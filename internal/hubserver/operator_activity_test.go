@@ -447,7 +447,55 @@ func activityPopulationFixture(t *testing.T, running bool) (*activityPostgresFix
 			live = attempt
 		}
 	}
+	f.copyOldHistory(t, "population_10001", 150000)
 	return f, live
+}
+
+func (f *activityPostgresFixture) copyOldHistory(t *testing.T, attempt string, copies int) {
+	t.Helper()
+	tx, err := f.admin.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			t.Error(err)
+		}
+	}()
+	var fence int64
+	if err := tx.QueryRowContext(t.Context(), "SELECT coalesce(max(fencing_token),0) FROM leases").Scan(&fence); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"CREATE TEMP TABLE old_leases ON COMMIT DROP AS SELECT g, l.* FROM native_attempts a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id, generate_series(1,$3::int) g WHERE a.organization_id=$1 AND a.id=$2",
+		"UPDATE old_leases SET lease_id=lease_id||'_old_'||g, session_id=session_id||'_old_'||g, fencing_token=$1::bigint+g",
+		"CREATE TEMP TABLE old_runs ON COMMIT DROP AS SELECT g, r.* FROM native_attempts a JOIN native_attempt_runs r ON r.organization_id=a.organization_id AND r.run_id=a.run_id, generate_series(1,$3::int) g WHERE a.organization_id=$1 AND a.id=$2",
+		"UPDATE old_runs SET run_id=run_id||'_old_'||g",
+		"CREATE TEMP TABLE old_attempts ON COMMIT DROP AS SELECT g, a.* FROM native_attempts a, generate_series(1,$3::int) g WHERE a.organization_id=$1 AND a.id=$2",
+		"UPDATE old_attempts SET id=id||'_old_'||g, lease_id=lease_id||'_old_'||g, run_id=run_id||'_old_'||g, fencing_token=$1::bigint+g, updated_at=updated_at-g*interval '1 minute', started_at=started_at-g*interval '1 minute'",
+		"UPDATE old_leases SET acquired_at=acquired_at-g*interval '1 minute', renewed_at=renewed_at-g*interval '1 minute'",
+		"ALTER TABLE old_leases DROP COLUMN g",
+		"ALTER TABLE old_runs DROP COLUMN g",
+		"ALTER TABLE old_attempts DROP COLUMN g",
+		"INSERT INTO leases OVERRIDING SYSTEM VALUE SELECT * FROM old_leases",
+		"INSERT INTO native_attempt_runs SELECT * FROM old_runs",
+		"INSERT INTO native_attempts SELECT * FROM old_attempts",
+	} {
+		var args []any
+		switch {
+		case strings.Contains(statement, "$3"):
+			args = []any{string(f.organization), attempt, copies}
+		case strings.Contains(statement, "$1"):
+			args = []any{fence}
+		}
+		if _, err := tx.ExecContext(t.Context(), statement, args...); err != nil {
+			t.Fatalf("copy old history: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	f.fence = fence + int64(copies) + 20000
 }
 
 type activityPostgresFixture struct {
