@@ -23,6 +23,7 @@ type Deps struct {
 	Resolve     func(context.Context, echo.Context) error
 	Scope       func(echo.Context) hubapi.Scope
 	ReadProject func(context.Context, hubapi.Scope) (projectstore.Record, error)
+	Live        func(echo.Context, *projectstore.Integration) error
 	Error       func(echo.Context, error) error
 	Audit       func(echo.Context, hubapi.Scope) error
 }

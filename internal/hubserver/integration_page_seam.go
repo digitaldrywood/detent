@@ -22,6 +22,9 @@ func (s *Service) integrationPageService() *integrationpage.Service {
 		ReadProject: func(ctx context.Context, scope hubapi.Scope) (projectstore.Record, error) {
 			return s.readProjectRecord(ctx, nativeScope{organization: scope.Organization, project: scope.Project})
 		},
+		Live: func(c echo.Context, value *projectstore.Integration) error {
+			return s.applyProjectIntegrationLive(c.Request().Context(), nativeRequestScope(c), value)
+		},
 		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
 		Audit: func(c echo.Context, _ hubapi.Scope) error {
 			scope := nativeRequestScope(c)

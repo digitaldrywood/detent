@@ -88,11 +88,16 @@ func (s *Service) projectIntegration(ctx context.Context, scope nativeScope) (Pr
 	if err != nil {
 		return result, err
 	}
+	return result, s.applyProjectIntegrationLive(ctx, scope, &result)
+}
+
+func (s *Service) applyProjectIntegrationLive(ctx context.Context, scope nativeScope, result *ProjectIntegration) error {
 	if result.CheckoutRepository != "" {
-		result.CheckoutVerified, err = s.verifiedProjectCheckout(ctx, nil, scope, result.CheckoutRepository, s.config.now())
+		verified, err := s.verifiedProjectCheckout(ctx, nil, scope, result.CheckoutRepository, s.config.now())
 		if err != nil {
-			return result, err
+			return err
 		}
+		result.CheckoutVerified = verified
 	}
 	available := s.config.ReconcileBackend != nil
 	result.GitHubTransportAvailable = &available
@@ -103,12 +108,12 @@ func (s *Service) projectIntegration(ctx context.Context, scope nativeScope) (Pr
 	if available && result.Profile == "native" && repository != "" && s.config.GitHubAppInstallation != nil {
 		app, err := s.config.GitHubAppInstallation(ctx, repository)
 		if err != nil {
-			return result, err
+			return err
 		}
 		result.GitHubAppSlug, result.GitHubAppInstallURL = app.Slug, app.InstallURL
 		result.GitHubAppInstalled = &app.Installed
 	}
-	return result, err
+	return nil
 }
 
 type updateProjectIntegrationRequest struct {

@@ -130,6 +130,9 @@ func (s *Service) Get(c echo.Context) error {
 			value.WorkflowMarkdown, err = s.deps.Workflow(c.Request().Context(), record)
 		}
 	}
+	if err == nil {
+		err = s.deps.Live(c, &value)
+	}
 	if err != nil {
 		return s.deps.Error(c, err)
 	}

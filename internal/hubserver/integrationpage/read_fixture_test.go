@@ -136,7 +136,7 @@ func (f *readFixture) pageService() *integrationpage.Service {
 		return record, hubauth.RecordError(err)
 	}
 	return integrationpage.New(integrationpage.Deps{Repository: f.repository, Details: hubmaintenance.LimitDetails(f.details), Now: time.Now, RecordError: hubauth.RecordError,
-		ReadProject: readProject, Scope: func(c echo.Context) hubapi.Scope { return c.Get("hub_request_scope").(hubapi.Scope) }, Error: hubtest.HTTPError, Audit: func(echo.Context, hubapi.Scope) error { return nil },
+		ReadProject: readProject, Scope: func(c echo.Context) hubapi.Scope { return c.Get("hub_request_scope").(hubapi.Scope) }, Error: hubtest.HTTPError, Audit: func(echo.Context, hubapi.Scope) error { return nil }, Live: func(echo.Context, *projectstore.Integration) error { return nil },
 		Workflow: func(ctx context.Context, record projectstore.Record) (string, error) {
 			if record.Settings.WorkflowKey == "" {
 				return "", nil
