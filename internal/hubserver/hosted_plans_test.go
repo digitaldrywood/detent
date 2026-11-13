@@ -837,6 +837,26 @@ func TestHostedProjectMutationsChargeTheRequestOrganization(t *testing.T) {
 	})
 }
 
+func TestHostedRunnerUsageChargesTheRequestOrganization(t *testing.T) {
+	t.Parallel()
+	service := newPostgresNativeService(t, Config{})
+	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.CapacityPlans()})
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		t.Run(string(organization), func(t *testing.T) {
+			f := newNativeFixture(t, service, organization, "Example project")
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.enroll(t)
+			var receipts int
+			if err := usagePostgresAdmin(t, service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_usage_receipts WHERE organization_id=$1 AND metric='api_mutations'", organization).Scan(&receipts); err != nil {
+				t.Fatal(err)
+			}
+			if receipts < 2 {
+				t.Fatalf("api_mutations receipts for %s = %d, want enrollment and redemption charged to it", organization, receipts)
+			}
+		})
+	}
+}
+
 func TestHostedRunnerAdmission(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
