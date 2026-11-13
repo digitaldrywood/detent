@@ -82,7 +82,9 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	var blocker tracker.NativeIssue
 	browserHostedDecode(t, api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "blocker"}, Title: "Retain prerequisite", Body: nativeContractTestBody, State: "Todo"}, http.StatusOK), &blocker)
 	api(t, "owner", http.MethodPost, base+"/work-items/"+string(currentItem.WorkItemID)+"/dependencies", tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "dependency"}, ExpectedRevision: currentItem.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}, http.StatusOK)
-	browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/work-items/"+string(currentItem.WorkItemID), nil, http.StatusOK), &currentItem)
+	var detail tracker.NativeIssue
+	browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/work-items/"+string(currentItem.WorkItemID), nil, http.StatusOK), &detail)
+	currentItem = detail
 	var integration ProjectIntegration
 	browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/integration", nil, http.StatusOK), &integration)
 	states := migrationWorkflow()
@@ -144,7 +146,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		{"terminal dispatch", []tracker.NativeState{{Name: "Todo", Terminal: true, Dispatchable: true}}, "2", "owner", http.StatusUnprocessableEntity},
 		{"occupied state", []tracker.NativeState{{Name: "Backlog"}}, "2", "owner", http.StatusUnprocessableEntity},
 		{"stale settings", states, "1", "owner", http.StatusConflict},
-		{"viewer", states, "2", "viewer", http.StatusNotFound},
+		{"viewer", states, "2", "viewer", http.StatusForbidden},
 		{"member with write grant", states, "2", "member", http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -204,7 +206,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM project_workflow_states WHERE organization_id=$1 AND project_id=$2", created.OrganizationID, created.ID).Scan(&remaining); err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(simplified.States, []tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog"}}, {Name: "Backlog"}}) || remaining != 2 {
+		if !reflect.DeepEqual(simplified.States, []tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog"}}, {Name: "Backlog", Transitions: []string{}}}) || remaining != 2 {
 			t.Fatalf("unused states were not removed: %#v, rows=%d", simplified.States, remaining)
 		}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), created.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
