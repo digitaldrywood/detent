@@ -1,18 +1,15 @@
-package hubserver
+package integrationpage
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestIntegrationPageQueueIsTenantBound(t *testing.T) {
-	service := newPostgresNativeService(t, Config{})
-	value, _ := projectRecordDatabases.Load(service.database.postgres)
-	admin := value.(*sql.DB)
+	_, repository, admin := pageFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
-		newNativeFixture(t, service, org, "Example")
+		pageProject(t, repository, org, "Example")
 	}
 	for _, org := range []string{"", "org_first", "org_first_second"} {
 		tx, err := admin.Begin()
