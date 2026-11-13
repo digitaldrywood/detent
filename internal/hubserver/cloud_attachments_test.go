@@ -360,7 +360,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				plan.ID = "example-attachment-plan"
 				plan.Allowances = maps.Clone(plan.Allowances)
 				plan.Allowances["collaboration_bytes"], plan.Allowances["api_mutations"] = test.allowance, test.apiLimit
-				plans.Plans, plans.Base, base = []HostedPlan{plan}, plan.PlanReference, plan.PlanReference
+				plans.Plans, plans.Base, base = append([]HostedPlan{plan}, plans.Plans...), plan.PlanReference, plan.PlanReference
 			}
 			if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
@@ -479,7 +479,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				}
 				return
 			}
-			usage, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now())
+			usage, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now(), "collaboration_bytes", "api_mutations")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -490,7 +490,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if replay.Code != http.StatusCreated || replay.Body.String() != response.Body.String() {
 				t.Fatalf("metadata replay=%d %s", replay.Code, replay.Body.String())
 			}
-			replayedUsage, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now())
+			replayedUsage, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now(), "collaboration_bytes", "api_mutations")
 			if err != nil || replayedUsage["collaboration_bytes"] != usage["collaboration_bytes"] || replayedUsage["api_mutations"] != 2 || usage["api_mutations"] != 2 {
 				t.Fatalf("metadata replay consumption=%v err=%v", replayedUsage, err)
 			}
