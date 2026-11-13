@@ -62,6 +62,7 @@ func TestReporterNativeCommands(t *testing.T) {
 		{"key/dispatchable intake", "key", true, &tracker.NativeState{Name: "Triage", Dispatchable: true, OperatorOnly: true, Transitions: []string{"Todo"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newHostedSharedFixture(t)
 			u := f.user(t, "reporter", "reporter", "reporter@example.test", "write", "")
 			member := f.user(t, "member", "member", "member@example.test", "write", "")
@@ -750,6 +751,7 @@ func TestReporterCustomHostedProjectCreation(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f, ctx := newHostedKeyMCPFixture(t, "dedicated", "owner")
 			reporter := f.hostedSecurityFixture.user(t, "reporter", "reporter", "reporter@example.test", "", "")
 			member := f.hostedSecurityFixture.user(t, "member", "member", "member@example.test", "", "")
