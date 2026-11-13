@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -198,6 +199,9 @@ func installReportsBudgetTrace(t *testing.T, s *Service) {
 	t.Cleanup(func() {
 		s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository = oldTenant, oldAccess, oldBilling
 		s.database.postgres, s.requestMetrics.Repository, s.database.billingRepository = oldDatabase, oldMetrics, oldDatabaseBilling
+		if s.requestMetrics != nil {
+			s.requestMetrics.RecordUsage(s.database.metricsBillingOwner(), requestmetrics.Key{}, requestmetrics.Usage{})
+		}
 		projectRecordDatabases.Delete(repository)
 		if err := repository.Close(); err != nil {
 			t.Error(err)
