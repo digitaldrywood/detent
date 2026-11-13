@@ -77,9 +77,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 		}
 	}
 
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE issues,collaboration_events,native_attempts,change_requests,change_evidence,attempt_usage,report_usage_current,report_escape_facts"); err != nil {
-		t.Fatal(err)
-	}
+	freezeReportPlannerInputs(t, admin)
 	for _, test := range []struct {
 		name      string
 		rangeName string
@@ -206,6 +204,18 @@ func installReportsBudgetTrace(t *testing.T, s *Service) {
 		}
 	})
 }
+func freezeReportPlannerInputs(t *testing.T, admin *sql.DB) {
+	t.Helper()
+	for _, relation := range reportsBudgetHotRelations {
+		if _, err := admin.ExecContext(t.Context(), "ALTER TABLE "+relation+" SET (autovacuum_enabled=false, toast.autovacuum_enabled=false)"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := admin.ExecContext(t.Context(), "VACUUM (ANALYZE) "+strings.Join(reportsBudgetHotRelations, ",")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func reportsAssertPostgresPlans(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statements []tracedStatement, required ...string) {
 	t.Helper()
 	families := map[string]bool{}

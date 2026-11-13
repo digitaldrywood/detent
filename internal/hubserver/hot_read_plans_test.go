@@ -34,9 +34,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 	admin := hostedPostgresAdmin(t, f.service)
 	installReportsBudgetTrace(t, f.service)
 	seedProductionProject(t, f.service, hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}, productionProjectShape{issues: 594, attempts: 469, usage: 262, leases: 1682, comments: 7000})
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE issues,collaboration_events,native_attempts,change_requests,change_evidence,attempt_usage,report_usage_current,report_escape_facts"); err != nil {
-		t.Fatal(err)
-	}
+	freezeReportPlannerInputs(t, admin)
 	t.Run("rules reject injected unindexed reads", func(t *testing.T) {
 		for _, statement := range []tracedStatement{
 			{"SELECT count(*) FROM collaboration_events WHERE organization_id=$1", []any{"org_browser_preview"}},
@@ -136,9 +134,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 				seedReportsVolumeTransitions(t, f.service, scope, population.transitions)
 			}
 			admin := hostedPostgresAdmin(t, f.service)
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE issues,collaboration_events,native_attempts,change_requests,change_evidence,attempt_usage,report_usage_current,report_escape_facts"); err != nil {
-				t.Fatal(err)
-			}
+			freezeReportPlannerInputs(t, admin)
 			for _, window := range []string{"24h", "7d", "30d"} {
 				t.Run(window, func(t *testing.T) {
 					var mu sync.Mutex
