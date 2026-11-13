@@ -116,7 +116,7 @@ func CSRF(t *testing.T, body string) string {
 	}
 	_, rest, ok := strings.Cut(body, `name="csrf" value="`)
 	if !ok {
-		t.Fatalf("Page has no CSRF token: %s", body)
+		t.Fatalf("page has no CSRF token: %s", body)
 	}
 	value, _, _ := strings.Cut(rest, `"`)
 	return value

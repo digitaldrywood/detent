@@ -103,7 +103,7 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			}
 			response, _ := alice.Get("/organizations/org_alpha/app/bootstrap")
 			if response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/auth/oidc/start") {
-				t.Fatalf("revoked harness.Page read = %d %q, want sign-in redirect", response.StatusCode, response.Header.Get("Location"))
+				t.Fatalf("revoked page read = %d %q, want sign-in redirect", response.StatusCode, response.Header.Get("Location"))
 			}
 			if f.Provider.Refreshes != 1 {
 				t.Fatalf("refreshes = %d, want 1: the dropped authorization must not refresh again", f.Provider.Refreshes)
@@ -131,7 +131,7 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			}
 			response, _ := alice.Get("/organizations/org_alpha/app/bootstrap")
 			if response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/auth/oidc/start") {
-				t.Fatalf("removed member harness.Page = %d %q, want sign-in redirect", response.StatusCode, response.Header.Get("Location"))
+				t.Fatalf("removed member page = %d %q, want sign-in redirect", response.StatusCode, response.Header.Get("Location"))
 			}
 		}},
 		{"unreachable key set keeps the authorization", func(t *testing.T, f entryfixture.Fixture, alice *harness.Browser) {
