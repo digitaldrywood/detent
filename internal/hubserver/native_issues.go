@@ -418,10 +418,7 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope hubsco
 }
 
 func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
-	if conversationID != "" {
-		return nil, hubapi.NativeWorkItemStorageUnavailable()
-	}
-	return s.transitionNativeIssueTenant(ctx, scope, item, request)
+	return s.transitionNativeIssueTenantFromChat(ctx, scope, item, request, conversationID)
 }
 
 func (s *Service) changeNativeDependency(c echo.Context) error {

@@ -21,8 +21,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -289,9 +291,96 @@ func coordinatorActionRequestID(messageID string, call runner.AgentToolCall) str
 	return "luna_" + hex.EncodeToString(digest[:])
 }
 
-func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, target, answer string) error {
-	if !strings.EqualFold(issue.State, "Blocked") || strings.EqualFold(target, issue.State) || strings.TrimSpace(answer) != "" {
+type coordinatorMoveAnswerAttempt struct {
+	checked   bool
+	attemptID string
+}
+
+func (a coordinatorMoveAnswerAttempt) recheck(ctx context.Context, w tenantstore.Writer, issueID int64) error {
+	if !a.checked {
 		return nil
+	}
+	current := ""
+	attempt, err := w.LatestAttempt(ctx, issueID)
+	if err == nil {
+		current = attempt.ID
+	} else if !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	if current != a.attemptID {
+		return corestore.ErrSerializationFailure
+	}
+	return nil
+}
+
+type coordinatorAnswerComment struct {
+	comment corestore.Comment
+	version eventstore.CollaborationVersion
+	event   eventstore.Event
+	search  searchstore.Document
+}
+
+func (s *Service) prepareCoordinatorAnswerComment(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem, conversationID string, request tracker.Transition, now time.Time) (*coordinatorAnswerComment, error) {
+	content := eventstore.NewContent(s.runDetailStore())
+	actor := scope.Actor()
+	body := strings.TrimSpace(request.ReasonDetail)
+	provenance := tracker.Provenance{Provider: "chat", ExternalID: conversationID + ":" + request.IdempotencyKey, AuthorID: actor.PrincipalID}
+	comment := tracker.NativeComment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.NativeID, ID: hubapi.NewID("cmt"), Revision: 1, Sequence: item.EventSequence + 1, Body: body, Actor: actor, Provenance: &provenance, CreatedAt: now, UpdatedAt: now}
+	bodyRaw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyRef, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, bodyRaw)
+	if err != nil {
+		return nil, err
+	}
+	commentRaw, err := json.Marshal(comment)
+	if err != nil {
+		return nil, err
+	}
+	version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.NativeID, RecordID: comment.ID, Revision: 1}, commentRaw)
+	if err != nil {
+		return nil, err
+	}
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: item.NativeID, Type: "comment.created", SchemaVersion: 1, Actor: actor, RecordedAt: now, Data: tracker.CollaborationData{Revision: 1, CommentID: comment.ID}})
+	if err != nil {
+		return nil, err
+	}
+	event, err := content.PrepareEvent(ctx, scope.Organization, eventRaw)
+	if err != nil {
+		return nil, err
+	}
+	search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.NativeID, ID: "comment:" + comment.ID, SourceID: comment.ID, Kind: "comment", Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Body: body})
+	if err != nil {
+		return nil, err
+	}
+	sourceKey := provenance.Provider + ":" + provenance.ExternalID
+	row := corestore.Comment{OrganizationID: scope.Organization, ID: comment.ID, ProjectID: scope.Project, WorkItemID: item.NativeID, Revision: 1, Sequence: comment.Sequence, BodyObjectKey: bodyRef.PayloadObjectKey, ActorKind: actor.Kind, ActorPrincipalID: actor.PrincipalID, ProvenanceProvider: &provenance.Provider, ProvenanceExternalID: &provenance.ExternalID, SourceKey: &sourceKey, SourceRevision: 1, SourceObservedAt: &now, CreatedAt: now, UpdatedAt: now}
+	return &coordinatorAnswerComment{comment: row, version: version, event: event, search: search}, nil
+}
+
+func (c *coordinatorAnswerComment) write(ctx context.Context, w tenantstore.Writer) error {
+	if _, err := w.CreateComment(ctx, c.comment); err != nil {
+		return err
+	}
+	if err := w.PutSearch(ctx, c.search, 0); err != nil {
+		return err
+	}
+	if _, err := w.CreateCollaborationVersion(ctx, c.version); err != nil {
+		return err
+	}
+	_, err := w.AppendEvent(ctx, c.event)
+	return err
+}
+
+func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, target, answer string) error {
+	_, err := s.checkCoordinatorMoveAnswer(ctx, scope, issue, target, answer)
+	return err
+}
+
+func (s *Service) checkCoordinatorMoveAnswer(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, target, answer string) (coordinatorMoveAnswerAttempt, error) {
+	if !strings.EqualFold(issue.State, "Blocked") || strings.EqualFold(target, issue.State) || strings.TrimSpace(answer) != "" {
+		return coordinatorMoveAnswerAttempt{}, nil
 	}
 	var attemptID string
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -307,20 +396,20 @@ func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope hubsc
 		return err
 	})
 	if err != nil {
-		return err
+		return coordinatorMoveAnswerAttempt{}, err
 	}
 	humanAction := false
 	if attemptID != "" {
 		attempt, err := s.readNativeAttemptTenant(ctx, scope, string(issue.WorkItemID), attemptID)
 		if err != nil {
-			return err
+			return coordinatorMoveAnswerAttempt{}, err
 		}
 		humanAction = attempt.Disposition != nil && attempt.Disposition.Status == "blocked" && attempt.Disposition.HumanAction
 	}
 	if humanAction {
-		return &operatortool.RequestError{Code: "invalid_request", Message: "Provide the human's answer to the recorded human_action question in reason_detail before moving this item out of Blocked"}
+		return coordinatorMoveAnswerAttempt{}, &operatortool.RequestError{Code: "invalid_request", Message: "Provide the human's answer to the recorded human_action question in reason_detail before moving this item out of Blocked"}
 	}
-	return nil
+	return coordinatorMoveAnswerAttempt{checked: true, attemptID: attemptID}, nil
 }
 
 func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, action chat.Action) (any, error) {

@@ -119,7 +119,7 @@ func (s *Service) stopNativeRunCommand(ctx context.Context, scope hubscope.Nativ
 	if request.ProjectID != string(scope.Project) || request.LeaseID == "" || !slices.Contains([]string{"Blocked", "Backlog", "Cancelled", "Todo"}, request.Destination) || len(request.Reason) > 280 || request.Priority != nil && (*request.Priority < 1 || *request.Priority > 4) {
 		return nil, operatortool.ErrInvalidArguments
 	}
-	raw, err := s.transitionNativeIssueTenantWithStop(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: tracker.MutationForContext(ctx, requestID).IdempotencyKey, LeaseID: request.LeaseID, FencingToken: request.FencingToken}, ExpectedRevision: request.ExpectedRevision, State: request.Destination, Reason: "user_requested", ReasonDetail: strings.TrimSpace(request.Reason)}, &request)
+	raw, err := s.transitionNativeIssueTenantWithStop(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: tracker.MutationForContext(ctx, requestID).IdempotencyKey, LeaseID: request.LeaseID, FencingToken: request.FencingToken}, ExpectedRevision: request.ExpectedRevision, State: request.Destination, Reason: "user_requested", ReasonDetail: strings.TrimSpace(request.Reason)}, &request, "")
 	if err != nil {
 		return nil, err
 	}

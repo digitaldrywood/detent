@@ -37,14 +37,18 @@ import (
 )
 
 func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
-	result, err := s.transitionNativeIssueTenantWithStop(ctx, scope, item, request, nil)
+	return s.transitionNativeIssueTenantFromChat(ctx, scope, item, request, "")
+}
+
+func (s *Service) transitionNativeIssueTenantFromChat(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
+	result, err := s.transitionNativeIssueTenantWithStop(ctx, scope, item, request, nil, conversationID)
 	if err == nil && s.wakeSpriteRunnersAfter != nil {
 		s.wakeSpriteRunnersAfter(scope, result)
 	}
 	return result, err
 }
 
-func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments) (json.RawMessage, error) {
+func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments, conversationID string) (json.RawMessage, error) {
 	batchRouting := scope.IntegrationOwned && scope.IntegrationRepository != "" && scope.GitHubIntakeRevision != nil && scope.GitHubIntakeRevision.BatchID != "" && scope.GitHubIntakeRevision.Revision > 0 && scope.Credential.Scope == hubapi.APIScopeAdmin && scope.Credential.Runner.RunnerID == "" && request.Reason == "user_requested" && request.State != "Cancelled" && stop == nil
 	if batchRouting {
 		batch, err := s.loadGitHubBatchRecord(ctx, scope)
@@ -79,7 +83,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 	}
 	human := (scope.Credential.Scope == hubapi.APIScopeOperator || scope.Credential.Scope == hubapi.APIScopeAdmin) && scope.Credential.Runner.RunnerID == "" && scope.Actor().Kind == "human" || batchRouting
 	recordedRecovery := !human && request.Reason == "dependency_ready"
-	if !human && (scope.Credential.Scope != hubapi.APIScopeWorker || scope.Credential.Runner.RunnerID == "" || scope.Credential.Runner.OrganizationID != scope.Organization || scope.Credential.EntryKey != nil) {
+	if !human && (conversationID != "" || scope.Credential.Scope != hubapi.APIScopeWorker || scope.Credential.Runner.RunnerID == "" || scope.Credential.Runner.OrganizationID != scope.Organization || scope.Credential.EntryKey != nil) {
 		return nil, hubscope.RunnerUnauthorized()
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.ExpectedRevision <= 0 || !human && (request.LeaseID == "" || request.FencingToken <= 0) {
@@ -110,7 +114,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		tracker.Transition
 		ConversationID string                       `json:"conversation_id,omitempty"`
 		Stop           *coordinatorStopRunArguments `json:"stop,omitempty"`
-	}{Transition: request, Stop: stop}
+	}{Transition: request, ConversationID: conversationID, Stop: stop}
 	hash, err := hubapi.CommandHash(payload)
 	if err != nil {
 		return nil, err
@@ -143,6 +147,13 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		issue, err := s.hydrateWorkItemRecord(ctx, row, currentVersion)
 		if err != nil {
 			return nil, err
+		}
+		var answerAttempt coordinatorMoveAnswerAttempt
+		if conversationID != "" {
+			answerAttempt, err = s.checkCoordinatorMoveAnswer(ctx, scope, issue, request.State, request.ReasonDetail)
+			if err != nil {
+				return nil, err
+			}
 		}
 		compatible := issue.Profile == "github_compatible" && human && !batchRouting
 		if issue.Profile == "native" && request.WorkflowLabel != "" {
@@ -313,6 +324,13 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
+		var answerComment *coordinatorAnswerComment
+		if conversationID != "" && !unchanged && strings.TrimSpace(request.ReasonDetail) != "" {
+			answerComment, err = s.prepareCoordinatorAnswerComment(ctx, scope, row, conversationID, request, now)
+			if err != nil {
+				return nil, err
+			}
+		}
 		preparedReceipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: options.OperationID, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, responseRaw)
 		if err != nil {
 			return nil, err
@@ -434,6 +452,12 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			if recordedRecovery && locked.EventSequence != row.EventSequence {
 				return corestore.ErrRevisionConflict
+			}
+			if answerComment != nil && locked.EventSequence != row.EventSequence {
+				return corestore.ErrSerializationFailure
+			}
+			if err := answerAttempt.recheck(ctx, w, locked.ID); err != nil {
+				return err
 			}
 			if previousState != request.State && nativeDoneState(request.State) && nativeHumanFiled(issue) {
 				workspace, err := w.IsWorkspaceWorkItem(ctx, scope.Project, issue.WorkItemID)
@@ -575,6 +599,11 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			if err := w.BindDoctorProposalIdentities(ctx, corestore.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: newVersion.WorkItemID, Revision: newVersion.Revision, VersionSHA256: newVersion.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(issue.Body)}); err != nil {
 				return err
+			}
+			if answerComment != nil {
+				if err := answerComment.write(ctx, w); err != nil {
+					return err
+				}
 			}
 			if _, err := w.AppendEvent(ctx, event); err != nil {
 				return err
