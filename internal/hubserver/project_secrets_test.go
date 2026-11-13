@@ -126,7 +126,12 @@ func TestProjectSecretPermissions(t *testing.T) {
 			decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, poolPath, nil, http.StatusOK), &pool)
 			f.api(t, "viewer", http.MethodPut, poolPath, spritePoolCommand{Mutation: tracker.Mutation{IdempotencyKey: "project-pool-" + role}, spritePoolSettings: spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Revision: pool.Revision}, Bootstrap: new("true"), ShareIdleCapacity: new(false)}, status)
 			organizationPoolPath := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/sprite-pool"
-			decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, organizationPoolPath, nil, http.StatusOK), &pool)
+			if status == http.StatusOK {
+				decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, organizationPoolPath, nil, http.StatusOK), &pool)
+			} else {
+				requireNativeError(t, f.api(t, "viewer", http.MethodGet, organizationPoolPath, nil, http.StatusForbidden), http.StatusForbidden, "access_denied")
+				decodeHubResponse(t, f.api(t, "owner", http.MethodGet, organizationPoolPath, nil, http.StatusOK), &pool)
+			}
 			organizationStatus := status
 			if role == "viewer" {
 				organizationStatus = http.StatusForbidden
