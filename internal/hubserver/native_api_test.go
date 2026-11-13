@@ -1143,38 +1143,56 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 
 func TestNativeClaimRefusesWorkBlockedByHiddenDependency(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
-	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}), "", "hidden-blocker-claim")
-	other := newNativeFixture(t, f.service, f.project.OrganizationID, "private-blocker")
-	r := prepareRunnerForScope(t, f, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-	r.enroll(t)
-	r.reportCapacity(t)
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	issue := f.create(t, "blocked work")
-	blocker := other.create(t, "private blocker")
-	request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "hidden-blocker"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/dependencies", testHubAdminToken, request), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/work-items/"+string(blocker.WorkItemID), r.redemption.Credential, nil), http.StatusNotFound)
-	claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "work", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	refused := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
-	requireNativeError(t, refused, http.StatusConflict, "no_claimable_work")
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		item, err := w.WorkItem(t.Context(), other.project.ID, blocker.WorkItemID)
-		if err != nil {
-			return err
-		}
-		item.WorkflowStateName = new("Done")
-		_, err = w.UpdateWorkItem(t.Context(), item)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
-	requireNativeStatus(t, claimed, http.StatusOK)
-	var lease tracker.NativeLease
-	decodeHubResponse(t, claimed, &lease)
-	if lease.WorkItemID != issue.WorkItemID {
-		t.Fatalf("claimed %s, want %s", lease.WorkItemID, issue.WorkItemID)
+	for _, hidden := range []bool{true, false} {
+		t.Run(fmt.Sprintf("hidden=%t", hidden), func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}), "", "hidden-blocker-claim")
+			owner := f
+			if hidden {
+				owner = newNativeFixture(t, f.service, f.project.OrganizationID, "private-blocker")
+			}
+			r := prepareRunnerForScope(t, f, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.enroll(t)
+			r.reportCapacity(t)
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "blocked work")
+			blocker := owner.create(t, "blocker")
+			request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "blocker"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/dependencies", testHubAdminToken, request), http.StatusOK)
+			if hidden {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, owner.base+"/work-items/"+string(blocker.WorkItemID), r.redemption.Credential, nil), http.StatusNotFound)
+			}
+			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "work", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			refused := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			requireNativeError(t, refused, http.StatusConflict, "no_claimable_work")
+			if current := readWorkItem(t, f, issue.WorkItemID, ""); current.State != "Todo" || current.Revision != issue.Revision+1 {
+				t.Fatalf("refused claim moved the dependent: state=%q revision=%d", current.State, current.Revision)
+			}
+			if hidden {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					item, err := w.WorkItem(t.Context(), owner.project.ID, blocker.WorkItemID)
+					if err != nil {
+						return err
+					}
+					item.WorkflowStateName = new("Done")
+					_, err = w.UpdateWorkItem(t.Context(), item)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				done := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "blocker-done"}, ExpectedRevision: blocker.Revision, State: "Done", Reason: "user_requested"}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, owner.base+"/work-items/"+string(blocker.WorkItemID)+"/workflow", owner.token, done), http.StatusOK)
+			}
+			claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			requireNativeStatus(t, claimed, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, claimed, &lease)
+			if lease.WorkItemID != issue.WorkItemID {
+				t.Fatalf("claimed %s, want %s", lease.WorkItemID, issue.WorkItemID)
+			}
+		})
 	}
 }
 
