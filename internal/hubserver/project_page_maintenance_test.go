@@ -151,11 +151,13 @@ func TestProjectPageSchedulerAndLiveRoute(t *testing.T) {
 				if reads == 0 {
 					t.Fatal("cold project did not fall back to current source")
 				}
+				service.config.Hosted = &HostedConfig{OrganizationID: string(org)}
 				for range 64 {
 					if err := scheduler.Tick(t.Context()); err != nil {
 						t.Fatal(err)
 					}
 				}
+				service.config.Hosted = nil
 				service.config.TenantRepository, service.config.AccessRepository = measured, measured
 				reads = 0
 				wire.reset()
