@@ -1422,7 +1422,15 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 					t.Fatalf("restored attempt payload lost original attribution: proofs=%+v error=%v", proofs, err)
 				}
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, local.base+"/leases/"+string(localLease.ID)+"/release", localWorker, tracker.NativeLeaseMutation{FencingToken: localLease.FencingToken, Reason: "released"}), http.StatusNoContent)
+			release := performHubAPIRequest(t, service, http.MethodPost, local.base+"/leases/"+string(localLease.ID)+"/release", localWorker, tracker.NativeLeaseMutation{FencingToken: localLease.FencingToken, Reason: "released"})
+			switch test.name {
+			case "wrong run", "wrong lease", "wrong fence", "wrong policy", "wrong pinned policy", "unrecorded sequence":
+				if release.Code < http.StatusBadRequest {
+					t.Fatalf("release accepted latest run history outside its lease: %d %s", release.Code, release.Body.String())
+				}
+			default:
+				requireNativeStatus(t, release, http.StatusNoContent)
+			}
 		})
 	}
 	t.Run("confirmed PR receipt", func(t *testing.T) {
