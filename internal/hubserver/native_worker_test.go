@@ -136,10 +136,10 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if afterRefusal.ReplayFloor > beforeRefusal.Sequence || afterRefusal.Sequence != beforeRefusal.Sequence+1 || len(deltas) != 1 || deltas[0].Current == nil {
+	if afterRefusal.ReplayFloor > beforeRefusal.Sequence || afterRefusal.Sequence != beforeRefusal.Sequence+2 || len(deltas) != 2 || deltas[0].Topic != "activity" || deltas[0].RelatedID != string(issue.WorkItemID) || deltas[1].Topic != "card" || deltas[1].Current == nil {
 		t.Fatalf("claim refusal sequence=%#v deltas=%#v response=%s", afterRefusal, deltas, refusal.Body.String())
 	}
-	card, err := viewstore.NewContent(f.service.runDetailStore()).Board(t.Context(), f.project.OrganizationID, *deltas[0].Current)
+	card, err := viewstore.NewContent(f.service.runDetailStore()).Board(t.Context(), f.project.OrganizationID, *deltas[1].Current)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +504,7 @@ func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T
 			now = now.Add(time.Second)
 			refuse(0)
 			after := read()
-			if after.revision != before.revision || after.sequence != before.sequence+1 || after.board != before.board+1 || !after.activity.Equal(now) || after.leases != 0 || after.attempts != 0 {
+			if after.revision != before.revision || after.sequence != before.sequence+1 || after.board != before.board+2 || !after.activity.Equal(now) || after.leases != 0 || after.attempts != 0 {
 				t.Fatalf("first refusal before=%+v after=%+v", before, after)
 			}
 			response := perform(http.MethodGet, path+"/history", f.token, nil)
@@ -539,7 +539,7 @@ func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T
 			now = now.Add(time.Second)
 			refuse(1)
 			interleaved := read()
-			if interleaved.sequence != after.sequence+1 || interleaved.board != after.board+1 || interleaved.revision != after.revision || interleaved.leases != 0 || interleaved.attempts != 0 {
+			if interleaved.sequence != after.sequence+1 || interleaved.board != after.board+2 || interleaved.revision != after.revision || interleaved.leases != 0 || interleaved.attempts != 0 {
 				t.Fatalf("second runner refusal=%+v", interleaved)
 			}
 			assertDuplicate()
@@ -561,7 +561,7 @@ func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T
 			now = now.Add(time.Second)
 			refuse(0)
 			afterReset := read()
-			if afterReset.revision != before.revision || afterReset.sequence != beforeReset.sequence+1 || afterReset.board != beforeReset.board+1 || afterReset.leases != beforeReset.leases || afterReset.attempts != beforeReset.attempts || !afterReset.activity.Equal(now) {
+			if afterReset.revision != before.revision || afterReset.sequence != beforeReset.sequence+1 || afterReset.board != beforeReset.board+2 || afterReset.leases != beforeReset.leases || afterReset.attempts != beforeReset.attempts || !afterReset.activity.Equal(now) {
 				t.Fatalf("committed claim did not reset refusal dedup: before=%+v after=%+v", beforeReset, afterReset)
 			}
 			assertDuplicate()
@@ -571,7 +571,7 @@ func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T
 			now = now.Add(time.Second)
 			refuse(0)
 			afterRevision := read()
-			if afterRevision.revision != afterReset.revision+1 || afterRevision.sequence != beforeRevision.sequence+1 || afterRevision.board != beforeRevision.board+1 || afterRevision.leases != beforeRevision.leases || afterRevision.attempts != beforeRevision.attempts || !afterRevision.activity.Equal(now) {
+			if afterRevision.revision != afterReset.revision+1 || afterRevision.sequence != beforeRevision.sequence+1 || afterRevision.board != beforeRevision.board+2 || afterRevision.leases != beforeRevision.leases || afterRevision.attempts != beforeRevision.attempts || !afterRevision.activity.Equal(now) {
 				t.Fatalf("new item revision did not fence refusal dedup: before=%+v after=%+v", beforeRevision, afterRevision)
 			}
 			assertDuplicate()
