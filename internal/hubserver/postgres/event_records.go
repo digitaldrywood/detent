@@ -148,6 +148,43 @@ func (s *session) ProjectChanges(ctx context.Context, project tracker.ProjectID,
 	return changes, nil
 }
 
+func (s *session) EventsByKey(ctx context.Context, keys []eventstore.EventKey) (map[string]eventstore.Event, error) {
+	events := make(map[string]eventstore.Event, len(keys))
+	if len(keys) == 0 {
+		return events, nil
+	}
+	requested := make(map[string]eventstore.EventKey, len(keys))
+	ids := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if key.ID == "" || key.ProjectID == "" || key.WorkItemID == "" {
+			return nil, eventstore.ErrInvalidRecord
+		}
+		if previous, ok := requested[key.ID]; ok {
+			if previous != key {
+				return nil, eventstore.ErrInvalidRecord
+			}
+			continue
+		}
+		requested[key.ID] = key
+		ids = append(ids, key.ID)
+	}
+	if len(ids) > 100000 {
+		return nil, eventstore.ErrInvalidRecord
+	}
+	rows, err := s.queries.RecordGetEvents(ctx, pgquery.RecordGetEventsParams{OrganizationID: s.organization, Ids: ids, RowLimit: int32(len(ids))})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	for _, row := range rows {
+		key := requested[row.ID]
+		if row.ProjectID != key.ProjectID || row.WorkItemID != key.WorkItemID {
+			continue
+		}
+		events[row.ID] = eventRecord(row)
+	}
+	return events, nil
+}
+
 func (s *session) RunEvent(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) (eventstore.Event, error) {
 	row, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, ID: id})
 	return eventRecord(row), mapError(ctx, err)

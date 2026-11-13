@@ -328,6 +328,81 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEventsByKeyMatchesPointReads(t *testing.T) {
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	for _, org := range []tracker.OrganizationID{"org_keys_first", "org_keys_second"} {
+		pgstoretest.SeedRepository(t, repository, org)
+		f := pgstoretest.SeedHistory(t, repository, org, "first")
+		other, err := f.Content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "event_other_item", OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_2", Type: "issue.edited", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{Revision: 2, Fields: []string{"title"}}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
+			_, err := w.AppendEvent(t.Context(), other)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		keys := []eventstore.EventKey{{ProjectID: "prj_first", WorkItemID: "wi_first_1", ID: f.Event.ID}, {ProjectID: "prj_first", WorkItemID: "wi_first_2", ID: other.ID}}
+		for _, test := range []struct {
+			name string
+			keys []eventstore.EventKey
+			want []string
+			err  error
+		}{
+			{"every requested event", append(keys, keys[0]), []string{f.Event.ID, other.ID}, nil},
+			{"another item's event is absent", []eventstore.EventKey{{ProjectID: "prj_first", WorkItemID: "wi_first_2", ID: f.Event.ID}}, nil, nil},
+			{"another project's event is absent", []eventstore.EventKey{{ProjectID: "prj_second", WorkItemID: "wi_first_1", ID: f.Event.ID}}, nil, nil},
+			{"conflicting identities are refused", []eventstore.EventKey{keys[0], {ProjectID: "prj_first", WorkItemID: "wi_first_2", ID: f.Event.ID}}, nil, eventstore.ErrInvalidRecord},
+		} {
+			t.Run(string(org)+"/"+test.name, func(t *testing.T) {
+				if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+					batch, ok := r.(eventstore.EventsByKeyReader)
+					if !ok {
+						return errors.New("batched event owner unavailable")
+					}
+					point, ok := r.(interface {
+						RunEvent(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (eventstore.Event, error)
+					})
+					if !ok {
+						return errors.New("point event owner unavailable")
+					}
+					events, err := batch.EventsByKey(t.Context(), test.keys)
+					if !errors.Is(err, test.err) {
+						t.Fatalf("batch error=%v want %v", err, test.err)
+					}
+					if test.err != nil {
+						return nil
+					}
+					if len(events) != len(test.want) {
+						t.Fatalf("batch events=%v want %v", events, test.want)
+					}
+					for _, key := range test.keys {
+						single, err := point.RunEvent(t.Context(), key.ProjectID, key.WorkItemID, key.ID)
+						event, found := events[key.ID]
+						if errors.Is(err, corestore.ErrNotFound) {
+							if found {
+								t.Fatalf("batch returned %+v for absent %+v", event, key)
+							}
+							continue
+						}
+						if err != nil {
+							return err
+						}
+						if !found || !reflect.DeepEqual(event, single) || event.OrganizationID != org {
+							t.Fatalf("batch event=%+v point=%+v", event, single)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
 func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

@@ -79,6 +79,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 	}
 
 	freezeReportPlannerInputs(t, admin)
+	statementCounts := map[string]int{}
 	for _, test := range []struct {
 		name      string
 		rangeName string
@@ -134,9 +135,13 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 			mu.Lock()
 			captured := append([]tracedStatement(nil), statements...)
 			mu.Unlock()
+			statementCounts[test.name] = len(captured)
 			reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "issues", "collaboration_events", "native_attempts", "change_requests", "report_escape_facts")
 
 		})
+	}
+	if statementCounts["30d/midnight"] == 0 || statementCounts["90d/midnight"] != statementCounts["30d/midnight"] || statementCounts["90d/daytime"] != statementCounts["30d/daytime"] {
+		t.Errorf("report statements grow with the window: %v", statementCounts)
 	}
 }
 

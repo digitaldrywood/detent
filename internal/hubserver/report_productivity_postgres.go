@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -244,6 +243,7 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 		if err != nil {
 			return err
 		}
+		keys := []eventstore.EventKey{}
 		for _, fact := range facts {
 			ids := []string{}
 			filed := !fact.CreatedAt.Before(prior.From) && fact.CreatedAt.Before(w.To)
@@ -259,25 +259,28 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 			if fact.PreviousCompletedState == "Done" && fact.PreviousCompletedAt != nil && !fact.PreviousCompletedAt.Before(prior.From) && fact.PreviousCompletedAt.Before(prior.To) && !fact.PreviousCompletedActorKnown {
 				ids = append(ids, fact.PreviousCompletedEventID)
 			}
-			if len(ids) == 0 {
-				continue
-			}
-			point, ok := reader.(hubrecords.NativeRunEventReader)
-			if !ok {
-				return errors.New("PostgreSQL event reader is unavailable")
-			}
 			for _, id := range ids {
-				if _, exists := actorSources[id]; exists {
-					continue
-				}
 				if id == "" {
 					return errors.New("productivity actor source is unavailable")
 				}
-				event, err := point.RunEvent(ctx, fact.ProjectID, fact.WorkItemID, id)
-				if err != nil {
-					return err
+				keys = append(keys, eventstore.EventKey{ProjectID: fact.ProjectID, WorkItemID: fact.WorkItemID, ID: id})
+			}
+		}
+		if len(keys) > 0 {
+			point, ok := reader.(eventstore.EventsByKeyReader)
+			if !ok {
+				return errors.New("PostgreSQL event reader is unavailable")
+			}
+			found, err := point.EventsByKey(ctx, keys)
+			if err != nil {
+				return err
+			}
+			for _, key := range keys {
+				event, ok := found[key.ID]
+				if !ok {
+					return corestore.ErrNotFound
 				}
-				actorSources[id] = event
+				actorSources[key.ID] = event
 			}
 		}
 		issueCosts, err = readPostgresReportCompletionCosts(ctx, reader, query, facts, w, prior, true)

@@ -4140,16 +4140,19 @@ type ProjectOnboardingPageViewer struct {
 }
 
 type ProjectPageReadModel struct {
-	OrganizationID       tracker.OrganizationID
-	ProjectID            tracker.ProjectID
-	Revision             int64
-	SourceGeneration     int64
-	OrganizationRevision int64
-	WorkflowSha256       string
-	ModelSha256          string
-	SourceAt             time.Time
-	ProjectedAt          time.Time
-	Body                 string
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	Revision              int64
+	SourceGeneration      int64
+	OrganizationRevision  int64
+	WorkflowSha256        string
+	ModelSha256           string
+	SourceAt              time.Time
+	ProjectedAt           time.Time
+	Body                  string
+	PolicyID              string
+	ReporterBug           []string
+	ReporterChangeRequest []string
 }
 
 type ProjectPolicy struct {

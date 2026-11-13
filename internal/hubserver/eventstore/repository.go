@@ -97,6 +97,16 @@ type CollaborationVersionsReader interface {
 	CollaborationVersions(context.Context, []CollaborationVersionKey) ([]CollaborationVersion, error)
 }
 
+type EventKey struct {
+	ProjectID  tracker.ProjectID
+	WorkItemID tracker.NativeWorkItemID
+	ID         string
+}
+
+type EventsByKeyReader interface {
+	EventsByKey(context.Context, []EventKey) (map[string]Event, error)
+}
+
 type Change struct {
 	OrganizationID         tracker.OrganizationID
 	ProjectID              tracker.ProjectID

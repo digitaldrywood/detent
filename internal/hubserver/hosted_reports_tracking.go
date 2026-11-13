@@ -13,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -87,12 +86,13 @@ func (s *Service) populatePostgresReportTracking(ctx context.Context, credential
 	events := make([]eventstore.Event, len(selected))
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
-		reader, ok := r.(hubrecords.NativeRunEventReader)
+		reader, ok := r.(eventstore.EventsByKeyReader)
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		authorized := map[tracker.ProjectID]bool{}
-		for index, attempt := range selected {
+		keys := make([]eventstore.EventKey, 0, len(selected))
+		for _, attempt := range selected {
 			if !authorized[attempt.ProjectID] {
 				if !slices.Contains(projects, string(attempt.ProjectID)) {
 					return hubapi.NativeNotFound()
@@ -102,17 +102,23 @@ func (s *Service) populatePostgresReportTracking(ctx context.Context, credential
 				}
 				authorized[attempt.ProjectID] = true
 			}
+			if attempt.ProjectionKnown && attempt.EventID != "" {
+				keys = append(keys, eventstore.EventKey{ProjectID: attempt.ProjectID, WorkItemID: attempt.WorkItemID, ID: attempt.EventID})
+			}
+		}
+		found, err := reader.EventsByKey(ctx, keys)
+		if err != nil {
+			return err
+		}
+		for index, attempt := range selected {
 			if !attempt.ProjectionKnown || attempt.EventID == "" {
 				partial = true
 				continue
 			}
-			event, err := reader.RunEvent(ctx, attempt.ProjectID, attempt.WorkItemID, attempt.EventID)
-			if errors.Is(err, corestore.ErrNotFound) {
+			event, ok := found[attempt.EventID]
+			if !ok {
 				partial = true
 				continue
-			}
-			if err != nil {
-				return err
 			}
 			if event.AttemptID != attempt.AttemptID || event.ProjectID != attempt.ProjectID || event.WorkItemID != attempt.WorkItemID || event.OrganizationID != organization {
 				return artifact.ErrIntegrity
