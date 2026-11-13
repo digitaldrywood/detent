@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -39,9 +40,9 @@ import (
 )
 
 func TestPostgresRunnerAuditDispositionUsesArchivedSource(t *testing.T) {
-	f := newRunnerPGFixture(t)
-	for index, lease := range f.leases {
-		native, ctx := f.client(t, index)
+	f := hubfixture.NewLeasedRunners(t)
+	for index, lease := range f.Leases {
+		native, ctx := f.Client(t, index)
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		sessionID, err := api.NewRunnerSessions(native).StartSession(ctx, store.SessionStart{IssueID: string(lease.WorkItemID), StartedAt: now, AgentRole: "security_audit", Model: "example-model"})
 		if err != nil {
@@ -54,12 +55,12 @@ func TestPostgresRunnerAuditDispositionUsesArchivedSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		content := eventstore.NewContent(f.service.runDetailStore())
+		content := eventstore.NewContent(f.Hub.Config.RunDetails)
 		changeRow, err := content.PrepareChange(ctx, "org_startup", changeRaw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		version := tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, CreatedAt: now, ChangeVersionInput: tracker.ChangeVersionInput{Repository: key.Repository, BaseSHA: key.BaseSHA, HeadSHA: key.HeadSHA, AttemptID: f.data[index].AttemptID, PolicyID: f.policy.PolicyID}}
+		version := tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, CreatedAt: now, ChangeVersionInput: tracker.ChangeVersionInput{Repository: key.Repository, BaseSHA: key.BaseSHA, HeadSHA: key.HeadSHA, AttemptID: f.Data[index].AttemptID, PolicyID: f.Policy.PolicyID}}
 		versionRaw, err := json.Marshal(version)
 		if err != nil {
 			t.Fatal(err)
@@ -78,7 +79,7 @@ func TestPostgresRunnerAuditDispositionUsesArchivedSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.Hub.Config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.CreateChange(ctx, changeRow); err != nil {
 				return err
 			}
@@ -94,7 +95,7 @@ func TestPostgresRunnerAuditDispositionUsesArchivedSource(t *testing.T) {
 		if err != nil || disposition.ID < 1 || disposition.AuditRunID != sessionID {
 			t.Fatalf("Hub disposition: %+v %v", disposition, err)
 		}
-		restarted, restartedCtx := f.client(t, index)
+		restarted, restartedCtx := f.Client(t, index)
 		evidence, err := restarted.AuditEvidence(restartedCtx, key)
 		if err != nil || evidence.Run.ID != sessionID || len(evidence.Dispositions) != 1 || evidence.Dispositions[0].Evidence != disposition.Evidence {
 			t.Fatalf("restart lost audit disposition: %+v %v", evidence, err)
@@ -121,8 +122,8 @@ func (s postgresUpdateReceipts) Save(receipt *runnerauth.UpdateReceipt) error {
 }
 
 func TestPostgresRunnerUpdateReceiptRestoresWithoutLocalState(t *testing.T) {
-	f := newRunnerPGFixture(t)
-	for index, binding := range f.bindings {
+	f := hubfixture.NewLeasedRunners(t)
+	for index, binding := range f.Bindings {
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		running := runnerauth.BuildEvidence{Version: "1.0.0", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: runtime.GOOS, Architecture: runtime.GOARCH, VerifiedRelease: true, ObservedAt: now}
 		request := runnerauth.UpdateRequest{ID: fmt.Sprintf("update_%d", index), Service: "detent", Version: "1.1.0", Release: true, ExpectedBuildRevision: strings.Repeat("c", 64), RequestedAt: now}
@@ -130,7 +131,7 @@ func TestPostgresRunnerUpdateReceiptRestoresWithoutLocalState(t *testing.T) {
 			request.Urgent = true
 			request.ExpectedBuildRevision = ""
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.Hub.Config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			requestRunner := binding.RunnerID
 			if request.Urgent {
 				requestRunner = ""
@@ -150,7 +151,7 @@ func TestPostgresRunnerUpdateReceiptRestoresWithoutLocalState(t *testing.T) {
 			t.Fatal(err)
 		}
 		identityPath := filepath.Join(identityDirectory, "identity.json")
-		file := runnerauth.File{Schema: 1, HubURL: f.server.URL, Credential: f.tokens[index], Identity: runnerauth.Identity{Binding: binding, OrganizationID: "org_startup", Scope: "projects", ProjectIDs: []tracker.ProjectID{"prj_runner"}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, ExpiresAt: now.Add(time.Hour)}}
+		file := runnerauth.File{Schema: 1, HubURL: f.Server.URL, Credential: f.Tokens[index], Identity: runnerauth.Identity{Binding: binding, OrganizationID: "org_startup", Scope: "projects", ProjectIDs: []tracker.ProjectID{"prj_runner"}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, ExpiresAt: now.Add(time.Hour)}}
 		raw, err := json.Marshal(file)
 		if err != nil {
 			t.Fatal(err)
@@ -159,7 +160,7 @@ func TestPostgresRunnerUpdateReceiptRestoresWithoutLocalState(t *testing.T) {
 			t.Fatal(err)
 		}
 		newClient := func() *api.Client {
-			client, err := api.New(api.Config{URL: f.server.URL, IdentityFile: identityPath, HTTPClient: &http.Client{Transport: &http.Transport{}}})
+			client, err := api.New(api.Config{URL: f.Server.URL, IdentityFile: identityPath, HTTPClient: &http.Client{Transport: &http.Transport{}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -179,16 +180,16 @@ func TestPostgresRunnerUpdateReceiptRestoresWithoutLocalState(t *testing.T) {
 			t.Fatalf("restart lost update recovery receipt: %+v %v", loaded, err)
 		}
 		path := "/api/v2/organizations/org_startup/runners/" + binding.RunnerID + "/update/receipt"
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.tokens[1-index], nil), http.StatusUnauthorized)
+		hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodGet, path, f.Tokens[1-index], nil), http.StatusUnauthorized)
 	}
 }
 
 func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
-	f := newRunnerPGFixture(t)
+	f := hubfixture.NewLeasedRunners(t)
 	day := time.Now().UTC()
-	for index, lease := range f.leases {
-		native, ctx := f.client(t, index)
-		data := f.data[index]
+	for index, lease := range f.Leases {
+		native, ctx := f.Client(t, index)
+		data := f.Data[index]
 		data.Sequence = 2
 		data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: time.Now().UTC()}
 		data.Usage = []tracker.NativeUsage{{Provider: "example", Model: "example-model", Input: int64(17 + index), CachedInput: 2, Output: 3, BillingMode: "metered", Currency: "USD", To: day}}
@@ -204,7 +205,7 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 		if err := native.AppendEvent(ctx, lease.WorkItemID, tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "checkpoint_" + data.AttemptID}, Type: "run.checkpointed", SchemaVersion: 1, Data: data}); err != nil {
 			t.Fatal(err)
 		}
-		restarted, restartedCtx := f.client(t, index)
+		restarted, restartedCtx := f.Client(t, index)
 		spend, err := restarted.IssueTokenSpend(restartedCtx, store.IssueIdentity{IssueID: string(lease.WorkItemID)})
 		if err != nil || spend.InputTokens != int64(17+index) || spend.OutputTokens != 3 || spend.Sessions != 1 {
 			t.Fatalf("usage replay changed spend: %+v %v", spend, err)
@@ -221,7 +222,7 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 			name = "fallback"
 		}
 		t.Run("model selection "+name, func(t *testing.T) {
-			native, ctx := f.client(t, index)
+			native, ctx := f.Client(t, index)
 			sessions := api.NewRunnerSessions(native)
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			identity := agentidentity.Configured("example", "example", "default", "code", "example-model", "", "medium", "", now)
@@ -238,7 +239,7 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 			if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: now.Add(time.Second), FinalState: "completed", ProviderThreadID: "thread-" + name, RuntimeIdentity: identity}); err != nil {
 				t.Fatal(err)
 			}
-			replacement, replacementCtx := f.client(t, index)
+			replacement, replacementCtx := f.Client(t, index)
 			resume, err := api.NewRunnerSessions(replacement).LatestIssueAgentResumeState(replacementCtx, store.IssueIdentity{ProjectID: "local-project", IssueID: string(lease.WorkItemID)})
 			if err != nil || resume.DetentSessionID != id || !resume.RuntimeIdentity.MateriallyEqual(identity) {
 				t.Fatalf("resume identity = %+v, %v, want %+v", resume, err, identity)
@@ -252,7 +253,7 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 			}
 		})
 	}
-	native, ctx := f.client(t, 0)
+	native, ctx := f.Client(t, 0)
 	spend, err := native.ProjectDailyTokenSpend(ctx, "local-project", day)
 	if err != nil || spend.InputTokens != 35 || spend.OutputTokens != 6 || spend.Sessions != 2 {
 		t.Fatalf("daily typed spend: %+v %v", spend, err)
@@ -261,11 +262,11 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 	if err != nil || quantiles.Sessions != 2 || quantiles.P90InputTokens != 18 || quantiles.P90OutputTokens != 3 {
 		t.Fatalf("typed quantiles: %+v %v", quantiles, err)
 	}
-	data := f.data[0]
+	data := f.Data[0]
 	data.Sequence = 4
 	data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: time.Now().UTC()}
 	data.Usage = []tracker.NativeUsage{{Provider: "example", Model: "example-model", Input: 27, CachedInput: 2, Output: 3, BillingMode: "metered", Currency: "USD", To: day.AddDate(0, 0, 1)}}
-	if err := native.AppendEvent(ctx, f.leases[0].WorkItemID, tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "next_day_" + data.AttemptID}, Type: "run.observed", SchemaVersion: 1, Data: data}); err != nil {
+	if err := native.AppendEvent(ctx, f.Leases[0].WorkItemID, tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "next_day_" + data.AttemptID}, Type: "run.observed", SchemaVersion: 1, Data: data}); err != nil {
 		t.Fatal(err)
 	}
 	previous, err := native.ProjectDailyTokenSpend(ctx, "local-project", day)
@@ -277,12 +278,12 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 		t.Fatalf("new day did not account only incremental spend: %+v %v", next, err)
 	}
 
-	for index, lease := range f.leases {
+	for index, lease := range f.Leases {
 		t.Run(fmt.Sprintf("late_blocker_usage_%d", index), func(t *testing.T) {
-			native, ctx := f.client(t, index)
+			native, ctx := f.Client(t, index)
 			bindRepository := func(repository string) {
 				t.Helper()
-				if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				if err := f.Hub.Config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 					project, err := w.ProjectRecord(ctx, "prj_runner")
 					if err != nil {
 						return err
@@ -300,7 +301,7 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 			} else {
 				bindRepository("")
 			}
-			path := native.Scope() + "/work-items/" + string(lease.WorkItemID) + "/attempts/" + f.data[index].AttemptID
+			path := native.Scope() + "/work-items/" + string(lease.WorkItemID) + "/attempts/" + f.Data[index].AttemptID
 			var current tracker.NativeAttempt
 			if err := native.Transport().Request(ctx, http.MethodGet, path, nil, &current); err != nil {
 				t.Fatal(err)
@@ -325,7 +326,7 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 			visibleHistory := func() int {
 				t.Helper()
 				count := 0
-				if err := f.service.config.TenantRepository.ReadTenant(ctx, "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+				if err := f.Hub.Config.TenantRepository.ReadTenant(ctx, "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 					rows, err := r.Events(ctx, "prj_runner", lease.WorkItemID, 0, 20)
 					if err != nil {
 						return err
@@ -368,7 +369,7 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 			if after := visibleHistory(); after != historyCount {
 				t.Fatalf("late usage added visible terminal history: before=%d after=%d", historyCount, after)
 			}
-			if err := f.service.config.TenantRepository.ReadTenant(ctx, "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.Hub.Config.TenantRepository.ReadTenant(ctx, "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 				item, err := r.WorkItem(ctx, "prj_runner", lease.WorkItemID)
 				if err != nil {
 					return err
@@ -390,15 +391,15 @@ func TestPostgresRunnerRestartDoesNotReleaseLiveProvider(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture uses POSIX process groups")
 	}
-	f := newRunnerPGFixture(t)
-	native, ctx := f.client(t, 0)
+	f := hubfixture.NewLeasedRunners(t)
+	native, ctx := f.Client(t, 0)
 	sessions := api.NewRunnerSessions(native)
-	id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"})
+	id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(f.Leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted, restartedCtx := f.client(t, 0)
-	stopped, err := restarted.ReleasedProvidersStopped(restartedCtx, f.data[0].AttemptID)
+	restarted, restartedCtx := f.Client(t, 0)
+	stopped, err := restarted.ReleasedProvidersStopped(restartedCtx, f.Data[0].AttemptID)
 	if err != nil || stopped {
 		t.Fatalf("unregistered provider state authorized cleanup: %t %v", stopped, err)
 	}
@@ -415,7 +416,7 @@ func TestPostgresRunnerRestartDoesNotReleaseLiveProvider(t *testing.T) {
 	if err := sessions.UpdateSessionWorkerProcess(ctx, id, store.WorkerProcessRegistration{WorkerProcessIdentity: store.WorkerProcessIdentity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt}}); err != nil {
 		t.Fatal(err)
 	}
-	stopped, err = restarted.ReleasedProvidersStopped(restartedCtx, f.data[0].AttemptID)
+	stopped, err = restarted.ReleasedProvidersStopped(restartedCtx, f.Data[0].AttemptID)
 	if err != nil || stopped {
 		t.Fatalf("live Hub-recorded provider authorized cleanup: %t %v", stopped, err)
 	}
@@ -423,7 +424,7 @@ func TestPostgresRunnerRestartDoesNotReleaseLiveProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = cmd.Wait()
-	stopped, err = restarted.ReleasedProvidersStopped(restartedCtx, f.data[0].AttemptID)
+	stopped, err = restarted.ReleasedProvidersStopped(restartedCtx, f.Data[0].AttemptID)
 	if err != nil || !stopped {
 		t.Fatalf("stopped Hub-recorded provider could not reconcile: %t %v", stopped, err)
 	}
@@ -433,10 +434,10 @@ func TestPostgresRunnerProcessRegistrationRequiresSessionAuthority(t *testing.T)
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture uses POSIX process groups")
 	}
-	f := newRunnerPGFixture(t)
-	native, ctx := f.client(t, 0)
+	f := hubfixture.NewLeasedRunners(t)
+	native, ctx := f.Client(t, 0)
 	trusted := api.NewRunnerSessions(native)
-	attackerNative, attackerCtx := f.client(t, 0)
+	attackerNative, attackerCtx := f.Client(t, 0)
 	attacker := api.NewRunnerSessions(attackerNative)
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -467,7 +468,7 @@ func TestPostgresRunnerProcessRegistrationRequiresSessionAuthority(t *testing.T)
 		identities[index] = store.WorkerProcessIdentity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt}
 	}
 	owned, unrelated := identities[0], identities[1]
-	start := store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"}
+	start := store.SessionStart{IssueID: string(f.Leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"}
 	trustedID, err := trusted.StartSession(ctx, start)
 	if err != nil {
 		t.Fatal(err)
@@ -495,7 +496,7 @@ func TestPostgresRunnerProcessRegistrationRequiresSessionAuthority(t *testing.T)
 	if err := attacker.UpdateSessionWorkerProcess(attackerCtx, foreignID, forged); err != nil {
 		t.Fatal(err)
 	}
-	restartedNative, restartedCtx := f.client(t, 0)
+	restartedNative, restartedCtx := f.Client(t, 0)
 	restarted := api.NewRunnerSessions(restartedNative)
 	for name, sessions := range map[string]*api.RunnerSessions{"trusted": trusted, "restarted": restarted} {
 		listCtx := ctx
@@ -535,37 +536,37 @@ func TestPostgresRunnerProcessRegistrationRequiresSessionAuthority(t *testing.T)
 }
 
 func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
-	f := newRunnerPGFixture(t)
-	otherConfig := startupConfig(t, f.admin)
+	f := hubfixture.NewLeasedRunners(t)
+	otherConfig := hubfixture.StartupConfig()
 	otherConfig.Hosted.OrganizationID = "org_other"
 	otherConfig.Hosted.WorkOSOrganizationID = "provider_org_other"
-	otherService := openStartupHub(t, f.admin, otherConfig)
-	otherTenant := seedRunnerPGFixture(t, f.admin, otherService, "org_other")
+	otherService := hubfixture.OpenStartupOn(t, f.Admin, otherConfig)
+	otherTenant := hubfixture.SeedLeasedRunners(t, otherService, "org_other")
 	progressSessionIDs := make(map[tracker.OrganizationID]int64)
-	for _, pair := range [][2]runnerPGFixture{{f, otherTenant}, {otherTenant, f}} {
-		for index := range pair[0].leases {
+	for _, pair := range [][2]hubfixture.LeasedRunners{{f, otherTenant}, {otherTenant, f}} {
+		for index := range pair[0].Leases {
 			testRunnerSessionFinalizationRecovery(t, pair[0], pair[1], index)
 		}
-		native, ctx := pair[0].client(t, 0)
-		id, err := api.NewRunnerSessions(native).StartSession(ctx, store.SessionStart{IssueID: string(pair[0].leases[0].WorkItemID), StartedAt: time.Now().UTC().Truncate(time.Microsecond)})
+		native, ctx := pair[0].Client(t, 0)
+		id, err := api.NewRunnerSessions(native).StartSession(ctx, store.SessionStart{IssueID: string(pair[0].Leases[0].WorkItemID), StartedAt: time.Now().UTC().Truncate(time.Microsecond)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		progressSessionIDs[pair[0].organization] = id
+		progressSessionIDs[pair[0].Organization] = id
 	}
 
-	for _, pair := range [][2]runnerPGFixture{{f, otherTenant}, {otherTenant, f}} {
+	for _, pair := range [][2]hubfixture.LeasedRunners{{f, otherTenant}, {otherTenant, f}} {
 		f := pair[0]
-		t.Run(string(f.organization), func(t *testing.T) {
-			for index := range f.leases {
-				native, ctx := f.client(t, index)
+		t.Run(string(f.Organization), func(t *testing.T) {
+			for index := range f.Leases {
+				native, ctx := f.Client(t, index)
 				sessions := api.NewRunnerSessions(native)
 				started := time.Now().UTC().Truncate(time.Microsecond)
-				start := store.SessionStart{ProjectID: "local-project", IssueID: string(f.leases[index].WorkItemID), StartedAt: started, RequestedModel: "example-model", Model: "example-model", AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code"}
+				start := store.SessionStart{ProjectID: "local-project", IssueID: string(f.Leases[index].WorkItemID), StartedAt: started, RequestedModel: "example-model", Model: "example-model", AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code"}
 				committed := make(chan runnersession.Snapshot, 1)
 				lostResponse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					response := httptest.NewRecorder()
-					f.service.Handler().ServeHTTP(response, r)
+					f.Hub.Handler().ServeHTTP(response, r)
 					var snapshot runnersession.Snapshot
 					if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &snapshot) != nil || snapshot.ID < 1 {
 						t.Error("session start did not commit before response loss")
@@ -578,11 +579,11 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 					}
 				}))
 				t.Cleanup(lostResponse.Close)
-				transport, err := api.New(api.Config{URL: lostResponse.URL, TokenSource: func() string { return f.tokens[index] }, HTTPClient: &http.Client{Transport: &http.Transport{}}})
+				transport, err := api.New(api.Config{URL: lostResponse.URL, TokenSource: func() string { return f.Tokens[index] }, HTTPClient: &http.Client{Transport: &http.Transport{}}})
 				if err != nil {
 					t.Fatal(err)
 				}
-				uncertainNative, err := transport.Native(f.organization, "prj_runner")
+				uncertainNative, err := transport.Native(f.Organization, "prj_runner")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -599,7 +600,7 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 				if persistedStart.Revision != 1 || persistedStart.Start.IssueID != start.IssueID || persistedStart.Provider.ThreadID != "" || persistedStart.Provider.SessionID != "" || persistedStart.Worker != nil || persistedStart.Progress != nil || persistedStart.Finish != nil || orphan.ReceiptID < 1 {
 					t.Fatalf("lost response changed committed pre-provider session: %+v", persistedStart)
 				}
-				if stopped, err := native.ReleasedProvidersStopped(ctx, f.data[index].AttemptID); err != nil || stopped {
+				if stopped, err := native.ReleasedProvidersStopped(ctx, f.Data[index].AttemptID); err != nil || stopped {
 					t.Fatalf("pre-provider session process observation: stopped=%t error=%v", stopped, err)
 				}
 				if _, err := sessions.LatestIssueAgentResumeState(ctx, store.IssueIdentity{IssueID: start.IssueID}); !errors.Is(err, store.ErrNotFound) {
@@ -638,9 +639,9 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 				if err := native.Transport().Request(ctx, http.MethodGet, native.Scope()+"/runner-sessions/"+strconv.FormatInt(id, 10), nil, &beforeRejected); err != nil {
 					t.Fatal(err)
 				}
-				foreign, foreignCtx := pair[1].client(t, 0)
+				foreign, foreignCtx := pair[1].Client(t, 0)
 				var beforeForeign runnersession.Snapshot
-				if err := foreign.Transport().Request(foreignCtx, http.MethodGet, foreign.Scope()+"/runner-sessions/"+strconv.FormatInt(progressSessionIDs[pair[1].organization], 10), nil, &beforeForeign); err != nil {
+				if err := foreign.Transport().Request(foreignCtx, http.MethodGet, foreign.Scope()+"/runner-sessions/"+strconv.FormatInt(progressSessionIDs[pair[1].Organization], 10), nil, &beforeForeign); err != nil {
 					t.Fatal(err)
 				}
 				if beforeForeign.Progress != nil {
@@ -655,7 +656,7 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 				}{
 					{name: "missing progress timestamp", id: id, status: http.StatusUnprocessableEntity, code: "invalid_request"},
 					{name: "unknown progress session", id: int64(1<<63 - 1), progress: progress, status: http.StatusNotFound, code: "not_found"},
-					{name: "foreign tenant progress session", id: progressSessionIDs[pair[1].organization], progress: progress, status: http.StatusNotFound, code: "not_found"},
+					{name: "foreign tenant progress session", id: progressSessionIDs[pair[1].Organization], progress: progress, status: http.StatusNotFound, code: "not_found"},
 					{name: "zero progress session", progress: progress, status: http.StatusNotFound, code: "not_found"},
 				} {
 					t.Run(fmt.Sprintf("runner_%d/%s", index, test.name), func(t *testing.T) {
@@ -664,7 +665,7 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 						if !errors.As(err, &apiErr) || apiErr.Status != test.status || apiErr.Code != test.code {
 							t.Fatalf("progress mutation error = %v, want %d %s", err, test.status, test.code)
 						}
-						if test.id == progressSessionIDs[pair[1].organization] {
+						if test.id == progressSessionIDs[pair[1].Organization] {
 							var afterForeign runnersession.Snapshot
 							if err := foreign.Transport().Request(foreignCtx, http.MethodGet, foreign.Scope()+"/runner-sessions/"+strconv.FormatInt(test.id, 10), nil, &afterForeign); err != nil {
 								t.Fatal(err)
@@ -699,14 +700,14 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				restartedNative, restartedCtx := f.client(t, index)
+				restartedNative, restartedCtx := f.Client(t, index)
 				restarted := api.NewRunnerSessions(restartedNative)
-				resume, err := restarted.LatestAgentResumeState(restartedCtx, store.AgentResumeLookup{NativeAttemptID: f.data[index].AttemptID, IssueID: string(f.leases[index].WorkItemID), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code", RequestedModel: "example-model"})
+				resume, err := restarted.LatestAgentResumeState(restartedCtx, store.AgentResumeLookup{NativeAttemptID: f.Data[index].AttemptID, IssueID: string(f.Leases[index].WorkItemID), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code", RequestedModel: "example-model"})
 				if err != nil || resume.DetentSessionID != id || resume.ProviderThreadID != provider.ThreadID || resume.ProviderSessionID != provider.SessionID || !resume.Orphaned || resume.RuntimeIdentity.ResolvedModel.Value != "example-model" {
 					t.Fatalf("restart lost provider identity: %+v %v", resume, err)
 				}
-				replacement, replacementCtx := f.client(t, 1-index)
-				recovered, err := api.NewRunnerSessions(replacement).LatestAgentResumeState(replacementCtx, store.AgentResumeLookup{NativeAttemptID: f.data[index].AttemptID, IssueID: string(f.leases[index].WorkItemID), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code", RequestedModel: "example-model"})
+				replacement, replacementCtx := f.Client(t, 1-index)
+				recovered, err := api.NewRunnerSessions(replacement).LatestAgentResumeState(replacementCtx, store.AgentResumeLookup{NativeAttemptID: f.Data[index].AttemptID, IssueID: string(f.Leases[index].WorkItemID), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code", RequestedModel: "example-model"})
 				if err != nil || recovered.DetentSessionID != id || recovered.ProviderThreadID != provider.ThreadID {
 					t.Fatalf("replacement runner lost Hub resume identity: %+v %v", recovered, err)
 				}
@@ -715,11 +716,11 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 					t.Fatalf("restart lost progress: %+v %v", persisted, err)
 				}
 				pinned, err := restarted.SessionPolicy(restartedCtx, "local-project", id)
-				if err != nil || pinned.ID != f.policy.PolicyID {
+				if err != nil || pinned.ID != f.Policy.PolicyID {
 					t.Fatalf("restart lost policy: %+v %v", pinned, err)
 				}
 				t.Run(fmt.Sprintf("runner_%d/unknown project policy", index), func(t *testing.T) {
-					unknownProject, err := native.Transport().Native(f.organization, "prj_other")
+					unknownProject, err := native.Transport().Native(f.Organization, "prj_other")
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -755,7 +756,7 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 						if err := restarted.FinishSession(restartedCtx, nextID, finish); err != nil {
 							t.Fatal(err)
 						}
-						reader, readCtx := f.client(t, index)
+						reader, readCtx := f.Client(t, index)
 						var snapshot runnersession.Snapshot
 						if err := reader.Transport().Request(readCtx, http.MethodGet, reader.Scope()+"/runner-sessions/"+strconv.FormatInt(nextID, 10), nil, &snapshot); err != nil {
 							t.Fatal(err)
@@ -769,7 +770,7 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 					})
 				}
 				var history []runnersession.History
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := f.Hub.Config.TenantRepository.ReadTenant(t.Context(), f.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
 					history, err = r.(runnersession.Reader).RunnerSessionHistory(t.Context(), "prj_runner", id, 0, 20)
 					return err
@@ -789,8 +790,8 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 				if archived.Profile == nil || archived.Profile.Profile.SessionID != id {
 					t.Fatalf("activity profile was not retained in Hub history: %+v", archived)
 				}
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.organization, corestore.Serving, func(w tenantstore.Writer) error {
-					_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(f.leases[index].ID), FencingToken: int64(f.leases[index].FencingToken)}, "released")
+				if err := f.Hub.Config.TenantRepository.WriteTenant(t.Context(), f.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(f.Leases[index].ID), FencingToken: int64(f.Leases[index].FencingToken)}, "released")
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -798,7 +799,7 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 				if err := restarted.SaveSessionProgress(restartedCtx, id, progress); err == nil {
 					t.Fatal("revoked lease accepted a session mutation")
 				}
-				other, _ := f.client(t, 1-index)
+				other, _ := f.Client(t, 1-index)
 				if err := api.NewRunnerSessions(other).UpdateSessionProviderIdentity(restartedCtx, id, provider); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					t.Fatalf("other runner accepted identity mutation: %v", err)
 				}

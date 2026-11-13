@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerupdate"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -20,9 +21,9 @@ import (
 func TestPostgresRunnerUpdateReceiptMonotonic(t *testing.T) {
 	for _, mode := range []string{"heartbeat-heartbeat", "put-heartbeat", "heartbeat-put", "concurrent"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newRunnerPGFixture(t)
+			f := hubfixture.NewLeasedRunners(t)
 			now := time.Now().UTC().Truncate(time.Microsecond)
-			for index := range f.bindings {
+			for index := range f.Bindings {
 				request := runnerauth.UpdateRequest{ID: fmt.Sprintf("update_%d", index), RequestedAt: now, Service: "detent", Version: "1.1.0", Release: true, ExpectedBuildRevision: strings.Repeat("c", 64)}
 				seedMonotonicRequest(t, f, index, request)
 				build := runnerauth.BuildEvidence{Version: "1.1.0", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "linux", Architecture: "amd64", ObservedAt: now}
@@ -56,10 +57,10 @@ func TestPostgresRunnerUpdateReceiptMonotonic(t *testing.T) {
 	}
 }
 
-func seedMonotonicRequest(t *testing.T, f runnerPGFixture, index int, request runnerauth.UpdateRequest) {
+func seedMonotonicRequest(t *testing.T, f hubfixture.LeasedRunners, index int, request runnerauth.UpdateRequest) {
 	t.Helper()
-	err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-		id := f.bindings[index].RunnerID
+	err := f.Hub.Config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		id := f.Bindings[index].RunnerID
 		identity, err := w.RunnerIdentity(t.Context(), id)
 		if err != nil {
 			return err
@@ -93,30 +94,30 @@ func seedMonotonicRequest(t *testing.T, f runnerPGFixture, index int, request ru
 	}
 }
 
-func writeMonotonicReceipt(t *testing.T, f runnerPGFixture, index int, writer string, receipt runnerauth.UpdateReceipt, build runnerauth.BuildEvidence, allowed ...int) {
+func writeMonotonicReceipt(t *testing.T, f hubfixture.LeasedRunners, index int, writer string, receipt runnerauth.UpdateReceipt, build runnerauth.BuildEvidence, allowed ...int) {
 	t.Helper()
-	path := "/api/v2/organizations/org_startup/runners/" + f.bindings[index].RunnerID + "/update/receipt"
+	path := "/api/v2/organizations/org_startup/runners/" + f.Bindings[index].RunnerID + "/update/receipt"
 	method := http.MethodPut
 	var body any = runnerupdate.ReceiptWrite{Receipt: receipt, Running: build}
 	status := http.StatusNoContent
 	if writer == "heartbeat" {
 		observation := runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: build, Receipt: &receipt, ObservedAt: build.ObservedAt}
 		observation.Revision = observation.BuildRevision()
-		path = "/api/v2/organizations/org_startup/projects/prj_runner/machines/" + string(f.bindings[index].MachineID) + "/heartbeat"
+		path = "/api/v2/organizations/org_startup/projects/prj_runner/machines/" + string(f.Bindings[index].MachineID) + "/heartbeat"
 		method = http.MethodPost
 		body = nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 1, Version: build.Version, OS: build.OS, Architecture: build.Architecture, ProtocolMajor: 2, WorkspaceIsolation: "sandbox", Update: &observation}
 		status = http.StatusOK
 	}
-	response := performHubAPIRequest(t, f.service, method, path, f.tokens[index], body)
+	response := f.Hub.Request(t, method, path, f.Tokens[index], body)
 	if response.Code != status && !slices.Contains(allowed, response.Code) {
 		t.Errorf("%s: status %d: %s", writer, response.Code, response.Body.String())
 	}
 }
 
-func assertMonotonicReceipt(t *testing.T, f runnerPGFixture, index int, want runnerauth.UpdateReceipt) {
+func assertMonotonicReceipt(t *testing.T, f hubfixture.LeasedRunners, index int, want runnerauth.UpdateReceipt) {
 	t.Helper()
-	path := "/api/v2/organizations/org_startup/runners/" + f.bindings[index].RunnerID + "/update/receipt"
-	client, ctx := f.client(t, index)
+	path := "/api/v2/organizations/org_startup/runners/" + f.Bindings[index].RunnerID + "/update/receipt"
+	client, ctx := f.Client(t, index)
 	var got runnerauth.UpdateReceipt
 	if err := client.Transport().Request(ctx, http.MethodGet, path, nil, &got); err != nil {
 		t.Fatal(err)
@@ -124,13 +125,13 @@ func assertMonotonicReceipt(t *testing.T, f runnerPGFixture, index int, want run
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("durable receipt regressed: got %+v want %+v", got, want)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.tokens[1-index], nil), http.StatusUnauthorized)
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodGet, path, f.Tokens[1-index], nil), http.StatusUnauthorized)
 }
 
 func TestPostgresRunnerUpdateReceiptReconciliation(t *testing.T) {
-	f := newRunnerPGFixture(t)
+	f := hubfixture.NewLeasedRunners(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	for index := range f.bindings {
+	for index := range f.Bindings {
 		request := runnerauth.UpdateRequest{ID: fmt.Sprintf("reconcile_%d", index), RequestedAt: now, Service: "detent", Version: "1.1.0", Release: true, ExpectedBuildRevision: strings.Repeat("c", 64)}
 		seedMonotonicRequest(t, f, index, request)
 		build := runnerauth.BuildEvidence{Version: "1.1.0", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "linux", Architecture: "amd64", ObservedAt: now}
@@ -174,9 +175,9 @@ func TestPostgresRunnerUpdateReceiptReconciliation(t *testing.T) {
 func TestPostgresRunnerUpdateReceiptRequestSupersession(t *testing.T) {
 	for _, kinds := range []string{"normal-normal", "normal-urgent", "urgent-normal", "urgent-urgent"} {
 		t.Run(kinds, func(t *testing.T) {
-			f := newRunnerPGFixture(t)
+			f := hubfixture.NewLeasedRunners(t)
 			now := time.Now().UTC().Truncate(time.Microsecond)
-			for index := range f.bindings {
+			for index := range f.Bindings {
 				requests := make([]runnerauth.UpdateRequest, 2)
 				for i, kind := range strings.Split(kinds, "-") {
 					requests[i] = runnerauth.UpdateRequest{ID: fmt.Sprintf("supersede_%d_%d", index, i), RequestedAt: now.Add(time.Duration(index*2+i) * time.Second), Service: "detent", Version: "1.1.0", Release: true, ExpectedBuildRevision: strings.Repeat("c", 64)}
@@ -215,15 +216,15 @@ func TestPostgresRunnerUpdateReceiptRequestSupersession(t *testing.T) {
 }
 
 func TestPostgresRunnerUpdateHeartbeatRequiresCurrentCredential(t *testing.T) {
-	f := newRunnerPGFixture(t)
+	f := hubfixture.NewLeasedRunners(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	for index := range f.bindings {
+	for index := range f.Bindings {
 		request := runnerauth.UpdateRequest{ID: fmt.Sprintf("credential_%d", index), RequestedAt: now, Service: "detent", Version: "1.1.0", Release: true, ExpectedBuildRevision: strings.Repeat("c", 64)}
 		seedMonotonicRequest(t, f, index, request)
 		build := runnerauth.BuildEvidence{Version: "1.0.0", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "linux", Architecture: "amd64", ObservedAt: now}
 		receipt := runnerauth.UpdateReceipt{Request: request, Status: "draining", ObservedAt: now}
 		writeMonotonicReceipt(t, f, index, "put", receipt, build)
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.Hub.Config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			return w.RevokeAccessCredential(t.Context(), fmt.Sprintf("credential_%d", index+1), now)
 		}); err != nil {
 			t.Fatal(err)
@@ -231,7 +232,7 @@ func TestPostgresRunnerUpdateHeartbeatRequiresCurrentCredential(t *testing.T) {
 		observation := runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: build, Receipt: &receipt, ObservedAt: now}
 		observation.Revision = observation.BuildRevision()
 		heartbeat := nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 1, Version: build.Version, OS: build.OS, Architecture: build.Architecture, ProtocolMajor: 2, WorkspaceIsolation: "sandbox", Update: &observation}
-		path := "/api/v2/organizations/org_startup/projects/prj_runner/machines/" + string(f.bindings[index].MachineID) + "/heartbeat"
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], heartbeat), http.StatusUnauthorized)
+		path := "/api/v2/organizations/org_startup/projects/prj_runner/machines/" + string(f.Bindings[index].MachineID) + "/heartbeat"
+		hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, path, f.Tokens[index], heartbeat), http.StatusUnauthorized)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -27,16 +28,16 @@ import (
 )
 
 func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
-	f := newRunnerPGFixture(t, func(p *policy.Descriptor) {
+	f := hubfixture.NewLeasedRunners(t, func(p *policy.Descriptor) {
 		p.Gates.AutomatedReview = gate.AutomatedReviewRequired
 		p.Gates.Validator = true
 	})
-	native, ctx := f.client(t, 0)
+	native, ctx := f.Client(t, 0)
 	sessions := api.NewRunnerSessions(native)
 	session := func(role string) int64 {
 		t.Helper()
 		started := time.Now().UTC()
-		id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: started, AgentRole: role, Model: "example-model"})
+		id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(f.Leases[0].WorkItemID), StartedAt: started, AgentRole: role, Model: "example-model"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -44,35 +45,35 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 		if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: finished, FinalState: "completed"}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := sessions.RecordUsageEvent(ctx, store.UsageEvent{IssueID: string(f.leases[0].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: finished, Outcome: "completed"}); err != nil {
+		if _, err := sessions.RecordUsageEvent(ctx, store.UsageEvent{IssueID: string(f.Leases[0].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: finished, Outcome: "completed"}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := sessions.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{IssueID: string(f.leases[0].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: finished, PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: "completed"}); err != nil {
+		if _, err := sessions.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{IssueID: string(f.Leases[0].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: finished, PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: "completed"}); err != nil {
 			t.Fatal(err)
 		}
 		return id
 	}
 	sourceSession := session("code")
-	change, err := native.CreateChange(ctx, f.leases[0].WorkItemID, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "review_change"}, Title: "Example source"})
+	change, err := native.CreateChange(ctx, f.Leases[0].WorkItemID, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "review_change"}, Title: "Example source"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := f.data[0]
+	source := f.Data[0]
 	source.Sequence = 2
 	source.Outcome = "succeeded"
 	source.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: time.Now().UTC(), Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: sourceSession, Status: "completed"}}
-	if err := native.AppendEvent(ctx, f.leases[0].WorkItemID, tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "source_finished"}, Type: "run.finished", SchemaVersion: 1, Data: source}); err != nil {
+	if err := native.AppendEvent(ctx, f.Leases[0].WorkItemID, tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "source_finished"}, Type: "run.finished", SchemaVersion: 1, Data: source}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	input := changeTestInput()
 	bundle := changeTestSource(t, &input)
-	input.PolicyID, input.RunID, input.AttemptID = f.policy.PolicyID, source.RunID, source.AttemptID
-	version, err := native.PublishChangeVersion(ctx, f.leases[0].WorkItemID, change.ID, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source_version"}, ChangeVersionInput: input, SourceBundle: bundle})
+	input.PolicyID, input.RunID, input.AttemptID = f.Policy.PolicyID, source.RunID, source.AttemptID
+	version, err := native.PublishChangeVersion(ctx, f.Leases[0].WorkItemID, change.ID, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source_version"}, ChangeVersionInput: input, SourceBundle: bundle})
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := f.leases[0]
+	old := f.Leases[0]
 	if err := native.Transport().Request(ctx, http.MethodPost, native.Scope()+"/leases/"+string(old.ID)+"/release", tracker.NativeLeaseMutation{FencingToken: old.FencingToken, Reason: "released"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +84,7 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 	if _, err := native.CreateChange(ctx, old.WorkItemID, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "released_new_change"}, Title: "Example new source"}); err == nil {
 		t.Fatal("released worker lease created a new Change")
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.Hub.Config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		item, err := w.WorkItem(ctx, "prj_runner", old.WorkItemID)
 		if err != nil {
 			return err
@@ -92,19 +93,19 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if err := w.AssignRunnerLease(ctx, runnerstore.LeaseAssignment{OrganizationID: "org_startup", LeaseID: lease.LeaseID, RunnerID: f.bindings[0].RunnerID, AssignedAt: now}); err != nil {
+		if err := w.AssignRunnerLease(ctx, runnerstore.LeaseAssignment{OrganizationID: "org_startup", LeaseID: lease.LeaseID, RunnerID: f.Bindings[0].RunnerID, AssignedAt: now}); err != nil {
 			return err
 		}
-		if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: "org_startup", ProjectID: "prj_runner", LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: f.policy.PolicyID, BoundAt: now}); err != nil {
+		if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: "org_startup", ProjectID: "prj_runner", LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: f.Policy.PolicyID, BoundAt: now}); err != nil {
 			return err
 		}
-		f.leases[0] = tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), WorkItemID: old.WorkItemID, MachineID: old.MachineID, SessionID: lease.SessionID, FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: f.policy.PolicyID, ExpiresAt: lease.ExpiresAt}
+		f.Leases[0] = tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), WorkItemID: old.WorkItemID, MachineID: old.MachineID, SessionID: lease.SessionID, FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: f.Policy.PolicyID, ExpiresAt: lease.ExpiresAt}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ctx = api.WithMutationAuthority(t.Context(), native.Scope(), f.leases[0], nil)
-	active := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), Sequence: 1, LeaseID: f.leases[0].ID, FencingToken: f.leases[0].FencingToken, PolicyID: f.policy.PolicyID, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example-backend", Model: "example-model"}}
+	ctx = api.WithMutationAuthority(t.Context(), native.Scope(), f.Leases[0], nil)
+	active := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), Sequence: 1, LeaseID: f.Leases[0].ID, FencingToken: f.Leases[0].FencingToken, PolicyID: f.Policy.PolicyID, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example-backend", Model: "example-model"}}
 	if err := native.AppendEvent(ctx, old.WorkItemID, tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "review_started"}, Type: "run.started", SchemaVersion: 1, Data: active}); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted, _ := f.client(t, 0)
+	restarted, _ := f.Client(t, 0)
 	readPath := native.Scope() + "/work-items/" + string(old.WorkItemID) + "/changes/" + change.ID + "?view=bounded&section=reviews&limit=1"
 	var first, second operatortool.ChangeResult
 	if err := restarted.Transport().Request(ctx, http.MethodGet, readPath, nil, &first); err != nil {
@@ -172,7 +173,7 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 		t.Fatalf("published reviews did not satisfy gates: %+v %v", detail, err)
 	}
 	t.Run("irrelevant historical reviews do not block current validation", func(t *testing.T) {
-		content := eventstore.NewContent(f.service.runDetailStore())
+		content := eventstore.NewContent(f.Hub.Config.RunDetails)
 		rows := make([]eventstore.Evidence, 201)
 		for i := range rows {
 			review := tracker.ChangeReview{ID: fmt.Sprintf("historical_review_%d", i), VersionID: version.ID, Decision: "commented", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, CreatedAt: now.Add(-time.Hour)}
@@ -185,7 +186,7 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.Hub.Config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			for _, row := range rows {
 				if _, err := w.AppendEvidence(ctx, row); err != nil {
 					return err
@@ -215,7 +216,7 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 			t.Fatal(err)
 		}
 		row.ActorPrincipalID = "different-actor"
-		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(ctx, row); return err }); err != nil {
+		if err := f.Hub.Config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(ctx, row); return err }); err != nil {
 			t.Fatal(err)
 		}
 		fresh := makeResult(session("validator"))
@@ -232,17 +233,17 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 		if _, err := content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: "org_startup", ChangeID: change.ID, Kind: "review"}, raw); !errors.Is(err, eventstore.ErrInvalidRecord) {
 			t.Fatal("current evidence preparation accepted combined machine results")
 		}
-		ref, err := f.service.runDetailStore().StoreDetail(ctx, "org_startup", raw)
+		ref, err := f.Hub.Config.RunDetails.StoreDetail(ctx, "org_startup", raw)
 		if err != nil {
 			t.Fatal(err)
 		}
 		row.ActorPrincipalID = malformed.Actor.PrincipalID
 		row.ReviewKind, row.ReviewLanding, row.ReviewSessionKnown, row.ReviewSessionID, row.ReviewSessionMachine = "", false, false, 0, ""
 		row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
-		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(ctx, row); return err }); err != nil {
+		if err := f.Hub.Config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(ctx, row); return err }); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.config.TenantRepository.(*postgres.Repository).BackfillChangeRecoveryProjections(ctx, "org_startup", content, 1); !errors.Is(err, eventstore.ErrInvalidRecord) {
+		if _, err := f.Hub.Config.TenantRepository.(*postgres.Repository).BackfillChangeRecoveryProjections(ctx, "org_startup", content, 1); !errors.Is(err, eventstore.ErrInvalidRecord) {
 			t.Fatal("historical combined machine results hid a session during canonical backfill")
 		}
 	})

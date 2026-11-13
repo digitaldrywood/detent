@@ -15,6 +15,7 @@ import (
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -98,14 +99,14 @@ func (t *runnerLostAcknowledgment) RoundTrip(request *http.Request) (*http.Respo
 }
 
 func TestPostgresNativeExecutionRestartUsesHubReceipts(t *testing.T) {
-	f := newRunnerPGFixture(t)
-	pinned, err := eventstore.NewContent(f.service.runDetailStore()).ProjectPolicy(t.Context(), f.policy)
+	f := hubfixture.NewLeasedRunners(t)
+	pinned, err := eventstore.NewContent(f.Hub.Config.RunDetails).ProjectPolicy(t.Context(), f.Policy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index, lease := range f.leases {
+	for index, lease := range f.Leases {
 		fault := &runnerLostAcknowledgment{next: &http.Transport{}}
-		client, err := api.New(api.Config{URL: f.server.URL, TokenSource: func() string { return f.tokens[index] }, HTTPClient: &http.Client{Transport: fault}})
+		client, err := api.New(api.Config{URL: f.Server.URL, TokenSource: func() string { return f.Tokens[index] }, HTTPClient: &http.Client{Transport: fault}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,7 +114,7 @@ func TestPostgresNativeExecutionRestartUsesHubReceipts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		path := native.Scope() + "/work-items/" + string(lease.WorkItemID) + "/attempts/" + f.data[index].AttemptID
+		path := native.Scope() + "/work-items/" + string(lease.WorkItemID) + "/attempts/" + f.Data[index].AttemptID
 		restart := func(native *api.NativeClient) executioncontract.Execution {
 			var attempt tracker.NativeAttempt
 			if err := native.Transport().Request(t.Context(), http.MethodGet, path, nil, &attempt); err != nil {
@@ -127,7 +128,7 @@ func TestPostgresNativeExecutionRestartUsesHubReceipts(t *testing.T) {
 			host := &runnerExecutionHost{client: native, claim: claim, pinned: pinned}
 			execution := nativechange.NewExecution(host, claim)
 			host.claim.Execution = execution
-			if err := execution.Start(t.Context(), *f.data[index].Identity); err != nil {
+			if err := execution.Start(t.Context(), *f.Data[index].Identity); err != nil {
 				t.Fatal(err)
 			}
 			return execution
@@ -154,7 +155,7 @@ func TestPostgresNativeExecutionRestartUsesHubReceipts(t *testing.T) {
 		if err != nil || retained.InputTokens != 15 || retained.OutputTokens != 3 {
 			t.Fatalf("usage observed during an earlier flush failure was lost: %+v %v", retained, err)
 		}
-		restartedNative, ctx := f.client(t, index)
+		restartedNative, ctx := f.Client(t, index)
 		restarted := restart(restartedNative)
 		if err := restarted.(runner.UsageExecution).RecordUsage(ctx, observed); err != nil {
 			t.Fatal(err)
