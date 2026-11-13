@@ -28,9 +28,18 @@ func MatchDuplicateSource(source DuplicateSource, text Text, parent Text, reques
 	if source.Document.Kind == "comment" {
 		previous = parent.Body + "\n" + text.Body
 	}
-	if _, stamped := issueorigin.Parse(request.Body); stamped && issueorigin.SameDefect(previous, request.Body) {
-		match.Fingerprint = true
-		return match, true
+	if _, stamped := issueorigin.Parse(request.Body); stamped {
+		same := issueorigin.SameDefect(previous, request.Body)
+		if string(source.Document.ProjectID) == issueorigin.DetentCloudProjectID {
+			before, after := issueorigin.ReleaseStabilizationSeries(previous), issueorigin.ReleaseStabilizationSeries(request.Body)
+			if before != "" || after != "" {
+				same = before != "" && before == after
+			}
+		}
+		if same {
+			match.Fingerprint = true
+			return match, true
+		}
 	}
 	for column, content := range []string{request.Title, request.Body} {
 		terms := duplicateTerms(content)
