@@ -197,9 +197,14 @@ func TestAPITokensAreHashedScopedRotatableAndRedacted(t *testing.T) {
 
 func newRetainedWorkListFixture(t *testing.T) (nativeFixture, runnerFixture, []tracker.NativeWorkItemID, policy.Descriptor) {
 	t.Helper()
+	return newRetainedWorkListFixtureWith(t, &memoryRunDetails{})
+}
+
+func newRetainedWorkListFixtureWith(t *testing.T, objects *memoryRunDetails) (nativeFixture, runnerFixture, []tracker.NativeWorkItemID, policy.Descriptor) {
+	t.Helper()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	clock := &leaseTestClock{value: now}
-	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: clock.Now}), "", "Work list authority")
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: clock.Now, RunDetails: objects}), "", "Work list authority")
 	organization := f.project.OrganizationID
 	project := tracker.ProjectID(newNativeID("prj"))
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -274,7 +279,8 @@ func newRetainedWorkListFixture(t *testing.T) (nativeFixture, runnerFixture, []t
 
 func TestWorkItemAPIUsesStableFilteredCursorsAndDetailTimeline(t *testing.T) {
 	t.Parallel()
-	f, _, ids, _ := newRetainedWorkListFixture(t)
+	objects := &memoryRunDetails{}
+	f, _, ids, _ := newRetainedWorkListFixtureWith(t, objects)
 	list := f.base + "/work-items"
 	firstPath := list + "?repository=example-org%2Fexample-project&queue_scope=fleet&readiness=ready&priority=urgent&limit=1"
 	first := performHubAPIRequest(t, f.service, http.MethodGet, firstPath, testHubAdminToken, nil)
@@ -365,10 +371,6 @@ func TestWorkItemAPIUsesStableFilteredCursorsAndDetailTimeline(t *testing.T) {
 	decodeHubResponse(t, historyResponse, &history)
 	if len(history.Items) != 1 || history.Items[0].Type != "event_2" || history.NextCursor != "" {
 		t.Fatalf("next timeline=%+v", history)
-	}
-	objects, ok := f.service.config.RunDetails.(*memoryRunDetails)
-	if !ok {
-		t.Fatal("work list fixture did not retain its object owner")
 	}
 	saved := f
 	saved.token = testHubAdminToken
