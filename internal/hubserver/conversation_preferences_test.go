@@ -564,6 +564,23 @@ func TestConversationMessageReferences(t *testing.T) {
 	other := f.nativeFixture.create(t, "Second issue")
 	target := f.create(t, f.token, map[string]any{"title": "Target chat"}).Conversation
 	record := f.create(t, f.token, map[string]any{"title": "References"}).Conversation
+	var organizationSlug, projectSlug string
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		organization, err := w.AccessOrganization(t.Context())
+		if err != nil {
+			return err
+		}
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.Core.Name = "native"
+		project, err = w.UpdateProjectRecord(t.Context(), project)
+		organizationSlug, projectSlug, f.project.Name = organization.Slug, project.Core.Slug, project.Core.Name
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	text := "See #" + strconv.Itoa(issue.Number) +
 		" and " + f.project.Name + "#" + strconv.Itoa(other.Number) +
@@ -579,8 +596,8 @@ func TestConversationMessageReferences(t *testing.T) {
 		t.Fatalf("references = %#v, want the three resolvable targets", got)
 	}
 	want := []conversationReferenceResource{
-		{Kind: conversation.ReferenceIssue, ID: string(issue.WorkItemID), Label: "#" + strconv.Itoa(issue.Number), URL: "/local-organization/native/issues/" + strconv.Itoa(issue.Number)},
-		{Kind: conversation.ReferenceIssue, ID: string(other.WorkItemID), Label: f.project.Name + "#" + strconv.Itoa(other.Number), URL: "/local-organization/native/issues/" + strconv.Itoa(other.Number)},
+		{Kind: conversation.ReferenceIssue, ID: string(issue.WorkItemID), Label: "#" + strconv.Itoa(issue.Number), URL: "/" + organizationSlug + "/" + projectSlug + "/issues/" + strconv.Itoa(issue.Number)},
+		{Kind: conversation.ReferenceIssue, ID: string(other.WorkItemID), Label: f.project.Name + "#" + strconv.Itoa(other.Number), URL: "/" + organizationSlug + "/" + projectSlug + "/issues/" + strconv.Itoa(other.Number)},
 		{Kind: conversation.ReferenceConversation, ID: target.ID, Label: target.ID, URL: "/chat/c/" + target.ID},
 	}
 	for index, reference := range want {
