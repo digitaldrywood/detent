@@ -602,6 +602,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		requireNativeStatus(t, request(http.MethodPut, tenantBase+"/name", newer), http.StatusOK)
 		operation := "PUT /api/v2/organizations/" + tenant + "/name"
 		var original receiptstore.Record
+		var originalObject artifactstore.ArchiveObject
 		if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(tenant), corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			original, err = r.Receipt(t.Context(), "credential_owner", operation, "rename")
@@ -610,6 +611,10 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			}
 			if original.ResponseReplayUntilNs != now.Add(receiptstore.ReplayRetention).UnixNano() {
 				t.Fatalf("rename replay deadline=%d want %d", original.ResponseReplayUntilNs, now.Add(receiptstore.ReplayRetention).UnixNano())
+			}
+			originalObject, err = r.ArchiveObjectByReference(t.Context(), eventstore.Reference(original.PayloadObjectKey, original.PayloadSHA256, original.PayloadBytes, original.PayloadContentBytes))
+			if err != nil {
+				return err
 			}
 			rows, err := r.(receiptstore.RetentionReader).ReceiptExpiryPage(t.Context(), now.Add(receiptstore.ReplayRetention+time.Nanosecond), 50)
 			if err == nil && len(rows) != 2 {
@@ -651,12 +656,11 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			if _, err := eventstore.NewContent(service.runDetailStore()).Receipt(t.Context(), stored); !errors.Is(err, receiptstore.ErrExpired) {
 				t.Fatalf("expired content read: %v", err)
 			}
-			object, err := r.ArchiveObjectByReference(t.Context(), eventstore.Reference(original.PayloadObjectKey, original.PayloadSHA256, original.PayloadBytes, original.PayloadContentBytes))
-			if err != nil {
-				return err
+			if _, err := r.ArchiveObjectByReference(t.Context(), originalObject.Reference); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("expired rename response archive: %v, want not found", err)
 			}
 			var owners int
-			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND archive_id=$2`, tenant, object.ID).Scan(&owners); err != nil {
+			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND archive_id=$2`, tenant, originalObject.ID).Scan(&owners); err != nil {
 				return err
 			}
 			if owners != 0 {
