@@ -412,6 +412,7 @@ func TestIndependentFailureGateAttemptReplay(t *testing.T) {
 			event := nativeStartedEvent(lease)
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			now = now.Add(time.Second)
 			baseSHA, headSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
 			result := independentRepairReview(tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: baseSHA, HeadSHA: headSHA}}, now).Validator.Commands[0]
 			result.Stage, result.TreeSHA, result.DurationNS, result.StartedAt = gate.StageSourceFinalization, strings.Repeat("c", 40), int64(time.Second), now.Add(-time.Second)
