@@ -858,6 +858,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			}
 			lease := claim(worker, firstMachine, "first-session")
 			event := nativeStartedEvent(lease)
+			event.Data.Identity.Role, event.Data.MachineID = "code", lease.MachineID
 			path := f.base + "/work-items/" + string(issue.WorkItemID)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "push-ambiguity", 2
@@ -894,7 +895,12 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				var change tracker.ChangeRequest
 				decodeHubResponse(t, response, &change)
 				changePath = path + "/changes/" + change.ID
-				response = performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "retained-source"}, ChangeVersionInput: input, SourceBundle: bundle})
+				input.PolicyID = lease.PolicyID
+				operator := performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "operator-retained-source"}, ChangeVersionInput: input, SourceBundle: bundle})
+				requireNativeError(t, operator, http.StatusConflict, "run_sequence_conflict")
+				diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: input.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+input.AttemptID+"/diff", worker, diff), http.StatusAccepted)
+				response = performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions", worker, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "retained-source", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: bundle})
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &version)
 				origin := t.TempDir()
@@ -977,9 +983,9 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 					t.Fatal("retention or restart lost the live closed unresolved issue")
 				}
 				var retained tracker.NativeRecovery
-				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/recovery", worker, nil), &retained)
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=recovery", worker, nil), &retained)
 				if retained.ChangeDetail == nil || len(retained.ChangeDetail.Versions) != 1 || retained.ChangeDetail.Versions[0].ID != version.ID || !reflect.DeepEqual(retained.ChangeDetail.Versions[0].Source, version.Source) {
-					t.Fatal("retention lost unresolved immutable source")
+					t.Fatalf("retention lost unresolved immutable source: detail=%+v want version=%s", retained.ChangeDetail, version.ID)
 				}
 				move("Todo")
 			}
