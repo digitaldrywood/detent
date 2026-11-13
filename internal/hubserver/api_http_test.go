@@ -242,8 +242,8 @@ func TestAPIRefusals(t *testing.T) {
 		name, method, path, body, message string
 	}{
 		{"private query", http.MethodGet, native.base + "/work-items?priority=private-token", "", "priority must be between zero and three"},
-		{"dependency action", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"invalid-operation","expected_revision":1,"related_work_item_id":%q,"operation":"private-token"}`, second.WorkItemID), "Relationship operation must be add or remove"},
-		{"dependency distinct item", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"self-dependency","expected_revision":1,"related_work_item_id":%q,"operation":"add"}`, first.WorkItemID), "An issue cannot be related to itself"},
+		{"dependency action", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"invalid-operation","expected_revision":"1","related_work_item_id":%q,"operation":"private-token"}`, second.WorkItemID), "Relationship operation must be add or remove"},
+		{"dependency distinct item", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"self-dependency","expected_revision":"1","related_work_item_id":%q,"operation":"add"}`, first.WorkItemID), "An issue cannot be related to itself"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			logStart := len(logs.String())
