@@ -63,7 +63,11 @@ func TestPostgresHostedArtifactAllowanceBoundary(t *testing.T) {
 				if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization, PlanReference: plan, Name: "Artifact usage", Allowances: map[string]int64{}}); err != nil {
 					return err
 				}
-				if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: organization, Base: plan}, 0); err != nil {
+				current, err := w.BillingAssignment(t.Context())
+				if err != nil {
+					return err
+				}
+				if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: organization, Base: plan}, current.Revision); err != nil {
 					return err
 				}
 				return w.BindArtifactService(t.Context(), project, binding)

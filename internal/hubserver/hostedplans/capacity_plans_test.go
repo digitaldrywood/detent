@@ -1,6 +1,8 @@
 package hostedplans
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
@@ -413,4 +415,93 @@ func TestUnconfiguredHostedPlansResolveToFreeDefault(t *testing.T) {
 			}
 		}
 	})
+}
+
+type planResolutionReader struct {
+	tenantstore.Reader
+	assignment    *billingstore.Assignment
+	assignmentErr error
+	planErr       error
+}
+
+func (r planResolutionReader) BillingAssignment(ctx context.Context) (billingstore.Assignment, error) {
+	if r.assignmentErr != nil {
+		return billingstore.Assignment{}, r.assignmentErr
+	}
+	if r.assignment != nil {
+		return *r.assignment, nil
+	}
+	return r.Reader.BillingAssignment(ctx)
+}
+
+func (r planResolutionReader) BillingPlan(ctx context.Context, ref billingstore.PlanReference) (billingstore.Plan, error) {
+	if r.planErr != nil {
+		return billingstore.Plan{}, r.planErr
+	}
+	return r.Reader.BillingPlan(ctx, ref)
+}
+
+func TestPlanResolutionDefaultsOnlyADeliberateAbsence(t *testing.T) {
+	repo, _ := postgresWithAdmin(t, 4)
+	hub := tracker.OrganizationID("org_resolution_hub")
+	if err := repo.WriteTenant(t.Context(), hub, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: hub, Name: "Example", CreatedAt: time.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d := &hubDatabase{billingRepository: repo, hostedOrganization: hub, billingAuditStore: hubtest.NewDetails(), now: time.Now, logger: discardLogger()}
+	plans := d.plansService()
+	if err := hubapi.FromFeatureError(plans.ConfigurePlans(t.Context(), PlansInput(&HostedConfig{OrganizationID: string(hub)}))); err != nil {
+		t.Fatal(err)
+	}
+	unavailable := errors.New("example plan store unavailable")
+	free := Tiers()[0].PlanReference
+	for _, test := range []struct {
+		name    string
+		org     tracker.OrganizationID
+		reader  func(tenantstore.Reader) planResolutionReader
+		wantErr error
+	}{
+		{name: "absent plan resolves to free", org: "org_resolution_planless", reader: func(r tenantstore.Reader) planResolutionReader { return planResolutionReader{Reader: r} }},
+		{name: "assignment read error fails closed", org: "org_resolution_read_error", reader: func(r tenantstore.Reader) planResolutionReader {
+			return planResolutionReader{Reader: r, assignmentErr: unavailable}
+		}, wantErr: unavailable},
+		{name: "assignment naming an unknown plan fails closed", org: hub, reader: func(r tenantstore.Reader) planResolutionReader {
+			return planResolutionReader{Reader: r, assignment: &billingstore.Assignment{OrganizationID: hub, Base: billingstore.PlanReference{ID: "missing_paid", Version: 1}, Revision: 1}}
+		}, wantErr: sql.ErrNoRows},
+		{name: "plan store read error fails closed", org: hub, reader: func(r tenantstore.Reader) planResolutionReader {
+			return planResolutionReader{Reader: r, planErr: unavailable}
+		}, wantErr: unavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.org != hub {
+				if err := repo.WriteTenant(t.Context(), test.org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: test.org, Name: "Example", CreatedAt: time.Now()})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := repo.ReadTenant(t.Context(), test.org, corestore.Serving, func(r tenantstore.Reader) error {
+				reader := test.reader(r)
+				entitlement, err := plans.EntitlementRecord(t.Context(), reader, time.Now())
+				featureErr := plans.RequireFeatureRecord(t.Context(), reader, "hosted_artifacts", time.Now())
+				if test.wantErr == nil {
+					var limit *LimitError
+					if err != nil || entitlement.EffectiveBase != free || !errors.As(featureErr, &limit) {
+						return fmt.Errorf("entitlement=%+v err=%v feature=%v, want free", entitlement, err, featureErr)
+					}
+					return nil
+				}
+				if !errors.Is(err, test.wantErr) || len(entitlement.Allowances) != 0 {
+					return fmt.Errorf("entitlement=%+v err=%v, want %v", entitlement, err, test.wantErr)
+				}
+				if featureErr == nil || test.org != hub && !errors.Is(featureErr, test.wantErr) {
+					return fmt.Errorf("feature check=%v, want a refusal or %v", featureErr, test.wantErr)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
