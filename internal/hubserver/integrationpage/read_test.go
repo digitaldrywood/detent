@@ -21,7 +21,7 @@ import (
 
 func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 	f := newReadFixture(t)
-	details, original, admin, service := f.details, f.original, f.admin, f.service
+	details, original, admin := f.details, f.original, f.admin
 	wire := &pgwire.Wire{PingEveryAcquire: true}
 	samples := 1
 	if os.Getenv("SHELLPERF_RTT_MS") == "12" {
@@ -92,7 +92,7 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 				f.use(original)
 				details.beforeRead = nil
 			}
-			scheduler, err := hubmaintenance.New(selectedTenant{hubmaintenance.Tenant{Organization: string(organization), Generation: 1}}, []hubmaintenance.Feature{f.pageService().MaintenanceFeature(), service.ScheduledSourceMaintenanceFeature()})
+			scheduler, err := hubmaintenance.New(selectedTenant{hubmaintenance.Tenant{Organization: string(organization), Generation: 1}}, []hubmaintenance.Feature{f.pageService().MaintenanceFeature()})
 			if err != nil {
 				t.Fatal(err)
 			}

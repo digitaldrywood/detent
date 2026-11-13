@@ -1,10 +1,11 @@
-package integrationpage
+package integrationpage_test
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/integrationpage"
 	"testing"
 	"time"
 
@@ -65,7 +66,7 @@ func TestIntegrationProjectionRejectsStaleSource(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			page := Record(record)
+			page := integrationpage.Record(record)
 			return writer.PublishIntegrationPage(t.Context(), latest, &page, time.Now())
 		}); err != nil {
 			t.Fatal(err)
@@ -190,7 +191,7 @@ func TestIntegrationBackfillPassesPublishedProject(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		ctx := (hubmaintenance.Budget{Items: 1, Bytes: MaintenanceBytes}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
+		ctx := (hubmaintenance.Budget{Items: 1, Bytes: integrationpage.MaintenanceBytes}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
 		if _, err := service.Maintain(ctx, organization); err != nil {
 			t.Fatal(err)
 		}

@@ -11,9 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -28,8 +26,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
 )
-
-func TestMain(m *testing.M) { hubtest.Main(m) }
 
 type readDetails struct {
 	*hubtest.Details
@@ -83,7 +79,6 @@ type readFixture struct {
 	repository *repositorySwitch
 	details    *readDetails
 	h          *hubtest.HTTPHarness
-	service    *hubserver.Service
 }
 
 func newReadFixture(t *testing.T) *readFixture {
@@ -99,19 +94,6 @@ func newReadFixture(t *testing.T) *readFixture {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	configuration := hubtest.PostgresConfig(t, admin)
-	ctx, cancel := context.WithCancel(t.Context())
-	service, err := hubserver.Open(ctx, hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &configuration, Hosted: &hubserver.HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: readProvider{}}, RunDetails: hubmaintenance.LimitDetails(f.details), InitialAdminToken: []byte("example_page_admin_token")})
-	cancel()
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.service = service
-	t.Cleanup(func() {
-		if err := service.Close(); err != nil {
-			t.Error(err)
-		}
-	})
 	f.h = hubtest.NewHTTP(t, hubtest.HTTPOptions{Repository: f.repository, Organization: "org_first"}, func(g *echo.Group, deps hubtest.HTTPDeps) {
 		g.GET("/api/v2/organizations/:organization/projects/:project/integration", func(c echo.Context) error { return f.pageService().Get(c) }, deps.API(hubauth.Worker, hubauth.Operator))
 	})
@@ -201,5 +183,3 @@ func decodeResponse(t *testing.T, response *httptest.ResponseRecorder, value any
 		t.Fatal(err)
 	}
 }
-
-type readProvider struct{ auth.HostedProvider }

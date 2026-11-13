@@ -1,4 +1,4 @@
-package integrationpage
+package integrationpage_test
 
 import (
 	"testing"
