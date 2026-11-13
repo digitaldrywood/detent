@@ -172,6 +172,11 @@ func seedWriteLoadHistory(t *testing.T, f nativeFixture, history int) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		if first == 0 {
+			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), `ANALYZE collaboration_events`); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	var stored int
 	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='issue.edited'`, f.project.OrganizationID, f.project.ID, issue.WorkItemID).Scan(&stored); err != nil {
