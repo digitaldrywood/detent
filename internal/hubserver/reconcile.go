@@ -2,17 +2,10 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
-)
-
-const (
-	checkpointWebhook     = "webhook"
-	checkpointIncremental = "incremental"
-	checkpointFullRepair  = "full_repair"
 )
 
 type reconcileTarget struct {
@@ -24,24 +17,8 @@ type reconcileTarget struct {
 	Hydrations        []HydrationRequest
 }
 
-func (s *Service) reconcileAllRepositories(ctx context.Context, mode ReconcileMode) {
-
-}
-
-func (s *Service) reconcileRepository(ctx context.Context, target reconcileTarget, mode ReconcileMode) error {
-	return ErrPostgresFeatureUnavailable
-}
-
 func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, error) {
 	return nil, ErrPostgresFeatureUnavailable
-}
-
-func (d *database) pendingHydrationRequests(ctx context.Context, repositoryID int64) ([]HydrationRequest, *time.Time, error) {
-	return nil, nil, ErrPostgresFeatureUnavailable
-}
-
-func (d *database) applyReconcileSnapshot(ctx context.Context, target reconcileTarget, mode ReconcileMode, cursor time.Time, completedAt time.Time, snapshot ReconcileSnapshot) error {
-	return ErrPostgresFeatureUnavailable
 }
 
 func validateReconcileSnapshot(snapshot ReconcileSnapshot) error {
@@ -60,38 +37,4 @@ func validateReconcileSnapshot(snapshot ReconcileSnapshot) error {
 		}
 	}
 	return nil
-}
-
-func (d *database) recordCheckpointStarted(ctx context.Context, repositoryID int64, name string, now time.Time) error {
-	return ErrPostgresFeatureUnavailable
-}
-
-func (d *database) recordCheckpointFailure(ctx context.Context, repositoryID int64, name string, now time.Time, failure error) error {
-	return ErrPostgresFeatureUnavailable
-}
-
-func parseCheckpointTime(value sql.NullString) (time.Time, bool, error) {
-	if !value.Valid || value.String == "" {
-		return time.Time{}, false, nil
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, value.String)
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	parsed = parsed.UTC()
-	return parsed, true, nil
-}
-
-func earliestTime(values ...*time.Time) *time.Time {
-	var earliest *time.Time
-	for _, value := range values {
-		if value == nil || value.IsZero() {
-			continue
-		}
-		if earliest == nil || value.Before(*earliest) {
-			copy := value.UTC()
-			earliest = &copy
-		}
-	}
-	return earliest
 }
