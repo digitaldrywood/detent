@@ -2,32 +2,19 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/skills"
-	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -43,30 +30,6 @@ var (
 	conversationStreamHeartbeat = conversationHeartbeatInterval
 	conversationStreamAuthorize = conversationAuthorizeInterval
 )
-
-func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
-	scope := s.requireConversationScope()
-	e.POST(hubapi.NativeBase+"/conversations", s.createConversation, scope, s.operatorAuthority)
-	e.GET(hubapi.NativeBase+"/conversations", s.listProjectConversations, scope)
-	e.GET("/api/v2/organizations/:organization/conversations", s.listOrganizationConversations, s.requireConversationOrganization())
-	e.GET(hubapi.NativeBase+"/conversations/:conversation", s.getConversation, scope)
-	e.GET(hubapi.NativeBase+"/work-items/:item/conversation", s.getWorkItemConversation, scope)
-	e.GET(hubapi.NativeBase+"/conversations/:conversation/messages", s.listConversationMessages, scope)
-	e.GET(hubapi.NativeBase+"/conversations/:conversation/events", s.streamConversationEvents, scope)
-	e.POST(hubapi.NativeBase+"/conversations/:conversation/actions", s.postConversationAction, scope, s.operatorAuthority)
-	e.POST(hubapi.NativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope, s.operatorAuthority)
-	e.POST(hubapi.NativeBase+"/conversations/:conversation/link", s.linkConversation, scope)
-	e.PATCH(hubapi.NativeBase+"/conversations/:conversation", s.patchConversation, scope)
-	e.POST(hubapi.NativeBase+"/conversations/:conversation/archive", s.archiveConversation, scope)
-	e.DELETE(hubapi.NativeBase+"/conversations/:conversation", s.deleteConversation, scope)
-	e.GET(hubapi.NativeBase+"/work-items/:item/references", s.listWorkItemReferences, scope)
-	e.POST(hubapi.NativeBase+"/conversations/:conversation/attachments", s.uploadConversationAttachment, scope)
-	// The download also answers a worker: the runner fetches the files the
-	// control named with its own token, so the conversation's read rule
-	// governs the bytes the provider sees.
-	e.GET(hubapi.NativeBase+"/conversations/:conversation/attachments/:attachment", s.getConversationAttachment, s.requireConversationScope(hubapi.APIScopeWorker))
-	e.DELETE(hubapi.NativeBase+"/conversations/:conversation/attachments/:attachment", s.deleteConversationAttachment, scope)
-}
 
 // requireConversationScope authenticates an operator or admin credential
 // for a project route and requires read access to the project. It mirrors
@@ -158,588 +121,59 @@ func (s *Service) authorizeConversationOrganization(ctx context.Context, scope h
 	return hubapi.FromFeatureError(s.requestAuth().AuthorizeOrganization(ctx, s.authInput(scope)))
 }
 
-func conversationQueryInt(c echo.Context, name string) (int64, error) {
-	raw := strings.TrimSpace(c.QueryParam(name))
-	if raw == "" {
-		return 0, nil
+func (s *Service) registerConversationRoutes(e *echo.Echo) {
+	if s.conversations == nil {
+		return
 	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value < 0 {
-		return 0, hubapi.NativePublicInvalid("Query parameter " + name + " must be a non-negative integer")
-	}
-	return value, nil
+	conversations.RegisterRoutes(e.Group(""), s.conversationHTTPDeps())
 }
 
-// conversationQueryTristate reads an optional boolean filter: absent lists
-// both groups, true or false restricts to one.
-// present is false when the parameter was not given.
-func conversationQueryTristate(c echo.Context, name string) (value, present bool, err error) {
-	switch strings.ToLower(strings.TrimSpace(c.QueryParam(name))) {
-	case "":
-		return false, false, nil
-	case "1", "true", "yes":
-		return true, true, nil
-	case "0", "false", "no":
-		return false, true, nil
-	default:
-		return false, false, hubapi.NativePublicInvalid("Query parameter " + name + " must be true or false")
-	}
-}
-
-// createConversation implements POST /conversations. The mutation is
-// idempotent by the request's top-level key through nativeMutation, which
-// also applies the hosted feature and growth checks that every native
-// mutation runs.
-func (s *Service) createConversation(c echo.Context) error {
-	var request conversationCreateRequest
-	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	value, err := s.commandCreateConversation(c.Request().Context(), hubscope.NativeRequestScope(c), request)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusCreated, value)
-}
-
-func (s *Service) listConversationsPage(c echo.Context, filter conversationListQuery) error {
-	limit, err := conversationQueryInt(c, "limit")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	scope := hubscope.NativeRequestScope(c)
-	filter.Organization = scope.Organization
-	filter.Principal = scope.Credential.ID
-	filter.Limit = int(limit)
-	filter.Cursor = strings.TrimSpace(c.QueryParam("cursor"))
-	settled, present, err := conversationQueryTristate(c, "settled")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if present {
-		filter.Settled = &settled
-	}
-	filter.Title = strings.TrimSpace(c.QueryParam("q"))
-	filter.SubjectWorkItemID = strings.TrimSpace(c.QueryParam("subject_work_item_id"))
-	value, err := s.readConversationsPage(c.Request().Context(), scope, filter)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
-
-// listProjectConversations implements GET /conversations for a project.
-func (s *Service) listProjectConversations(c echo.Context) error {
-	return s.listConversationsPage(c, conversationListQuery{Project: hubscope.NativeRequestScope(c).Project})
-}
-
-// listOrganizationConversations implements the organization-level listing:
-// the union of the projects the actor can read, most recent activity first.
-func (s *Service) listOrganizationConversations(c echo.Context) error {
-	scope := hubscope.NativeRequestScope(c)
-	if scope.Credential.Hosted == nil && scope.Credential.EntryKey == nil {
-		return s.listConversationsPage(c, conversationListQuery{})
-	}
-
-	projects, every, err := s.readableConversationProjects(c.Request().Context(), scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	filter := conversationListQuery{}
-	if !every {
-		// A non-nil slice, empty when nothing is readable, so the query
-		// restricts rather than listing the whole organization.
-		filter.Projects = projects
-	}
-	return s.listConversationsPage(c, filter)
-}
-
-func (s *Service) getWorkItemConversation(c echo.Context) error {
-	if c.QueryParam("metadata") == "true" {
-
-		scope := hubscope.NativeRequestScope(c)
-		var record conversationRecord
-		err := s.config.TenantRepository.ReadTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			stored, err := reader.ConversationByWorkItem(c.Request().Context(), scope.Project, c.Param("item"))
-			if err != nil {
-				return err
-			}
-			record = conversationRecordFromStore(stored)
-			return nil
-		})
-		if err != nil {
-			return s.nativeAPIError(c, translateConversationError(err))
-		}
-		record, err = s.readPGConversation(c.Request().Context(), scope, record.ID)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, conversationSnapshot{Skills: []skills.ProviderSkill{}, Conversation: projectConversation(record), Messages: []conversationMessageResource{}, Questions: []conversation.Question{}, Cursor: record.EventSeq})
-	}
-	value, err := s.readWorkItemConversationSnapshot(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
-
-// getConversation implements GET /conversations/:conversation. The record,
-// the latest message page and the pending questions are read in one
-// transaction so that the returned cursor matches the messages exactly.
-func (s *Service) getConversation(c echo.Context) error {
-	value, err := s.readConversationSnapshot(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return nativeArchiveJSON(c, http.StatusOK, value)
-}
-
-// listConversationMessages implements GET /conversations/:conversation/messages.
-func (s *Service) listConversationMessages(c echo.Context) error {
-	before, err := conversationQueryInt(c, "before")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	limit, err := conversationQueryInt(c, "limit")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if limit == 0 {
-		limit = conversationMessagePage
-	}
-	value, err := s.readConversationMessages(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), before, int(limit))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return nativeArchiveJSON(c, http.StatusOK, value)
-}
-
-// postConversationCommand implements POST /conversations/:conversation/commands.
-func (s *Service) postConversationCommand(c echo.Context) error {
-	var command conversation.Command
-	if err := hubapi.DecodeAPIJSON(c, &command); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	value, err := s.commandPostConversation(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), command)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
-
-func (s *Service) linkConversation(c echo.Context) error {
-	var request conversationLinkRequest
-	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	value, err := s.commandLinkConversation(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), request)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
-
-// patchConversation implements PATCH /conversations/:conversation. It
-// renames a conversation, changes its turn preferences, or both; a request
-// that asks for neither is refused rather than silently accepted.
-func (s *Service) patchConversation(c echo.Context) error {
-	var request conversationPatchRequest
-	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	value, err := s.commandPatchConversation(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), request)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
-
-// streamConversationEvents implements GET /conversations/:conversation/events.
-// The durable event log is the source: subscribers are only woken, then read
-// from their cursor, so a slow client never loses or reorders events. The
-// stream re-authorizes on every wake and on a timer and closes on loss.
-func (s *Service) streamConversationEvents(c echo.Context) error {
-	scope := hubscope.NativeRequestScope(c)
-	after, err := conversationQueryInt(c, "after")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	service := s.conversations
-	ctx := c.Request().Context()
-	var record conversationRecord
-
-	record, err = s.readPGConversation(ctx, scope, c.Param("conversation"))
-
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	stream := newConversationStream(c)
-	stream.Now = s.config.now
-	if scope.Credential.EntryKey != nil {
-		stream.Authorize = func() error {
-			_, err := s.reauthorizeConversationStream(c, &scope, record.ID)
-			return err
-		}
-	}
-	if after > record.EventSeq {
-		return stream.Closed(conversationClosedCursorExpired)
-	}
-	subscription, cancel := service.Broker.Subscribe(record.ID)
-	defer cancel()
-	heartbeat := time.NewTicker(conversationStreamHeartbeat)
-	defer heartbeat.Stop()
-	authorize := time.NewTicker(conversationStreamAuthorize)
-	defer authorize.Stop()
-	cursor := after
-	for {
-		// The re-read proves the stream may continue: a settled conversation
-		// keeps streaming, only a revoked audience closes it.
-		stream.NextAuthorization = stream.Now().Add(conversationStreamAuthorize)
-		authorized, err := s.reauthorizeConversationStream(c, &scope, record.ID)
-		if err != nil {
-			reason := conversationStreamCloseReason(err)
-			service.Logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
-			return stream.Closed(reason)
-		}
-
-		cursor, err = s.replayPGConversationEvents(ctx, scope, stream, record.ID, cursor, authorized.EventSeq)
-
-		if err != nil {
-			if errors.Is(err, errConversationCursorExpired) {
-				return stream.Closed(conversationClosedCursorExpired)
-			}
-			return stream.Closed(conversationStreamCloseReason(err))
-		}
-	wait:
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-subscription.Closed():
-				return stream.Closed(conversationClosedShutdown)
-			case <-heartbeat.C:
-				if err := stream.Heartbeat(cursor); err != nil {
-					return nil
-				}
-			case <-subscription.Wake():
-				break wait
-			case <-authorize.C:
-				break wait
-			}
-		}
+func (s *Service) conversationHTTPDeps() conversations.HTTPDeps {
+	return conversations.HTTPDeps{
+		Service:        func() *conversationService { return s.conversations },
+		Scope:          s.requireConversationScope,
+		Organization:   s.requireConversationOrganization(),
+		Operator:       s.operatorAuthority,
+		Worker:         s.requireNativeScope(hubapi.APIScopeWorker),
+		Action:         s.postConversationAction,
+		Error:          func(c echo.Context, err error) error { return s.nativeAPIError(c, err) },
+		InvalidRequest: s.invalidAPIRequest,
+		RefreshStream:  s.refreshConversationStream,
+		StreamHeartbeat: func() time.Duration {
+			return conversationStreamHeartbeat
+		},
+		StreamAuthorize: func() time.Duration {
+			return conversationStreamAuthorize
+		},
 	}
 }
 
-// reauthorizeConversationStream re-runs the request authorization from live
-// state: the hosted session, membership and grant for sessions, token
-// revocation and grants for API tokens, then the conversation read rule.
-// It updates scope with the refreshed credential and returns the current
-// record.
-func (s *Service) reauthorizeConversationStream(c echo.Context, scope *hubscope.NativeScope, conversationID string) (conversationRecord, error) {
-	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
+func (s *Service) refreshConversationStream(readCtx context.Context, c echo.Context, scope *hubscope.NativeScope) error {
 	if scope.Credential.EntryKey != nil {
 		claims, ok := hostedSharedClaims(c)
 		if !ok || claims.Key == nil {
-			return conversationRecord{}, auth.ErrHostedIdentity
+			return auth.ErrHostedIdentity
 		}
 		encoded, err := json.Marshal(entryauthority.Origin{KeyID: claims.Key.ID, CredentialBinding: claims.Key.CredentialBinding, Subject: claims.Subject, Issuer: claims.Issuer, Generation: claims.Generation})
 		if err != nil {
-			return conversationRecord{}, err
+			return err
 		}
 		credential, err := s.currentEntryOriginCredential(readCtx, string(encoded))
 		if err != nil {
-			return conversationRecord{}, err
+			return err
 		}
 		scope.Credential = credential
 	} else if scope.Credential.Hosted != nil {
 		credential, _, err := s.authenticateAPIRequestContext(readCtx, c)
 		if err != nil {
-			return conversationRecord{}, err
+			return err
 		}
 		scope.Credential = credential
 	}
 
 	if err := s.authorizeProjectRecord(readCtx, *scope, false); err != nil {
-		return conversationRecord{}, err
-	}
-	if _, err := s.readProjectRecord(readCtx, *scope); err != nil {
-		return conversationRecord{}, err
-	}
-
-	return s.readPGConversation(readCtx, *scope, conversationID)
-}
-
-// conversationStreamCloseReason tells a denial apart from a failure. A
-// denial is a decision the client must respect; a failure is transient and
-// the client may reconnect.
-func conversationStreamCloseReason(err error) string {
-	err = hubapi.FromFeatureError(err)
-	var native *hubapi.NativeError
-	switch {
-	case errors.Is(err, tenantauth.ErrUnavailable):
-		return conversationClosedServerError
-	case errors.As(err, &native):
-		return conversationClosedAccessRevoked
-	case errors.Is(err, sql.ErrNoRows), errors.Is(err, auth.ErrHostedIdentity), errors.Is(err, accessstore.ErrDenied), errors.Is(err, operatortool.ErrAccessDenied):
-		return conversationClosedAccessRevoked
-	default:
-		return conversationClosedServerError
-	}
-}
-
-// readConversationAttachmentUpload streams the multipart body. The parts are
-// read rather than parsed into temporary files, so a refused upload never
-// reaches the disk. Only the two documented fields are accepted.
-func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpload, error) {
-	request := c.Request()
-	request.Body = http.MaxBytesReader(c.Response(), request.Body, conversationAttachmentRequestBytes)
-	reader, err := request.MultipartReader()
-	if err != nil {
-		return conversationAttachmentUpload{}, hubapi.NativePublicInvalid("A multipart upload with a file part is required")
-	}
-	var upload conversationAttachmentUpload
-	seenFile := false
-	for {
-		part, err := reader.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return conversationAttachmentUpload{}, conversationAttachmentBodyError(err)
-		}
-		switch part.FormName() {
-		case "file":
-			if seenFile {
-				return conversationAttachmentUpload{}, conversationAttachmentRefusal(part, "An upload carries one file")
-			}
-			seenFile = true
-			upload.Name = part.FileName()
-			upload.Media = part.Header.Get(echo.HeaderContentType)
-			// One byte over the limit is enough to know the file is too big.
-			upload.Content, err = readConversationAttachmentPart(part, conversation.MaxAttachmentBytes+1)
-			if err != nil {
-				return conversationAttachmentUpload{}, conversationAttachmentBodyError(err)
-			}
-			if int64(len(upload.Content)) > conversation.MaxAttachmentBytes {
-				return conversationAttachmentUpload{}, conversationAttachmentTooLarge()
-			}
-		case "idempotency_key":
-			value, err := readConversationAttachmentPart(part, conversationAttachmentFieldBytes)
-			if err != nil {
-				return conversationAttachmentUpload{}, conversationAttachmentBodyError(err)
-			}
-			upload.Key = strings.TrimSpace(string(value))
-		default:
-			return conversationAttachmentUpload{}, conversationAttachmentRefusal(part, "Field "+part.FormName()+" is not part of an attachment upload")
-		}
-	}
-	if !seenFile {
-		return conversationAttachmentUpload{}, hubapi.NativePublicInvalid("A file part is required")
-	}
-	if upload.Key == "" || len(upload.Key) > conversation.MaxCommandKeyBytes {
-		return conversationAttachmentUpload{}, hubapi.NativePublicInvalid(fmt.Sprintf("An idempotency key of at most %d bytes is required", conversation.MaxCommandKeyBytes))
-	}
-	return upload, nil
-}
-
-// readConversationAttachmentPart reads at most limit bytes of a part and
-// closes it. The close belongs to the read: a part that will not close has
-// not been read cleanly, so its failure joins the read's.
-func readConversationAttachmentPart(part *multipart.Part, limit int64) ([]byte, error) {
-	content, err := io.ReadAll(io.LimitReader(part, limit))
-	return content, errors.Join(err, part.Close())
-}
-
-// conversationAttachmentRefusal closes the part a refused upload leaves
-// unread and returns the refusal. Closing only discards the rest of that
-// part, so a close that fails means the body itself is broken and says so
-// instead.
-func conversationAttachmentRefusal(part *multipart.Part, message string) error {
-	if err := part.Close(); err != nil {
-		return conversationAttachmentBodyError(err)
-	}
-	return hubapi.NativeInvalid(message)
-}
-
-func conversationAttachmentTooLarge() error {
-	return &hubapi.NativeError{Code: "invalid_request", Message: fmt.Sprintf("A file must be at most %d bytes", conversation.MaxAttachmentBytes), Status: http.StatusRequestEntityTooLarge, PublicMessage: true}
-}
-
-// conversationAttachmentBodyError turns a truncated or oversized body into the
-// API error it deserves; anything else is the transport failing.
-func conversationAttachmentBodyError(err error) error {
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		return conversationAttachmentTooLarge()
-	}
-	return hubapi.NativePublicInvalid("The upload could not be read")
-}
-
-// uploadConversationAttachment implements POST
-// {nativeBase}/conversations/:conversation/attachments.
-func (s *Service) uploadConversationAttachment(c echo.Context) error {
-	upload, err := readConversationAttachmentUpload(c)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	value, err := s.commandUploadAttachment(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), upload)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusCreated, value)
-}
-
-// getConversationAttachment implements GET
-// {nativeBase}/conversations/:conversation/attachments/:attachment. The
-// audience is the conversation's read rule.
-func (s *Service) getConversationAttachment(c echo.Context) error {
-	attachment, content, err := s.readAttachment(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), c.Param("attachment"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	// The name is a header parameter, never part of the path, so a crafted
-	// file name cannot forge a header.
-	c.Response().Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": attachment.Name}))
-	c.Response().Header().Set("X-Content-Type-Options", "nosniff")
-	return c.Blob(http.StatusOK, attachment.MIME, content)
-}
-
-// deleteConversationAttachment implements DELETE
-// {nativeBase}/conversations/:conversation/attachments/:attachment. Only the
-// owner may delete, and only while the attachment is unsent.
-func (s *Service) deleteConversationAttachment(c echo.Context) error {
-	_, err := s.commandDeleteAttachment(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), c.Param("attachment"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.NoContent(http.StatusNoContent)
-}
-
-func (s *Service) archiveConversation(c echo.Context) error {
-	scope := hubscope.NativeRequestScope(c)
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
-	id := c.Param("conversation")
-	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.Organization, id)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return s.authorizeConversationRemoval(ctx, r, scope, original)
-	}); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := requireConversationRemoval(original); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	record := original
-	record.Archived, record.Revision, record.EventSeq, record.UpdatedAt = true, original.Revision+1, original.EventSeq+1, s.config.now()
-	raw, err := json.Marshal(projectConversation(record))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	payload, err := messageContent(conversationMessageRecord{Data: raw})
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	ref, err := s.conversations.Store.PublishPayload(ctx, string(scope.Organization), payload)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	contentID := contentArchiveID(string(scope.Organization), ref)
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		stored, err := w.LockConversation(ctx, scope.Project, id)
-		if err != nil {
-			return err
-		}
-		if err := s.authorizeConversationRemoval(ctx, w, scope, conversationRecordFromStore(stored)); err != nil {
-			return err
-		}
-		if stored.Revision != original.Revision || stored.EventSequence != original.EventSeq {
-			return hubapi.NativeConflict(tracker.Revision(stored.Revision))
-		}
-		if err := requireConversationRemoval(conversationRecordFromStore(stored)); err != nil {
-			return err
-		}
-		stored.Execution, stored.Preferences = original.Execution, original.Preferences
-		stored.Archived, stored.UpdatedAt = true, record.UpdatedAt
-		if _, err := w.UpdateConversation(ctx, stored, stored.Revision); err != nil {
-			return err
-		}
-		if err := w.PutConversationContent(ctx, conversationstore.ContentObject{OrganizationID: scope.Organization, ID: contentID, Reference: ref, CreatedAt: record.UpdatedAt}); err != nil {
-			return err
-		}
-		event, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: scope.Organization, ConversationID: id, ContentReference: contentID, Event: conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{}`), CreatedAt: record.UpdatedAt}})
-		record.EventSeq = event.Seq
 		return err
-	})
-	if err != nil {
-		return s.nativeAPIError(c, translateConversationError(err))
 	}
-	s.conversations.Committed(record)
-	return c.JSON(http.StatusOK, projectConversation(record))
-}
-
-func (s *Service) deleteConversation(c echo.Context) error {
-	scope := hubscope.NativeRequestScope(c)
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
-	id := c.Param("conversation")
-	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.Organization, id)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		stored, err := w.LockConversation(ctx, scope.Project, id)
-		if err != nil {
-			return err
-		}
-		record := conversationRecordFromStore(stored)
-		if err := s.authorizeConversationRemoval(ctx, w, scope, record); err != nil {
-			return err
-		}
-		if stored.Revision != original.Revision || stored.EventSequence != original.EventSeq {
-			return hubapi.NativeConflict(tracker.Revision(stored.Revision))
-		}
-		if err := requireConversationRemoval(record); err != nil {
-			return err
-		}
-		if err := requireConversationRemoval(original); err != nil {
-			return err
-		}
-		owner, ok := w.(conversationstore.RemovalWriter)
-		if !ok {
-			return errors.New("conversation removal owner is required")
-		}
-		return owner.DeleteConversation(ctx, scope.Project, id, s.config.now())
-	})
-	if err != nil {
-		return s.nativeAPIError(c, translateConversationError(err))
-	}
-	s.conversations.Broker.Notify(id)
-	return c.NoContent(http.StatusNoContent)
-}
-
-// listWorkItemReferences implements GET /work-items/:item/references. The
-// scope middleware has already proved the reader can read the project; the
-// issue read proves the issue exists in it, and the conversation read rule
-// drops entries from private chats the reader does not own.
-func (s *Service) listWorkItemReferences(c echo.Context) error {
-	value, err := s.readWorkItemReferences(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
-
-// registerConversationRoutes mounts the API, the event stream and the
-// client shell. The individual groups are implemented in sibling files.
-func (s *Service) registerConversationRoutes(e *echo.Echo) {
-	if s.conversations == nil {
-		return
-	}
-	s.registerConversationAPIRoutes(e)
-	s.conversations.RegisterWorkerRoutes(e, s.requireNativeScope(hubapi.APIScopeWorker))
+	_, err := s.readProjectRecord(readCtx, *scope)
+	return err
 }

@@ -70,7 +70,7 @@ func (r *WorkerRouter) reconcileLoop() {
 }
 
 // RegisterWorkerRoutes mounts the lease-fenced worker endpoints.
-func (c *ConversationService) RegisterWorkerRoutes(e *echo.Echo, worker echo.MiddlewareFunc) {
+func (c *ConversationService) RegisterWorkerRoutes(e *echo.Group, worker echo.MiddlewareFunc) {
 	router, ok := c.Controls.(*WorkerRouter)
 	if !ok {
 		return

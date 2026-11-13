@@ -18,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -207,20 +206,12 @@ func conversationWorkerAuthorityAt(now time.Time) ConversationWorkerAuthority {
 	return conversationFeatureWorkerAuthority{tenantRunnerAuthority{now: func() time.Time { return now }}}
 }
 
-func conversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, record conversationRecord, now time.Time) (bool, error) {
-	server := conversations.NewServer(conversations.Deps{CheckMonthlyLease: conversationCheckMonthlyLease, WorkerAuthorityAt: conversationWorkerAuthorityAt})
-	return server.ConversationLeaseCurrentPG(ctx, reader, record, now)
-}
-
-type conversationArchiveReads = conversations.ConversationArchiveReads
 type conversationAttachmentRecord = conversations.ConversationAttachmentRecord
 type conversationAttachmentUpload = conversations.ConversationAttachmentUpload
 type conversationContent = conversations.ConversationContent
-type conversationControlRouter = conversations.ConversationControlRouter
 type conversationCoordinator = conversations.ConversationCoordinator
 type conversationCreateRequest = conversations.ConversationCreateRequest
 type conversationDeltaFact = conversations.ConversationDeltaFact
-type conversationExecutionResource = conversations.ConversationExecutionResource
 type conversationLinkRequest = conversations.ConversationLinkRequest
 type conversationListQuery = conversations.ConversationListQuery
 type conversationMessageRecord = conversations.ConversationMessageRecord
@@ -231,53 +222,17 @@ type conversationModel = conversations.ConversationModel
 type conversationPatchRequest = conversations.ConversationPatchRequest
 type conversationPublicationKey = conversations.ConversationPublicationKey
 type conversationPublicationPlan = conversations.ConversationPublicationPlan
-type conversationQuestionRecord = conversations.ConversationQuestionRecord
 type conversationRecord = conversations.ConversationRecord
-type conversationResumeDecision = conversations.ConversationResumeDecision
-type conversationResumeResource = conversations.ConversationResumeResource
 type conversationService = conversations.ConversationService
 type conversationSnapshot = conversations.ConversationSnapshot
-type conversationTranscriptEntry = conversations.ConversationTranscriptEntry
 type conversationWorkItem = conversations.ConversationWorkItem
-type conversationWorkerIdentity = conversations.WorkerIdentity
-type pgWorkerPublicationKey = conversations.PgWorkerPublicationKey
-type preparedConversationContents = conversations.PreparedConversationContents
 type queryMessageData = conversations.QueryMessageData
 
 const (
-	conversationAttachmentFieldBytes   = conversations.ConversationAttachmentFieldBytes
-	conversationAttachmentRequestBytes = conversations.ConversationAttachmentRequestBytes
-	conversationAuthorizeInterval      = conversations.ConversationAuthorizeInterval
-	conversationClosedAccessRevoked    = conversations.ConversationClosedAccessRevoked
-	conversationClosedCursorExpired    = conversations.ConversationClosedCursorExpired
-	conversationClosedServerError      = conversations.ConversationClosedServerError
-	conversationClosedShutdown         = conversations.ConversationClosedShutdown
-	conversationControlMaxWait         = conversations.ConversationControlMaxWait
-	conversationHeaderAttempt          = conversations.ConversationHeaderAttempt
-	conversationHeaderFencingToken     = conversations.ConversationHeaderFencingToken
-	conversationHeaderLease            = conversations.ConversationHeaderLease
-	conversationHeartbeatInterval      = conversations.ConversationHeartbeatInterval
-	conversationLeaseLostError         = conversations.ConversationLeaseLostError
-	conversationLifecycleBatchSize     = conversations.ConversationLifecycleBatchSize
-	conversationMaxDeltaBytes          = conversations.ConversationMaxDeltaBytes
-	conversationMaxItemDataBytes       = conversations.ConversationMaxItemDataBytes
-	conversationMaxSummaryBytes        = conversations.ConversationMaxSummaryBytes
-	conversationMaxTurnEvents          = conversations.ConversationMaxTurnEvents
-	conversationMessagePage            = conversations.ConversationMessagePage
-	conversationOriginUser             = conversations.ConversationOriginUser
-	conversationOriginWorker           = conversations.ConversationOriginWorker
-	conversationQuestionPrompt         = conversations.ConversationQuestionPrompt
-	conversationTranscriptMessages     = conversations.ConversationTranscriptMessages
-	conversationTranscriptRunes        = conversations.ConversationTranscriptRunes
+	conversationAuthorizeInterval  = conversations.ConversationAuthorizeInterval
+	conversationHeartbeatInterval  = conversations.ConversationHeartbeatInterval
+	conversationLifecycleBatchSize = conversations.ConversationLifecycleBatchSize
 )
-
-var (
-	errConversationCursorExpired = conversations.ErrConversationCursorExpired
-)
-
-func appendPGConversationEvent(p0 context.Context, p1 tenantstore.Writer, p2 tracker.OrganizationID, p3 string, p4 conversation.EventType, p5 any, p6 time.Time) error {
-	return hubapi.FromFeatureError(conversations.AppendPGConversationEvent(p0, p1, p2, p3, p4, p5, p6))
-}
 
 func authorizeConversationLinkedItemPG(p0 context.Context, p1 tenantstore.Reader, p2 hubscope.NativeScope, p3 conversations.ConversationRecord) error {
 	return hubapi.FromFeatureError(conversations.AuthorizeConversationLinkedItemPG(p0, p1, conversationInput(p2), p3))
@@ -289,20 +244,12 @@ func contentArchiveID(p0 string, p1 attachment.ArchiveReference) string {
 	return conversations.ContentArchiveID(p0, p1)
 }
 
-func conversationActorFor(p0 hubscope.NativeScope) conversation.Actor {
-	return conversations.ConversationActorFor(conversationInput(p0))
-}
-
 func conversationAgentOverrideBody(p0 string, p1 conversation.Preferences) string {
 	return conversations.ConversationAgentOverrideBody(p0, p1)
 }
 
 func conversationAttachmentFromStore(p0 conversationstore.Attachment) conversations.ConversationAttachmentRecord {
 	return conversations.ConversationAttachmentFromStore(p0)
-}
-
-func conversationBetweenTurns(p0 conversation.Execution) bool {
-	return conversations.ConversationBetweenTurns(p0)
 }
 
 func conversationContentUnavailable() error {
@@ -327,10 +274,6 @@ func conversationOlderCursor(p0 []conversations.ConversationMessageResource) (bo
 
 func conversationOptional(p0 string) *string { return conversations.ConversationOptional(p0) }
 
-func conversationQuestionID(p0 context.Context) string {
-	return conversations.ConversationQuestionID(p0)
-}
-
 func conversationReadAudienceRecord(p0 context.Context, p1 tenantstore.Reader, p2 tracker.OrganizationID, p3 hubapi.APICredential) (string, error) {
 	value, err := conversations.ConversationReadAudienceRecord(p0, p1, p2, hubscope.AuthCredential(p3))
 	return value, hubapi.FromFeatureError(err)
@@ -344,31 +287,13 @@ func conversationRecordToStore(p0 conversations.ConversationRecord) conversation
 	return conversations.ConversationRecordToStore(p0)
 }
 
-func conversationResumeKind(p0 conversations.ConversationResumeResource) string {
-	return conversations.ConversationResumeKind(p0)
-}
-
 func conversationStale(p0 string) error {
 	return hubapi.FromFeatureError(conversations.ConversationStale(p0))
-}
-
-func conversationStaleExecutionError(p0 string, p1 string, p2 error) error {
-	return hubapi.FromFeatureError(conversations.ConversationStaleExecutionError(p0, p1, toFeatureError(p2)))
-}
-
-func conversationTranscriptNotice(p0 int) string {
-	return conversations.ConversationTranscriptNotice(p0)
-}
-
-func conversationUnsupported(p0 string) error {
-	return hubapi.FromFeatureError(conversations.ConversationUnsupported(p0))
 }
 
 func conversationWorkerAuthorityUnavailable() error {
 	return hubapi.FromFeatureError(conversations.ConversationWorkerAuthorityUnavailable())
 }
-
-func deriveConversationTitle(p0 string) string { return conversations.DeriveConversationTitle(p0) }
 
 func firstDispatchableState(p0 tracker.NativeProject) (string, bool) {
 	return conversations.FirstDispatchableState(p0)
@@ -383,23 +308,6 @@ func newConversationArchiveReads(p0 context.Context) context.Context {
 	return conversations.NewConversationArchiveReads(p0)
 }
 
-func newConversationStream(p0 echo.Context) *conversations.ConversationStream {
-	return conversations.NewConversationStream(p0)
-}
-
-func preparePGConversationMessage(p0 context.Context, p1 *conversations.ConversationPublicationPlan, p2 *conversations.ConversationMessageRecord) error {
-	return hubapi.FromFeatureError(conversations.PreparePGConversationMessage(p0, p1, p2))
-}
-
-func preparedPGConversationQuestion(p0 context.Context, p1 conversationstore.Question) (conversationstore.Question, error) {
-	r0, r1 := conversations.PreparedPGConversationQuestion(p0, p1)
-	return r0, hubapi.FromFeatureError(r1)
-}
-
-func projectAttachments(p0 []conversations.ConversationAttachmentRecord) []conversation.Attachment {
-	return conversations.ProjectAttachments(p0)
-}
-
 func projectConversation(p0 conversations.ConversationRecord) conversations.ConversationResource {
 	return conversations.ProjectConversation(p0)
 }
@@ -412,11 +320,6 @@ func projectMessage(p0 conversations.ConversationMessageRecord) conversations.Co
 	return conversations.ProjectMessage(p0)
 }
 
-func readConversationRecordFromTenant(p0 context.Context, p1 tenantstore.Reader, p2 tracker.ProjectID, p3 string) (conversations.ConversationRecord, error) {
-	r0, r1 := conversations.ReadConversationRecordFromTenant(p0, p1, p2, p3)
-	return r0, hubapi.FromFeatureError(r1)
-}
-
 func recordPayload(p0 conversations.ConversationRecord) ([]byte, error) {
 	r0, r1 := conversations.RecordPayload(p0)
 	return r0, hubapi.FromFeatureError(r1)
@@ -424,14 +327,6 @@ func recordPayload(p0 conversations.ConversationRecord) ([]byte, error) {
 
 func registerPreparedConversationObjects(p0 context.Context, p1 tenantstore.Writer, p2 tracker.OrganizationID, p3 conversations.PreparedConversationContents, p4 time.Time) error {
 	return hubapi.FromFeatureError(conversations.RegisterPreparedConversationObjects(p0, p1, p2, p3, p4))
-}
-
-func requireConversationRecordOwner(p0 conversations.ConversationRecord, p1 conversations.WorkerIdentity, p2 bool) error {
-	return hubapi.FromFeatureError(conversations.RequireConversationRecordOwner(p0, p1, p2))
-}
-
-func requireConversationRemoval(p0 conversations.ConversationRecord) error {
-	return hubapi.FromFeatureError(conversations.RequireConversationRemoval(p0))
 }
 
 func staleExecutionAttempts(p0 error) (string, string, bool) {
@@ -442,27 +337,9 @@ func translateConversationError(p0 error) error {
 	return hubapi.FromFeatureError(conversations.TranslateConversationError(p0))
 }
 
-func updatePGWorkerMessage(p0 context.Context, p1 tenantstore.Writer, p2 conversationstore.Message, p3 time.Time, p4 *conversation.ReceiptError) error {
-	return hubapi.FromFeatureError(conversations.UpdatePGWorkerMessage(p0, p1, p2, p3, p4))
-}
-func (s *Service) authorizeConversationRemoval(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, record conversations.ConversationRecord) error {
-	r0 := s.conversationServer().AuthorizeConversationRemoval(ctx, r, s.authInput(scope), record)
-	return hubapi.FromFeatureError(r0)
-}
-
 func (s *Service) authorizeConversationScopePG(ctx context.Context, scope hubscope.NativeScope, write bool) error {
 	r0 := s.conversationServer().AuthorizeConversationScopePG(ctx, s.authInput(scope), write)
 	return hubapi.FromFeatureError(r0)
-}
-
-func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, itemID string, identity conversations.WorkerIdentity, runID string, allowReleased bool, allowUnstarted bool) (leasestore.Lease, leasestore.Attempt, error) {
-	r0, r1, r2 := s.conversationServer().AuthorizeConversationWorkerLeasePG(ctx, reader, s.authInput(scope), itemID, identity, runID, allowReleased, allowUnstarted)
-	return r0, r1, hubapi.FromFeatureError(r2)
-}
-
-func (s *Service) authorizeConversationWorkerPG(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, record conversations.ConversationRecord, identity conversations.WorkerIdentity, runID string, allowReleased bool, allowUnstarted bool) (leasestore.Lease, error) {
-	r0, r1 := s.conversationServer().AuthorizeConversationWorkerPG(ctx, reader, s.authInput(scope), record, identity, runID, allowReleased, allowUnstarted)
-	return r0, hubapi.FromFeatureError(r1)
 }
 
 func (s *Service) commandCreateConversation(ctx context.Context, scope hubscope.NativeScope, request conversations.ConversationCreateRequest) (json.RawMessage, error) {
@@ -482,11 +359,6 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope hubscope.Na
 
 func (s *Service) commandPatchConversation(ctx context.Context, scope hubscope.NativeScope, id string, request conversations.ConversationPatchRequest) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().CommandPatchConversation(ctx, s.authInput(scope), id, request)
-	return r0, hubapi.FromFeatureError(r1)
-}
-
-func (s *Service) commandPatchConversationPG(ctx context.Context, scope hubscope.NativeScope, id string, request conversations.ConversationPatchRequest, title string) (json.RawMessage, error) {
-	r0, r1 := s.conversationServer().CommandPatchConversationPG(ctx, s.authInput(scope), id, request, title)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
@@ -555,16 +427,6 @@ func (s *Service) readPGConversation(ctx context.Context, scope hubscope.NativeS
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) readPGConversationPage(ctx context.Context, scope hubscope.NativeScope, id string, before int64, limit int) (conversations.ConversationPageRead, error) {
-	r0, r1 := s.conversationServer().ReadPGConversationPage(ctx, s.authInput(scope), id, before, limit)
-	return r0, hubapi.FromFeatureError(r1)
-}
-
-func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope hubscope.NativeScope, item string) (json.RawMessage, error) {
-	r0, r1 := s.conversationServer().ReadWorkItemConversationSnapshot(ctx, s.authInput(scope), item)
-	return r0, hubapi.FromFeatureError(r1)
-}
-
 func (s *Service) readWorkItemReferences(ctx context.Context, scope hubscope.NativeScope, id string) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().ReadWorkItemReferences(ctx, s.authInput(scope), id)
 	return r0, hubapi.FromFeatureError(r1)
@@ -574,20 +436,5 @@ func (s *Service) readableConversationProjects(ctx context.Context, scope hubsco
 	r0, r1, r2 := s.conversationServer().ReadableConversationProjects(ctx, s.authInput(scope))
 	return r0, r1, hubapi.FromFeatureError(r2)
 }
-
-func (s *Service) replayPGConversationEvents(ctx context.Context, scope hubscope.NativeScope, stream *conversations.ConversationStream, id string, cursor int64, through int64) (int64, error) {
-	r0, r1 := s.conversationServer().ReplayPGConversationEvents(ctx, s.authInput(scope), stream, id, cursor, through)
-	return r0, hubapi.FromFeatureError(r1)
-}
-
-func expirePGOutstandingQuestions(ctx context.Context, writer conversationstore.Writer, conversationID, attemptID, turnID string, expire func(conversationstore.Question) error) error {
-	return hubapi.FromFeatureError(conversations.ExpirePGOutstandingQuestions(ctx, writer, conversationID, attemptID, turnID, expire))
-}
-
-func settlePGWorkerMessages(ctx context.Context, writer tenantstore.Writer, record *conversationRecord, status conversation.ExecutionStatus, now time.Time, limit int) error {
-	return hubapi.FromFeatureError(conversations.SettlePGWorkerMessages(ctx, writer, record, status, now, limit))
-}
-
-const conversationPGWorkerPageSize = conversations.ConversationPGWorkerPageSize
 
 var _ conversations.CommandDeliverer = (*conversationTurnCoordinator)(nil)
