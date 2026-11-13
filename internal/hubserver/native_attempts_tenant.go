@@ -609,6 +609,10 @@ func (s *Service) populateCheckpointSource(ctx context.Context, organization tra
 			}
 		}
 	}
+	if checkpointNeeded && cleanupErr != nil {
+		s.config.Logger.WarnContext(ctx, "attempt cleanup classification unavailable", "organization_id", organization, "attempt_id", snapshot.Attempt.ID, "error", cleanupErr)
+		cleanupErr = nil
+	}
 	if cleanup == nil && checkpoint == nil {
 		return page.Next, errors.Join(cleanupErr, checkpointErr)
 	}
