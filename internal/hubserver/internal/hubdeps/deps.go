@@ -32,6 +32,7 @@ type Deps struct {
 	RunMaintenance              func(context.Context, *hubmaintenance.Scheduler, func(error)) error
 	Listen                      func(context.Context, string, string) (net.Listener, error)
 	RetentionTimeout            func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	SearchRefreshTimeout        func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	Jitter                      func() float64
 	NewLeaseID                  func() string
 	NewTokenID                  func() string
@@ -60,6 +61,9 @@ func (d Deps) WithDefaults() Deps {
 	}
 	if d.RetentionTimeout == nil {
 		d.RetentionTimeout = context.WithTimeout
+	}
+	if d.SearchRefreshTimeout == nil {
+		d.SearchRefreshTimeout = context.WithTimeout
 	}
 	if d.Jitter == nil {
 		d.Jitter = RandomJitter

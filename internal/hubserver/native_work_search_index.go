@@ -27,10 +27,15 @@ func (s *Service) searchContent() *searchstore.Content {
 }
 
 func (s *Service) maintainNativeSearch(ctx context.Context) {
-	if _, err := s.refreshNativeIdentity(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	base := s.runDetailContext(ctx)
+	tick, cancel := s.config.deps.SearchRefreshTimeout(base, searchstore.RefreshTickDuration)
+	defer cancel()
+	if _, err := s.refreshNativeIdentity(tick); err != nil && tick.Err() == nil {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped origin identities", "error", err)
 	}
-	_, err := s.searchContent().RefreshTick(s.runDetailContext(ctx), tenantstore.SearchRepository{Repository: s.config.TenantRepository}, s.accessOrganization(), context.WithTimeout)
+	_, err := s.searchContent().RefreshTick(base, tenantstore.SearchRepository{Repository: s.config.TenantRepository}, s.accessOrganization(), func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
+		return tick, func() {}
+	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped search index", "error", err)
 	}
