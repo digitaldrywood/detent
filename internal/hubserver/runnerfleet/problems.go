@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet
 
 import (
 	"fmt"
@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/sprites"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 const cachedProbeProblemWindow = 2 * time.Minute
 
-func runnerHubProblems(protocol int, rejected bool) []runnerauth.Problem {
+func hubProblems(protocol int, rejected bool) []runnerauth.Problem {
 	problems := []runnerauth.Problem{}
 	if rejected {
 		problems = append(problems, runnerauth.NewProblem("settings_rejected"))
@@ -23,12 +24,12 @@ func runnerHubProblems(protocol int, rejected bool) []runnerauth.Problem {
 	return problems
 }
 
-func applyRunnerProblemView(r *runnerauth.Runner, spriteName string, now time.Time) {
+func ApplyProblemView(r *runnerauth.Runner, spriteName string, now time.Time) {
 	r.Problems = runnerauth.MergeProblems(r.Problems, r.Problems, r.LastHeartbeatAt)
 	if spriteName != "" && r.IsolationTier == isolation.Sandbox {
 		for index := range r.Problems {
 			if r.Problems[index].Code == "tier_unavailable" {
-				r.Problems[index].Message = spriteSandboxUnavailableReason
+				r.Problems[index].Message = sprites.SandboxUnavailableReason
 			}
 		}
 	}
@@ -46,15 +47,15 @@ func applyRunnerProblemView(r *runnerauth.Runner, spriteName string, now time.Ti
 	}
 }
 
-func mergeRunnerProblems(previous, current []runnerauth.Problem, protocol int, rejected bool, now time.Time) []runnerauth.Problem {
+func MergeProblems(previous, current []runnerauth.Problem, protocol int, rejected bool, now time.Time) []runnerauth.Problem {
 	current = slices.DeleteFunc(slices.Clone(current), func(p runnerauth.Problem) bool {
 		return p.Code == "settings_rejected" || p.Code == "version_unsupported" || p.Code == "policy_mismatch"
 	})
-	current = append(current, runnerHubProblems(protocol, rejected)...)
+	current = append(current, hubProblems(protocol, rejected)...)
 	return runnerauth.MergeProblems(previous, current, now)
 }
 
-func appendRunnerRuntimeProblems(r *runnerauth.Runner, lease runnerstore.FleetLease, now time.Time) {
+func AppendRuntimeProblems(r *runnerauth.Runner, lease runnerstore.FleetLease, now time.Time) {
 	if lease.RuntimeAttemptID == "" || lease.RuntimeHeartbeatAt == nil || !slices.Contains(r.ProjectIDs, lease.Lease.ProjectID) {
 		return
 	}
