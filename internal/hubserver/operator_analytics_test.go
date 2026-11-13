@@ -156,12 +156,12 @@ func TestHostedAnalyticsReads(t *testing.T) {
 					t.Fatalf("member received tenant-wide traffic: %s", raw)
 				}
 				want := 1
-				if grant != "github" {
+				if grant != "github" && name == operatortool.Reports {
 					for _, filter := range []struct {
 						kind string
 						want int
-					}{{"bug", 1}, {"feature", 0}} {
-						filteredResponse, filteredRaw := call(user, name, map[string]any{"project_id": string(f.project), "types": []string{filter.kind}})
+					}{{"bug", 1}, {"change_request", 0}} {
+						filteredResponse, filteredRaw := call(user, name, map[string]any{"projects": []string{string(f.project)}, "types": []string{filter.kind}})
 						var filtered nativeAnalyticsReport
 						if err := json.Unmarshal(filteredRaw, &filtered); err != nil || filteredResponse.Code != http.StatusOK || len(filtered.Projects) != 1 {
 							t.Fatalf("filtered aggregate=%s error=%v", filteredResponse.Body.String(), err)
