@@ -1,20 +1,27 @@
-package cloudentry
+package keys_test
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entryfixture"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
 )
 
 func TestAccessKeyThreadsMCP(t *testing.T) {
 	for _, protocol := range []string{"2025-11-25", "2026-07-28"} {
 		t.Run(protocol, func(t *testing.T) {
-			f := newEntryFixture(t)
-			owner := newBrowser(t, f.service.Handler())
+			f := entryfixture.New(t)
+			owner := harness.NewBrowser(t, f.Service.Handler())
 			owner.Login("/organizations", "user_alice:")
-			key := createTestAccessKey(t, owner, "global", nil, "")
-			client := newBrowser(t, f.service.Handler())
-			send := entryMCPClient(t, client, key.Token, protocol, "/mcp")
+			var key struct {
+				ID    string `json:"id"`
+				Token string `json:"token"`
+			}
+			harness.CreateAccessKey(t, owner, "global", nil, "", &key)
+			client := harness.NewBrowser(t, f.Service.Handler())
+			send := harness.MCPClient(t, client, key.Token, protocol, "/mcp")
 			call := func(name string, args map[string]any) json.RawMessage {
 				t.Helper()
 				args["organization_id"] = "org_alpha"
@@ -68,7 +75,7 @@ func TestAccessKeyThreadsMCP(t *testing.T) {
 			if len(page.Threads) != 1 || page.Threads[0].ID != thread.ID || page.Threads[0].Unread != 1 {
 				t.Fatalf("list=%s", raw)
 			}
-			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.access_keys SET permission='read' WHERE id=$1", key.ID); err != nil {
+			if _, err := f.DB.ExecContext(t.Context(), "UPDATE platform.access_keys SET permission='read' WHERE id=$1", key.ID); err != nil {
 				t.Fatal(err)
 			}
 			for _, want := range []int{1, 0} {

@@ -1,4 +1,4 @@
-package cloudentry
+package keys_test
 
 import (
 	"bytes"
@@ -15,6 +15,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entryfixture"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -22,15 +26,19 @@ import (
 
 func TestSharedEntryChangeSourcePublication(t *testing.T) {
 	t.Parallel()
-	f := newEntryFixture(t)
-	owner := newBrowser(t, f.service.Handler())
+	f := entryfixture.New(t)
+	owner := harness.NewBrowser(t, f.Service.Handler())
 	owner.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	_, page := owner.Get("/organizations/org_alpha/app/bootstrap")
-	csrf := csrfFrom(t, page)
-	project := attachmentProject(t, owner, "org_alpha")
+	csrf := harness.CSRF(t, page)
+	project := harness.Project(t, owner, "org_alpha")
 	base := "/api/v2/organizations/org_alpha/projects/" + project
-	key := createTestAccessKey(t, owner, "project", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}, "")
-	client := newBrowser(t, f.service.Handler())
+	var key struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+	}
+	harness.CreateAccessKey(t, owner, "project", []harness.KeyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}, "", &key)
+	client := harness.NewBrowser(t, f.Service.Handler())
 	request := func(t *testing.T, method, path string, value any, token string) *httptest.ResponseRecorder {
 		t.Helper()
 		var raw []byte
@@ -41,7 +49,7 @@ func TestSharedEntryChangeSourcePublication(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		return attachmentRequest(t, client, method, path, bytes.NewReader(raw), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+		return harness.Request(t, client, method, path, bytes.NewReader(raw), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
 	}
 	require := func(t *testing.T, response *httptest.ResponseRecorder, status int) {
 		t.Helper()
@@ -49,17 +57,17 @@ func TestSharedEntryChangeSourcePublication(t *testing.T) {
 			t.Fatalf("status=%d want=%d: %.500s", response.Code, status, response.Body.String())
 		}
 	}
-	descriptor := pilotPolicy()
+	descriptor := harness.PilotPolicy()
 	raw, err := json.Marshal(policy.Change{Policy: descriptor})
 	if err != nil {
 		t.Fatal(err)
 	}
-	require(t, attachmentRequest(t, owner, http.MethodPut, base+"/onboarding/policy", bytes.NewReader(raw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf}), http.StatusOK)
+	require(t, harness.Request(t, owner, http.MethodPut, base+"/onboarding/policy", bytes.NewReader(raw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf}), http.StatusOK)
 	raw, err = json.Marshal(tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "source-rules"}, Policy: tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequiredChecks: []tracker.ChangeCheckSpec{}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	require(t, attachmentRequest(t, owner, http.MethodPut, base+"/change-review-policy", bytes.NewReader(raw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf}), http.StatusOK)
+	require(t, harness.Request(t, owner, http.MethodPut, base+"/change-review-policy", bytes.NewReader(raw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf}), http.StatusOK)
 	response := request(t, http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "source-item"}, Title: "Synthetic source publication", State: "Backlog"}, key.Token)
 	require(t, response, http.StatusOK)
 	var item tracker.NativeIssue
@@ -186,15 +194,15 @@ func TestSharedEntryChangeSourcePublication(t *testing.T) {
 	}
 	bounded = append(bounded, bytes.Repeat([]byte(" "), (28<<20)-len(bounded))...)
 	headers := map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + key.Token}
-	atLimit := attachmentRequest(t, client, http.MethodPost, path, bytes.NewReader(bounded), headers)
+	atLimit := harness.Request(t, client, http.MethodPost, path, bytes.NewReader(bounded), headers)
 	require(t, atLimit, http.StatusOK)
 	if !bytes.Equal(response.Body.Bytes(), atLimit.Body.Bytes()) {
 		t.Fatal("publication at JSON limit changed immutable receipt")
 	}
-	require(t, attachmentRequest(t, client, http.MethodPost, path, bytes.NewReader(append(bounded, ' ')), headers), http.StatusRequestEntityTooLarge)
-	transport := f.service.config.Transport
-	f.service.config.Transport = func(organization Organization) (http.RoundTripper, error) {
-		return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	require(t, harness.Request(t, client, http.MethodPost, path, bytes.NewReader(append(bounded, ' ')), headers), http.StatusRequestEntityTooLarge)
+	transport := f.Seams.TransportFunc()
+	f.Seams.SetTransport(func(organization cloudentry.Organization) (http.RoundTripper, error) {
+		return entrytest.HandlerTransport{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Error(err)
@@ -202,10 +210,10 @@ func TestSharedEntryChangeSourcePublication(t *testing.T) {
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(append(body, ' ')))
-			f.tenants[organization.Endpoint].ServeHTTP(w, r)
+			f.Tenants[organization.Endpoint].ServeHTTP(w, r)
 		})}, nil
-	}
+	})
 	require(t, request(t, http.MethodPost, path, publication, key.Token), http.StatusUnauthorized)
-	f.service.config.Transport = transport
+	f.Seams.SetTransport(transport)
 
 }
