@@ -56,11 +56,16 @@ type changeFixture struct {
 
 func newChangeFixture(t *testing.T, service *Service, organizations ...tracker.OrganizationID) changeFixture {
 	t.Helper()
+	return newNamedChangeFixture(t, service, "changes", organizations...)
+}
+
+func newNamedChangeFixture(t *testing.T, service *Service, name string, organizations ...tracker.OrganizationID) changeFixture {
+	t.Helper()
 	organization := tracker.OrganizationID("")
 	if len(organizations) > 0 {
 		organization = organizations[0]
 	}
-	f := newNativeFixture(t, service, organization, "changes")
+	f := newNativeFixture(t, service, organization, name)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
@@ -1122,16 +1127,16 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		{"legacy overflow confirmed", true}, {"legacy overflow wrong recorder", false}, {"legacy overflow newer invalid", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			local := newChangeFixture(t, service)
+			local := newNamedChangeFixture(t, service, "changes "+test.name)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, local.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 			localRules := local.rules
 			localRules.PolicyID = descriptor.ID
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, local.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "push-policy"}, ExpectedID: local.rules.ID, Policy: localRules}), http.StatusOK)
-			localWorker := local.worker(t, "checkpoint-worker")
+			localWorker := local.worker(t, "checkpoint-worker "+test.name)
 			localLease := claimNativeAttempt(t, local.nativeFixture, localWorker, newNativeID("machine"), newNativeID("session"), local.issue.WorkItemID, descriptor.ID)
 			localStart := nativeStartedEvent(localLease)
 			localStart.Data.Identity.Role, localStart.Data.MachineID = "code", localLease.MachineID
-			localStart.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42}
+			localStart.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Phase: "implementation", HeartbeatAt: now}
 			localPath := local.base + "/work-items/" + string(local.issue.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, localPath, localWorker, localStart), http.StatusOK)
 			localInput := changeTestInput()
