@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -73,6 +74,9 @@ func (s *Authenticator) ResolveNative(readCtx context.Context, c echo.Context, o
 				scope.Action = operatortool.UploadAttachment
 			case "POST " + attachmentMetadataBase + "/:attachment/reference":
 				scope.Action = operatortool.ReferenceAttachment
+			}
+			if !RoleAllows(credential.HostedRole, apikey.ScopeWrite, scope.Action) {
+				return operatortool.ErrAccessDenied
 			}
 		}
 		if options.LeaseRoute(c.Path()) {
