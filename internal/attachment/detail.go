@@ -27,6 +27,16 @@ func ReadArchive(ctx context.Context, storage Storage, organization string, ref 
 	return decodeArchive(compressed, ref.CompressedSize, ref.UncompressedSize, true)
 }
 
+func DecodeArchive(organization string, ref ArchiveReference, compressed []byte) ([]byte, error) {
+	if ref.Validate(organization) != nil {
+		return nil, ErrInvalid
+	}
+	if int64(len(compressed)) != ref.CompressedSize || artifact.Digest(compressed) != ref.SHA256 {
+		return nil, &ArchiveReadError{BytesRead: int64(len(compressed)), ExpectedSize: ref.CompressedSize, Err: artifact.ErrIntegrity}
+	}
+	return decodeArchive(compressed, ref.CompressedSize, ref.UncompressedSize, true)
+}
+
 func decodeArchive(compressed []byte, compressedSize, contentLimit int64, exact bool) ([]byte, error) {
 	reader, err := gzip.NewReader(bytes.NewReader(compressed))
 	if err != nil {
@@ -63,6 +73,13 @@ func ReadCanonicalArchive(ctx context.Context, storage Storage, organization, pr
 	compressed, err := io.ReadAll(io.LimitReader(body, MaxArchiveBytes+1))
 	if err = errors.Join(err, body.Close(), ctx.Err()); err != nil {
 		return nil, errors.Join(artifact.ErrIntegrity, err)
+	}
+	return DecodeCanonicalArchive(organization, project, key, compressed)
+}
+
+func DecodeCanonicalArchive(organization, project, key string, compressed []byte) ([]byte, error) {
+	if err := ValidateCanonicalDetailKey(organization, project, key); err != nil {
+		return nil, err
 	}
 	digest := key[strings.LastIndex(key, "/")+1:]
 	if len(compressed) == 0 || len(compressed) > MaxArchiveBytes || artifact.Digest(compressed) != digest {
