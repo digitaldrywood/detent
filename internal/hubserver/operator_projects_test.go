@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -466,8 +467,12 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			observedRevision.ProjectID = f.project
+			seedHostedContextRunner(t, f, "observing-runner", "test", f.service.config.Clock(), false)
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-				_, err := w.RecordProjectPolicyObservation(t.Context(), policystore.Observation{OrganizationID: "org_security", ProjectID: f.project, RunnerID: operatortool.ConnectionIdentity(ctx).PrincipalID, PolicyID: candidate.ID, ObservedAt: f.service.config.Clock(), Revision: observedRevision})
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: "tok_observing-runner", ProjectID: f.project}); err != nil {
+					return err
+				}
+				_, err := w.RecordProjectPolicyObservation(t.Context(), policystore.Observation{OrganizationID: "org_security", ProjectID: f.project, RunnerID: "observing-runner", PolicyID: candidate.ID, ObservedAt: f.service.config.Clock(), Revision: observedRevision})
 				return err
 			}); err != nil {
 				t.Fatal(err)
