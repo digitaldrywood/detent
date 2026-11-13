@@ -810,7 +810,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 			{name: "project access removed", apiLimit: 100, statement: "DELETE FROM token_grants WHERE token_id=$1", target: "runner", status: http.StatusNotFound, code: "not_found"},
 			{name: "disabled runner", apiLimit: 100, statement: "UPDATE runner_identities SET state='disabled' WHERE runner_id=$1", target: "runner", status: http.StatusConflict, code: "runner_disabled"},
 			{name: "wrong runner", apiLimit: 100, status: http.StatusNotFound, code: "not_found"},
-			{name: "cross organization", apiLimit: 100, status: http.StatusNotFound, code: "not_found"},
+			{name: "cross organization", apiLimit: 100, status: http.StatusUnauthorized, code: "unauthorized"},
 			{name: "removed approval preserves lease", apiLimit: 100, statement: "DELETE FROM project_policies WHERE organization_id||'/'||project_id=$1", target: "project", status: http.StatusOK},
 		} {
 			t.Run(scope+"/"+test.name, func(t *testing.T) {
@@ -873,7 +873,23 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 					base = other.base
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/validate", otherRunner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken}), http.StatusOK)
 					otherClaim.MachineID = r.binding.MachineID
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", credential, otherClaim), http.StatusNotFound)
+					foreign := performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", credential, otherClaim)
+					requireNativeError(t, foreign, http.StatusUnauthorized, "unauthorized")
+					unknown, err := apikey.GenerateToken()
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, action := range []string{"/claims", "/leases/" + string(lease.ID) + "/validate"} {
+						var body any = otherClaim
+						if action != "/claims" {
+							body = tracker.NativeLeaseMutation{FencingToken: lease.FencingToken}
+						}
+						foreign := performHubAPIRequest(t, f.service, http.MethodPost, base+action, credential, body)
+						absent := performHubAPIRequest(t, f.service, http.MethodPost, base+action, unknown, body)
+						if foreign.Code != absent.Code || foreign.Body.String() != absent.Body.String() || foreign.Header().Get("WWW-Authenticate") != absent.Header().Get("WWW-Authenticate") {
+							t.Fatalf("%s foreign credential answered %d %s, nonexistent credential %d %s", action, foreign.Code, foreign.Body.String(), absent.Code, absent.Body.String())
+						}
+					}
 				}
 				f.service.config.Hosted = &hostedplans.HostedConfig{}
 				d.hostedOrganization = f.project.OrganizationID
