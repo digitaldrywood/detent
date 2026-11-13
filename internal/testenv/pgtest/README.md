@@ -88,7 +88,7 @@ connections (its two fixture connections plus a service's pools), plus the
 administrative pool and 64 connections of setup headroom, never below 320 or
 above 2000 (708 at `GOMAXPROCS=16`). URL attachment never changes the caller's
 server capacity. Total connections
-depend on the number of databases those tests keep open; close unused pools promptly. Each Template keeps up to two databases cloned ahead from its immutable migrated template, so a fixture usually starts without waiting for `CREATE DATABASE`; each prepared database is handed to exactly one fixture and dropped by that fixture's cleanup, and `Close` drops prepared databases nobody took. Each Template retains
+depend on the number of databases those tests keep open; close unused pools promptly. Once a Template has served its first fixture it keeps up to two databases cloned ahead from its immutable migrated template, so a later fixture usually starts without waiting for `CREATE DATABASE` and a Template used for one fixture never clones databases nobody takes; each prepared database is handed to exactly one fixture and dropped by that fixture's cleanup, and `Close` drops prepared databases nobody took. Each Template retains
 its own exact-name ownership set; closing a borrower never drops another
 Template's databases. Cleanup never enumerates other processes' databases.
 

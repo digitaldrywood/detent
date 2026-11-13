@@ -55,13 +55,13 @@ var errNotConfigured = errors.New("PostgreSQL 17 or 18 fixtures require DETENT_T
 var processCluster binaryCluster
 
 type binaryCluster struct {
-	mu        sync.Mutex
-	owner     *Template
-	tempDir   string
-	once      sync.Once
-	server    *server
-	err       error
-	closed    bool
+	mu      sync.Mutex
+	owner   *Template
+	tempDir string
+	once    sync.Once
+	server  *server
+	err     error
+	closed  bool
 }
 
 type Template struct {
@@ -74,6 +74,7 @@ type Template struct {
 	prepareMu sync.Mutex
 	prepared  []string
 	preparing int
+	requests  int
 	closing   bool
 	prepares  sync.WaitGroup
 }
@@ -300,7 +301,8 @@ func (p *Template) prepare(ctx context.Context) {
 	p.prepareMu.Lock()
 	defer p.prepareMu.Unlock()
 	server, template := p.server, p.name
-	for !p.closing && len(p.prepared)+p.preparing < preparedClones {
+	p.requests++
+	for p.requests > 1 && !p.closing && len(p.prepared)+p.preparing < preparedClones {
 		p.preparing++
 		p.prepares.Go(func() {
 			createCtx, cancel := cleanupContext(ctx)

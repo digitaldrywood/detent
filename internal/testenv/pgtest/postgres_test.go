@@ -1163,3 +1163,37 @@ func TestBinaryStartsUnderLongTempDirectory(t *testing.T) {
 		t.Fatalf("query under long TMPDIR = %d, %v", one, err)
 	}
 }
+
+func TestTemplatePreparesClonesOnlyAfterItsFirstFixture(t *testing.T) {
+	p := NewTemplate(migrateFixture)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	if err := p.initialize(ctx, serverSelection(processTemplate.server)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := p.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	pending := func() int {
+		p.prepareMu.Lock()
+		defer p.prepareMu.Unlock()
+		return len(p.prepared) + p.preparing
+	}
+	for fixture, want := range []int{0, preparedClones} {
+		db, cleanup, err := p.clone(ctx, func(context.Context, *sql.DB) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.PingContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := pending(); got != want {
+			t.Fatalf("fixture %d left %d prepared or preparing clones, want %d", fixture, got, want)
+		}
+		if err := cleanup(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
