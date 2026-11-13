@@ -1198,10 +1198,10 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 		name, state, reason, detail string
 		want                        int
 	}{
-		{"invalid state", "Unknown", "worker_progress", "", http.StatusUnprocessableEntity},
+		{"invalid state", "Unknown", "user_requested", "", http.StatusUnprocessableEntity},
 		{"raw reason", "Done", "raw prompt contents", "", http.StatusUnprocessableEntity},
-		{"oversized reason detail", "Done", "worker_progress", strings.Repeat("x", 8<<10+1), http.StatusUnprocessableEntity},
-		{"valid state", "Done", "worker_progress", "The worker completed the requested work", http.StatusOK},
+		{"oversized reason detail", "Done", "user_requested", strings.Repeat("x", 8<<10+1), http.StatusUnprocessableEntity},
+		{"valid state", "Done", "user_requested", "The operator completed the requested work", http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedRevision: 1, State: test.state, Reason: test.reason, ReasonDetail: test.detail}
