@@ -93,8 +93,8 @@ func TestAttemptFailureSummaryFollowsAttemptSequence(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if got := summary(t, org, issue); got.Recorded || got.AttemptID != running.ID || got.Status != "cancelled" {
-				t.Fatalf("lease release kept a summary computed for the running attempt: %+v", got)
+			if got := summary(t, org, issue); !got.Recorded || got.AttemptID != running.ID || got.Status != "running" || got.Failure != (leasestore.AttemptFailure{}) {
+				t.Fatalf("lease release rewrote the attempt or its summary: %+v", got)
 			}
 		}
 	}

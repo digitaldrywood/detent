@@ -129,7 +129,7 @@ func TestOperatorOrphanScanAdvancesPastOtherRunners(t *testing.T) {
 			query.Before = page.Next
 			for _, want := range wants[string(org)+string(query.ProjectID)] {
 				page, err = scan(query)
-				if err != nil || len(page.Sessions) != 1 || page.Sessions[0].ID != want || page.Sessions[0].OrganizationID != org || page.Sessions[0].ProjectID != query.ProjectID || page.Sessions[0].PayloadSHA256 == "" || page.Sessions[0].WorkerPid != 0 || page.Sessions[0].AttemptStatus != "cancelled" {
+				if err != nil || len(page.Sessions) != 1 || page.Sessions[0].ID != want || page.Sessions[0].OrganizationID != org || page.Sessions[0].ProjectID != query.ProjectID || page.Sessions[0].PayloadSHA256 == "" || page.Sessions[0].WorkerPid != 0 || page.Sessions[0].AttemptStatus != "interrupted" {
 					t.Fatalf("saved session want=%d page=%+v: %v", want, page, err)
 				}
 				query.Before = page.Next

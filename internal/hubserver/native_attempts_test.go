@@ -1879,6 +1879,29 @@ func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+				renewal := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90})
+				requireNativeError(t, renewal, http.StatusUnauthorized, "unauthorized")
+				late := nativeStartedEvent(lease)
+				late.IdempotencyKey, late.Type, late.Data.Sequence, late.Data.RunID, late.Data.AttemptID = "late_revoked", "run.finished", 2, events[0].Data.RunID, events[0].Data.AttemptID
+				late.Data.Outcome = "succeeded"
+				requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(items[0].WorkItemID)+"/events", owner.redemption.Credential, late), http.StatusUnauthorized, "unauthorized")
+				for i := range items {
+					attempt, err := f.service.readNativeAttemptTenant(ctx, nativeAttemptListingScope(t, f), string(items[i].WorkItemID), events[i].Data.AttemptID)
+					if err != nil || attempt.Status != "running" || !attempt.Current {
+						t.Fatalf("item %d before expiry: status=%q current=%t error=%v", i, attempt.Status, attempt.Current, err)
+					}
+				}
+				clock.Advance(leases[1].ExpiresAt.Sub(clock.Now()))
+				requireLostLeaseAttemptsInterrupted(t, f, items, events, 0, 1)
+				if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.RequireProjectIdle(ctx, project, clock.Now())
+				}); err != nil {
+					t.Fatalf("lost attempts still hold the project active: %v", err)
+				}
+				replacement := enroll()
+				for i := range items {
+					claim(replacement, items[i].WorkItemID, fmt.Sprintf("replacement-session-%d", i), 90)
+				}
 			default:
 				clock.Advance(lease.ExpiresAt.Sub(clock.Now()))
 				if mode == "released repair" || mode == "superseded repair" {
@@ -1896,6 +1919,10 @@ func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
 					if current.FencingToken <= lease.FencingToken || int64(current.FencingToken) <= newerAttempt.FencingToken {
 						t.Fatal("replacement reused fencing token")
 					}
+					late := nativeStartedEvent(lease)
+					late.IdempotencyKey, late.Type, late.Data.Sequence, late.Data.RunID, late.Data.AttemptID = "late_superseded", "run.finished", 2, events[0].Data.RunID, events[0].Data.AttemptID
+					late.Data.Outcome = "succeeded"
+					requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(items[0].WorkItemID)+"/events", owner.redemption.Credential, late), http.StatusConflict, "stale_fencing_token")
 				}
 				if mode != "superseded" && mode != "superseded imported" {
 					if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -1981,6 +2008,10 @@ func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if mode == "released repair" {
+					requireLostLeaseAttemptsInterrupted(t, f, items, events, 0)
+					claim(enroll(), items[0].WorkItemID, "replacement-session", 90)
+				}
 			}
 
 			if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -2034,6 +2065,29 @@ func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func requireLostLeaseAttemptsInterrupted(t *testing.T, f nativeFixture, items []tracker.NativeIssue, events []tracker.NativeRunEvent, lost ...int) {
+	t.Helper()
+	scope := nativeAttemptListingScope(t, f)
+	for _, i := range lost {
+		attempt, err := f.service.readNativeAttemptTenant(t.Context(), scope, string(items[i].WorkItemID), events[i].Data.AttemptID)
+		if err != nil {
+			t.Fatalf("read item %d lost attempt: %v", i, err)
+		}
+		if attempt.Status != "interrupted" || attempt.Current || attempt.ClaimReleasedAt == nil {
+			t.Errorf("item %d lost lease still reported running: status=%q current=%t released=%v", i, attempt.Status, attempt.Current, attempt.ClaimReleasedAt)
+		}
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			stored, err := r.Attempt(t.Context(), events[i].Data.AttemptID)
+			if err == nil && (stored.Status != "running" || stored.Sequence != 1) {
+				t.Errorf("item %d read rewrote the lost attempt: status=%s sequence=%d", i, stored.Status, stored.Sequence)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

@@ -694,7 +694,7 @@ func TestLeaseRejectsStaleAndInvalidMutations(t *testing.T) {
 				}
 				if err := r.ReadLeases(t.Context(), "org_first", corestore.Serving, func(reader leasestore.Reader) error {
 					current, err := reader.Attempt(t.Context(), event.ID)
-					if err == nil && (current.Status != "cancelled" || current.RuntimeSummarySequence != current.Sequence) {
+					if err == nil && (current.Status != "running" || current.Sequence != event.Sequence || current.RuntimeSummarySequence != current.Sequence) {
 						t.Fatalf("released attempt runtime coverage = %+v", current)
 					}
 					return err

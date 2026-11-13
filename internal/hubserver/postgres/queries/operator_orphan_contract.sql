@@ -20,7 +20,7 @@ WITH candidates AS MATERIALIZED (
  AND (rs.started_at,rs.id)>=(sqlc.arg(through_time)::timestamptz,sqlc.arg(through_id)::bigint)
  ORDER BY rs.started_at DESC,rs.id DESC LIMIT sqlc.arg(page_limit)::integer
 )
-SELECT s.*,a.status AS attempt_status,l.lease_id,l.fencing_token,l.expires_at,l.released_at
+SELECT s.*,CASE WHEN a.status='running' THEN 'interrupted' ELSE a.status END::text AS attempt_status,l.lease_id,l.fencing_token,l.expires_at,l.released_at
 FROM candidates s
 JOIN native_attempts a ON a.organization_id=s.organization_id AND a.id=s.attempt_id
 JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id

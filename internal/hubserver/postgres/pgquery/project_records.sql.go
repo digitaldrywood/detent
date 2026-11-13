@@ -220,7 +220,6 @@ func (q *Queries) LockActiveProject(ctx context.Context, arg LockActiveProjectPa
 
 const projectHasActiveWork = `-- name: ProjectHasActiveWork :one
 SELECT EXISTS(SELECT 1 FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE i.organization_id=$1 AND i.project_id=$2 AND l.released_at IS NULL AND l.expires_at>$3::timestamptz)
-OR EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND a.status='running')
 OR EXISTS(SELECT 1 FROM workspace_sessions w WHERE w.organization_id=$1 AND w.project_id=$2 AND w.state NOT IN ('closed','failed'))
 OR EXISTS(SELECT 1 FROM project_action_runs a WHERE a.organization_id=$1 AND a.project_id=$2 AND a.status IN ('queued','running'))
 OR EXISTS(SELECT 1 FROM github_imports g WHERE g.organization_id=$1 AND g.project_id=$2 AND (g.status IN ('pending','running','partial') OR g.intake_pending))

@@ -62,7 +62,7 @@ WITH candidates AS MATERIALIZED (
  AND (rs.started_at,rs.id)>=($9::timestamptz,$10::bigint)
  ORDER BY rs.started_at DESC,rs.id DESC LIMIT $4::integer
 )
-SELECT s.organization_id, s.id, s.project_id, s.issue_id, s.attempt_id, s.revision, s.start_key, s.started_at, s.completed_at, s.backend_id, s.backend_kind, s.role, s.model, s.policy_id, s.provider_thread_id, s.provider_session_id, s.pr_number, s.pr_head_sha, s.pr_base_sha, s.final_state, s.worker_pid, s.worker_group_id, s.worker_started_at, s.worker_reaped_at, s.payload_object_key, s.payload_sha256, s.payload_bytes, s.payload_content_bytes,a.status AS attempt_status,l.lease_id,l.fencing_token,l.expires_at,l.released_at
+SELECT s.organization_id, s.id, s.project_id, s.issue_id, s.attempt_id, s.revision, s.start_key, s.started_at, s.completed_at, s.backend_id, s.backend_kind, s.role, s.model, s.policy_id, s.provider_thread_id, s.provider_session_id, s.pr_number, s.pr_head_sha, s.pr_base_sha, s.final_state, s.worker_pid, s.worker_group_id, s.worker_started_at, s.worker_reaped_at, s.payload_object_key, s.payload_sha256, s.payload_bytes, s.payload_content_bytes,CASE WHEN a.status='running' THEN 'interrupted' ELSE a.status END::text AS attempt_status,l.lease_id,l.fencing_token,l.expires_at,l.released_at
 FROM candidates s
 JOIN native_attempts a ON a.organization_id=s.organization_id AND a.id=s.attempt_id
 JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id

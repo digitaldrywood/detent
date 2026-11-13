@@ -278,7 +278,7 @@ func (s *session) RetireProject(ctx context.Context, id tracker.ProjectID, revis
 	if record.Settings.Revision != revision {
 		return corestore.ErrRevisionConflict
 	}
-	serverNow, err := s.queries.LeaseTime(ctx)
+	serverNow, err := s.leaseTime(ctx)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -345,7 +345,7 @@ func (s *session) RequireProjectIdle(ctx context.Context, id tracker.ProjectID, 
 	if err := s.lockProjectChildren(ctx, id, true); err != nil {
 		return err
 	}
-	serverNow, err := s.queries.LeaseTime(ctx)
+	serverNow, err := s.leaseTime(ctx)
 	if err != nil {
 		return mapError(ctx, err)
 	}
