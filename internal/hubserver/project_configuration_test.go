@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -744,7 +745,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			if scenario == "storage exhausted" {
 				view.Constraint = ""
-				f.service.config.Hosted = &HostedConfig{}
+				f.service.config.Hosted = &hostedplans.HostedConfig{}
 				f.service.config.Hosted.OrganizationID = string(f.project.OrganizationID)
 				configurationTestStorageLimit(t, f, 1)
 				_, storageErr := prepareChangeContent(f.service.contentContext(t.Context()), string(f.project.OrganizationID), []byte(strings.Repeat("ordinary billable storage probe", 80)))

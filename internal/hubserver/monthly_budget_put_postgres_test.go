@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -36,7 +37,7 @@ func TestPostgresMonthlyBudgetPut(t *testing.T) {
 			cfg.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
 			cfg.Hosted.OrganizationID = string(organization)
 			cfg.Hosted.WorkOSOrganizationID = "provider_" + string(organization)
-			cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+			cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 			cfg.RunDetails = &memoryRunDetails{}
 			plans := pilotHostedPlans()
 			cfg.Hosted.Plans = &plans
@@ -86,7 +87,7 @@ func TestPostgresMonthlyBudgetPut(t *testing.T) {
 			if service.database.postgres == nil || service.config.TenantRepository == nil {
 				t.Fatal("fixture requires the PostgreSQL repository")
 			}
-			service.config.Hosted.SharedEntry.verifier.Now = cfg.now
+			service.config.Hosted.SharedEntry.Verifier().Now = cfg.now
 			sessionTime := now
 			call := func(method, suffix, role, support, body string) *httptest.ResponseRecorder {
 				t.Helper()

@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -111,7 +112,7 @@ func TestOperatorAuthorizationPostgresCancellation(t *testing.T) {
 			t.Run(string(org)+"/"+mode, func(t *testing.T) {
 				transport, mode, _ := strings.Cut(mode, "/")
 				var logs bytes.Buffer
-				s := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), now: func() time.Time { return now }, Hosted: &HostedConfig{OrganizationID: string(org), SharedEntry: &HostedSharedEntry{Issuer: "entry", Generation: 1}, PublicURL: "https://example.test"}}}
+				s := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), SharedEntry: &hostedplans.HostedSharedEntry{Issuer: "entry", Generation: 1}, PublicURL: "https://example.test"}}}
 				ctx := t.Context()
 				if mode == "cancelled" {
 					var cancel context.CancelFunc

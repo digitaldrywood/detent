@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -905,7 +906,7 @@ func TestHostedPlanConfigurationDefaults(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			cfg := *f.service.config.Hosted
 			cfg.Plans = test.plans
-			err := ValidateHostedConfig(&cfg)
+			err := hostedplans.ValidateHostedConfig(&cfg)
 			if !valid {
 				if err == nil {
 					t.Fatal("partial entitlements accepted")
@@ -913,7 +914,7 @@ func TestHostedPlanConfigurationDefaults(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("ValidateHostedConfig() = %v", err)
+				t.Fatalf("hostedplans.ValidateHostedConfig() = %v", err)
 			}
 			configured := newHostedSecurityFixture(t, func(config *Config) { config.Hosted.Plans = cfg.Plans })
 			d := configured.service.database
@@ -1085,7 +1086,7 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	originalGrant := readGrant()
 
 	plans := capacityHostedPlans()
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
 	retained := readPlan()
@@ -1378,7 +1379,7 @@ func TestCapacityGrantPreservesUnrestrictedResources(t *testing.T) {
 	grant := HostedPlan{PlanReference: PlanReference{ID: "capacity_grant", Version: 1}, Allowances: map[string]int64{"concurrent_work": 9, "projects": 1, "repositories": 1, "registered_runners": 1, "connected_runners": 1}}
 	config.Plans = append(config.Plans, grant)
 	d := f.service.database
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &config}); err != nil {
+	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &config}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-base", Action: "base", ExpectedRevision: 1, Plan: config.Base, Reason: "capacity access"}); err != nil {
@@ -1436,7 +1437,7 @@ func TestCapacityFreeConcurrentWorkQueues(t *testing.T) {
 	d := f.service.database
 	d.hostedOrganization = f.project.OrganizationID
 	plans := capacityHostedPlans()
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
 	tokens := map[string]string{}
@@ -1806,7 +1807,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", retainedWorker, event), http.StatusOK)
 		}
 		previous = retained
-		if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+		if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -2311,7 +2312,7 @@ func TestHostedRunnerTransactionQuotas(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			f.service.config.Hosted = &HostedConfig{}
+			f.service.config.Hosted = &hostedplans.HostedConfig{}
 			d.hostedOrganization = f.project.OrganizationID
 			hostedTestPlans(t, f.service, test.limits)
 			observeHostedArtifactUsage(t, f.service)
@@ -2392,7 +2393,7 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 			if test.kind != "run.started" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			}
-			f.service.config.Hosted = &HostedConfig{}
+			f.service.config.Hosted = &hostedplans.HostedConfig{}
 			f.service.database.hostedOrganization = f.project.OrganizationID
 			hostedTestPlans(t, f.service, test.limits)
 			observeHostedArtifactUsage(t, f.service)

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -619,7 +620,7 @@ type postgresArtifactFixture struct {
 
 func newPostgresArtifactFixture(t *testing.T, configure ...func(*Config)) postgresArtifactFixture {
 	t.Helper()
-	cfg := Config{RunDetails: &memoryRunDetails{}, Hosted: &HostedConfig{
+	cfg := Config{RunDetails: &memoryRunDetails{}, Hosted: &hostedplans.HostedConfig{
 		OrganizationID:       "org_" + strings.Repeat("a", 32),
 		WorkOSOrganizationID: "org_provider",
 		BootstrapSubject:     "user_owner",

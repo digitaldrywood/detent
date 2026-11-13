@@ -13,7 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 )
 
 func TestTenantEnvironmentPassesOpenAIKeyOnlyWhenPresent(t *testing.T) {
@@ -74,7 +74,7 @@ func TestCloudTenantConfigurationSelectsPostgresRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := hubserver.ValidateHostedConfig(hosted); err != nil {
+	if err := hostedplans.ValidateHostedConfig(hosted); err != nil {
 		t.Fatal(err)
 	}
 	if hosted.Postgres == nil || hosted.Postgres.Connection.Database != "detent" || hosted.Postgres.Connection.Password != values["TENANT_DATABASE_PASSWORD"] {
@@ -570,7 +570,7 @@ func TestCloudEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := hubserver.ValidateHostedConfig(tenant); err != nil || tenant.Plans != nil {
+			if err := hostedplans.ValidateHostedConfig(tenant); err != nil || tenant.Plans != nil {
 				t.Fatalf("tenant plans = %+v, %v; want default catalog", tenant.Plans, err)
 			}
 		})

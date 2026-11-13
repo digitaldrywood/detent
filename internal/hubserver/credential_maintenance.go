@@ -21,7 +21,7 @@ func validateCredentialMaintenance(cfg Config) error {
 	if !cfg.CredentialMaintenance {
 		return nil
 	}
-	if cfg.Hosted == nil || cfg.Hosted.WorkOSOrganizationID == "" || !listenerAddressLoopback(cfg.ListenAddress) || cfg.TrustedProxy {
+	if cfg.Hosted == nil || cfg.Hosted.WorkOSOrganizationID == "" || !hubapi.ListenerAddressLoopback(cfg.ListenAddress) || cfg.TrustedProxy {
 		return errors.New("credential maintenance requires hosted configuration with an explicit provider organization and private loopback without a trusted proxy")
 	}
 	return nil
@@ -93,7 +93,7 @@ func (s *Service) accessHostedBinding(tenant accessstore.Tenant) error {
 	if tenant.ProviderID != cfg.WorkOSOrganizationID && (s.config.CredentialMaintenance || cfg.WorkOSOrganizationID != "" || cfg.BootstrapSubject == "") {
 		return ErrHostedDatabaseBinding
 	}
-	deployment, generation := cfg.deployment()
+	deployment, generation := cfg.Deployment()
 	if tenant.Deployment != deployment || tenant.AllocationGeneration != generation {
 		return ErrHostedDatabaseBinding
 	}

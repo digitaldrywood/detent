@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -663,7 +664,7 @@ func TestOrganizationProductivityTenant(t *testing.T) {
 		productivitySeedItem(t.Context(), t, f.service.config.TenantRepository, eventstore.NewContent(f.service.runDetailStore()), fixture.project.OrganizationID, fixture.project.ID, tracker.NativeWorkItemID("wi_"+string(fixture.project.ID)), 1, fixture.project.Name, "Todo", "", nil, tracker.Actor{Kind: "human", PrincipalID: "person_one"}, now, nil)
 	}
 
-	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatalf("credential status=%d: %v", status, err)

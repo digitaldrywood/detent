@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -39,7 +40,7 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 		t.Run(string(org), func(t *testing.T) {
 			service := accountPreferencesPostgresFixture(t, repository).service
 			service.config.Hosted.OrganizationID = string(org)
-			service.config.Hosted.SharedEntry = &HostedSharedEntry{}
+			service.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 			service.config.SecretKeys = secretTestKeys(t, "1", "1")
 			service.database.hostedOrganization = org
 			service.config.now = func() time.Time { return now }

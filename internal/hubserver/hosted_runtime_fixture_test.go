@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -21,7 +22,7 @@ func newRuntimePostgresService(t *testing.T, plans HostedPlansConfig, billing bo
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Logger: discardLogger(), now: time.Now, Hosted: &HostedConfig{OrganizationID: "org_browser_preview", Plans: &plans, EntitlementAdministrator: "test-operator", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}
+	cfg := Config{Logger: discardLogger(), now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_browser_preview", Plans: &plans, EntitlementAdministrator: "test-operator", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}
 	if billing {
 		cfg.Hosted.Billing = &HostedBillingConfig{AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: &hostedBillingProvider{}, Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}}}
 	}

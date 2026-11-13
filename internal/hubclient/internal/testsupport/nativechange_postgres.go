@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
@@ -141,7 +142,7 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 			t.Fatal(err)
 		}
 		provider = nativeChangeIdentityProvider{HostedProvider: provider}
-		cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_11111111111111111111111111111111", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: provider}
+		cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_11111111111111111111111111111111", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: provider}
 	}
 	migrations, err := fs.Sub(nativeChangeSchema(), "migrations")
 	if err != nil {

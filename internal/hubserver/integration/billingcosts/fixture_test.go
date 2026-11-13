@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
@@ -715,7 +716,7 @@ func newUsageHostedFixture(t *testing.T) usageHostedFixture {
 	project := hubtest.Project(t, repo, org, hubtest.ProjectOptions{Name: "Public"})
 	private := hubtest.Project(t, repo, org, hubtest.ProjectOptions{Name: "Private"})
 	provider := newHostedSecurityProvider()
-	cfg := Config{Clock: time.Now, RunDetails: details, SecretKeys: keys(t), Hosted: &hubserver.HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "https://example.test"}}
+	cfg := Config{Clock: time.Now, RunDetails: details, SecretKeys: keys(t), Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "https://example.test"}}
 	h := openHub(t, &testHub{admin: admin, owner: t}, cfg, repo)
 	harness := hubtest.NewHTTP(t, hubtest.HTTPOptions{Repository: repo, Organization: org, Now: cfg.Clock}, func(*echo.Group, hubtest.HTTPDeps) {})
 	f := usageHostedFixture{service: h, project: string(project.ID), privateProject: string(private.ID), provider: provider, actors: map[string]hubtest.HTTPActor{}}

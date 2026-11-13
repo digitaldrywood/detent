@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -223,7 +224,7 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 		t.Run(organization, func(t *testing.T) {
 			t.Parallel()
 			service := openHostedPostgresService(t, Config{
-				Hosted: &HostedConfig{
+				Hosted: &hostedplans.HostedConfig{
 					OrganizationID:       organization,
 					WorkOSOrganizationID: "provider_" + organization,
 					PublicURL:            "https://" + organization + ".example.test",
@@ -311,7 +312,7 @@ func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSe
 	provider := newHostedSecurityProvider()
 	legacyPlans := pilotHostedPlans()
 	cfg := Config{
-		Hosted: &HostedConfig{
+		Hosted: &hostedplans.HostedConfig{
 			Plans:                &legacyPlans,
 			OrganizationID:       "org_security",
 			WorkOSOrganizationID: "org_provider",
@@ -1281,7 +1282,7 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 	provider := newHostedSecurityProvider()
 	service := openHostedPostgresService(t, Config{
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
-		Hosted: &HostedConfig{OrganizationID: "org_logs", WorkOSOrganizationID: "org_provider", PublicURL: "https://logs.example.test", Provider: provider},
+		Hosted: &hostedplans.HostedConfig{OrganizationID: "org_logs", WorkOSOrganizationID: "org_provider", PublicURL: "https://logs.example.test", Provider: provider},
 	})
 	const sentinel = "private-content-bearer-sentinel"
 	service.echo.GET("/security/error", func(c echo.Context) error {

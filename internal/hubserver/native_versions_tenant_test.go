@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -112,7 +113,7 @@ func TestTenantVersionRoutesWithoutLegacyDatabase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			service.config.Hosted = &HostedConfig{OrganizationID: org, PublicURL: "https://example.test"}
+			service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: org, PublicURL: "https://example.test"}
 			raw, err := service.readVersion(t.Context(), hubscope.NativeScope{Organization: tracker.OrganizationID(org), Project: "project", Credential: credential}, "item_project", "", 1)
 			if err != nil {
 				t.Fatal(err)

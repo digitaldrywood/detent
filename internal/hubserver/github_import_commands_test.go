@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -24,7 +25,7 @@ func TestPostgresImportStarts(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	service := &Service{localOrganization: "org", notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), database: &database{now: time.Now}, config: Config{ImportBackend: gitHubLifecycleImporter{}, TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now}}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org", Name: "Example", Slug: "example"})
-	service.config.Hosted = &HostedConfig{OrganizationID: "org"}
+	service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: "org"}
 	service.database.hostedOrganization = "org"
 	for _, project := range []tracker.ProjectID{"first", "second"} {
 		err := repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {

@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -21,7 +22,7 @@ func TestPostgresLogoutRevokesExpiredSessions(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
 			provider := newHostedSecurityProvider()
-			service := &Service{database: &database{}, config: Config{AccessRepository: repository, TenantRepository: repository, now: func() time.Time { return now }, Hosted: &HostedConfig{OrganizationID: string(org), PublicURL: "http://example.test", Provider: provider}}}
+			service := &Service{database: &database{}, config: Config{AccessRepository: repository, TenantRepository: repository, now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), PublicURL: "http://example.test", Provider: provider}}}
 			hash := apikey.HashToken("expired-token")
 			err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: now}); err != nil {

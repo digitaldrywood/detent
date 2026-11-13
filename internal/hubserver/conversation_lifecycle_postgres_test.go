@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -21,7 +22,7 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	repository := projectRecordPostgres(t)
 	f := newConversationTenantFixture(t, repository, now)
 	f.service.config.TenantRepository = repository
-	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 	f.service.config.now = func() time.Time { return now }
 	owner := conversationLifecyclePostgresOwner(t, f, now)
 
@@ -451,7 +452,7 @@ func (r *blockingLifecycleRepository) releaseNow() {
 func newConversationTenantFixture(t *testing.T, repository tenantstore.Repository, now time.Time) conversationAPIFixture {
 	t.Helper()
 	service := &Service{
-		config:   Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }, Hosted: &HostedConfig{OrganizationID: "org_conversation"}},
+		config:   Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_conversation"}},
 		database: &database{}, notifications: newNotificationBroker(),
 	}
 	service.ready.Store(true)

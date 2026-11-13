@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -511,7 +512,7 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 		return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
 	}})
 	ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (hubapi.APICredential, error) { return hubapi.APICredential{}, nil })
-	for _, cfg := range []Config{{now: time.Now}, {now: time.Now, Hosted: &HostedConfig{OrganizationID: "org_test"}}} {
+	for _, cfg := range []Config{{now: time.Now}, {now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_test"}}} {
 		service := &Service{config: cfg}
 		for _, name := range []string{operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports} {
 			_, err := service.executeAnalyticsRead(ctx, operatortool.Call{Name: name, Arguments: []byte(`{}`)})

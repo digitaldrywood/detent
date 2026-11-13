@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -59,7 +60,7 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 				selected = selected.WithID()
 				view.SelectedPolicy = &selected
 			}
-			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+			f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 			f.service.database.hostedOrganization = f.project.OrganizationID
 			limits := map[string]int64{"registered_runners": 100, "connected_runners": 100}
 			before := heartbeatBudgetBytes(t, f)
@@ -208,7 +209,7 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 			}
 			f.service.tokenUseWork.Wait()
 			if test.hosted {
-				f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+				f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 				f.service.database.hostedOrganization = f.project.OrganizationID
 				hostedTestPlans(t, f.service, nil)
 				metrics, err := newPostgresTestMetrics(t, f.project.OrganizationID)

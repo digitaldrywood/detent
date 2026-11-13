@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -1208,7 +1209,7 @@ func TestSafeNativeWorkError(t *testing.T) {
 			}
 			response := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), response)
-			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
+			service := &Service{config: Config{Hosted: &hostedplans.HostedConfig{}, Logger: discardLogger()}}
 			if err := service.nativeAPIError(context, cause); err != nil {
 				t.Fatal(err)
 			}
@@ -1238,7 +1239,7 @@ func TestSafeNativeWorkError(t *testing.T) {
 			}
 			response := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), response)
-			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}, database: f.service.database}
+			service := &Service{config: Config{Hosted: &hostedplans.HostedConfig{}, Logger: discardLogger()}, database: f.service.database}
 			if err := service.nativeAPIError(context, test.cause); err != nil {
 				t.Fatal(err)
 			}

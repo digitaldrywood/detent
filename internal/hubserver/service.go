@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -199,7 +200,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 	if err := validateCredentialMaintenance(cfg); err != nil {
 		return nil, err
 	}
-	if err := cfg.Hosted.validate(); err != nil {
+	if err := hostedplans.ValidateHostedConfig(cfg.Hosted); err != nil {
 		return nil, err
 	}
 	notes, err := releasenotes.Read(detent.StaticFS())
@@ -417,7 +418,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("listen for hub requests: %w", err)
 	}
-	if cfg.CredentialMaintenance && !listenerAddressLoopback(listener.Addr().String()) {
+	if cfg.CredentialMaintenance && !hubapi.ListenerAddressLoopback(listener.Addr().String()) {
 		return errors.Join(ErrInsecureListener, listener.Close())
 	}
 	if network == "unix" {
@@ -425,12 +426,12 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 			return errors.Join(fmt.Errorf("restrict hub socket: %w", err), listener.Close())
 		}
 	}
-	if err := cfg.Hosted.validate(); err != nil {
+	if err := hostedplans.ValidateHostedConfig(cfg.Hosted); err != nil {
 		return errors.Join(err, listener.Close())
 	}
 	progress := &startupHealth{config: cfg}
 	if cfg.Hosted != nil && cfg.Hosted.SharedEntry != nil {
-		progress.verifier = cfg.Hosted.SharedEntry.verifier
+		progress.verifier = cfg.Hosted.SharedEntry.Verifier()
 	}
 	if cfg.Postgres != nil {
 		postgresConfig := *cfg.Postgres
@@ -500,7 +501,7 @@ func validateListenerSecurity(cfg Config) error {
 	if (certFile == "") != (keyFile == "") {
 		return errors.New("hub TLS certificate and key must be configured together")
 	}
-	if _, unix := listenerUnixPath(cfg.ListenAddress); unix || listenerAddressLoopback(cfg.ListenAddress) || certFile != "" || cfg.TrustedProxy {
+	if _, unix := listenerUnixPath(cfg.ListenAddress); unix || hubapi.ListenerAddressLoopback(cfg.ListenAddress) || certFile != "" || cfg.TrustedProxy {
 		return nil
 	}
 	return fmt.Errorf("%w: %s", ErrInsecureListener, cfg.ListenAddress)
@@ -534,19 +535,6 @@ func prepareUnixListener(ctx context.Context, path string) error {
 	return os.Remove(path)
 }
 
-func listenerAddressLoopback(address string) bool {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
-	if err != nil {
-		return false
-	}
-	host = strings.Trim(strings.TrimSpace(host), "[]")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
 func (s *Service) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.signalSecretRewrap()
@@ -555,7 +543,7 @@ func (s *Service) Handler() http.Handler {
 }
 
 func (s *Service) Serve(listener net.Listener) error {
-	if s.config.CredentialMaintenance && listener != nil && !listenerAddressLoopback(listener.Addr().String()) {
+	if s.config.CredentialMaintenance && listener != nil && !hubapi.ListenerAddressLoopback(listener.Addr().String()) {
 		return ErrInsecureListener
 	}
 	if listener == nil {
@@ -572,7 +560,7 @@ func (s *Service) Serve(listener net.Listener) error {
 }
 
 func (s *Service) ServeTLS(listener net.Listener, certificateFile string, keyFile string) error {
-	if s.config.CredentialMaintenance && listener != nil && !listenerAddressLoopback(listener.Addr().String()) {
+	if s.config.CredentialMaintenance && listener != nil && !hubapi.ListenerAddressLoopback(listener.Addr().String()) {
 		return ErrInsecureListener
 	}
 	if listener == nil {

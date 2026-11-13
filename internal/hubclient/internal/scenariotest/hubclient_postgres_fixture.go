@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -58,7 +59,7 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 6, ServingConnections: 4, BackgroundConnections: 1}, LeaseClock: cfg.Clock}
 	if cfg.Hosted == nil {
-		cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: hubclientIdentityProvider{}}
+		cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: hubclientIdentityProvider{}}
 	}
 	cfg.Logger = slog.New(slog.NewTextHandler(t.Output(), nil))
 	keys, err := hubsecrets.FromEnvironment(func(name string) string {

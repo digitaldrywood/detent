@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -93,7 +94,7 @@ func (p runtimeRevisionProbe) MissingConfiguredBillingPlan(context.Context, []bi
 func runtimeProbeService(repo tenantstore.Repository) *Service {
 	d := &database{billingRepository: repo, postgres: &postgres.Repository{}, logger: discardLogger(), now: time.Now}
 	d.hostedRuntime.Store(&hostedRuntimeConfig{Revision: "loaded", Plans: pilotHostedPlans()})
-	return &Service{database: d, config: Config{Logger: discardLogger(), now: time.Now, Hosted: &HostedConfig{OrganizationID: "org_example", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}}
+	return &Service{database: d, config: Config{Logger: discardLogger(), now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_example", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}}
 }
 func TestRuntimeRefreshRequestsOverlap(t *testing.T) {
 	release := make(chan struct{})

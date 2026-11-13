@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/update"
@@ -73,7 +74,7 @@ type Config struct {
 	SpritesHTTPClient              *http.Client
 	SlackHTTPClient                *http.Client
 	CredentialMaintenance          bool
-	Hosted                         *HostedConfig
+	Hosted                         *hostedplans.HostedConfig
 	Conversation                   *ConversationConfig
 	Usage                          *UsageConfig
 	// Workspace enables workspace sessions and the relay.

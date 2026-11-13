@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -16,7 +17,7 @@ import (
 func TestSecretStatusLiveDatabase(t *testing.T) {
 	t.Parallel()
 	keys := secretTestKeys(t, "2", "1", "2")
-	service := openTestService(t, Config{SecretKeys: keys, Hosted: &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}})
+	service := openTestService(t, Config{SecretKeys: keys, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}})
 	organization := tracker.OrganizationID(service.config.Hosted.OrganizationID)
 	envelope, err := keys.Seal([]byte("known-live-token"), accessstore.SecretAAD(organization, "", slackWebhookSecret))
 	if err != nil {

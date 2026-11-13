@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -761,7 +762,7 @@ func TestGitHubBatchRunnerOperations(t *testing.T) {
 			t.Run(fault, func(t *testing.T) {
 				first := newHostedBatchFixture(t)
 				secondCfg := first.service.config
-				secondCfg.Hosted = &HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://second.example.test", Provider: first.provider}
+				secondCfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://second.example.test", Provider: first.provider}
 				bindBatchTenant(t, first, secondCfg.Hosted)
 				secondService := openPostgresHubTestService(t, projectRecordRepositoryFor(t, hostedPostgresAdmin(t, first.service), 4, first.clock.Now), secondCfg)
 				second := newBatchFixtureForProject(t, newNativeFixture(t, secondService, "org_first_second", "Example unaffected intake"))
@@ -1744,7 +1745,7 @@ func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
 func TestGitHubBatchMaintenanceReconcilesRunnerProjects(t *testing.T) {
 	first := newHostedBatchFixture(t)
 	cfg := first.service.config
-	cfg.Hosted = &HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://hub.example.test", Provider: first.provider}
+	cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://hub.example.test", Provider: first.provider}
 	bindBatchTenant(t, first, cfg.Hosted)
 	secondService := openPostgresHubTestService(t, projectRecordRepositoryFor(t, hostedPostgresAdmin(t, first.service), 4, first.clock.Now), cfg)
 	if secondService.database.hostedOrganization != "org_first_second" {
@@ -1949,7 +1950,7 @@ func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
 		t.Run(test.plan, func(t *testing.T) {
 			f := newBatchFixture(t)
 			plans := capacityHostedPlans()
-			if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+			if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			if test.plan != "free" {
@@ -2085,15 +2086,15 @@ func newHostedBatchFixture(t *testing.T) *batchFixture {
 		member.Role.Slug = "owner"
 		provider.members[member.ID] = member
 	}
-	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, Clock: clock.Now, Hosted: &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: provider}})
+	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, Clock: clock.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: provider}})
 	f := newBatchFixtureForProject(t, newNativeFixture(t, service, "org_first", "Example hosted batch"))
 	f.clock, f.provider = clock, provider
 	return f
 }
 
-func bindBatchTenant(t *testing.T, f *batchFixture, hosted *HostedConfig) {
+func bindBatchTenant(t *testing.T, f *batchFixture, hosted *hostedplans.HostedConfig) {
 	t.Helper()
-	deployment, generation := hosted.deployment()
+	deployment, generation := hosted.Deployment()
 	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_tenant SET provider_id=$2,bootstrap_subject=$3,deployment=$4,public_url=$5,allocation_generation=$6 WHERE organization_id=$1", hosted.OrganizationID, hosted.WorkOSOrganizationID, hosted.BootstrapSubject, deployment, hosted.PublicURL, generation); err != nil {
 		t.Fatal(err)
 	}

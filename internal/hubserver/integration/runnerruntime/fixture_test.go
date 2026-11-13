@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -93,7 +94,7 @@ func secretKeys(t *testing.T) *hubsecrets.Keyring {
 func startupConfig(t *testing.T, admin *sql.DB) Config {
 	t.Helper()
 	connection := hubtest.PostgresConfig(t, admin)
-	return Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &connection, Hosted: &hubserver.HostedConfig{
+	return Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &connection, Hosted: &hostedplans.HostedConfig{
 		OrganizationID:       "org_startup",
 		WorkOSOrganizationID: "provider_org_startup",
 		PublicURL:            "https://hub.example.test",

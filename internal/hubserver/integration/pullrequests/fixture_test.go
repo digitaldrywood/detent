@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/hubserver/githubreconcile"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -131,7 +132,7 @@ func newExportPostgresFixtureInOrganization(t *testing.T, admin *sql.DB, org tra
 	}
 	provider := &fixtureProvider{members: map[string]auth.Membership{}}
 	plans := hubserver.HostedPlansConfig{Base: hubserver.PlanReference{ID: "pilot_free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400, Plans: []hubserver.HostedPlan{{PlanReference: hubserver.PlanReference{ID: "pilot_free", Version: 1}, Features: []string{"collaboration", "native_execution", "github_integration"}, Allowances: map[string]int64{"members": 10, "projects": 10, "repositories": 10, "registered_runners": 10, "connected_runners": 10, "concurrent_work": 5, "api_mutations": 1000000, "ingested_events": 1000000, "collaboration_bytes": 64 << 20, "history_records": 10000}}}}
-	cfg.Hosted = &hubserver.HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "org_provider", PublicURL: "https://hub.example.test", Provider: provider, Plans: &plans}
+	cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "org_provider", PublicURL: "https://hub.example.test", Provider: provider, Plans: &plans}
 	cfg.Clock = func() time.Time { return cfg.now() }
 	cfg.WebhookMaintenanceInterval = time.Hour
 	cfg.DatabaseBackend = hubserver.DatabasePostgres

@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"io/fs"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -52,7 +54,7 @@ func gitHubServiceConfig(t *testing.T, cfg hubserver.Config) (hubserver.Config, 
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
 	config := hubtest.PostgresConfig(t, hubtest.Database(t))
 	cfg.Postgres = &config
-	cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "http://127.0.0.1:7777", Provider: &githubHostedProvider{}}
+	cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "http://127.0.0.1:7777", Provider: &githubHostedProvider{}}
 	cfg.RunDetails = hubtest.NewDetails()
 	keys, err := hubsecrets.FromEnvironment(func(name string) string {
 		if name == "DETENT_HUB_SECRET_KEYS" {

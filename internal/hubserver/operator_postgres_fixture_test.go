@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -34,7 +35,7 @@ func newOperatorSecurityFixture(t *testing.T, configure ...func(*Config)) operat
 	t.Helper()
 	provider := newHostedSecurityProvider()
 	plans := pilotHostedPlans()
-	cfg := Config{Hosted: &HostedConfig{Plans: &plans, OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "http://127.0.0.1:7777", StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, Provider: provider}}
+	cfg := Config{Hosted: &hostedplans.HostedConfig{Plans: &plans, OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "http://127.0.0.1:7777", StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, Provider: provider}}
 	for _, apply := range configure {
 		apply(&cfg)
 	}
@@ -58,7 +59,7 @@ func newOperatorSecurityFixture(t *testing.T, configure ...func(*Config)) operat
 			if org != "org_security" {
 				providerID += "_second"
 			}
-			deployment, generation := cfg.Hosted.deployment()
+			deployment, generation := cfg.Hosted.Deployment()
 			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: providerID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 				return err
 			}

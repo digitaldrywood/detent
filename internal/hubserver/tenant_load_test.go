@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -105,7 +106,7 @@ func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	installReportsBudgetTrace(t, f.service)
 	admin := hostedPostgresAdmin(t, f.service)
-	f.service.config.Hosted = &HostedConfig{}
+	f.service.config.Hosted = &hostedplans.HostedConfig{}
 	f.service.database.hostedOrganization = f.project.OrganizationID
 	hostedTestPlans(t, f.service, map[string]int64{"api_mutations": 1 << 40, "ingested_events": 1 << 40, "collaboration_bytes": 1 << 50, "history_records": 1 << 40,
 		"concurrent_work": 10000, "connected_runners": 10000, "registered_runners": 10000, "unarchived_issues": 1 << 30})

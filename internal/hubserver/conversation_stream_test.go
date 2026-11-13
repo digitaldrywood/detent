@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -647,7 +648,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				f.service.config.Hosted.SharedEntry = &HostedSharedEntry{Generation: 1}
+				f.service.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Generation: 1}
 				c.Set(hostedSharedClaimsKey, cloudassert.Claims{
 					Audience: string(scope.Organization), Generation: 1,
 					Kind: cloudassert.KindBrowser, Subject: session.Subject, Email: session.Email,

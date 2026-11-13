@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -247,7 +248,7 @@ func TestPostgresMCPHostedParity(t *testing.T) {
 	second := parityHostedPeer(t, first, "org_budget_second", "prj_budget_second")
 	for _, f := range []hostedSecurityFixture{first, second} {
 		t.Run(f.service.config.Hosted.OrganizationID, func(t *testing.T) {
-			f.service.config.Hosted.Directory = []HostedDestination{{OrganizationID: f.service.config.Hosted.OrganizationID, WorkOSOrganizationID: f.service.config.Hosted.WorkOSOrganizationID, PublicURL: f.service.config.Hosted.PublicURL}}
+			f.service.config.Hosted.Directory = []hostedplans.HostedDestination{{OrganizationID: f.service.config.Hosted.OrganizationID, WorkOSOrganizationID: f.service.config.Hosted.WorkOSOrganizationID, PublicURL: f.service.config.Hosted.PublicURL}}
 			owner := coordinatorBudgetUser(t, f, "parity-owner", "owner", true)
 			target := coordinatorBudgetUser(t, f, "parity-target", "member", false)
 			var targetID string
@@ -353,7 +354,7 @@ func parityHostedPeer(t *testing.T, first hostedSecurityFixture, organization tr
 	if err != nil {
 		t.Fatal(err)
 	}
-	deployment, generation := hosted.deployment()
+	deployment, generation := hosted.Deployment()
 	if err := first.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example second organization", Slug: "budget-second", CreatedAt: now}); err != nil {
 			return err

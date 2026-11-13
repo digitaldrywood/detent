@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -26,8 +27,8 @@ func TestHostedGitHubRepositoriesPostgres(t *testing.T) {
 	admin := hubtest.Database(t)
 	connection := hubtest.PostgresConfig(t, admin)
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{97}, ed25519.SeedSize))
-	config := hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &connection, RunDetails: hubtest.NewDetails(), Hosted: &hubserver.HostedConfig{OrganizationID: "org_startup", WorkOSOrganizationID: "provider_org_startup", PublicURL: "https://hub.example.test", Provider: sharedProvider{}}}
-	config.Hosted.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	config := hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &connection, RunDetails: hubtest.NewDetails(), Hosted: &hostedplans.HostedConfig{OrganizationID: "org_startup", WorkOSOrganizationID: "provider_org_startup", PublicURL: "https://hub.example.test", Provider: sharedProvider{}}}
+	config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	repository := hubtest.RepositoryOn(t, admin)
 	nowSeed := time.Now().UTC()
 	if err := repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {

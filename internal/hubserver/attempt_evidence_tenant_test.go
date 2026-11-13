@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -200,7 +201,7 @@ func testPostgresAttemptEvidence(t *testing.T, service *Service, admin *sql.DB, 
 			secondAttemptID = started.Data.AttemptID
 		}
 	}
-	service.config.Hosted = &HostedConfig{OrganizationID: string(organization.ID), SharedEntry: &HostedSharedEntry{}}
+	service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(organization.ID), SharedEntry: &hostedplans.HostedSharedEntry{}}
 	service.registerCloudAttachmentRoutes(service.echo)
 	if service.outbox != nil {
 		service.outbox.stop()

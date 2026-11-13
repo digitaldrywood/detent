@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -112,7 +113,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 						if err != nil {
 							t.Fatalf("fixture credential status=%d: %v", status, err)
 						}
-						reportService := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}}}
+						reportService := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}}}
 						report, err := reportService.readPostgresHostedReport(ctx, credential, []string{string(project)}, operatortool.AnalyticsWindow{From: from, To: to, Bucket: time.Hour}, reportsFilter{}, true)
 						if err != nil {
 							t.Fatal(err)
@@ -311,7 +312,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 				if err != nil {
 					t.Fatalf("fixture credential status=%d: %v", status, err)
 				}
-				reader := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}}}
+				reader := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}}}
 				report, err := reader.readPostgresHostedReport(ctx, credential, []string{string(project)}, w, reportsFilter{}, true)
 				if err != nil {
 					t.Fatal(err)

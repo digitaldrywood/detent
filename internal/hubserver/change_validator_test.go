@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -681,7 +682,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				f.service.database.hostedOrganization = f.project.OrganizationID
 				plans := pilotHostedPlans()
 				plans.Plans[0].Allowances["collaboration_bytes"] = contentBefore
-				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+				if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 					t.Fatal(err)
 				}
 			}

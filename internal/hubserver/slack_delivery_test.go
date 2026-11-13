@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -25,7 +26,7 @@ func configureTestSlack(t *testing.T, f nativeFixture, now *time.Time, configure
 		f.service.outbox.stop()
 	}
 	f.service.config.now = func() time.Time { return *now }
-	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://cloud.detent.test"}
+	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://cloud.detent.test"}
 	f.service.config.SecretKeys = secretTestKeys(t, "1", "1")
 	if !configured {
 		return

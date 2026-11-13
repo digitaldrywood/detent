@@ -11,7 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
@@ -40,7 +40,7 @@ func (c *hubPostgresFileConfig) runtime(lookupEnv func(string) string) (*postgre
 	}, nil
 }
 
-func readHubServeConfig(path string, lookupEnv func(string) string) (_ *hubserver.HostedConfig, _ *postgres.Config, resultErr error) {
+func readHubServeConfig(path string, lookupEnv func(string) string) (_ *hostedplans.HostedConfig, _ *postgres.Config, resultErr error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, nil, nil
 	}

@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -2226,7 +2227,7 @@ func newHostedWorkspaceFixture(t *testing.T) hostedSecurityFixture {
 	provider := newHostedSecurityProvider()
 	service := openTestService(t, Config{
 		Workspace: &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: true}},
-		Hosted: &HostedConfig{
+		Hosted: &hostedplans.HostedConfig{
 			OrganizationID:       "org_security",
 			WorkOSOrganizationID: "org_provider",
 			BootstrapSubject:     "user_owner",
@@ -2683,7 +2684,7 @@ func newPostgresRelayRuntimeFixture(t *testing.T, hosted bool) postgresRelayRunt
 	clock.Store(base.UnixNano())
 	cfg := Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }}
 	if hosted {
-		cfg.Hosted = &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", BootstrapSubject: "user_org_first", PublicURL: "http://127.0.0.1:7777", Provider: newHostedSecurityProvider()}
+		cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", BootstrapSubject: "user_org_first", PublicURL: "http://127.0.0.1:7777", Provider: newHostedSecurityProvider()}
 	}
 	server := newClockedPostgresNativeService(t, cfg)
 	admin := usagePostgresAdmin(t, server)

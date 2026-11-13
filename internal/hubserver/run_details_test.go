@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -240,7 +241,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	}
 	checkSingleReader("hosted runner", func(ctx context.Context) error {
 		config := f.service.config
-		config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+		config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 		service := &Service{database: f.service.database, config: config}
 		credential, status, err := f.service.authenticateTenantAPIHash(ctx, f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 		if err != nil || status != http.StatusOK {
@@ -596,7 +597,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 				limited.ID, limited.Allowances = "run_detail_limit", maps.Clone(limited.Allowances)
 				limited.Allowances["collaboration_bytes"] = 1
 				plans.Plans, plans.Base = []HostedPlan{limited}, limited.PlanReference
-				config := &HostedConfig{OrganizationID: string(f.project.OrganizationID), Plans: &plans, EntitlementAdministrator: "operator"}
+				config := &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID), Plans: &plans, EntitlementAdministrator: "operator"}
 				if err := f.service.database.configureHostedPlans(t.Context(), config); err != nil {
 					t.Fatal(err)
 				}

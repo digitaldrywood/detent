@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -23,7 +24,7 @@ import (
 
 func hostedStorageConfig(t *testing.T, configure ...func(*Config)) Config {
 	t.Helper()
-	cfg := Config{Logger: discardLogger(), ListenAddress: "127.0.0.1:0", InitialAdminToken: []byte(testHubAdminToken), RunnerReleaseClient: &runnerReleaseFixture{}, Content: (&changeObjectFixture{}).call, RunDetails: &memoryRunDetails{}, Hosted: &HostedConfig{OrganizationID: "org_hosted", WorkOSOrganizationID: "org_provider", PublicURL: "https://tenant.example.test", Provider: newHostedSecurityProvider()}}
+	cfg := Config{Logger: discardLogger(), ListenAddress: "127.0.0.1:0", InitialAdminToken: []byte(testHubAdminToken), RunnerReleaseClient: &runnerReleaseFixture{}, Content: (&changeObjectFixture{}).call, RunDetails: &memoryRunDetails{}, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_hosted", WorkOSOrganizationID: "org_provider", PublicURL: "https://tenant.example.test", Provider: newHostedSecurityProvider()}}
 	for _, apply := range configure {
 		apply(&cfg)
 	}
@@ -137,7 +138,7 @@ func TestHostedDatabaseCloudAliases(t *testing.T) {
 			cfg := hostedStorageConfig(t, func(cfg *Config) {
 				cfg.Hosted.PublicURL = test.from
 				if !test.originBound {
-					cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", Generation: 1, PublicKeys: []ed25519.PublicKey{hostedSharedKey(71).Public().(ed25519.PublicKey)}}
+					cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", Generation: 1, PublicKeys: []ed25519.PublicKey{hostedSharedKey(71).Public().(ed25519.PublicKey)}}
 				}
 			})
 			service := openHostedStorage(t, cfg)

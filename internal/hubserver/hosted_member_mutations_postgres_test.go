@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -35,7 +36,7 @@ func TestPostgresHostedEntitlementRoutesUseCurrentTenant(t *testing.T) {
 	for _, organization := range organizations {
 		plans := pilotHostedPlans()
 		database := &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: tracker.OrganizationID(organization), now: func() time.Time { return now }, logger: discardLogger()}
-		hosted := &HostedConfig{OrganizationID: organization, EntitlementAdministrator: "operator_example", EntitlementAdminToken: []byte(tokens[organization]), Plans: &plans}
+		hosted := &hostedplans.HostedConfig{OrganizationID: organization, EntitlementAdministrator: "operator_example", EntitlementAdminToken: []byte(tokens[organization]), Plans: &plans}
 		service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: database, config: Config{Logger: discardLogger(), now: func() time.Time { return now }, RunDetails: details, Hosted: hosted}}
 		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: tracker.OrganizationID(organization), Name: "Example organization", CreatedAt: now}); err != nil {
@@ -134,7 +135,7 @@ func TestPostgresMemberMutationRoutesPreserveCurrentAuthority(t *testing.T) {
 	provider := newHostedSecurityProvider()
 	details := &memoryRunDetails{}
 	plans := pilotHostedPlans()
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: "org_security", now: time.Now, logger: discardLogger()}, config: Config{Logger: discardLogger(), now: time.Now, generateToken: apikey.GenerateToken, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider, Plans: &plans}}}
+	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: "org_security", now: time.Now, logger: discardLogger()}, config: Config{Logger: discardLogger(), now: time.Now, generateToken: apikey.GenerateToken, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider, Plans: &plans}}}
 	sessions, err := auth.NewSessionService(auth.SessionConfig{SessionTTL: 24 * time.Hour, PublicURL: service.config.Hosted.PublicURL}, service)
 	if err != nil {
 		t.Fatal(err)

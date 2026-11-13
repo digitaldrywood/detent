@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -24,7 +25,7 @@ func TestPostgresAttachmentDeletionReleasesQuotaOnce(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: discardLogger(), now: func() time.Time { return now }}}
 	service.ready.Store(true)
-	service.config.Hosted = &HostedConfig{SharedEntry: &HostedSharedEntry{}}
+	service.config.Hosted = &hostedplans.HostedConfig{SharedEntry: &hostedplans.HostedSharedEntry{}}
 	service.registerCloudAttachmentRoutes(service.echo)
 	service.config.Hosted = nil
 	ids := []string{conversation.NewAttachmentID(), conversation.NewAttachmentID()}

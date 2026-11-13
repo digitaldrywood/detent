@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -1122,7 +1123,7 @@ func runCoordinatorIssueSplitPostgresCases(t *testing.T) {
 		t.Run(string(chat.ActionIssueSplit)+"/"+outcome, func(t *testing.T) {
 			provider := newHostedSecurityProvider()
 			fixture := newConfiguredCoordinatorFixture(t, "Approved split", func(cfg *Config) {
-				cfg.Hosted = &HostedConfig{OrganizationID: "org_split", WorkOSOrganizationID: "provider_org_split", BootstrapSubject: "user_org_split", PublicURL: "https://hub.example.test", Provider: provider}
+				cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_split", WorkOSOrganizationID: "provider_org_split", BootstrapSubject: "user_org_split", PublicURL: "https://hub.example.test", Provider: provider}
 			})
 			service := fixture.service
 			repository := service.config.TenantRepository

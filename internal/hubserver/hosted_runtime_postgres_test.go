@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -80,7 +81,7 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 						staged := plans
 						staged.Plans = slices.Clone(plans.Plans)
 						staged.Plans[len(staged.Plans)-1] = stored
-						s.config.Hosted.SharedEntry = &HostedSharedEntry{}
+						s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 						update := HostedRuntimeUpdate{Plans: &staged, Reason: "unpublished conflicting version", StageID: "00000000-0000-4000-8000-000000000011"}
 						if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
 							t.Fatal(err)
@@ -185,7 +186,7 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 				} else {
 					update := HostedRuntimeUpdate{Plans: &plans, Reason: "configuration edit"}
 					if mode == "publication" {
-						s.config.Hosted.SharedEntry = &HostedSharedEntry{}
+						s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 						update.StageID = stage
 					}
 					before := s.database.runtimeState()
@@ -302,7 +303,7 @@ func TestPostgresRuntimeValidationDoesNotPublish(t *testing.T) {
 			t.Fatal(err)
 		}
 		d := &database{billingRepository: repo, hostedOrganization: org, billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
-		s := &Service{database: d, config: Config{Hosted: &HostedConfig{OrganizationID: string(org), EntitlementAdministrator: "actor"}, now: time.Now, Logger: discardLogger()}}
+		s := &Service{database: d, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), EntitlementAdministrator: "actor"}, now: time.Now, Logger: discardLogger()}}
 		plans := pilotHostedPlans()
 		update := HostedRuntimeUpdate{Plans: &plans, Reason: "Test runtime", ValidateOnly: true}
 		if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
@@ -322,7 +323,7 @@ func TestPostgresRuntimeValidationDoesNotPublish(t *testing.T) {
 		}
 		update.ValidateOnly = false
 		if org == "org_second" {
-			s.config.Hosted.SharedEntry = &HostedSharedEntry{}
+			s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 			update.StageID = "00000000-0000-4000-8000-000000000003"
 		}
 		if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
@@ -373,7 +374,7 @@ func configuredPlanPostgresServices(t *testing.T, plans HostedPlansConfig, repo 
 			t.Fatal(err)
 		}
 		d := &database{postgres: repo, billingRepository: repo, hostedOrganization: org, billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
-		s := &Service{database: d, config: Config{Hosted: &HostedConfig{OrganizationID: string(org), Plans: &plans, EntitlementAdministrator: "operator"}, now: time.Now, Logger: discardLogger()}}
+		s := &Service{database: d, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), Plans: &plans, EntitlementAdministrator: "operator"}, now: time.Now, Logger: discardLogger()}}
 		if err := d.configureHostedPlans(t.Context(), s.config.Hosted); err != nil {
 			t.Fatal(err)
 		}

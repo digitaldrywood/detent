@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -174,7 +175,7 @@ func TestConversationModelChoicesOfferLunaEfforts(t *testing.T) {
 	d.hostedOrganization = f.project.OrganizationID
 	plans := capacityHostedPlans()
 	plans.Base = PlanReference{ID: "starter", Version: 1}
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
 	for _, granted := range []bool{false, true} {

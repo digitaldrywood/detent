@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -42,7 +43,7 @@ func TestProjectPageSchedulerAndLiveRoute(t *testing.T) {
 		t.Run(string(org), func(t *testing.T) {
 			service.config.TenantRepository, service.config.AccessRepository = original, original
 			fixture := newNativeFixture(t, service, org, "Example")
-			service.config.Hosted = &HostedConfig{OrganizationID: string(org)}
+			service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org)}
 			scheduler, err := service.newReadModelMaintenance()
 			service.config.Hosted = nil
 			if err != nil {
@@ -151,7 +152,7 @@ func TestProjectPageSchedulerAndLiveRoute(t *testing.T) {
 				if reads == 0 {
 					t.Fatal("cold project did not fall back to current source")
 				}
-				service.config.Hosted = &HostedConfig{OrganizationID: string(org)}
+				service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org)}
 				for range 64 {
 					if err := scheduler.Tick(t.Context()); err != nil {
 						t.Fatal(err)

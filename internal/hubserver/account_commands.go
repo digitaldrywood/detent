@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
@@ -35,7 +36,7 @@ func (s *Service) createHostedOrganizationFor(ctx context.Context, credential hu
 		return "", operatortool.ErrAccessDenied
 	}
 	session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
-	if err != nil || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+	if err != nil || hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
 		return "", operatortool.ErrAccessDenied
 	}
 	var members []accessstore.Member

@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -128,7 +129,7 @@ func (r *hostedSessionReadFailureRepository) ReadTenant(context.Context, tracker
 func accountPreferencesPostgresFixture(t *testing.T, repository *postgres.Repository) hostedSecurityFixture {
 	t.Helper()
 	provider := newHostedSecurityProvider()
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, hostedOrganization: "org_security", now: time.Now, logger: discardLogger()}, config: Config{Logger: discardLogger(), now: time.Now, newLeaseID: func() string { return hubapi.NewID("lease") }, generateToken: apikey.GenerateToken, AccessRepository: repository, TenantRepository: repository, RunDetails: &memoryRunDetails{}, Hosted: &HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://example.test", Provider: provider}}}
+	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, hostedOrganization: "org_security", now: time.Now, logger: discardLogger()}, config: Config{Logger: discardLogger(), now: time.Now, newLeaseID: func() string { return hubapi.NewID("lease") }, generateToken: apikey.GenerateToken, AccessRepository: repository, TenantRepository: repository, RunDetails: &memoryRunDetails{}, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://example.test", Provider: provider}}}
 	sessions, err := auth.NewSessionService(auth.SessionConfig{SessionTTL: 24 * time.Hour, PublicURL: service.config.Hosted.PublicURL}, service)
 	if err != nil {
 		t.Fatal(err)

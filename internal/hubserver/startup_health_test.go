@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
@@ -22,7 +23,7 @@ import (
 func TestRunReportsSchemaValidation(t *testing.T) {
 	key := hostedSharedKey(17)
 	admin, cfg, expected := postgresStartupHealthFixture(t, func(cfg *Config) {
-		cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+		cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	})
 	cfg.ListenAddress = "127.0.0.1:0"
 	lock := lockStartupLedger(t, admin)

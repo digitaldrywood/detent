@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -32,7 +33,7 @@ import (
 )
 
 func RunNativeChangeLargeValidationFinalization(t *testing.T, factories Constructors) {
-	h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Hosted: &hubserver.HostedConfig{OrganizationID: artifact.NewID("org"), WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: hubclientIdentityProvider{}}}, factories)
+	h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Hosted: &hostedplans.HostedConfig{OrganizationID: artifact.NewID("org"), WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: hubclientIdentityProvider{}}}, factories)
 	store, publisher := changeEvidenceArtifactService(t, h)
 	for _, test := range []struct {
 		name   string

@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -112,11 +113,11 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 		Version:           l.version,
 		InitialAdminToken: []byte(pilotAdminToken(spec.Organization.ID)), Logger: slog.New(slog.DiscardHandler),
 		Content: content.HandleContent,
-		Hosted: &hubserver.HostedConfig{
+		Hosted: &hostedplans.HostedConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
 			StaffEmails: []string{"staff@example.test"}, Plans: pilotPlans(),
 			EntitlementAdministrator: "pilot-operator", EntitlementAdminToken: []byte(pilotOperatorToken),
-			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: content, Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
+			SharedEntry: &hostedplans.HostedSharedEntry{ArchiveContents: content, Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
 		},
 	}
 	if l.billing != nil {

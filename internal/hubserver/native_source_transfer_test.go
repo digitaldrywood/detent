@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -379,7 +380,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 						t.Fatal("active or interrupted writer became transferable")
 					}
 					response = httptest.NewRecorder()
-					hosted := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
+					hosted := &Service{config: Config{Hosted: &hostedplans.HostedConfig{}, Logger: discardLogger()}}
 					if err := hosted.nativeAPIError(echo.New().NewContext(httptest.NewRequest(http.MethodPost, itemPath+"/source-recovery", nil), response), refusal); err != nil {
 						t.Fatal(err)
 					}

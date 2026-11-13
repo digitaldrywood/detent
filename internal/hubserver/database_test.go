@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -43,7 +44,7 @@ func TestOpenTestServiceUsesPostgres(t *testing.T) {
 			cfg := Config{InitialAdminToken: []byte("example_fixture_admin_token")}
 			if hosted {
 				plans := pilotHostedPlans()
-				cfg.Hosted = &HostedConfig{
+				cfg.Hosted = &hostedplans.HostedConfig{
 					Plans:                &plans,
 					OrganizationID:       "org_example",
 					WorkOSOrganizationID: "provider_example",
@@ -144,7 +145,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: "example", CreatedAt: now}); err != nil {
 				return err
 			}
-			deployment, generation := cfg.Hosted.deployment()
+			deployment, generation := cfg.Hosted.Deployment()
 			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 				return err
 			}
@@ -174,7 +175,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	return service
 }
 
-func seedSuppliedRepositoryBinding(t *testing.T, repository *postgres.Repository, hosted *HostedConfig, now time.Time) {
+func seedSuppliedRepositoryBinding(t *testing.T, repository *postgres.Repository, hosted *hostedplans.HostedConfig, now time.Time) {
 	t.Helper()
 	organization := tracker.OrganizationID(hosted.OrganizationID)
 	err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -188,7 +189,7 @@ func seedSuppliedRepositoryBinding(t *testing.T, repository *postgres.Repository
 		} else if err != nil {
 			return err
 		}
-		deployment, generation := hosted.deployment()
+		deployment, generation := hosted.Deployment()
 		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: hosted.WorkOSOrganizationID, BootstrapSubject: hosted.BootstrapSubject, Deployment: deployment, PublicURL: hosted.PublicURL, AllocationGeneration: generation})
 	})
 	if err != nil {

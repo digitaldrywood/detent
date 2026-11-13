@@ -16,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
@@ -461,7 +462,7 @@ func TestHostedLoginCookieSecurity(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			service := &Service{config: Config{Hosted: &HostedConfig{PublicURL: tt.publicURL}}}
+			service := &Service{config: Config{Hosted: &hostedplans.HostedConfig{PublicURL: tt.publicURL}}}
 			for _, value := range []string{"session-fixture", ""} {
 				response := httptest.NewRecorder()
 				request := httptest.NewRequest(http.MethodGet, "/login", nil)
@@ -728,10 +729,10 @@ func TestHostedLoginSessionExpiryAndRevocation(t *testing.T) {
 
 func hostedLoginConfig(t *testing.T, provider *hostedLoginProvider, allocated bool) Config {
 	t.Helper()
-	cfg := Config{Hosted: &HostedConfig{
+	cfg := Config{Hosted: &hostedplans.HostedConfig{
 		OrganizationID: "org_local_login", BootstrapSubject: "user_customer", PublicURL: "https://login.example.test", Provider: provider,
 		StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
-		Directory: []HostedDestination{{OrganizationID: "org_destination", WorkOSOrganizationID: "org_provider_destination", PublicURL: "https://destination.example.test"}},
+		Directory: []hostedplans.HostedDestination{{OrganizationID: "org_destination", WorkOSOrganizationID: "org_provider_destination", PublicURL: "https://destination.example.test"}},
 	}}
 	if allocated {
 		cfg.Hosted.WorkOSOrganizationID = "org_provider_login"

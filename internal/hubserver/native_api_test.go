@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -359,7 +360,7 @@ func TestNativeRunnerVersionErrorResponse(t *testing.T) {
 			t.Parallel()
 			service := &Service{config: Config{Logger: discardLogger()}}
 			if hosted {
-				service.config.Hosted = &HostedConfig{}
+				service.config.Hosted = &hostedplans.HostedConfig{}
 			}
 			recorded := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/claim", nil), recorded)
@@ -420,7 +421,7 @@ func TestNativeAPIError(t *testing.T) {
 					}
 					service := &Service{config: Config{Logger: slog.New(handler)}}
 					if hosted {
-						service.config.Hosted = &HostedConfig{}
+						service.config.Hosted = &hostedplans.HostedConfig{}
 					}
 					recorded := httptest.NewRecorder()
 					request := httptest.NewRequest(http.MethodDelete, "/private-target?token=query-secret", strings.NewReader("body-secret"))
@@ -548,7 +549,7 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 			}
 			recorded := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/workflow", nil), recorded)
-			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
+			service := &Service{config: Config{Hosted: &hostedplans.HostedConfig{}, Logger: discardLogger()}}
 			if err := service.nativeAPIError(context, &hubapi.NativeError{Code: failure.Code, Message: failure.Message, Status: http.StatusUnprocessableEntity, PublicMessage: true}); err != nil {
 				t.Fatal(err)
 			}

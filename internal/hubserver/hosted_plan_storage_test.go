@@ -11,6 +11,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -132,7 +133,7 @@ func TestHostedPlanStorageMigration(t *testing.T) {
 	}
 	current := capacityHostedPlans()
 	current.Plans = append(current.Plans, fixturePlans...)
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &current}); err != nil {
+	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &current}); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {

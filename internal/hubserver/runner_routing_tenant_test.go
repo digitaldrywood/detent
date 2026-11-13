@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -323,7 +324,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			service.config.Hosted = &HostedConfig{OrganizationID: org, Provider: provider}
+			service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: org, Provider: provider}
 			hosted := echo.New()
 			service.registerPostgresRoutes(hosted)
 			for _, tc := range []struct{ query, id, next string }{
@@ -548,7 +549,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		service.config.Hosted = &HostedConfig{OrganizationID: "org_first", Provider: provider}
+		service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_first", Provider: provider}
 		defer func() { service.config.Hosted = nil }()
 		rec := request("org_first", "runner_000000000000000000000000000000a1", "example_member_token")
 		if rec.Code != http.StatusOK {

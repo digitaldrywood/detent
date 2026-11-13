@@ -25,7 +25,7 @@ func (d *database) plansService() *hostedplans.Service {
 	}})
 }
 
-func hostedPlansConfig(cfg *HostedConfig) *hostedplans.Hosted {
+func hostedPlansConfig(cfg *hostedplans.HostedConfig) *hostedplans.Hosted {
 	if cfg == nil {
 		return nil
 	}
@@ -62,7 +62,7 @@ func hostedTiers() []hostedplans.Tier {
 func capacityHostedPlans() hostedplans.HostedPlansConfig {
 	return hostedplans.CapacityPlans()
 }
-func defaultHostedPlans(p0 *HostedConfig) hostedplans.HostedPlansConfig {
+func defaultHostedPlans(p0 *hostedplans.HostedConfig) hostedplans.HostedPlansConfig {
 	return hostedplans.DefaultPlans(hostedPlansConfig(p0))
 }
 func requireHostedFeatureInEntitlement(p0 hostedplans.HostedEntitlement, p1 string) error {
@@ -131,7 +131,7 @@ func (d *database) hostedBillingBinding(p0 context.Context, p1 *hostedplans.Host
 	r0, r1 := d.plansService().BillingBinding(p0, p1)
 	return r0, hubapi.FromFeatureError(r1)
 }
-func (d *database) configureHostedBilling(p0 context.Context, p1 *HostedConfig) error {
+func (d *database) configureHostedBilling(p0 context.Context, p1 *hostedplans.HostedConfig) error {
 	r0 := d.plansService().ConfigureBilling(p0, hostedPlansConfig(p1))
 	return hubapi.FromFeatureError(r0)
 }
@@ -163,7 +163,7 @@ func (d *database) requireHostedFeatureRecord(p0 context.Context, p1 billingstor
 	r0 := d.plansService().RequireFeatureRecord(p0, p1, p2, p3)
 	return hubapi.FromFeatureError(r0)
 }
-func (d *database) configureHostedPlans(p0 context.Context, p1 *HostedConfig) error {
+func (d *database) configureHostedPlans(p0 context.Context, p1 *hostedplans.HostedConfig) error {
 	r0 := d.plansService().ConfigurePlans(p0, hostedPlansConfig(p1))
 	return hubapi.FromFeatureError(r0)
 }

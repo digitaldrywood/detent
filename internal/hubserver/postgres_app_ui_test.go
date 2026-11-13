@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -43,7 +44,7 @@ func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
 	cfg.Workspace = &WorkspaceConfig{Enabled: true}
 	cfg.Conversation = &ConversationConfig{Enabled: true, Model: "configured-model", ReasoningEffort: "medium"}
 	key := hostedSharedKey(31)
-	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	store, err := openDatabase(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -338,8 +339,8 @@ func testPostgresSharedHealthWithSaturatedWorkloads(t *testing.T, config postgre
 			hosted := *cfg.Hosted
 			configuration.Hosted = &hosted
 			configuration.Hosted.OrganizationID = organization
-			configuration.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
-			if err := configuration.Hosted.SharedEntry.validate(organization); err != nil {
+			configuration.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+			if err := configuration.Hosted.SharedEntry.Validate(organization); err != nil {
 				t.Fatal(err)
 			}
 			entered := make(chan struct{}, 1)

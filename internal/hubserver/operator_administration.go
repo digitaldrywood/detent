@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -222,14 +223,14 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 	}
 	if name == operatortool.SupportStart {
 		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
-		if err != nil || credential.Hosted.SupportActor != "" || !hostedEmailListed(s.config.Hosted.SupportActors, session.Email) || in.OrganizationID != "" && in.OrganizationID != s.config.Hosted.OrganizationID {
+		if err != nil || credential.Hosted.SupportActor != "" || !hostedplans.EmailListed(s.config.Hosted.SupportActors, session.Email) || in.OrganizationID != "" && in.OrganizationID != s.config.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
 		return nil
 	}
 	if name == operatortool.OrganizationCreate {
 		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
-		if err != nil || credential.Hosted.Subject != s.config.Hosted.BootstrapSubject || credential.Hosted.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+		if err != nil || credential.Hosted.Subject != s.config.Hosted.BootstrapSubject || credential.Hosted.SupportActor != "" || hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
 			return operatortool.ErrAccessDenied
 		}
 		var count int
@@ -254,7 +255,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 	}
 	if name == operatortool.InvitationAccept && in.InvitationID != "" {
 		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
-		if err != nil || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+		if err != nil || hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
 			return operatortool.ErrAccessDenied
 		}
 		invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, in.InvitationID)

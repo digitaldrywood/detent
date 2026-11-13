@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -46,7 +47,7 @@ func TestOnboardingPageDoesNotReadObjects(t *testing.T) {
 			cold := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/onboarding", fixture.token, nil)
 			requireNativeStatus(t, cold, http.StatusOK)
 			previousHosted := service.config.Hosted
-			service.config.Hosted = &HostedConfig{OrganizationID: string(organization)}
+			service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(organization)}
 			scheduler, err := service.newReadModelMaintenance()
 			if err != nil {
 				t.Fatal(err)

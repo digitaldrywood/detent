@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -256,7 +257,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		return s.hostedError(c, http.StatusForbidden, "You cannot invite a member with this role")
 	}
 	email := strings.ToLower(strings.TrimSpace(c.FormValue("email")))
-	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, email) {
+	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedplans.EmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
 	if err := s.validateHostedInvitationGrants(readCtx, credential, email, nil); err != nil {

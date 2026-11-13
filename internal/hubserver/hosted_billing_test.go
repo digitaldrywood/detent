@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -85,7 +86,7 @@ func newHostedBillingFixture(t *testing.T, configure ...func(*HostedBillingConfi
 	for _, apply := range configure {
 		apply(f.service.config.Hosted.Billing, p)
 	}
-	if err := f.service.config.Hosted.validate(); err != nil {
+	if err := hostedplans.ValidateHostedConfig(f.service.config.Hosted); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.database.configureHostedBilling(t.Context(), f.service.config.Hosted); err != nil {
@@ -406,7 +407,7 @@ func TestCapacityTestPriceCompatibility(t *testing.T) {
 	cfg := *f.service.config.Hosted
 	cfg.Billing = &HostedBillingConfig{Mode: billing.ModeTest, AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_capacity_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: provider, Prices: []HostedBillingPrice{{PriceID: "price_legacy49", Label: "Legacy $49", Plan: PlanReference{ID: "comp_team", Version: 1}}}}
 	provider.snapshot.PriceID = "price_legacy49"
-	if err := cfg.validate(); err != nil {
+	if err := hostedplans.ValidateHostedConfig(&cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.configureHostedBilling(t.Context(), &cfg); err != nil {
@@ -424,7 +425,7 @@ func TestCapacityTestPriceCompatibility(t *testing.T) {
 	plans := capacityHostedPlans()
 	cfg.Plans = &plans
 	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_starter_test", Label: "Starter", Plan: PlanReference{ID: "starter", Version: 1}})
-	if err := cfg.validate(); err != nil {
+	if err := hostedplans.ValidateHostedConfig(&cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.configureHostedPlans(t.Context(), &cfg); err != nil {
@@ -475,7 +476,7 @@ func TestCapacityPaidPlanChanges(t *testing.T) {
 	for _, plan := range []PlanReference{{ID: "starter", Version: 1}, {ID: "team", Version: 2}, {ID: "growth", Version: 2}} {
 		cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_" + plan.ID, Label: plan.ID, Plan: plan})
 	}
-	if err := cfg.validate(); err != nil {
+	if err := hostedplans.ValidateHostedConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.configureHostedPlans(t.Context(), cfg); err != nil {

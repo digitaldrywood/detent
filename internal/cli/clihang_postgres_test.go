@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -113,7 +114,7 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 		t.Fatal(err)
 	}
 	defer repository.Close()
-	hosted := &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_org_example", PublicURL: "https://hub.example.test"}
+	hosted := &hostedplans.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_org_example", PublicURL: "https://hub.example.test"}
 	deployment, generation := "origin", int64(0)
 	if hosted.SharedEntry != nil {
 		deployment, generation = "shared", hosted.SharedEntry.Generation

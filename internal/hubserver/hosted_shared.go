@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/subtle"
 	"errors"
 	"io"
@@ -14,10 +13,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessinvites"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -34,36 +31,6 @@ import (
 const hostedSharedClaimsKey = "hosted_shared_claims"
 
 var errHostedOwnerAlreadyBootstrapped = errors.New("hosted organization already has an owner")
-
-type HostedSharedEntry struct {
-	Issuer          string
-	PublicKeys      []ed25519.PublicKey
-	Generation      int64
-	ResolveKey      entryauthority.Resolver
-	ArchiveContents attachment.ArchiveContentStore
-	Content         entryauthority.ContentHandler
-	RunDetails      attachment.DetailStore
-	Icons           attachment.IconStore
-	ReadArchive     entryauthority.ArchiveReader
-
-	verifier *cloudassert.Verifier
-}
-
-func (e *HostedSharedEntry) validate(organization string) error {
-	if e == nil {
-		return nil
-	}
-	if !hostedSafeID(e.Issuer) || e.Generation < 1 || len(e.PublicKeys) == 0 || len(e.PublicKeys) > 4 {
-		return errors.New("shared entry requires an issuer, allocation generation and one to four public keys")
-	}
-	for _, key := range e.PublicKeys {
-		if len(key) != ed25519.PublicKeySize {
-			return errors.New("shared entry public key is invalid")
-		}
-	}
-	e.verifier = &cloudassert.Verifier{PublicKeys: e.PublicKeys, Issuer: e.Issuer, Audience: organization, Generation: e.Generation}
-	return nil
-}
 
 func (s *Service) hostedShared() bool {
 	return s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil
@@ -109,7 +76,7 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", hubapi.APIErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 		}
 		request.Body = io.NopCloser(bytes.NewReader(body))
-		claims, err := entry.verifier.Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
+		claims, err := entry.Verifier().Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
 		if err != nil {
 			return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "entry_assertion_required", Message: "Requests must arrive through the authenticated shared entry"})
 		}

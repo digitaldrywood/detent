@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -55,7 +56,7 @@ func TestCoordinatorPostgresReadsPendingMessages(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			server := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}}}
+			server := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}}}
 			coordinator := &conversationTurnCoordinator{server: server, service: &conversationService{Server: server.conversationServer(), Store: &conversationStore{}}}
 			record, err := coordinator.readConversation(t.Context(), nil, id)
 			if err != nil {
@@ -111,7 +112,7 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}}
+	service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}}
 	for _, project := range projects {
 		t.Run(string(project), func(t *testing.T) {
 			key := "key_" + string(project)

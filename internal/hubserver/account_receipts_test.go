@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -19,7 +20,7 @@ import (
 func TestPostgresAccountReceiptsPreserveReplayAndUncertainty(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now, Hosted: &HostedConfig{OrganizationID: string(org), PublicURL: "http://example.test"}}}
+		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), PublicURL: "http://example.test"}}}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: time.Now()})
 		}); err != nil {

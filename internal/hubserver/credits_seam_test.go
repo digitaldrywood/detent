@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -44,7 +45,7 @@ func TestCreditUsageReport(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		reporter := &Service{database: d, config: Config{Hosted: &HostedConfig{OrganizationID: string(org.ID)}}}
+		reporter := &Service{database: d, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org.ID)}}}
 		for _, hourly := range []bool{false, true} {
 			window := usageWindow{From: at, To: at.Add(2 * time.Hour), Hourly: hourly}
 			rows, err := reporter.chatUsageRows(t.Context(), window, []string{string(project.ID)})

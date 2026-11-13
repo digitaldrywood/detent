@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -81,7 +82,7 @@ func newWriteLoadFixture(t *testing.T, history, runners, sessions int) *writeLoa
 	d.hostedOrganization = f.project.OrganizationID
 	plans := capacityHostedPlans()
 	plans.Base = PlanReference{ID: "scale", Version: 1}
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
 	streamRunner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events)

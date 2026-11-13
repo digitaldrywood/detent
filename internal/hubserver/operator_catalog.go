@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -32,8 +33,8 @@ func (s *Service) withOperatorCatalog(ctx context.Context, credential hubapi.API
 	}
 	if s.config.Hosted != nil && !s.hostedShared() && credential.Hosted != nil && credential.SessionHash != "" && credential.Hosted.SupportActor == "" {
 		if session, err := s.storedWebSession(readCtx, credential.SessionHash, s.config.now()); err == nil {
-			catalog.support = hostedEmailListed(s.config.Hosted.SupportActors, session.Email)
-			if credential.Hosted.Subject == s.config.Hosted.BootstrapSubject && !hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+			catalog.support = hostedplans.EmailListed(s.config.Hosted.SupportActors, session.Email)
+			if credential.Hosted.Subject == s.config.Hosted.BootstrapSubject && !hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
 				setup, err := s.hostedAccountSetupFor(readCtx, session)
 				catalog.createOrganization = err == nil && setup.CanCreate
 			}

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -452,7 +453,7 @@ func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
 				if _, err := admin.ExecContext(t.Context(), `DELETE FROM native_work_item_page_dirty WHERE organization_id=$1`, org); err != nil {
 					t.Fatal(err)
 				}
-				service.config.Hosted = &HostedConfig{OrganizationID: string(org)}
+				service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org)}
 				scheduler, err := service.newReadModelMaintenance()
 				if err != nil {
 					t.Fatal(err)

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
@@ -98,7 +99,7 @@ func TestSavedWorkViews(t *testing.T) {
 	requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, savedWorkView{ProjectIDs: []string{project}, Name: "Denied", Scope: "personal", ProjectID: &project, State: state}), http.StatusNotFound)
 	otherRepository, _ := hubPostgresRepository(t, 3)
 	provider := newHostedSecurityProvider()
-	binding := &HostedConfig{OrganizationID: "org_other", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider}
+	binding := &hostedplans.HostedConfig{OrganizationID: "org_other", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider}
 	seedStartupOrganization(t, otherRepository, "org_other", binding)
 	second := hostedSecurityFixture{provider: provider, service: openTestService(t, Config{
 		TenantRepository: otherRepository, AccessRepository: otherRepository,

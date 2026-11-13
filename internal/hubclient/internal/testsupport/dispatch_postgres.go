@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -143,7 +144,7 @@ func dispatchPostgresConfig(t *testing.T, cfg hubserver.Config, admin *sql.DB, o
 	})
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}, LeaseClock: cfg.Clock}
-	cfg.Hosted = &hubserver.HostedConfig{OrganizationID: organization, WorkOSOrganizationID: provider, PublicURL: "https://hub.example.test", Provider: dispatchHostedProvider{member: auth.Membership{ID: membership, UserID: user, OrganizationID: provider, Status: "active"}}}
+	cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: organization, WorkOSOrganizationID: provider, PublicURL: "https://hub.example.test", Provider: dispatchHostedProvider{member: auth.Membership{ID: membership, UserID: user, OrganizationID: provider, Status: "active"}}}
 	encoded, err := json.Marshal(map[string]string{"1": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x35}, 32))})
 	if err != nil {
 		t.Fatal(err)

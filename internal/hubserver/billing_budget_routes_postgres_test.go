@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -39,7 +40,7 @@ func TestPostgresBillingBudgetReadRoutes(t *testing.T) {
 			details := &memoryRunDetails{}
 			plans := pilotHostedPlans()
 			now := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
-			service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: organization, aiCreditMode: "test", now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Logger: discardLogger(), now: func() time.Time { return now }, newLeaseID: func() string { return hubapi.NewID("lease") }, generateToken: apikey.GenerateToken, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &HostedConfig{OrganizationID: string(organization), WorkOSOrganizationID: "org_provider", PublicURL: "http://example.test", Provider: provider, Plans: &plans}}}
+			service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: organization, aiCreditMode: "test", now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Logger: discardLogger(), now: func() time.Time { return now }, newLeaseID: func() string { return hubapi.NewID("lease") }, generateToken: apikey.GenerateToken, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization), WorkOSOrganizationID: "org_provider", PublicURL: "http://example.test", Provider: provider, Plans: &plans}}}
 			sessions, err := auth.NewSessionService(auth.SessionConfig{SessionTTL: 24 * time.Hour, PublicURL: service.config.Hosted.PublicURL}, service)
 			if err != nil {
 				t.Fatal(err)

@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -39,7 +40,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 	cfg.Clock = func() time.Time { return now }
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	key := hostedSharedKey(41)
-	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	seedHostedStartup(t, cfg)
 	otherBinding := *cfg.Hosted
 	otherBinding.OrganizationID, otherBinding.WorkOSOrganizationID = "org_second", "provider_org_second"
@@ -115,7 +116,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 	secondConfig := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	secondConfig.Clock = func() time.Time { return now }
 	secondConfig.Hosted.OrganizationID, secondConfig.Hosted.WorkOSOrganizationID = "org_second", "provider_org_second"
-	secondConfig.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	secondConfig.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	secondService, err := Open(t.Context(), secondConfig)
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -1172,7 +1173,7 @@ func TestWorkspaceLifecycleUsesConfiguredTenant(t *testing.T) {
 	services := make([]*workspaceService, 0, 2)
 	for _, fixture := range fixtures {
 		subject := fixture.create(t, "lifecycle-subject")
-		server := &Service{config: Config{TenantRepository: base.service.config.TenantRepository, Hosted: &HostedConfig{OrganizationID: string(fixture.project.OrganizationID)}, Logger: discardLogger(), now: clock.Now}}
+		server := &Service{config: Config{TenantRepository: base.service.config.TenantRepository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(fixture.project.OrganizationID)}, Logger: discardLogger(), now: clock.Now}}
 		service := newWorkspaceService(server, WorkspaceConfig{Enabled: true})
 		if server.accessOrganization() != fixture.project.OrganizationID {
 			t.Fatalf("configured tenant resolved to %q", server.accessOrganization())

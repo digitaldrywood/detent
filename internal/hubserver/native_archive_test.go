@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -402,7 +403,7 @@ func TestHostedIssueImportAllocation(t *testing.T) {
 	d.hostedOrganization = f.project.OrganizationID
 	config := pilotHostedPlans()
 	config.Plans[0].Allowances["unarchived_issues"] = 1
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &config}); err != nil {
+	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &config}); err != nil {
 		t.Fatal(err)
 	}
 	response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/integration/repository", testHubAdminToken, map[string]any{"idempotency_key": "bind", "expected_revision": "1", "repository": "example-org/example-project"})

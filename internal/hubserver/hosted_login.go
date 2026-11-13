@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -37,7 +38,7 @@ func (s *Service) hostedSetCookie(c echo.Context, name, value, path string, expi
 		maxAge = -1
 	}
 	cookie := &http.Cookie{Name: name, Value: value, Path: path, Expires: expires, MaxAge: maxAge, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}
-	if publicURL, err := url.Parse(s.config.Hosted.PublicURL); err == nil && publicURL.Scheme == "http" && listenerAddressLoopback(publicURL.Host) {
+	if publicURL, err := url.Parse(s.config.Hosted.PublicURL); err == nil && publicURL.Scheme == "http" && hubapi.ListenerAddressLoopback(publicURL.Host) {
 		cookie.Secure = c.Request().TLS != nil
 	}
 	c.SetCookie(cookie)
@@ -162,7 +163,7 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 	} else {
 		denial.Flow = "support_callback"
 		staff, _, staffErr := s.hostedSession(c.Request().Context(), c)
-		if staffErr != nil || staff.Identity.SupportActor != "" || staff.Identity.SessionID != transaction.SupportSession || !strings.EqualFold(staff.Email, transaction.SupportActor) || !hostedEmailListed(s.config.Hosted.SupportActors, staff.Email) {
+		if staffErr != nil || staff.Identity.SupportActor != "" || staff.Identity.SessionID != transaction.SupportSession || !strings.EqualFold(staff.Email, transaction.SupportActor) || !hostedplans.EmailListed(s.config.Hosted.SupportActors, staff.Email) {
 			denial.Reason, denial.Email = "support_session_mismatch", staff.Email
 			return s.hostedDenied(c, http.StatusForbidden, "Start support access from your authorized staff session", denial)
 		}
@@ -189,7 +190,7 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 	if denial.Reason != "" {
 		return s.hostedDenied(c, http.StatusForbidden, "This identity belongs to a different organization or support session", denial)
 	}
-	if transaction.SupportActor != "" && (!auth.ValidSupportReason(identity.Hosted.SupportReason) || !hostedEmailListed(s.config.Hosted.SupportActors, transaction.SupportActor)) {
+	if transaction.SupportActor != "" && (!auth.ValidSupportReason(identity.Hosted.SupportReason) || !hostedplans.EmailListed(s.config.Hosted.SupportActors, transaction.SupportActor)) {
 		denial.Reason = "support_denied"
 		return s.hostedDenied(c, http.StatusForbidden, "Support access is not authorized", denial)
 	}
@@ -199,7 +200,7 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 	}
 	if transaction.InvitationToken != "" {
 		var invitationErr error
-		if identity.Hosted.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, identity.Email) {
+		if identity.Hosted.SupportActor != "" || hostedplans.EmailListed(s.config.Hosted.StaffEmails, identity.Email) {
 			invitationErr = auth.ErrHostedIdentity
 		} else {
 			invitationErr = s.acceptHostedInvitationFor(c.Request().Context(), identity, transaction.InvitationToken)
@@ -277,7 +278,7 @@ func (s *Service) beginHostedSupport(c echo.Context) (auth.Session, hostedTransa
 	if err != nil {
 		return session, hostedTransaction{}, http.StatusForbidden, "This account cannot start support access", auth.HostedReasonSessionNotFound
 	}
-	if session.Identity.SupportActor != "" || !hostedEmailListed(s.config.Hosted.SupportActors, session.Email) {
+	if session.Identity.SupportActor != "" || !hostedplans.EmailListed(s.config.Hosted.SupportActors, session.Email) {
 		return session, hostedTransaction{}, http.StatusForbidden, "This account cannot start support access", "support_denied"
 	}
 	organization, err := s.hostedProviderOrganization(c.Request().Context())
@@ -388,7 +389,7 @@ func (s *Service) acceptHostedInvitationToken(c echo.Context, token string) (str
 		return "Sign in with the invited account to join this organization", denial
 	}
 	denial.Email = session.Email
-	if session.Identity.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+	if session.Identity.SupportActor != "" || hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
 		denial.Reason = "staff_session"
 		return "Sign in with the invited account to join this organization", denial
 	}
@@ -480,7 +481,7 @@ func (s *Service) hostedSupportPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?staff=1")
 	}
-	return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "support", Title: "Temporary support access", Email: session.Email, CanSupport: session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email), SupportActor: session.Identity.SupportActor, SupportReason: session.Identity.SupportReason, SupportExpiry: session.Identity.ExpiresAt.UTC().Format(time.RFC3339)})
+	return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "support", Title: "Temporary support access", Email: session.Email, CanSupport: session.Identity.SupportActor == "" && hostedplans.EmailListed(s.config.Hosted.SupportActors, session.Email), SupportActor: session.Identity.SupportActor, SupportReason: session.Identity.SupportReason, SupportExpiry: session.Identity.ExpiresAt.UTC().Format(time.RFC3339)})
 }
 
 // logoutHostedFor retains the browser's current-session revocation semantics.

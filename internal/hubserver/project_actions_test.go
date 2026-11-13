@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -90,7 +91,7 @@ func (f actionFixture) requireRefusedAction(t *testing.T, method, actionID strin
 	t.Helper()
 	var logs bytes.Buffer
 	config := f.service.config
-	config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+	config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 	config.Logger = slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)})
 	service := &Service{database: f.service.database, config: config, localOrganization: f.service.localOrganization}
 	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")

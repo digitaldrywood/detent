@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -41,7 +42,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 	details := &memoryRunDetails{}
 	asOf := now
 	historyHour := now.Truncate(time.Hour)
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Version: "0.177.4", Hosted: &HostedConfig{OrganizationID: "org_first"}}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Version: "0.177.4", Hosted: &hostedplans.HostedConfig{OrganizationID: "org_first"}}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
@@ -162,7 +163,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		reader := &Service{database: service.database, config: service.config}
-		reader.config.Hosted = &HostedConfig{OrganizationID: string(org)}
+		reader.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org)}
 		for _, tc := range []struct {
 			name         string
 			keyGrants    []tracker.ProjectID

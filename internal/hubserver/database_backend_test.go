@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -144,7 +145,7 @@ func startupConfig(connection pgtransport.Connection) Config {
 	return Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{
 		Connection: connection,
 		Pool:       postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1},
-	}, Hosted: &HostedConfig{
+	}, Hosted: &hostedplans.HostedConfig{
 		OrganizationID:       "org_startup",
 		WorkOSOrganizationID: "provider_org_startup",
 		PublicURL:            "https://hub.example.test",
@@ -152,7 +153,7 @@ func startupConfig(connection pgtransport.Connection) Config {
 	}, RunDetails: &memoryRunDetails{}}
 }
 
-func seedStartupOrganization(t *testing.T, repository tenantstore.Repository, organization tracker.OrganizationID, bindings ...*HostedConfig) {
+func seedStartupOrganization(t *testing.T, repository tenantstore.Repository, organization tracker.OrganizationID, bindings ...*hostedplans.HostedConfig) {
 	t.Helper()
 	now := time.Now().UTC()
 	tenant := accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization), AllocationGeneration: 1}
@@ -164,7 +165,7 @@ func seedStartupOrganization(t *testing.T, repository tenantstore.Repository, or
 		if binding == nil || binding.OrganizationID != string(organization) {
 			t.Fatal("startup fixture tenant binding does not match its organization")
 		}
-		deployment, generation := binding.deployment()
+		deployment, generation := binding.Deployment()
 		tenant = accessstore.Tenant{OrganizationID: organization, ProviderID: binding.WorkOSOrganizationID, BootstrapSubject: binding.BootstrapSubject, Deployment: deployment, PublicURL: binding.PublicURL, AllocationGeneration: generation}
 	}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -410,7 +411,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Hosted.Provider = provider
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
-	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	store, err := openDatabase(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

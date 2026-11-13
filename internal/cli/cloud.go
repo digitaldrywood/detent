@@ -20,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -201,7 +202,7 @@ func validateTenantConfiguration(config cloudFileConfig, key ed25519.PrivateKey,
 	}
 	tenant, err := parseHostedConfig(bytes.NewReader(raw), func(name string) string { return environment[name] })
 	if err == nil {
-		err = hubserver.ValidateHostedConfig(tenant)
+		err = hostedplans.ValidateHostedConfig(tenant)
 	}
 	if err != nil {
 		return fmt.Errorf("allocated tenant configuration is invalid; every tenant Hub would refuse to start: %w", err)

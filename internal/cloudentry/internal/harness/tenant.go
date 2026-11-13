@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
@@ -56,9 +57,9 @@ func NewTenant(t *testing.T, provider *FakeProvider, key ed25519.PrivateKey, id,
 	})
 	content := &ConversationArchive{}
 	fixture := Tenant{ID: id, Provider: providerID, Config: hubserver.Config{InitialAdminToken: []byte(AdminKey), Logger: logger, Content: content.HandleContent, Conversation: &hubserver.ConversationConfig{Enabled: true},
-		Hosted: &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: PublicURL, Provider: provider,
+		Hosted: &hostedplans.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: PublicURL, Provider: provider,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
-			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: &ConversationArchive{}, Issuer: "entry", PublicKeys: []ed25519.PublicKey{publicKey}, Generation: 1}},
+			SharedEntry: &hostedplans.HostedSharedEntry{ArchiveContents: &ConversationArchive{}, Issuer: "entry", PublicKeys: []ed25519.PublicKey{publicKey}, Generation: 1}},
 	}}
 	for _, apply := range configure {
 		apply(&fixture.Config)

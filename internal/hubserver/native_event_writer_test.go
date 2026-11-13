@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -174,7 +175,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 			decodeHubResponse(t, claimed, &lease)
 			path := f.base + "/work-items/" + string(item.WorkItemID) + "/events"
 			event := nativeStartedEvent(lease)
-			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+			f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 			f.service.database.hostedOrganization = f.project.OrganizationID
 			hostedTestPlans(t, f.service, map[string]int64{"concurrent_work": 100, "registered_runners": 100, "connected_runners": 100})
 			metrics, err := newPostgresTestMetrics(t, f.project.OrganizationID)
@@ -410,7 +411,7 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		requests[i] = newHubAPIRequest(t, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", runner.redemption.Credential, event)
 	}
 	f.service.tokenUseWork.Wait()
-	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 	f.service.database.hostedOrganization = f.project.OrganizationID
 	hostedTestPlans(t, f.service, map[string]int64{"concurrent_work": 100, "registered_runners": 100, "connected_runners": 100})
 	metrics, err := newPostgresTestMetrics(t, f.project.OrganizationID)

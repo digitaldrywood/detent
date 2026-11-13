@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -32,7 +33,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}
 	const runnerID, machineID = "runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "machine_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &HostedConfig{OrganizationID: "org_first"}}}
+	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &hostedplans.HostedConfig{OrganizationID: "org_first"}}}
 	service.registerNativeRoutes(service.echo)
 	leases := map[tracker.OrganizationID]leasestore.Lease{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

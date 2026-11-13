@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -45,7 +46,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 	second := nativeOrganization{ID: "org_second", Name: "Second organization", Slug: "second"}
 	now := service.config.now()
 	provider := newHostedSecurityProvider()
-	service.config.Hosted = &HostedConfig{OrganizationID: string(first.ID), Provider: provider}
+	service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(first.ID), Provider: provider}
 	credential := "tenant_scoped_runner_token"
 	hash := apikey.HashToken(credential)
 	if err := repository.WriteTenant(t.Context(), first.ID, corestore.Serving, func(w tenantstore.Writer) error {

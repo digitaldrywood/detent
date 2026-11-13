@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -1616,7 +1617,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 				if !test.free {
 					plans.Base = PlanReference{ID: "starter", Version: 1}
 				}
-				if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+				if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 					t.Fatal(err)
 				}
 				if test.granted {
@@ -2194,12 +2195,12 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 			plans := capacityHostedPlans()
 			f := newConfiguredCoordinatorFixture(t, "free-chat", func(cfg *Config) {
 				if test.credits {
-					cfg.Hosted = &HostedConfig{Plans: &plans, OrganizationID: "org_credit", WorkOSOrganizationID: "provider_org_credit", BootstrapSubject: "user_owner", PublicURL: "http://127.0.0.1:7777", Provider: newHostedSecurityProvider()}
+					cfg.Hosted = &hostedplans.HostedConfig{Plans: &plans, OrganizationID: "org_credit", WorkOSOrganizationID: "provider_org_credit", BootstrapSubject: "user_owner", PublicURL: "http://127.0.0.1:7777", Provider: newHostedSecurityProvider()}
 				}
 			})
 			d := f.service.database
 			d.hostedOrganization = f.organization
-			if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+			if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			f.conversations.Config.Model = "gpt-6-luna"

@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -754,7 +755,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 		}
 		for index, org := range organizations {
 			t.Run(string(org), func(t *testing.T) {
-				service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, RunDetails: objects}}
+				service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, RunDetails: objects}}
 				metadataReads := 0
 				newContext := func() (context.Context, *hubcontent.ChangeContent) {
 					ctx := service.contentContext(t.Context())

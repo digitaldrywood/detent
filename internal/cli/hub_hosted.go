@@ -12,32 +12,33 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/profiling"
 )
 
 type hostedFileConfig struct {
-	SMTP                     *hostedSMTPFileConfig         `yaml:"smtp"`
-	Profiling                profiling.Config              `yaml:"profiling,omitempty"`
-	Billing                  *hostedBillingFileConfig      `yaml:"billing"`
-	EntitlementAdministrator string                        `yaml:"entitlement_administrator"`
-	EntitlementAdminTokenEnv string                        `yaml:"entitlement_admin_token_env"`
-	Plans                    *hubserver.HostedPlansConfig  `yaml:"entitlements"`
-	OrganizationID           string                        `yaml:"organization_id"`
-	WorkOSOrganizationID     string                        `yaml:"workos_organization_id"`
-	BootstrapSubject         string                        `yaml:"bootstrap_subject"`
-	PublicURL                string                        `yaml:"public_url"`
-	StaffEmails              []string                      `yaml:"staff_emails"`
-	SupportActors            []string                      `yaml:"support_actors"`
-	PlanID                   string                        `yaml:"plan_id"`
-	StorageQuotaBytes        int64                         `yaml:"storage_quota_bytes"`
-	EventQuota               int64                         `yaml:"event_quota"`
-	Directory                []hubserver.HostedDestination `yaml:"directory"`
-	SharedEntry              *hostedSharedEntryFileConfig  `yaml:"shared_entry"`
-	Conversation             *hostedConversationFileConfig `yaml:"conversation"`
-	Usage                    *hostedUsageFileConfig        `yaml:"usage"`
-	Workspaces               *hostedWorkspaceFileConfig    `yaml:"workspaces"`
-	Postgres                 *hubPostgresFileConfig        `yaml:"postgres"`
+	SMTP                     *hostedSMTPFileConfig           `yaml:"smtp"`
+	Profiling                profiling.Config                `yaml:"profiling,omitempty"`
+	Billing                  *hostedBillingFileConfig        `yaml:"billing"`
+	EntitlementAdministrator string                          `yaml:"entitlement_administrator"`
+	EntitlementAdminTokenEnv string                          `yaml:"entitlement_admin_token_env"`
+	Plans                    *hubserver.HostedPlansConfig    `yaml:"entitlements"`
+	OrganizationID           string                          `yaml:"organization_id"`
+	WorkOSOrganizationID     string                          `yaml:"workos_organization_id"`
+	BootstrapSubject         string                          `yaml:"bootstrap_subject"`
+	PublicURL                string                          `yaml:"public_url"`
+	StaffEmails              []string                        `yaml:"staff_emails"`
+	SupportActors            []string                        `yaml:"support_actors"`
+	PlanID                   string                          `yaml:"plan_id"`
+	StorageQuotaBytes        int64                           `yaml:"storage_quota_bytes"`
+	EventQuota               int64                           `yaml:"event_quota"`
+	Directory                []hostedplans.HostedDestination `yaml:"directory"`
+	SharedEntry              *hostedSharedEntryFileConfig    `yaml:"shared_entry"`
+	Conversation             *hostedConversationFileConfig   `yaml:"conversation"`
+	Usage                    *hostedUsageFileConfig          `yaml:"usage"`
+	Workspaces               *hostedWorkspaceFileConfig      `yaml:"workspaces"`
+	Postgres                 *hubPostgresFileConfig          `yaml:"postgres"`
 	WorkOS                   struct {
 		ClientID  string `yaml:"client_id"`
 		APIKeyEnv string `yaml:"api_key_env"`
@@ -81,8 +82,8 @@ type hostedSharedEntryFileConfig struct {
 	AllocationGeneration int64    `yaml:"allocation_generation"`
 }
 
-func readHostedSharedEntry(config *hostedSharedEntryFileConfig) (*hubserver.HostedSharedEntry, error) {
-	entry := &hubserver.HostedSharedEntry{Issuer: config.Issuer, Generation: config.AllocationGeneration}
+func readHostedSharedEntry(config *hostedSharedEntryFileConfig) (*hostedplans.HostedSharedEntry, error) {
+	entry := &hostedplans.HostedSharedEntry{Issuer: config.Issuer, Generation: config.AllocationGeneration}
 	for _, value := range config.PublicKeys {
 		key, err := cloudassert.ParsePublicKey(value)
 		if err != nil {
@@ -130,7 +131,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 	}, nil
 }
 
-func readHostedConfig(path string, lookupEnv func(string) string) (result *hubserver.HostedConfig, enabled bool, resultErr error) {
+func readHostedConfig(path string, lookupEnv func(string) string) (result *hostedplans.HostedConfig, enabled bool, resultErr error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, false, nil
 	}
@@ -150,7 +151,7 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hubse
 	return result, true, nil
 }
 
-func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubserver.HostedConfig, error) {
+func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hostedplans.HostedConfig, error) {
 	decoder := yaml.NewDecoder(io.LimitReader(reader, 128*1024))
 	decoder.KnownFields(true)
 	var config hostedFileConfig
@@ -184,7 +185,7 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubser
 			return nil, errors.New("entitlement administration token is unavailable or too short")
 		}
 	}
-	var sharedEntry *hubserver.HostedSharedEntry
+	var sharedEntry *hostedplans.HostedSharedEntry
 	if config.SharedEntry != nil {
 		if sharedEntry, err = readHostedSharedEntry(config.SharedEntry); err != nil {
 			return nil, err
@@ -211,7 +212,7 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubser
 			return nil, err
 		}
 	}
-	return &hubserver.HostedConfig{
+	return &hostedplans.HostedConfig{
 		EmailSender:              sender,
 		Billing:                  billingConfig,
 		EntitlementAdministrator: config.EntitlementAdministrator, EntitlementAdminToken: entitlementToken,

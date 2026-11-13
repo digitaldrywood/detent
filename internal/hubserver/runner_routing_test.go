@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -859,7 +860,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 					otherClaim.MachineID = r.binding.MachineID
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", credential, otherClaim), http.StatusNotFound)
 				}
-				f.service.config.Hosted = &HostedConfig{}
+				f.service.config.Hosted = &hostedplans.HostedConfig{}
 				d.hostedOrganization = f.project.OrganizationID
 				hostedTestPlans(t, f.service, map[string]int64{"api_mutations": test.apiLimit, "ingested_events": 0, "collaboration_bytes": 0, "history_records": 0})
 				f.service.config.Hosted = nil

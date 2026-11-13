@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -284,7 +285,7 @@ func benchmarkPostgresDiagnostics(b *testing.B) (context.Context, diagnosticsPos
 		b.Fatal(err)
 	}
 	details := &memoryRunDetails{}
-	service := &Service{config: (Config{TenantRepository: repository, RunDetails: details, Hosted: &HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}).normalized()}
+	service := &Service{config: (Config{TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}).normalized()}
 	authority := &apikey.KeyAuthority{ID: "benchmark-key", Kind: "service", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "all"}}
 	if !authority.Valid() {
 		b.Fatal("invalid benchmark authority")

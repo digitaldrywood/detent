@@ -52,7 +52,7 @@ func coordinatorBudgetPeer(t *testing.T, first hostedSecurityFixture) hostedSecu
 	if err != nil {
 		t.Fatal(err)
 	}
-	deployment, generation := hosted.deployment()
+	deployment, generation := hosted.Deployment()
 	if err := first.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example second organization", Slug: "budget-second", CreatedAt: now}); err != nil {
 			return err

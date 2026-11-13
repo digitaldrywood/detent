@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -40,11 +41,11 @@ func TestPostgresLegacyBootstrapTenants(t *testing.T) {
 	}
 	for _, org := range []string{"org_first", "org_second"} {
 		t.Run(org, func(t *testing.T) {
-			entry := &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
-			if err := entry.validate(org); err != nil {
+			entry := &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+			if err := entry.Validate(org); err != nil {
 				t.Fatal(err)
 			}
-			service := &Service{secretRewrapReady: make(chan struct{}), echo: echo.New(), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }, Hosted: &HostedConfig{OrganizationID: org, PublicURL: "https://hub.example.test", SharedEntry: entry}}}
+			service := &Service{secretRewrapReady: make(chan struct{}), echo: echo.New(), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: org, PublicURL: "https://hub.example.test", SharedEntry: entry}}}
 			service.echo.Pre(service.hostedSharedEntry)
 			service.echo.GET("/app/bootstrap", service.appBootstrapPayload)
 			target := "/organizations/" + org + "/app/bootstrap"

@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -50,7 +51,7 @@ func sourceTransferPostgresFixture(t *testing.T) (*Service, *sql.DB) {
 	})
 	service := &Service{notifications: newNotificationBroker(), echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))}}
 	provider := newHostedSecurityProvider()
-	service.config.Hosted = &HostedConfig{OrganizationID: "org_first", Provider: provider}
+	service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_first", Provider: provider}
 	service.registerNativeRoutes(service.echo)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		member := auth.Membership{ID: "member_" + string(org), UserID: "user_" + string(org), OrganizationID: "provider_" + string(org), Status: "active"}

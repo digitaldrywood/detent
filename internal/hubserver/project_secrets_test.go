@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -375,7 +376,7 @@ func TestProjectSecretLifecycle(t *testing.T) {
 }
 
 func TestProjectSecretStartupKeys(t *testing.T) {
-	f := newNativeFixture(t, openTestService(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), Hosted: &HostedConfig{OrganizationID: "org_secret_startup", WorkOSOrganizationID: "provider_secret_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}}), "", "Secret startup")
+	f := newNativeFixture(t, openTestService(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), Hosted: &hostedplans.HostedConfig{OrganizationID: "org_secret_startup", WorkOSOrganizationID: "provider_secret_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}}), "", "Secret startup")
 	now := f.service.config.now()
 	envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(f.project.OrganizationID, f.project.ID, flySpritesToken))
 	if err != nil {

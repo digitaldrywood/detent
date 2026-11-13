@@ -4,15 +4,16 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"net/http"
+	"testing"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"net/http"
-	"testing"
-	"time"
 )
 
 func newExportPostgresFixture(t *testing.T) (tenantstore.Repository, hostedSecurityFixture, hostedSecurityUser, *sql.DB) {
@@ -48,7 +49,7 @@ func newExportPostgresFixtureInOrganization(t *testing.T, admin *sql.DB, organiz
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", CreatedAt: now}); err != nil {
 			return err
 		}
-		deployment, generation := cfg.Hosted.deployment()
+		deployment, generation := cfg.Hosted.Deployment()
 		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 			return err
 		}

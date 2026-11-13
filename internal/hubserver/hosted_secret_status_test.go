@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -38,7 +39,7 @@ func TestHostedSecretStatusTenantPagesAndKeyChecks(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			service := openTestService(t, Config{TenantRepository: f.repository, SecretKeys: keys, Hosted: &HostedConfig{OrganizationID: string(organization), WorkOSOrganizationID: "provider_" + string(organization), PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}})
+			service := openTestService(t, Config{TenantRepository: f.repository, SecretKeys: keys, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization), WorkOSOrganizationID: "provider_" + string(organization), PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}})
 			service.workerCancel()
 			<-service.workerDone
 			<-service.secretRewrapDone

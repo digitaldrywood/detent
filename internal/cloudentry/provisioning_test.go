@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
@@ -66,10 +67,10 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 	config := hubserver.Config{
 		StaticFS:          l.clientFS,
 		InitialAdminToken: []byte(testAdminKey), Logger: slog.New(slog.DiscardHandler),
-		Hosted: &hubserver.HostedConfig{
+		Hosted: &hostedplans.HostedConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
-			SharedEntry: &hubserver.HostedSharedEntry{Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation, ResolveKey: spec.ResolveKey, ArchiveContents: spec.ArchiveContents, Content: spec.Content, RunDetails: spec.RunDetails, Icons: spec.Icons, ReadArchive: spec.ReadArchive},
+			SharedEntry: &hostedplans.HostedSharedEntry{Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation, ResolveKey: spec.ResolveKey, ArchiveContents: spec.ArchiveContents, Content: spec.Content, RunDetails: spec.RunDetails, Icons: spec.Icons, ReadArchive: spec.ReadArchive},
 			Plans:       l.plans,
 		},
 	}

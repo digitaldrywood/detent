@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -122,7 +123,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 	}
 	for index, org := range organizations {
 		t.Run(string(org), func(t *testing.T) {
-			service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, Logger: discardLogger(), now: func() time.Time { return now }}, database: &database{postgres: repository}, requestMetrics: &tenantRequestMetrics{Repository: repository, Organization: org}}
+			service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, Logger: discardLogger(), now: func() time.Time { return now }}, database: &database{postgres: repository}, requestMetrics: &tenantRequestMetrics{Repository: repository, Organization: org}}
 			service.config.RunDetails = objects
 			for pass := range 2 {
 				if err := service.maintainNativeRetention(t.Context(), now); err != nil {
@@ -306,7 +307,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_duplicate_challenges IN SHARE MODE"); err != nil {
 					t.Fatal(err)
 				}
-				service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, retentionTimeout: frozenRetentionTimeout}}
+				service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, retentionTimeout: frozenRetentionTimeout}}
 				retained := make(chan error, 1)
 				workers.Go(func() { retained <- service.expireNativeRecords(ctx, now.Add(2*time.Hour)) })
 				testenv.WaitUntil(t, testenv.WaitContext(t, ctx), func() error {
@@ -557,7 +558,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				var stages atomic.Int64
 				var wrongBudget atomic.Bool
 				schedulerDone := make(chan struct{})
-				service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, RunDetails: objects, Logger: discardLogger(), WebhookMaintenanceInterval: time.Millisecond,
+				service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, RunDetails: objects, Logger: discardLogger(), WebhookMaintenanceInterval: time.Millisecond,
 					now: func() time.Time { return time.Unix(0, clock.Load()).UTC() },
 					retentionTimeout: func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 						if budget != backgroundStorageBudget {

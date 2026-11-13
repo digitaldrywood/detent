@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -109,7 +110,7 @@ func TestRenderIssueEmail(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			s := &Service{config: Config{Hosted: &HostedConfig{PublicURL: "https://hub.example.test", OrganizationID: "org_example", SharedEntry: &HostedSharedEntry{}}}}
+			s := &Service{config: Config{Hosted: &hostedplans.HostedConfig{PublicURL: "https://hub.example.test", OrganizationID: "org_example", SharedEntry: &hostedplans.HostedSharedEntry{}}}}
 			message, err := s.renderIssueEmail("member@example.test", link, title, 42, "sub +&", test.notices)
 			if err != nil {
 				t.Fatal(err)

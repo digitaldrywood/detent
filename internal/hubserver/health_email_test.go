@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -26,7 +27,7 @@ func TestHealthEmailTemplate(t *testing.T) {
 	storage := projectRecordPostgres(t)
 	now := time.Now().UTC()
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: tracker.NativeWorkItemID("wi_" + strings.Repeat("a", 32)), Number: 1}}
-	s := &Service{database: &database{}, config: Config{TenantRepository: storage, AccessRepository: storage, now: func() time.Time { return now }, Hosted: &HostedConfig{OrganizationID: string(issue.OrganizationID), PublicURL: "https://cloud.example.test", SharedEntry: &HostedSharedEntry{}}}}
+	s := &Service{database: &database{}, config: Config{TenantRepository: storage, AccessRepository: storage, now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: string(issue.OrganizationID), PublicURL: "https://cloud.example.test", SharedEntry: &hostedplans.HostedSharedEntry{}}}}
 	if err := storage.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: issue.OrganizationID, Name: "Local organization", Slug: "local-organization", CreatedAt: now}); err != nil {
 			return err

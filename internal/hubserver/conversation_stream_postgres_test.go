@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -190,7 +191,7 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 				s.config.now = func() time.Time { return now.Add(time.Duration(elapsed.Load())) }
 				resolved := new(atomic.Int64)
 				resolutions = append(resolutions, resolved)
-				s.config.Hosted = &HostedConfig{OrganizationID: string(organization), SharedEntry: &HostedSharedEntry{Issuer: "entry", Generation: 1}}
+				s.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(organization), SharedEntry: &hostedplans.HostedSharedEntry{Issuer: "entry", Generation: 1}}
 				claims := cloudassert.Claims{Issuer: "entry", Generation: 1, Audience: string(organization), ProviderOrganization: "provider_" + string(organization), Subject: "owner", Role: "owner", Kind: cloudassert.KindKey, IssuedAt: now, ExpiresAt: now.Add(time.Hour), Key: &apikey.KeyAuthority{ID: "key_example", CredentialBinding: strings.Repeat("a", 64), Kind: "personal", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "selected", Projects: []string{"project_removed", "project_retained"}}}}
 				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 					if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", CreatedAt: now}); err != nil {

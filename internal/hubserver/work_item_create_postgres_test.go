@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -166,13 +167,13 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			membership := auth.Membership{ID: "membership-" + string(org), UserID: user, OrganizationID: "provider_" + string(org), Status: "active"}
 			membership.Role.Slug = "owner"
 			provider.members[membership.ID] = membership
-			service := &Service{echo: echo.New(), notifications: newNotificationBroker(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: org, now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Hosted: &HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "http://example.test", Plans: &plans}, Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }}}
+			service := &Service{echo: echo.New(), notifications: newNotificationBroker(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: org, now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "http://example.test", Plans: &plans}, Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }}}
 			service.ready.Store(true)
 			service.registerNativeRoutes(service.echo)
 			service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
 			service.echo.POST("/internal/v1/keys/catalog", service.entryKeyCatalog, service.hostedSharedEntry, service.operatorAuthority)
 			service.echo.POST("/internal/v1/keys/call", service.entryKeyCall, service.hostedSharedEntry, service.operatorAuthority)
-			if err := service.database.configureHostedPlans(t.Context(), &HostedConfig{OrganizationID: string(org), Plans: &plans}); err != nil {
+			if err := service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{OrganizationID: string(org), Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			project := tracker.ProjectID("project_" + string(org))
@@ -689,11 +690,11 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				t.Fatal(err)
 			}
 			entrySigner := hostedSharedKey(7)
-			service.config.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{entrySigner.Public().(ed25519.PublicKey)}, Generation: 1}
-			if err := service.config.Hosted.SharedEntry.validate(string(org)); err != nil {
+			service.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{entrySigner.Public().(ed25519.PublicKey)}, Generation: 1}
+			if err := service.config.Hosted.SharedEntry.Validate(string(org)); err != nil {
 				t.Fatal(err)
 			}
-			service.config.Hosted.SharedEntry.verifier.Now = service.config.now
+			service.config.Hosted.SharedEntry.Verifier().Now = service.config.now
 			entryPermission := apikey.ScopeWrite
 			entryCall := func(path string, payload any, statuses ...int) *httptest.ResponseRecorder {
 				t.Helper()

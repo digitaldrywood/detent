@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -266,7 +267,7 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 	if err != nil {
 		return hubapi.APICredential{}, err
 	}
-	if s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && (session.Identity == nil || session.Identity.SupportActor == "") {
+	if s.config.Hosted.SharedEntry == nil && hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) && (session.Identity == nil || session.Identity.SupportActor == "") {
 		return hubapi.APICredential{}, auth.ErrHostedIdentity
 	}
 	credential, _, err := s.hostedSessionCredential(ctx, session, sessionHash)

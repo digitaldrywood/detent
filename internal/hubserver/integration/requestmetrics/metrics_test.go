@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
@@ -186,7 +187,7 @@ func newMetricsHTTPFixture(t *testing.T, admin *sql.DB, repository *postgres.Rep
 		t.Fatal(err)
 	}
 	pg := hubtest.PostgresConfig(t, admin)
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &pg, TenantRepository: repository, AccessRepository: repository, BillingRepository: repository, RunDetails: hubtest.NewDetails(), SecretKeys: keys, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), InitialAdminToken: []byte("example-admin-token-at-least-32-characters"), Hosted: &hubserver.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "https://example.test", Provider: provider}})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &pg, TenantRepository: repository, AccessRepository: repository, BillingRepository: repository, RunDetails: hubtest.NewDetails(), SecretKeys: keys, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), InitialAdminToken: []byte("example-admin-token-at-least-32-characters"), Hosted: &hostedplans.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "https://example.test", Provider: provider}})
 	if err != nil {
 		t.Fatal(err)
 	}

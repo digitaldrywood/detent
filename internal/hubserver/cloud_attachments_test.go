@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -362,7 +363,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				plan.Allowances["collaboration_bytes"], plan.Allowances["api_mutations"] = test.allowance, test.apiLimit
 				plans.Plans, plans.Base, base = append([]HostedPlan{plan}, plans.Plans...), plan.PlanReference, plan.PlanReference
 			}
-			if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+			if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {

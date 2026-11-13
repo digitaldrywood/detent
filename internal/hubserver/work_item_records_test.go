@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -1662,7 +1663,7 @@ func TestWorkItemRecordRollback(t *testing.T) {
 			if issue.Number != 1 {
 				t.Fatalf("committed number=%d", issue.Number)
 			}
-			service.config.Hosted = &HostedConfig{OrganizationID: string(org.ID)}
+			service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org.ID)}
 
 			for _, indexed := range []bool{false, true} {
 				if indexed {

@@ -22,6 +22,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/credits"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -206,7 +207,7 @@ func TestAPIRefusals(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), GitHubWebhookSecret: []byte("test-secret"), Hosted: &HostedConfig{}}}
+			service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), GitHubWebhookSecret: []byte("test-secret"), Hosted: &hostedplans.HostedConfig{}}}
 			recorded := httptest.NewRecorder()
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body)), recorded)
 			c.SetPath(strings.SplitN(test.path, "?", 2)[0])

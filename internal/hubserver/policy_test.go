@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -531,7 +532,7 @@ func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	service.config.Hosted = &HostedConfig{OrganizationID: string(organization.ID)}
+	service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(organization.ID)}
 	identity := &auth.HostedIdentity{Subject: userID, OrganizationID: "provider_example", SessionID: "session_example", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 	actor := hubapi.APICredential{ID: credentialID, Hash: credentialHash, Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: identity, SessionHash: sessionHash, HostedRole: "owner", HostedMembership: memberID, HostedKeyScope: apikey.ScopeAdmin}
 	scope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: actor, RequireHostedAdmin: true}

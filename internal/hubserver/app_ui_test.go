@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -723,7 +724,7 @@ func TestAppUpdatesPostgresProjectionAndFreshAuthorization(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}, Version: "v1.2.4", now: func() time.Time { return now }}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, Version: "v1.2.4", now: func() time.Time { return now }}}
 	credential := hubapi.APICredential{ID: "operator_example", Hash: "example-hash", Scope: hubapi.APIScopeOperator, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}, HostedRole: "owner"}
 	updates, err := service.readAppUpdates(t.Context(), credential)
 	if err != nil {

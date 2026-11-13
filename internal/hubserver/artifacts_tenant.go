@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -24,7 +25,7 @@ func (s *Service) artifactReadGrantTenant(ctx context.Context, scope hubscope.Na
 		if err != nil {
 			return result, err
 		}
-		if s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && (session.Identity == nil || session.Identity.SupportActor == "") {
+		if s.config.Hosted.SharedEntry == nil && hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) && (session.Identity == nil || session.Identity.SupportActor == "") {
 			return result, auth.ErrHostedIdentity
 		}
 		if _, _, err := s.hostedMutationIdentity(ctx, scope.Credential); err != nil {

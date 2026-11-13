@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -45,7 +46,7 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 			f.service.database.billingRepository = repository
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			r.enroll(t)
-			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+			f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 			f.service.database.hostedOrganization = f.project.OrganizationID
 			metrics, err := newPostgresTestMetrics(t, f.project.OrganizationID)
 			if err != nil {

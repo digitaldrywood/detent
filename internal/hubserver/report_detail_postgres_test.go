@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -96,7 +97,7 @@ func TestReportCurrentUsageIngestionPreservesCoverage(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}}}
+			service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}}}
 			usage, err := service.usageRows(ctx, usageWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour)}, []string{string(project)})
 			if err != nil || len(usage) != 1 || usage[0].Cost != float64(amount)/1e6 {
 				t.Fatalf("usage rows=%+v err=%v", usage, err)
@@ -159,7 +160,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 	}
 	for _, organization := range []tracker.OrganizationID{"org_partial_first", "org_partial_second"} {
 		t.Run(string(organization), func(t *testing.T) {
-			service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}}}
+			service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}}}
 			out, err := service.readPostgresHostedReport(t.Context(), hubapi.APICredential{}, []string{string(project)}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}, reportsFilter{}, false)
 			if err != nil {
 				t.Fatal(err)
@@ -229,7 +230,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}}
+			service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}}
 			credential := hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: user}, HostedRole: "reporter", HostedPrincipal: principal, ID: principal, Scope: hubapi.APIScopeOperator}
 			identity := operatortool.Identity{PrincipalID: principal, OrganizationID: string(organization), CredentialID: principal}
 			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
@@ -377,7 +378,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 					}
 				}},
 				{"coordinator report", func(t *testing.T) {
-					coordinator := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now.Add(3 * time.Hour) }}}
+					coordinator := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now.Add(3 * time.Hour) }}}
 					value, err := coordinator.coordinatorScreenReport(ctx, conversationRecord{ProjectID: project}, credential, runner.AgentToolCall{Name: "get_project_reports", Arguments: json.RawMessage(`{"range":"24h"}`)})
 					if err != nil {
 						t.Fatal(err)

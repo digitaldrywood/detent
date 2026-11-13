@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -102,7 +103,7 @@ func configureTestCredits(t *testing.T, f *browserHostedFixture, base *hostedBil
 	p := &hostedCreditProvider{hostedBillingProvider: base, chargeStatus: "succeeded"}
 	f.service.config.Hosted.Billing.Provider = p
 	f.service.config.Hosted.Billing.CreditPacks = []HostedCreditPack{{PriceID: "price_credit", Label: "AI credit pack", USDCents: 500}}
-	if err := f.service.config.Hosted.validate(); err != nil {
+	if err := hostedplans.ValidateHostedConfig(f.service.config.Hosted); err != nil {
 		t.Fatal(err)
 	}
 	d := f.service.database
@@ -509,7 +510,7 @@ func TestAICreditAutoFund(t *testing.T) {
 				d := f.service.database
 				plans := capacityHostedPlans()
 				plans.Plans = append(plans.Plans, f.service.config.Hosted.Plans.Plans...)
-				if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+				if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 					t.Fatal(err)
 				}
 				now := f.service.config.now()
@@ -662,7 +663,7 @@ func TestIncludedAICreditAllowance(t *testing.T) {
 	d := f.service.database
 	plans := capacityHostedPlans()
 	plans.Plans = append(plans.Plans, f.service.config.Hosted.Plans.Plans...)
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
 	now := f.service.config.now()

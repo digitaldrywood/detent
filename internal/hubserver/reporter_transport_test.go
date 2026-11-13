@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -273,7 +274,7 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 			}
 			if deployment == "dedicated" {
 				t.Run("personal organization switch", func(t *testing.T) {
-					f.service.config.Hosted.Directory = []HostedDestination{{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "https://example.test"}}
+					f.service.config.Hosted.Directory = []hostedplans.HostedDestination{{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "https://example.test"}}
 					response := send(t, "web-session", http.MethodPost, "/api/v2/organizations/org_security/switch", []byte(`{"organization":"org_security"}`), nil)
 					requireNativeStatus(t, response, http.StatusOK)
 					var next hostedNextResponse

@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -95,8 +96,8 @@ func TestAPITokensAreHashedScopedRotatableAndRedacted(t *testing.T) {
 	}
 	maintenanceConfig := service.config
 	maintenanceConfig.CredentialMaintenance = true
-	maintenanceConfig.Hosted = &HostedConfig{OrganizationID: string(service.accessOrganization()), WorkOSOrganizationID: "provider_api", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}
-	deployment, generation := maintenanceConfig.Hosted.deployment()
+	maintenanceConfig.Hosted = &hostedplans.HostedConfig{OrganizationID: string(service.accessOrganization()), WorkOSOrganizationID: "provider_api", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}
+	deployment, generation := maintenanceConfig.Hosted.Deployment()
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: service.accessOrganization(), ProviderID: maintenanceConfig.Hosted.WorkOSOrganizationID, Deployment: deployment, PublicURL: maintenanceConfig.Hosted.PublicURL, AllocationGeneration: generation})
 	}); err != nil {
@@ -1195,7 +1196,7 @@ func TestControlPlaneRoutesRequireAuthentication(t *testing.T) {
 		})
 	}
 	t.Run("private credential maintenance", func(t *testing.T) {
-		config := hostedPostgresConfig(t, Config{ListenAddress: "127.0.0.1:0", CredentialMaintenance: true, Hosted: &HostedConfig{OrganizationID: "org_api_auth", WorkOSOrganizationID: "provider_api_auth", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}})
+		config := hostedPostgresConfig(t, Config{ListenAddress: "127.0.0.1:0", CredentialMaintenance: true, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_api_auth", WorkOSOrganizationID: "provider_api_auth", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}})
 		maintenance := openTestService(t, config)
 		for _, route := range []struct{ method, path string }{
 			{http.MethodPost, "/api/v1/tokens"},

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -115,7 +116,7 @@ func TestPostgresCredentialMembershipAndKeyAudit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, now: func() time.Time { return now }}}
+		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, now: func() time.Time { return now }}}
 		request := httptest.NewRequest(http.MethodPost, "/internal/v1/keys/audit", strings.NewReader(`{"key_id":"key_example","owner":"owner_example","event":"key_revoked"}`))
 		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 		recorder := httptest.NewRecorder()

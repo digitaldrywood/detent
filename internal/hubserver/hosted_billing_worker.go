@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -66,7 +67,7 @@ func (s *Service) billingMaintenance(ctx context.Context, tenant BillingTenant) 
 	if tenant.Config != nil {
 		d.aiCreditMode = tenant.Config.CreditMode()
 	}
-	return &Service{database: d, config: Config{Hosted: &HostedConfig{OrganizationID: tenant.Tenant.Organization, Billing: tenant.Config}, now: now, newLeaseID: leaseID}}, nil
+	return &Service{database: d, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: tenant.Tenant.Organization, Billing: tenant.Config}, now: now, newLeaseID: leaseID}}, nil
 }
 
 func (s *Service) MaintainBillingCredit(ctx context.Context, tenant BillingTenant, after int64) (int64, bool, error) {

@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -272,7 +273,7 @@ func newHostedFixture(t *testing.T, cfg hubserver.Config, collaborationBytes int
 	t.Helper()
 	provider := &hostedProvider{members: map[string]auth.Membership{}}
 	plans := hostedPlans(collaborationBytes)
-	cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_browser_preview", WorkOSOrganizationID: "provider_org_browser_preview", PublicURL: "https://browser.example.test", Provider: provider, Plans: &plans}
+	cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_browser_preview", WorkOSOrganizationID: "provider_org_browser_preview", PublicURL: "https://browser.example.test", Provider: provider, Plans: &plans}
 	base := newSettingsFixture(t, cfg)
 	f := &hostedFixture{settingsFixture: base, provider: provider, members: map[string]hubtest.SeededMember{}, cookies: map[string]*http.Cookie{}}
 	organization := tracker.OrganizationID(base.config.Hosted.OrganizationID)

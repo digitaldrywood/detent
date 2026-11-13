@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -153,7 +154,7 @@ func TestReportsTrackingIssues(t *testing.T) {
 			event.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "hub request timed out", ErrorClass: "protocol", ObservedAt: f.service.config.now()}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			reportService := &Service{config: f.service.config}
-			reportService.config.Hosted = &HostedConfig{OrganizationID: string(scope.Organization)}
+			reportService.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(scope.Organization)}
 			now := f.service.config.now()
 			window := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
 			report, err := reportService.readPostgresHostedReport(t.Context(), credential, []string{string(scope.Project)}, window, reportsFilter{}, true)

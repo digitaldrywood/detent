@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -272,7 +273,7 @@ func TestPostgresHealthEvaluationPublishesRecurrenceAndClear(t *testing.T) {
 	}
 	cfg := service.config
 	cfg.TenantRepository, cfg.AccessRepository, cfg.BillingRepository = nil, nil, nil
-	cfg.Hosted = &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}
+	cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}
 	tamperHostedBinding(t, hostedPostgresAdmin(t, service), "UPDATE hosted_tenant SET deployment='origin',public_url=$2 WHERE organization_id=$1", cfg.Hosted.OrganizationID, cfg.Hosted.PublicURL)
 	if err := service.Close(); err != nil {
 		t.Fatal(err)

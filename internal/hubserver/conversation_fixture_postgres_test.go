@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -45,7 +46,7 @@ func (f conversationFixture) recordChat(organization tracker.OrganizationID) *co
 
 func (f conversationFixture) recordServer(organization tracker.OrganizationID) *Service {
 	server := &Service{config: f.service.config, database: f.service.database, localOrganization: string(organization)}
-	server.config.Hosted = &HostedConfig{OrganizationID: string(organization)}
+	server.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(organization)}
 	chat := &conversationService{Server: server.conversationServer(), Store: f.store, Broker: newNotificationBroker().Broker, Coordinator: &recordingWaker{}, Controls: &recordingWaker{}}
 	server.conversations = chat
 	return server

@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -734,7 +735,7 @@ func newChangePolicyPostgresTenantFixture(t *testing.T, repository tenantstore.R
 		BillingRepository: repository,
 		TenantRepository:  repository,
 		RunDetails:        details,
-		Hosted: &HostedConfig{
+		Hosted: &hostedplans.HostedConfig{
 			Plans:                &plans,
 			OrganizationID:       string(organization),
 			WorkOSOrganizationID: "org_provider",

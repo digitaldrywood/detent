@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -77,7 +78,7 @@ func (s *Service) inviteHostedMemberFor(ctx context.Context, credential hubapi.A
 		return hostedInvitationView{}, operatortool.ErrAccessDenied
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
-	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, email) {
+	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedplans.EmailListed(s.config.Hosted.StaffEmails, email) {
 		return hostedInvitationView{}, operatortool.ErrInvalidArguments
 	}
 	grants = append([]hostedMemberGrant{}, grants...)

@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -319,7 +320,7 @@ func hostedPostgresConfig(t *testing.T, cfg Config) Config {
 	projectRecordDatabases.Store(cfg.Postgres.Connection.Database, admin)
 	t.Cleanup(func() { projectRecordDatabases.Delete(cfg.Postgres.Connection.Database) })
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
-	deployment, generation := cfg.Hosted.deployment()
+	deployment, generation := cfg.Hosted.Deployment()
 	cursorKey := []byte(strings.Repeat("k", 32))
 	cursorEnvelope, err := cfg.SecretKeys.Seal(cursorKey, accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
 	if err != nil {
@@ -396,10 +397,10 @@ func newBrowserHostedFixtureBackendWithService(t *testing.T, allocated bool, org
 		members: make(map[string]auth.Membership), sessions: make(map[string]auth.HostedIdentity), invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string), authorizations: make(map[string]string), codes: make(map[string]auth.Identity),
 	}
 	legacyPlans := pilotHostedPlans()
-	cfg := Config{Content: (&changeObjectFixture{}).call, InitialAdminToken: []byte(testHubAdminToken), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &HostedConfig{
+	cfg := Config{Content: (&changeObjectFixture{}).call, InitialAdminToken: []byte(testHubAdminToken), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &hostedplans.HostedConfig{
 		Plans: &legacyPlans, OrganizationID: organization, BootstrapSubject: "user_browser_owner", PublicURL: base, Provider: provider,
 		StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
-		Directory: []HostedDestination{{OrganizationID: organization, WorkOSOrganizationID: "org_browser_provider", PublicURL: base}},
+		Directory: []hostedplans.HostedDestination{{OrganizationID: organization, WorkOSOrganizationID: "org_browser_provider", PublicURL: base}},
 	}}
 	if allocated {
 		cfg.Hosted.WorkOSOrganizationID = provider.organization.ID
@@ -1131,7 +1132,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
 		plans := capacityHostedPlans()
-		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+		if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {

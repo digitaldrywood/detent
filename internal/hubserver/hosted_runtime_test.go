@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -120,7 +121,7 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			}
 			update := HostedRuntimeUpdate{Plans: &plans, Prices: prices, Reason: "SIGHUP regression", ValidateOnly: test.validate}
 			if test.prepare {
-				f.service.config.Hosted.SharedEntry = &HostedSharedEntry{}
+				f.service.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 				update.StageID = "00000000-0000-4000-8000-000000000001"
 			}
 			path := "/api/v2/organizations/org_browser_preview/entitlements/runtime"
@@ -244,7 +245,7 @@ func TestHostedRuntimeReloadCatalogTransitions(t *testing.T) {
 				before := s.database.runtimeState()
 				update := HostedRuntimeUpdate{Plans: test.plans, Reason: "catalog transition"}
 				if prepare {
-					s.config.Hosted.SharedEntry = &HostedSharedEntry{}
+					s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 					update.StageID = "00000000-0000-4000-8000-000000000002"
 				}
 				if err := s.applyHostedRuntime(t.Context(), &update); err == nil || s.database.runtimeState() != before {

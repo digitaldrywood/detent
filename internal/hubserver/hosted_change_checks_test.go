@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -607,7 +608,7 @@ func TestHostedRunnerChangeChecks(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "customer-policy"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
 			}
 			version := f.publish(t, "v1", "")
-			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+			f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 			path := f.path + "/versions/" + version.ID + "/checks"
 			request := changeTestResult(version)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, request), test.want)

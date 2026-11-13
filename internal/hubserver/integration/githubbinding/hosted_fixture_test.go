@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -49,7 +50,7 @@ func newBrowserBindingFixture(t *testing.T) *browserBindingFixture {
 	t.Helper()
 	provider := &bindingProvider{members: map[string]auth.Membership{}}
 	plans := hubserver.HostedPlansConfig{Base: hubserver.PlanReference{ID: "pilot_free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400, Plans: []hubserver.HostedPlan{{PlanReference: hubserver.PlanReference{ID: "pilot_free", Version: 1}, Features: []string{"collaboration", "native_execution", "github_integration"}, Allowances: map[string]int64{"members": 10, "projects": 10, "repositories": 10, "registered_runners": 10, "connected_runners": 10, "concurrent_work": 5, "api_mutations": 1000000, "ingested_events": 1000000, "collaboration_bytes": 64 << 20, "history_records": 10000}}}}
-	fixture := newBindingFixture(t, hubserver.Config{Hosted: &hubserver.HostedConfig{OrganizationID: "org_browser_preview", WorkOSOrganizationID: "provider_org_browser_preview", PublicURL: "https://browser.example.test", Provider: provider, Plans: &plans}})
+	fixture := newBindingFixture(t, hubserver.Config{Hosted: &hostedplans.HostedConfig{OrganizationID: "org_browser_preview", WorkOSOrganizationID: "provider_org_browser_preview", PublicURL: "https://browser.example.test", Provider: provider, Plans: &plans}})
 	f := &browserBindingFixture{bindingFixture: fixture, cookies: map[string]*http.Cookie{}}
 	project := hubtest.Project(t, f.repository, f.organization, hubtest.ProjectOptions{Name: "Browser collaboration"})
 	f.project = string(project.ID)

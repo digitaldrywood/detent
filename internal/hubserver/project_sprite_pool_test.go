@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -281,7 +282,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, hubscope
 	if failure == "installer" {
 		provider.manual = enrollSpriteWakeRunners(t, f, time.Hour, "existing-one", "existing-two")
 	}
-	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://hub.example.test"}
+	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://hub.example.test"}
 	f.service.config.Version = "v0.117.99"
 	f.service.config.generateToken = func() (string, error) {
 		token, err := apikey.GenerateToken()
@@ -1817,7 +1818,7 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 
 func TestZZSpriteBootstrapProbe(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://hub.example.test"}
+	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://hub.example.test"}
 	scope := placementFixtureScope(t, f)
 	scope.Project = ""
 	if err := f.service.updateSpritePool(t.Context(), scope, spritePoolSettings{MaxRunners: 1, Bootstrap: "true"}, nil); err != nil {

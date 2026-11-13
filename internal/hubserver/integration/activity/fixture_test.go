@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/activity"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
@@ -352,7 +353,7 @@ func (runtimeHistoryTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBa
 func TestMain(m *testing.M) { hubtest.Main(m) }
 
 type Config = hubserver.Config
-type HostedConfig = hubserver.HostedConfig
+type HostedConfig = hostedplans.HostedConfig
 type apiCredential = hubauth.Credential
 type nativeScope struct {
 	organization tracker.OrganizationID

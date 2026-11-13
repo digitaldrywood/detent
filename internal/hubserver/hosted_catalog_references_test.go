@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -37,7 +38,7 @@ func TestPostgresCatalogRemovalChecksReferences(t *testing.T) {
 				}
 				if mode == "publication" && kind != "disable catalog" {
 					for _, s := range services {
-						s.config.Hosted.SharedEntry = &HostedSharedEntry{}
+						s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 						update := HostedRuntimeUpdate{Plans: &candidate, Reason: "prepare removal", StageID: stageID}
 						if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
 							t.Fatal(err)
@@ -83,7 +84,7 @@ func TestPostgresCatalogRemovalChecksReferences(t *testing.T) {
 					}
 					update := HostedRuntimeUpdate{Plans: &candidate, Reason: "remove configured plan", ValidateOnly: mode == "validation"}
 					if mode == "prepare" || mode == "publication" {
-						s.config.Hosted.SharedEntry = &HostedSharedEntry{}
+						s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 						update.StageID = stageID
 					}
 					before := s.database.runtimeState()
