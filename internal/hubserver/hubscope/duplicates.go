@@ -15,9 +15,3 @@ type PossibleDuplicate struct {
 	WebURL     string                   `json:"web_url"`
 	Why        string                   `json:"why"`
 }
-
-type NativeDuplicateSearch struct {
-	latestNumber int
-	matches      []PossibleDuplicate
-	skipped      bool
-}

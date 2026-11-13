@@ -58,10 +58,9 @@ type GitHubIntakeRevision struct {
 }
 
 type NativeScope struct {
-	IntegrationOwned      bool                  `json:"-"`
-	GitHubIntakeRevision  *GitHubIntakeRevision `json:"-"`
-	IntegrationRepository string                `json:"-"`
-	duplicateSearch       *NativeDuplicateSearch
+	IntegrationOwned      bool                   `json:"-"`
+	GitHubIntakeRevision  *GitHubIntakeRevision  `json:"-"`
+	IntegrationRepository string                 `json:"-"`
 	Action                string                 `json:"-"`
 	ActionItem            string                 `json:"-"`
 	ActionTarget          string                 `json:"-"`
@@ -75,8 +74,6 @@ type NativeScope struct {
 	RequireHostedAdmin    bool                   `json:"-"`
 	ImportedContent       bool                   `json:"-"`
 	ManagedRunner         string                 `json:"-"`
-	managedRunnerScope    string
-	managedRunnerProjects []tracker.ProjectID
 }
 
 type ProgressDefectOrigin interface {
