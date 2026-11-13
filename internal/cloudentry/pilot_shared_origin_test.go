@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -35,11 +34,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -538,21 +539,20 @@ func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 
 func (p *sharedOriginPilot) waitState(t *testing.T, id string, states ...string) Organization {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		organization, err := p.service.registry.Organization(t.Context(), id)
+	var organization Organization
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		organization, err = p.service.registry.Organization(t.Context(), id)
 		if err == nil {
 			for _, state := range states {
 				if organization.State == state {
-					return organization
+					return nil
 				}
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("organization %s = %+v, want %v (%v)", id, organization, states, err)
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
+		return fmt.Errorf("organization %s = %+v, want %v (%v)", id, organization, states, err)
+	})
+	return organization
 }
 
 type pilotBrowser struct {
@@ -761,12 +761,12 @@ type pilotStream struct {
 	events      chan string
 }
 
-func (s pilotStream) next(timeout time.Duration) (string, bool, error) {
+func (s pilotStream) next(ctx context.Context) (string, bool, error) {
 	select {
 	case line, ok := <-s.events:
 		return line, ok, nil
-	case <-time.After(timeout):
-		return "", true, context.DeadlineExceeded
+	case <-ctx.Done():
+		return "", true, ctx.Err()
 	}
 }
 
@@ -1278,7 +1278,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			if stream.status != http.StatusOK || !strings.HasPrefix(stream.contentType, "text/event-stream") {
 				t.Fatalf("%s stream = %d %q", o.id, stream.status, stream.contentType)
 			}
-			if line, open, err := stream.next(10 * time.Second); err != nil || !open || !strings.HasPrefix(line, "data:") {
+			if line, open, err := stream.next(testenv.WaitContext(t, t.Context())); err != nil || !open || !strings.HasPrefix(line, "data:") {
 				t.Fatalf("%s first event = %q %v %v", o.id, line, open, err)
 			}
 			streams[o.id] = stream
@@ -1289,8 +1289,8 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			t.Fatal("removed member still reads alpha after the access token refresh")
 		}
 		ended := false
-		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
-			if _, open, _ := streams[alpha.id].next(time.Second); !open {
+		for ctx := testenv.WaitContext(t, t.Context()); ctx.Err() == nil; {
+			if _, open, _ := streams[alpha.id].next(ctx); !open {
 				ended = true
 				break
 			}
@@ -1298,7 +1298,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		if !ended {
 			t.Fatal("alpha stream continued after membership removal")
 		}
-		if line, open, err := streams[beta.id].next(10 * time.Second); err != nil || !open || !strings.HasPrefix(line, "data:") {
+		if line, open, err := streams[beta.id].next(testenv.WaitContext(t, t.Context())); err != nil || !open || !strings.HasPrefix(line, "data:") {
 			t.Fatalf("beta stream after alpha revocation = %q %v %v", line, open, err)
 		}
 		if response := fay.get(alpha.page()); response.status == http.StatusOK {
@@ -1328,22 +1328,18 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		}
 		p.open(t, 2, 1)
 		p.startServing(t, p.ingress)
-		deadline := time.Now().Add(30 * time.Second)
 		for _, tenant := range []struct {
 			name    string
 			org     pilotOrganization
 			content string
 		}{{"alpha", alpha, "Alpha secret project"}, {"beta", beta, ""}} {
-			for {
+			testenv.WaitUntil(t, t.Context(), func() error {
 				response := tenant.org.owner.get(tenant.org.page())
 				if response.status == http.StatusOK && strings.Contains(response.body, tenant.content) {
-					break
+					return nil
 				}
-				if time.Now().After(deadline) {
-					t.Fatalf("%s after restart = %d: %.200s", tenant.name, response.status, response.body)
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
+				return fmt.Errorf("%s after restart = %d: %.200s", tenant.name, response.status, response.body)
+			})
 		}
 		if p.launcher.starts <= starts {
 			t.Fatalf("restart did not relaunch tenants: %d -> %d", starts, p.launcher.starts)
