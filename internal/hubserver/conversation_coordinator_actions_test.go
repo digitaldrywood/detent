@@ -35,11 +35,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestCoordinatorProjectActions(t *testing.T) {
-
+	t.Parallel()
 	for _, tool := range []string{"propose_stop_run", "propose_file_issue", "propose_maintenance_issue", "propose_move_item", "propose_set_priority", "propose_backlog_admission", "update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), string(chat.ActionArchiveItems), "set_sprite_pool", "scale_up_sprite_pool"} {
 		if tool == string(chat.ActionIssueSplit) {
 			runCoordinatorIssueSplitPostgresCases(t)
@@ -70,6 +71,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 		}
 		for _, outcome := range outcomes {
 			t.Run(tool+"/"+outcome, func(t *testing.T) {
+				t.Parallel()
 				sharedEntry := strings.HasPrefix(outcome, "shared entry")
 				mcpPost := sharedEntry || outcome == "stored key preview"
 				var clock atomic.Int64
@@ -270,6 +272,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					if sharedEntry {
 						clock.Add(int64(time.Minute))
 					}
+					waitCoordinatorIdle(t, t.Context(), f.service)
 					f.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{f.service}, chat.WithClock(f.service.config.now), chat.WithSessionStore(operatorChatStore{f.service.database}, f.service.resolveOperatorChatAuthority))
 				}
 				state := &coordinatorTurnState{coordinator: c, conversationID: record.ID, users: []conversationMessageRecord{user}}
@@ -322,6 +325,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 							t.Fatalf("MCP coordinator %s=%+v error=%v", section, result, err)
 						}
 					}
+					waitCoordinatorIdle(t, t.Context(), f.service)
 					switch outcome {
 					case "shared entry expired":
 						keyExpired = true
@@ -758,9 +762,16 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					if tool == string(chat.ActionArchiveItems) {
 						target = tracker.NativeWorkItemID(archiveIDs[4])
 					}
+					if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+						t.Fatal(err)
+					}
+					waitCoordinatorIdle(t, t.Context(), f.service)
 					original := f.service.config.TenantRepository
 					f.service.config.TenantRepository = coordinatorActionFailureRepository{Repository: original, phase: faultPhase, target: target, injected: &injected}
-					t.Cleanup(func() { f.service.config.TenantRepository = original })
+					t.Cleanup(func() {
+						waitCoordinatorIdle(t, context.Background(), f.service)
+						f.service.config.TenantRepository = original
+					})
 				}
 
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
@@ -1121,14 +1132,19 @@ func runCoordinatorIssueSplitPostgresCases(t *testing.T) {
 	outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments", "child failure", "edge failure", "comment failure", "invalid state", "cycle", "validation then valid", "multiple edges"}
 	for _, outcome := range outcomes {
 		t.Run(string(chat.ActionIssueSplit)+"/"+outcome, func(t *testing.T) {
+			t.Parallel()
 			provider := newHostedSecurityProvider()
 			fixture := newConfiguredCoordinatorFixture(t, "Approved split", func(cfg *Config) {
 				cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_split", WorkOSOrganizationID: "provider_org_split", BootstrapSubject: "user_org_split", PublicURL: "https://hub.example.test", Provider: provider}
 			})
 			service := fixture.service
+			if err := service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			repository := service.config.TenantRepository
 			for _, organization := range []tracker.OrganizationID{"org_split", "org_split_second"} {
 				t.Run(string(organization), func(t *testing.T) {
+					waitCoordinatorIdle(t, t.Context(), service)
 					selectPostgresHubTestOrganization(service, organization)
 					native := newNativeFixture(t, service, organization, "Split scope")
 					f := hostedSecurityFixture{service: service, provider: provider, project: native.project.ID, base: native.base}
@@ -1230,6 +1246,7 @@ func runCoordinatorIssueSplitPostgresCases(t *testing.T) {
 						if organization == other {
 							other = "org_split_second"
 						}
+						waitCoordinatorIdle(t, t.Context(), service)
 						selectPostgresHubTestOrganization(service, other)
 						foreign := newNativeFixture(t, service, other, "Foreign split scope").create(t, "Foreign issue")
 						selectPostgresHubTestOrganization(service, organization)
@@ -1338,10 +1355,12 @@ func runCoordinatorIssueSplitPostgresCases(t *testing.T) {
 					}
 					readSequence()
 					injected := false
+					waitCoordinatorIdle(t, t.Context(), service)
 					if strings.HasSuffix(outcome, " failure") {
 						service.config.TenantRepository = coordinatorSplitFailureRepository{Repository: repository, phase: strings.TrimSuffix(outcome, " failure"), injected: &injected}
 					}
 					response = f.request(t, user, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
+					waitCoordinatorIdle(t, t.Context(), service)
 					service.config.TenantRepository = repository
 					if strings.HasSuffix(outcome, " failure") && !injected {
 						t.Fatalf("split never reached the injected %s: %d %s", outcome, response.Code, response.Body.String())
@@ -1985,4 +2004,17 @@ func TestBindCoordinatorConnectionPerOrganization(t *testing.T) {
 	if len(connections) != 2 {
 		t.Fatalf("organizations share a coordinator connection: %v", connections)
 	}
+}
+
+func waitCoordinatorIdle(t *testing.T, ctx context.Context, service *Service) {
+	t.Helper()
+	coordinator := service.conversations.Coordinator.(*conversationTurnCoordinator)
+	testenv.WaitUntil(t, ctx, func() error {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		if coordinator.workers != 0 || len(coordinator.queue) != 0 {
+			return fmt.Errorf("coordinator workers=%d queued=%d", coordinator.workers, len(coordinator.queue))
+		}
+		return nil
+	})
 }
