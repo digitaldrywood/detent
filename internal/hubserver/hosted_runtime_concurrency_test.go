@@ -19,10 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -97,32 +95,6 @@ func runtimeProbeService(repo tenantstore.Repository) *Service {
 	d.hostedRuntime.Store(&hostedplans.RuntimeConfig{Revision: "loaded", Plans: hostedplans.PilotPlans()})
 	return &Service{database: d, config: Config{Logger: discardLogger(), now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_example", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}}
 }
-func TestRuntimeRefreshRequestsOverlap(t *testing.T) {
-	release := make(chan struct{})
-	probe := &runtimeReadProbe{release: release}
-	s := runtimeProbeService(probe)
-	e := echo.New()
-	e.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime, s.refreshHostedRuntime)
-	var wg sync.WaitGroup
-	defer func() { close(release); wg.Wait() }()
-	for range 2 {
-		wg.Go(func() {
-			req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_example/entitlements/runtime", nil)
-			req.Header.Set("Authorization", "Bearer "+testHostedPlanAdminToken)
-			rec := httptest.NewRecorder()
-			e.ServeHTTP(rec, req)
-			if rec.Code != http.StatusOK {
-				t.Errorf("runtime status=%d", rec.Code)
-			}
-		})
-	}
-	testenv.WaitUntil(t, t.Context(), func() error {
-		if got := probe.calls.Load(); got != 2 {
-			return fmt.Errorf("concurrent requests entered %d runtime reads; want 2", got)
-		}
-		return nil
-	})
-}
 func TestRuntimeRefreshExcludesUnrelatedRoutes(t *testing.T) {
 	probe := &runtimeReadProbe{err: errors.New("runtime storage unavailable")}
 	s := runtimeProbeService(probe)
@@ -134,37 +106,6 @@ func TestRuntimeRefreshExcludesUnrelatedRoutes(t *testing.T) {
 		if got := probe.calls.Load(); got != 0 {
 			t.Errorf("%s performed %d runtime reads", path, got)
 		}
-	}
-}
-func TestRuntimeRefreshRetainsSnapshotOnError(t *testing.T) {
-	probe := &runtimeReadProbe{err: errors.New("runtime storage unavailable")}
-	s := runtimeProbeService(probe)
-	before := s.database.plansService().RuntimeState()
-	e := echo.New()
-	e.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime, s.refreshHostedRuntime)
-	req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_example/entitlements/runtime", nil)
-	req.Header.Set("Authorization", "Bearer "+testHostedPlanAdminToken)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || s.database.plansService().RuntimeState() != before {
-		t.Fatalf("last good snapshot lost: status=%d", rec.Code)
-	}
-}
-
-func TestRuntimeRefreshRejectsInvalidPublishedSnapshot(t *testing.T) {
-	s := runtimeProbeService(&runtimeReadProbe{revision: "invalid"})
-	before := s.database.plansService().RuntimeState()
-	plans := hostedplans.PilotPlans()
-	plans.WindowSeconds = 61
-	raw, err := json.Marshal(hostedplans.HostedRuntimeUpdate{Plans: &plans})
-	if err != nil {
-		t.Fatal(err)
-	}
-	release := make(chan struct{})
-	close(release)
-	s.database.billingAuditStore = &runtimeObjectProbe{release: release, raw: raw}
-	if err := hubapi.FromFeatureError(s.database.plansService().RefreshRuntime(t.Context())); err == nil || s.database.plansService().RuntimeState() != before {
-		t.Fatalf("invalid publication replaced valid snapshot: %v", err)
 	}
 }
 

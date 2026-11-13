@@ -1,68 +1,13 @@
 package hubserver
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
-	"errors"
-	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func (s *Service) entitlementAdministrator(c echo.Context) bool {
-	token, err := apiBearerToken(c)
-	supplied := sha256.Sum256([]byte(token))
-	configured := sha256.Sum256(s.config.Hosted.EntitlementAdminToken)
-	return err == nil && len(s.config.Hosted.EntitlementAdminToken) >= 32 && subtle.ConstantTimeCompare(supplied[:], configured[:]) == 1
-}
-
-func (s *Service) hostedPlanReport(c echo.Context) error {
-	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
-		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
-	}
-	after := int64(0)
-	if value := c.QueryParam("history_after"); value != "" {
-		parsed, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || parsed < 0 {
-			return s.invalidAPIRequest(c, errors.New("invalid grant history cursor"))
-		}
-		after = parsed
-	}
-	limit := 100
-	if value := c.QueryParam("history_limit"); value != "" {
-		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed < 1 || parsed > 100 {
-			return s.invalidAPIRequest(c, errors.New("grant history limit must be between 1 and 100"))
-		}
-		limit = parsed
-	}
-	report, err := hubapi.FeatureResult(s.database.plansService().Entitlements(c.Request().Context(), after, limit))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, report)
-}
-
-func (s *Service) updateHostedPlan(c echo.Context) error {
-	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
-		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
-	}
-
-	var command hostedplans.PlanCommand
-	if err := hubapi.DecodeAPIJSON(c, &command); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	if err := hubapi.FromFeatureError(s.database.plansService().ApplyPlanCommand(c.Request().Context(), s.config.Hosted.EntitlementAdministrator, command)); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.NoContent(http.StatusNoContent)
-}
 
 func hostedRunnerTransactionMetrics(path string) []string {
 	switch path {

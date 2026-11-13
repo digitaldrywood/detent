@@ -185,10 +185,10 @@ func TestAPIRefusals(t *testing.T) {
 		{"credit balance", hubapi.NativeBase + "/ai-credits", "", "forbidden", "Shared service access is required to read AI credits", http.StatusForbidden, func(s *Service, c echo.Context) error { return credits.NewHTTP(s.creditHTTPDeps()).PlatformBalance(c) }},
 		{"credit adjustment", hubapi.NativeBase + "/ai-credits", "", "forbidden", "Shared service identity and email are required to adjust AI credits", http.StatusForbidden, func(s *Service, c echo.Context) error { return credits.NewHTTP(s.creditHTTPDeps()).AdjustPlatform(c) }},
 		{"request metrics", hubapi.NativeBase + "/request-metrics", "", "forbidden", "Staff access is required to read request metrics", http.StatusForbidden, (*Service).hostedRequestMetrics},
-		{"runtime read", hubapi.NativeBase + "/runtime", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, (*Service).readHostedRuntime},
-		{"runtime reload", hubapi.NativeBase + "/runtime", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, (*Service).reloadHostedRuntime},
-		{"plan read", hubapi.NativeBase + "/plan", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, (*Service).hostedPlanReport},
-		{"plan update", hubapi.NativeBase + "/plan", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, (*Service).updateHostedPlan},
+		{"runtime read", hubapi.NativeBase + "/runtime", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, func(s *Service, c echo.Context) error { return hostedplans.NewHTTP(s.hostedPlansHTTPDeps()).ReadRuntime(c) }},
+		{"runtime reload", hubapi.NativeBase + "/runtime", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, func(s *Service, c echo.Context) error { return hostedplans.NewHTTP(s.hostedPlansHTTPDeps()).ReloadRuntime(c) }},
+		{"plan read", hubapi.NativeBase + "/plan", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, func(s *Service, c echo.Context) error { return hostedplans.NewHTTP(s.hostedPlansHTTPDeps()).PlanReport(c) }},
+		{"plan update", hubapi.NativeBase + "/plan", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, func(s *Service, c echo.Context) error { return hostedplans.NewHTTP(s.hostedPlansHTTPDeps()).UpdatePlan(c) }},
 		{"billing webhook", "/webhooks/stripe", `{"private-token":"test-secret"}`, "invalid_request", "Billing webhook signature, timestamp or mode is invalid", http.StatusBadRequest, func(s *Service, c echo.Context) error {
 			s.database = &database{}
 			s.config.now = time.Now
