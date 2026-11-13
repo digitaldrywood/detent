@@ -17,6 +17,7 @@ type (
 	conversationArchiveFixture = harness.ConversationArchive
 	tenantFixture              = harness.Tenant
 	tenantDetailFixture        = harness.TenantDetails
+	nativeDuplicateFixture     = harness.DuplicateChallenge
 )
 
 const (
@@ -28,34 +29,35 @@ const (
 )
 
 var (
-	createEntryTestProject  = harness.CreateProject
-	stateOf                 = harness.StateOf
-	assertEntryFallback     = harness.AssertEntryFallback
-	inviteEntryTestMember   = harness.InviteMember
-	registerTestOAuth       = harness.RegisterOAuth
-	testOAuthQuery          = harness.OAuthQuery
-	approveTestOAuth        = harness.ApproveOAuth
-	exchangeTestOAuth       = harness.ExchangeOAuth
-	entryTenantTransport    = harness.TenantTransport
-	attachmentProject       = harness.Project
-	attachmentRequest       = harness.Request
-	entryMCPClient          = harness.MCPClient
-	attachmentMCPClient     = harness.AttachmentMCPClient
-	entryPostgresTemplate   = harness.Postgres
-	newFakeProvider         = harness.NewFakeProvider
-	newBrowser              = harness.NewBrowser
-	csrfFrom                = harness.CSRF
-	bootstrapCSRF           = harness.BootstrapCSRF
-	jsonBody                = harness.JSONBody
-	newSpacesFixture        = harness.NewSpaces
-	newTenantIn             = harness.NewTenantIn
-	pilotPlans              = harness.PilotPlans
-	capacityPlans           = harness.CapacityPlans
-	testSocketEndpoint      = harness.SocketEndpoint
-	signedTenantFixtureCall = harness.SignedTenantCall
-	pilotPolicy             = harness.PilotPolicy
-	entryPostgresDatabase   = harness.PostgresDatabase
-	entrySharedDatabase     = harness.SharedPostgresDatabase
-	configurePostgresTenant = harness.ConfigurePostgresTenant
-	entrySecretEnvironment  = harness.SecretEnvironment
+	createEntryTestProject    = harness.CreateProject
+	stateOf                   = harness.StateOf
+	assertEntryFallback       = harness.AssertEntryFallback
+	inviteEntryTestMember     = harness.InviteMember
+	registerTestOAuth         = harness.RegisterOAuth
+	testOAuthQuery            = harness.OAuthQuery
+	approveTestOAuth          = harness.ApproveOAuth
+	exchangeTestOAuth         = harness.ExchangeOAuth
+	entryTenantTransport      = harness.TenantTransport
+	attachmentProject         = harness.Project
+	attachmentRequest         = harness.Request
+	entryMCPClient            = harness.MCPClient
+	attachmentMCPClient       = harness.AttachmentMCPClient
+	entryPostgresTemplate     = harness.Postgres
+	newFakeProvider           = harness.NewFakeProvider
+	newBrowser                = harness.NewBrowser
+	csrfFrom                  = harness.CSRF
+	bootstrapCSRF             = harness.BootstrapCSRF
+	jsonBody                  = harness.JSONBody
+	newSpacesFixture          = harness.NewSpaces
+	newTenantIn               = harness.NewTenantIn
+	pilotPlans                = harness.PilotPlans
+	capacityPlans             = harness.CapacityPlans
+	testSocketEndpoint        = harness.SocketEndpoint
+	signedTenantFixtureCall   = harness.SignedTenantCall
+	pilotPolicy               = harness.PilotPolicy
+	entryPostgresDatabase     = harness.PostgresDatabase
+	entrySharedDatabase       = harness.SharedPostgresDatabase
+	configurePostgresTenant   = harness.ConfigurePostgresTenant
+	entrySecretEnvironment    = harness.SecretEnvironment
+	approveEntryFixturePolicy = harness.ApprovePolicy
 )

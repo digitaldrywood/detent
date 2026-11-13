@@ -1,69 +1,52 @@
-package cloudentry
+package workreads_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entryfixture"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type nativeDuplicateFixture struct {
-	ChallengeToken     string `json:"challenge_token"`
-	PossibleDuplicates []struct {
-		Number int `json:"number"`
-	} `json:"possible_duplicates"`
-}
-
 type hostedHubReadFixture struct {
-	entry   entryFixture
-	browser *browser
+	entry   entryfixture.Fixture
+	browser *harness.Browser
 	base    string
 	csrf    string
 }
 
 func newHostedHubReadFixture(t *testing.T) hostedHubReadFixture {
 	t.Helper()
-	entry := newEntryFixtureWithLogger(t, slog.New(slog.DiscardHandler), func(cfg *hubserver.Config) {
-		configurePostgresTenant(t, cfg)
+	entry := entryfixture.NewWithLogger(t, slog.New(slog.DiscardHandler), func(cfg *hubserver.Config) {
+		harness.ConfigurePostgresTenant(t, cfg)
 		cfg.RunDetails = hubmaintenance.LimitDetails(cfg.RunDetails)
 	})
-	owner := newBrowser(t, entry.service.Handler())
+	owner := harness.NewBrowser(t, entry.Service.Handler())
 	owner.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	response, body := owner.Get("/organizations/org_alpha/app/bootstrap")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("organization status = %d: %s", response.StatusCode, body)
 	}
-	project := attachmentProject(t, owner, "org_alpha")
-	approveEntryFixturePolicy(t, owner, "org_alpha", project)
+	project := harness.Project(t, owner, "org_alpha")
+	harness.ApprovePolicy(t, owner, "org_alpha", project)
 	return hostedHubReadFixture{
 		entry:   entry,
 		browser: owner,
 		base:    "/api/v2/organizations/org_alpha/projects/" + project,
-		csrf:    bootstrapCSRF(t, body),
+		csrf:    harness.BootstrapCSRF(t, body),
 	}
 }
 
 func (f hostedHubReadFixture) request(t *testing.T, method, target string, payload any) *httptest.ResponseRecorder {
 	t.Helper()
-	var body []byte
-	if payload != nil {
-		var err error
-		body, err = json.Marshal(payload)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	return attachmentRequest(t, f.browser, method, target, bytes.NewReader(body), map[string]string{
-		"Content-Type": "application/json", "X-CSRF-Token": f.csrf,
-	})
+	return harness.JSONRequest(t, f.browser, f.csrf, method, target, payload)
 }
 
 func TestHostedHubWorkReads(t *testing.T) {
@@ -80,7 +63,7 @@ func TestHostedHubWorkReads(t *testing.T) {
 			"body": "## Acceptance criteria\nRead through the shared entry.\n## Must not break\nTenant isolation.\n## How we know it worked\nRun the HTTP regression.",
 		}
 		response := f.request(t, http.MethodPost, f.base+"/work-items", draft)
-		var challenge nativeDuplicateFixture
+		var challenge harness.DuplicateChallenge
 		if json.Unmarshal(response.Body.Bytes(), &challenge) != nil {
 			t.Fatalf("file fixture=%d %s", response.Code, response.Body)
 		}
@@ -113,7 +96,7 @@ func TestHostedHubWorkReads(t *testing.T) {
 	var after tracker.NativeWorkItemID
 	for range len(issues) {
 		ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubserver.BoardMaintenanceBytes}).Context(t.Context(), tenant)
-		next, processed, err := f.entry.fixtures[tenant.Organization].Service.MaintainBoardRecord(ctx, tracker.OrganizationID(tenant.Organization), after)
+		next, processed, err := f.entry.Fixtures[tenant.Organization].Service.MaintainBoardRecord(ctx, tracker.OrganizationID(tenant.Organization), after)
 		if err != nil || !processed {
 			t.Fatalf("project fixture board after %s: processed=%t error=%v", after, processed, err)
 		}
@@ -206,27 +189,5 @@ func TestHostedHubWorkReads(t *testing.T) {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body)
 			}
 		})
-	}
-}
-
-func approveEntryFixturePolicy(t *testing.T, owner *browser, organization, project string) {
-	t.Helper()
-	selected := newBrowser(t, owner.Entry)
-	selected.Login("/organizations/"+organization+"/organization", "user_alice:p"+organization)
-	response, page := selected.Get("/organizations/" + organization + "/app/bootstrap")
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("organization=%d %s", response.StatusCode, page)
-	}
-	fixture := hostedHubReadFixture{browser: selected, base: "/api/v2/organizations/" + organization + "/projects/" + project, csrf: bootstrapCSRF(t, page)}
-	current := fixture.request(t, http.MethodGet, fixture.base+"/policy", nil)
-	var approval policy.Approval
-	if current.Code == http.StatusOK {
-		if err := json.Unmarshal(current.Body.Bytes(), &approval); err != nil {
-			t.Fatal(err)
-		}
-	}
-	applied := fixture.request(t, http.MethodPut, fixture.base+"/policy", policy.Change{ExpectedID: approval.Policy.ID, Policy: pilotPolicy()})
-	if applied.Code != http.StatusOK {
-		t.Fatalf("approve fixture policy=%d %s", applied.Code, applied.Body)
 	}
 }
