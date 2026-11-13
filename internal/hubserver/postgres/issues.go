@@ -155,6 +155,11 @@ func (s *session) updateWorkItem(ctx context.Context, record corestore.WorkItem,
 		return corestore.WorkItem{}, err
 	}
 	current := corestore.WorkItem(row)
+	if !reflect.DeepEqual(previous.ActorPrincipalID, current.ActorPrincipalID) {
+		if err := s.advanceWorkItemVisibility(ctx); err != nil {
+			return corestore.WorkItem{}, err
+		}
+	}
 	if !reflect.DeepEqual(workItemDeliveryValues(previous), workItemDeliveryValues(current)) {
 		if err := s.recordBoardDelta(current.ProjectID, viewstore.BoardDelta{WorkItemID: current.NativeID, Topic: "work_item", EntityID: string(current.NativeID), EntityRevision: new(current.Revision), Kind: "upsert", RelatedID: string(current.NativeID)}); err != nil {
 			return corestore.WorkItem{}, err
@@ -184,10 +189,20 @@ func (s *session) DeleteWorkItem(ctx context.Context, project tracker.ProjectID,
 	if err := affected(ctx, rows, err); err != nil {
 		return err
 	}
+	if err := s.advanceWorkItemVisibility(ctx); err != nil {
+		return err
+	}
 	if err := s.recordBoardDelta(project, viewstore.BoardDelta{WorkItemID: previous.NativeID, Topic: "work_item", EntityID: string(previous.NativeID), Kind: "delete", RelatedID: string(previous.NativeID)}); err != nil {
 		return err
 	}
 	return s.recordBoardDelta(project, viewstore.BoardDelta{Topic: "human_action", EntityID: string(previous.NativeID), Kind: "delete", RelatedID: string(previous.NativeID)})
+}
+
+func (s *session) advanceWorkItemVisibility(ctx context.Context) error {
+	_, err := s.db.Exec(ctx, `INSERT INTO native_board_access_revisions(organization_id,subject_kind,subject_id,revision)
+ VALUES($1,'organization',$1,1) ON CONFLICT(organization_id,subject_kind,subject_id)
+ DO UPDATE SET revision=native_board_access_revisions.revision+1`, s.organization)
+	return mapError(ctx, err)
 }
 
 func workItemDeliveryValues(row corestore.WorkItem) []any {

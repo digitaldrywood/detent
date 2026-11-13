@@ -783,9 +783,9 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 				}
 			}
 			setOwner("another-principal")
-			assertVisibilityReset(reporter, 3)
+			assertVisibilityReset(reporter, 4)
 			setOwner(member.PrincipalID)
-			deleted := &dashboardSubscription{request: reporter.request, claims: reporter.claims, scope: reporter.scope, sequence: 4, grantVersion: reporter.grantVersion, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
+			deleted := &dashboardSubscription{request: reporter.request, claims: reporter.claims, scope: reporter.scope, sequence: 6, grantVersion: reporter.grantVersion, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.DeleteWorkItem(t.Context(), "project_first", "wi_owned"); err != nil {
 					return err
@@ -794,7 +794,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			assertVisibilityReset(deleted, 5)
+			assertVisibilityReset(deleted, 9)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 				return w.DeleteAccessProjectGrant(t.Context(), member.UserID, "project_first")
 			}); err != nil {
