@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -391,6 +392,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		want        []int
 		winner      int
 		targeted    bool
+		byID        bool
 	}{
 		{name: "single provider candidate honors project rank and selectors", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, want: []int{0, 1, 2}, winner: 1, targeted: true},
 		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
@@ -401,7 +403,8 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		{name: "rework then in progress precede higher priority todo", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{0, 1, 2}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{2, 1, 0}, winner: 2},
 		{name: "rework precedes configured labels and older todo", states: []string{"Todo", "Rework", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "Todo"}, labels: []string{"hotfix", "bug"}, want: []int{1, 0, 2}, winner: 1},
 		{name: "queue rank yields to age", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{"c", "a", "b"}, want: []int{0, 1, 2}},
-		{name: "precise creation order breaks unranked ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{" ", "  ", "   "}, created: []string{"2026-10-02T12:00:00.000000002Z", "2026-10-02T12:00:00Z", "2026-10-02T12:00:00.000000001Z"}, want: []int{1, 2, 0}, winner: 1},
+		{name: "precise creation order breaks unranked ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{" ", "  ", "   "}, created: []string{"2026-10-02T12:00:00.000002Z", "2026-10-02T12:00:00Z", "2026-10-02T12:00:00.000001Z"}, want: []int{1, 2, 0}, winner: 1},
+		{name: "equal creation times break ties by work item ID", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{" ", " ", " "}, created: []string{"2026-10-02T12:00:00.000001Z", "2026-10-02T12:00:00.000001Z", "2026-10-02T12:00:00.000001Z"}, byID: true},
 		{name: "unblocker count yields to age", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, unavailable: "unblocker", want: []int{0, 1}},
 		{name: "retired red barrier does not hold merging", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "retired barrier", want: []int{0, 1, 2}},
 		{name: "missing required review keeps merging unclaimable", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "required review", want: []int{1, 2}, winner: 1},
@@ -489,6 +492,11 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 					return nil
 				})
 				issues[i] = issue
+				if test.created != nil {
+					if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET native_created_at=$1 WHERE organization_id=$2 AND project_id=$3 AND native_id=$4", issue.CreatedAt, f.project.OrganizationID, f.project.ID, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if test.states[i] == "Merging" && test.unavailable != "review" {
 					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
 					response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Reviewed work"})
@@ -512,6 +520,11 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 					candidate.Revision++
 				}
 				claim.ProviderCandidates = append(claim.ProviderCandidates, candidate)
+			}
+			if test.byID {
+				test.want = []int{0, 1, 2}
+				slices.SortFunc(test.want, func(a, b int) int { return strings.Compare(string(issues[a].WorkItemID), string(issues[b].WorkItemID)) })
+				test.winner = test.want[0]
 			}
 			if test.unavailable == "dependency" {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
