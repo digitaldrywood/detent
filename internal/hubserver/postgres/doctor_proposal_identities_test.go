@@ -60,7 +60,7 @@ func assertDoctorProposalIdentitySeek(t *testing.T, admin *sql.DB, org tracker.O
 	if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.ExecContext(t.Context(), `SET LOCAL enable_seqscan=off`); err != nil {
+	if _, err := tx.ExecContext(t.Context(), `SET LOCAL enable_seqscan=off; SET LOCAL enable_sort=off`); err != nil {
 		t.Fatal(err)
 	}
 	var raw []byte
