@@ -1,6 +1,6 @@
 {
   "tables": {
-    "hub_detail_objects": {"class": "immutable_payload", "retention": "PutDetailObject stores content-addressed detail archives for a Hub without object storage; replay is idempotent by key and digest and organization deletion cascades"},
+    "hub_detail_objects": {"class": "immutable_payload", "retention": "PutDetailObject stores content-addressed detail archives for a Hub without object storage and refreshes the orphan grace on replay; native retention Reclaim deletes objects older than the attachment orphan TTL that no reference catalog row names, a bounded page budget per pass; organization deletion cascades"},
     "github_pull_request_refresh": {"class": "hot_state", "retention": "RequestGitHubPullRequests, CompleteGitHubPullRequestRefresh and RecordGitHubPullRequestSource own current refresh requests and observations; organization deletion cascades"},
     "health_scheduled_reports": {"class": "immutable_payload", "retention": "RecordHealthScheduledReport retains immutable per-project repository run and attempt receipts; conflicting replay is rejected and project identity is retained"},
     "issue_storage_archives": {"class": "hot_state", "retention": "PublishStorageArchive owns the current work item archive pointer and scan progress; archive reference deletion cascades"},

@@ -241,8 +241,8 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 				return nil, errors.Join(fmt.Errorf("resolve local organization: %w", err), database.Close())
 			}
 			database.hostedOrganization = localOrganization
-			if cfg.RunDetails == nil {
-				cfg.RunDetails = database.postgres.DetailStore(cfg.Clock)
+			if database.detailObjects = database.postgres.DetailStore(cfg.Clock); cfg.RunDetails == nil {
+				cfg.RunDetails = database.detailObjects
 			}
 		}
 		cfg = cfg.normalized()

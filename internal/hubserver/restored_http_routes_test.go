@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -243,5 +244,16 @@ func TestLocalHubStoresRunDetailsInPostgres(t *testing.T) {
 	var stored int
 	if err := admin.(*sql.DB).QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts a JOIN hub_detail_objects d ON d.organization_id=a.organization_id AND d.object_key IN (a.payload_object_key,a.checkpoint_object_key) WHERE a.organization_id=$1 AND a.id=$2`, f.project.OrganizationID, start.Data.AttemptID).Scan(&stored); err != nil || stored != 2 {
 		t.Fatalf("run detail objects in PostgreSQL=%d err=%v", stored, err)
+	}
+	abandoned, err := service.runDetailStore().StoreDetail(t.Context(), string(f.project.OrganizationID), []byte(`{"abandoned":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.expireNativeRecords(t.Context(), service.config.Clock().Add(8*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var live, orphaned int
+	if err := admin.(*sql.DB).QueryRowContext(t.Context(), `SELECT count(*) FILTER (WHERE object_key<>$2),count(*) FILTER (WHERE object_key=$2) FROM hub_detail_objects WHERE organization_id=$1`, f.project.OrganizationID, abandoned.Key).Scan(&live, &orphaned); err != nil || live == 0 || orphaned != 0 {
+		t.Fatalf("retention kept abandoned=%d live=%d err=%v", orphaned, live, err)
 	}
 }

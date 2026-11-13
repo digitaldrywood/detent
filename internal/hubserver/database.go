@@ -28,6 +28,7 @@ type database struct {
 	postgres               *postgres.Repository
 	billingRepository      tenantstore.Repository
 	billingAuditStore      attachment.DetailStore
+	detailObjects          *postgres.DetailStore
 	schemaVersion          int64
 	schemaFingerprint      string
 	hostedOrganization     tracker.OrganizationID

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -126,5 +127,12 @@ func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error 
 			})
 		}},
 		{"expire command receipts", func(ctx context.Context) error { return s.retainCommandPayloads(ctx, now) }},
+		{"reclaim unreferenced detail objects", func(ctx context.Context) error {
+			if s.database == nil || s.database.detailObjects == nil {
+				return nil
+			}
+			_, err := s.database.detailObjects.Reclaim(ctx, organization, now.Add(-attachment.OrphanTTL))
+			return err
+		}},
 	})
 }
