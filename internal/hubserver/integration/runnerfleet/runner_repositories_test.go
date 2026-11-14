@@ -21,7 +21,15 @@ func TestRunnerRepositoryReports(t *testing.T) {
 	second := hubfixture.PrepareRunner(t, other, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	first.Enroll(t)
 	second.Enroll(t)
-	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/onboarding/repositories", f.Token, map[string]any{"runner_id": first.Binding.RunnerID, "idempotency_key": "denied"}), http.StatusNotFound)
+	denied := f.Hub.Request(t, http.MethodPost, f.Base+"/onboarding/repositories", f.Token, map[string]any{"runner_id": first.Binding.RunnerID, "idempotency_key": "denied"})
+	hubfixture.RequireStatus(t, denied, http.StatusForbidden)
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	hubfixture.Decode(t, denied, &refusal)
+	if refusal.Code != "access_denied" {
+		t.Fatalf("visible non-administrator refusal code=%q, want access_denied", refusal.Code)
+	}
 	ctx := t.Context()
 	read := func(runner string) (*runnerauth.RepositoryList, error) {
 		list := &runnerauth.RepositoryList{Repositories: []runnerauth.Repository{}}
