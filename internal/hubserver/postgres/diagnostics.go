@@ -213,7 +213,7 @@ func (s *session) diagnosticAttempts(ctx context.Context, projects []string, fro
 		positions[attempt.ID] = index
 	}
 	for project, ids := range byProject {
-		events, err := s.queries.RecordLatestRunEventsByAttempts(ctx, pgquery.RecordLatestRunEventsByAttemptsParams{OrganizationID: s.organization, ProjectID: project, AttemptIds: ids})
+		events, err := s.queries.RecordLatestRunEventsByAttempts(ctx, pgquery.RecordLatestRunEventsByAttemptsParams{OrganizationID: s.organization, ProjectID: string(project), AttemptIds: ids})
 		if err != nil {
 			return mapError(ctx, err)
 		}

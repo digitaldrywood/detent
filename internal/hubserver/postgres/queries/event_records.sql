@@ -316,12 +316,13 @@ SELECT latest.*
 FROM unnest(sqlc.arg(attempt_ids)::text[]) AS requested(attempt_id)
 CROSS JOIN LATERAL (
   SELECT * FROM collaboration_events
-  WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+  WHERE organization_id=sqlc.arg(organization_id)
     AND attempt_id=requested.attempt_id
     AND attempt_id<>''
   ORDER BY sequence DESC
   LIMIT 1
-) latest;
+) latest
+WHERE latest.project_id=sqlc.arg(project_id)::text;
 
 -- name: RecordGetLinkedIssueSourceByURL :one
 SELECT * FROM linked_issue_sources WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND source_url=sqlc.arg(source_url);

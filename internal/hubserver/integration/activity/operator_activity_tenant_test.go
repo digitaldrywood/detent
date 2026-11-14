@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -329,6 +330,7 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 		t.Fatal("expired running attempt did not report interruption")
 	}
 	assertActivityRunLookupBounded(t, admin)
+	assertActivityRunLookupFailsClosed(t, admin)
 }
 
 type activityQueryCapture struct {
@@ -418,5 +420,56 @@ func assertActivityRunLookupBounded(t *testing.T, admin *sql.DB) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertActivityRunLookupFailsClosed(t *testing.T, admin *sql.DB) {
+	t.Helper()
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,attempt_id)
+ SELECT e.organization_id,e.project_id,e.work_item_id,'foreign_project_event',90000,e.type,e.schema_version,e.actor_kind,e.actor_principal_id,e.event_revision,e.recorded_at,e.payload_object_key,e.payload_sha256,e.payload_bytes,e.payload_content_bytes,'project_1_item_1'
+ FROM collaboration_events e WHERE e.organization_id='org_first' AND e.attempt_id='project_2_item_1' ORDER BY e.sequence DESC LIMIT 1`); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		org  tracker.OrganizationID
+		want []string
+	}{{"org_first", []string{"project_1_item_2"}}, {"org_second", []string{"project_1_item_1", "project_1_item_2"}}} {
+		connection, err := admin.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = connection.Raw(func(driverConnection any) error {
+			tx, err := driverConnection.(*stdlib.Conn).Conn().Begin(t.Context())
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback(t.Context())
+			if _, err := tx.Exec(t.Context(), `SET LOCAL ROLE detent_runtime_v2`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, string(test.org)); err != nil {
+				return err
+			}
+			events, err := pgquery.New(tx).ActivityLatestRunEvents(t.Context(), pgquery.ActivityLatestRunEventsParams{OrganizationID: test.org, AttemptIds: []string{"project_1_item_1", "project_1_item_2", "attempt_absent"}})
+			if err != nil {
+				return err
+			}
+			got := []string{}
+			for _, e := range events {
+				if e.ID == "foreign_project_event" || e.OrganizationID != test.org || e.ProjectID != "project_1" {
+					t.Fatalf("%s run lookup disclosed an event outside the attempt's project: %+v", test.org, e)
+				}
+				got = append(got, e.AttemptID)
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("%s run lookup attempts=%v, want %v", test.org, got, test.want)
+			}
+			return nil
+		})
+		connection.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }

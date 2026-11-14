@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -1061,6 +1062,25 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				t.Fatalf("other project events=%d error=%v", len(otherProject), err)
 			}
 		})
+	}
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,schema_version,actor_kind,actor_principal_id,attempt_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) VALUES('org_first','prj_second','wi_second_1','event_foreign',40000,1,'runner','example','attempt_1',$1,'orgs/org_first/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1)`, pgstoretest.HistoryAt()); err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		want, got := map[string]string{"attempt_1": "event_1684", "attempt_2": "event_1685"}, map[string]string{}
+		if org == "org_first" {
+			delete(want, "attempt_1")
+		}
+		err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+			events, err := reader.(eventstore.RunEventBatchReader).LatestRunEvents(t.Context(), "prj_first", []string{"attempt_1", "attempt_2", "attempt_absent"})
+			for _, event := range events {
+				got[event.AttemptID] = event.ID
+			}
+			return err
+		})
+		if err != nil || !maps.Equal(got, want) {
+			t.Fatalf("%s latest run events with a foreign-project latest event=%v want %v error=%v", org, got, want, err)
+		}
 	}
 }
 

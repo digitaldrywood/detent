@@ -2471,18 +2471,19 @@ SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id
 FROM unnest($1::text[]) AS requested(attempt_id)
 CROSS JOIN LATERAL (
   SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, history_hidden, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events
-  WHERE organization_id=$2 AND project_id=$3
+  WHERE organization_id=$2
     AND attempt_id=requested.attempt_id
     AND attempt_id<>''
   ORDER BY sequence DESC
   LIMIT 1
 ) latest
+WHERE latest.project_id=$3::text
 `
 
 type RecordLatestRunEventsByAttemptsParams struct {
 	AttemptIds     []string
 	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
+	ProjectID      string
 }
 
 func (q *Queries) RecordLatestRunEventsByAttempts(ctx context.Context, arg RecordLatestRunEventsByAttemptsParams) ([]CollaborationEvent, error) {

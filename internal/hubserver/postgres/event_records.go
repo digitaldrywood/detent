@@ -1219,7 +1219,7 @@ func (s *session) LatestRunEvents(ctx context.Context, project tracker.ProjectID
 		}
 		seen[id] = true
 	}
-	rows, err := s.queries.RecordLatestRunEventsByAttempts(ctx, pgquery.RecordLatestRunEventsByAttemptsParams{OrganizationID: s.organization, ProjectID: project, AttemptIds: attempts})
+	rows, err := s.queries.RecordLatestRunEventsByAttempts(ctx, pgquery.RecordLatestRunEventsByAttemptsParams{OrganizationID: s.organization, ProjectID: string(project), AttemptIds: attempts})
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
