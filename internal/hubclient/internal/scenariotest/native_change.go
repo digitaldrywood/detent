@@ -1060,7 +1060,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 							t.Fatal(err)
 						}
 						h.seed(func(w tenantstore.Writer) error {
-							_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: peerAttemptID, RunID: data.RunID, Fence: leasestore.Fence{LeaseID: peerLease.LeaseID, FencingToken: peerLease.FencingToken}, Sequence: sequence, Status: status, StartedAt: peerLease.AcquiredAt, PayloadObjectKey: payload.Key, PayloadReference: payload})
+							_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: peerAttemptID, RunID: data.RunID, Fence: leasestore.Fence{LeaseID: peerLease.LeaseID, FencingToken: peerLease.FencingToken}, Sequence: sequence, Status: status, StartedAt: peerLease.AcquiredAt, PayloadObjectKey: payload.Key, PayloadReference: payload, WorkerCleanupRequired: new(false), Failure: &leasestore.AttemptFailure{}})
 							return err
 						})
 					}
