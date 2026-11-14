@@ -88,5 +88,12 @@ func (s *Service) projectBoardRelationships(scope hubscope.NativeScope, issue *t
 	slices.SortFunc(issue.Blockers, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 	slices.SortFunc(issue.Dependents, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 	slices.SortFunc(issue.Related, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
-	issue.BlockedReason.CurrentBasis, issue.UnblocksReason.CurrentBasis = "", ""
+	blocked, unblocks := make([]string, 0, len(issue.Dependencies)), make([]string, 0, len(issue.Dependents))
+	for _, id := range issue.Dependencies {
+		blocked = append(blocked, string(id))
+	}
+	for _, link := range issue.Dependents {
+		unblocks = append(unblocks, string(link.ID))
+	}
+	issue.BlockedReason.CurrentBasis, issue.UnblocksReason.CurrentBasis = workitemread.DependencyBasis(blocked), workitemread.DependencyBasis(unblocks)
 }
