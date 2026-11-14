@@ -172,7 +172,7 @@ func TestDiagnosticsProjectionReadBound(t *testing.T) {
 				}
 			}
 			credential := hubapi.APICredential{Hosted: f.owner.identity.Hosted}
-			report, err := f.hosted.service.readDiagnosticsTenant(t.Context(), credential, w, f.hosted.project)
+			report, err := f.hosted.service.diagnosticsTenantReport(t.Context(), credential, w, f.hosted.project)
 			if err != nil {
 				t.Fatal(err)
 			}
