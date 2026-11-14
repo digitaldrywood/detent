@@ -43,6 +43,7 @@ type CandidateQuery struct {
 	After                     CandidateCursor
 	AfterWorkItemID           tracker.NativeWorkItemID
 	IncludeLeasedAnchor       bool
+	ExcludeSatisfiedAnchor    bool
 	IncludeUnclassifiedSource bool
 	Limit                     int
 }

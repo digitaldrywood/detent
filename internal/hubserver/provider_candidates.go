@@ -98,6 +98,9 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			query.AfterWorkItemID = anchor.NativeID
 		}
 		page, err := r.CandidatePage(ctx, query)
+		if errors.Is(err, corestore.ErrInvalidCursor) && query.AfterWorkItemID != "" {
+			return providerWait("provider_candidate_changed", "Work item changed after local model selection; refresh before claiming")
+		}
 		if err != nil {
 			return err
 		}
