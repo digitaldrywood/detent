@@ -679,7 +679,13 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	if ids, _ = observedIDs(t); len(ids) != 0 {
 		t.Fatalf("removed runners retain actionable reports: %v", ids)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, ObservedPolicyID: changed.ID}), http.StatusUnprocessableEntity)
+	stale := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, ObservedPolicyID: changed.ID})
+	requireNativeStatus(t, stale, http.StatusConflict)
+	var refusal hubapi.APIErrorResponse
+	decodeHubResponse(t, stale, &refusal)
+	if refusal.Code != "policy_mismatch" {
+		t.Fatalf("withdrawn observation refusal = %+v, want policy_mismatch", refusal)
+	}
 }
 
 func TestOnboardingReportedConfigurationDoesNotBlockRunner(t *testing.T) {
