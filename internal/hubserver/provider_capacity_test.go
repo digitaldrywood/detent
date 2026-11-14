@@ -1288,7 +1288,13 @@ func TestProviderCapacityReportDisappearance(t *testing.T) {
 				reports, readErr = reader.RunnerProviderReports(t.Context(), r.binding.RunnerID)
 				return readErr
 			})
-			if err != nil || len(reports) != 0 {
+			if state == "omitted" {
+				if err != nil || len(reports) != 1 || !reports[0].ObservedAt.Equal(capacityReport(now).ObservedAt) {
+					t.Fatalf("omitted provider reports must stay unchanged without renewing their observation: %+v, err=%v", reports, err)
+				}
+				now = now.Add(providercapacity.MaxAge)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, payload), http.StatusOK)
+			} else if err != nil || len(reports) != 0 {
 				t.Fatalf("reports after disappearance=%+v, err=%v", reports, err)
 			}
 			claim := providerClaim(r, issue, "empty")
