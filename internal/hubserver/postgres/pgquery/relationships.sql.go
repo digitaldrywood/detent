@@ -401,6 +401,46 @@ func (q *Queries) LockWorkItemBatch(ctx context.Context, arg LockWorkItemBatchPa
 	return items, nil
 }
 
+const relatedProjects = `-- name: RelatedProjects :many
+SELECT d.blocker_project_id::text AS related_project_id FROM issue_dependencies d
+WHERE d.organization_id=$1 AND d.dependent_project_id=$2 AND d.dependent_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3)
+UNION
+SELECT d.dependent_project_id::text FROM issue_dependencies d
+WHERE d.organization_id=$1 AND d.blocker_project_id=$2 AND d.blocker_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3)
+UNION
+SELECT r.second_project_id::text FROM issue_relationships r
+WHERE r.organization_id=$1 AND r.first_project_id=$2 AND r.first_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3)
+UNION
+SELECT r.first_project_id::text FROM issue_relationships r
+WHERE r.organization_id=$1 AND r.second_project_id=$2 AND r.second_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3)
+`
+
+type RelatedProjectsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      string
+	NativeID       tracker.NativeWorkItemID
+}
+
+func (q *Queries) RelatedProjects(ctx context.Context, arg RelatedProjectsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, relatedProjects, arg.OrganizationID, arg.ProjectID, arg.NativeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var related_project_id string
+		if err := rows.Scan(&related_project_id); err != nil {
+			return nil, err
+		}
+		items = append(items, related_project_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const relationshipBatch = `-- name: RelationshipBatch :many
 WITH requested AS (
     SELECT DISTINCT unnest($2::text[]) AS native_id
@@ -518,19 +558,19 @@ const relationshipPage = `-- name: RelationshipPage :many
 WITH candidates AS (
     SELECT 'dependency'::text AS relationship_type, 'blocked_by'::text AS direction, d.blocker_project_id AS related_project_id, d.blocker_issue_id AS related_issue_id, d.created_at
     FROM issue_dependencies d
-    WHERE d.organization_id=$1 AND d.dependent_project_id=$7 AND d.dependent_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$7 AND i.native_id=$8)
+    WHERE d.organization_id=$1 AND d.dependent_project_id=$9 AND d.dependent_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$9 AND i.native_id=$10)
     UNION ALL
     SELECT 'dependency'::text, 'blocks'::text, d.dependent_project_id, d.dependent_issue_id, d.created_at
     FROM issue_dependencies d
-    WHERE d.organization_id=$1 AND d.blocker_project_id=$7 AND d.blocker_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$7 AND i.native_id=$8)
+    WHERE d.organization_id=$1 AND d.blocker_project_id=$9 AND d.blocker_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$9 AND i.native_id=$10)
     UNION ALL
     SELECT 'related'::text, 'related'::text, r.second_project_id, r.second_issue_id, r.created_at
     FROM issue_relationships r
-    WHERE r.organization_id=$1 AND r.first_project_id=$7 AND r.first_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$7 AND i.native_id=$8)
+    WHERE r.organization_id=$1 AND r.first_project_id=$9 AND r.first_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$9 AND i.native_id=$10)
     UNION ALL
     SELECT 'related'::text, 'related'::text, r.first_project_id, r.first_issue_id, r.created_at
     FROM issue_relationships r
-    WHERE r.organization_id=$1 AND r.second_project_id=$7 AND r.second_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$7 AND i.native_id=$8)
+    WHERE r.organization_id=$1 AND r.second_project_id=$9 AND r.second_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$9 AND i.native_id=$10)
 )
 SELECT c.relationship_type,c.direction,c.related_project_id,target.native_id,c.created_at,target.number,target.title,target.workflow_state_name,COALESCE(states.terminal,false),COALESCE(states.dispatchable,false),target.actor_principal_id,COALESCE(organizations.slug,'') AS organization_slug,projects.slug AS project_slug,
     COALESCE(closed.closed_at,'0001-01-01 00:00:00+00'::timestamptz) AS closed_at,
@@ -554,19 +594,23 @@ LEFT JOIN LATERAL (
         ORDER BY attempts.fencing_token DESC LIMIT 1
     ) started ON true
 WHERE (c.relationship_type,c.direction,c.related_project_id,target.native_id) > ($2::text,$3::text,$4::text,$5::text)
+  AND ($6::text[] IS NULL OR (projects.deleted_at IS NULL AND c.related_project_id=ANY($6::text[])))
+  AND ($7::text IS NULL OR ($7::text<>'' AND target.actor_principal_id=$7::text))
 ORDER BY c.relationship_type,c.direction,c.related_project_id,target.native_id
-LIMIT $6
+LIMIT $8
 `
 
 type RelationshipPageParams struct {
-	OrganizationID tracker.OrganizationID
-	AfterType      string
-	AfterDirection string
-	AfterProjectID string
-	AfterNativeID  string
-	PageLimit      int32
-	ProjectID      string
-	NativeID       tracker.NativeWorkItemID
+	OrganizationID      tracker.OrganizationID
+	AfterType           string
+	AfterDirection      string
+	AfterProjectID      string
+	AfterNativeID       string
+	VisibleProjectIds   []string
+	ReporterPrincipalID *string
+	PageLimit           int32
+	ProjectID           string
+	NativeID            tracker.NativeWorkItemID
 }
 
 type RelationshipPageRow struct {
@@ -594,6 +638,8 @@ func (q *Queries) RelationshipPage(ctx context.Context, arg RelationshipPagePara
 		arg.AfterDirection,
 		arg.AfterProjectID,
 		arg.AfterNativeID,
+		arg.VisibleProjectIds,
+		arg.ReporterPrincipalID,
 		arg.PageLimit,
 		arg.ProjectID,
 		arg.NativeID,

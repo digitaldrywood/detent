@@ -60,6 +60,8 @@ type Reader interface {
 	CommentPage(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, Cursor, int) (Page[Comment], error)
 	RelationshipExists(context.Context, Relationship) (bool, error)
 	Relationships(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, RelationshipCursor, int) (RelationshipPage, error)
+	RelatedProjects(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) ([]tracker.ProjectID, error)
+	VisibleRelationships(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, RelationshipCursor, int, RelationshipVisibility) (RelationshipPage, error)
 	ProgressDependencies(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, WorkItemBlockerCursor, int) ([]ProgressDependency, error)
 	WorkItemBlockers(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, WorkItemBlockerCursor, int) ([]WorkItemBlocker, error)
 	LabelCatalog(context.Context, tracker.ProjectID, bool, string) ([]LabelCount, error)
@@ -253,6 +255,11 @@ type RelationshipCursor struct {
 type RelationshipPage struct {
 	Items []Relationship
 	Next  RelationshipCursor
+}
+
+type RelationshipVisibility struct {
+	Projects []tracker.ProjectID
+	Reporter *string
 }
 
 type LabelCount struct {

@@ -53,8 +53,23 @@ LEFT JOIN LATERAL (
         ORDER BY attempts.fencing_token DESC LIMIT 1
     ) started ON true
 WHERE (c.relationship_type,c.direction,c.related_project_id,target.native_id) > (sqlc.arg(after_type)::text,sqlc.arg(after_direction)::text,sqlc.arg(after_project_id)::text,sqlc.arg(after_native_id)::text)
+  AND (sqlc.narg(visible_project_ids)::text[] IS NULL OR (projects.deleted_at IS NULL AND c.related_project_id=ANY(sqlc.narg(visible_project_ids)::text[])))
+  AND (sqlc.narg(reporter_principal_id)::text IS NULL OR (sqlc.narg(reporter_principal_id)::text<>'' AND target.actor_principal_id=sqlc.narg(reporter_principal_id)::text))
 ORDER BY c.relationship_type,c.direction,c.related_project_id,target.native_id
 LIMIT sqlc.arg(page_limit);
+
+-- name: RelatedProjects :many
+SELECT d.blocker_project_id::text AS related_project_id FROM issue_dependencies d
+WHERE d.organization_id=sqlc.arg(organization_id) AND d.dependent_project_id=sqlc.arg(project_id) AND d.dependent_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(native_id))
+UNION
+SELECT d.dependent_project_id::text FROM issue_dependencies d
+WHERE d.organization_id=sqlc.arg(organization_id) AND d.blocker_project_id=sqlc.arg(project_id) AND d.blocker_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(native_id))
+UNION
+SELECT r.second_project_id::text FROM issue_relationships r
+WHERE r.organization_id=sqlc.arg(organization_id) AND r.first_project_id=sqlc.arg(project_id) AND r.first_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(native_id))
+UNION
+SELECT r.first_project_id::text FROM issue_relationships r
+WHERE r.organization_id=sqlc.arg(organization_id) AND r.second_project_id=sqlc.arg(project_id) AND r.second_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(native_id));
 
 -- name: RelationshipBatch :many
 WITH requested AS (

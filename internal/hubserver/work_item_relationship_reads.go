@@ -29,27 +29,45 @@ type workItemRelationshipPage struct {
 	NextCursor   string                      `json:"next_cursor,omitempty"`
 }
 
-func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope hubscope.NativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
-	var page workItemRelationshipPage
-	err := s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
-		var err error
-		page, err = s.readRelationshipPageModel(ctx, scope, request, item)
-		return err
-	})
-	if pageModelPending(err) {
-		return s.readWorkItemRelationshipSourcePage(ctx, scope, request, item)
-	}
-	return page, err
+type relationshipPageQuery struct {
+	limit      int
+	cursor     nativeCursor
+	key        []byte
+	after      corestore.RelationshipCursor
+	visibility corestore.RelationshipVisibility
 }
 
-func (s *Service) readRelationshipPageModel(ctx context.Context, scope hubscope.NativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
-	page := workItemRelationshipPage{
+func newWorkItemRelationshipPage(item tracker.NativeIssue) workItemRelationshipPage {
+	return workItemRelationshipPage{
 		Dependencies: []tracker.NativeWorkItemID{},
 		Blockers:     []tracker.NativeDependency{},
 		Dependents:   []tracker.NativeDependency{},
 		References:   append([]tracker.ExternalReference{}, item.ExternalReferences...),
 		Related:      []tracker.NativeDependency{},
 	}
+}
+
+func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope hubscope.NativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
+	var page workItemRelationshipPage
+	var query relationshipPageQuery
+	prepared := false
+	err := s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
+		var err error
+		query, err = s.prepareRelationshipPage(ctx, scope, request, item)
+		if err != nil {
+			return err
+		}
+		prepared = true
+		page, err = s.readRelationshipPageModel(ctx, scope, item, query)
+		return err
+	})
+	if prepared && pageModelPending(err) {
+		return s.readWorkItemRelationshipSourcePage(ctx, scope, item, query)
+	}
+	return page, err
+}
+
+func (s *Service) prepareRelationshipPage(ctx context.Context, scope hubscope.NativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (relationshipPageQuery, error) {
 	params := url.Values{"reference": {request.Reference}}
 	if request.Limit > 0 {
 		params.Set("limit", strconv.Itoa(request.Limit))
@@ -60,95 +78,97 @@ func (s *Service) readRelationshipPageModel(ctx context.Context, scope hubscope.
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(string(item.WorkItemID)) + "/relationships"
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, hubapi.MaxAPIPageLimit, hubapi.DefaultAPIPageLimit)
 	if err != nil {
-		return page, err
+		return relationshipPageQuery{}, err
 	}
-	after := corestore.RelationshipCursor{}
+	query := relationshipPageQuery{limit: limit, cursor: cursor, key: key}
 	if cursor.After != "" {
-		if err := json.Unmarshal([]byte(cursor.After), &after); err != nil {
-			return page, hubapi.NativePublicInvalid("Relationship cursor is invalid")
+		if err := json.Unmarshal([]byte(cursor.After), &query.after); err != nil {
+			return query, hubapi.NativePublicInvalid("Relationship cursor is invalid")
 		}
 	}
 	if err := s.authorizeCommentWorkItem(ctx, scope, string(item.WorkItemID)); err != nil {
-		return page, err
+		return query, err
 	}
-	var records []viewstore.RelationshipPageRecord
+	var related []tracker.ProjectID
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		related, err = r.RelatedProjects(ctx, scope.Project, item.WorkItemID)
+		return err
+	})
+	if err != nil {
+		return query, hubapi.ProjectRecordError(err)
+	}
+	query.visibility, err = s.workItemReader().RelationshipVisibility(ctx, scope, related)
+	return query, err
+}
+
+func (s *Service) readRelationshipPageModel(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeIssue, query relationshipPageQuery) (workItemRelationshipPage, error) {
+	page := newWorkItemRelationshipPage(item)
+	var records []viewstore.RelationshipPageRecord
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		reader, ok := r.(viewstore.RelationshipPageReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		records, err = reader.RelationshipPageRecords(ctx, scope.Project, item.WorkItemID, after, limit)
+		records, err = reader.RelationshipPageRecords(ctx, scope.Project, item.WorkItemID, query.after, query.limit, query.visibility)
 		return err
 	})
 	if err != nil {
 		return page, pageModelError(err)
 	}
-	projectVisible := map[tracker.ProjectID]bool{}
-	for _, record := range records[:min(limit, len(records))] {
-		relation := record.Relationship
-		projectVisible[relation.RelatedProjectID] = true
+	for _, record := range records[:min(query.limit, len(records))] {
+		page.add(record.Relationship, record.WebURL, record.Identifier)
 	}
-	authorizedProjects, err := s.relationshipProjectAccess(ctx, scope, projectVisible)
-	if err != nil {
-		return page, err
+	next := corestore.RelationshipCursor{}
+	if len(records) > query.limit {
+		last := records[query.limit-1].Relationship
+		next = corestore.RelationshipCursor{Type: last.Type, Direction: last.Direction, RelatedProjectID: last.RelatedProjectID, RelatedWorkItemID: last.RelatedWorkItemID}
 	}
-	for _, record := range records[:min(limit, len(records))] {
-		relation := record.Relationship
-		if !record.TargetExists {
-			continue
-		}
-		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
-			continue
-		}
-		if scope.Credential.EntryKey != nil && !scope.Credential.EntryKey.Allows(string(relation.RelatedProjectID)) {
-			continue
-		}
-		if !authorizedProjects[relation.RelatedProjectID] {
-			continue
-		}
+	return page, s.continueRelationshipPage(&page, query, next)
+}
 
-		link := tracker.NativeDependency{
-			Dispatchable: relation.Dispatchable,
-			Number:       relation.Number,
-			Title:        relation.Title,
-			WebURL:       record.WebURL,
-			Identifier:   record.Identifier,
-			ID:           relation.RelatedWorkItemID,
-			ProjectID:    relation.RelatedProjectID,
-			State:        relation.State,
-			Terminal:     relation.Terminal,
-			ClosedAt:     relation.ClosedAt,
-			StartedAt:    relation.StartedAt,
-		}
-		switch relation.Type {
-		case "dependency":
-			switch relation.Direction {
-			case "blocked_by":
-				page.Dependencies = append(page.Dependencies, relation.RelatedWorkItemID)
-				page.Blockers = append(page.Blockers, link)
-			case "blocks":
-				page.Dependents = append(page.Dependents, link)
-			}
-		case "related":
-			page.Related = append(page.Related, link)
-		}
+func (page *workItemRelationshipPage) add(relation corestore.Relationship, webURL, identifier string) {
+	link := tracker.NativeDependency{
+		Dispatchable: relation.Dispatchable,
+		Number:       relation.Number,
+		Title:        relation.Title,
+		WebURL:       webURL,
+		Identifier:   identifier,
+		ID:           relation.RelatedWorkItemID,
+		ProjectID:    relation.RelatedProjectID,
+		State:        relation.State,
+		Terminal:     relation.Terminal,
+		ClosedAt:     relation.ClosedAt,
+		StartedAt:    relation.StartedAt,
 	}
-	if len(records) > limit {
-		last := records[limit-1].Relationship
-		next := corestore.RelationshipCursor{Type: last.Type, Direction: last.Direction, RelatedProjectID: last.RelatedProjectID, RelatedWorkItemID: last.RelatedWorkItemID}
-		cursorAfter, err := json.Marshal(next)
-		if err != nil {
-			return page, err
+	switch relation.Type {
+	case "dependency":
+		switch relation.Direction {
+		case "blocked_by":
+			page.Dependencies = append(page.Dependencies, relation.RelatedWorkItemID)
+			page.Blockers = append(page.Blockers, link)
+		case "blocks":
+			page.Dependents = append(page.Dependents, link)
 		}
-		cursor.After = string(cursorAfter)
-		cursor.Expires = s.config.Clock().Add(time.Hour).Unix()
-		page.NextCursor, err = encodeNativeCursor(cursor, key)
-		if err != nil {
-			return page, err
-		}
+	case "related":
+		page.Related = append(page.Related, link)
 	}
-	return page, nil
+}
+
+func (s *Service) continueRelationshipPage(page *workItemRelationshipPage, query relationshipPageQuery, next corestore.RelationshipCursor) error {
+	if next.RelatedWorkItemID == "" {
+		return nil
+	}
+	cursorAfter, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	cursor := query.cursor
+	cursor.After = string(cursorAfter)
+	cursor.Expires = s.config.Clock().Add(time.Hour).Unix()
+	page.NextCursor, err = encodeNativeCursor(cursor, query.key)
+	return err
 }
 
 func (s *Service) GetWorkItemRelationships(c echo.Context) error {
@@ -170,8 +190,11 @@ func (s *Service) GetWorkItemRelationships(c echo.Context) error {
 	item := tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(c.Param("item"))}}
 	var page workItemRelationshipPage
 	err = s.readWorkItemPageSnapshot(c.Request().Context(), scope, func(ctx context.Context) error {
-		var err error
-		page, err = s.readRelationshipPageModel(ctx, scope, operatortool.WorkReadRequest{Reference: c.Param("item"), Limit: limit, Cursor: params.Get("cursor")}, item)
+		query, err := s.prepareRelationshipPage(ctx, scope, operatortool.WorkReadRequest{Reference: c.Param("item"), Limit: limit, Cursor: params.Get("cursor")}, item)
+		if err != nil {
+			return err
+		}
+		page, err = s.readRelationshipPageModel(ctx, scope, item, query)
 		return err
 	})
 	if err != nil {
@@ -180,100 +203,23 @@ func (s *Service) GetWorkItemRelationships(c echo.Context) error {
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope hubscope.NativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
-	page := workItemRelationshipPage{
-		Dependencies: []tracker.NativeWorkItemID{},
-		Blockers:     []tracker.NativeDependency{},
-		Dependents:   []tracker.NativeDependency{},
-		References:   append([]tracker.ExternalReference{}, item.ExternalReferences...),
-		Related:      []tracker.NativeDependency{},
-	}
-	params := url.Values{"reference": {request.Reference}}
-	if request.Limit > 0 {
-		params.Set("limit", strconv.Itoa(request.Limit))
-	}
-	if request.Cursor != "" {
-		params.Set("cursor", request.Cursor)
-	}
-	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(string(item.WorkItemID)) + "/relationships"
-	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, hubapi.MaxAPIPageLimit, hubapi.DefaultAPIPageLimit)
-	if err != nil {
-		return page, err
-	}
-	after := corestore.RelationshipCursor{}
-	if cursor.After != "" {
-		if err := json.Unmarshal([]byte(cursor.After), &after); err != nil {
-			return page, hubapi.NativePublicInvalid("Relationship cursor is invalid")
-		}
-	}
+func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeIssue, query relationshipPageQuery) (workItemRelationshipPage, error) {
+	page := newWorkItemRelationshipPage(item)
 	var relations corestore.RelationshipPage
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		relations, err = r.Relationships(ctx, scope.Project, item.WorkItemID, after, limit)
+		relations, err = r.VisibleRelationships(ctx, scope.Project, item.WorkItemID, query.after, query.limit, query.visibility)
 		return err
 	})
 	if err != nil {
 		return page, hubapi.ProjectRecordError(err)
 	}
-	projectVisible := map[tracker.ProjectID]bool{}
 	for _, relation := range relations.Items {
-		projectVisible[relation.RelatedProjectID] = true
-	}
-	authorizedProjects, err := s.relationshipProjectAccess(ctx, scope, projectVisible)
-	if err != nil {
-		return page, err
-	}
-	for _, relation := range relations.Items {
-		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
-			continue
-		}
-		if scope.Credential.EntryKey != nil && !scope.Credential.EntryKey.Allows(string(relation.RelatedProjectID)) {
-			continue
-		}
-		if !authorizedProjects[relation.RelatedProjectID] {
-			continue
-		}
 		browserURL := ""
 		if relation.OrganizationSlug != "" && relation.ProjectSlug != "" && s.config.Hosted != nil {
 			browserURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
 		}
-		link := tracker.NativeDependency{
-			Dispatchable: relation.Dispatchable,
-			Number:       relation.Number,
-			Title:        relation.Title,
-			WebURL:       browserURL,
-			Identifier:   string(relation.RelatedProjectID) + "#" + strconv.Itoa(relation.Number),
-			ID:           relation.RelatedWorkItemID,
-			ProjectID:    relation.RelatedProjectID,
-			State:        relation.State,
-			Terminal:     relation.Terminal,
-			ClosedAt:     relation.ClosedAt,
-			StartedAt:    relation.StartedAt,
-		}
-		switch relation.Type {
-		case "dependency":
-			switch relation.Direction {
-			case "blocked_by":
-				page.Dependencies = append(page.Dependencies, relation.RelatedWorkItemID)
-				page.Blockers = append(page.Blockers, link)
-			case "blocks":
-				page.Dependents = append(page.Dependents, link)
-			}
-		case "related":
-			page.Related = append(page.Related, link)
-		}
+		page.add(relation, browserURL, string(relation.RelatedProjectID)+"#"+strconv.Itoa(relation.Number))
 	}
-	if relations.Next.RelatedWorkItemID != "" {
-		cursorAfter, err := json.Marshal(relations.Next)
-		if err != nil {
-			return page, err
-		}
-		cursor.After = string(cursorAfter)
-		cursor.Expires = s.config.Clock().Add(time.Hour).Unix()
-		page.NextCursor, err = encodeNativeCursor(cursor, key)
-		if err != nil {
-			return page, err
-		}
-	}
-	return page, nil
+	return page, s.continueRelationshipPage(&page, query, relations.Next)
 }

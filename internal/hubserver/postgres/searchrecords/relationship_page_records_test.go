@@ -3,6 +3,7 @@ package searchrecords_test
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
@@ -19,6 +20,7 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	counts := new(pageWireCounts)
 	measured := pageMeasuredRepository(t, pool, counts)
+	everything := corestore.RelationshipVisibility{Projects: []tracker.ProjectID{"prj_first", "prj_second"}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedTenantAccess(t, repository, org)
 		pgstoretest.SeedRepository(t, repository, org)
@@ -74,7 +76,7 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 						if err := w.(viewstore.RelationshipPageWriter).PublishRelationshipPage(t.Context(), candidate, records[:1], next); err != nil {
 							return err
 						}
-						if _, err := w.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), candidate.ProjectID, candidate.WorkItemID, corestore.RelationshipCursor{}, 1); !errors.Is(err, viewstore.ErrPagePending) {
+						if _, err := w.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), candidate.ProjectID, candidate.WorkItemID, corestore.RelationshipCursor{}, 1, everything); !errors.Is(err, viewstore.ErrPagePending) {
 							t.Fatalf("incomplete generation returned success: %v", err)
 						}
 					}
@@ -100,7 +102,7 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 			for _, limit := range []int{1, 2} {
 				counts.reset()
 				if err := measured.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-					rows, err := r.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, limit)
+					rows, err := r.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, limit, everything)
 					if err != nil {
 						return err
 					}
@@ -138,7 +140,7 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 				check := func(deleted bool) {
 					t.Helper()
 					if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-						rows, err := r.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, 100)
+						rows, err := r.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, 100, everything)
 						if deleted && errors.Is(err, viewstore.ErrPagePending) {
 							return nil
 						}
@@ -166,6 +168,36 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 					}
 				}
 				check(false)
+				last, reporter := "wi_page_50_49", "page_reporter"
+				if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id=$3 WHERE organization_id=$1 AND project_id='prj_second' AND native_id=$2`, org, last, reporter); err != nil {
+					t.Fatal(err)
+				}
+				for _, test := range []struct {
+					name       string
+					visibility corestore.RelationshipVisibility
+					want       []tracker.NativeWorkItemID
+				}{
+					{"reporter sees only their target past hidden rows", corestore.RelationshipVisibility{Projects: everything.Projects, Reporter: &reporter}, []tracker.NativeWorkItemID{tracker.NativeWorkItemID(last)}},
+					{"empty reporter principal sees nothing", corestore.RelationshipVisibility{Projects: everything.Projects, Reporter: new("")}, nil},
+					{"unauthorized target project", corestore.RelationshipVisibility{Projects: []tracker.ProjectID{"prj_first"}}, nil},
+				} {
+					if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+						rows, err := r.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, 1, test.visibility)
+						if err != nil {
+							return err
+						}
+						got := []tracker.NativeWorkItemID(nil)
+						for _, row := range rows {
+							got = append(got, row.Relationship.RelatedWorkItemID)
+						}
+						if !slices.Equal(got, test.want) {
+							t.Errorf("%s: %s rows=%v, want %v", org, test.name, got, test.want)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if _, err := admin.ExecContext(t.Context(), `DELETE FROM issue_dependencies WHERE organization_id=$1 AND blocker_issue_id=(SELECT id FROM issues WHERE organization_id=$1 AND native_id=$2)`, org, id); err != nil {
 					t.Fatal(err)
 				}

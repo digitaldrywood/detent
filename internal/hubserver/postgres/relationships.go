@@ -72,18 +72,41 @@ AND target.organization_id=$1 AND target.project_id=$4 AND target.native_id=$5`,
 }
 
 func (s *session) Relationships(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.RelationshipCursor, limit int) (corestore.RelationshipPage, error) {
+	return s.relationshipPage(ctx, project, item, cursor, limit, nil, nil)
+}
+
+func (s *session) RelatedProjects(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) ([]tracker.ProjectID, error) {
+	rows, err := s.queries.RelatedProjects(ctx, pgquery.RelatedProjectsParams{OrganizationID: s.organization, ProjectID: string(project), NativeID: item})
+	projects := make([]tracker.ProjectID, len(rows))
+	for i, row := range rows {
+		projects[i] = tracker.ProjectID(row)
+	}
+	return projects, mapError(ctx, err)
+}
+
+func (s *session) VisibleRelationships(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.RelationshipCursor, limit int, visibility corestore.RelationshipVisibility) (corestore.RelationshipPage, error) {
+	visible := make([]string, len(visibility.Projects))
+	for i, related := range visibility.Projects {
+		visible[i] = string(related)
+	}
+	return s.relationshipPage(ctx, project, item, cursor, limit, visible, visibility.Reporter)
+}
+
+func (s *session) relationshipPage(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.RelationshipCursor, limit int, visibleProjects []string, reporter *string) (corestore.RelationshipPage, error) {
 	if err := checkPage(limit); err != nil {
 		return corestore.RelationshipPage{}, err
 	}
 	rows, err := s.queries.RelationshipPage(ctx, pgquery.RelationshipPageParams{
-		OrganizationID: s.organization,
-		AfterType:      cursor.Type,
-		AfterDirection: cursor.Direction,
-		AfterProjectID: string(cursor.RelatedProjectID),
-		AfterNativeID:  string(cursor.RelatedWorkItemID),
-		PageLimit:      int32(limit + 1),
-		ProjectID:      string(project),
-		NativeID:       item,
+		OrganizationID:      s.organization,
+		AfterType:           cursor.Type,
+		AfterDirection:      cursor.Direction,
+		AfterProjectID:      string(cursor.RelatedProjectID),
+		AfterNativeID:       string(cursor.RelatedWorkItemID),
+		PageLimit:           int32(limit + 1),
+		ProjectID:           string(project),
+		NativeID:            item,
+		VisibleProjectIds:   visibleProjects,
+		ReporterPrincipalID: reporter,
 	})
 	if err != nil {
 		return corestore.RelationshipPage{}, mapError(ctx, err)

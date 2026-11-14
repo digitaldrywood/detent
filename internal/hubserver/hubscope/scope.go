@@ -109,6 +109,14 @@ func (scope NativeScope) ReporterOwns(actor tracker.Actor) bool {
 	return scope.Credential.HostedRole != "reporter" || scope.Actor().PrincipalID != "" && actor.PrincipalID == scope.Actor().PrincipalID
 }
 
+func (scope NativeScope) ReporterRestriction() *string {
+	if scope.Credential.HostedRole != "reporter" {
+		return nil
+	}
+	principal := scope.Actor().PrincipalID
+	return &principal
+}
+
 func (scope NativeScope) IssueVisibilitySQL(alias string) (string, []any) {
 	if scope.Credential.HostedRole != "reporter" {
 		return "1", nil

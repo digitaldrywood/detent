@@ -179,6 +179,26 @@ func (rd Reader) ProjectAccess(ctx context.Context, scope hubscope.NativeScope, 
 	return allowed, err
 }
 
+func (rd Reader) RelationshipVisibility(ctx context.Context, scope hubscope.NativeScope, related []tracker.ProjectID) (corestore.RelationshipVisibility, error) {
+	requested := map[tracker.ProjectID]bool{}
+	for _, project := range related {
+		requested[project] = true
+	}
+	allowed, err := rd.ProjectAccess(ctx, scope, requested)
+	if err != nil {
+		return corestore.RelationshipVisibility{}, err
+	}
+	visibility := corestore.RelationshipVisibility{Projects: []tracker.ProjectID{}}
+	for project, visible := range allowed {
+		if visible {
+			visibility.Projects = append(visibility.Projects, project)
+		}
+	}
+	slices.Sort(visibility.Projects)
+	visibility.Reporter = scope.ReporterRestriction()
+	return visibility, nil
+}
+
 func VisibleDependencyReason(reason tracker.DependencyReason, visible []string, crossProject bool) tracker.DependencyReason {
 	reason.CurrentBasis = DependencyBasis(slices.Clone(visible))
 	if reason.Basis != reason.CurrentBasis || crossProject {

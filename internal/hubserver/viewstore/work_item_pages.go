@@ -48,13 +48,12 @@ type WorkItemPageWriter interface {
 }
 
 type RelationshipPageRecord struct {
-	TargetExists bool
 	Relationship corestore.Relationship
 	WebURL       string
 	Identifier   string
 }
 type RelationshipPageReader interface {
-	RelationshipPageRecords(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, corestore.RelationshipCursor, int) ([]RelationshipPageRecord, error)
+	RelationshipPageRecords(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, corestore.RelationshipCursor, int, corestore.RelationshipVisibility) ([]RelationshipPageRecord, error)
 }
 type RelationshipPageWriter interface {
 	PublishRelationshipPage(context.Context, PageCandidate, []RelationshipPageRecord, corestore.RelationshipCursor) error
