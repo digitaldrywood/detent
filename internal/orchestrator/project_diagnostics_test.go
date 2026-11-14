@@ -16,7 +16,7 @@ func TestProjectDiagnosticsReconcilesOwners(t *testing.T) {
 	issue := connector.Issue{ID: "wi_completed", State: "In Progress"}
 	running := Running{Issue: issue, WorkAttemptID: 4, Generation: 9, Mode: "implement"}
 	record := deferredCompletion{Schema: deferredCompletionSchema, Running: running, CompletedAt: now.Add(-time.Minute), DeferredAt: now, Error: "tracker unavailable: token=private customer prompt", FenceRetryAt: now.Add(time.Minute), RetryAttempt: 2}
-	state := State{Running: map[string]Running{issue.ID: running}, Claimed: map[string]Claimed{issue.ID: {Issue: issue, LeaseRenewedAt: now}}, deferredCompletions: map[string]deferredCompletion{issue.ID: record}, SchedulerDecisions: []telemetry.SchedulerDecision{{IssueID: "wi_ready", DecisionAt: now.Add(-time.Minute), Result: "skipped", Reason: dispatchSkipProjectCapacityFull}}}
+	state := State{RuntimeObservation: telemetry.SnapshotSection{ObservedAt: now.Add(-time.Second)}, Running: map[string]Running{issue.ID: running}, Claimed: map[string]Claimed{issue.ID: {Issue: issue, LeaseRenewedAt: now}}, deferredCompletions: map[string]deferredCompletion{issue.ID: record}, SchedulerDecisions: []telemetry.SchedulerDecision{{IssueID: "wi_ready", DecisionAt: now.Add(-time.Minute), Result: "skipped", Reason: dispatchSkipProjectCapacityFull}}}
 	metadata, err := deferredCompletionMetadataJSON(record)
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +32,7 @@ func TestProjectDiagnosticsReconcilesOwners(t *testing.T) {
 	before := string(ownerBytes())
 	durable := append([]store.WorkAttempt(nil), active...)
 	d := state.ProjectDiagnostics(active, now)
-	if len(d.Records) != 2 || d.Counts["runtime_unsettled"] != 1 || d.Counts["durable_active"] != 2 {
+	if len(d.Records) != 2 || d.Counts["runtime_unsettled"] != 1 || d.Counts["durable_active"] != 2 || !d.RuntimeObservedAt.Equal(state.RuntimeObservation.ObservedAt) {
 		t.Fatalf("snapshot=%+v", d)
 	}
 	completed := d.Records[0]
@@ -52,24 +52,5 @@ func TestProjectDiagnosticsReconcilesOwners(t *testing.T) {
 	second, _ := json.Marshal(state.ProjectDiagnostics(active, now))
 	if string(first) != string(second) {
 		t.Fatal("read changed observation")
-	}
-	for _, runtimeAt := range []time.Time{{}, now.Add(-time.Second)} {
-		state.RuntimeObservation = telemetry.SnapshotSection{ObservedAt: runtimeAt}
-		raw, err := json.Marshal(state.ProjectDiagnostics(active, now))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var wire map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &wire); err != nil {
-			t.Fatal(err)
-		}
-		for _, key := range []string{"observed_at", "source", "records", "admissions", "counts", "truncated", "unavailable"} {
-			if _, ok := wire[key]; !ok {
-				t.Fatalf("complete diagnostics snapshot omitted %s: %s", key, raw)
-			}
-		}
-		if _, ok := wire["runtime_observed_at"]; ok == runtimeAt.IsZero() {
-			t.Fatalf("runtime_observed_at present=%t for runtime observation %v: %s", ok, runtimeAt, raw)
-		}
 	}
 }

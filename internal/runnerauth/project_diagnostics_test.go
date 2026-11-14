@@ -31,6 +31,21 @@ func TestRunnerDiagnosticPages(t *testing.T) {
 			}
 		})
 	}
+	for _, runtimeAt := range []time.Time{{}, now} {
+		raw, err := json.Marshal(ProjectDiagnostics{RuntimeObservedAt: runtimeAt, ObservedAt: now, Records: []DiagnosticAttempt{}, Admissions: []DiagnosticAdmission{}, Counts: map[string]int{}, Unavailable: map[string]string{}})
+		var wire map[string]json.RawMessage
+		if err != nil || json.Unmarshal(raw, &wire) != nil {
+			t.Fatalf("snapshot wire=%s err=%v", raw, err)
+		}
+		for _, key := range []string{"observed_at", "source", "records", "admissions", "counts", "truncated", "unavailable"} {
+			if _, ok := wire[key]; !ok {
+				t.Fatalf("complete diagnostics snapshot omitted %s: %s", key, raw)
+			}
+		}
+		if _, ok := wire["runtime_observed_at"]; ok == runtimeAt.IsZero() {
+			t.Fatalf("runtime_observed_at present=%t for runtime observation %v: %s", ok, runtimeAt, raw)
+		}
+	}
 	for _, test := range []struct {
 		name, value, want string
 		operation         string
