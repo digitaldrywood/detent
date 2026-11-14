@@ -232,7 +232,7 @@ func (s *session) RunnerRoutingRecord(ctx context.Context, runnerID string, now 
 		return result, corestore.ErrNotFound
 	}
 	result.Record = records[0]
-	result.Leases, err = s.fleetLeases(ctx, now, 10000, result.Record.Identity.MachineID)
+	result.Leases, err = s.fleetLeaseRows(ctx, now, 10000, result.Record.Identity.MachineID, nil, false, true)
 	if err != nil {
 		return result, err
 	}

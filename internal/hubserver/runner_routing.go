@@ -553,11 +553,12 @@ func runnerFromRoutingRecord(record runnerstore.RoutingRecord, now time.Time, ur
 		if lease.MachineID != runner.MachineID {
 			continue
 		}
-		key := string(lease.Lease.ID)
+		key, project := string(lease.Lease.ID), lease.CapacityProject
 		if lease.LandingCapacity > 0 {
-			if group := landingCapacityKey(lease.MachineID, string(lease.Lease.ProjectID), lease.SessionID); group != "" {
-				key = group
-			}
+			project = string(lease.Lease.ProjectID)
+		}
+		if group := landingCapacityKey(lease.MachineID, project, lease.SessionID); group != "" {
+			key = group
 		}
 		hostSlots[key] = true
 		if lease.RunnerID != runner.RunnerID {
