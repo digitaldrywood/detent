@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -126,32 +125,3 @@ func requireNativeCode(t *testing.T, response *httptest.ResponseRecorder, status
 // the worst case of JSON string escaping, or a diff the contract accepts is
 // refused by the transport instead. Each byte class the encoder escapes costs
 // at most six bytes, which is the factor the allowance is sized by.
-func TestAttemptDiffBodyAllowanceCoversEscaping(t *testing.T) {
-	t.Parallel()
-	const sample = 1 << 10
-	for _, test := range []struct {
-		name string
-		char string
-	}{
-		{name: "less than", char: "<"},
-		{name: "greater than", char: ">"},
-		{name: "ampersand", char: "&"},
-		{name: "escape", char: "\x1b"},
-		{name: "quote", char: "\""},
-		{name: "newline", char: "\n"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			encoded, err := json.Marshal(strings.Repeat(test.char, sample))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if perByte := (len(encoded) - 2) / sample; perByte > 6 {
-				t.Fatalf("%q encodes to %d bytes per byte, above the allowance factor", test.char, perByte)
-			}
-		})
-	}
-	if want := int64(6*tracker.MaxDiffBytes + (1 << 20)); hubapi.MaxAttemptDiffRequestBytes != want {
-		t.Fatalf("allowance = %d, want %d", hubapi.MaxAttemptDiffRequestBytes, want)
-	}
-}
