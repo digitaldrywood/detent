@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -12,9 +13,12 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -318,4 +322,152 @@ func TestNativeIssueRetentionRechecksCurrentAuthorityBeforeCommit(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestTerminalIssueArchiveFollowsLostAttemptLease(t *testing.T) {
+	t.Parallel()
+	f := newPostgresStorageArchiveFixture(t)
+	repository, ok := f.service.config.TenantRepository.(*postgres.Repository)
+	if !ok {
+		t.Fatal("archive fixture lacks PostgreSQL repository")
+	}
+	second := nativeOrganization{ID: "org_lost_archive", Name: "Second", Slug: "lost-archive"}
+	seedPostgresHubAdmin(t, repository, f.service, second)
+	fixtures := []nativeFixture{f.nativeFixture, newNativeFixture(t, f.service, second.ID, "archive example")}
+	far := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name                                  string
+		lease                                 string
+		checkpoint, acknowledged, unpublished bool
+		archivable                            bool
+	}{
+		{name: "live lease keeps running attempt", lease: "live"},
+		{name: "expired lease releases lost attempt", lease: "expired", archivable: true},
+		{name: "released lease releases lost attempt", lease: "released", archivable: true},
+		{name: "checkpoint awaiting cleanup is retained", lease: "expired", checkpoint: true},
+		{name: "acknowledged checkpoint cleanup releases lost attempt", lease: "expired", checkpoint: true, acknowledged: true, archivable: true},
+		{name: "unresolved publication is retained", lease: "expired", unpublished: true},
+	}
+	for _, fixture := range fixtures {
+		t.Run(string(fixture.project.OrganizationID), func(t *testing.T) {
+			f.nativeFixture = fixture
+			f.service.localOrganization, f.service.database.hostedOrganization, f.service.requestMetrics.Organization = string(fixture.project.OrganizationID), fixture.project.OrganizationID, fixture.project.OrganizationID
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			admin := nativeAttemptTestDatabase(t, f.nativeFixture)
+			for index, test := range tests {
+				t.Run(test.name, func(t *testing.T) {
+					issue := f.create(t, fmt.Sprintf("lost-%d", index))
+					worker := f.worker(t, fmt.Sprintf("lost-%d", index))
+					claimed := claimNativeAttempt(t, f.nativeFixture, worker, "machine", fmt.Sprintf("lost-%d", index), issue.WorkItemID)
+					path := f.base + "/work-items/" + string(issue.WorkItemID)
+					start := nativeStartedEvent(claimed)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
+					if test.checkpoint {
+						checkpoint := start
+						checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence, checkpoint.Data.Handoff = "run.checkpointed", "checkpoint", 2, nativeTestCheckpoint()
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+					}
+					current := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", worker, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "done", LeaseID: claimed.ID, FencingToken: claimed.FencingToken}, ExpectedRevision: current.Revision, State: "Done", Reason: "worker_progress"}), http.StatusOK)
+					f.service.tokenUseWork.Wait()
+					lease := leasestore.Lease{LeaseID: string(claimed.ID), FencingToken: int64(claimed.FencingToken)}
+					if test.lease == "released" {
+						f.write(t, func(w tenantstore.Writer) error {
+							_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "released")
+							return err
+						})
+					}
+					f.clock.Add(int64(74 * time.Hour))
+					switch test.lease {
+					case "live":
+						if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET expires_at=$3 WHERE organization_id=$1 AND lease_id=$2`, f.project.OrganizationID, lease.LeaseID, far.AddDate(100, 0, 0)); err != nil {
+							t.Fatal(err)
+						}
+					case "expired":
+						if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET acquired_at=$3,renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, f.project.OrganizationID, lease.LeaseID, far, far.Add(time.Hour)); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if test.acknowledged {
+						if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET cleanup_acknowledged_at=updated_at WHERE organization_id=$1 AND lease_id=$2`, f.project.OrganizationID, lease.LeaseID); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if test.unpublished {
+						seedRetentionChange(t, f, issue.WorkItemID, false, false)
+					}
+					current = readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
+					var stored string
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						attempt, err := r.LatestAttempt(t.Context(), mustWorkItemRowID(t, r, f.project.ID, issue.WorkItemID))
+						stored = attempt.Status
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if stored != "running" {
+						t.Fatalf("fixture attempt status=%s, want a stored running attempt", stored)
+					}
+					eligible := storageArchiveEligible(t, f, issue.WorkItemID)
+					if eligible != test.archivable {
+						t.Fatalf("storage archive eligible=%t, want %t", eligible, test.archivable)
+					}
+					f.clock.Add(int64(31 * 24 * time.Hour))
+					if err := f.service.maintainNativeRetention(t.Context(), f.now()); err != nil {
+						t.Fatal(err)
+					}
+					got := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
+					if got.Archived != test.archivable {
+						t.Fatalf("auto archived=%t, want %t", got.Archived, test.archivable)
+					}
+					if !test.archivable && got.Revision != current.Revision {
+						t.Fatalf("retained issue changed revision %d -> %d", current.Revision, got.Revision)
+					}
+				})
+			}
+		})
+	}
+}
+
+func mustWorkItemRowID(t *testing.T, r tenantstore.Reader, project tracker.ProjectID, item tracker.NativeWorkItemID) int64 {
+	t.Helper()
+	row, err := r.WorkItem(t.Context(), project, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return row.ID
+}
+
+func storageArchiveEligible(t *testing.T, f *postgresStorageArchiveFixture, item tracker.NativeWorkItemID) bool {
+	t.Helper()
+	before := f.now().Add(-issueStorageArchiveAge)
+	var eligible bool
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
+		reader := r.(attachmentstore.StorageArchiveReader)
+		cursor := attachmentstore.StorageArchiveCursor{}
+		for {
+			page, err := reader.StorageArchiveCandidates(t.Context(), before, cursor, 4)
+			if err != nil {
+				return err
+			}
+			for _, candidate := range page.Items {
+				if candidate.Stamp.WorkItemID != item {
+					continue
+				}
+				_, err := reader.StorageArchiveSnapshot(t.Context(), candidate.Stamp, before, 1)
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				eligible = err == nil
+				return err
+			}
+			if page.Next == (attachmentstore.StorageArchiveCursor{}) {
+				return fmt.Errorf("work item %s is not a storage archive candidate", item)
+			}
+			cursor = page.Next
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return eligible
 }

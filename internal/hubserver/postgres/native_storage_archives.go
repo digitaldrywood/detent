@@ -19,7 +19,8 @@ const storageArchiveSafe = `i.terminal_entered_at IS NOT NULL AND i.terminal_ent
 AND EXISTS (SELECT 1 FROM projects p WHERE p.organization_id=i.organization_id AND p.id=i.project_id AND p.profile='native' AND p.deleted_at IS NULL)
 AND EXISTS (SELECT 1 FROM project_workflow_states w WHERE w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name AND w.terminal)
 AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>$3)
-AND NOT EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.status='running')
+AND NOT EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.status='running' AND (a.checkpoint_object_key IS NOT NULL AND a.cleanup_acknowledged_at IS NULL
+OR NOT EXISTS (SELECT 1 FROM leases l WHERE l.organization_id=a.organization_id AND l.lease_id=a.lease_id AND (l.released_at IS NOT NULL OR l.expires_at<=$3))))
 AND NOT EXISTS (SELECT 1 FROM change_issue_links x JOIN change_requests r ON r.organization_id=x.organization_id AND r.project_id=x.project_id AND r.id=x.change_id WHERE x.organization_id=i.organization_id AND x.project_id=i.project_id AND x.work_item_id=i.native_id AND (r.current_version_id IS NULL OR r.landed_version_id IS DISTINCT FROM r.current_version_id))
 AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND (c.work_item_id=i.native_id OR c.subject_work_item_id=i.native_id) AND c.deleted_at IS NULL AND
 (c.execution_status IS NULL OR c.execution_lease_id IS NULL OR c.execution_status NOT IN ('idle','completed','interrupted','failed')

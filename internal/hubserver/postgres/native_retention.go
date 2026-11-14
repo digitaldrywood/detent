@@ -96,7 +96,8 @@ AND CASE WHEN lower(w.name)='cancelled' THEN p.archive_cancelled_after_days ELSE
 AND GREATEST(i.terminal_entered_at,i.archive_restored_at,CASE WHEN NOT i.archive_restore_known THEN i.native_updated_at ELSE i.terminal_entered_at END)
  < $8::timestamptz-make_interval(days=>(CASE WHEN lower(w.name)='cancelled' THEN p.archive_cancelled_after_days ELSE p.archive_completed_after_days END)::integer)
 AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>$8)
-AND NOT EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.status='running')
+AND NOT EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.status='running' AND (a.checkpoint_object_key IS NOT NULL AND a.cleanup_acknowledged_at IS NULL
+OR NOT EXISTS (SELECT 1 FROM leases l WHERE l.organization_id=a.organization_id AND l.lease_id=a.lease_id AND (l.released_at IS NOT NULL OR l.expires_at<=$8))))
 AND NOT EXISTS (SELECT 1 FROM change_issue_links x JOIN change_requests c ON c.organization_id=x.organization_id AND c.project_id=x.project_id AND c.id=x.change_id WHERE x.organization_id=i.organization_id AND x.project_id=i.project_id AND x.work_item_id=i.native_id AND (c.current_version_id IS NULL OR c.landed_version_id IS DISTINCT FROM c.current_version_id))`, s.organization, item.ID, item.ProjectID, item.NativeID, item.Revision, item.EventSequence, settingsRevision, now).Scan(&days)
 	if errors.Is(mapError(ctx, err), corestore.ErrNotFound) {
 		return 0, false, nil
