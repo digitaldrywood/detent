@@ -162,3 +162,37 @@ func Reviews(ctx context.Context, tx pgcore.Transaction, project tracker.Project
 	}
 	return result, nil
 }
+
+func BackfillPolicy(ctx context.Context, tx pgcore.Transaction, row policystore.Revision) error {
+	stored, err := tx.Queries.PolicyGetProjectRevision(ctx, pgquery.PolicyGetProjectRevisionParams{OrganizationID: tx.Organization, ProjectID: row.ProjectID, PolicyID: row.PolicyID})
+	if err != nil {
+		return pgcore.MapError(ctx, err)
+	}
+	if row.OrganizationID != tx.Organization || stored.PayloadSHA256 != row.PayloadSHA256 || row.Compatibility == nil {
+		return eventstore.ErrInvalidRecord
+	}
+	row.GitHubPullRequest = nil
+	if stored.GateGithubPullRequest.Valid {
+		row.GitHubPullRequest = new(stored.GateGithubPullRequest.Bool)
+	}
+	return RecordPolicy(ctx, tx, row)
+}
+
+func ReviewRevision(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID, id string) (eventstore.ReviewPolicy, error) {
+	row, err := tx.Queries.PolicyGetReviewRevision(ctx, pgquery.PolicyGetReviewRevisionParams{OrganizationID: tx.Organization, ProjectID: project, ReviewPolicyID: id})
+	if err != nil {
+		return eventstore.ReviewPolicy{}, pgcore.MapError(ctx, err)
+	}
+	return eventstore.ReviewPolicy{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, PolicyRevisionID: row.PolicyID, ReviewPolicyID: row.ReviewPolicyID, Revision: row.Revision, UpdatedBy: row.UpdatedBy, UpdatedAt: row.UpdatedAt, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes}, nil
+}
+
+func BackfillReview(ctx context.Context, tx pgcore.Transaction, row eventstore.ReviewPolicy) error {
+	stored, err := ReviewRevision(ctx, tx, row.ProjectID, row.ReviewPolicyID)
+	if err != nil {
+		return err
+	}
+	if row.OrganizationID != tx.Organization || stored.PolicyRevisionID != row.PolicyRevisionID || stored.PayloadSHA256 != row.PayloadSHA256 || row.Compatibility == nil {
+		return eventstore.ErrInvalidRecord
+	}
+	return RecordReview(ctx, tx, row)
+}

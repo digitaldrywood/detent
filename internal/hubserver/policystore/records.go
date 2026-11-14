@@ -109,4 +109,5 @@ type Writer interface {
 	ImportProjectPolicyCurrent(context.Context, tracker.ProjectID, string) error
 	RecordProjectPolicyObservation(context.Context, Observation) (bool, error)
 	CreateProjectWorkflowApply(context.Context, WorkflowApply) (WorkflowApply, error)
+	BackfillPolicyCompatibility(context.Context, Revision) error
 }

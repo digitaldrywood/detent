@@ -290,6 +290,7 @@ type Reader interface {
 	PRPublication(context.Context, string) (NativePRPublication, error)
 	ReleaseDelivery(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (ReleaseDelivery, error)
 	ReviewPolicy(context.Context, tracker.ProjectID) (ReviewPolicy, error)
+	ReviewPolicyRevision(context.Context, tracker.ProjectID, string) (ReviewPolicy, error)
 	LandingReceipt(context.Context, string) (LandingReceipt, error)
 	LatestLandingReceipt(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (LandingReceipt, error)
 	ViewedFiles(context.Context, string, string, int) ([]ViewedFile, error)
@@ -322,6 +323,7 @@ type Writer interface {
 	Reader
 	LockChange(context.Context, string) (Change, error)
 	SetReviewPolicy(context.Context, ReviewPolicy, string) error
+	BackfillReviewCompatibility(context.Context, ReviewPolicy) error
 	CreateLandingReceipt(context.Context, LandingReceipt) (LandingReceipt, error)
 	SetViewedFile(context.Context, ViewedFile) (ViewedFile, error)
 	AppendEvent(context.Context, Event) (Event, error)

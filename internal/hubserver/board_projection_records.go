@@ -120,6 +120,9 @@ func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		err = nil
 	}
+	if err == nil {
+		err = s.backfillBoardPolicyFacts(ctx, organization, candidate)
+	}
 	return candidate.WorkItemID, true, err
 }
 
