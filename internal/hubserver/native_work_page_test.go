@@ -604,12 +604,12 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			if page.Total != -1 || page.Work == nil || len(page.Items) > 100 || len(page.Work.Items) != test.open || page.Work.Truncated || page.Work.AsOf.IsZero() {
 				t.Fatalf("page lost bounds or open selection: %+v", page.Work)
 			}
-			if len(page.Work.Lanes) != 0 {
-				t.Fatalf("list response included aggregate lanes: %+v", page.Work.Lanes)
+			laneTotal, laneRunning := 0, 0
+			for _, lane := range page.Work.Lanes {
+				laneTotal, laneRunning = laneTotal+lane.Total, laneRunning+lane.Running
 			}
-			total, running := readInventory(t, test.query)
-			if total != test.total || running != test.running {
-				t.Fatalf("scope total=%d running=%d, want %d/%d", total, running, test.total, test.running)
+			if total, running := readInventory(t, test.query); total != test.total || running != test.running || (page.Work.Lanes == nil) != (strings.Contains(test.query, "label") || strings.Contains(test.query, "assignee") || strings.Contains(test.query, "q=")) || page.Work.Lanes != nil && (laneTotal != total || laneRunning != running) {
+				t.Fatalf("scope total=%d running=%d lanes=%+v, want %d/%d", total, running, page.Work.Lanes, test.total, test.running)
 			}
 			for _, issue := range append(page.Items, page.Work.Items...) {
 				if issue.Body != "" || issue.ProjectID != f.project.ID {
