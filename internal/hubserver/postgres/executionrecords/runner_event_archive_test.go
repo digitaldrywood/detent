@@ -21,6 +21,7 @@ import (
 )
 
 func TestRunnerReceiptRollsBackWhenArchiveDisappears(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION remove_unowned_receipt_archive() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN DELETE FROM public.archive_objects a USING public.native_commands c WHERE a.organization_id=NEW.organization_id AND c.organization_id=a.organization_id AND c.command_key='archive-race' AND a.object_key=c.payload_object_key AND NOT EXISTS(SELECT 1 FROM public.archive_object_owners o WHERE o.organization_id=a.organization_id AND o.archive_id=a.id); RETURN NEW; END$$; CREATE TRIGGER remove_unowned_receipt_archive AFTER INSERT ON archive_objects FOR EACH ROW EXECUTE FUNCTION remove_unowned_receipt_archive()`); err != nil {

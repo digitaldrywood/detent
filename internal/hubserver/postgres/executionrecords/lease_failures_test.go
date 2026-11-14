@@ -14,6 +14,7 @@ import (
 )
 
 func TestLeaseTransactionFailureReturnsToRetryOwner(t *testing.T) {
+	t.Parallel()
 	for _, code := range []string{"40001", "40P01"} {
 		for _, stage := range []string{"statement", "commit"} {
 			t.Run(code+"/"+stage, func(t *testing.T) {
@@ -69,6 +70,7 @@ func TestLeaseTransactionFailureReturnsToRetryOwner(t *testing.T) {
 }
 
 func TestLeaseCancellationRollsBackWholeTransaction(t *testing.T) {
+	t.Parallel()
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	pgstoretest.SeedLeaseFamily(t, r, "org_first")
 	ctx, cancel := context.WithCancel(t.Context())
@@ -93,6 +95,7 @@ func TestLeaseCancellationRollsBackWholeTransaction(t *testing.T) {
 }
 
 func TestLeaseReleaseFailurePreservesCapacityAndAttempt(t *testing.T) {
+	t.Parallel()
 	for _, code := range []string{"40001", "40P01"} {
 		t.Run(code, func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)

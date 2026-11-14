@@ -69,6 +69,7 @@ func workspaceContractFixture(t *testing.T) (*sql.DB, *postgres.Repository, *pgx
 }
 
 func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
+	t.Parallel()
 	t.Run("open scan pages both projects without crossing tenant boundaries", func(t *testing.T) {
 		_, repository, _, now := workspaceContractFixture(t)
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

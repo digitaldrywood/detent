@@ -14,6 +14,7 @@ import (
 )
 
 func TestLeaseFamilyRowSecurity(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -116,6 +117,7 @@ func TestLeaseFamilyRowSecurity(t *testing.T) {
 }
 
 func TestLeaseFamilyConstraints(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

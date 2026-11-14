@@ -38,6 +38,7 @@ func (trace *relayActionQueryTrace) TraceQueryStart(ctx context.Context, conn *p
 }
 
 func TestRelayActionContractRedeemsOnceAndFencesOrderedReports(t *testing.T) {
+	t.Parallel()
 	admin, repository, pool, now := workspaceContractFixture(t)
 	objects := pgstoretest.NewHistoryObjects()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

@@ -26,6 +26,7 @@ import (
 )
 
 func TestRunnerEventDoesNotDeadlockMachineHeartbeat(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	var login string
@@ -125,6 +126,7 @@ func TestRunnerEventDoesNotDeadlockMachineHeartbeat(t *testing.T) {
 }
 
 func TestRunnerCompletionAcquiresProjectLockBeforePublication(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -169,6 +171,7 @@ func TestRunnerCompletionAcquiresProjectLockBeforePublication(t *testing.T) {
 }
 
 func TestRunnerEventQueuedFenceDiagnostics(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION expire_queued_run_lease() RETURNS trigger LANGUAGE plpgsql AS $$DECLARE changed integer;BEGIN IF NEW.id='queue_expiry' THEN UPDATE public.leases SET acquired_at=clock_timestamp()-interval '3 hours',renewed_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE organization_id=NEW.organization_id AND issue_id=(SELECT id FROM public.issues WHERE organization_id=NEW.organization_id AND project_id='prj_1' AND native_id='wi_1') AND released_at IS NULL; GET DIAGNOSTICS changed=ROW_COUNT; IF changed<>1 THEN RAISE EXCEPTION 'queue expiry scope mismatch'; END IF; END IF; RETURN NEW; END$$; CREATE TRIGGER expire_queued_run_lease BEFORE INSERT ON archive_objects FOR EACH ROW EXECUTE FUNCTION expire_queued_run_lease()`); err != nil {

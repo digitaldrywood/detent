@@ -75,6 +75,7 @@ type heartbeatCommand interface {
 }
 
 func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
@@ -210,6 +211,7 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 }
 
 func TestRunnerHeartbeatReturnsCommittedUpdateRevision(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -259,6 +261,7 @@ func TestRunnerHeartbeatReturnsCommittedUpdateRevision(t *testing.T) {
 }
 
 func TestRunnerHeartbeatCapacityConfigIsVisibleToLaterWritersAndResponse(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
 	for index, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -333,6 +336,7 @@ func TestRunnerHeartbeatCapacityConfigIsVisibleToLaterWritersAndResponse(t *test
 }
 
 func TestRunnerHeartbeatOtherCachedWritesStayCoherent(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

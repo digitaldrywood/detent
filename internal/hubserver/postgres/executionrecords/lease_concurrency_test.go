@@ -24,6 +24,7 @@ import (
 )
 
 func TestLeaseCompetingLifecycleTransactions(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, first, second string
 		expired             bool
@@ -318,6 +319,7 @@ func TestLeaseCompetingLifecycleTransactions(t *testing.T) {
 }
 
 func TestLeaseUnrelatedClaimsDoNotShareWriterLock(t *testing.T) {
+	t.Parallel()
 	for _, sameTenant := range []bool{false, true} {
 		t.Run(map[bool]string{false: "other tenant", true: "same tenant other item"}[sameTenant], func(t *testing.T) {
 			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
@@ -348,6 +350,7 @@ func TestLeaseUnrelatedClaimsDoNotShareWriterLock(t *testing.T) {
 }
 
 func TestLeaseHeartbeatDoesNotRegressWhileWaiting(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"claim", "renew", "release"} {
 		t.Run(operation, func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)
@@ -401,6 +404,7 @@ func TestLeaseHeartbeatDoesNotRegressWhileWaiting(t *testing.T) {
 }
 
 func TestLeaseMutationStatementBudget(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	counter := &pgstoretest.ReportCountingTracer{}

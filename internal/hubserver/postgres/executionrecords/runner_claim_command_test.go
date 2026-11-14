@@ -17,6 +17,7 @@ import (
 )
 
 func TestRunnerClaimSharesLockedHeartbeatAuthority(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	counter := &pgstoretest.ReportCountingTracer{}

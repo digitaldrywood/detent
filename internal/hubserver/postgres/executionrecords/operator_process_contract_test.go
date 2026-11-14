@@ -19,6 +19,7 @@ import (
 )
 
 func TestOperatorProcessContractFencesDurableReaping(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	objects := pgstoretest.NewHistoryObjects()

@@ -90,6 +90,7 @@ func (r *postgresShutdownRunner) Run(ctx context.Context, _ orchestrator.RunRequ
 }
 
 func TestRunnerShutdownReleasesPostgresLeaseBeforeExpiry(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	leases := make(map[tracker.OrganizationID]leasestore.Lease)

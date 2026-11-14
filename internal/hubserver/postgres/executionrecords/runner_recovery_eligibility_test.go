@@ -16,6 +16,7 @@ import (
 )
 
 func TestRunnerRecoveryEligibilityIncludesHiddenDependencyAuthority(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Blocked"}, {Name: "In Progress"}, {Name: "Done", Terminal: true}}

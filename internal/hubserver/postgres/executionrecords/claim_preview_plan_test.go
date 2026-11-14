@@ -15,6 +15,7 @@ import (
 )
 
 func TestClaimPreviewPlanDistinguishesProvenanceFromLinkedSources(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_example")
 	project := tracker.ProjectID("prj_example")

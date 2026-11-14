@@ -40,6 +40,7 @@ func (p *recoveryStatementTrace) TraceQueryStart(ctx context.Context, conn *pgx.
 func (*recoveryStatementTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	admin.SetMaxOpenConns(2)

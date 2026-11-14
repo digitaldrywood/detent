@@ -23,6 +23,7 @@ import (
 )
 
 func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
@@ -197,6 +198,7 @@ func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
 }
 
 func TestRunnerProjectObservationPreservesUnchangedDetails(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
@@ -238,6 +240,7 @@ func TestRunnerProjectObservationPreservesUnchangedDetails(t *testing.T) {
 }
 
 func TestRunnerHeartbeatHostSegmentsHaveFixedStatements(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()

@@ -19,6 +19,7 @@ import (
 )
 
 func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
+	t.Parallel()
 	for _, queued := range []bool{false, true} {
 		t.Run(fmt.Sprintf("queued=%t", queued), func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)

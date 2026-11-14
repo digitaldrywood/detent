@@ -15,6 +15,7 @@ import (
 )
 
 func TestRunnerClaimFactsUpgradeRetainsUnresolvedTenantAttempts(t *testing.T) {
+	t.Parallel()
 	db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
 	pgstoretest.SeedCore(t, db)
 	for _, organization := range []string{"org_first", "org_second"} {

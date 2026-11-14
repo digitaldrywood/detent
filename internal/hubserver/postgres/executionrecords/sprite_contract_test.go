@@ -20,6 +20,7 @@ import (
 )
 
 func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
@@ -315,6 +316,7 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 }
 
 func TestSpriteWakeFactsPreserveNullsAndFenceMachineBinding(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_wake_first", "org_wake_second"} {
@@ -381,6 +383,7 @@ func TestSpriteWakeFactsPreserveNullsAndFenceMachineBinding(t *testing.T) {
 }
 
 func TestSpriteLeaseUsageCountsUnassignedLeasesAndExpiryBoundary(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_usage_first", "org_usage_second"} {
 		pgstoretest.SeedLeaseFamily(t, repository, org)

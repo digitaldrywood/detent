@@ -23,6 +23,7 @@ import (
 )
 
 func TestWorkItemDeletionRetainsHistoryAndReceipts(t *testing.T) {
+	t.Parallel()
 	var baseline [2]int64
 	for _, size := range []int{2, 50} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
@@ -160,6 +161,7 @@ func seedIdentityMigrationIssues(t *testing.T, admin *sql.DB, organization track
 }
 
 func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
+	t.Parallel()
 	const migrationVersion = 20261107060339
 	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, migrationVersion-1)
 	provider, err := pgstoretest.MigrationProvider(admin)
@@ -200,6 +202,7 @@ func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 }
 
 func TestWorkItemDeletionRefusesActiveExecution(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -242,6 +245,7 @@ func TestWorkItemDeletionRefusesActiveExecution(t *testing.T) {
 }
 
 func TestWorkItemDeletionOrdersConcurrentHistoryInsertion(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	admin.SetMaxOpenConns(2)
@@ -292,6 +296,7 @@ func TestWorkItemDeletionOrdersConcurrentHistoryInsertion(t *testing.T) {
 }
 
 func TestRetainedWorkItemIdentitiesEnforceTenantReadOnlyAccess(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -324,6 +329,7 @@ func TestRetainedWorkItemIdentitiesEnforceTenantReadOnlyAccess(t *testing.T) {
 }
 
 func TestWorkItemDeletionRemovesOnlyLiveAttachmentReferences(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -397,6 +403,7 @@ func TestWorkItemDeletionRemovesOnlyLiveAttachmentReferences(t *testing.T) {
 }
 
 func TestRetainedIdentityMigrationIncludesConcurrentIssueCreation(t *testing.T) {
+	t.Parallel()
 	const migrationVersion = 20261107060339
 	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, migrationVersion-1)
 	provider, err := pgstoretest.MigrationProvider(admin)

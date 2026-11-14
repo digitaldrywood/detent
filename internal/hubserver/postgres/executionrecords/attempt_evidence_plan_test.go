@@ -25,6 +25,7 @@ import (
 )
 
 func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
+	t.Parallel()
 	const version = int64(20261106222200)
 	_, fixture := pgstoretest.MigrationDatabaseAtVersion(t, version-1)
 	for _, state := range []string{"absent", "valid", "invalid"} {
@@ -83,6 +84,7 @@ func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
 }
 
 func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
 	repository, repositoryPool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())

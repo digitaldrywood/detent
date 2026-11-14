@@ -30,6 +30,7 @@ import (
 )
 
 func TestOperatorReceiptGenericWritesCannotBypassCustody(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
@@ -67,6 +68,7 @@ func TestOperatorReceiptGenericWritesCannotBypassCustody(t *testing.T) {
 }
 
 func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	config := pgstoretest.SmallPool()
 	config.MaxConnections, config.ServingConnections = 5, 3
@@ -307,6 +309,7 @@ func assertOperatorProjectActivitySeek(t *testing.T, pool *pgxpool.Pool, organiz
 }
 
 func TestOperatorReceiptPreservesScopedCustodyAndReplay(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
 	config := pgstoretest.SmallPool()

@@ -31,6 +31,7 @@ import (
 )
 
 func TestAttemptEventDoesNotDeadlockIssueTransition(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	pgstoretest.SeedLeaseFamily(t, repository, "org_first")
@@ -90,6 +91,7 @@ func TestAttemptEventDoesNotDeadlockIssueTransition(t *testing.T) {
 }
 
 func TestAttemptEventDoesNotDeadlockUsageAccounting(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	pgstoretest.SeedLeaseFamily(t, repository, "org_first")
@@ -158,6 +160,7 @@ func TestAttemptEventDoesNotDeadlockUsageAccounting(t *testing.T) {
 }
 
 func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 2, BackgroundConnections: 2})
 	pgstoretest.SeedLeaseFamily(t, repository, "org_first")
@@ -258,6 +261,7 @@ func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
 }
 
 func TestImportedLeaseWaitsForIssueBeforeFencingAllocation(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 1, BackgroundConnections: 3})
 	pgstoretest.SeedLeaseFamily(t, repository, "org_first")
@@ -399,6 +403,7 @@ func requireLeaseUsage(t *testing.T, r *postgres.Repository, org tracker.Organiz
 }
 
 func TestLeaseAttemptLifecycle(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -542,6 +547,7 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 }
 
 func TestLeaseIssueReadsReturnActiveLeaseAndBoundedAttemptPages(t *testing.T) {
+	t.Parallel()
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	pgstoretest.SeedLeaseFamily(t, r, "org_first")
 	var attempts []leasestore.Attempt
@@ -674,6 +680,7 @@ func TestLeaseIssueReadsReturnActiveLeaseAndBoundedAttemptPages(t *testing.T) {
 }
 
 func TestLeaseRejectsStaleAndInvalidMutations(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"live", "expired", "released", "reassigned"} {
 		t.Run(state, func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)
@@ -751,6 +758,7 @@ func TestLeaseRejectsStaleAndInvalidMutations(t *testing.T) {
 }
 
 func TestLeaseAttemptRejectsConflictingSequences(t *testing.T) {
+	t.Parallel()
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	pgstoretest.SeedLeaseFamily(t, r, "org_first")
 	lease := pgstoretest.ClaimLease(t, r, "org_first", pgstoretest.LeaseClaim(1))
@@ -782,6 +790,7 @@ func TestLeaseAttemptRejectsConflictingSequences(t *testing.T) {
 }
 
 func TestLeaseAttemptUsageCorrectionPreservesTerminalLifecycle(t *testing.T) {
+	t.Parallel()
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	pgstoretest.SeedLeaseFamily(t, r, "org_first")
 	lease := pgstoretest.ClaimLease(t, r, "org_first", pgstoretest.LeaseClaim(1))
@@ -803,6 +812,7 @@ func TestLeaseAttemptUsageCorrectionPreservesTerminalLifecycle(t *testing.T) {
 }
 
 func TestLeaseCompetingClaims(t *testing.T) {
+	t.Parallel()
 	for _, sameSession := range []bool{false, true} {
 		t.Run(fmt.Sprintf("same_session_%t", sameSession), func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)
@@ -859,6 +869,7 @@ func TestLeaseCompetingClaims(t *testing.T) {
 }
 
 func TestLeaseClaimEligibility(t *testing.T) {
+	t.Parallel()
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	pgstoretest.SeedLeaseFamily(t, r, "org_first")
 	for _, tc := range []struct {
@@ -904,6 +915,7 @@ func TestLeaseClaimEligibility(t *testing.T) {
 }
 
 func TestLeaseClaimReplayOnlyTightensLandingCapacity(t *testing.T) {
+	t.Parallel()
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	pgstoretest.SeedLeaseFamily(t, r, "org_first")
 	firstRequest := pgstoretest.LeaseClaim(1)
@@ -931,6 +943,7 @@ func TestLeaseClaimReplayOnlyTightensLandingCapacity(t *testing.T) {
 }
 
 func TestLandingLeaseRenewalPreservesFenceAndCeiling(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"live", "expired", "released", "reassigned"} {
 		t.Run(state, func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)
@@ -980,6 +993,7 @@ func TestLandingLeaseRenewalPreservesFenceAndCeiling(t *testing.T) {
 }
 
 func TestLeaseIsolationTierConstraint(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -1023,6 +1037,7 @@ func TestLeaseIsolationTierConstraint(t *testing.T) {
 }
 
 func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"repeated observations", "issue across days"} {
 		t.Run(scenario, func(t *testing.T) {
 			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
@@ -1103,6 +1118,7 @@ func (s repositorySpend) IssueTokenSpend(ctx context.Context, issue store.IssueI
 }
 
 func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
+	t.Parallel()
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	day := time.Date(2026, 12, 25, 12, 0, 0, 0, time.UTC)
 	next := day.AddDate(0, 0, 1)
@@ -1221,6 +1237,7 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 }
 
 func TestRunnerSpendAcceptsCumulativeDecreaseAsZero(t *testing.T) {
+	t.Parallel()
 	yesterday := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	today := yesterday.AddDate(0, 0, 1)
 	for _, test := range []struct {
@@ -1286,6 +1303,7 @@ func TestRunnerSpendAcceptsCumulativeDecreaseAsZero(t *testing.T) {
 }
 
 func TestRunnerSpendConcurrentModelAdmission(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	day := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)

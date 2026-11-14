@@ -55,6 +55,7 @@ func (c *capacityQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d
 func (*capacityQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestRunnerCapacityFactsClipLeaseWindowsAndExcludeOldHistory(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	cfg := pool.Config()

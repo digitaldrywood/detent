@@ -17,6 +17,7 @@ import (
 )
 
 func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -220,6 +221,7 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 }
 
 func TestIssueDispatchRollbackRefusesAcrossTenantRLS(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	at := time.Now().UTC().Truncate(time.Microsecond)

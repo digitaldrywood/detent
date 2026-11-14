@@ -12,6 +12,7 @@ import (
 )
 
 func TestAttemptFailureSummaryFollowsAttemptSequence(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	observed := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)

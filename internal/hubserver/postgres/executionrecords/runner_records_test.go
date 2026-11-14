@@ -36,6 +36,7 @@ import (
 )
 
 func TestRunnerProviderAccountLockScopesCurrentReports(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -132,6 +133,7 @@ func TestRunnerProviderAccountLockScopesCurrentReports(t *testing.T) {
 }
 
 func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	const organization tracker.OrganizationID = "org_usage"
@@ -615,6 +617,7 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 }
 
 func TestRunnerHasActiveLeaseIsBoundedAndTenantScoped(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	first := tracker.OrganizationID("org_active_lease_first")
@@ -691,6 +694,7 @@ func TestRunnerHasActiveLeaseIsBoundedAndTenantScoped(t *testing.T) {
 }
 
 func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	const organization tracker.OrganizationID = "org_shared_account"
@@ -770,6 +774,7 @@ func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
 }
 
 func TestSetRunnerUrgentUpdateRejectsNonzeroRevisionWithoutCurrentRow(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_urgent_cas")
 	now := pgstoretest.HistoryAt()
@@ -816,6 +821,7 @@ func TestSetRunnerUrgentUpdateRejectsNonzeroRevisionWithoutCurrentRow(t *testing
 }
 
 func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
@@ -1049,6 +1055,7 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 }
 
 func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	ctx := t.Context()
@@ -1317,6 +1324,7 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 }
 
 func TestRunnerHeartbeatObservationsAreTenantScoped(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	ctx := t.Context()
 	now := pgstoretest.HistoryAt()
@@ -1375,6 +1383,7 @@ func TestRunnerHeartbeatObservationsAreTenantScoped(t *testing.T) {
 }
 
 func TestRunnerHostMetricRetentionUsesBoundedTenantBatch(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()

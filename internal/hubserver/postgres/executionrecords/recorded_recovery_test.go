@@ -17,6 +17,7 @@ import (
 )
 
 func TestRecordedRecoveryRejectsChangedSourceAndDependencies(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
