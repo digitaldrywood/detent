@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -702,10 +703,10 @@ func boardSearchLiteral(value string) string {
 }
 
 func boardSearchPatterns(text string) []string {
-	patterns := []string{"%" + boardSearchLiteral(text) + "%"}
-	for _, term := range searchstore.Terms(text) {
-		pattern := "%" + boardSearchLiteral(term) + "%"
-		if pattern != patterns[0] {
+	patterns := []string{}
+	for _, value := range append([]string{text}, searchstore.Terms(text)...) {
+		pattern := "%" + boardSearchLiteral(value) + "%"
+		if !strings.ContainsRune(value, 0) && !slices.Contains(patterns, pattern) {
 			patterns = append(patterns, pattern)
 		}
 	}

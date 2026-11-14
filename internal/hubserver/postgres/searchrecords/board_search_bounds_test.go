@@ -410,7 +410,7 @@ func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
 			for _, query := range []struct {
 				text string
 				want int
-			}{{"Example", 2}, {"bodyuniquemarker", 2}, {"unmatched bodyuniq", 2}, {"%_\\marker", 2}, {"CAFÉ", 2}, {"café", 2}, {"cafe", 0}, {"école", 2}, {"ÉCOLE", 2}, {"ecole", 0}, {"absentuniqueterm", 0}, {"%%_", 0}, {"2", 1}} {
+			}{{"Example", 2}, {"bodyuniquemarker", 2}, {"unmatched bodyuniq", 2}, {"%_\\marker", 2}, {"CAFÉ", 2}, {"café", 2}, {"cafe", 0}, {"école", 2}, {"ÉCOLE", 2}, {"ecole", 0}, {"absentuniqueterm", 0}, {"%%_", 0}, {"\x00", 0}, {"2", 1}} {
 				selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: query.text, SearchRanked: true, Limit: 200, Reporter: reporter, ReporterPrincipalID: "example"}
 				want := query.want
 				if reporter && want == 2 {
@@ -755,11 +755,19 @@ func TestBoardSearchFallsBackForDocumentsAwaitingRebuild(t *testing.T) {
 					f.drain(t, org)
 				}
 				if err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-					rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "bcabca", Limit: 20})
-					if err == nil && len(rows) != 2 {
-						t.Fatalf("%s board search rows=%d want 2", state, len(rows))
+					for _, query := range []struct {
+						text string
+						want int
+					}{{"bcabca", 2}, {"\x00", 0}} {
+						rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: query.text, Limit: 20})
+						if err != nil {
+							return fmt.Errorf("%s board search %q: %w", state, query.text, err)
+						}
+						if len(rows) != query.want {
+							t.Fatalf("%s board search %q rows=%d want %d", state, query.text, len(rows), query.want)
+						}
 					}
-					return err
+					return nil
 				}); err != nil {
 					t.Fatal(err)
 				}

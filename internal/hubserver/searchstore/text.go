@@ -23,7 +23,7 @@ func Number(query string) (int64, string) {
 	if !qualified {
 		number, project = project, ""
 	}
-	if strings.IndexFunc(number, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+	if strings.ContainsRune(project, 0) || strings.IndexFunc(number, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
 		return 0, ""
 	}
 	value, err := strconv.ParseInt(number, 10, 64)

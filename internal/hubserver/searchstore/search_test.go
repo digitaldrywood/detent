@@ -196,3 +196,22 @@ func TestSearchCursorRequiresSealer(t *testing.T) {
 		})
 	}
 }
+
+func TestNumberQualifierPostgresCannotStore(t *testing.T) {
+	for _, test := range []struct {
+		query   string
+		number  int64
+		project string
+	}{
+		{"42", 42, ""},
+		{"example#42", 42, "example"},
+		{"exa\x00mple#42", 0, ""},
+		{"\x00#42", 0, ""},
+		{"\x00", 0, ""},
+	} {
+		number, project := Number(test.query)
+		if number != test.number || project != test.project {
+			t.Errorf("Number(%q)=(%d,%q) want (%d,%q)", test.query, number, project, test.number, test.project)
+		}
+	}
+}
