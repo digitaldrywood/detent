@@ -817,7 +817,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 						var rows []eventstore.Event
 						if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
 							var err error
-							rows, err = r.HistoryEventsBefore(t.Context(), f.project, issue.WorkItemID, 0, 1)
+							rows, err = r.HistoryEventsBefore(t.Context(), f.project, issue.WorkItemID, 1<<63-1, 1)
 							return err
 						}); err != nil || len(rows) != 1 || rows[0].Type != "workflow.transitioned" {
 							t.Fatalf("latest workflow event=%+v error=%v", rows, err)
