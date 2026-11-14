@@ -697,7 +697,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			if got := f.detail(t).Versions[0].Policy; !reflect.DeepEqual(got, descriptor) {
+			if versions := f.detail(t).Versions; versions[len(versions)-1].ID != version.ID || !reflect.DeepEqual(versions[len(versions)-1].Policy, descriptor) {
 				t.Fatal("historical policy changed during hydration")
 			}
 		}},
