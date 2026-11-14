@@ -1550,7 +1550,20 @@ func importRunDetailHistoryIntoEmptyTarget(t *testing.T, issue tracker.NativeIss
 		}
 		for index, event := range page.Items {
 			sequence := int64(index + 1)
-			if event.AggregateSequence != sequence || event.Data.Run == nil || !reflect.DeepEqual(*event.Data.Run, history[sequence]) || event.OrganizationID != target.project.OrganizationID || event.ProjectID != target.project.ID || event.AggregateID != issue.WorkItemID {
+			if event.AggregateSequence != sequence || event.OrganizationID != target.project.OrganizationID || event.ProjectID != target.project.ID || event.AggregateID != issue.WorkItemID {
+				t.Fatalf("%s historical event%d differs from independent inline source", name, sequence)
+			}
+			if event.DataOmission != nil {
+				expected, err := json.Marshal(history[sequence])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if event.Data.Run != nil || event.DataOmission.Bytes <= len(expected) || len(expected) <= operatortool.WorkHistoryPageBytes-8192 {
+					t.Fatalf("%s historical event%d omitted a payload within the history page bound: %+v", name, sequence, event.DataOmission)
+				}
+				continue
+			}
+			if event.Data.Run == nil || !reflect.DeepEqual(*event.Data.Run, history[sequence]) {
 				t.Fatalf("%s historical event%d differs from independent inline source", name, sequence)
 			}
 		}
