@@ -383,13 +383,16 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			t.Fatalf("draft change status=%+v", card.Change)
 		}
 	}
-	firstVersionResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "shared-version-first"}, ChangeVersionInput: changeTestInput()})
+	firstInput := changeTestInput()
+	firstSource := changeTestSource(t, &firstInput)
+	firstVersionResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "shared-version-first"}, ChangeVersionInput: firstInput, SourceBundle: firstSource})
 	requireNativeStatus(t, firstVersionResponse, http.StatusOK)
 	var firstVersion tracker.ChangeVersion
 	decodeHubResponse(t, firstVersionResponse, &firstVersion)
 	secondInput := changeTestInput()
 	secondInput.HeadSHA = strings.Repeat("d", 40)
-	secondVersionResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "shared-version-second"}, ExpectedVersionID: firstVersion.ID, ChangeVersionInput: secondInput})
+	secondSource := changeTestSource(t, &secondInput, []byte("second version source\n"))
+	secondVersionResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "shared-version-second"}, ExpectedVersionID: firstVersion.ID, ChangeVersionInput: secondInput, SourceBundle: secondSource})
 	requireNativeStatus(t, secondVersionResponse, http.StatusOK)
 	var secondVersion tracker.ChangeVersion
 	decodeHubResponse(t, secondVersionResponse, &secondVersion)
@@ -623,8 +626,8 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		restoreSQL string
 		wantItems  int
 	}{
-		{"linked_source", "UPDATE issues SET native_source_key='missing-source' WHERE organization_id=$1 AND native_id=$2", "UPDATE issues SET native_source_key=NULL WHERE organization_id=$1 AND native_id=$2", 1},
-		{"all_linked_sources", "UPDATE issues SET native_source_key=native_id WHERE organization_id=$1 AND project_id=(SELECT project_id FROM issues WHERE organization_id=$1 AND native_id=$2)", "UPDATE issues SET native_source_key=NULL WHERE organization_id=$1 AND project_id=(SELECT project_id FROM issues WHERE organization_id=$1 AND native_id=$2)", 0},
+		{"linked_source", "UPDATE issues SET native_source_key='github:https://github.com/example-org/example-project/issues/1' WHERE organization_id=$1 AND native_id=$2", "UPDATE issues SET native_source_key=NULL WHERE organization_id=$1 AND native_id=$2", 1},
+		{"all_linked_sources", "UPDATE issues SET native_source_key='github:https://github.com/example-org/example-project/issues/'||native_id WHERE organization_id=$1 AND project_id=(SELECT project_id FROM issues WHERE organization_id=$1 AND native_id=$2)", "UPDATE issues SET native_source_key=NULL WHERE organization_id=$1 AND project_id=(SELECT project_id FROM issues WHERE organization_id=$1 AND native_id=$2)", 0},
 		{"item_version", "UPDATE issues SET revision=revision+100 WHERE organization_id=$1 AND native_id=$2", "UPDATE issues SET revision=revision-100 WHERE organization_id=$1 AND native_id=$2", 1},
 	} {
 		t.Run("preview_missing_"+test.name, func(t *testing.T) {
@@ -800,7 +803,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	started := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: "native-run-start"}, Type: "run.started", SchemaVersion: 1,
 		Data: tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: descriptor.ID, Sequence: 1,
-			Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: report.Backend, Model: report.Models[0]}},
+			Identity: &tracker.NativeExecutionIdentity{Role: requirement.Role, Backend: requirement.Backend, Model: requirement.Model}},
 	}
 	startedAt := clock.value.Truncate(time.Second).Add(123456789 * time.Nanosecond)
 	service.config.Version = "2.0.0"
