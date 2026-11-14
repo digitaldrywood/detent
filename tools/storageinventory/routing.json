@@ -3912,6 +3912,19 @@
         ]
       }
     },
+    "internal/hubserver/postgres/attempt_identity.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lease",
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/attempt_reads.go": {
       "disposition": "target-adapter",
       "families": [
@@ -12218,6 +12231,20 @@
         },
         "tables": [
           "hub/projects"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261114014509_attempt_execution_identity.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_attempts"
         ]
       }
     },

@@ -182,22 +182,26 @@ func (s *session) recordAttemptEvent(ctx context.Context, event leasestore.Attem
 		}
 		startedAtSubmicro := startedAt.Nanosecond() % 1000
 		startedAt = startedAt.Truncate(time.Microsecond)
-		row, err = s.queries.InsertLeaseAttempt(ctx, pgquery.InsertLeaseAttemptParams{
+		params := pgquery.InsertLeaseAttemptParams{
 			OrganizationID: s.organization, ID: event.ID, IssueID: lease.IssueID, LeaseID: lease.LeaseID,
 			FencingToken: lease.FencingToken, RunID: event.RunID, Status: event.Status, WorkItemRevision: lease.WorkItemRevision,
 			DispatchGeneration: event.DispatchGeneration, PayloadObjectKey: event.PayloadObjectKey,
 			CheckpointObjectKey: event.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(event.CheckpointPreservesSource), ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(event.WorkerCleanupRequired), LocalAttemptID: event.LocalAttemptID,
 			StartedAt: startedAt, StartedAtSubmicroNs: int16(startedAtSubmicro), Now: now,
 			FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt,
-		})
+		}
+		newAttemptIdentityColumns(event.Identity).insert(&params)
+		row, err = s.queries.InsertLeaseAttempt(ctx, params)
 	} else {
-		row, err = s.queries.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{
+		params := pgquery.AdvanceLeaseAttemptParams{
 			OrganizationID: s.organization, ID: event.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken,
 			RunID: event.RunID, NextSequence: event.Sequence, Status: event.Status, DispatchGeneration: event.DispatchGeneration,
 			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(event.CheckpointPreservesSource), ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(event.WorkerCleanupRequired), LocalAttemptID: event.LocalAttemptID,
 			UsageCorrection: event.UsageCorrection, Termination: event.Termination, RuntimeOrdered: event.RuntimeOrdered, Now: &now,
 			FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt,
-		})
+		}
+		newAttemptIdentityColumns(event.Identity).advance(&params)
+		row, err = s.queries.AdvanceLeaseAttempt(ctx, params)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict

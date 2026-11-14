@@ -180,7 +180,9 @@ type Attempt struct {
 	CheckpointObjectKey       *string
 	CheckpointPreservesSource *bool `json:"-"`
 	ArtifactsObjectKey        *string
-	FailureSequence           *int64 `json:"-"`
+	FailureSequence           *int64          `json:"-"`
+	IdentitySequence          int64           `json:"-"`
+	Identity                  AttemptIdentity `json:"-"`
 	StartedAt                 time.Time
 	UpdatedAt                 time.Time
 }
@@ -230,6 +232,7 @@ type AttemptEvent struct {
 	PayloadReference          attachment.ArchiveReference `json:"-"`
 	Usage                     []tracker.NativeUsage       `json:"-"`
 	Failure                   *AttemptFailure             `json:"-"`
+	Identity                  AttemptIdentity             `json:"-"`
 	ID                        string
 	Fence                     Fence
 	RunID                     string
