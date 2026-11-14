@@ -12248,6 +12248,18 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261114014702_search_comment_fingerprint_refresh.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "search"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
