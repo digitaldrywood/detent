@@ -232,7 +232,7 @@ func TestNativeRefreshOversizedRecordedAttempt(t *testing.T) {
 	}
 	mutation := nativeMutationKey()
 	mutation.LeaseID, mutation.FencingToken = finished.LeaseID, finished.FencingToken
-	if _, err := h.native.Transition(t.Context(), item, tracker.Transition{Mutation: mutation, ExpectedRevision: current.Revision, State: "Blocked", Reason: "worker_progress"}); err != nil {
+	if _, err := h.native.Transition(t.Context(), item, tracker.Transition{Mutation: mutation, ExpectedRevision: current.Revision, State: "Blocked", Reason: "worker_progress", ReasonDetail: "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"Operator approval required\"\n```"}); err != nil {
 		t.Fatal(err)
 	}
 	otherNative, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Unaffected item", Body: "Preserve this body." + issueContractTestSections, State: "Blocked"})
