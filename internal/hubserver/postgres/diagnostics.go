@@ -171,8 +171,8 @@ const diagnosticsAttemptCandidatesQuery = `WITH completed AS MATERIALIZED (
 SELECT '' AS id,'' AS project_id,'' AS native_id,'' AS status,$3::timestamptz AS started_at,$3::timestamptz AS updated_at,NULL::timestamptz AS failed_at,(SELECT count(*) FROM completed)>$8 OR (SELECT count(*) FROM running)>$8 AS clipped
 UNION ALL
 SELECT a.id,a.project_id,a.native_id,a.status,a.started_at,a.updated_at,outcome.recorded_at,false
-FROM selected a LEFT JOIN report_attempt_facts f ON f.organization_id=$1 AND f.attempt_id=a.id
-LEFT JOIN collaboration_events outcome ON outcome.organization_id=f.organization_id AND outcome.id=f.outcome_event_id
+FROM selected a LEFT JOIN LATERAL (SELECT f.outcome_event_id FROM report_attempt_facts f WHERE f.organization_id=$1 AND f.attempt_id=a.id LIMIT 1) f ON true
+LEFT JOIN LATERAL (SELECT outcome.recorded_at FROM collaboration_events outcome WHERE outcome.organization_id=$1 AND outcome.id=f.outcome_event_id LIMIT 1) outcome ON true
 ORDER BY updated_at DESC,id DESC`
 
 func (s *session) diagnosticAttempts(ctx context.Context, projects []string, from, to time.Time, principal string, out *diagnosticstore.Snapshot) error {

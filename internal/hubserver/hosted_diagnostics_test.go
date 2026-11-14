@@ -154,10 +154,11 @@ func TestDiagnosticsProjectionReadBound(t *testing.T) {
 		t.Run(string(f.organization), func(t *testing.T) {
 			now := f.hosted.service.config.Clock().UTC().Truncate(time.Hour)
 			w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
+			history := map[tracker.OrganizationID]int{"org_first": 4 * maxAnalyticsPopulation, "org_second": 40 * maxAnalyticsPopulation}[f.organization]
 			for _, project := range []tracker.ProjectID{f.hosted.project, "prj_diagnostics_other"} {
 				data := tracker.NativeRunData{Outcome: "failed", Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "conflict"}}}
 				diagnosticsFixtureAttempts(t.Context(), t, f, project, tracker.NativeWorkItemID(string(project)+"-diagnostic-source"), string(project)+"-recent", 4*maxAnalyticsPopulation, maxAnalyticsPopulation, now.Add(-2*time.Hour), now.Add(-time.Hour), data)
-				diagnosticsFixtureAttempts(t.Context(), t, f, project, tracker.NativeWorkItemID(string(project)+"-historical-source"), string(project)+"-old", 4*maxAnalyticsPopulation, 0, now.Add(-2400*time.Hour), now.Add(-2400*time.Hour), data)
+				diagnosticsFixtureAttempts(t.Context(), t, f, project, tracker.NativeWorkItemID(string(project)+"-historical-source"), string(project)+"-old", history, 0, now.Add(-2400*time.Hour), now.Add(-2400*time.Hour), data)
 			}
 			if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT a.organization_id,i.project_id,a.id,a.updated_at+n*interval '1 microsecond','provider','model',1,0,1,1,'USD',a.updated_at FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id CROSS JOIN generate_series(1,12)n WHERE a.organization_id=$1`, f.organization); err != nil {
 				t.Fatal(err)
@@ -413,7 +414,7 @@ func diagnosticsAssertIndexedPlan(t *testing.T, f diagnosticsPostgresFixture, ki
 	}
 	inspect(plans[0].Plan)
 	if kind == "attempts" {
-		if !indexes["native_attempts_activity_recent_idx"] || !indexes["native_attempts_activity_running_idx"] || visits["native_attempts"] > 2*float64(diagnosticstore.Limit+1) {
+		if visits["native_attempts"] > 2*float64(diagnosticstore.Limit+1) || visits["report_attempt_facts"] > diagnosticstore.AttemptLimit+1 || visits["collaboration_events"] > diagnosticstore.AttemptLimit+1 {
 			t.Fatalf("attempt candidates lost indexed bounded reads: %s", raw)
 		}
 	} else if !indexes["attempt_usage_pkey"] && !indexes["attempt_usage_report_window_idx"] || kind == "usage" && visits["attempt_usage"] > 2*float64(diagnosticstore.Limit+1) {
