@@ -53,16 +53,20 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 		if workspace, err := r.IsWorkspaceWorkItem(ctx, project, item.NativeID); err != nil || workspace {
 			return err
 		}
+		runner := func(leaseID string) (string, error) {
+			identity, err := r.RunnerForLease(ctx, leaseID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return "", nil
+			}
+			return identity.RunnerID, err
+		}
 		owner := func(leaseID string) (string, string, error) {
 			lease, err := r.Lease(ctx, leaseID)
 			if err != nil {
 				return "", "", err
 			}
-			identity, err := r.RunnerForLease(ctx, leaseID)
-			if errors.Is(err, corestore.ErrNotFound) {
-				return lease.MachineID, "", nil
-			}
-			return lease.MachineID, identity.RunnerID, err
+			runnerID, err := runner(leaseID)
+			return lease.MachineID, runnerID, err
 		}
 		change, err := r.LatestChange(ctx, project, item.NativeID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -110,7 +114,8 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 			return err
 		}
-		facts.CheckpointMachine, facts.CheckpointRunner, err = owner(attempt.LeaseID)
+		facts.CheckpointMachine = snapshot.Lease.MachineID
+		facts.CheckpointRunner, err = runner(attempt.LeaseID)
 		return err
 	})
 	if err != nil {

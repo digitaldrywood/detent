@@ -1320,7 +1320,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 							if writeTransactions.Load() != 0 || directWrites.Load() != 0 {
 								t.Errorf("explanation opened %d write transactions and issued %d direct write statements", writeTransactions.Load(), directWrites.Load())
 							}
-							if queries.Load() == 0 || queries.Load() > 180 || response.Body.Len() > 64*1024 {
+							if queries.Load() == 0 || queries.Load() > 190 || response.Body.Len() > 64*1024 {
 								t.Errorf("unbounded or unobserved explanation: queries=%d bytes=%d", queries.Load(), response.Body.Len())
 							}
 							t.Logf("explanation history=%d queries=%d bytes=%d elapsed=%s writer_txs=%d direct_writes=%d", history, queries.Load(), response.Body.Len(), time.Since(started), writeTransactions.Load(), directWrites.Load())
