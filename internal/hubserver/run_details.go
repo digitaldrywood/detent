@@ -63,15 +63,9 @@ func decodeRunHistory(ctx context.Context, q hubapi.NativeQueryer, raw string, r
 	return hubrecords.DecodeRunDetail(ctx, q, string(envelope.Run), result.Run)
 }
 
-type storedRunCheckpoint struct {
-	*tracker.NativeCheckpoint
-	Detail *hubrecords.RunDetailReference `json:"detail,omitempty"`
-}
+type storedRunCheckpoint = hubrecords.StoredRunCheckpoint
 
-type checkpointPayload struct {
-	Checkpoint  *tracker.NativeCheckpoint `json:"checkpoint"`
-	ArtifactIDs []string                  `json:"artifact_ids"`
-}
+type checkpointPayload = hubrecords.CheckpointPayload
 
 func (s *Service) freshRunDetailContext(ctx context.Context) context.Context {
 	return s.runDetailContext(context.WithValue(context.WithValue(ctx, hubcontent.RunDetailContextKey{}, nil), hubcontent.ChangeContentKey{}, nil))

@@ -814,7 +814,7 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *neutralimport.Index, c
 		}
 		attempt.CheckpointObjectKey = &ref.Key
 		checkpointReference = ref
-		decoded, decodeErr := decodeAttemptCheckpoint(ctx, attempt, checkpoint, func(ctx context.Context, detail *hubrecords.RunDetailReference) ([]byte, error) {
+		decoded, decodeErr := hubrecords.DecodeAttemptCheckpoint(ctx, attempt, checkpoint, func(ctx context.Context, detail *hubrecords.RunDetailReference) ([]byte, error) {
 			key := detail.ObjectKey
 			var uploader string
 			if key == "" {
