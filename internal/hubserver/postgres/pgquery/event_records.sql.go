@@ -967,6 +967,23 @@ func (q *Queries) RecordGetVersionByID(ctx context.Context, arg RecordGetVersion
 	return i, err
 }
 
+const recordGetVersionWorkItemID = `-- name: RecordGetVersionWorkItemID :one
+SELECT i.id FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
+WHERE v.organization_id=$1 AND v.id=$2
+`
+
+type RecordGetVersionWorkItemIDParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+}
+
+func (q *Queries) RecordGetVersionWorkItemID(ctx context.Context, arg RecordGetVersionWorkItemIDParams) (int64, error) {
+	row := q.db.QueryRow(ctx, recordGetVersionWorkItemID, arg.OrganizationID, arg.ID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const recordInsertChange = `-- name: RecordInsertChange :one
 INSERT INTO change_requests (organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref, review_summary_sequence, review_evidence_revision

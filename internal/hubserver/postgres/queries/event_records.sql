@@ -125,6 +125,10 @@ SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AN
 -- name: RecordGetVersionAttemptID :one
 SELECT attempt_id FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id);
 
+-- name: RecordGetVersionWorkItemID :one
+SELECT i.id FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
+WHERE v.organization_id=sqlc.arg(organization_id) AND v.id=sqlc.arg(id);
+
 -- name: RecordGetLandingReceipt :one
 SELECT * FROM change_landing_receipts WHERE organization_id=sqlc.arg(organization_id) AND attempt_id=sqlc.arg(attempt_id);
 

@@ -170,11 +170,15 @@ func (s *session) CreateLandingReceipt(ctx context.Context, record eventstore.La
 	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {
 		return eventstore.LandingReceipt{}, err
 	}
-	versionAttempt, err := s.queries.RecordGetVersionAttemptID(ctx, pgquery.RecordGetVersionAttemptIDParams{OrganizationID: s.organization, ID: record.VersionID})
+	versionItem, err := s.queries.RecordGetVersionWorkItemID(ctx, pgquery.RecordGetVersionWorkItemIDParams{OrganizationID: s.organization, ID: record.VersionID})
 	if err != nil {
 		return eventstore.LandingReceipt{}, mapError(ctx, err)
 	}
-	if versionAttempt != record.AttemptID {
+	landing, err := s.Attempt(ctx, record.AttemptID)
+	if err != nil {
+		return eventstore.LandingReceipt{}, err
+	}
+	if landing.IssueID != versionItem {
 		return eventstore.LandingReceipt{}, eventstore.ErrInvalidRecord
 	}
 	if (record.Repository == "") != (record.BaseRef == "") {
