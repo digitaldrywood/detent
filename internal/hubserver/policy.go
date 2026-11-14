@@ -518,6 +518,9 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 		}
 		return nil
 	})
+	if errors.Is(err, projectstore.ErrStateInUse) {
+		return policy.Approval{}, projectRecordError(err)
+	}
 	if err != nil {
 		return policy.Approval{}, err
 	}
@@ -906,6 +909,9 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 			return err
 		}
 		return applyDefaultReviewPolicy(ctx, writer, review, previous.ApprovedBy, now)
+	}
+	if !carryover {
+		return nil
 	}
 	actor := "repository-default-branch"
 	if carryover && previous.ApprovedBy != "" {

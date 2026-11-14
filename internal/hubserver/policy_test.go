@@ -371,8 +371,13 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	sourceC := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("c", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("d", 40), DefaultBranchReachable: true}
 	report(runners[1], descriptorC, sourceC)
 	view = read()
-	if view.Policy == nil || view.Policy.ID != descriptorC.ID || view.ApprovedBy != "repository-default-branch" || len(view.History) == 0 || view.History[0].AppliedBy != "repository-default-branch" || view.History[0].Definition == nil || view.History[0].Definition.ID != descriptorC.ID || view.History[0].PreviousDefinition == nil || view.History[0].PreviousDefinition.ID != descriptorB.ID {
-		t.Fatalf("reachable default-branch policy was not applied with history: %+v", view)
+	if view.Policy == nil || view.Policy.ID != descriptorB.ID || len(view.ObservedPolicies) != 1 || view.ObservedPolicies[0].Policy.ID != descriptorC.ID {
+		t.Fatalf("runner-reported default-branch reachability approved policy without a human: %+v", view)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptorB.ID, ObservedPolicyID: descriptorC.ID}), http.StatusOK)
+	view = read()
+	if view.Policy == nil || view.Policy.ID != descriptorC.ID || view.ApprovedBy == "repository-default-branch" || strings.HasPrefix(view.ApprovedBy, "runner_") || len(view.History) == 0 || view.History[0].AppliedBy != view.ApprovedBy || view.History[0].Definition == nil || view.History[0].Definition.ID != descriptorC.ID || view.History[0].PreviousDefinition == nil || view.History[0].PreviousDefinition.ID != descriptorB.ID {
+		t.Fatalf("human approval of the reported default-branch policy was not applied with history: %+v", view)
 	}
 	response = performHubAPIRequest(t, service, http.MethodGet, base+"/policy?limit=2", testHubAdminToken, nil)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -422,7 +427,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	var operatorPage struct {
 		Data projectPolicyRead `json:"data"`
 	}
-	if err := json.Unmarshal(operatorRead.Content, &operatorPage); err != nil || operatorPage.Data.Policy == nil || operatorPage.Data.Policy.ID != descriptorC.ID || operatorPage.Data.ApprovedBy != "repository-default-branch" {
+	if err := json.Unmarshal(operatorRead.Content, &operatorPage); err != nil || operatorPage.Data.Policy == nil || operatorPage.Data.Policy.ID != descriptorC.ID || operatorPage.Data.ApprovedBy != view.ApprovedBy {
 		t.Fatalf("selected PostgreSQL operator policy read = %+v, %v", operatorPage.Data, err)
 	}
 	descriptorD := authoredDescriptor("Operator-approved workflow content.\n", strings.Repeat("e", 40))
@@ -2268,16 +2273,35 @@ func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.
 				source := &policy.RepositorySource{Repository: "example-org/example-project", Commit: candidate.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: candidate.Workflow.Revision, DefaultBranchReachable: true}
 				for _, observed := range []policy.Descriptor{candidate, candidate} {
 					response = performHubAPIRequest(t, service, http.MethodPost, base+"/policy/observed", runner.redemption.Credential, policy.Observation{Descriptor: observed, Source: source})
-					expected := http.StatusNoContent
-					if test.occupied == "Legacy" {
-						expected = http.StatusConflict
+					requireNativeStatus(t, response, http.StatusNoContent)
+					err = repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+						after, err := r.ProjectRecord(t.Context(), project.ID)
+						if err != nil {
+							return err
+						}
+						if !reflect.DeepEqual(before, after) {
+							t.Errorf("runner observation changed project metadata, states or transitions: before=%+v after=%+v", before, after)
+						}
+						return nil
+					})
+					if err != nil {
+						t.Fatal(err)
 					}
-					if response.Code != expected {
-						t.Errorf("observation status = %d, want %d: %s", response.Code, expected, response.Body)
+					response = performHubAPIRequest(t, service, http.MethodGet, base+"/policy", testHubAdminToken, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var pending projectPolicyRead
+					decodeHubResponse(t, response, &pending)
+					if pending.Policy == nil || pending.Policy.ID != original.ID || len(pending.ObservedPolicies) != 1 || pending.ObservedPolicies[0].Policy.ID != candidate.ID {
+						t.Fatalf("runner observation approved policy without a human: %+v", pending)
 					}
-					if expected == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"workflow_conflict"`) {
-						t.Errorf("missing typed workflow conflict: %s", response.Body)
-					}
+				}
+				response = performHubAPIRequest(t, service, http.MethodPut, base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, ObservedPolicyID: candidate.ID})
+				if test.occupied == "Legacy" {
+					requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+				} else {
+					requireNativeStatus(t, response, http.StatusOK)
+				}
+				{
 					err = repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 						after, err := r.ProjectRecord(t.Context(), project.ID)
 						if err != nil {
