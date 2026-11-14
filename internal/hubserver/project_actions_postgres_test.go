@@ -301,8 +301,8 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteAccessTokenGrant(t.Context(), credentialID, project) }); err != nil {
 				t.Fatal(err)
 			}
-			call(http.MethodPost, "", create, http.StatusForbidden)
-			call(http.MethodPatch, suffix, patch, http.StatusForbidden)
+			call(http.MethodPost, "", create, http.StatusNotFound)
+			call(http.MethodPatch, suffix, patch, http.StatusNotFound)
 			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credentialID, ProjectID: project})
 			}); err != nil {
