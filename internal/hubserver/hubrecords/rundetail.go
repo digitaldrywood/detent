@@ -51,6 +51,9 @@ func (store RunEventDetailStore) StoreDetail(ctx context.Context, organization s
 
 func (store RunEventDetailStore) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
 	raw, err := store.DetailStore.ReadDetail(ctx, organization, ref)
+	if errors.Is(err, artifact.ErrMissing) {
+		return nil, err
+	}
 	if err != nil {
 		return nil, hubcontent.ImmutableContentStorageError(err)
 	}
