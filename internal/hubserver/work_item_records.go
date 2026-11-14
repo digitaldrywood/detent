@@ -1098,7 +1098,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 					return err
 				}
 			}
-			if plan.LinkedSource != nil {
+			if plan.LinkedSource != nil && plan.Current.ID == 0 {
 				hasTriage := slices.ContainsFunc(project.States, func(state tracker.NativeState) bool { return state.Name == "Triage" })
 				if !hasTriage && project.Core.WorkflowSource != "" {
 					return hubapi.PolicyMismatch("The configured workflow must include Triage for linked issues")
