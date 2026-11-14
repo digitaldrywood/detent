@@ -19,6 +19,7 @@ const (
 	maxOverviewFactLimit     = 5000
 	maxOverviewCandidateRows = 50000
 	maxReportProjects        = 1000
+	maxReportStateNames      = 1000
 )
 
 var _ reportstore.Reader = (*session)(nil)
@@ -35,12 +36,19 @@ func (s *session) ReadOpenFacts(ctx context.Context, query reportstore.OpenQuery
 		}
 		projects[i] = string(project)
 	}
+	if len(projects) > maxReportProjects {
+		return nil, reportstore.ErrPopulationExceeded
+	}
+	candidateIDs, err := s.readOpenCandidates(ctx, projects, query.At.UTC())
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,i.title,state.name,coalesce(ws.terminal,false),
-	(SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.to_state=state.name AND e.recorded_at <= $3 ORDER BY e.recorded_at DESC,e.sequence DESC LIMIT 1),
-	CASE WHEN EXISTS (SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created' AND e.recorded_at <= $3) THEN i.created_at END,
-	(SELECT min(e.recorded_at) FROM collaboration_events e JOIN project_workflow_states started ON started.organization_id=e.organization_id AND started.project_id=e.project_id AND started.name=e.to_state WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.recorded_at <= $3 AND started.dispatchable AND NOT started.terminal AND e.to_state NOT IN ('Backlog','Triage','Blocked','Human Review'))
-FROM issues i
-LEFT JOIN LATERAL (SELECT e.to_state AS name FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.recorded_at <= $3 ORDER BY e.recorded_at DESC,e.sequence DESC LIMIT 1) previous ON true
+	previous.recorded_at,
+	CASE WHEN (SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created' AND e.recorded_at <= $3 LIMIT 1) THEN i.created_at END,
+	(SELECT e.recorded_at FROM collaboration_events e JOIN project_workflow_states started ON started.organization_id=e.organization_id AND started.project_id=e.project_id AND started.name=e.to_state WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.recorded_at <= $3 AND started.dispatchable AND NOT started.terminal AND e.to_state NOT IN ('Backlog','Triage','Blocked','Human Review') ORDER BY e.recorded_at LIMIT 1)
+FROM unnest($11::bigint[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i
+LEFT JOIN LATERAL (SELECT e.to_state AS name,e.recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.recorded_at <= $3 ORDER BY e.recorded_at DESC,e.sequence DESC LIMIT 1) previous ON true
 LEFT JOIN LATERAL (SELECT e.from_state AS name FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.recorded_at > $3 ORDER BY e.recorded_at,e.sequence LIMIT 1) next ON previous.name IS NULL
 LEFT JOIN LATERAL (SELECT coalesce(previous.name,next.name,CASE WHEN i.native_updated_at <= $3 THEN i.workflow_state_name END,'') AS name) state ON true
 LEFT JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=state.name
@@ -50,7 +58,7 @@ WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND NOT i.archived A
   AND (coalesce(cardinality($7::text[]),0)=0 OR i.actor_principal_id=ANY($7::text[]))
   AND (coalesce(cardinality($8::text[]),0)=0 OR EXISTS (SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY($8::text[])))
   AND (coalesce(cardinality($9::text[]),0)=0 OR EXISTS (SELECT 1 FROM native_attempts a JOIN runner_lease_assignments la ON la.organization_id=a.organization_id AND la.lease_id=a.lease_id WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at <= $3 AND la.runner_id=ANY($9::text[])))
-ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, projects, query.At.UTC(), query.Principal, query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1)
+ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, projects, query.At.UTC(), query.Principal, query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, candidateIDs)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -84,6 +92,46 @@ ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, projects, query.At
 		return nil, reportstore.ErrPopulationExceeded
 	}
 	return facts, nil
+}
+
+func (s *session) readOpenCandidates(ctx context.Context, projects []string, at time.Time) ([]int64, error) {
+	var exceeded bool
+	var ids []int64
+	err := s.db.QueryRow(ctx, `WITH RECURSIVE states AS (
+ SELECT p.project_id,first.name,1 AS depth FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL (
+  SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND NOT i.archived AND i.workflow_state_name IS NOT NULL ORDER BY i.workflow_state_name LIMIT 1
+ ) first
+ UNION ALL
+ SELECT s.project_id,next.name,s.depth+1 FROM states s CROSS JOIN LATERAL (
+  SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name>s.name ORDER BY i.workflow_state_name LIMIT 1
+ ) next WHERE s.depth<=$5
+), open AS MATERIALIZED (
+ SELECT i.id FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
+ CROSS JOIN LATERAL (
+  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name=s.name ORDER BY i.id LIMIT $4
+ ) i WHERE NOT coalesce(ws.terminal,false)
+ UNION ALL
+ SELECT i.id FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL (
+  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND NOT i.archived AND i.workflow_state_name IS NULL ORDER BY i.id LIMIT $4
+ ) i
+), terminal AS MATERIALIZED (
+ SELECT i.id,i.project_id FROM issues i WHERE i.organization_id=$1 AND NOT i.archived AND i.terminal_entered_at IS NOT NULL AND i.terminal_entered_at>$3 ORDER BY i.terminal_entered_at,i.id LIMIT $4
+), updated AS MATERIALIZED (
+ SELECT i.id,i.project_id,i.archived FROM issues i WHERE i.organization_id=$1 AND i.native_updated_at>$3 ORDER BY i.native_updated_at DESC,i.id DESC LIMIT $4
+), keyed AS (
+ SELECT id FROM open
+ UNION SELECT id FROM terminal WHERE project_id=ANY($2::text[])
+ UNION SELECT id FROM updated WHERE project_id=ANY($2::text[]) AND NOT archived
+)
+SELECT EXISTS(SELECT 1 FROM states WHERE depth>$5) OR (SELECT count(*) FROM open)>=$4 OR (SELECT count(*) FROM terminal)>=$4 OR (SELECT count(*) FROM updated)>=$4,
+ coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::bigint[])`, s.organization, projects, at, maxOverviewCandidateRows+1, maxReportStateNames).Scan(&exceeded, &ids)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	if exceeded || len(ids) > maxOverviewCandidateRows {
+		return nil, reportstore.ErrPopulationExceeded
+	}
+	return ids, nil
 }
 
 func (s *session) ReadOverviewFacts(ctx context.Context, query reportstore.OverviewQuery) ([]reportstore.OverviewFact, error) {
