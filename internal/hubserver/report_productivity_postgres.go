@@ -182,6 +182,9 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 		projectIndex[project] = len(out.Projects)
 		out.Projects = append(out.Projects, postgresProductivityProject{ProjectID: project})
 	}
+	if len(projectIDsTyped) == 0 {
+		return out, nil
+	}
 	priorities := make([]int, len(filter.Priorities))
 	for i, value := range filter.Priorities {
 		priorities[i] = mustAtoi(value)
