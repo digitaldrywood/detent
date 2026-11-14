@@ -358,7 +358,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 					issue = &compact
 				}
 				if selection.SearchText != "" {
-					issue.Snippet = searchstore.Snippet(searchstore.Text{Title: row.PageIssue.Title, Body: row.PageIssue.Body}, selection.SearchText)
+					issue.Snippet = searchstore.Snippet(searchstore.Text{Title: row.PageIssue.Title, Body: row.PageIssue.Body, Labels: row.PageIssue.Labels}, selection.SearchText)
 					issue.SearchScore = row.Position.SearchRank
 					extra, err := json.Marshal(struct {
 						Snippet     string  `json:"snippet"`
