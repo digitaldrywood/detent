@@ -589,6 +589,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					linked = append(linked, historical.WorkItemID)
 				}
 				for i, id := range linked {
+					if test.active {
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
+					}
 					path := f.base + "/work-items/" + string(id) + "/changes"
 					response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("history-change-%d", i)}, Title: "Retained Change"})
 					requireNativeStatus(t, response, http.StatusOK)
@@ -639,7 +642,6 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 						}); err != nil {
 							t.Fatal(err)
 						}
-
 					}
 					response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 					requireNativeStatus(t, response, http.StatusOK)
@@ -707,6 +709,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			if test.history > 0 {
 				for path, before := range historySummaries {
+					if test.active {
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
+					}
 					response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 					requireNativeStatus(t, response, http.StatusOK)
 					var detail tracker.ChangeDetail
@@ -741,12 +746,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 						t.Fatal(err)
 					}
 					t.Logf("instruction-only adoption: %s work=%d, retained history=%d", kind, count, test.history)
-					want := 0
-
-					if kind == "project" {
-						want = 1
-					}
-					if count != want {
+					if want := map[string]int{"project": 1}[kind]; count != want {
 						t.Errorf("instruction-only adoption %s work=%d, want %d", kind, count, want)
 					}
 				}
