@@ -614,6 +614,10 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			failed := postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "failure.txt", "text/plain", []byte("unpublished"), "failure")
 			requireNativeStatus(t, failed, http.StatusInternalServerError)
 			objects.setFail(false)
+			previous, staged := archive, 0
+			if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT compressed_bytes FROM archive_usage_counters WHERE organization_id=$1),(SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND owner_kind='conversation-upload')`, f.org).Scan(&archive, &staged); err != nil || staged != 1 || archive <= previous {
+				t.Fatalf("uncertain upload keeps exactly its staged reservation: staged=%d archive=%d before=%d err=%v", staged, archive, previous, err)
+			}
 			usage(f, int64(len(payload)))
 			duplicate := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "duplicate.txt", "text/plain", payload)
 			usage(f, 2*int64(len(payload)))
