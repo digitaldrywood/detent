@@ -935,6 +935,19 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, MachineID: credential.Runner.MachineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": claim.MachineID, "hostname": "runner", "capacity": 2, "version": "test"}), http.StatusOK)
 	reportRunnerCapacity(t, f.service, f.base, worker, claim.MachineID, "runner", isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, 2)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: f.project.OrganizationID, ID: string(claim.MachineID), Hostname: "runner", Capacity: 2, Version: "test"}); err != nil {
+			return err
+		}
+		identity, err := w.RunnerIdentityByCredential(t.Context(), credential.ID)
+		if err != nil {
+			return err
+		}
+		identity.CapacityLimit = 2
+		return w.UpdateRunnerIdentity(t.Context(), identity)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	runner.enroll(t)
 	for _, token := range []string{worker, f.token, runner.redemption.Credential} {
