@@ -723,6 +723,9 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
 	}
 	decision := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.Item.NativeID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: "native_claim", Outcome: "claimed", Reason: "A current fenced lease owns this item", At: now, WorkItemRevision: tracker.Revision(plan.Item.Revision)}}}
+	if (hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending) && plan.ChangeReady && plan.Change.VersionID != "" {
+		decision.Data.Change = new(plan.Change)
+	}
 	decisionRaw, err := json.Marshal(decision)
 	if err != nil {
 		return leasestore.Lease{}, err

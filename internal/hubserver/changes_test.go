@@ -2790,9 +2790,7 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					t.Fatalf("unclaimed landing evidence=%#v", evidence)
 				}
 				claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "capacity-refusal", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-				if !test.provider {
-					publishCapacity(t, f, r)
-				}
+				publishCapacity(t, f, r)
 				if test.provider {
 					publishCapacity(t, f, r, capacityReport(f.service.config.Clock()))
 					claim.WorkItemID = ""
@@ -2857,7 +2855,12 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 2, "display_name": "Landing runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}), http.StatusOK)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
+				var claimed, replayed tracker.NativeLease
+				for _, lease := range []*tracker.NativeLease{&claimed, &replayed} {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, lease)
+				}
 				var decisions []eventstore.Event
 				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
 					var err error
@@ -2869,7 +2872,7 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				if len(decisions) == 100 {
 					t.Fatal("decision fixture history exceeds complete read bound")
 				}
-				var evaluatedReady int
+				var evaluatedClaims int
 				for _, row := range decisions {
 					if row.Type != "scheduler.decision" {
 						continue
@@ -2878,12 +2881,12 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if event.Data.Decision != nil && event.Data.Decision.Source == "native_claim_eligibility" && event.Data.Decision.Outcome == "ready" && event.Data.Change != nil && event.Data.Change.VersionID == version.ID {
-						evaluatedReady++
+					if decision := event.Data.Decision; decision != nil && decision.Source == "native_claim" && decision.Outcome == "claimed" && decision.RunnerID == r.binding.RunnerID && decision.WorkItemRevision == issue.Revision+1 && event.Data.Change != nil && *event.Data.Change == (tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}) {
+						evaluatedClaims++
 					}
 				}
-				if evaluatedReady != 1 {
-					t.Fatalf("actual reviewed Change evaluation missing: count=%d", evaluatedReady)
+				if evaluatedClaims != 1 || claimed.ID == "" || replayed.ID != claimed.ID || claimed.WorkItemID != issue.WorkItemID {
+					t.Fatalf("claimed landing evaluation of the reviewed Change: count=%d, want 1; claim=%+v replay=%+v", evaluatedClaims, claimed, replayed)
 				}
 			}
 		})
