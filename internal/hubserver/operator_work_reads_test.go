@@ -1159,7 +1159,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 				{"setup missing local identity", func(e *tracker.NativeRunEvent) {
 					if setupOnly {
 						copy := *e.Data.Runtime
-						copy.LocalAttemptID = 0
+						copy.LocalAttemptID, copy.Generation = 0, 0
 						e.Data.Runtime = &copy
 					} else {
 						e.Data.Identity = nil
