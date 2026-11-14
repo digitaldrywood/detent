@@ -193,6 +193,8 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(expected[0].WorkItemID)+"/dependencies", f.token,
 		tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "list-dependency"}, ExpectedRevision: expected[0].Revision, RelatedWorkItemID: expected[1].WorkItemID, Operation: "add"})
 	requireNativeStatus(t, response, http.StatusOK)
+	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(expected[0].WorkItemID), f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &expected[0])
 	detailItem := expected[60]
 	expectedByID := map[tracker.NativeWorkItemID]tracker.NativeIssue{}
