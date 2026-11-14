@@ -159,24 +159,22 @@ BEGIN
                     AND p.term>r.last_lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
                  ORDER BY p.term LIMIT 1)
                 UNION ALL
-                (SELECT p.term FROM (SELECT sd.organization_id,sd.id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
-                    SELECT p.term FROM public.search_postings p
-                    WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term=r.term COLLATE "C" AND p.scope=r.key AND (NOT $10 OR p.principal_id=$11) LIMIT 1) p
+                (SELECT p.term FROM (SELECT sd.organization_id,sd.id COLLATE "default" AS id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
+                    SELECT p.term FROM (SELECT p.term,p.scope,p.principal_id,p.impact,p.document_id,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term=r.term COLLATE "C" OFFSET 0) p
+                    WHERE p.scope=r.key AND (NOT $10 OR p.principal_id=$11) LIMIT 1) p
                  WHERE $5<>'' AND $6='work' AND ($16 OR left(r.term,1)='~') AND (r.first_active IS NOT NULL OR r.last_lexeme IS NULL)
                  ORDER BY p.term LIMIT 1)
                 UNION ALL
-                (SELECT p.term FROM (SELECT sd.organization_id,sd.id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
-                    SELECT p.term FROM public.search_postings p
-                    WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.scope=r.key AND (NOT $10 OR p.principal_id=$11)
-                       AND p.term>=COALESCE(r.first_active,r.term) COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
+                (SELECT p.term FROM (SELECT sd.organization_id,sd.id COLLATE "default" AS id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
+                    SELECT p.term FROM (SELECT p.term,p.scope,p.principal_id,p.impact,p.document_id,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term>=COALESCE(r.first_active,r.term) COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C" OFFSET 0) p
+                    WHERE p.scope=r.key AND (NOT $10 OR p.principal_id=$11)
                     ORDER BY p.term LIMIT 1) p
                  WHERE $5<>'' AND $6='work' AND NOT $16 AND left(r.term,1)<>'~' AND (r.first_active IS NOT NULL OR r.last_lexeme IS NULL)
                  ORDER BY p.term LIMIT 1)
                 UNION ALL
-                (SELECT p.term FROM (SELECT sd.organization_id,sd.id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
-                    SELECT p.term FROM public.search_postings p
-                    WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.scope=r.key AND (NOT $10 OR p.principal_id=$11)
-                       AND p.term>r.last_lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
+                (SELECT p.term FROM (SELECT sd.organization_id,sd.id COLLATE "default" AS id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
+                    SELECT p.term FROM (SELECT p.term,p.scope,p.principal_id,p.impact,p.document_id,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term>r.last_lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C" OFFSET 0) p
+                    WHERE p.scope=r.key AND (NOT $10 OR p.principal_id=$11)
                     ORDER BY p.term LIMIT 1) p
                  WHERE $5<>'' AND $6='work' AND NOT $16 AND left(r.term,1)<>'~' AND r.first_active IS NULL AND r.last_lexeme IS NOT NULL
                  ORDER BY p.term LIMIT 1)
@@ -195,10 +193,9 @@ BEGIN
                     AND p.term>w.lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
                 ORDER BY p.term LIMIT 1)
                 UNION ALL
-                (SELECT p.term FROM (SELECT sd.organization_id,sd.id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
-                    SELECT p.term FROM public.search_postings p
-                    WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.scope=r.key AND (NOT $10 OR p.principal_id=$11)
-                       AND p.term>w.lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
+                (SELECT p.term FROM (SELECT sd.organization_id,sd.id COLLATE "default" AS id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
+                    SELECT p.term FROM (SELECT p.term,p.scope,p.principal_id,p.impact,p.document_id,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term>w.lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C" OFFSET 0) p
+                    WHERE p.scope=r.key AND (NOT $10 OR p.principal_id=$11)
                     ORDER BY p.term LIMIT 1) p
                 WHERE $5<>'' AND $6='work' AND NOT $16 AND left(r.term,1)<>'~' AND w.ordinal<129
                 ORDER BY p.term LIMIT 1)
@@ -258,22 +255,22 @@ BEGIN
                 AND (p.updated_at,p.updated_at_submicrosecond,p.document_id COLLATE "C")<(r.after_at,r.after_submicrosecond,r.after_id COLLATE "C")
              ORDER BY p.updated_at DESC,p.updated_at_submicrosecond DESC,p.document_id COLLATE "C" DESC LIMIT r.budget+1)
             UNION ALL
-            (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM (SELECT sd.organization_id,sd.id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
-                SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
-                WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term=r.lexeme AND p.scope=r.key AND (NOT $10 OR p.principal_id=$11) LIMIT 1) p
+            (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM (SELECT sd.organization_id,sd.id COLLATE "default" AS id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
+                SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM (SELECT p.term,p.scope,p.principal_id,p.impact,p.document_id,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term=r.lexeme OFFSET 0) p
+                WHERE p.scope=r.key AND (NOT $10 OR p.principal_id=$11) LIMIT 1) p
              WHERE $6='work' AND $5<>'' AND NOT r.done AND r.after_id IS NULL
              ORDER BY p.impact DESC,p.document_id COLLATE "C" LIMIT r.budget+1)
             UNION ALL
-            (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM (SELECT sd.organization_id,sd.id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
-                SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
-                WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term=r.lexeme AND p.scope=r.key AND (NOT $10 OR p.principal_id=$11)
+            (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM (SELECT sd.organization_id,sd.id COLLATE "default" AS id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
+                SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM (SELECT p.term,p.scope,p.principal_id,p.impact,p.document_id,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term=r.lexeme OFFSET 0) p
+                WHERE p.scope=r.key AND (NOT $10 OR p.principal_id=$11)
                    AND p.impact=r.after_impact AND p.document_id COLLATE "C">r.after_id COLLATE "C" LIMIT 1) p
              WHERE $6='work' AND $5<>'' AND NOT r.done AND r.after_id IS NOT NULL
              ORDER BY p.impact DESC,p.document_id COLLATE "C" LIMIT r.budget+1)
             UNION ALL
-            (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM (SELECT sd.organization_id,sd.id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
-                SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
-                WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term=r.lexeme AND p.scope=r.key AND (NOT $10 OR p.principal_id=$11) AND p.impact<r.after_impact LIMIT 1) p
+            (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM (SELECT sd.organization_id,sd.id COLLATE "default" AS id FROM public.search_scope_documents sd WHERE sd.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
+                SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM (SELECT p.term,p.scope,p.principal_id,p.impact,p.document_id,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p WHERE p.organization_id=sd.organization_id AND p.document_id=sd.id AND p.term=r.lexeme OFFSET 0) p
+                WHERE p.scope=r.key AND (NOT $10 OR p.principal_id=$11) AND p.impact<r.after_impact LIMIT 1) p
              WHERE $6='work' AND $5<>'' AND NOT r.done AND r.after_id IS NOT NULL
              ORDER BY p.impact DESC,p.document_id COLLATE "C" LIMIT r.budget+1)
         ) p ORDER BY CASE WHEN $6='thread' THEN p.updated_at END DESC,CASE WHEN $6='thread' THEN p.updated_at_submicrosecond END DESC,
@@ -355,12 +352,14 @@ BEGIN
     SELECT d.id,owner.key,owner.term,owner.lexeme FROM scoped d CROSS JOIN LATERAL (
       SELECT r.key,r.term,p.term AS lexeme FROM requested r CROSS JOIN LATERAL (
        SELECT p.term,p.impact FROM (
-        (SELECT p.term,p.impact FROM public.search_postings p
-         WHERE ($16 OR left(r.term,1)='~') AND p.organization_id=d.organization_id AND p.document_id=d.id AND p.term=r.term COLLATE "C" AND p.scope=r.key)
+        (SELECT p.term,p.impact FROM (SELECT p.term,p.impact,p.scope FROM public.search_postings p
+          WHERE ($16 OR left(r.term,1)='~') AND p.organization_id=d.organization_id AND p.document_id=d.id AND p.term=r.term COLLATE "C" OFFSET 0) p
+         WHERE p.scope=r.key)
         UNION ALL
-        (SELECT p.term,p.impact FROM public.search_postings p
-         WHERE NOT $16 AND left(r.term,1)<>'~' AND p.organization_id=d.organization_id AND p.document_id=d.id
-          AND p.term>=r.term COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C" AND p.scope=r.key)
+        (SELECT p.term,p.impact FROM (SELECT p.term,p.impact,p.scope FROM public.search_postings p
+          WHERE NOT $16 AND left(r.term,1)<>'~' AND p.organization_id=d.organization_id AND p.document_id=d.id
+           AND p.term>=r.term COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C" OFFSET 0) p
+         WHERE p.scope=r.key)
        ) p
        ORDER BY p.impact DESC,p.term COLLATE "C" LIMIT 1
       ) p CROSS JOIN LATERAL (
@@ -372,9 +371,10 @@ BEGIN
        WHERE $10 AND $5='' AND front.organization_id=d.organization_id AND front.scope=r.key AND front.principal_id=$11 AND front.term=p.term
        ORDER BY front.impact DESC,front.document_id COLLATE "C" LIMIT 1)
        UNION ALL
-       (SELECT front.document_id,front.impact FROM (SELECT sd.organization_id,sd.id FROM public.search_scope_documents sd WHERE $5<>'' AND sd.organization_id=d.organization_id AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
-        SELECT front.document_id,front.impact FROM public.search_postings front
-        WHERE front.organization_id=sd.organization_id AND front.document_id=sd.id AND front.term=p.term AND front.scope=r.key AND (NOT $10 OR front.principal_id=$11) LIMIT 1) front
+       (SELECT front.document_id,front.impact FROM (SELECT sd.organization_id,sd.id COLLATE "default" AS id FROM public.search_scope_documents sd WHERE $5<>'' AND sd.organization_id=d.organization_id AND sd.project_id=r.project AND sd.work_item_id=$5 OFFSET 0) sd CROSS JOIN LATERAL (
+        SELECT front.document_id,front.impact FROM (SELECT front.document_id,front.impact,front.scope,front.principal_id FROM public.search_postings front
+         WHERE front.organization_id=sd.organization_id AND front.document_id=sd.id AND front.term=p.term OFFSET 0) front
+        WHERE front.scope=r.key AND (NOT $10 OR front.principal_id=$11) LIMIT 1) front
        WHERE $5<>''
        ORDER BY front.impact DESC,front.document_id COLLATE "C" LIMIT 1)
       ) front

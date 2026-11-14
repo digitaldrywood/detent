@@ -203,12 +203,18 @@ func TestSearchWorkItemFilterIgnoresSameReporterCrowd(t *testing.T) {
 	d := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "commonterm", Body: postingScopeBody}, 0)
 	f.drain(t, "org_first")
 	seedReporterRows(t, f, d, "example-principal", 1, searchstore.CandidateLimit+1)
-	for _, statistics := range []string{"unanalyzed", "analyzed"} {
-		if statistics == "analyzed" {
-			analyzeSearchHistory(t, f)
+	for _, statistics := range []struct{ name, statement string }{
+		{"unanalyzed", ""},
+		{"analyzed", "ANALYZE"},
+		{"vacuumed", "VACUUM (ANALYZE)"},
+	} {
+		if statistics.statement != "" {
+			if _, err := f.admin.ExecContext(t.Context(), statistics.statement); err != nil {
+				t.Fatal(err)
+			}
 		}
 		for _, reporter := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/reporter=%t", statistics, reporter), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/reporter=%t", statistics.name, reporter), func(t *testing.T) {
 				query := searchstore.Query{Text: "commonterm", WorkItemID: "wi_first_1"}
 				if reporter {
 					query.Reporter = new("example-principal")
