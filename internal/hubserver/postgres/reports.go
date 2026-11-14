@@ -360,7 +360,7 @@ func (s *session) ReadFacets(ctx context.Context, projects []tracker.ProjectID, 
 		return out, reportstore.ErrPopulationExceeded
 	}
 	labels := map[string]bool{}
-	rows, err = s.db.Query(ctx, `SELECT l.label FROM issues i JOIN issue_labels l ON l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id WHERE i.organization_id=$1 AND i.id=ANY($2::bigint[]) ORDER BY i.id,l.label LIMIT 100001`, s.organization, ids)
+	rows, err = s.db.Query(ctx, `SELECT l.label FROM issues i JOIN issue_labels l ON l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id WHERE i.organization_id=$1 AND i.id=ANY($2::bigint[]) ORDER BY i.id,l.label LIMIT $3`, s.organization, ids, maxOverviewCandidateRows+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -377,7 +377,7 @@ func (s *session) ReadFacets(ctx context.Context, projects []tracker.ProjectID, 
 	if err := rows.Err(); err != nil {
 		return out, mapError(ctx, err)
 	}
-	if count > 100000 {
+	if count > maxOverviewCandidateRows {
 		return out, reportstore.ErrPopulationExceeded
 	}
 	attempts, err := s.ReadAttemptFacts(ctx, reportstore.AttemptQuery{Projects: projects, Principal: principal, From: from, To: to, Limit: 50000})

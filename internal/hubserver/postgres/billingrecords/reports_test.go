@@ -2149,6 +2149,41 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 			t.Fatal(err)
 		}
 	})
+	t.Run("facet label rows stop at the candidate sentinel", func(t *testing.T) {
+		labeled := tracker.ProjectID("project_reports_facet_labels")
+		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: labeled, Name: "Example labels", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Done", Terminal: true}}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `INSERT INTO issues(organization_id,id,project_id,native_id,number,title,actor_kind,actor_principal_id,workflow_state_name,archived,created_at,native_created_at,native_updated_at) SELECT $1,40000+n,$2,'wi_facet_label_'||n,40000+n,'Example','human','actor_labels','Todo',false,$3,$3,$3 FROM generate_series(1,5000) n`, organization, labeled, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `INSERT INTO issue_labels(organization_id,project_id,work_item_id,label) SELECT $1,$2,'wi_facet_label_'||n,'label_'||k FROM generate_series(1,5000) n CROSS JOIN generate_series(1,10) k`, organization, labeled); err != nil {
+			t.Fatal(err)
+		}
+		read := func() (reportstore.Facets, error) {
+			var facets reportstore.Facets
+			err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				facets, err = r.(reportstore.Reader).ReadFacets(ctx, []tracker.ProjectID{labeled}, now.Add(-time.Hour), now.Add(time.Hour), "", 11)
+				return err
+			})
+			return facets, err
+		}
+		facets, err := read()
+		if err != nil || len(facets.Labels) != 10 || len(facets.FiledBy) != 1 {
+			t.Fatalf("50,000 label rows: labels=%v filers=%v error=%v", facets.Labels, facets.FiledBy, err)
+		}
+		if _, err := admin.ExecContext(ctx, `INSERT INTO issue_labels(organization_id,project_id,work_item_id,label) VALUES($1,$2,'wi_facet_label_1','label_11')`, organization, labeled); err != nil {
+			t.Fatal(err)
+		}
+		facets, err = read()
+		if !errors.Is(err, reportstore.ErrPopulationExceeded) || len(facets.Labels) != 0 || len(facets.FiledBy) != 0 {
+			t.Fatalf("50,001st label row: labels=%v filers=%v error=%v, want ErrPopulationExceeded and no options", facets.Labels, facets.FiledBy, err)
+		}
+	})
 
 }
 
