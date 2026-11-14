@@ -3,6 +3,7 @@ package hubserver
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -166,7 +167,12 @@ func TestPilotHostedTwoRepositoryReadiness(t *testing.T) {
 			}
 			path := version.path + "/versions/" + version.version.ID + "/reviews"
 			review := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "pilot-approval"}, Decision: "approved"}
-			requireNativeStatus(t, f.setupRequest(t, "viewer", http.MethodPost, path, review), http.StatusNotFound)
+			requireNativeStatus(t, f.page(t, "viewer", version.path), http.StatusOK)
+			denied := f.setupRequest(t, "viewer", http.MethodPost, path, review)
+			requireNativeStatus(t, denied, http.StatusForbidden)
+			if !strings.Contains(denied.Body.String(), `"code":"access_denied"`) {
+				t.Fatalf("viewer review refusal = %s", denied.Body.String())
+			}
 			if got := pilotChangeSummary(t, f, version.path); got.Status == "reviewed" {
 				t.Fatal("denied review changed readiness")
 			}
