@@ -87,6 +87,7 @@ type spritePoolProvider struct {
 	mu               sync.Mutex
 	f                nativeFixture
 	token            string
+	tokens           []string
 	fail             string
 	nameConflicts    int
 	conflictStatus   int
@@ -98,6 +99,17 @@ type spritePoolProvider struct {
 	deleteStarted    chan struct{}
 	releaseDelete    chan struct{}
 	stage            func(string)
+}
+
+func (p *spritePoolProvider) scriptToken(script string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, token := range p.tokens {
+		if strings.Contains(script, token) {
+			return token
+		}
+	}
+	return ""
 }
 
 func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, hubscope.NativeScope, *spritePoolProvider) {
@@ -198,7 +210,8 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, hubscope
 		if provider.stage != nil {
 			provider.stage("exec")
 		}
-		if !strings.Contains(string(script), provider.token) || strings.Contains(r.URL.RawQuery, provider.token) {
+		token := provider.scriptToken(string(script))
+		if token == "" || strings.Contains(r.URL.RawQuery, token) {
 			t.Error("fresh enrollment must travel only through stdin")
 		}
 		if !strings.Contains(string(script), "https://raw.githubusercontent.com/digitaldrywood/detent/v0.117.99/scripts/sprite-runner-bootstrap.sh") || !strings.Contains(string(script), "--version 'v0.117.99'") {
@@ -215,7 +228,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, hubscope
 			return
 		}
 		if provider.fail == "installer" {
-			output := "Customer setup completed\nRunner bootstrap started\nInstalling PostgreSQL client " + provider.token + "\nE: Version '" + spritesSecretSentinel + "' for 'postgresql-client-17' was not found\nAuthorization: Bearer private-provider-secret\nBootstrap stopped. Last completed step: GitHub CLI, ripgrep and fd installed.\n"
+			output := "Customer setup completed\nRunner bootstrap started\nInstalling PostgreSQL client " + token + "\nE: Version '" + spritesSecretSentinel + "' for 'postgresql-client-17' was not found\nAuthorization: Bearer private-provider-secret\nBootstrap stopped. Last completed step: GitHub CLI, ripgrep and fd installed.\n"
 			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte(output[:20])...))
 			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte(output[20:])...))
 			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte(strings.Repeat("E: Failed to fetch https://private-provider-secret\n", 1000))...))
@@ -238,7 +251,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, hubscope
 			t.Error("registration must carry pool access tier")
 		}
 		redemption := runnerauth.Redemption{IsolationTier: tier, Binding: binding, Credential: credential, Hostname: name, SpriteName: name, DisplayName: name, Capacity: 1, Version: "fixture"}
-		response := performHubAPIRequest(t, provider.f.service, http.MethodPost, "/api/v2/organizations/"+string(provider.f.project.OrganizationID)+"/runner-enrollments/redeem", provider.token, redemption)
+		response := performHubAPIRequest(t, provider.f.service, http.MethodPost, "/api/v2/organizations/"+string(provider.f.project.OrganizationID)+"/runner-enrollments/redeem", token, redemption)
 		if response.Code != http.StatusCreated {
 			t.Errorf("bootstrap enrollment = %d: %s", response.Code, response.Body.String())
 			return
@@ -287,7 +300,10 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, hubscope
 	f.service.config.Version = "v0.117.99"
 	f.service.config.deps.GenerateToken = func() (string, error) {
 		token, err := apikey.GenerateToken()
+		provider.mu.Lock()
 		provider.token = token
+		provider.tokens = append(provider.tokens, token)
+		provider.mu.Unlock()
 		return token, err
 	}
 	provider.f = f
