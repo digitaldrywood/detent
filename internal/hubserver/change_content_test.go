@@ -158,7 +158,7 @@ func TestChangeContentObjects(t *testing.T) {
 		}, http.StatusConflict},
 		{"unknown configuration", func(request *tracker.PublishChangeVersion) {
 			request.PolicyID = artifact.Digest([]byte("unknown configuration"))
-		}, http.StatusConflict},
+		}, http.StatusUnprocessableEntity},
 		{"invalid validation artifact", func(request *tracker.PublishChangeVersion) {
 			validation := *request.Validation
 			validation.EvidenceArtifact = &artifact.Reference{}
@@ -170,6 +170,20 @@ func TestChangeContentObjects(t *testing.T) {
 			test.edit(&request)
 			refused := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
 			requireNativeStatus(t, refused, test.status)
+			if test.name == "unknown configuration" {
+				var body struct {
+					Code    string `json:"code"`
+					Details struct {
+						Rejection struct {
+							Category string `json:"category"`
+							Field    string `json:"field"`
+						} `json:"rejection"`
+					} `json:"details"`
+				}
+				if err := json.Unmarshal(refused.Body.Bytes(), &body); err != nil || body.Code != "invalid_request" || body.Details.Rejection.Category != "version_validation" || body.Details.Rejection.Field != "policy_id" {
+					t.Fatalf("unreported configuration refusal=%s error=%v", refused.Body.String(), err)
+				}
+			}
 			var registered int
 			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects WHERE organization_id=$1", f.project.OrganizationID).Scan(&registered); err != nil {
 				t.Fatal(err)
