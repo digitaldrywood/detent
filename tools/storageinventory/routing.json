@@ -2570,8 +2570,8 @@
       ],
       "inventory": {
         "operations": {
-          "Open:ExecContext": 1,
-          "Open:SQL": 1
+          "OpenPool:ExecContext": 1,
+          "OpenPool:SQL": 1
         },
         "tables": [
           "hub/organizations"
