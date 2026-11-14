@@ -240,9 +240,9 @@ func (s *session) diagnosticUsage(ctx context.Context, projects []string, out *d
 		ids[index] = attempt.ID
 	}
 	rows, err := s.db.Query(ctx, `WITH usage AS (
- SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input+u.output AS tokens,u.cost_estimate AS cost,u.complete FROM report_usage_current u WHERE u.organization_id=$1 AND u.attempt_id=ANY($3::text[])
+ SELECT u.* FROM unnest($3::text[]) requested(attempt_id) CROSS JOIN LATERAL (SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input+u.output AS tokens,u.cost_estimate AS cost,u.complete FROM report_usage_current u WHERE u.organization_id=$1 AND u.attempt_id=requested.attempt_id ORDER BY u.period,u.provider,u.model LIMIT $4) u
  UNION ALL
- SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input+u.output,u.cost_estimate,true FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($3::text[]) AND upper(u.currency)='USD' AND NOT EXISTS(SELECT 1 FROM report_usage_current c WHERE c.organization_id=u.organization_id AND c.attempt_id=u.attempt_id)
+ SELECT u.* FROM unnest($3::text[]) requested(attempt_id) CROSS JOIN LATERAL (SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input+u.output,u.cost_estimate,true FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=requested.attempt_id AND upper(u.currency)='USD' AND NOT EXISTS(SELECT 1 FROM report_usage_current c WHERE c.organization_id=u.organization_id AND c.attempt_id=u.attempt_id) ORDER BY u.period,u.provider,u.model LIMIT $4) u
 ) SELECT u.attempt_id,u.period,u.cost,u.tokens,u.complete FROM usage u JOIN native_attempts a ON a.organization_id=$1 AND a.id=u.attempt_id JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id AND i.project_id=u.project_id WHERE i.project_id=ANY($2) ORDER BY u.attempt_id,u.period,u.provider,u.model LIMIT $4`, s.organization, projects, ids, diagnosticstore.Limit+1)
 	if err != nil {
 		return mapError(ctx, err)
