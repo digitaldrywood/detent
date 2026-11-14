@@ -995,20 +995,21 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	issue := f.create(t, "recorded phase")
 	worker := f.worker(t, "analytics")
 	scope := analyticsTestScope(t, f)
-	appendAnalyticsTestEvent(t, f.service, scope, issue.WorkItemID, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: "Current provider requirement has no available reservation", At: clock, WorkItemRevision: issue.Revision}}, clock)
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendAnalyticsTestEvent(t, f.service, scope, issue.WorkItemID, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: credential.Runner.RunnerID, Source: "native_provider_capacity", Outcome: "skipped", Reason: "Current provider requirement has no available reservation", At: clock, WorkItemRevision: issue.Revision}}, clock)
 	clock = now.Add(-10 * time.Minute)
 	lease := claimNativeAttempt(t, f, worker, "analytics-machine", "analytics-session", issue.WorkItemID)
 	start := nativeStartedEvent(lease)
 	start.Data.Identity.Role = "merge"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 900}), http.StatusOK)
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start)
-	requireNativeStatus(t, response, http.StatusOK)
-	clock = now
-	start.Type, start.IdempotencyKey, start.Data.Sequence = "run.observed", "analytics-runtime", 2
-	start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: now, Phases: []tracker.NativePhase{{Name: "planning", StartedAt: now.Add(-10 * time.Minute), FinishedAt: now.Add(-5 * time.Minute)}}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start), http.StatusOK)
+	clock, start.Type, start.IdempotencyKey, start.Data.Sequence = now, "run.observed", "analytics-runtime", 2
+	start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: now, Phases: []tracker.NativePhase{{Name: "planning", StartedAt: now.Add(-10 * time.Minute), FinishedAt: now.Add(-5 * time.Minute)}}, LocalAttemptID: 1, Generation: 1}
 	commandTiming := (gate.CommandResult{Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), StartedAt: now.Add(-4 * time.Minute), FinishedAt: now.Add(-3 * time.Minute), ExitCode: 1}).PipelineTiming("worker_check_land")
 	start.Data.Runtime.Pipeline = []gate.PipelineTiming{commandTiming, gate.Interval("rebase", now.Add(-2*time.Minute), now.Add(-time.Minute), "conflict")}
-	start.Data.Runtime.LocalAttemptID, start.Data.Runtime.Generation = 1, 1
 	start.Data.Runtime.Identity = agentidentity.RuntimeUpdate("merge-model", "openai", "high", "", now)
 	start.Data.Runtime.Identity.Role, start.Data.Runtime.Identity.BackendKind = "merge", "codex"
 	start.Data.Runtime.Landing = &tracker.NativeLandingReceipt{RefusalKind: "conflict", ObservedAt: now}
@@ -1024,8 +1025,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			{ID: "wait", Kind: "waiting", StartedAt: now.Add(-8 * time.Minute), FinishedAt: now.Add(-6 * time.Minute), Outcome: "completed"},
 		},
 	}
-	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start)
-	requireNativeStatus(t, response, http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start), http.StatusOK)
 	w := operatortool.AnalyticsWindow{From: now.Truncate(time.Hour).Add(-time.Hour), To: now.Truncate(time.Hour).Add(time.Hour), Bucket: time.Hour}
 	report, err := f.service.readNativeAnalyticsTenant(t.Context(), scope, operatortool.AnalyticsRequest{Limit: 1}, w)
 	if err != nil {
