@@ -753,6 +753,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope hubscope
 	if err != nil {
 		return err
 	}
+	verifiedSource := observation.Workflow != nil
 	if observation.Workflow == nil && projectSnapshot.Core.Profile == "native" {
 		markdown, err := s.projectRecordWorkflow(ctx, projectSnapshot)
 		if err != nil {
@@ -761,6 +762,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope hubscope
 		if err := validateCloudWorkflowPolicy(markdown, observation.Descriptor); err != nil {
 			return err
 		}
+		verifiedSource = markdown != ""
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	revision, found, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.Organization, scope.Project, observation.Descriptor, content)
@@ -862,7 +864,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope hubscope
 		if !accepted || !apply {
 			return nil
 		}
-		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, review, preparedLanding, now)
+		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, review, preparedLanding, verifiedSource, now)
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, writeObservation)
 	if !errors.Is(err, projectstore.ErrStateInUse) {
@@ -988,7 +990,7 @@ func samePolicyLandingSource(left, right eventstore.PolicyLanding) bool {
 	return reflect.DeepEqual(left, right)
 }
 
-func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, project projectstore.Record, reporter string, observation policy.Observation, canonical policy.Descriptor, previous policy.Approval, previousRevision, observedRevision policystore.Revision, review preparedDefaultReviewPolicy, preparedLanding eventstore.PolicyLanding, now time.Time) error {
+func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, project projectstore.Record, reporter string, observation policy.Observation, canonical policy.Descriptor, previous policy.Approval, previousRevision, observedRevision policystore.Revision, review preparedDefaultReviewPolicy, preparedLanding eventstore.PolicyLanding, verifiedSource bool, now time.Time) error {
 	descriptor := observation.Descriptor
 	current, err := writer.ProjectPolicy(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -1040,6 +1042,9 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 			return err
 		}
 		return applyDefaultReviewPolicy(ctx, writer, review, previous.ApprovedBy, now)
+	}
+	if !verifiedSource && !carryover {
+		return nil
 	}
 	actor := "repository-default-branch"
 	if carryover && previous.ApprovedBy != "" {
