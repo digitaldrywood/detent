@@ -33,7 +33,9 @@ func TestHostedInvitationGrants(t *testing.T) {
 		principalOnly bool
 		actorOther    bool
 		admin         bool
+		member        bool
 		editAdmin     bool
+		editMember    bool
 		status        int
 	}{
 		{name: "no access by default", actorGrant: "write", none: true},
@@ -58,6 +60,10 @@ func TestHostedInvitationGrants(t *testing.T) {
 		{name: "owner role delegates write beyond read grant", actorGrant: "read", write: true},
 		{name: "owner role delegates runner beyond write grant", actorGrant: "write", runner: true},
 		{name: "owner role delegates ungranted project"},
+		{name: "member cannot delegate write from read", actorGrant: "read", write: true, member: true, status: http.StatusForbidden},
+		{name: "member cannot delegate runners from write", actorGrant: "write", runner: true, member: true, status: http.StatusForbidden},
+		{name: "member cannot delegate an ungranted project", member: true, status: http.StatusForbidden},
+		{name: "member cannot edit to write", actorGrant: "write", edit: "write", editMember: true},
 		{name: "foreign project refused", actorGrant: "write", project: "prj_other", status: http.StatusForbidden},
 		{name: "duplicate project refused", actorGrant: "write", duplicate: true, status: http.StatusUnprocessableEntity},
 	} {
@@ -68,6 +74,8 @@ func TestHostedInvitationGrants(t *testing.T) {
 			actorRole := "owner"
 			if test.admin {
 				actorRole = "admin"
+			} else if test.member {
+				actorRole = "member"
 			}
 			owner := f.user(t, "owner", actorRole, "owner@example.test", test.actorGrant, "")
 			if test.actorGrant == "" {
@@ -186,8 +194,13 @@ func TestHostedInvitationGrants(t *testing.T) {
 					second.project = "prj_second"
 					second.withoutProjectAccess(t, editor)
 				}
-				grants = updated
-				requireNativeStatus(t, f.request(t, editor, http.MethodPut, path, map[string]any{"grants": updated}), http.StatusNoContent)
+				editStatus := http.StatusNoContent
+				if test.editMember {
+					editor, editStatus = f.user(t, "editor", "member", "editor@example.test", "write", ""), http.StatusForbidden
+				} else {
+					grants = updated
+				}
+				requireNativeStatus(t, f.request(t, editor, http.MethodPut, path, map[string]any{"grants": updated}), editStatus)
 			}
 			var pending hostedMembersResponse
 			decodeHubResponse(t, f.request(t, owner, http.MethodGet, base+"/members", nil), &pending)

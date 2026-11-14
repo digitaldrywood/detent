@@ -32,6 +32,8 @@ func TestHostedChangeReviewRequiresAdminAndWriteGrant(t *testing.T) {
 		{"viewer with write grant", "viewer", "write", http.StatusForbidden},
 		{"owner with read grant", "owner", "read", http.StatusUnprocessableEntity},
 		{"admin without grant", "admin", "", http.StatusUnprocessableEntity},
+		{"member with read grant", "member", "read", http.StatusForbidden},
+		{"member without grant", "member", "", http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -63,6 +65,8 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 		{"viewer", "viewer", "write", "viewer@example.test", true, http.StatusForbidden},
 		{"read only owner", "owner", "read", "owner@example.test", true, http.StatusOK},
 		{"ungranted owner", "owner", "", "owner@example.test", false, http.StatusOK},
+		{"read only member", "member", "read", "member@example.test", true, http.StatusForbidden},
+		{"ungranted member", "member", "", "member@example.test", false, http.StatusNotFound},
 		{"staff owner", "owner", "write", "staff@example.test", true, http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -81,7 +85,7 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 			}
 			request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, ExpectedID: seeded.ID, Policy: tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: false}}
 			response := f.request(t, user, http.MethodPut, f.base+"/change-review-policy", request)
-			if test.role == "member" {
+			if test.role == "member" && test.grant != "" {
 				requireNativeError(t, response, test.want, "access_denied")
 			} else {
 				requireNativeStatus(t, response, test.want)

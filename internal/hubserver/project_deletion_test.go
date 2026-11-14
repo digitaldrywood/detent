@@ -28,6 +28,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 		{name: "viewer refused", account: "viewer", status: http.StatusForbidden},
 		{name: "cross organization session refused", account: "wrong-organization", status: http.StatusForbidden},
 		{name: "cross organization path refused", account: "owner", organization: "org_other", status: http.StatusNotFound},
+		{name: "member with read-only grant refused", account: "owner", role: "member", update: "WITH granted AS (INSERT INTO hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner,explicit) SELECT organization_id,'user_browser_owner',id,id<>$1::text,FALSE,TRUE FROM projects WHERE organization_id='org_browser_preview' AND deleted_at IS NULL) INSERT INTO token_grants(organization_id,token_id,project_id) SELECT p.organization_id,m.principal_id,p.id FROM projects p JOIN hosted_members m ON m.organization_id=p.organization_id AND m.user_id='user_browser_owner' WHERE p.organization_id='org_browser_preview' AND p.deleted_at IS NULL ON CONFLICT DO NOTHING", status: http.StatusForbidden},
 		{name: "owner with read-only grant row deletes", account: "owner", update: "INSERT INTO hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner,explicit) VALUES('org_browser_preview','user_browser_owner',$1,FALSE,FALSE,TRUE)", status: http.StatusOK},
 		{name: "missing CSRF refused", account: "owner", noCSRF: true, status: http.StatusForbidden},
 		{name: "wrong confirmation refused", account: "owner", confirm: "Wrong project", status: http.StatusUnprocessableEntity},
