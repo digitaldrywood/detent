@@ -1,4 +1,4 @@
-package hubserver
+package access_test
 
 import (
 	"context"
@@ -9,10 +9,11 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 )
 
 type widgetTokenProvider struct {
-	*hostedSecurityProvider
+	*hubfixture.HostedProvider
 	users []string
 	err   error
 }
@@ -45,18 +46,19 @@ func TestHostedWidgetToken(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var provider *widgetTokenProvider
-			f := newHostedSecurityFixture(t, func(c *Config) {
-				provider = &widgetTokenProvider{hostedSecurityProvider: c.Hosted.Provider.(*hostedSecurityProvider)}
+			f := hubfixture.NewHostedSecurity(t, func(c *hubfixture.Config) {
+				provider = &widgetTokenProvider{HostedProvider: c.Hosted.Provider.(*hubfixture.HostedProvider)}
 				c.Hosted.Provider = provider
 				c.Hosted.SupportActors = []string{"staff@example.test"}
 			})
-			var user hostedSecurityUser
+			f.Provider = provider.HostedProvider
+			var user hubfixture.HostedUser
 			if test.signedIn {
 				support := ""
 				if test.support {
 					support = "staff@example.test"
 				}
-				user = f.user(t, "account", "member", "account@example.test", "", support)
+				user = f.User(t, "account", "member", "account@example.test", "", support)
 			}
 			if test.failed {
 				provider.err = errors.New("private-token-email-sentinel")
@@ -64,19 +66,19 @@ func TestHostedWidgetToken(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/api/v2/organizations/org_security/widget-token", strings.NewReader(test.body))
 			request.Header.Set("Content-Type", "application/json")
 			if test.signedIn {
-				request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
-				request.Header.Set("X-CSRF-Token", hostedCSRF(user.token))
+				request.AddCookie(&http.Cookie{Name: hubfixture.HostedCookie, Value: user.Token})
+				request.Header.Set("X-CSRF-Token", hubfixture.HostedCSRF(user.Token))
 			}
 			if test.bearer {
 				request.Header.Set("Authorization", "Bearer other-principal-key")
 			}
 			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request)
+			f.Handler().ServeHTTP(response, request)
 			if response.Code != test.status {
 				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 			}
 			if test.minted {
-				if len(provider.users) != 1 || provider.users[0] != user.identity.Subject {
+				if len(provider.users) != 1 || provider.users[0] != user.Identity.Subject {
 					t.Fatalf("minted users = %v", provider.users)
 				}
 			} else if len(provider.users) != 0 {
