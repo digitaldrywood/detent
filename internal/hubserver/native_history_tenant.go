@@ -244,12 +244,7 @@ func (s *Service) readTenantCollaborationEvent(ctx context.Context, record event
 	if store == nil {
 		return tracker.CollaborationEvent{}, nil, hubapi.NativeRunEventStorageUnavailable()
 	}
-	ref := eventstore.Reference(record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes)
-	raw, err := store.ReadDetail(ctx, string(record.OrganizationID), ref)
-	if err != nil {
-		return tracker.CollaborationEvent{}, nil, err
-	}
-	event, err := eventstore.NewContent(store).Event(ctx, record)
+	event, raw, err := eventstore.NewContent(store).EventWithPayload(ctx, record)
 	if err != nil {
 		return tracker.CollaborationEvent{}, nil, err
 	}

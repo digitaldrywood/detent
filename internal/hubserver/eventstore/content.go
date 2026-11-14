@@ -242,6 +242,19 @@ func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEv
 	return validateEventRecord(row, value, err)
 }
 
+func (c *Content) EventWithPayload(ctx context.Context, row Event) (tracker.CollaborationEvent, []byte, error) {
+	raw, err := c.readRaw(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes))
+	if err != nil {
+		return tracker.CollaborationEvent{}, nil, err
+	}
+	var value tracker.CollaborationEvent
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return tracker.CollaborationEvent{}, nil, fmt.Errorf("decode history payload: %w", artifact.ErrIntegrity)
+	}
+	value, err = validateEventRecord(row, value, nil)
+	return value, raw, err
+}
+
 func (c *Content) AnalyticsEvent(ctx context.Context, row Event) (tracker.CollaborationEvent, bool, error) {
 	var raw json.RawMessage
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &raw)
