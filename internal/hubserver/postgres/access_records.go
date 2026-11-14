@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -271,6 +270,16 @@ func (s *session) AccessTokenGrant(ctx context.Context, token_id string, project
 	}
 	var row accessstore.TokenGrant
 	err := s.db.QueryRow(ctx, `SELECT organization_id,token_id,project_id FROM token_grants WHERE organization_id=$1 AND token_id=$2 AND project_id=$3`+s.accessLock(), s.organization, token_id, project_id).Scan(&row.OrganizationID, &row.TokenID, &row.ProjectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var administrator bool
+		roleErr := s.db.QueryRow(ctx, `SELECT hosted_administrator_access(m.organization_id,m.user_id,m.principal_id) FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.id=$3 AND p.deleted_at IS NULL WHERE m.organization_id=$1 AND m.principal_id=$2`+s.accessLockOf("m"), s.organization, token_id, project_id).Scan(&administrator)
+		switch {
+		case roleErr == nil && administrator:
+			row, err = accessstore.TokenGrant{OrganizationID: s.organization, TokenID: token_id, ProjectID: project_id}, nil
+		case roleErr != nil && !errors.Is(roleErr, pgx.ErrNoRows):
+			err = roleErr
+		}
+	}
 	if err == nil && s.tokenGrants != nil {
 		s.tokenGrants[key] = row
 	}
@@ -655,7 +664,6 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 		}
 	}
 	if authority.ProjectID != "" && (credential.NativeOnly || credential.Scope != "admin") {
-		administrator := member.UserID != "" && accessstore.RoleAllows(accessstore.LesserRole(member.Role, cmp.Or(authority.Role, member.Role)), apikey.ScopeAdmin)
 		if member.UserID != "" {
 			grant, err := s.AccessProjectGrant(ctx, member.UserID, authority.ProjectID)
 			if err != nil {
@@ -664,13 +672,11 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 			if authority.Write && !grant.CanWrite {
 				return member, accessstore.ErrDenied
 			}
-			if !administrator {
-				if _, err := s.AccessTokenGrant(ctx, member.PrincipalID, authority.ProjectID); err != nil {
-					return member, accessAuthorizationError(err)
-				}
+			if _, err := s.AccessTokenGrant(ctx, member.PrincipalID, authority.ProjectID); err != nil {
+				return member, accessAuthorizationError(err)
 			}
 		}
-		if credential.ProjectAccess != "all" && !(administrator && credential.ID == member.PrincipalID) {
+		if credential.ProjectAccess != "all" {
 			if _, err := s.AccessTokenGrant(ctx, credential.ID, authority.ProjectID); err != nil {
 				if !errors.Is(err, corestore.ErrNotFound) || errors.Is(err, tenantauth.ErrUnavailable) || member.UserID != "" || credential.Scope != "worker" || credential.Kind != "service" {
 					return member, accessAuthorizationError(err)

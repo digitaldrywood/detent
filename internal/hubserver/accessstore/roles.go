@@ -43,6 +43,10 @@ func LesserRole(a, b string) string {
 	return b
 }
 
+func RoleGrantsProjectAccess(role string) bool {
+	return role == "owner" || role == "admin"
+}
+
 func Demoted(from, to string) bool {
-	return RoleAllows(from, apikey.ScopeAdmin) && !RoleAllows(to, apikey.ScopeAdmin)
+	return RoleGrantsProjectAccess(from) && !RoleGrantsProjectAccess(to)
 }
