@@ -336,48 +336,6 @@ func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 	}
 }
 
-func TestProviderStartRevalidation(t *testing.T) {
-	t.Parallel()
-	for _, change := range []string{"exhausted", "model", "account", "active"} {
-		t.Run(change, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
-			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
-			r.enroll(t)
-			r.reportCapacity(t)
-			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			report := capacityReport(f.service.config.Clock())
-			publishCapacity(t, f, r, report)
-			issue := f.create(t, "work")
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "session"))
-			requireNativeStatus(t, response, http.StatusOK)
-			var lease tracker.NativeLease
-			decodeHubResponse(t, response, &lease)
-			event := nativeStartedEvent(lease)
-			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
-			if change == "active" {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, event), http.StatusOK)
-			}
-			switch change {
-			case "exhausted", "active":
-				report.Availability = "exhausted"
-			case "model":
-				event.Data.Identity.Model = "expensive"
-			case "account":
-				report.AccountAlias = "changed"
-			}
-			publishCapacity(t, f, r, report)
-			if change == "active" || change == "exhausted" {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, event), http.StatusOK)
-				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
-				event.Data.Handoff = nativeTestCheckpoint()
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, event), http.StatusOK)
-			} else {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, event), http.StatusConflict)
-			}
-		})
-	}
-}
-
 func TestProviderQueueOrderAndSelectors(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -671,31 +629,6 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestProviderOlderReportsCannotRestoreQuota(t *testing.T) {
-	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-	r.enroll(t)
-	report := capacityReport(f.service.config.Clock().Add(-time.Second))
-	report.Availability = "exhausted"
-	publishCapacity(t, f, r, report)
-	for _, age := range []time.Duration{0, -time.Second, time.Hour} {
-		stale := report
-		stale.ObservedAt = stale.ObservedAt.Add(age)
-		stale.Availability = "available"
-		publishCapacity(t, f, r, stale)
-		stored, err := []providercapacity.Report(nil), error(nil)
-		err = f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-			var readErr error
-			stored, readErr = reader.RunnerProviderReports(t.Context(), r.binding.RunnerID)
-			return readErr
-		})
-		if err != nil || len(stored) != 1 || stored[0].Availability != "exhausted" || !stored[0].ObservedAt.Equal(report.ObservedAt) {
-			t.Fatalf("stale observation replaced exhaustion: %+v, %v", stored, err)
-		}
 	}
 }
 

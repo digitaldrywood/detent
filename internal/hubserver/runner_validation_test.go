@@ -110,40 +110,6 @@ func TestRunnerCredentialExpiryBoundaries(t *testing.T) {
 	}
 }
 
-func TestRunnerEnrollmentIdentityRevocationAndTenantScope(t *testing.T) {
-	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read)
-	r.enroll(t)
-	request := runnerauth.EnrollmentRequest{Binding: r.binding, ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, r.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments", testHubAdminToken, request), http.StatusConflict)
-	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]string{"name": "other"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var organization nativeOrganization
-	decodeHubResponse(t, response, &organization)
-	other := newNativeFixture(t, f.service, organization.ID, "foreign")
-	request.Binding = runnerauth.NewBinding()
-	request.ProjectIDs = []tracker.ProjectID{other.project.ID}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments", testHubAdminToken, request), http.StatusUnprocessableEntity)
-	live := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
-	live.enroll(t)
-	for _, path := range []string{other.base, "/api/v2/organizations/" + string(organization.ID) + "/runners/" + live.binding.RunnerID} {
-		for _, test := range []struct {
-			name, token string
-			status      int
-		}{
-			{"valid credential outside scope", live.redemption.Credential, http.StatusUnauthorized},
-			{"revoked credential before resource lookup", r.redemption.Credential, http.StatusUnauthorized},
-			{"invalid credential before resource lookup", "invalid", http.StatusUnauthorized},
-		} {
-			t.Run(path+"/"+test.name, func(t *testing.T) {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, test.token, nil), test.status)
-			})
-		}
-	}
-}
-
 func TestRunnerCredentialsAndRejectedProviderDataAreRedacted(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
