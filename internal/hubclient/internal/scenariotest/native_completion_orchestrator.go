@@ -54,6 +54,7 @@ type nativeCompletionScheduling struct {
 	resumeCandidates       atomic.Bool
 	retryCandidatesChecked atomic.Bool
 	retryCandidates        chan error
+	beforeIdleFetch        func(context.Context)
 }
 
 type nativeCompletionRun struct {
@@ -245,6 +246,9 @@ func (s *nativeCompletionScheduling) FetchCandidateIssues(ctx context.Context, r
 		return []connector.Issue{s.issue}, nil
 	}
 	if !s.resumeCandidates.Load() {
+		if s.beforeIdleFetch != nil {
+			s.beforeIdleFetch(ctx)
+		}
 		return nil, nil
 	}
 	firstResumedFetch := !s.retryCandidatesChecked.Swap(true)

@@ -662,6 +662,26 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	candidateChanges := make(chan struct{}, 1)
 	completionSource := &nativeCompletionScheduling{Scheduler: h.scheduler, issue: candidates[0], released: make(chan error, 1), wake: candidateChanges}
+	var refillArmed atomic.Bool
+	var refillHeldOnce, refillReleaseOnce sync.Once
+	refillHeld, refillRelease := make(chan struct{}), make(chan struct{})
+	completionSource.beforeIdleFetch = func(ctx context.Context) {
+		if !refillArmed.Load() || globalGate.PoolSnapshot().Available != 1 {
+			return
+		}
+		holding := false
+		refillHeldOnce.Do(func() {
+			holding = true
+			close(refillHeld)
+		})
+		if !holding {
+			return
+		}
+		select {
+		case <-refillRelease:
+		case <-ctx.Done():
+		}
+	}
 	completed := make(chan nativeCompletionRun, 1)
 	runtimeRunner, err := runner.NewRunner(runner.Dependencies{ProjectID: "local", Now: retryNow, ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), Workspace: backend, AgentBackend: &committingAgent{}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: config.DefaultAgentBackendID, Model: "example-model", Default: true}}}}, Prompt: "Preserve the saved implementation"}})
 	if err != nil {
@@ -671,6 +691,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 		if globalGate.PoolSnapshot().Available != 0 {
 			return errors.New("dependency worker did not acquire global slot")
 		}
+		refillArmed.Store(true)
 		return request.Execution.(runner.CompletionExecution).PrepareFinish(ctx, "succeeded", report, nil)
 	}}
 	var retryStarted chan nativeCompletionRun
@@ -704,13 +725,19 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 	case <-ctx.Done():
 		t.Fatal("dependency worker did not complete")
 	}
+	select {
+	case <-refillHeld:
+	case <-ctx.Done():
+		t.Fatal("dependency completion never refilled its released slot")
+	}
 	var settled orchestrator.State
 	testenv.WaitUntil(t, ctx, func() error {
 		current, err := completionOrch.State(ctx)
 		if err != nil {
 			return err
 		}
-		if len(current.Running) != 0 {
+		if len(current.Running) != 0 || !current.RuntimeObservation.IsZero() {
+			refillReleaseOnce.Do(func() { close(refillRelease) })
 			return errors.New("dependency completion is still running")
 		}
 		settled = current
