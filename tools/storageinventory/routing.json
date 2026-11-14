@@ -2117,7 +2117,7 @@
       ],
       "inventory": {
         "operations": {
-          "Service.prepareChangeWorkflowTransition:Prepare": 1
+          "Service.prepareChangeWorkflowRoute:Prepare": 1
         },
         "tables": []
       }
@@ -4032,6 +4032,8 @@
       ],
       "inventory": {
         "operations": {
+          "session.BillingCostConflict:Query": 1,
+          "session.BillingCostConflict:SQL": 1,
           "session.BillingCostRevision:QueryRow": 1,
           "session.BillingCostRevision:SQL": 1,
           "session.BillingMonthlySpend:Query": 1,
