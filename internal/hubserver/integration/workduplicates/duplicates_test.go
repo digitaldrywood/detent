@@ -295,13 +295,10 @@ func TestMachineDuplicateCommentOutsideParentAggregate(t *testing.T) {
 	f := newDefaultNativeFixture(t)
 	owner := f.createIndependent(t, "Long running failure")
 	path := f.base + "/work-items/" + string(owner.WorkItemID)
-	body := issueorigin.Stamp("Initial diagnostic"+issueContractTestSections, issueorigin.Origin{Kind: "worker", Fingerprint: "long-running-failure"})
+	filler := strings.Repeat("Unrelated progress notes for the long running failure. ", 1150)
+	body := issueorigin.Stamp("Initial diagnostic\n"+filler+issueContractTestSections, issueorigin.Origin{Kind: "worker", Fingerprint: "long-running-failure"})
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "long-owner-body"}, ExpectedRevision: owner.Revision, Body: &body}), http.StatusOK)
-	for index := range 2 {
-		filler := strings.Repeat("Unrelated progress notes for the long running failure. ", 700)
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "filler-" + strconv.Itoa(index)}, Body: filler}), http.StatusOK)
-	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "late-diagnostic"}, Body: "internal/example/queue.go:40:7: undefined: drain"}), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "late-diagnostic"}, Body: strings.Repeat("Unrelated queue notes. ", 400) + "\ninternal/example/queue.go:40:7: undefined: drain"}), http.StatusOK)
 	refreshNativeDuplicateSearchFixture(t, f.hub, f.project.OrganizationID)
 	var issueHasDiagnostic bool
 	if err := f.admin.QueryRowContext(t.Context(), "SELECT 'drain' = ANY(terms) FROM search_documents WHERE organization_id=$1 AND kind='issue' AND work_item_id=$2", f.project.OrganizationID, owner.WorkItemID).Scan(&issueHasDiagnostic); err != nil {
