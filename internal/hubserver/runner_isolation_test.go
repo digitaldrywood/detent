@@ -15,62 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestRunnerIsolationOmittedHeartbeatClearsReport(t *testing.T) {
-	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
-	r.enroll(t)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
-		map[string]any{"display_name": "Runner", "capacity": 2, "version": "test"}), http.StatusOK)
-	var report isolation.Report
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-		var err error
-		report, err = reader.RunnerBackendIsolation(t.Context(), r.binding.RunnerID)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if len(report) != 0 {
-		t.Fatalf("stale report retained: %v", report)
-	}
-}
-
-func TestRunnerIsolationPolicyPinnedToClaim(t *testing.T) {
-	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-	r.enroll(t)
-	r.reportCapacity(t)
-	issue := f.create(t, "queued")
-	descriptor := hubTestPolicy()
-	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "pinned", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
-	requireNativeStatus(t, response, http.StatusOK)
-	var lease tracker.NativeLease
-	decodeHubResponse(t, response, &lease)
-	if lease.IsolationPolicy == nil || lease.IsolationPolicy.Tier != isolation.Sandbox {
-		t.Fatalf("claim isolation = %#v", lease.IsolationPolicy)
-	}
-	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}, IsolationTier: isolation.NativeTrusted}}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
-	for _, request := range []struct {
-		path string
-		body any
-	}{
-		{f.base + "/claims", claim},
-		{f.base + "/leases/" + string(lease.ID) + "/renew", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}},
-	} {
-		response := performHubAPIRequest(t, f.service, http.MethodPost, request.path, r.redemption.Credential, request.body)
-		requireNativeStatus(t, response, http.StatusOK)
-		var renewed tracker.NativeLease
-		decodeHubResponse(t, response, &renewed)
-		if renewed.IsolationPolicy == nil || renewed.IsolationPolicy.Tier != isolation.Sandbox {
-			t.Fatalf("claim downgraded: %#v", renewed.IsolationPolicy)
-		}
-	}
-}
-
 func TestRunnerIsolationLeaseLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

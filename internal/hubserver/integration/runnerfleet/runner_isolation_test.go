@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerupdate"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -334,5 +336,61 @@ func TestRunnerUpdateMCP(t *testing.T) {
 			}
 			t.Logf("isolated normalized input=%s accepted receipt=%s", raw, receipt)
 		})
+	}
+}
+
+func TestRunnerIsolationOmittedHeartbeatClearsReport(t *testing.T) {
+	t.Parallel()
+	f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
+	r := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	r.Enroll(t)
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/machines/"+string(r.Binding.MachineID)+"/heartbeat", r.Redemption.Credential,
+		map[string]any{"display_name": "Runner", "capacity": 2, "version": "test"}), http.StatusOK)
+	var report isolation.Report
+	if err := f.Hub.Repository.ReadTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		report, err = reader.RunnerBackendIsolation(t.Context(), r.Binding.RunnerID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(report) != 0 {
+		t.Fatalf("stale report retained: %v", report)
+	}
+}
+
+func TestRunnerIsolationPolicyPinnedToClaim(t *testing.T) {
+	t.Parallel()
+	f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
+	r := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	r.Enroll(t)
+	r.ReportCapacity(t)
+	issue := f.Create(t, "queued")
+	descriptor := hubfixture.Policy()
+	hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", descriptor)
+	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.Binding.MachineID, SessionID: "pinned", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	response := f.Hub.Request(t, http.MethodPost, f.Base+"/claims", r.Redemption.Credential, claim)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	hubfixture.Decode(t, response, &lease)
+	if lease.IsolationPolicy == nil || lease.IsolationPolicy.Tier != isolation.Sandbox {
+		t.Fatalf("claim isolation = %#v", lease.IsolationPolicy)
+	}
+	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.Project.ID}, IsolationTier: isolation.NativeTrusted}}
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, r.IdentityPath()+"/routing", hubfixture.AdminToken, change), http.StatusOK)
+	for _, request := range []struct {
+		path string
+		body any
+	}{
+		{f.Base + "/claims", claim},
+		{f.Base + "/leases/" + string(lease.ID) + "/renew", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}},
+	} {
+		response := f.Hub.Request(t, http.MethodPost, request.path, r.Redemption.Credential, request.body)
+		hubfixture.RequireStatus(t, response, http.StatusOK)
+		var renewed tracker.NativeLease
+		hubfixture.Decode(t, response, &renewed)
+		if renewed.IsolationPolicy == nil || renewed.IsolationPolicy.Tier != isolation.Sandbox {
+			t.Fatalf("claim downgraded: %#v", renewed.IsolationPolicy)
+		}
 	}
 }
