@@ -2788,6 +2788,9 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					t.Fatalf("unclaimed landing evidence=%#v", evidence)
 				}
 				claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "capacity-refusal", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				if !test.provider {
+					publishCapacity(t, f, r)
+				}
 				if test.provider {
 					publishCapacity(t, f, r, capacityReport(f.service.config.Clock()))
 					claim.WorkItemID = ""
@@ -2838,8 +2841,9 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				if evidence.LatestDecision.Data.Change == nil || evidence.LatestDecision.Data.Change.VersionID != version.ID {
 					t.Fatalf("decision lost Change evidence=%#v", evidence.LatestDecision)
 				}
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, issue.WorkItemID); err != nil {
-					t.Fatal(err)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "revision-change"}, ExpectedRevision: issue.Revision, Title: new("Land me again")}), http.StatusOK)
+				if test.provider {
+					claim.ProviderCandidates[0].Revision = issue.Revision + 1
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
 				assertUnchangedDecision()
@@ -2851,9 +2855,6 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 2, "display_name": "Landing runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}), http.StatusOK)
-				if test.provider {
-					claim.ProviderCandidates[0].Revision = issue.Revision + 1
-				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
 				var decisions []eventstore.Event
 				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
