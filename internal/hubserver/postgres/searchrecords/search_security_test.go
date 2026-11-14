@@ -377,6 +377,7 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 	}
 	body = strings.TrimSuffix(strings.TrimSpace(body), "END")
 	body = strings.TrimSuffix(strings.TrimSpace(body), ";")
+	seedForeignIssueIndex(t, f, d, 1, 200)
 	for _, size := range []int{2000, 10000} {
 		seedSearchPlanHistory(t, f, d, map[int]int{2000: 1, 10000: 2001}[size], size)
 		var pending bool
