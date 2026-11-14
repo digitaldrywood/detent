@@ -729,9 +729,15 @@ func (a *reportAnalysis) visit(node reportPlanNode, ctx reportContext) float64 {
 	case "Values Scan":
 		bound = math.Ceil(node.rows.Rows+node.rows.rowsRounding) * ctx.loops
 	case "ProjectSet":
+		childBound := 0.0
 		for _, child := range ordinary {
-			blocked(child)
+			childBound += streaming(child, inf)
 		}
+		texts := strings.Join(node.texts(), "\n")
+		if strings.Contains(texts, "unnest(") && !strings.Contains(texts, "generate_series(") {
+			bound = min(ctx.cap, childBound*float64(a.contract.Cap))
+		}
+		input = childBound
 	default:
 		if node.Relation != "" {
 			bound, input = a.scan(node, ctx)
