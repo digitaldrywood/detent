@@ -160,10 +160,12 @@ func TestNativeIssueContract(t *testing.T) {
 		claimable bool
 		custom    bool
 		refused   bool
+		untyped   bool
 	}{
 		{name: "missing", refused: true},
 		{name: "partial", body: "## Acceptance criteria\nFix endpoint.", refused: true},
 		{name: "machine missing", machine: true},
+		{name: "machine missing untyped worker hold", machine: true, untyped: true},
 		{name: "human", body: complete, claimable: true},
 		{name: "dispatch marker", body: complete + "\n<!-- detent:no-dispatch -->"},
 		{name: "machine", body: complete, machine: true},
@@ -291,9 +293,9 @@ func TestNativeIssueContract(t *testing.T) {
 			fence := tracker.Mutation{IdempotencyKey: "hold", LeaseID: tracker.LeaseID(heldLease.LeaseID), FencingToken: tracker.FencingToken(heldLease.FencingToken)}
 			hold := fmt.Sprintf("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\nfields:\n  issue_contract_return_state: Todo\n```", action)
 			path := f.base + "/work-items/" + string(issue.WorkItemID)
-			unattended := fence
-			unattended.IdempotencyKey = "unattended-hold"
-			requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", worker, tracker.Transition{Mutation: unattended, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "worker_progress", ReasonDetail: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\n```"}), http.StatusUnprocessableEntity, "invalid_request")
+			if test.untyped {
+				hold = "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\n```"
+			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", worker, tracker.Transition{Mutation: fence, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "worker_progress", ReasonDetail: hold})
 			requireNativeStatus(t, response, http.StatusOK)
 			issue = tracker.NativeIssue{}

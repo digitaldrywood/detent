@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -14,7 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-func TestWorkerBlockedWithoutTypedActionNeedsCurrentRecordedHumanAction(t *testing.T) {
+func TestWorkerBlockedMoveRecordsCurrentContractHumanAction(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -30,16 +31,16 @@ func TestWorkerBlockedWithoutTypedActionNeedsCurrentRecordedHumanAction(t *testi
 		code     string
 		source   string
 	}{
-		{name: "untyped current attempt", evidence: "attempt", status: http.StatusOK, source: "attempt"},
+		{name: "untyped with current attempt question", evidence: "attempt", status: http.StatusOK},
 		{name: "typed current attempt", evidence: "attempt", typed: true, status: http.StatusOK},
-		{name: "untyped current contract", evidence: "contract", status: http.StatusOK, source: "issue_contract"},
+		{name: "untyped records current contract action", evidence: "contract", status: http.StatusOK, source: "issue_contract"},
 		{name: "typed current contract", evidence: "contract", typed: true, status: http.StatusOK},
-		{name: "untyped attempt resolved during transition", evidence: "attempt", resolve: true, status: http.StatusUnprocessableEntity, code: "invalid_request"},
+		{name: "untyped with attempt question superseded during transition", evidence: "attempt", resolve: true, status: http.StatusOK},
 		{name: "untyped contract resolved during transition", evidence: "contract", resolve: true, status: http.StatusConflict, code: "revision_conflict"},
-		{name: "untyped historical action only", evidence: "historical", status: http.StatusUnprocessableEntity, code: "invalid_request"},
+		{name: "untyped with historical action only", evidence: "historical", status: http.StatusOK},
 		{name: "typed historical action only", evidence: "historical", typed: true, status: http.StatusOK},
-		{name: "untyped machine failure", evidence: "failure", status: http.StatusUnprocessableEntity, code: "invalid_request"},
-		{name: "untyped question before its run finishes", evidence: "unfinished", status: http.StatusUnprocessableEntity, code: "invalid_request"},
+		{name: "untyped after machine failure", evidence: "failure", status: http.StatusOK},
+		{name: "old runner order: lane move, question comment, run finished, no rerun", evidence: "old_runner_order", status: http.StatusOK},
 	}
 	for _, organization := range []nativeOrganization{{ID: "org_skew_first", Name: "First", Slug: "skew-first"}, {ID: "org_skew_second", Name: "Second", Slug: "skew-second"}} {
 		t.Run(string(organization.ID), func(t *testing.T) {
@@ -74,7 +75,7 @@ func TestWorkerBlockedWithoutTypedActionNeedsCurrentRecordedHumanAction(t *testi
 					default:
 						finish.Data.Disposition = &tracker.NativeDisposition{Status: "complete"}
 					}
-					if test.evidence != "unfinished" {
+					if test.evidence != "old_runner_order" {
 						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
 					}
 					current := readWorkItem(t, f, issue.WorkItemID, "")
@@ -141,21 +142,42 @@ func TestWorkerBlockedWithoutTypedActionNeedsCurrentRecordedHumanAction(t *testi
 						t.Fatalf("missing Blocked transition in %+v", page.Items)
 					}
 					signal, reported := workpad.SignalFromComment(recorded.Data.ReasonDetail, "", "")
-					if !reported || signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusBlocked || signal.HumanAction != action {
-						t.Fatalf("stored transition lacks the typed human action: %q", recorded.Data.ReasonDetail)
+					if !test.typed && test.source == "" {
+						if recorded.Data.ReasonDetail != detail || reported && signal != nil && signal.HumanAction != "" {
+							t.Fatalf("untyped hold without a current contract action was not stored as sent: %q", recorded.Data.ReasonDetail)
+						}
+					} else {
+						if !reported || signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusBlocked || signal.HumanAction != action {
+							t.Fatalf("stored transition lacks the typed human action: %q", recorded.Data.ReasonDetail)
+						}
+						if !strings.HasPrefix(recorded.Data.ReasonDetail, "The provider turn completed.") {
+							t.Fatalf("stored transition lost the worker summary: %q", recorded.Data.ReasonDetail)
+						}
+						wantSourceID := ""
+						if test.source == "issue_contract" {
+							wantSourceID = strconv.FormatInt(int64(current.Revision), 10)
+						}
+						if signal.Fields["human_action_source"] != test.source || signal.Fields["human_action_source_id"] != wantSourceID {
+							t.Fatalf("stored provenance = %+v, want %q %q", signal.Fields, test.source, wantSourceID)
+						}
 					}
-					if !strings.HasPrefix(recorded.Data.ReasonDetail, "The provider turn completed.") {
-						t.Fatalf("stored transition lost the worker summary: %q", recorded.Data.ReasonDetail)
+					if test.evidence != "old_runner_order" {
+						return
 					}
-					wantSourceID := ""
-					switch test.source {
-					case "attempt":
-						wantSourceID = start.Data.AttemptID
-					case "issue_contract":
-						wantSourceID = strconv.FormatInt(int64(current.Revision), 10)
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/comments", worker, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "question", LeaseID: lease.ID, FencingToken: lease.FencingToken}, Body: "Question for a human.\n\n" + typedBlock}), http.StatusOK)
+					finish.Data.Disposition = &tracker.NativeDisposition{Status: "blocked", HumanAction: true, FinalSummary: action}
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+					credential, status, err := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+					if err != nil || status != http.StatusOK {
+						t.Fatalf("worker authentication status=%d error=%v", status, err)
 					}
-					if signal.Fields["human_action_source"] != test.source || signal.Fields["human_action_source_id"] != wantSourceID {
-						t.Fatalf("stored provenance = %+v, want %q %q", signal.Fields, test.source, wantSourceID)
+					rerun := performHubAPIRequest(t, service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: credential.Runner.MachineID, SessionID: "rerun-" + test.name, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+					if rerun.Code == http.StatusOK {
+						t.Fatalf("held question was claimed for a rerun: %s", rerun.Body.String())
+					}
+					if held := readWorkItem(t, f, issue.WorkItemID, ""); held.State != "Blocked" {
+						t.Fatalf("old runner completion left state %q", held.State)
 					}
 				})
 			}

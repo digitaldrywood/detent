@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -170,13 +169,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		reasonDetail := strings.TrimSpace(request.ReasonDetail)
 		var recordedHold *recordedWorkerHumanAction
 		if untypedWorkerHold {
-			recordedHold, err = s.prepareRecordedWorkerHumanAction(ctx, scope, row, issue, request)
-			if errors.Is(err, corestore.ErrSerializationFailure) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
+			recordedHold = issueContractWorkerHumanAction(row, issue)
+		}
+		if recordedHold != nil {
 			reasonDetail = recordedHold.reasonDetail(reasonDetail)
 		}
 		var linkedSource *eventstore.LinkedSource
@@ -554,10 +549,8 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				if !allowed {
 					return tracker.ErrMachineNotFound
 				}
-				if recordedHold != nil {
-					if err := recordedHold.recheck(ctx, w, locked, request); err != nil {
-						return err
-					}
+				if recordedHold != nil && !recordedHold.current(locked) {
+					return corestore.ErrRevisionConflict
 				}
 			}
 			currentTime := s.config.Clock().UTC()
@@ -689,82 +682,17 @@ type recordedWorkerHumanAction struct {
 	sourceID string
 	revision int64
 	contract *string
-	attempt  *leasestore.Attempt
 }
 
-func untypedWorkerHoldRefusal() error {
-	return hubapi.NativePublicInvalid("A worker may move an item to Blocked only with a typed human_action")
-}
-
-func (s *Service) prepareRecordedWorkerHumanAction(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, issue tracker.NativeIssue, request tracker.Transition) (*recordedWorkerHumanAction, error) {
-	if issue.IssueContract != nil && strings.TrimSpace(issue.IssueContract.HumanAction) != "" {
-		return &recordedWorkerHumanAction{action: strings.TrimSpace(issue.IssueContract.HumanAction), source: "issue_contract", sourceID: strconv.FormatInt(row.Revision, 10), revision: row.Revision, contract: row.IssueContractObjectKey}, nil
-	}
-	var latest leasestore.Attempt
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		latest, err = r.LatestAttempt(ctx, row.ID)
-		return err
-	})
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-		return nil, untypedWorkerHoldRefusal()
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !attemptRecordsCurrentHumanAction(latest, request) {
-		return nil, untypedWorkerHoldRefusal()
-	}
-	snapshot, err := s.readNativeRecoveryAttemptSnapshot(ctx, scope, string(issue.WorkItemID), row.ID, latest.ID)
-	if err != nil {
-		return nil, err
-	}
-	if !sameRecordedHumanActionAttempt(snapshot.Attempt, latest) {
-		return nil, corestore.ErrSerializationFailure
-	}
-	run, err := s.readNativeAttemptRunTenant(ctx, snapshot)
-	if err != nil {
-		return nil, err
-	}
-	if mismatch := hubrecords.NativeAttemptRunMismatch(snapshot, run); mismatch != nil {
-		return nil, fmt.Errorf("read recorded human action: %w", mismatch)
-	}
-	if run.Disposition == nil || !run.Disposition.HumanAction || run.TerminalFailure != nil {
-		return nil, untypedWorkerHoldRefusal()
-	}
-	action := strings.TrimSpace(run.Disposition.FinalSummary)
-	if action == "" {
-		action = "Human action remains required"
-	}
-	return &recordedWorkerHumanAction{action: action, source: "attempt", sourceID: latest.ID, attempt: &latest}, nil
-}
-
-func attemptRecordsCurrentHumanAction(attempt leasestore.Attempt, request tracker.Transition) bool {
-	return attempt.LeaseID == string(request.LeaseID) && attempt.FencingToken == int64(request.FencingToken) && attempt.Status == "succeeded" && attempt.ClaimDisposition != nil && *attempt.ClaimDisposition == "human_action"
-}
-
-func sameRecordedHumanActionAttempt(current, recorded leasestore.Attempt) bool {
-	return current.ID == recorded.ID && current.IssueID == recorded.IssueID && current.Sequence == recorded.Sequence && current.PayloadObjectKey == recorded.PayloadObjectKey
-}
-
-func (h *recordedWorkerHumanAction) recheck(ctx context.Context, w tenantstore.Writer, locked corestore.WorkItem, request tracker.Transition) error {
-	if h.attempt == nil {
-		if locked.Revision != h.revision || hubapi.StringValue(locked.IssueContractObjectKey) != hubapi.StringValue(h.contract) {
-			return corestore.ErrRevisionConflict
-		}
+func issueContractWorkerHumanAction(row corestore.WorkItem, issue tracker.NativeIssue) *recordedWorkerHumanAction {
+	if issue.IssueContract == nil || strings.TrimSpace(issue.IssueContract.HumanAction) == "" {
 		return nil
 	}
-	current, err := w.LatestAttempt(ctx, locked.ID)
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-		return corestore.ErrSerializationFailure
-	}
-	if err != nil {
-		return err
-	}
-	if !sameRecordedHumanActionAttempt(current, *h.attempt) || !attemptRecordsCurrentHumanAction(current, request) {
-		return corestore.ErrSerializationFailure
-	}
-	return nil
+	return &recordedWorkerHumanAction{action: strings.TrimSpace(issue.IssueContract.HumanAction), source: "issue_contract", sourceID: strconv.FormatInt(row.Revision, 10), revision: row.Revision, contract: row.IssueContractObjectKey}
+}
+
+func (h *recordedWorkerHumanAction) current(locked corestore.WorkItem) bool {
+	return locked.Revision == h.revision && hubapi.StringValue(locked.IssueContractObjectKey) == hubapi.StringValue(h.contract)
 }
 
 func (h *recordedWorkerHumanAction) reasonDetail(detail string) string {
