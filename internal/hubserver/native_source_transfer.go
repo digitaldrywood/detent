@@ -108,8 +108,11 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 			if err != nil {
 				return err
 			}
-			if change.OrganizationID != scope.Organization || change.ProjectID != scope.Project || change.WorkItemID != snapshot.item.NativeID || version.OrganizationID != scope.Organization || version.ChangeID != change.ID {
+			if change.OrganizationID != scope.Organization || change.ProjectID != scope.Project || version.OrganizationID != scope.Organization || version.ChangeID != change.ID {
 				return artifact.ErrIntegrity
+			}
+			if change.WorkItemID != snapshot.item.NativeID {
+				return corestore.ErrNotFound
 			}
 			snapshot.version = &version
 		}
