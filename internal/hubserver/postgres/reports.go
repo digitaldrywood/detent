@@ -15,7 +15,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const maxOverviewFactLimit = 5000
+const (
+	maxOverviewFactLimit     = 5000
+	maxOverviewCandidateRows = 50000
+	maxReportProjects        = 1000
+)
 
 var _ reportstore.Reader = (*session)(nil)
 var _ reportstore.OpenReader = (*session)(nil)
@@ -93,30 +97,22 @@ func (s *session) ReadOverviewFacts(ctx context.Context, query reportstore.Overv
 		}
 		projects[i] = string(project)
 	}
+	if len(projects) > maxReportProjects || len(query.ActivityWorkItems) > maxOverviewCandidateRows {
+		return nil, reportstore.ErrPopulationExceeded
+	}
 	activityIDs := make([]string, len(query.ActivityWorkItems))
 	for i, id := range query.ActivityWorkItems {
 		activityIDs[i] = string(id)
 	}
+	candidateIDs, err := s.readOverviewCandidates(ctx, projects, query.From.UTC(), query.To.UTC(), activityIDs)
+	if err != nil {
+		return nil, err
+	}
 	statement := `WITH candidates AS (
 	 SELECT i.organization_id,i.id,i.project_id,i.native_id,i.title,i.created_at,i.workflow_state_name,i.actor_kind,i.actor_principal_id,i.issue_type,i.priority,i.revision,i.doctor_identity_revision
- FROM issues i
- WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[])
+ FROM unnest($15::bigint[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i
+ WHERE i.project_id=ANY($2::text[])
    AND ($3='' OR i.actor_principal_id=$3)
-   AND (i.created_at >= $4 AND i.created_at < $5 OR i.native_id=ANY($15::text[]) OR EXISTS (
-     SELECT 1 FROM collaboration_events e
-     JOIN project_workflow_states ws ON ws.organization_id=e.organization_id AND ws.project_id=e.project_id AND ws.name=e.to_state AND ws.terminal
-     WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id
-       AND e.type='workflow.transitioned' AND e.recorded_at >= $4 AND e.recorded_at < $5
-   ) OR EXISTS (
-     SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at >= $4 AND a.started_at < $5
-   ) OR EXISTS (
-     SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id
-       AND e.type='workflow.transitioned' AND e.to_state='Rework' AND e.recorded_at >= $4 AND e.recorded_at < $5
-   ) OR EXISTS (
-     SELECT 1 FROM change_requests c JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id
-     WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id
-       AND c.landed_at >= $4 AND c.landed_at < $5 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'
-   ))
 	   AND (coalesce(cardinality($7::text[]),0)=0 OR i.issue_type=ANY($7::text[]))
 	   AND (coalesce(cardinality($8::integer[]),0)=0 OR i.priority=ANY($8::integer[]))
 	   AND (coalesce(cardinality($9::text[]),0)=0 OR i.actor_principal_id=ANY($9::text[]))
@@ -194,7 +190,7 @@ LEFT JOIN LATERAL (
  ORDER BY a.started_at DESC,a.started_at_submicro_ns DESC,a.id DESC LIMIT 1
 ) previous_final_runner ON previous_completion.to_state='Done' 
 ORDER BY i.created_at,i.project_id,i.native_id`
-	rows, err := s.db.Query(ctx, statement, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Split.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages, activityIDs)
+	rows, err := s.db.Query(ctx, statement, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Split.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages, candidateIDs)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -233,6 +229,45 @@ ORDER BY i.created_at,i.project_id,i.native_id`
 		return nil, reportstore.ErrPopulationExceeded
 	}
 	return facts, nil
+}
+
+func (s *session) readOverviewCandidates(ctx context.Context, projects []string, from, to time.Time, named []string) ([]int64, error) {
+	var exceeded bool
+	var ids []int64
+	err := s.db.QueryRow(ctx, `WITH created AS MATERIALIZED (
+ SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND i.created_at>=$3 AND i.created_at<$4 ORDER BY i.project_id,i.created_at,i.id LIMIT $6
+), named AS MATERIALIZED (
+ SELECT i.id FROM unnest($5::text[]) n(native_id) CROSS JOIN LATERAL (
+  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.native_id=n.native_id AND i.project_id=ANY($2::text[])
+ ) i LIMIT $6
+), transitioned AS MATERIALIZED (
+ SELECT e.project_id,e.work_item_id FROM (
+  SELECT ws.project_id,ws.name FROM project_workflow_states ws WHERE ws.organization_id=$1 AND ws.project_id=ANY($2::text[]) AND ws.terminal
+  UNION SELECT p.project_id,'Rework' FROM unnest($2::text[]) p(project_id)
+ ) state CROSS JOIN LATERAL (
+  SELECT e.project_id,e.work_item_id FROM collaboration_events e
+  WHERE e.organization_id=$1 AND e.project_id=state.project_id AND e.type='workflow.transitioned' AND e.to_state=state.name AND e.recorded_at>=$3 AND e.recorded_at<$4 LIMIT $6
+ ) e LIMIT $6
+), started AS MATERIALIZED (
+ SELECT a.id FROM native_attempts a WHERE a.organization_id=$1 AND a.project_id=ANY($2::text[]) AND a.started_at>=$3 AND a.started_at<$4 ORDER BY a.project_id,a.started_at,a.started_at_submicro_ns,a.id LIMIT $6
+), landed AS MATERIALIZED (
+ SELECT c.project_id,c.work_item_id FROM change_requests c JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id
+ WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$3 AND c.landed_at<$4 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ORDER BY c.project_id,c.landed_at,c.id LIMIT $6
+), keyed AS (
+ SELECT id FROM created UNION SELECT id FROM named
+ UNION SELECT a.issue_id FROM started s CROSS JOIN LATERAL (SELECT a.issue_id FROM native_attempts a WHERE a.organization_id=$1 AND a.id=s.id LIMIT 1) a
+ UNION SELECT i.id FROM transitioned t CROSS JOIN LATERAL (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=t.project_id AND i.native_id=t.work_item_id LIMIT 1) i
+ UNION SELECT i.id FROM landed l CROSS JOIN LATERAL (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=l.project_id AND i.native_id=l.work_item_id LIMIT 1) i
+)
+SELECT (SELECT count(*) FROM created)>=$6 OR (SELECT count(*) FROM named)>=$6 OR (SELECT count(*) FROM transitioned)>=$6 OR (SELECT count(*) FROM started)>=$6 OR (SELECT count(*) FROM landed)>=$6,
+ coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::bigint[])`, s.organization, projects, from, to, named, maxOverviewCandidateRows+1).Scan(&exceeded, &ids)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	if exceeded || len(ids) > maxOverviewCandidateRows {
+		return nil, reportstore.ErrPopulationExceeded
+	}
+	return ids, nil
 }
 
 func (s *session) ReadFacets(ctx context.Context, projects []tracker.ProjectID, from, to time.Time, principal string, limit int) (reportstore.Facets, error) {

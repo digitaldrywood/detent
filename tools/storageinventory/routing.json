@@ -18445,7 +18445,9 @@
           "session.ReadOpenFacts:Query": 1,
           "session.ReadOpenFacts:SQL": 1,
           "session.ReadOverviewFacts:Query": 1,
-          "session.ReadOverviewFacts:SQL": 1
+          "session.ReadOverviewFacts:SQL": 1,
+          "session.readOverviewCandidates:QueryRow": 1,
+          "session.readOverviewCandidates:SQL": 1
         },
         "tables": [
           "hub/api_tokens",
