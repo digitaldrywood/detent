@@ -240,10 +240,13 @@ prepareReview:
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			var held heldRunnerSessionAuthority
 			if prepared != nil {
-				if _, err := w.RunnerForLease(ctx, string(request.LeaseID)); err != nil {
+				owner, err := w.RunnerForLease(ctx, string(request.LeaseID))
+				if err != nil {
 					return fmt.Errorf("lock review runner: %w", err)
 				}
+				held.owner = owner
 			}
 			var transition *changeWorkflowTransition
 			if workflowPlan != nil {
@@ -262,7 +265,7 @@ prepareReview:
 			if err != nil {
 				return err
 			}
-			if _, err := s.lockChangeRecordOperation(ctx, w, scope, item, changeID, versionID); err != nil {
+			if _, err := s.lockChangeRecordOperation(ctx, w, scope, item, changeID, ""); err != nil {
 				return err
 			}
 			var lockedItem corestore.WorkItem
@@ -309,7 +312,7 @@ prepareReview:
 					return hubapi.PolicyMismatch("Current policy changed; the reviewed version must be republished")
 				}
 			}
-			if err := s.lockValidatorReviewRecord(ctx, w, scope, change, request, prepared); err != nil {
+			if err := s.lockValidatorReviewRecord(ctx, w, scope, change, request, prepared, held, currentChange); err != nil {
 				return fmt.Errorf("lock validator review: %w", err)
 			}
 			if request.Bundle != nil {

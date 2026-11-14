@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -143,63 +144,79 @@ func (s *Service) findRunnerSession(c echo.Context) error {
 }
 
 func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request runnersession.Mutation, issue string, lock bool) (leasestore.Attempt, policystore.Revision, error) {
-	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
-		return leasestore.Attempt{}, policystore.Revision{}, err
+	attempt, _, current, err := s.runnerSessionFenceHeld(ctx, r, scope, request, issue, lock, nil)
+	return attempt, current, err
+}
+
+type heldRunnerSessionAuthority struct {
+	owner runnerstore.Identity
+}
+
+func (s *Service) runnerSessionFenceHeld(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request runnersession.Mutation, issue string, lock bool, held *heldRunnerSessionAuthority) (leasestore.Attempt, corestore.WorkItem, policystore.Revision, error) {
+	var owner runnerstore.Identity
+	if held != nil {
+		owner = held.owner
+	} else {
+		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, err
+		}
+		var err error
+		owner, err = r.RunnerForLease(ctx, string(request.LeaseID))
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, err
+		}
 	}
-	owner, err := r.RunnerForLease(ctx, string(request.LeaseID))
-	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-		return leasestore.Attempt{}, policystore.Revision{}, err
-	}
+	var err error
 	var lease leasestore.Lease
 	if lock {
 		locker, ok := r.(leasestore.FencedLeaseLocker)
 		if !ok {
-			return leasestore.Attempt{}, policystore.Revision{}, hubapi.NativeRunEventStorageUnavailable()
+			return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, hubapi.NativeRunEventStorageUnavailable()
 		}
 		lease, err = locker.LockLease(ctx, string(request.LeaseID))
 	} else {
 		lease, err = r.Lease(ctx, string(request.LeaseID))
 	}
 	if err != nil {
-		return leasestore.Attempt{}, policystore.Revision{}, err
+		return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, err
 	}
 	item, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(issue))
 	if err != nil {
-		return leasestore.Attempt{}, policystore.Revision{}, err
+		return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, err
 	}
 	clock, ok := r.(runnersession.Reader)
 	if !ok {
-		return leasestore.Attempt{}, policystore.Revision{}, hubapi.NativeRunEventStorageUnavailable()
+		return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	now, err := clock.RunnerSessionTime(ctx)
 	if err != nil {
-		return leasestore.Attempt{}, policystore.Revision{}, err
+		return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, err
 	}
 	if lease.IssueID != item.ID || lease.FencingToken != int64(request.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || scope.Credential.Runner.RunnerID == "" || lease.MachineID != string(scope.Credential.Runner.MachineID) {
-		return leasestore.Attempt{}, policystore.Revision{}, tracker.ErrStaleFencingToken
+		return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, tracker.ErrStaleFencingToken
 	}
 	if owner.RunnerID != scope.Credential.Runner.RunnerID {
-		return leasestore.Attempt{}, policystore.Revision{}, tracker.ErrStaleFencingToken
+		return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, tracker.ErrStaleFencingToken
 	}
 	attempt, err := r.LatestAttempt(ctx, item.ID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-		return leasestore.Attempt{}, policystore.Revision{}, err
+		return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, err
 	}
 	if err != nil || attempt.LeaseID != lease.LeaseID || attempt.Status != "running" {
-		return leasestore.Attempt{}, policystore.Revision{}, tracker.ErrStaleFencingToken
+		return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, tracker.ErrStaleFencingToken
 	}
 	bound, err := r.LeasePolicy(ctx, request.LeaseID)
 	if err != nil {
-		return attempt, policystore.Revision{}, err
+		return attempt, item, policystore.Revision{}, err
 	}
 	current, err := r.ProjectPolicyRevision(ctx, scope.Project, bound.PolicyID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-		return attempt, current, err
+		return attempt, item, current, err
 	}
 	if err != nil || bound.OrganizationID != scope.Organization || bound.ProjectID != scope.Project || bound.LeaseID != request.LeaseID || current.PolicyID != bound.PolicyID {
-		return attempt, current, tracker.ErrStaleFencingToken
+		return attempt, item, current, tracker.ErrStaleFencingToken
 	}
-	return attempt, current, nil
+	return attempt, item, current, nil
 }
 
 func runnerSessionProcessAuthority(key string) string {

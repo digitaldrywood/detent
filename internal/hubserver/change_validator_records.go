@@ -163,27 +163,19 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope hubsco
 	return p, machine, err
 }
 
-func (s *Service) lockValidatorReviewRecord(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.ReviewChange, p *preparedValidatorReview) error {
+func (s *Service) lockValidatorReviewRecord(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.ReviewChange, p *preparedValidatorReview, held heldRunnerSessionAuthority, current eventstore.Change) error {
 	if p == nil {
 		return nil
 	}
-	attempt, _, err := s.runnerSessionFence(ctx, w, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), true)
+	attempt, item, _, err := s.runnerSessionFenceHeld(ctx, w, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), true, &held)
 	if err != nil {
 		return err
 	}
 	if !reflect.DeepEqual(attempt, p.attempt) {
 		return corestore.ErrRevisionConflict
 	}
-	current, err := w.Change(ctx, change.ID)
-	if err != nil {
-		return err
-	}
 	if current.Revision != p.change.Revision || current.EvidenceSequence != p.change.EvidenceSequence || !reflect.DeepEqual(current.CurrentVersionID, p.change.CurrentVersionID) {
 		return corestore.ErrRevisionConflict
-	}
-	item, err := w.WorkItem(ctx, scope.Project, change.WorkItemID)
-	if err != nil {
-		return err
 	}
 	if item.Revision != p.issue.Revision {
 		return corestore.ErrRevisionConflict
