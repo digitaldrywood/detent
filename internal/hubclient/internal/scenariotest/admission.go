@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariohooks"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -425,7 +426,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 				h.repolicy(t)
 			}
 			started := make(chan runner.RunRequest, 1)
-			orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "Human Review"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: nativeDependencyRecoveryRunner{started: started}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "Human Review"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: scenariohooks.StartedRunner{Started: started}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -511,16 +512,6 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			}
 		})
 	}
-}
-
-type nativeDependencyRecoveryRunner struct {
-	started chan runner.RunRequest
-}
-
-func (r nativeDependencyRecoveryRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
-	r.started <- request
-	<-ctx.Done()
-	return runner.RunResult{}, ctx.Err()
 }
 
 func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer string) {
@@ -661,27 +652,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 	report := fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s#%d'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: null\n```", h.project, prerequisite.Number)
 	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	candidateChanges := make(chan struct{}, 1)
-	completionSource := &nativeCompletionScheduling{Scheduler: h.scheduler, issue: candidates[0], released: make(chan error, 1), wake: candidateChanges}
-	var refillArmed atomic.Bool
-	var refillHeldOnce, refillReleaseOnce sync.Once
-	refillHeld, refillRelease := make(chan struct{}), make(chan struct{})
-	completionSource.beforeIdleFetch = func(ctx context.Context) {
-		if !refillArmed.Load() || globalGate.PoolSnapshot().Available != 1 {
-			return
-		}
-		holding := false
-		refillHeldOnce.Do(func() {
-			holding = true
-			close(refillHeld)
-		})
-		if !holding {
-			return
-		}
-		select {
-		case <-refillRelease:
-		case <-ctx.Done():
-		}
-	}
+	completionSource := &nativeCompletionScheduling{Scheduler: h.scheduler, issue: candidates[0], released: make(chan error, 1), wake: candidateChanges, idleFetchHold: scenariohooks.New(func() bool { return globalGate.PoolSnapshot().Available == 1 })}
 	completed := make(chan nativeCompletionRun, 1)
 	runtimeRunner, err := runner.NewRunner(runner.Dependencies{ProjectID: "local", Now: retryNow, ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), Workspace: backend, AgentBackend: &committingAgent{}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: config.DefaultAgentBackendID, Model: "example-model", Default: true}}}}, Prompt: "Preserve the saved implementation"}})
 	if err != nil {
@@ -691,7 +662,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 		if globalGate.PoolSnapshot().Available != 0 {
 			return errors.New("dependency worker did not acquire global slot")
 		}
-		refillArmed.Store(true)
+		completionSource.idleFetchHold.Arm()
 		return request.Execution.(runner.CompletionExecution).PrepareFinish(ctx, "succeeded", report, nil)
 	}}
 	var retryStarted chan nativeCompletionRun
@@ -725,11 +696,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 	case <-ctx.Done():
 		t.Fatal("dependency worker did not complete")
 	}
-	select {
-	case <-refillHeld:
-	case <-ctx.Done():
-		t.Fatal("dependency completion never refilled its released slot")
-	}
+	completionSource.idleFetchHold.AwaitHeld(t, ctx)
 	var settled orchestrator.State
 	testenv.WaitUntil(t, ctx, func() error {
 		current, err := completionOrch.State(ctx)
@@ -737,7 +704,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 			return err
 		}
 		if len(current.Running) != 0 || !current.RuntimeObservation.IsZero() {
-			refillReleaseOnce.Do(func() { close(refillRelease) })
+			completionSource.idleFetchHold.Release()
 			return errors.New("dependency completion is still running")
 		}
 		settled = current
@@ -955,7 +922,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 		t.Fatal(err)
 	}
 	started := make(chan runner.RunRequest, 1)
-	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, PrioritizeUnblockers: true, ActiveStates: request.WorkflowStates, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: request.DispatchPriorityByState}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: nativeDependencyRecoveryRunner{started: started}, Logger: slog.New(slog.DiscardHandler)})
+	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, PrioritizeUnblockers: true, ActiveStates: request.WorkflowStates, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: request.DispatchPriorityByState}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: scenariohooks.StartedRunner{Started: started}, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}

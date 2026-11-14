@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariohooks"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -54,7 +55,7 @@ type nativeCompletionScheduling struct {
 	resumeCandidates       atomic.Bool
 	retryCandidatesChecked atomic.Bool
 	retryCandidates        chan error
-	beforeIdleFetch        func(context.Context)
+	idleFetchHold          *scenariohooks.Hold
 }
 
 type nativeCompletionRun struct {
@@ -246,9 +247,7 @@ func (s *nativeCompletionScheduling) FetchCandidateIssues(ctx context.Context, r
 		return []connector.Issue{s.issue}, nil
 	}
 	if !s.resumeCandidates.Load() {
-		if s.beforeIdleFetch != nil {
-			s.beforeIdleFetch(ctx)
-		}
+		s.idleFetchHold.Wait(ctx)
 		return nil, nil
 	}
 	firstResumedFetch := !s.retryCandidatesChecked.Swap(true)
