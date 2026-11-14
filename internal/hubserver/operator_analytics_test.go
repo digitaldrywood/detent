@@ -110,10 +110,10 @@ func TestHostedAnalyticsReads(t *testing.T) {
 					t.Fatalf("hosted board: %s err=%v", response.Body.String(), err)
 				}
 				want := 1
-				if grant == "both" {
-					want = 2
+				if grant == "github" {
+					want = 0
 				}
-				if len(board.Projects) != want || grant == "native" && strings.Contains(string(raw), "prj_other") || grant == "github" && strings.Contains(string(raw), string(f.project)) {
+				if len(board.Projects) != want || strings.Contains(string(raw), "prj_other") || grant == "github" && strings.Contains(string(raw), string(f.project)) {
 					t.Fatalf("hosted board project authority: %s", raw)
 				}
 			})
