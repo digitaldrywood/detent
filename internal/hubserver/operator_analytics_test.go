@@ -710,7 +710,7 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 		if err != nil || workedPartial || len(workedUnavailable) != 0 || len(worked) != 1 || worked[0].Item != string(emptyItem.WorkItemID) || worked[0].Kind != "worked" || !worked[0].At.Equal(base.Add(-time.Minute)) || workedReads.Load() == 0 {
 			t.Fatalf("declared-role worked population=%+v partial=%v unavailable=%v reads=%d error=%v", worked, workedPartial, workedUnavailable, workedReads.Load(), err)
 		}
-		if _, err := emptyDB.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,$2,$3,$4::timestamptz+n*interval '1 millisecond','','',1,0,0,0,'',$4 FROM generate_series(0,1000)n`, emptyScope.Organization, emptyScope.Project, emptyAttempt, base); err != nil {
+		if _, err := emptyDB.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,$2,$3,$4::timestamptz+n*interval '1 millisecond','','',1,0,0,0,'USD',$4 FROM generate_series(0,1000)n`, emptyScope.Organization, emptyScope.Project, emptyAttempt, base); err != nil {
 			t.Fatal(err)
 		}
 		emptyHead, emptyNext, err := f.service.readNativeAnalyticsUsagePopulationTenant(t.Context(), emptyScope, window)
