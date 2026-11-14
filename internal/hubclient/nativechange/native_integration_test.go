@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -157,7 +158,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 			}
 		})
 	}
-	blocker, err := ownerConnector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Blocker", Body: "blocking" + issueContractTestSections})
+	blocker, err := ownerConnector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Blocker", Body: testenv.DistinctText("blocker", 24) + "\nblocking" + issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}
