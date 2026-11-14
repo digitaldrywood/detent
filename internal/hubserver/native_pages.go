@@ -100,11 +100,7 @@ func (s *Service) readIssues(ctx context.Context, scope hubscope.NativeScope, pa
 }
 
 func (s *Service) readIssuesProjection(ctx context.Context, scope hubscope.NativeScope, params url.Values, compact bool) (tracker.NativeIssuePage, error) {
-	return s.readBoardProjection(ctx, scope, params, false, compact, false)
-}
-
-func (s *Service) readIssueLanes(ctx context.Context, scope hubscope.NativeScope, params url.Values) (tracker.NativeIssuePage, error) {
-	return s.readBoardProjection(ctx, scope, params, false, false, true)
+	return s.readBoardProjection(ctx, scope, params, false, compact)
 }
 
 func (s *Service) listNativeComments(c echo.Context) error {

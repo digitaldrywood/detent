@@ -130,10 +130,10 @@ func (s *Service) readBoardRecords(ctx context.Context, scope hubscope.NativeSco
 }
 
 func (s *Service) readBoardRecordsFor(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
-	return s.readBoardProjection(ctx, scope, params, legacy, false, false)
+	return s.readBoardProjection(ctx, scope, params, legacy, false)
 }
 
-func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact bool) (tracker.NativeIssuePage, error) {
 	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
 		return tracker.NativeIssuePage{}, hubapi.NativePublicInvalid("archive_url supports true or false")
 	}
@@ -171,7 +171,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.Native
 			return err
 		}
 		var err error
-		page, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy, compact, lanes)
+		page, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy, compact)
 		return err
 	}
 	var err error
@@ -190,7 +190,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.Native
 	return page, err
 }
 
-func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact bool) (tracker.NativeIssuePage, error) {
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return page, hubapi.NativeWorkItemStorageUnavailable()
@@ -244,7 +244,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	if !legacy {
 		limit = min(limit, 200)
 	}
-	selection.Summary = (legacy || lanes && includeWork) && selection.SupportsSummary()
+	selection.Summary = (legacy || includeWork && selection.Terminal == nil) && selection.SupportsSummary()
 	selection.Limit = limit + 1
 	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {
@@ -307,15 +307,18 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	if (includeBoard || includeWork) && (!legacy || selection.Summary) {
 		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, ShippedWindows: []tracker.NativeShippedWindow{}, AsOf: s.config.Clock()}
 	}
-	if selection.Summary {
-		page.Total = 0
+	if includeWork && (!selection.Summary || snapshot.Pending) {
+		page.Work.Lanes = nil
+	}
+	if selection.Summary && !snapshot.Pending {
+		total := 0
 		windows := []tracker.NativeShippedWindow{{Window: "1h"}, {Window: "24h"}, {Window: "7d"}}
 		filterCompletionStates := !includeBoard && len(selection.States) > 0
 		for _, summary := range snapshot.Summaries {
-			if summary.Kind == "lane" && (!lanes || len(selection.States) == 0 || slices.Contains(selection.States, summary.State)) {
+			if summary.Kind == "lane" && (!includeWork || len(selection.States) == 0 || slices.Contains(selection.States, summary.State)) {
 				page.Work.Lanes = append(page.Work.Lanes, tracker.NativeWorkLane{State: summary.State, Total: int(summary.Total), Running: int(summary.Running)})
 				if len(selection.States) > 0 && slices.Contains(selection.States, summary.State) {
-					page.Total += int(summary.Total)
+					total += int(summary.Total)
 				}
 			}
 			if summary.Kind == "total" && !filterCompletionStates || summary.Kind == "lane" && filterCompletionStates && slices.Contains(selection.States, summary.State) {
@@ -337,8 +340,11 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 				}
 			}
 			if len(selection.States) == 0 && summary.Kind == kind {
-				page.Total = int(summary.Total)
+				total = int(summary.Total)
 			}
+		}
+		if legacy {
+			page.Total = total
 		}
 		applyNativeShippedWindows(page.Work, windows, selectedWindow)
 	}
