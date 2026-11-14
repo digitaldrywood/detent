@@ -24,7 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -1197,7 +1196,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	foreign := scope
 	foreign.Project = "prj_foreign"
 	hidden, err := f.service.readNativeAnalyticsTenant(t.Context(), foreign, operatortool.AnalyticsRequest{Limit: 1}, w)
-	if !errors.Is(err, accessstore.ErrDenied) {
+	if !hubapi.IsNativeNotFound(err) {
 		t.Fatalf("foreign project authorization error=%v", err)
 	}
 	if hidden.AttemptsObserved != 0 || hidden.DecisionsObserved != 0 || hidden.CostPerOutcome.Shipped != 0 {
