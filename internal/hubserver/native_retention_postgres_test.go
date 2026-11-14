@@ -35,6 +35,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const nativeRetentionStagesPerPass = 11
+
 func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testing.T) {
 	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
@@ -600,7 +602,10 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 					if err != nil {
 						return err
 					}
-					if state != wantAfterFailure || stages.Load() != 10 {
+					if passed := stages.Load(); passed > nativeRetentionStagesPerPass {
+						t.Fatalf("retention ran %d stages before the failed native-prune pass was observed, want %d", passed, nativeRetentionStagesPerPass)
+					}
+					if state != wantAfterFailure || stages.Load() != nativeRetentionStagesPerPass {
 						return fmt.Errorf("receipt expiry did not survive the failed native-prune stage: state=%v stages=%d", state, stages.Load())
 					}
 					return nil
@@ -616,7 +621,10 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 					if err != nil {
 						return err
 					}
-					if state != [10]int{0, 1, 0, 1, 0, 1, 0, 1, 1, 1} || stages.Load() != 20 {
+					if passed := stages.Load(); passed > 2*nativeRetentionStagesPerPass {
+						t.Fatalf("retention ran %d stages before the second pass was observed, want %d", passed, 2*nativeRetentionStagesPerPass)
+					}
+					if state != [10]int{0, 1, 0, 1, 0, 1, 0, 1, 1, 1} || stages.Load() != 2*nativeRetentionStagesPerPass {
 						return fmt.Errorf("live native expiry did not finish: state=%v stages=%d", state, stages.Load())
 					}
 					return nil
