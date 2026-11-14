@@ -357,6 +357,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						return
 					}
 					faultSource(false)
+					h.candidates(t)
 				}
 				candidate := h.claim(t, issue.ID)
 				faultSource(test.sourceFailure != "intact")
@@ -396,7 +397,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				if intact {
 					target = "Done"
 				}
-				result, _, runErr := runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: agent, completed: make(chan nativeCompletionRun, 1), landed: make(chan nativeCompletionRun, 1), expectSourceRefusal: !intact, expectedRecoverySite: expectedSite, gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, request, target)
+				result, _, runErr := runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: agent, completed: make(chan nativeCompletionRun, 1), landed: make(chan nativeCompletionRun, 1), expectSourceRefusal: !intact, expectedRecoverySite: expectedSite, afterSourceRefusal: func() { faultSource(false) }, gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, request, target)
 				if intact {
 					if runErr != nil || !result.TurnStarted || provider.calls == 0 || provider.writableCalls == 0 {
 						t.Fatalf("intact bundle refused before provider: result=%+v calls=%d writable=%d error=%v", result, provider.calls, provider.writableCalls, runErr)

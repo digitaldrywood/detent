@@ -32,6 +32,7 @@ type nativeCompletionRunner struct {
 	expectPendingLanding bool
 	expectSourceRefusal  bool
 	expectedRecoverySite string
+	afterSourceRefusal   func()
 }
 
 func runNativeCompletionOrchestrator(t *testing.T, h *nativeChangeHub, agent *runner.Runner, request runner.RunRequest, targets ...string) (runner.RunResult, error) {
@@ -116,6 +117,9 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 		expectedRecoverySite = "recover native Change source"
 	}
 	if backend.expectSourceRefusal {
+		if backend.afterSourceRefusal != nil {
+			backend.afterSourceRefusal()
+		}
 		assertInstanceRecoveryRetry(t, h, orch, request.Issue.ID)
 		if err := h.scheduler.ReleaseClaim(t.Context(), request.Issue.ID, "released"); err != nil {
 			t.Fatal(err)
