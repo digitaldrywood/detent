@@ -10,7 +10,7 @@ import (
 )
 
 func (s *session) SchedulerDecision(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) (eventstore.Event, error) {
-	row, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, ID: id})
+	row, err := s.itemEvent(ctx, project, item, id)
 	if err != nil {
 		return eventstore.Event{}, mapError(ctx, err)
 	}

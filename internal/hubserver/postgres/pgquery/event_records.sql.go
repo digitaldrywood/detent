@@ -780,23 +780,16 @@ func (q *Queries) RecordGetCollaborationVersions(ctx context.Context, arg Record
 }
 
 const recordGetEvent = `-- name: RecordGetEvent :one
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, history_hidden, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, history_hidden, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events WHERE organization_id=$1 AND id=$2
 `
 
 type RecordGetEventParams struct {
 	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	WorkItemID     tracker.NativeWorkItemID
 	ID             string
 }
 
 func (q *Queries) RecordGetEvent(ctx context.Context, arg RecordGetEventParams) (CollaborationEvent, error) {
-	row := q.db.QueryRow(ctx, recordGetEvent,
-		arg.OrganizationID,
-		arg.ProjectID,
-		arg.WorkItemID,
-		arg.ID,
-	)
+	row := q.db.QueryRow(ctx, recordGetEvent, arg.OrganizationID, arg.ID)
 	var i CollaborationEvent
 	err := row.Scan(
 		&i.OrganizationID,

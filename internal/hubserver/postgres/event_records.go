@@ -186,8 +186,16 @@ func (s *session) EventsByKey(ctx context.Context, keys []eventstore.EventKey) (
 }
 
 func (s *session) RunEvent(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) (eventstore.Event, error) {
-	row, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, ID: id})
+	row, err := s.itemEvent(ctx, project, item, id)
 	return eventRecord(row), mapError(ctx, err)
+}
+
+func (s *session) itemEvent(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) (pgquery.CollaborationEvent, error) {
+	row, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: s.organization, ID: id})
+	if err == nil && (row.ProjectID != project || row.WorkItemID != item) {
+		return pgquery.CollaborationEvent{}, pgx.ErrNoRows
+	}
+	return row, err
 }
 
 func (s *session) ProgressEvidenceSequence(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (int64, error) {
@@ -657,7 +665,7 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 	if err := s.db.QueryRow(ctx, `SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR NO KEY UPDATE`, s.organization, record.ProjectID, record.WorkItemID).Scan(&issueID); err != nil {
 		return eventstore.Event{}, mapError(ctx, err)
 	}
-	previous, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: s.organization, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID})
+	previous, err := s.itemEvent(ctx, record.ProjectID, record.WorkItemID, record.ID)
 	if err == nil {
 		requested := record
 		requested.Report = nil

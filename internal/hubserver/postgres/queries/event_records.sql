@@ -1,5 +1,5 @@
 -- name: RecordGetEvent :one
-SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND id=sqlc.arg(id);
+SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id);
 
 -- name: RecordGetEvents :many
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND id=ANY(sqlc.arg(ids)::text[]) ORDER BY id LIMIT sqlc.arg(row_limit);
