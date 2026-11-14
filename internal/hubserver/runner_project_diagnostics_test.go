@@ -254,6 +254,9 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	post := func() {
 		t.Helper()
 		clock.Add(int64(time.Second))
+		if view.Diagnostics != nil {
+			view.Diagnostics.ObservedAt = view.Diagnostics.ObservedAt.Add(time.Second)
+		}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
 	}
 	view.ObservedAt = now.Add(-10 * time.Second)
@@ -480,6 +483,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	post()
 	second := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	second.enroll(t)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(second.binding.MachineID)+"/heartbeat", second.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": second.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
 	ambiguous := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?issue_id=wi_unmatched&limit=20", r.redemption.Credential, nil)
 	failure := requireNativeCode(t, ambiguous, http.StatusUnprocessableEntity, "invalid_request")
 	if failure.Message != "Multiple runners report this project; select runner_id" {
@@ -627,7 +631,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	if err != nil || len(unknown.Records) != 1 || unknown.Records[0].LatestError != "[private error text omitted]" || unknown.Records[0].Unavailable["publication_rejection"] != "unavailable" {
 		t.Fatalf("unclassified rejection=%+v %v", unknown, err)
 	}
-	view.Diagnostics.ObservedAt = now.Add(-runnerauth.HeartbeatTimeout - time.Second)
+	clock.Add(int64(runnerauth.HeartbeatTimeout + time.Second))
 	post()
 	page, err := call(ctx, args)
 	if err != nil || page.Status != "stale" {
@@ -636,10 +640,19 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	view.Diagnostics = nil
 	post()
 	page, err = call(ctx, args)
+	if err != nil || page.Status != "stale" || len(page.Admissions) != 1 {
+		t.Fatalf("report without diagnostics replaced the stored snapshot=%+v %v", page, err)
+	}
+	older := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	older.enroll(t)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(older.binding.MachineID)+"/heartbeat", older.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": older.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
+	olderArgs := args
+	olderArgs.RunnerID = older.binding.RunnerID
+	page, err = call(ctx, olderArgs)
 	if err != nil || page.Status != "unavailable" || page.Unavailable["snapshot"] == "" {
 		t.Fatalf("older=%+v %v", page, err)
 	}
-	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = $1 WHERE id = $2 AND organization_id=$3", now.Add(-runnerauth.HeartbeatTimeout-time.Minute), r.binding.RunnerID, f.project.OrganizationID); err != nil {
+	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = $1 WHERE runner_id = $2 AND organization_id=$3", now.Add(-runnerauth.HeartbeatTimeout-time.Minute), r.binding.RunnerID, f.project.OrganizationID); err != nil {
 		t.Fatal(err)
 	}
 	page, err = call(ctx, args)
@@ -649,7 +662,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-diagnostics")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreign.base+"/runner-diagnostics", foreign.token, nil), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreign.base+"/runner-diagnostics", r.redemption.Credential, nil), http.StatusNotFound)
-	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = $1 WHERE id = (SELECT token_id FROM runner_identities WHERE id=$2 AND organization_id=$3)", now, r.binding.RunnerID, f.project.OrganizationID); err != nil {
+	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = $1 WHERE id = (SELECT token_id FROM runner_identities WHERE runner_id=$2 AND organization_id=$3)", now, r.binding.RunnerID, f.project.OrganizationID); err != nil {
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil), http.StatusUnauthorized)

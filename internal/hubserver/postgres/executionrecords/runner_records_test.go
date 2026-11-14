@@ -1180,12 +1180,6 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 	}); err != nil {
 		t.Fatalf("later receipt with stale diagnostics error=%v", err)
 	}
-	if err := repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
-		newerDiagnosticsAt, staleRuntimeAt := now.Add(2*time.Minute), now.Add(time.Minute)
-		return w.ReplaceRunnerProjectObservation(ctx, runnerstore.ProjectObservation{OrganizationID: "org_first", RunnerID: "runner_shared", ProjectID: "project_shared", ObservedAt: now.Add(4 * time.Minute), DiagnosticsAt: &newerDiagnosticsAt, RuntimeObservedAt: &staleRuntimeAt, SnapshotDigest: strings.Repeat("c", 64)}, nil)
-	}); err != nil {
-		t.Fatalf("later diagnostics with stale runtime error=%v", err)
-	}
 	if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 		observation, attempts, err := r.RunnerProjectObservation(ctx, "runner_shared", "project_shared", "wi_shared")
 		if err != nil {
@@ -1193,6 +1187,63 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 		}
 		if !observation.ObservedAt.Equal(now.Add(2*time.Minute)) || observation.DiagnosticsAt == nil || !observation.DiagnosticsAt.Equal(now.Add(time.Minute)) || observation.RuntimeObservedAt == nil || !observation.RuntimeObservedAt.Equal(now.Add(90*time.Second)) || observation.SnapshotDigest != strings.Repeat("a", 64) || len(attempts) != 1 || attempts[0].LocalAttemptID != 5 {
 			t.Fatalf("stale write replaced current project observation: %+v attempts=%+v", observation, attempts)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	componentAt := func(offset time.Duration) *time.Time {
+		at := now.Add(offset)
+		return &at
+	}
+	for _, step := range []struct {
+		name                          string
+		observed                      time.Duration
+		diagnostics, runtime          *time.Time
+		digest                        string
+		wantErr                       error
+		wantObserved, wantDiagnostics time.Duration
+		wantRuntime                   *time.Time
+		wantDigest                    string
+	}{
+		{name: "newer diagnostics keep newer stored runtime", observed: 4 * time.Minute, diagnostics: componentAt(2 * time.Minute), runtime: componentAt(time.Minute), digest: "c", wantObserved: 4 * time.Minute, wantDiagnostics: 2 * time.Minute, wantRuntime: componentAt(90 * time.Second), wantDigest: "c"},
+		{name: "equal-time conflicting diagnostics", observed: 5 * time.Minute, diagnostics: componentAt(2 * time.Minute), runtime: componentAt(3 * time.Minute), digest: "d", wantErr: runnerstore.ErrStaleObservation, wantObserved: 4 * time.Minute, wantDiagnostics: 2 * time.Minute, wantRuntime: componentAt(90 * time.Second), wantDigest: "c"},
+		{name: "older diagnostics advance newer runtime only", observed: 6 * time.Minute, diagnostics: componentAt(time.Minute), runtime: componentAt(100 * time.Second), digest: "e", wantObserved: 6 * time.Minute, wantDiagnostics: 2 * time.Minute, wantRuntime: componentAt(100 * time.Second), wantDigest: "c"},
+		{name: "newer complete snapshot without runtime clears runtime", observed: 7 * time.Minute, diagnostics: componentAt(3 * time.Minute), digest: "f", wantObserved: 7 * time.Minute, wantDiagnostics: 3 * time.Minute, wantDigest: "f"},
+		{name: "explicit runtime after clear", observed: 8 * time.Minute, diagnostics: componentAt(4 * time.Minute), runtime: componentAt(5 * time.Minute), digest: "0", wantObserved: 8 * time.Minute, wantDiagnostics: 4 * time.Minute, wantRuntime: componentAt(5 * time.Minute), wantDigest: "0"},
+		{name: "snapshot without runtime older than stored runtime keeps it", observed: 9 * time.Minute, diagnostics: componentAt(4*time.Minute + 30*time.Second), digest: "1", wantObserved: 9 * time.Minute, wantDiagnostics: 4*time.Minute + 30*time.Second, wantRuntime: componentAt(5 * time.Minute), wantDigest: "1"},
+	} {
+		err := repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+			return w.ReplaceRunnerProjectObservation(ctx, runnerstore.ProjectObservation{OrganizationID: "org_first", RunnerID: "runner_shared", ProjectID: "project_shared", ObservedAt: now.Add(step.observed), DiagnosticsAt: step.diagnostics, RuntimeObservedAt: step.runtime, SnapshotDigest: strings.Repeat(step.digest, 64)}, nil)
+		})
+		if !errors.Is(err, step.wantErr) {
+			t.Fatalf("%s: error=%v want %v", step.name, err, step.wantErr)
+		}
+		if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+			observation, _, err := r.RunnerProjectObservation(ctx, "runner_shared", "project_shared", "")
+			if err != nil {
+				return err
+			}
+			runtimeMatches := (observation.RuntimeObservedAt == nil) == (step.wantRuntime == nil) && (step.wantRuntime == nil || observation.RuntimeObservedAt.Equal(*step.wantRuntime))
+			if !observation.ObservedAt.Equal(now.Add(step.wantObserved)) || !runtimeMatches || observation.SnapshotDigest != strings.Repeat(step.wantDigest, 64) {
+				t.Fatalf("%s: merged observation = %+v", step.name, observation)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var storedDiagnostics time.Time
+		if err := admin.QueryRowContext(ctx, `SELECT diagnostics_at FROM runner_project_observations WHERE organization_id='org_first' AND runner_id='runner_shared' AND project_id='project_shared'`).Scan(&storedDiagnostics); err != nil || !storedDiagnostics.Equal(now.Add(step.wantDiagnostics)) {
+			t.Fatalf("%s: stored diagnostics_at=%v err=%v want %v", step.name, storedDiagnostics, err, now.Add(step.wantDiagnostics))
+		}
+	}
+	if err := repository.ReadTenant(ctx, "org_second", corestore.Serving, func(r tenantstore.Reader) error {
+		observation, attempts, err := r.RunnerProjectObservation(ctx, "runner_shared", "project_shared", "wi_shared")
+		if err != nil {
+			return err
+		}
+		if observation.RuntimeObservedAt == nil || !observation.RuntimeObservedAt.Equal(now.Add(90*time.Second)) || observation.SnapshotDigest != strings.Repeat("a", 64) || len(attempts) != 1 || attempts[0].LocalAttemptID != 6 {
+			t.Fatalf("second tenant observation changed: %+v attempts=%+v", observation, attempts)
 		}
 		return nil
 	}); err != nil {

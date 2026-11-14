@@ -53,4 +53,23 @@ func TestProjectDiagnosticsReconcilesOwners(t *testing.T) {
 	if string(first) != string(second) {
 		t.Fatal("read changed observation")
 	}
+	for _, runtimeAt := range []time.Time{{}, now.Add(-time.Second)} {
+		state.RuntimeObservation = telemetry.SnapshotSection{ObservedAt: runtimeAt}
+		raw, err := json.Marshal(state.ProjectDiagnostics(active, now))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &wire); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"observed_at", "source", "records", "admissions", "counts", "truncated", "unavailable"} {
+			if _, ok := wire[key]; !ok {
+				t.Fatalf("complete diagnostics snapshot omitted %s: %s", key, raw)
+			}
+		}
+		if _, ok := wire["runtime_observed_at"]; ok == runtimeAt.IsZero() {
+			t.Fatalf("runtime_observed_at present=%t for runtime observation %v: %s", ok, runtimeAt, raw)
+		}
+	}
 }

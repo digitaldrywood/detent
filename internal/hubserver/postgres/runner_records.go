@@ -772,43 +772,9 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 	if err := row.Validate(attempts); err != nil {
 		return err
 	}
-	var currentObserved time.Time
-	var currentDiagnostics pgtype.Timestamptz
-	var currentRuntime pgtype.Timestamptz
-	var currentDigest string
-	err := s.db.QueryRow(ctx, `SELECT observed_at,diagnostics_at,runtime_observed_at,snapshot_digest FROM runner_project_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3 FOR UPDATE`, row.OrganizationID, row.RunnerID, row.ProjectID).Scan(&currentObserved, &currentDiagnostics, &currentRuntime, &currentDigest)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return mapError(ctx, err)
-	}
-	if err == nil && (row.ObservedAt.Before(currentObserved) || row.ObservedAt.Equal(currentObserved) && row.SnapshotDigest != currentDigest) {
-		return runnerstore.ErrStaleObservation
-	}
-	if err == nil && currentDiagnostics.Valid && (row.DiagnosticsAt == nil || row.DiagnosticsAt.Before(currentDiagnostics.Time)) {
-		return nil
-	}
-	if err == nil && currentRuntime.Valid && (row.RuntimeObservedAt == nil || row.RuntimeObservedAt.Before(currentRuntime.Time)) {
-		return nil
-	}
-	if err == nil && currentDiagnostics.Valid && row.DiagnosticsAt != nil && row.DiagnosticsAt.Equal(currentDiagnostics.Time) && row.SnapshotDigest != currentDigest {
-		return runnerstore.ErrStaleObservation
-	}
-	result, err := s.db.Exec(ctx, `INSERT INTO runner_project_observations (organization_id,runner_id,project_id,observed_at,diagnostics_at,runtime_observed_at,snapshot_digest) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (organization_id,runner_id,project_id) DO UPDATE SET observed_at=EXCLUDED.observed_at,diagnostics_at=EXCLUDED.diagnostics_at,runtime_observed_at=EXCLUDED.runtime_observed_at,snapshot_digest=EXCLUDED.snapshot_digest WHERE (runner_project_observations.observed_at<EXCLUDED.observed_at AND ((runner_project_observations.diagnostics_at IS NULL AND EXCLUDED.diagnostics_at IS NULL) OR (EXCLUDED.diagnostics_at IS NOT NULL AND (runner_project_observations.diagnostics_at IS NULL OR runner_project_observations.diagnostics_at<EXCLUDED.diagnostics_at)) OR (runner_project_observations.diagnostics_at=EXCLUDED.diagnostics_at AND runner_project_observations.snapshot_digest=EXCLUDED.snapshot_digest)) AND ((runner_project_observations.runtime_observed_at IS NULL AND EXCLUDED.runtime_observed_at IS NULL) OR (EXCLUDED.runtime_observed_at IS NOT NULL AND (runner_project_observations.runtime_observed_at IS NULL OR runner_project_observations.runtime_observed_at<EXCLUDED.runtime_observed_at)) OR (runner_project_observations.runtime_observed_at=EXCLUDED.runtime_observed_at AND runner_project_observations.snapshot_digest=EXCLUDED.snapshot_digest))) OR (runner_project_observations.observed_at=EXCLUDED.observed_at AND runner_project_observations.snapshot_digest=EXCLUDED.snapshot_digest AND runner_project_observations.diagnostics_at IS NOT DISTINCT FROM EXCLUDED.diagnostics_at AND runner_project_observations.runtime_observed_at IS NOT DISTINCT FROM EXCLUDED.runtime_observed_at)`, row.OrganizationID, row.RunnerID, row.ProjectID, row.ObservedAt, row.DiagnosticsAt, row.RuntimeObservedAt, row.SnapshotDigest)
-	if err != nil {
-		return mapError(ctx, err)
-	}
-	count := result.RowsAffected()
-	if count != 1 {
-		var latestObserved time.Time
-		var latestDiagnostics pgtype.Timestamptz
-		var latestRuntime pgtype.Timestamptz
-		var latestDigest string
-		if err := s.db.QueryRow(ctx, `SELECT observed_at,diagnostics_at,runtime_observed_at,snapshot_digest FROM runner_project_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID).Scan(&latestObserved, &latestDiagnostics, &latestRuntime, &latestDigest); err != nil {
-			return mapError(ctx, err)
-		}
-		if latestObserved.After(row.ObservedAt) || latestDiagnostics.Valid && (row.DiagnosticsAt == nil || latestDiagnostics.Time.After(*row.DiagnosticsAt)) || latestRuntime.Valid && (row.RuntimeObservedAt == nil || latestRuntime.Time.After(*row.RuntimeObservedAt)) || latestObserved.Equal(row.ObservedAt) && latestDigest == row.SnapshotDigest {
-			return nil
-		}
-		return runnerstore.ErrStaleObservation
+	currentDigest, write, err := s.mergeRunnerProjectObservation(ctx, row)
+	if err != nil || !write {
+		return err
 	}
 	attemptRows := make([][]any, 0, len(attempts))
 	unavailableRows := make([][]any, 0)
@@ -871,6 +837,88 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 		}
 	}
 	return nil
+}
+
+type runnerObservationHead struct {
+	observed    time.Time
+	diagnostics pgtype.Timestamptz
+	runtime     pgtype.Timestamptz
+	digest      string
+}
+
+func (s *session) mergeRunnerProjectObservation(ctx context.Context, row runnerstore.ProjectObservation) (string, bool, error) {
+	for attempt := range 2 {
+		var current runnerObservationHead
+		err := s.db.QueryRow(ctx, `SELECT observed_at,diagnostics_at,runtime_observed_at,snapshot_digest FROM runner_project_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3 FOR UPDATE`, row.OrganizationID, row.RunnerID, row.ProjectID).Scan(&current.observed, &current.diagnostics, &current.runtime, &current.digest)
+		if errors.Is(err, pgx.ErrNoRows) {
+			result, err := s.db.Exec(ctx, `INSERT INTO runner_project_observations (organization_id,runner_id,project_id,observed_at,diagnostics_at,runtime_observed_at,snapshot_digest) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (organization_id,runner_id,project_id) DO NOTHING`, row.OrganizationID, row.RunnerID, row.ProjectID, row.ObservedAt, row.DiagnosticsAt, row.RuntimeObservedAt, row.SnapshotDigest)
+			if err != nil {
+				return "", false, mapError(ctx, err)
+			}
+			if result.RowsAffected() == 1 {
+				return "", true, nil
+			}
+			continue
+		}
+		if err != nil {
+			return "", false, mapError(ctx, err)
+		}
+		if attempt > 0 && row.ObservedAt.Before(current.observed) {
+			return "", false, nil
+		}
+		diagnostics, runtime, err := mergeRunnerObservationComponents(current, row)
+		if err != nil {
+			return "", false, err
+		}
+		runtimeChanged := runtime.Valid != current.runtime.Valid || runtime.Valid && !runtime.Time.Equal(current.runtime.Time)
+		if !diagnostics && !runtimeChanged {
+			return "", false, nil
+		}
+		if !diagnostics {
+			_, err := s.db.Exec(ctx, `UPDATE runner_project_observations SET observed_at=$4,runtime_observed_at=$5 WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID, row.ObservedAt, runtime)
+			return "", false, mapError(ctx, err)
+		}
+		if _, err := s.db.Exec(ctx, `UPDATE runner_project_observations SET observed_at=$4,diagnostics_at=$5,runtime_observed_at=$6,snapshot_digest=$7 WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID, row.ObservedAt, row.DiagnosticsAt, runtime, row.SnapshotDigest); err != nil {
+			return "", false, mapError(ctx, err)
+		}
+		return current.digest, true, nil
+	}
+	return "", false, runnerstore.ErrStaleObservation
+}
+
+func mergeRunnerObservationComponents(current runnerObservationHead, row runnerstore.ProjectObservation) (bool, pgtype.Timestamptz, error) {
+	row.ObservedAt = row.ObservedAt.Truncate(time.Microsecond)
+	for _, at := range []**time.Time{&row.DiagnosticsAt, &row.RuntimeObservedAt} {
+		if *at != nil {
+			truncated := (*at).Truncate(time.Microsecond)
+			*at = &truncated
+		}
+	}
+	if row.ObservedAt.Before(current.observed) || row.ObservedAt.Equal(current.observed) && row.SnapshotDigest != current.digest {
+		return false, pgtype.Timestamptz{}, runnerstore.ErrStaleObservation
+	}
+	diagnostics := false
+	switch {
+	case row.DiagnosticsAt == nil:
+		diagnostics = !current.diagnostics.Valid
+	case !current.diagnostics.Valid || row.DiagnosticsAt.After(current.diagnostics.Time):
+		diagnostics = true
+	case row.DiagnosticsAt.Equal(current.diagnostics.Time):
+		if row.SnapshotDigest != current.digest {
+			return false, pgtype.Timestamptz{}, runnerstore.ErrStaleObservation
+		}
+		diagnostics = true
+	}
+	runtime := current.runtime
+	switch {
+	case row.RuntimeObservedAt != nil:
+		if !current.runtime.Valid || row.RuntimeObservedAt.After(current.runtime.Time) {
+			runtime = pgtype.Timestamptz{Time: *row.RuntimeObservedAt, Valid: true}
+		}
+	case diagnostics && row.DiagnosticsAt != nil && (!current.runtime.Valid || row.DiagnosticsAt.After(current.runtime.Time)):
+		runtime = pgtype.Timestamptz{}
+	}
+	return diagnostics, runtime, nil
 }
 
 func (s *session) insertRunnerCurrentRows(ctx context.Context, table, columns string, rows [][]any) error {
