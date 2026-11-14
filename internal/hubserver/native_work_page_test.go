@@ -357,7 +357,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	t.Parallel()
 	fixtureNow := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{keyReads: make(map[string]int)}
-	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return fixtureNow }, WebhookMaintenanceInterval: time.Hour, RunDetails: details})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return fixtureNow }, WebhookMaintenanceInterval: time.Hour, RunDetails: details, Postgres: &postgres.Config{Pool: postgres.PoolConfig{SearchBudget: time.Hour}}})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	history := seedArchiveIssues(t, f.service, scope, 130, "Done")

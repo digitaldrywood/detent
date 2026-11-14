@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -124,13 +125,14 @@ func openTestService(t *testing.T, cfg Config) *Service {
 		}
 	}
 	var fixtureAdmin *sql.DB
-	if cfg.Postgres == nil {
+	if requested := cmp.Or(cfg.Postgres, &postgres.Config{}); requested.Connection.Host == "" {
 		admin := postgresStartupTemplate.Database(t)
 		fixtureAdmin = admin
 		defaults := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 		cfg.DatabaseBackend = DatabasePostgres
 
 		cfg.Postgres = defaults.Postgres
+		cfg.Postgres.Pool.SearchBudget = requested.Pool.SearchBudget
 		if cfg.Clock != nil {
 			cfg.Postgres.LeaseClock = cfg.normalized().Clock
 		}
