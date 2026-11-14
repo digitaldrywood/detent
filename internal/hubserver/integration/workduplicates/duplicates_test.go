@@ -1,6 +1,8 @@
 package workduplicates_test
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -104,6 +106,7 @@ func TestNativeDuplicateCandidateCrowding(t *testing.T) {
 func TestNativeSearchScopedCost(t *testing.T) {
 	for _, state := range []string{"ready", "rebuilding", "dirty"} {
 		t.Run(state, func(t *testing.T) {
+			t.Parallel()
 			f := newDefaultNativeFixture(t)
 			target := f.createIndependent(t, "Repository association")
 			foreign := f.fixture(t, f.project.OrganizationID, "foreign-search-cost")
@@ -114,6 +117,9 @@ func TestNativeSearchScopedCost(t *testing.T) {
 			}
 			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			admin := f.admin
+			content := searchstore.NewContentWithCursors(f.details, searchstore.NewCursorSealer(func(context.Context, tracker.OrganizationID) ([]byte, error) {
+				return bytes.Repeat([]byte{0x5c}, 32), nil
+			}))
 			count := 1
 			scores := map[string]float64{}
 			for _, size := range []int{1, 300, 3000, 6000} {
@@ -121,6 +127,25 @@ func TestNativeSearchScopedCost(t *testing.T) {
 					if size > count {
 						if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,project_id,native_id,number,revision,title,body_object_key,issue_contract_object_key,actor_kind,actor_principal_id,workflow_state_name,created_at,updated_at,native_created_at,native_updated_at,last_activity_at)
 SELECT organization_id,project_id,'wi_scoped_cost_'||n,n,1,title,body_object_key,issue_contract_object_key,actor_kind,actor_principal_id,workflow_state_name,created_at,updated_at,native_created_at,native_updated_at,last_activity_at FROM issues CROSS JOIN generate_series($1::bigint,$2::bigint) n WHERE organization_id=$3 AND project_id=$4 AND native_id=$5`, count+1, size, f.project.OrganizationID, foreign.project.ID, seed.WorkItemID); err != nil {
+							t.Fatal(err)
+						}
+						documents := make([]searchstore.Document, 0, size-count)
+						for n := count + 1; n <= size; n++ {
+							item := "wi_scoped_cost_" + strconv.Itoa(n)
+							document, err := content.Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ID: "issue:" + item, SourceID: item, ProjectID: foreign.project.ID, WorkItemID: tracker.NativeWorkItemID(item), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: time.Now()}, searchstore.Text{Title: seed.Title})
+							if err != nil {
+								t.Fatal(err)
+							}
+							documents = append(documents, document)
+						}
+						if err := (tenantstore.SearchRepository{Repository: f.repository}).WriteSearch(t.Context(), f.project.OrganizationID, corestore.Serving, func(w searchstore.Writer) error {
+							for _, document := range documents {
+								if err := w.PutSearch(t.Context(), document, 0); err != nil {
+									return err
+								}
+							}
+							return nil
+						}); err != nil {
 							t.Fatal(err)
 						}
 						count = size
@@ -140,29 +165,30 @@ SELECT organization_id,project_id,'wi_scoped_cost_'||n,n,1,title,body_object_key
 						}
 					}
 					for _, text := range []string{"repos associ deadlock", "repository repository association association"} {
+						page, err := content.Find(t.Context(), tenantstore.SearchRepository{Repository: f.repository}, f.project.OrganizationID, searchstore.Query{Kind: "work", ProjectID: f.project.ID, Text: text, Limit: 100})
+						if err != nil {
+							t.Fatal(err)
+						}
+						hits := page.Items
+						ids := map[tracker.NativeWorkItemID]bool{}
+						var score float64
+						for _, hit := range hits {
+							ids[hit.Document.WorkItemID] = true
+							score += hit.Score
+							if hit.Coverage != 2 {
+								t.Fatalf("hits=%+v want 2 covered terms", hits)
+							}
+						}
+						if len(ids) != 1 || !ids[target.WorkItemID] {
+							t.Fatalf("foreign population %d displaced scoped result: %+v", size, hits)
+						}
+						if size == 1 {
+							scores[text] = score
+						}
+						if state != "ready" && score != scores[text] {
+							t.Fatalf("fallback score changed with foreign inventory: got=%v want=%v", score, scores[text])
+						}
 						if err := f.repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-							hits, err := r.Search(t.Context(), searchstore.Query{Kind: "work", ProjectID: f.project.ID, Text: text, Limit: 100})
-							if err != nil {
-								return err
-							}
-							ids := map[tracker.NativeWorkItemID]bool{}
-							var score float64
-							for _, hit := range hits {
-								ids[hit.Document.WorkItemID] = true
-								score += hit.Score
-								if hit.Coverage != 2 {
-									t.Fatalf("hits=%+v want 2 covered terms", hits)
-								}
-							}
-							if len(ids) != 1 || !ids[target.WorkItemID] {
-								t.Fatalf("foreign population %d displaced scoped result: %+v", size, hits)
-							}
-							if size == 1 {
-								scores[text] = score
-							}
-							if state != "ready" && score != scores[text] {
-								t.Fatalf("fallback score changed with foreign inventory: got=%v want=%v", score, scores[text])
-							}
 							reader := r.(searchstore.DuplicateSourceReader)
 							availability, err := reader.DuplicateSourceState(t.Context(), f.project.ID)
 							if err != nil {
