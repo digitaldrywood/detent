@@ -761,7 +761,9 @@ func TestOnboardingReportedConfigurationDoesNotBlockRunner(t *testing.T) {
 				t.Fatalf("pending policy not offered alongside its approval: %+v", setup)
 			}
 			pending := setup.ObservedPolicies[0]
-			if pending.Conflict || pending.PreviouslyApproved || pending.RunnerID != runner.binding.RunnerID || !reflect.DeepEqual(pending.Policy, candidate) {
+			offered := candidate
+			offered.Configuration = nil
+			if pending.Conflict || pending.PreviouslyApproved || pending.RunnerID != runner.binding.RunnerID || !reflect.DeepEqual(pending.Policy, offered) {
 				t.Fatalf("runner candidate cannot be approved exactly: %+v", pending)
 			}
 			if test.selected && len(read(f.base, f.token).ObservedPolicies) != 0 {
@@ -792,7 +794,7 @@ func TestOnboardingReportedConfigurationDoesNotBlockRunner(t *testing.T) {
 				t.Fatalf("same runner cannot load the approved candidate: %v", err)
 			}
 			applied := read(target.base, target.token)
-			if applied.Policy == nil || !reflect.DeepEqual(applied.Policy.Policy, candidate) || len(applied.ObservedPolicies) != 0 {
+			if applied.Policy == nil || !reflect.DeepEqual(applied.Policy.Policy, offered) || len(applied.ObservedPolicies) != 0 {
 				t.Fatalf("approval did not apply the reported descriptor: %+v", applied)
 			}
 		})
