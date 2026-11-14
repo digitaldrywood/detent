@@ -178,8 +178,9 @@ func attemptIdentityFromPG(row pgquery.NativeAttempt) leasestore.AttemptIdentity
 
 func mergeAttemptIdentityRow(row *pgquery.NativeAttempt, sequence int64, update leasestore.AttemptIdentity) {
 	if sequence == 1 {
-		newAttemptIdentityColumns(update).store(row)
-		row.IdentitySequence = pgtype.Int8{Int64: 1, Valid: true}
+		columns := newAttemptIdentityColumns(update)
+		columns.store(row)
+		row.IdentitySequence = pgtype.Int8{Int64: 1, Valid: columns.executionRole != nil}
 		return
 	}
 	if !row.IdentitySequence.Valid || row.IdentitySequence.Int64 >= sequence {

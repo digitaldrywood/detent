@@ -35,7 +35,7 @@ func TestAttemptIdentityProjectionMergesFencedEvents(t *testing.T) {
 				sequence int64
 			}
 			runs := map[tracker.OrganizationID]*attemptRun{}
-			write := func(org tracker.OrganizationID, event leasestore.AttemptEvent) (leasestore.Attempt, bool, error) {
+			writeFor := func(org tracker.OrganizationID, project tracker.ProjectID, item tracker.NativeWorkItemID, event leasestore.AttemptEvent) (leasestore.Attempt, bool, error) {
 				var got leasestore.Attempt
 				var replay bool
 				apply := func(w leasestore.Writer) error {
@@ -49,12 +49,15 @@ func TestAttemptIdentityProjectionMergesFencedEvents(t *testing.T) {
 						facts := w.(interface {
 							WithRunnerEventFacts(context.Context, eventstore.RunCommand, func(tenantstore.Writer) error) error
 						})
-						return facts.WithRunnerEventFacts(t.Context(), eventstore.RunCommand{Project: "prj_1", WorkItem: "wi_1", LeaseID: event.Fence.LeaseID, AttemptID: event.ID, Sequences: []int64{event.Sequence}}, func(w tenantstore.Writer) error { return apply(w) })
+						return facts.WithRunnerEventFacts(t.Context(), eventstore.RunCommand{Project: project, WorkItem: item, LeaseID: event.Fence.LeaseID, AttemptID: event.ID, Sequences: []int64{event.Sequence}}, func(w tenantstore.Writer) error { return apply(w) })
 					})
 				} else {
 					err = repository.WriteLeases(t.Context(), org, corestore.Serving, apply)
 				}
 				return got, replay, err
+			}
+			write := func(org tracker.OrganizationID, event leasestore.AttemptEvent) (leasestore.Attempt, bool, error) {
+				return writeFor(org, "prj_1", "wi_1", event)
 			}
 			stored := func(t *testing.T, org tracker.OrganizationID) leasestore.Attempt {
 				t.Helper()
@@ -175,6 +178,20 @@ func TestAttemptIdentityProjectionMergesFencedEvents(t *testing.T) {
 							t.Fatalf("%s %s: replay=%v err=%v", org, test.name, replay, err)
 						}
 						requireIdentity(t, org, test.name, stored(t, org))
+					}
+				}
+			})
+			t.Run("start without execution identity stays unprojected", func(t *testing.T) {
+				for _, org := range organizations {
+					lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(2))
+					event := pgstoretest.AttemptEvent(lease)
+					event.Identity = leasestore.AttemptIdentity{Runtime: agentidentity.RuntimeUpdate("runtime-only", "", "high", "", later)}
+					for sequence, identity := range []leasestore.AttemptIdentity{event.Identity, {Execution: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "later"}}} {
+						event.Sequence, event.PayloadObjectKey, event.Identity = int64(sequence+1), fmt.Sprintf("example/%s/unprojected-%d", org, sequence+1), identity
+						got, _, err := writeFor(org, "prj_2", "wi_2", event)
+						if err != nil || got.IdentitySequence != 0 || got.Identity.Execution != nil {
+							t.Fatalf("%s attempt without a recorded start identity became projected at sequence %d: %+v err=%v", org, event.Sequence, got, err)
+						}
 					}
 				}
 			})
