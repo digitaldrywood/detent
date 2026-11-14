@@ -1,17 +1,21 @@
 package hubserver
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -297,6 +301,70 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		if err := validateNativeWorkflowPolicy(currentProject, approved.Policy, true); err != nil {
 			t.Fatalf("current Cloud workflow approval = %v", err)
 		}
+		t.Run("Cloud workflow edited between reapproval preparation and write", func(t *testing.T) {
+			edited := strings.Replace(markdown, "Complete the issue.", "Complete the concurrently edited issue.", 1)
+			var integrationBefore ProjectIntegration
+			browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/integration", nil, http.StatusOK), &integrationBefore)
+			policyBefore := api(t, "owner", http.MethodGet, base+"/policy", nil, http.StatusOK).Body.String()
+			reviewBefore, err := f.service.changeReviewPolicyRecord(t.Context(), hubscope.NativeScope{Organization: created.OrganizationID, Project: created.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			counts := func(t *testing.T) (usage, receipts int) {
+				t.Helper()
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_usage_receipts WHERE organization_id=$1 AND metric='api_mutations' AND receipt_id LIKE 'project-command/%/policy/%'", created.OrganizationID).Scan(&usage); err != nil {
+					t.Fatal(err)
+				}
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE organization_id=$1", created.OrganizationID).Scan(&receipts); err != nil {
+					t.Fatal(err)
+				}
+				return usage, receipts
+			}
+			original := f.service.runDetailStore()
+			interleave := &workflowEditInterleave{DetailStore: original, key: currentProject.Settings.WorkflowKey}
+			interleave.edit = func() {
+				api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": "concurrent-markdown", "expected_revision": fmt.Sprint(integrationBefore.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": edited}, http.StatusOK)
+			}
+			interleave.armed.Store(true)
+			f.service.config.RunDetails = interleave
+			t.Cleanup(func() { f.service.config.RunDetails = original })
+			usageBefore, receiptsBefore := counts(t)
+			response := api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: approved.Policy}, http.StatusConflict)
+			f.service.config.RunDetails = original
+			if interleave.armed.Load() || !interleave.fired.Load() {
+				t.Fatal("workflow edit did not run between reapproval preparation and write")
+			}
+			var failure hubapi.APIErrorResponse
+			browserHostedDecode(t, response, &failure)
+			if failure.Code != "revision_conflict" {
+				t.Fatalf("interleaved reapproval=%s", response.Body.String())
+			}
+			if after := api(t, "owner", http.MethodGet, base+"/policy", nil, http.StatusOK).Body.String(); after != policyBefore {
+				t.Fatalf("interleaved reapproval changed policy: %s", after)
+			}
+			var integrationAfter ProjectIntegration
+			browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/integration", nil, http.StatusOK), &integrationAfter)
+			if integrationAfter.WorkflowMarkdown != edited || integrationAfter.Authority["workflow"] != "detent" || integrationAfter.Revision != integrationBefore.Revision+1 {
+				t.Fatalf("interleaved reapproval rewrote the concurrent workflow edit: %#v", integrationAfter)
+			}
+			reviewAfter, err := f.service.changeReviewPolicyRecord(t.Context(), hubscope.NativeScope{Organization: created.OrganizationID, Project: created.ID})
+			if err != nil || !reflect.DeepEqual(reviewAfter, reviewBefore) {
+				t.Fatalf("interleaved reapproval changed review defaults=%+v err=%v", reviewAfter, err)
+			}
+			if usage, receipts := counts(t); usage != usageBefore || receipts != receiptsBefore+1 {
+				t.Fatalf("interleaved reapproval usage=%d->%d receipts=%d->%d (only the concurrent edit records one)", usageBefore, usage, receiptsBefore, receipts)
+			}
+			api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": "restore-markdown", "expected_revision": fmt.Sprint(integrationAfter.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": markdown}, http.StatusOK)
+			api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: approved.Policy}, http.StatusOK)
+			if usage, _ := counts(t); usage != usageBefore+1 {
+				t.Fatalf("accepted reapproval usage=%d want %d", usage, usageBefore+1)
+			}
+			integration = ProjectIntegration{}
+			browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/integration", nil, http.StatusOK), &integration)
+			if integration.WorkflowMarkdown != markdown {
+				t.Fatalf("restored Cloud workflow = %#v", integration)
+			}
+		})
 		resolveRepositoryPolicy := func(markdown, revision string) policy.Descriptor {
 			t.Helper()
 			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "WORKFLOW.md", Workflow: []byte(markdown)})
@@ -369,4 +437,21 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 			t.Fatalf("reopen lost repository authority: %#v", integration)
 		}
 	})
+}
+
+type workflowEditInterleave struct {
+	attachment.DetailStore
+	key   string
+	edit  func()
+	armed atomic.Bool
+	fired atomic.Bool
+}
+
+func (w *workflowEditInterleave) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	raw, err := w.DetailStore.ReadDetail(ctx, organization, ref)
+	if ref.Key == w.key && w.armed.CompareAndSwap(true, false) {
+		w.edit()
+		w.fired.Store(true)
+	}
+	return raw, err
 }
