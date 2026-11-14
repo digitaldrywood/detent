@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -485,6 +486,28 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			}
 			refresh()
 			call(sourceConfirmation, http.StatusConflict)
+			archiveDebits := func() map[string]int64 {
+				t.Helper()
+				rows, err := admin.QueryContext(t.Context(), `SELECT id,collaboration_bytes FROM archive_objects WHERE organization_id=$1 AND collaboration_bytes<>0`, org)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				debits := map[string]int64{}
+				for rows.Next() {
+					var id string
+					var bytes int64
+					if err := rows.Scan(&id, &bytes); err != nil {
+						t.Fatal(err)
+					}
+					debits[id] = bytes
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				return debits
+			}
+			beforeChallenge, debitsBeforeChallenge := accounting(), archiveDebits()
 			request.IdempotencyKey = "create-expired-challenge"
 			var expiredChallenge duplicateChallenge
 			if err := json.Unmarshal(call(request, http.StatusConflict), &expiredChallenge); err != nil {
@@ -523,13 +546,19 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			changed := request
 			changed.Title += " changed"
 			call(changed, http.StatusGone)
-			beforeRollback := accounting()
+			if !bytes.Equal(challenged, call(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: request.IdempotencyKey}, Title: request.Title, Body: request.Body, State: request.State}, http.StatusConflict)) {
+				t.Fatal("challenge replay changed its response")
+			}
+			if accounting() != beforeChallenge || !reflect.DeepEqual(archiveDebits(), debitsBeforeChallenge) {
+				t.Fatal("issuing, replaying or refusing duplicate challenges charged collaboration bytes or events")
+			}
+			beforeRollback, debitsBeforeRollback := accounting(), archiveDebits()
 			rollback := errors.New("injected create rollback")
 			service.config.TenantRepository = createProofRepository{Repository: repository, receiptError: rollback}
 			call(request, http.StatusInternalServerError)
 			service.config.TenantRepository = repository
-			if accounting() != beforeRollback {
-				t.Fatal("rollback changed collaboration bytes or project event sequence")
+			if accounting() != beforeRollback || !reflect.DeepEqual(archiveDebits(), debitsBeforeRollback) {
+				t.Fatal("rollback changed collaboration bytes, archive debits or project event sequence")
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				if _, err := r.WorkItemByNumber(t.Context(), project, 2); !errors.Is(err, corestore.ErrNotFound) {
@@ -619,12 +648,104 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			if len(createdDetail.Related) != 1 || createdDetail.Related[0].ID != issue.WorkItemID {
 				t.Fatal("confirmed issue detail lost related link")
 			}
-			beforeReplay := accounting()
+			afterConfirmation, debitsAfterConfirmation := accounting(), archiveDebits()
+			if afterConfirmation[1] != beforeRollback[1]+2 {
+				t.Fatalf("confirmation advanced project event sequence %d -> %d, want +2", beforeRollback[1], afterConfirmation[1])
+			}
+			if !reflect.DeepEqual(debitsAfterConfirmation, debitsBeforeRollback) {
+				t.Fatalf("confirmation charged archive objects %v beside its collaboration debit", debitsAfterConfirmation)
+			}
+			committed := func() ([]eventstore.Event, int, []corestore.Relationship) {
+				t.Helper()
+				var events []eventstore.Event
+				var population int
+				var relationships []corestore.Relationship
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					if events, err = r.Events(t.Context(), project, created.WorkItemID, 0, 10); err != nil {
+						return err
+					}
+					items, err := r.WorkItems(t.Context(), project, 0, 10)
+					if err != nil {
+						return err
+					}
+					population = len(items)
+					links, err := r.Relationships(t.Context(), project, created.WorkItemID, corestore.RelationshipCursor{}, 10)
+					relationships = links.Items
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return events, population, relationships
+			}
+			confirmedEvents, confirmedPopulation, confirmedRelationships := committed()
+			if len(confirmedEvents) != 2 || confirmedEvents[0].Type != "issue.created" || confirmedEvents[1].Type != "issue.edited" || confirmedPopulation != 2 || len(confirmedRelationships) != 1 || confirmedRelationships[0].RelatedWorkItemID != issue.WorkItemID {
+				t.Fatalf("concurrent confirmations committed events=%v population=%d relationships=%+v", confirmedEvents, confirmedPopulation, confirmedRelationships)
+			}
+			var committedContent int64
+			committedStore := eventstore.NewContent(details)
+			for revision := int64(1); revision <= 2; revision++ {
+				var version eventstore.CollaborationVersion
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					version, err = r.CollaborationVersion(t.Context(), string(created.WorkItemID), revision)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				raw, err := committedStore.CollaborationVersion(t.Context(), version)
+				if err != nil {
+					t.Fatal(err)
+				}
+				committedContent += int64(len(raw))
+				if revision == 1 {
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(raw, &fields); err != nil {
+						t.Fatal(err)
+					}
+					var title, body string
+					if err := json.Unmarshal(fields["title"], &title); err != nil {
+						t.Fatal(err)
+					}
+					if raw, ok := fields["body"]; ok {
+						if err := json.Unmarshal(raw, &body); err != nil {
+							t.Fatal(err)
+						}
+					}
+					committedContent += int64(len(title) + len(body))
+					for _, name := range []string{"labels", "assignees"} {
+						value, ok := fields[name]
+						if !ok {
+							value = json.RawMessage("null")
+						}
+						committedContent += int64(len(value))
+					}
+				}
+			}
+			for _, event := range confirmedEvents {
+				_, raw, err := committedStore.EventWithPayload(t.Context(), event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var envelope struct {
+					Actor json.RawMessage `json:"actor"`
+					Data  json.RawMessage `json:"data"`
+				}
+				if err := json.Unmarshal(raw, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				committedContent += int64(len(envelope.Actor) + len(envelope.Data))
+			}
+			if committedContent <= 0 || afterConfirmation[0] != beforeRollback[0]+committedContent {
+				t.Fatalf("confirmation debit=%d want the committed content once=%d", afterConfirmation[0]-beforeRollback[0], committedContent)
+			}
+			beforeReplay := afterConfirmation
 			if !bytes.Equal(confirmed, call(request, http.StatusOK)) {
 				t.Fatal("consumed challenge did not replay successful receipt")
 			}
-			if accounting() != beforeReplay || beforeReplay[0] != beforeRollback[0] {
-				t.Fatal("confirmation or replay charged collaboration bytes or duplicated events")
+			replayEvents, replayPopulation, replayRelationships := committed()
+			if accounting() != beforeReplay || !reflect.DeepEqual(archiveDebits(), debitsAfterConfirmation) || !reflect.DeepEqual(replayEvents, confirmedEvents) || replayPopulation != confirmedPopulation || !reflect.DeepEqual(replayRelationships, confirmedRelationships) {
+				t.Fatal("confirmation replay charged collaboration bytes or changed committed records")
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				links, err := r.Relationships(t.Context(), project, created.WorkItemID, corestore.RelationshipCursor{}, 10)
