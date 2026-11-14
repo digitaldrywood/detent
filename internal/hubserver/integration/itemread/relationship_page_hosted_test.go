@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -70,10 +71,11 @@ func (k entryKeyCaller) call(t *testing.T, holder entryKeyHolder, name string, a
 
 func (k entryKeyCaller) file(t *testing.T, holder entryKeyHolder, project tracker.ProjectID, title string) tracker.NativeIssue {
 	t.Helper()
-	arguments := map[string]any{"project_id": string(project), "request_id": "file-" + title, "title": title, "description": hubfixture.IssueBody(), "state": "Todo"}
+	distinct := testenv.DistinctText(title, 24) + "\n"
+	arguments := map[string]any{"project_id": string(project), "request_id": "file-" + title, "title": distinctTitle(title), "description": distinct + hubfixture.IssueBody(), "state": "Todo"}
 	if holder.role == "reporter" {
 		arguments["type"] = "bug"
-		arguments["description"] = "## Steps to reproduce\nOpen the example page.\n## Expected\nThe page loads.\n## Actual\nThe page fails.\n## Where\nThe example settings page.\n## Environment\nExample browser."
+		arguments["description"] = distinct + "## Steps to reproduce\nOpen the example page.\n## Expected\nThe page loads.\n## Actual\nThe page fails.\n## Where\nThe example settings page.\n## Environment\nExample browser."
 		delete(arguments, "state")
 	}
 	var issue tracker.NativeIssue

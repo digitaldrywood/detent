@@ -357,7 +357,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 // orchestrator's dispatch leaves a native item it runs.
 func (h *nativeChangeHub) createInProgress(t *testing.T, title string) connector.Issue {
 	t.Helper()
-	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: title, Body: "Change the README." + issueContractTestSections, State: "In Progress"})
+	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: title, Body: testenv.DistinctText(nativeMutationKey().IdempotencyKey, 24) + "\nChange the README." + issueContractTestSections, State: "In Progress"})
 	if err != nil {
 		t.Fatal(err)
 	}

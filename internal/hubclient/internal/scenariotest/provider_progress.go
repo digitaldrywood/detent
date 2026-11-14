@@ -57,7 +57,7 @@ func RunNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T, factories
 	}, true)
 	var defectID tracker.NativeWorkItemID
 	for index := range 6 {
-		issue := h.createInProgress(t, fmt.Sprintf("Backend outage issue %d", index))
+		issue := h.createInProgress(t, fmt.Sprintf("Backend outage issue %d %s", index, testenv.DistinctText(fmt.Sprint(index), 6)))
 		h.claim(t, issue.ID)
 		failed := h.scheduler.RunExecution(issue.ID)
 		if err := failed.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {

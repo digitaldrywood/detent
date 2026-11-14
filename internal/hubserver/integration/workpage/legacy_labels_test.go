@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -111,7 +112,7 @@ func TestLegacyLongLabelsKeepBoardsEditsAndFiltersWorking(t *testing.T) {
 		if after := list(t, f, url.Values{}); !slices.Equal(after, before) {
 			t.Fatalf("refused create changed the list: before=%v after=%v", before, after)
 		}
-		response = f.CreateNotDuplicate(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "label-at-bound"}, Title: "Label at bound", Body: hubfixture.IssueContractSections, State: "Todo", Labels: []string{accepted}})
+		response = f.Request(t, http.MethodPost, f.Base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "label-at-bound"}, Title: "Label at bound", Body: testenv.DistinctText("label-at-bound", 24) + hubfixture.IssueContractSections, State: "Todo", Labels: []string{accepted}})
 		hubfixture.RequireStatus(t, response, http.StatusOK)
 		var created tracker.NativeIssue
 		hubfixture.Decode(t, response, &created)

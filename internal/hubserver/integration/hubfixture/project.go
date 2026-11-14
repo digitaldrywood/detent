@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -76,35 +77,11 @@ func (p Native) Request(t *testing.T, method, path string, payload any) *httptes
 
 func (p Native) Create(t *testing.T, title string) tracker.NativeIssue {
 	t.Helper()
-	response := p.CreateNotDuplicate(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + title}, Title: title, Body: IssueBody(), State: "Todo"})
+	response := p.Hub.Request(t, http.MethodPost, p.Base+"/work-items", p.Token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + title}, Title: title + " " + testenv.DistinctText(string(p.Project.ID)+"/title/"+title, 6), Body: testenv.DistinctText(string(p.Project.ID)+"/"+title, 24) + "\n" + IssueBody(), State: "Todo"})
 	RequireStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	Decode(t, response, &issue)
 	return issue
-}
-
-func (p Native) CreateNotDuplicate(t *testing.T, draft tracker.CreateIssue) *httptest.ResponseRecorder {
-	t.Helper()
-	response := p.Hub.Request(t, http.MethodPost, p.Base+"/work-items", p.Token, draft)
-	if response.Code == http.StatusConflict {
-		var challenge struct {
-			Code    string `json:"code"`
-			Token   string `json:"challenge_token"`
-			Matches []struct {
-				Number int `json:"number"`
-			} `json:"possible_duplicates"`
-		}
-		Decode(t, response, &challenge)
-		if challenge.Code != "possible_duplicates" || challenge.Token == "" || len(challenge.Matches) == 0 {
-			t.Fatalf("create %q: %s", draft.Title, response.Body.Bytes())
-		}
-		draft.ChallengeToken = challenge.Token
-		for _, match := range challenge.Matches {
-			draft.NotDuplicateOf = append(draft.NotDuplicateOf, match.Number)
-		}
-		response = p.Hub.Request(t, http.MethodPost, p.Base+"/work-items", p.Token, draft)
-	}
-	return response
 }
 
 func (p Native) Credential(t *testing.T, token string) (accessstore.Credential, error) {

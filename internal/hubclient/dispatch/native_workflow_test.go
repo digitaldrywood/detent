@@ -182,7 +182,7 @@ func TestNativeLaneEntrySurvivesConnectorRestart(t *testing.T) {
 		return connector
 	}
 	first := h.createInProgress(t, "First work item")
-	second := h.createInProgress(t, "Second work item")
+	second := h.createInProgress(t, "Second lane entry")
 	for _, source := range []*NativeConnector{h.connector, reopen()} {
 		for _, issue := range []connector.Issue{first, second} {
 			entry, found, err := source.CurrentLaneEntry(t.Context(), issue)

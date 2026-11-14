@@ -207,7 +207,7 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	lease := execution.Recovery().Lease
-	competitor := h.createInProgress(t, "Waiting audit candidate")
+	competitor := h.createInProgress(t, "Waiting reservation competitor")
 	competingIssue, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(competitor.ID))
 	if err != nil {
 		t.Fatal(err)

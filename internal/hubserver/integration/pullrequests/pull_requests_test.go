@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,7 +28,7 @@ func TestWorkItemPullRequestProjection(t *testing.T) {
 	t.Run("cross Change precedence", func(t *testing.T) {
 		for _, entity := range []string{"first", "second"} {
 			t.Run(entity, func(t *testing.T) {
-				response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cross-projection-" + entity}, Title: "Example cross Change " + entity, Body: workItemRecordBody, State: "Todo"})
+				response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cross-projection-" + entity}, Title: "Example cross Change " + entity + " " + testenv.DistinctText("cross-"+entity, 4), Body: testenv.DistinctText("cross-projection-"+entity, 24) + "\n" + workItemRecordBody, State: "Todo"})
 				requireNativeStatus(t, response, http.StatusOK)
 				var item tracker.NativeIssue
 				decodeHubResponse(t, response, &item)
@@ -124,7 +125,7 @@ func TestWorkItemPullRequestProjection(t *testing.T) {
 	})
 	for _, entity := range []string{"first", "second"} {
 		t.Run(entity, func(t *testing.T) {
-			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "projection-" + entity}, Title: "Example " + entity, Body: workItemRecordBody, State: "Todo"})
+			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "projection-" + entity}, Title: "Example " + entity + " " + testenv.DistinctText("projection-title-"+entity, 4), Body: testenv.DistinctText("projection-"+entity, 24) + "\n" + workItemRecordBody, State: "Todo"})
 			requireNativeStatus(t, response, http.StatusOK)
 			var item tracker.NativeIssue
 			decodeHubResponse(t, response, &item)

@@ -364,7 +364,7 @@ func (h *nativeChangeHub) createInProgress(t *testing.T, title string) connector
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue, err := source.CreateIssue(t.Context(), connector.IssueDraft{Title: title, Body: "Change the README." + issueContractTestSections})
+	issue, err := source.CreateIssue(t.Context(), connector.IssueDraft{Title: title, Body: testenv.DistinctText(nativeMutationKey().IdempotencyKey, 24) + "\nChange the README." + issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}

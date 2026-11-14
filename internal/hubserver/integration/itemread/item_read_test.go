@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -243,3 +244,5 @@ func TestWorkItemReadIsTheSameBeforeAndAfterPageRefresh(t *testing.T) {
 		})
 	}
 }
+
+func distinctTitle(title string) string { return title + " " + testenv.DistinctText(title, 6) }

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -31,7 +32,7 @@ func newPostgresExportLinkedFixture(t *testing.T) (tenantstore.Repository, hoste
 	expected := map[tracker.NativeWorkItemID]string{}
 	changes := map[tracker.NativeWorkItemID]string{}
 	for _, name := range []string{"first", "second"} {
-		response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: name}, Title: name, Body: workItemRecordBody, State: "Todo"})
+		response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: name}, Title: name, Body: testenv.DistinctText(name, 24) + "\n" + workItemRecordBody, State: "Todo"})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
@@ -261,7 +262,7 @@ func TestPostgresLinkedChanges(t *testing.T) {
 					target := f
 					target.project = project
 					target.base = "/api/v2/organizations/" + string(org) + "/projects/" + string(project)
-					response := target.request(t, owner, http.MethodPost, target.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "refresh_item_" + key}, Title: "Example " + key, Body: workItemRecordBody, State: "Todo"})
+					response := target.request(t, owner, http.MethodPost, target.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "refresh_item_" + key}, Title: "Example " + key + " " + testenv.DistinctText(key, 4), Body: testenv.DistinctText("refresh-"+key, 24) + "\n" + workItemRecordBody, State: "Todo"})
 					requireNativeStatus(t, response, http.StatusOK)
 					var issue tracker.NativeIssue
 					decodeHubResponse(t, response, &issue)

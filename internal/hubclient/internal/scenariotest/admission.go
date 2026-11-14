@@ -561,7 +561,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 	issue := api.IssueFromNative(created)
 	request := orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Todo", "In Progress", "Rework", "Merging"}, PrioritizeUnblockers: true, DispatchPriorityByState: []string{"Merging", "Rework", "In Progress", "Todo"}}
 	priority = 2
-	prerequisite, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Prerequisite", Body: "Complete the prerequisite." + issueContractTestSections, State: "Backlog", Priority: &priority})
+	prerequisite, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Prerequisite", Body: testenv.DistinctText("prerequisite", 24) + "\nComplete the prerequisite." + issueContractTestSections, State: "Backlog", Priority: &priority})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +577,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 		return err
 	}
 	priority = 3
-	unrelated, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Unrelated work", Body: "Complete unrelated work." + issueContractTestSections, State: "Backlog", Priority: &priority})
+	unrelated, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Unrelated work", Body: testenv.DistinctText("unrelated-work", 24) + "\nComplete unrelated work." + issueContractTestSections, State: "Backlog", Priority: &priority})
 	if err != nil {
 		t.Fatal(err)
 	}
