@@ -81,7 +81,10 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 		if err != nil {
 			return err
 		}
-		if identity.OrganizationID != authority.OrganizationID || identity.RunnerID == "" || identity.RunnerID != authority.Scope.Credential.Runner.RunnerID || identity.TokenID != authority.Scope.Credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || !runnerStateHoldsLease(identity.State) || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
+		if identity.OrganizationID != authority.OrganizationID || identity.RunnerID == "" || identity.RunnerID != authority.Scope.Credential.Runner.RunnerID {
+			return tracker.ErrLeaseNotFound
+		}
+		if identity.TokenID != authority.Scope.Credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || !runnerStateHoldsLease(identity.State) || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
 			return &leasestore.FenceError{Check: "runner_owner"}
 		}
 		allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.ProjectID, now)
