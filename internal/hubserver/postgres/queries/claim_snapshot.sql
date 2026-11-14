@@ -252,7 +252,7 @@ COALESCE(transition.from_state,landing.from_state,'')::text AS observation_from_
 COALESCE(transition.to_state,'')::text AS observation_target_state
 FROM unnest(sqlc.arg(item_ids)::bigint[]) WITH ORDINALITY q(id,ordinality)
 LEFT JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.id>=q.id AND i.id<=q.id ORDER BY i.id LIMIT 1 OFFSET 0) i ON true
-LEFT JOIN LATERAL (SELECT * FROM collaboration_versions cv WHERE cv.organization_id=sqlc.arg(organization_id) AND cv.project_id=sqlc.arg(project_id) AND (cv.record_id,cv.revision)>=(i.native_id,(sqlc.arg(revisions)::bigint[])[q.ordinality]) AND (cv.record_id,cv.revision)<=(i.native_id,(sqlc.arg(revisions)::bigint[])[q.ordinality]) ORDER BY cv.record_id,cv.revision LIMIT 1 OFFSET 0) cv ON true
+LEFT JOIN LATERAL (SELECT * FROM collaboration_versions cv WHERE cv.organization_id=sqlc.arg(organization_id) AND cv.record_id=i.native_id AND cv.revision=(sqlc.arg(revisions)::bigint[])[q.ordinality] OFFSET 0) cv ON cv.project_id=sqlc.arg(project_id)
 LEFT JOIN LATERAL (SELECT * FROM linked_issue_sources ls WHERE ls.organization_id=sqlc.arg(organization_id) AND ls.project_id=sqlc.arg(project_id) AND ls.work_item_id>=i.native_id AND ls.work_item_id<=i.native_id ORDER BY ls.work_item_id LIMIT 1 OFFSET 0) ls ON true
 LEFT JOIN LATERAL (
  SELECT c.* FROM change_issue_links l
