@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -477,15 +476,8 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 		return progresscheck.Record{}, err
 	}
 	receiptWritten := false
-	replayed := false
 	err = o.service.config.TenantRepository.WriteTenant(ctx, o.scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if err := o.service.authorizeAccessScope(ctx, writer, commentScope, true); err != nil {
-			return err
-		}
-		if _, err := writer.Receipt(ctx, nativeProgressReceiptActor, nativeProgressReceiptOperation(o.scope, record.IssueID), record.RequestID); err == nil {
-			replayed = true
-			return nil
-		} else if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		lockRecord := record
@@ -536,16 +528,6 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 		return err
 	})
 	err = errors.Join(err, hubrecords.ReleaseWorkItemAuthority(authority))
-	if err == nil && replayed {
-		retained, found, readErr := o.Load(ctx, record.ProjectID, record.IssueID, record.RequestID)
-		if readErr != nil {
-			return progresscheck.Record{}, readErr
-		}
-		if !found {
-			return progresscheck.Record{}, eventstore.ErrInvalidRecord
-		}
-		return retained, nil
-	}
 	if err != nil {
 		if !receiptWritten {
 			return progresscheck.Record{}, fmt.Errorf("store progress decision receipt: %w", err)
