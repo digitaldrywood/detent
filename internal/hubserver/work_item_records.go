@@ -424,6 +424,7 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope hubscope.NativeS
 				plan.Fields = append(plan.Fields, "priority")
 			}
 		}
+		previousLabels, previousAssignees := plan.Issue.Labels, plan.Issue.Assignees
 		if request.Labels != nil {
 			if err := requireUnreservedLabels(ctx, *request.Labels); err != nil {
 				return plan, err
@@ -437,7 +438,7 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope hubscope.NativeS
 			plan.Issue.Assignees = *request.Assignees
 			plan.Fields = append(plan.Fields, "assignees")
 		}
-		if err := hubrecords.ValidateNativeContent(plan.Issue.Title, plan.Issue.Body, plan.Issue.Labels, plan.Issue.Assignees, plan.Issue.Priority); err != nil {
+		if err := hubrecords.ValidateNativeEditContent(plan.Issue.Title, plan.Issue.Body, plan.Issue.Labels, previousLabels, plan.Issue.Assignees, previousAssignees, plan.Issue.Priority); err != nil {
 			return plan, err
 		}
 		if len(plan.Fields) == 0 {

@@ -179,6 +179,8 @@ type BoardDeliveryReader interface {
 
 const BoardDeltaRelationshipsOnly = "relationships"
 
+const MaxFilterValueBytes = 512
+
 type BoardDelta struct {
 	Sequence       int64
 	WorkItemID     tracker.NativeWorkItemID

@@ -69,10 +69,11 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 		if value.Position.State == "" || value.Position.Identifier == "" || len(value.Labels)+len(value.Assignees) > 256 || value.ExecutionFence < 0 {
 			return viewstore.ErrInvalidView
 		}
-		value.Labels = append([]string{}, value.Labels...)
+		unfilterable := func(value string) bool { return len(value) > viewstore.MaxFilterValueBytes }
+		value.Labels = slices.DeleteFunc(append([]string{}, value.Labels...), unfilterable)
 		slices.Sort(value.Labels)
 		value.Labels = slices.Compact(value.Labels)
-		value.Assignees = append([]string{}, value.Assignees...)
+		value.Assignees = slices.DeleteFunc(append([]string{}, value.Assignees...), unfilterable)
 		slices.Sort(value.Assignees)
 		value.Assignees = slices.Compact(value.Assignees)
 		next = &value
@@ -330,7 +331,7 @@ func (s *session) putBoardItem(ctx context.Context, b viewstore.BoardRecord, num
 	}
 	for kind, values := range map[string][]string{"label": b.Labels, "assignee": b.Assignees} {
 		for _, value := range values {
-			if value == "" || len(value) > 512 {
+			if value == "" || len(value) > viewstore.MaxFilterValueBytes {
 				return viewstore.ErrInvalidView
 			}
 		}

@@ -7,9 +7,20 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func ValidateNativeEditContent(title, body string, labels, previousLabels, assignees, previousAssignees []string, priority *int) error {
+	if len(labels) > 100 || len(assignees) > 100 {
+		return hubapi.NativePublicInvalid("At most 100 labels or assignees are supported")
+	}
+	added := func(values, previous []string) []string {
+		return slices.DeleteFunc(slices.Clone(values), func(value string) bool { return slices.Contains(previous, value) })
+	}
+	return ValidateNativeContent(title, body, added(labels, previousLabels), added(assignees, previousAssignees), priority)
+}
 
 func ValidateNativeContent(title, body string, labels, assignees []string, priority *int) error {
 	if strings.TrimSpace(title) == "" || len(title) > 500 || len(body) > 256<<10 {
@@ -92,6 +103,13 @@ func ValidateNativeIssueQuery(params url.Values) error {
 		case "state", "label", "assignee", "priority":
 			if len(values) > 32 || len(strings.Join(values, "\x00")) > 4096 {
 				return hubapi.NativePublicInvalid("Query contains an unsupported field or value")
+			}
+			if key == "label" || key == "assignee" {
+				for _, value := range values {
+					if len(value) > viewstore.MaxFilterValueBytes {
+						return hubapi.NativePublicInvalid("Label and assignee filters accept values up to 512 bytes")
+					}
+				}
 			}
 		default:
 			single[key] = values
