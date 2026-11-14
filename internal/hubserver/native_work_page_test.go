@@ -608,7 +608,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			for _, lane := range page.Work.Lanes {
 				laneTotal, laneRunning = laneTotal+lane.Total, laneRunning+lane.Running
 			}
-			if total, running := readInventory(t, test.query); total != test.total || running != test.running || (page.Work.Lanes == nil) != (strings.Contains(test.query, "label") || strings.Contains(test.query, "assignee") || strings.Contains(test.query, "q=")) || page.Work.Lanes != nil && (laneTotal != total || laneRunning != running) {
+			if total, running := readInventory(t, test.query); total != test.total || running != test.running || (page.Work.Lanes == nil) != strings.Contains(test.query, "q=") || page.Work.Lanes != nil && (laneTotal != total || laneRunning != running) {
 				t.Fatalf("scope total=%d running=%d lanes=%+v, want %d/%d", total, running, page.Work.Lanes, test.total, test.running)
 			}
 			for _, issue := range append(page.Items, page.Work.Items...) {
