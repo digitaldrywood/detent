@@ -176,6 +176,7 @@ func finishAccessImport(t *testing.T, r *postgres.Repository, source postgres.Ac
 }
 
 func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
@@ -363,6 +364,7 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 }
 
 func TestAccessImportMissingProjectReferenceDoesNotAdvanceCheckpoint(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_missing_project")
@@ -398,6 +400,7 @@ func TestAccessImportMissingProjectReferenceDoesNotAdvanceCheckpoint(t *testing.
 }
 
 func TestAccessImportRejectsForeignOrganizationBindings(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	for _, transport := range []string{"postgres", "neutral"} {
@@ -451,6 +454,7 @@ func TestAccessImportRejectsForeignOrganizationBindings(t *testing.T) {
 }
 
 func TestAccessImportMalformedInvitationDoesNotAdvanceCheckpoint(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_malformed")
@@ -483,6 +487,7 @@ func TestAccessImportMalformedInvitationDoesNotAdvanceCheckpoint(t *testing.T) {
 }
 
 func TestAccessImportContinuesAfterEmptyTextKey(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_empty_key")
@@ -516,6 +521,7 @@ func TestAccessImportContinuesAfterEmptyTextKey(t *testing.T) {
 }
 
 func TestAccessImportRejectsSourceColumnTypeDrift(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_source_type")
@@ -530,6 +536,7 @@ func TestAccessImportRejectsSourceColumnTypeDrift(t *testing.T) {
 }
 
 func TestAccessImportPreservesInvitationBeyondServingPage(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_many_grants")

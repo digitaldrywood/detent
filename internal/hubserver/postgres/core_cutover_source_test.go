@@ -11,6 +11,7 @@ import (
 )
 
 func TestNeutralCoreCutoverRejectsUnimportedArtifactData(t *testing.T) {
+	t.Parallel()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, populated := range []string{"", "artifact_services", "artifact_grants", "artifact_references", "missing_table"} {
 			t.Run(string(org)+"_"+populated, func(t *testing.T) {

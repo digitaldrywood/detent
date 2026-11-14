@@ -22,6 +22,7 @@ import (
 )
 
 func TestNeutralHubIdentityImportPreservesBinaryCursor(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	objects := pgstoretest.NewHistoryObjects()
@@ -79,6 +80,7 @@ func TestNeutralHubIdentityImportPreservesBinaryCursor(t *testing.T) {
 }
 
 func TestNeutralHubIdentityImportRejectsAmbiguousSource(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	objects := pgstoretest.NewHistoryObjects()
 	for _, tc := range []struct {

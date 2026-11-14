@@ -32,6 +32,7 @@ import (
 )
 
 func TestConversationHistoryImportPreservesContinuationOwnership(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())

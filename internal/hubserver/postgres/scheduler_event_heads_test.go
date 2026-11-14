@@ -18,6 +18,7 @@ import (
 )
 
 func TestSchedulerEventHeadsFollowCommittedSequence(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
@@ -234,6 +235,7 @@ func TestSchedulerEventHeadsFollowCommittedSequence(t *testing.T) {
 }
 
 func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
+	t.Parallel()
 	const version = 20261108215450
 	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, version-1)
 	pgstoretest.SeedCore(t, admin)
@@ -402,6 +404,7 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 }
 
 func TestSchedulerClaimDecisionLookupIsScopedAndIndexed(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())

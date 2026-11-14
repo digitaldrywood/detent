@@ -23,6 +23,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestCoreMigrationsFromEmpty(t *testing.T) {
+	t.Parallel()
 	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 0)
 	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(t.Context(), "SET ROLE detent_migration_v2"); err != nil {
@@ -83,6 +84,7 @@ func TestCoreMigrationsFromEmpty(t *testing.T) {
 }
 
 func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	catalog, err := storagecatalog.ReadTargetCatalog(os.DirFS("../../.."), "internal/storagecatalog/targets/v1.json")
 	if err != nil {
@@ -177,6 +179,7 @@ func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
 }
 
 func TestCoreIdentifiersAreTenantScoped(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, db)
 	for _, org := range []string{"org_first", "org_second"} {
@@ -214,6 +217,7 @@ func TestCoreIdentifiersAreTenantScoped(t *testing.T) {
 }
 
 func TestCoreConstraintsRejectInvalidWrites(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, db)
 	for _, tc := range []struct {
@@ -251,6 +255,7 @@ func TestCoreConstraintsRejectInvalidWrites(t *testing.T) {
 }
 
 func TestCoreGeneratedIdentifiersAndOptionalKeys(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	for _, org := range []string{"org_first", "org_second"} {
 		t.Run(org, func(t *testing.T) {
@@ -294,6 +299,7 @@ func TestCoreGeneratedIdentifiersAndOptionalKeys(t *testing.T) {
 }
 
 func TestCoreForeignKeysDenyOtherTenants(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, db)
 	for _, query := range []string{
@@ -320,6 +326,7 @@ func TestCoreForeignKeysDenyOtherTenants(t *testing.T) {
 }
 
 func TestCoreSchemaUsesTenantLeadingTypedColumns(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	for _, tc := range []struct{ name, query string }{
 		{"tenant required", `SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND column_name='organization_id' AND (is_nullable<>'NO' OR data_type<>'text')`},

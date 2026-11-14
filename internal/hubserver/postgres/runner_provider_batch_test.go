@@ -117,6 +117,7 @@ func (p *providerBatchProbe) QueryRow(ctx context.Context, query string, args ..
 }
 
 func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
+	t.Parallel()
 	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		roles, err := os.ReadFile("roles.sql")
 		if err != nil {

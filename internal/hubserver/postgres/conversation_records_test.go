@@ -32,6 +32,7 @@ import (
 )
 
 func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
@@ -505,6 +506,7 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 }
 
 func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
+	t.Parallel()
 	const version = 20261108204849
 	admin, _ := pgstoretest.MigrationDatabaseAtVersion(t, version-1)
 	pgstoretest.SeedCore(t, admin)
@@ -549,6 +551,7 @@ func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
 }
 
 func TestMessageReadsReportUnknownLegacyStoredSize(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
@@ -641,6 +644,7 @@ func (*pendingConversationQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, 
 }
 
 func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
 	base := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")

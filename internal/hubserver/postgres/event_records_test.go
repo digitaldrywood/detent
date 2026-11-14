@@ -47,6 +47,7 @@ func historyEventForItem(t *testing.T, c *eventstore.Content, org tracker.Organi
 }
 
 func TestEventChangeTenantRoundTrip(t *testing.T) {
+	t.Parallel()
 	t.Run("frozen version landing survives later current source and replay", func(t *testing.T) {
 		admin := pgstoretest.Template.Database(t)
 		repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
@@ -329,6 +330,7 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 }
 
 func TestEventsByKeyMatchesPointReads(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_keys_first", "org_keys_second"} {
@@ -404,6 +406,7 @@ func TestEventsByKeyMatchesPointReads(t *testing.T) {
 }
 
 func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
+	t.Parallel()
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedRepository(t, r, org)
@@ -450,6 +453,7 @@ func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
 }
 
 func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
+	t.Parallel()
 	t.Run("analytics workflow and evidence seek before residuals", func(t *testing.T) {
 		admin := pgstoretest.Template.Database(t)
 		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
@@ -1061,6 +1065,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 }
 
 func TestEventChangeReceipts(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, "org_first", pgstoretest.HistoryAt()); err != nil {
 		t.Fatal(err)
@@ -1150,6 +1155,7 @@ func TestEventChangeReceipts(t *testing.T) {
 }
 
 func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, organization, pgstoretest.HistoryAt()); err != nil {
@@ -1263,6 +1269,7 @@ func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
 }
 
 func TestLatestChangeUsesLinkCreationChronology(t *testing.T) {
+	t.Parallel()
 	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedRepository(t, r, organization)
@@ -1414,6 +1421,7 @@ func TestLatestChangeUsesLinkCreationChronology(t *testing.T) {
 }
 
 func TestEventChangeImmutableHistory(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	pgstoretest.SeedRepository(t, r, "org_first")
@@ -1438,6 +1446,7 @@ func TestEventChangeImmutableHistory(t *testing.T) {
 }
 
 func TestEventChangeSequenceContention(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"event", "event replay", "evidence", "evidence replay"} {
 		t.Run(kind, func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)
@@ -1541,6 +1550,7 @@ func TestEventChangeSequenceContention(t *testing.T) {
 }
 
 func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
 	pgstoretest.SeedAccessTarget(t, admin, r, "org_first")
@@ -1665,6 +1675,7 @@ func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing
 }
 
 func TestEventChangeImportedSequenceContinuation(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"event", "evidence"} {
 		t.Run(kind, func(t *testing.T) {
 			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
@@ -1751,6 +1762,7 @@ func TestEventChangeImportedSequenceContinuation(t *testing.T) {
 }
 
 func TestEventChangeCommandReceiptContention(t *testing.T) {
+	t.Parallel()
 	for _, changed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("changed_request_%v", changed), func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)
@@ -1829,6 +1841,7 @@ func TestEventChangeCommandReceiptContention(t *testing.T) {
 }
 
 func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	if _, err := admin.ExecContext(t.Context(), `ALTER TABLE change_evidence SET (autovacuum_enabled=false); ALTER TABLE current_change_reviews SET (autovacuum_enabled=false)`); err != nil {
@@ -2091,6 +2104,7 @@ func currentReviewLookupVisits(node pgstoretest.SearchPlanNode) float64 {
 }
 
 func TestMachineReviewLookupsSeekPastHistoryAndLandingRows(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -2171,6 +2185,7 @@ func (p currentReviewReadProbe) ReadDetail(ctx context.Context, organization str
 }
 
 func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
@@ -2278,6 +2293,7 @@ func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
 }
 
 func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	fixtures := map[tracker.OrganizationID]pgstoretest.HistoryFixture{}
@@ -2521,6 +2537,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 }
 
 func TestMachineReviewMigrationRejectsAnIndexThatIncludesLandingRows(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	admin.SetMaxOpenConns(1)
 	provider, err := pgstoretest.MigrationProvider(admin)
@@ -2560,6 +2577,7 @@ func TestMachineReviewMigrationRejectsAnIndexThatIncludesLandingRows(t *testing.
 }
 
 func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	admin.SetMaxOpenConns(1)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())

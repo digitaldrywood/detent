@@ -23,6 +23,7 @@ type releaseDeliveryWriter interface {
 }
 
 func TestRuntimeReleaseDeliveryIdentity(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedRepository(t, repository, org)

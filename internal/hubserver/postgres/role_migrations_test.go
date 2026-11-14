@@ -7,6 +7,7 @@ import (
 )
 
 func TestRoleMigrationsRewritesOnlyLegacyRoleIdentifiers(t *testing.T) {
+	t.Parallel()
 	source := fstest.MapFS{
 		"001_roles.sql": {Data: []byte("GRANT detent_runtime TO detent_platform;\nSELECT 'detent_migration';\n-- detent_runtime\nCREATE ROLE detent_platform_extra;\nCREATE ROLE detent_runtime$shadow;\nCREATE ROLE detent_runtime_v2;\nCREATE ROLE café_detent_runtime;\n")},
 		"notes.txt":     {Data: []byte("detent_runtime")},

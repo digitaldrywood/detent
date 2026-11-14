@@ -16,6 +16,7 @@ import (
 )
 
 func TestGitHubImportJobsKeepProjectAndTenantScope(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"first", "second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

@@ -19,6 +19,7 @@ import (
 )
 
 func TestReceiptImportPreservesUncertainAndExpiredOutcomes(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
@@ -132,6 +133,7 @@ func TestReceiptImportPreservesUncertainAndExpiredOutcomes(t *testing.T) {
 }
 
 func TestReceiptMetadataBatchIsAtomicAndPreservesCompletion(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pool := pgstoretest.SmallPool()
 	pool.MaxConnections, pool.ServingConnections = 4, 2
@@ -224,6 +226,7 @@ func TestReceiptMetadataBatchIsAtomicAndPreservesCompletion(t *testing.T) {
 }
 
 func TestReceiptMetadataBatchCannotMaskGenericMutation(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pool := pgstoretest.SmallPool()
 	pool.MaxConnections, pool.ServingConnections = 4, 2
@@ -305,6 +308,7 @@ func TestReceiptMetadataBatchCannotMaskGenericMutation(t *testing.T) {
 }
 
 func TestReceiptStateRollbackRefusesAcrossTenantRLS(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -349,6 +353,7 @@ func TestReceiptStateRollbackRefusesAcrossTenantRLS(t *testing.T) {
 }
 
 func TestReceiptImportCannotReplacePreStateCompletion(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
@@ -414,6 +419,7 @@ func TestReceiptImportCannotReplacePreStateCompletion(t *testing.T) {
 }
 
 func TestReceiptClaimHasOneOwnerAndExpiryReleasesPayload(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pool := pgstoretest.SmallPool()
 	pool.MaxConnections, pool.ServingConnections = 4, 2

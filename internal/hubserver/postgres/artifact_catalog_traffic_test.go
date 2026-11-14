@@ -13,6 +13,7 @@ import (
 )
 
 func TestArtifactCatalogHostedRelayExcludesCustomerTraffic(t *testing.T) {
+	t.Parallel()
 	_, repository, _, now := artifactCatalogFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, mode := range []string{"customer", "hosted"} {

@@ -65,6 +65,7 @@ func catalogReservation(org tracker.OrganizationID, project tracker.ProjectID, s
 	return postgres.CatalogReservation{Upload: postgres.CatalogUpload{BindingMode: "customer", OrganizationID: org, ProjectID: project, ServiceID: service, ID: "upload", IdempotencyKey: "request", RequestHash: artifact.Digest([]byte("request")), WorkItemID: item, Kind: "log", RequestedBytes: 1000, PartLimit: 1000, CreatedAt: now, UploadDeadline: now.Add(time.Hour), ExpiresAt: now.Add(24 * time.Hour)}, ReservedLimit: 100000, RetainedLimit: 100000}
 }
 func TestArtifactCatalogContractAccountsReceiptsOnceAcrossReopen(t *testing.T) {
+	t.Parallel()
 	admin, repository, pool, now := artifactCatalogFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, suffix := range []string{"first", "second"} {
@@ -313,6 +314,7 @@ func TestArtifactCatalogContractAccountsReceiptsOnceAcrossReopen(t *testing.T) {
 	}
 }
 func TestArtifactCatalogContractSerializesQuotaAndRequiresDiscardReceipt(t *testing.T) {
+	t.Parallel()
 	_, repository, _, now := artifactCatalogFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		start := make(chan struct{})
@@ -401,6 +403,7 @@ func TestArtifactCatalogContractSerializesQuotaAndRequiresDiscardReceipt(t *test
 }
 
 func TestArtifactCatalogPendingAdmission(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"outstanding descriptors", "stored part limit", "concurrent descriptors"} {
 		t.Run(scenario, func(t *testing.T) {
 			admin, repository, _, now := artifactCatalogFixture(t)
@@ -540,6 +543,7 @@ func (p *catalogPruneProbe) Exec(ctx context.Context, statement string, args ...
 }
 
 func TestArtifactCatalogTrafficPruneSeeksBoundedHistoryPages(t *testing.T) {
+	t.Parallel()
 	admin, repository, pool, now := artifactCatalogFixture(t)
 	minute := now.UTC().Truncate(time.Minute)
 	for _, statement := range []string{

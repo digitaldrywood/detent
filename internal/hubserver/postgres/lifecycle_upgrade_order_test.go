@@ -189,6 +189,7 @@ var upgradeOrderTenants = []struct {
 }
 
 func TestMigrateAppliesPendingVersionsBelowPopulatedHead(t *testing.T) {
+	t.Parallel()
 	const concurrentIndexes = "20261109033415_doctor_proposal_identity_indexes.sql"
 	source := os.DirFS("migrations")
 	files, err := fs.Glob(source, "*.sql")

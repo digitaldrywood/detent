@@ -23,6 +23,7 @@ import (
 )
 
 func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organizations := []tracker.OrganizationID{"org_policy_import_first", "org_policy_import_second"}

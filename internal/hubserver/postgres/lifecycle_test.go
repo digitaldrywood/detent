@@ -23,6 +23,7 @@ import (
 )
 
 func TestMigrateAppliesOlderPendingVersions(t *testing.T) {
+	t.Parallel()
 	const first = "20261104090048_current_change_review_lookups.sql"
 	const second = "20261104114549_current_machine_review_heads.sql"
 	source := os.DirFS("migrations")
@@ -260,6 +261,7 @@ func migrationTestLogin(t *testing.T, db *sql.DB, group string) pgtransport.Conn
 }
 
 func TestSchemaRequiresMigrationSourcesBeforeDatabase(t *testing.T) {
+	t.Parallel()
 	for _, source := range []fs.FS{nil, fstest.MapFS{}} {
 		if err := validateNativeSchema(t.Context(), nil, source); !errors.Is(err, ErrSchema) {
 			t.Fatalf("missing migration sources=%v", err)

@@ -12,6 +12,7 @@ import (
 )
 
 func TestArtifactCatalogManifestIntentsFenceDiscardAndQuota(t *testing.T) {
+	t.Parallel()
 	_, repository, _, now := artifactCatalogFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
@@ -108,6 +109,7 @@ func TestArtifactCatalogManifestIntentsFenceDiscardAndQuota(t *testing.T) {
 }
 
 func TestArtifactCatalogIntentHistoryReleasesSpaceInBoundedPages(t *testing.T) {
+	t.Parallel()
 	_, repository, _, now := artifactCatalogFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {

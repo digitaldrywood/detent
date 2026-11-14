@@ -8,6 +8,7 @@ import (
 )
 
 func TestScheduledSourcePageSeparatesOversizeFromRemainingBudget(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                                                    string
 		compressed, content, remainingContent, remainingArchive int64

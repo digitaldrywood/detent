@@ -17,6 +17,7 @@ import (
 )
 
 func TestInsertsNeverWriteConstantUniqueKeys(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -97,6 +98,7 @@ func TestInsertsNeverWriteConstantUniqueKeys(t *testing.T) {
 }
 
 func TestRepositoryUpdatesAndDeletes(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	pgstoretest.SeedRepository(t, repository, "org_first")
 	for _, tc := range []struct {
@@ -203,6 +205,7 @@ func TestRepositoryUpdatesAndDeletes(t *testing.T) {
 }
 
 func TestRepositoryPages(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	pgstoretest.SeedRepository(t, repository, "org_first")
 	pgstoretest.SeedRepository(t, repository, "org_second")
@@ -277,6 +280,7 @@ func TestRepositoryPages(t *testing.T) {
 }
 
 func TestRepositoryDomainErrors(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	pgstoretest.SeedRepository(t, repository, "org_first")
 	for _, tc := range []struct {
@@ -387,6 +391,7 @@ func TestRepositoryDomainErrors(t *testing.T) {
 }
 
 func TestRepositoryRollsBackFailedCallbacks(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, "org_first", pgstoretest.HistoryAt()); err != nil {
 		t.Fatal(err)

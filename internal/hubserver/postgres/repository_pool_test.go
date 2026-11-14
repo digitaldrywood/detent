@@ -57,6 +57,7 @@ func poolPIDs(t *testing.T, admin *sql.DB, pool *pgxpool.Pool) []int {
 }
 
 func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		config  postgres.PoolConfig
 		serving int
@@ -163,6 +164,7 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 }
 
 func TestRepositoryPoolConfiguration(t *testing.T) {
+	t.Parallel()
 	pool := pgstoretest.RolePool(t, pgstoretest.Template.Database(t), "detent_runtime_v2", "")
 	for _, tc := range []struct {
 		name   string
@@ -209,6 +211,7 @@ func TestRepositoryPoolConfiguration(t *testing.T) {
 }
 
 func TestRepositoryReadCommittedAndReadOnly(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	pgstoretest.SeedRepository(t, repository, "org_first")

@@ -18,6 +18,7 @@ import (
 )
 
 func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

@@ -76,6 +76,7 @@ func driftNeutralCoreSchema(t *testing.T, path, tableName, column, change string
 }
 
 func TestNeutralCoreImportsRejectWellFormedSchemaDriftBeforePin(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, target := range []struct{ table, column, family string }{

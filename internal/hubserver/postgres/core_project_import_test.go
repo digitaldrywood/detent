@@ -53,6 +53,7 @@ func coreProjectCopy(t *testing.T, org tracker.OrganizationID, extra ...map[stri
 }
 
 func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	for _, org := range []tracker.OrganizationID{"org_import_first", "org_import_second"} {
 		t.Run(string(org), func(t *testing.T) {
@@ -296,6 +297,7 @@ func (s *changingCoreImportObjects) StoreDetail(ctx context.Context, org string,
 }
 
 func TestCoreProjectImportRejectsCopyChangedDuringImport(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_import_mutated")

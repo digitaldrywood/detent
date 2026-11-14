@@ -57,6 +57,7 @@ func costNeutralColumns(catalog storagecatalog.Catalog) (map[string]string, []ne
 	return columns, keys
 }
 func TestCostImportPagesPreserveCompositeTextCursor(t *testing.T) {
+	t.Parallel()
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)
@@ -127,6 +128,7 @@ func TestCostImportPagesPreserveCompositeTextCursor(t *testing.T) {
 	}
 }
 func TestCostImportSchemaAcceptsPhysicalColumnOrderAndRejectsTypeOrKeyDrift(t *testing.T) {
+	t.Parallel()
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)

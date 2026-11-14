@@ -19,6 +19,7 @@ import (
 )
 
 func TestCreditHistoryImportPreservesTenantLedgerAndAdvancesSequence(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
@@ -141,6 +142,7 @@ func TestCreditHistoryImportPreservesTenantLedgerAndAdvancesSequence(t *testing.
 }
 
 func TestCreditHistoryImportRejectsUnsupportedPeriodsAndPurchasesBeforeWrites(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")

@@ -10,6 +10,7 @@ import (
 )
 
 func TestAccessAuthorizationUnavailablePrecedesMissing(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		err  error

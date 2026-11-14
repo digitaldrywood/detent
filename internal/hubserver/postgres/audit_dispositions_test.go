@@ -18,6 +18,7 @@ import (
 )
 
 func TestAuditDispositionWritesPreserveReadableSession(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedRepository(t, repository, organization)
@@ -141,6 +142,7 @@ func TestAuditDispositionWritesPreserveReadableSession(t *testing.T) {
 }
 
 func TestAuditDispositionConcurrentSessionBound(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_first")

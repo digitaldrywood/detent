@@ -26,6 +26,7 @@ type recordIdentity struct {
 }
 
 func TestRecordPagesAndScansRevisitLateCommits(t *testing.T) {
+	t.Parallel()
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
 			repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
@@ -188,6 +189,7 @@ func prepareRecords(t *testing.T, repository corestore.Repository, org tracker.O
 }
 
 func TestRecordPagesPreserveImportsAndCursorOrdering(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2020, 1, 2, 3, 4, 5, 123456000, time.UTC)
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
@@ -304,6 +306,7 @@ func TestRecordPagesPreserveImportsAndCursorOrdering(t *testing.T) {
 }
 
 func TestImportedIDsDoNotCollideWithAutomaticInserts(t *testing.T) {
+	t.Parallel()
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
 			for _, imports := range [][]int64{{1}, {100, 2}} {
@@ -342,6 +345,7 @@ func TestImportedIDsDoNotCollideWithAutomaticInserts(t *testing.T) {
 }
 
 func TestLegacyPagesKeepNumberOrdering(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
@@ -411,6 +415,7 @@ func TestLegacyPagesKeepNumberOrdering(t *testing.T) {
 }
 
 func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
+	t.Parallel()
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)

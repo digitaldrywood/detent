@@ -50,6 +50,7 @@ func (s *costImportObjects) StoreDetail(ctx context.Context, organization string
 }
 
 func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	admin.SetMaxOpenConns(6)

@@ -15,6 +15,7 @@ import (
 )
 
 func TestNeutralImportFamiliesRefuseLegacyCopySelector(t *testing.T) {
+	t.Parallel()
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)

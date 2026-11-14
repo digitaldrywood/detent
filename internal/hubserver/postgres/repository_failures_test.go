@@ -39,6 +39,7 @@ func (*featureAcquireTracer) TraceAcquireEnd(context.Context, *pgxpool.Pool, pgx
 }
 
 func TestRepositorySerializationFailure(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	pgstoretest.SeedRepository(t, repository, "org_first")
@@ -76,6 +77,7 @@ func TestRepositorySerializationFailure(t *testing.T) {
 }
 
 func TestRepositoryDeadlockFailure(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	pgstoretest.SeedRepository(t, repository, "org_first")
@@ -156,6 +158,7 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 }
 
 func TestRepositoryCancellation(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"before request", "expired deadline", "waiting for pool", "running statement", "server cancellation"} {
 		t.Run(mode, func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)

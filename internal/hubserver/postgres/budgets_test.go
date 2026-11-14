@@ -10,6 +10,7 @@ import (
 )
 
 func TestWorkloadBudgetsReserveIndependentCapacity(t *testing.T) {
+	t.Parallel()
 	for _, workload := range []corestore.Workload{corestore.Serving, corestore.Background} {
 		t.Run(map[corestore.Workload]string{corestore.Serving: "serving", corestore.Background: "background"}[workload], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

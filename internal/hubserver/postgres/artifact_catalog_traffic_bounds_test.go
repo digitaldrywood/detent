@@ -54,6 +54,7 @@ func (p *catalogTrafficTrace) take() []catalogTrafficStatement {
 }
 
 func TestArtifactCatalogTrafficPruneDoesNotWalkRevokedProjectHistory(t *testing.T) {
+	t.Parallel()
 	admin, repository, pool, now := artifactCatalogFixture(t)
 	before := now.Truncate(time.Minute)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

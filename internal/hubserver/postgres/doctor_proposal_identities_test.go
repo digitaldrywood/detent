@@ -106,6 +106,7 @@ func assertDoctorProposalIdentitySeek(t *testing.T, admin *sql.DB, org tracker.O
 }
 
 func TestDoctorProposalIdentitiesPreserveFullBodyAndFirstOrigin(t *testing.T) {
+	t.Parallel()
 	first := "<!-- detent:self-improvement proposal_id=example-first -->"
 	second := "<!-- detent:self-improvement proposal_id=example-second -->"
 	for _, test := range []struct {
@@ -126,6 +127,7 @@ func TestDoctorProposalIdentitiesPreserveFullBodyAndFirstOrigin(t *testing.T) {
 }
 
 func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	config := pgstoretest.SmallPool()
 	config.ServingConnections = 2

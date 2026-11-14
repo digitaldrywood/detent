@@ -12,6 +12,7 @@ import (
 )
 
 func TestArtifactCatalogScopedPagesKeepRejectedPublicationProgress(t *testing.T) {
+	t.Parallel()
 	_, repository, _, now := artifactCatalogFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
@@ -82,6 +83,7 @@ func TestArtifactCatalogScopedPagesKeepRejectedPublicationProgress(t *testing.T)
 }
 
 func TestArtifactCatalogRetentionUsesEachProjectPolicy(t *testing.T) {
+	t.Parallel()
 	_, repository, _, now := artifactCatalogFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {

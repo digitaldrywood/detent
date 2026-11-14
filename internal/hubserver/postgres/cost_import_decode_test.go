@@ -10,6 +10,7 @@ import (
 )
 
 func TestCostImportRejectsAttributionAndPayloadDrift(t *testing.T) {
+	t.Parallel()
 	from := time.Date(2026, 1, 1, 0, 0, 0, 1, time.UTC)
 	amount := int64(73)
 	observation := usagecost.Observation{Provider: "example", ProviderAccount: "account", ResourceID: "resource", Bucket: "runner_api", Metric: "tokens", SourceID: "source", From: from, To: from.Add(time.Nanosecond), Revision: 3, AmountMicros: &amount, Voided: true}
