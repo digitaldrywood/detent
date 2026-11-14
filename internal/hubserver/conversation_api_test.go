@@ -69,7 +69,7 @@ func newConversationAPIFixtureConfig(t *testing.T, cfg *ConversationConfig, conf
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		for _, token := range tokens {
 			hash := apikey.HashToken(token.Token)
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "Example conversation operator " + token.ID, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(hubapi.APIScopeOperator), NativeOnly: true, Kind: "personal", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "Example conversation operator " + token.ID, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(hubapi.APIScopeOperator), NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: token.ID, ProjectID: f.project.ID}); err != nil {
