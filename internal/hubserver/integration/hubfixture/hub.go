@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -102,12 +104,21 @@ func defaults(t *testing.T, cfg hubserver.Config) hubserver.Config {
 
 func Open(t *testing.T, cfg hubserver.Config) *Hub {
 	t.Helper()
+	return OpenPool(t, cfg, nil)
+}
+
+func OpenPool(t *testing.T, cfg hubserver.Config, configure func(*pgxpool.Config)) *Hub {
+	t.Helper()
 	if cfg.Hosted != nil {
 		t.Fatal("hubfixture.Open opens a local Hub; use OpenHosted")
 	}
 	cfg = defaults(t, cfg)
 	admin := hubtest.Database(t)
-	repository := hubtest.RepositoryOn(t, admin, hubtest.WithClock(cfg.Clock))
+	options := []hubtest.Option{hubtest.WithClock(cfg.Clock)}
+	if configure != nil {
+		options = append(options, hubtest.WithPoolConfig(configure))
+	}
+	repository := hubtest.RepositoryOn(t, admin, options...)
 	for _, organization := range []tracker.OrganizationID{Secondary, Primary} {
 		SeedOrganization(t, repository, organization, string(cfg.InitialAdminToken), cfg.Clock())
 	}
