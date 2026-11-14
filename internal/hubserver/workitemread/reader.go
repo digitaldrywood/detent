@@ -3,6 +3,7 @@ package workitemread
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -48,7 +49,9 @@ func (rd Reader) Hydrate(ctx context.Context, row corestore.WorkItem, version ev
 		return issue, err
 	} else if found {
 		issue.LinkedSource = &source
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.GitHubIssueSourceReference(source.URL, source.URL))
+		if reference := tracker.GitHubIssueSourceReference(source.URL, source.URL); !slices.Contains(issue.ExternalReferences, reference) {
+			issue.ExternalReferences = append(issue.ExternalReferences, reference)
+		}
 	}
 	return rd.IssueResponse(issue), nil
 }

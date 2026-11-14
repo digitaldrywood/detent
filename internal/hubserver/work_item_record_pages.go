@@ -482,7 +482,9 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope hubscope.Nat
 					return artifact.ErrIntegrity
 				}
 				issue.LinkedSource.URL = currentSource.URL
-				issue.ExternalReferences = append(issue.ExternalReferences, tracker.GitHubIssueSourceReference(currentSource.URL, currentSource.URL))
+				if reference := tracker.GitHubIssueSourceReference(currentSource.URL, currentSource.URL); !slices.Contains(issue.ExternalReferences, reference) {
+					issue.ExternalReferences = append(issue.ExternalReferences, reference)
+				}
 			}
 			organization, err := r.AccessOrganization(ctx)
 			if err != nil {
