@@ -845,7 +845,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 		defer func() { service.config.TenantRepository = original }()
 		candidate := publishedProgress
 		candidate.CommentID = ""
-		if _, err := progressOwner.Publish(t.Context(), candidate); !errors.Is(err, accessstore.ErrDenied) {
+		if _, err := progressOwner.Publish(context.WithValue(t.Context(), postgresFixtureWrapScope{}, true), candidate); !errors.Is(err, accessstore.ErrDenied) {
 			t.Fatalf("denied publication replayed another publisher's receipt: %v", err)
 		}
 	})
@@ -1184,7 +1184,9 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 		after := ""
 		for range 3 {
 			path := itemsPath + "/" + string(issue.WorkItemID) + "/source-recovery?destinations_after=" + url.QueryEscape(after)
-			response := performHubAPIRequest(t, service, http.MethodGet, path, ownerToken, nil)
+			request := newHubAPIRequest(t, http.MethodGet, path, ownerToken, nil)
+			response := httptest.NewRecorder()
+			service.Handler().ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), postgresFixtureWrapScope{}, true)))
 			requireNativeStatus(t, response, http.StatusOK)
 			var view sourceRecoveryView
 			decodeHubResponse(t, response, &view)
@@ -1248,21 +1250,28 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 	})
 }
 
+type postgresFixtureWrapScope struct{}
+
 type postgresSourceRecoveryRepository struct {
 	tenantstore.Repository
 	pageCalls *int
 }
 
-func (r postgresSourceRecoveryRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
+func (r postgresSourceRecoveryRepository) wrap(ctx context.Context, read func(tenantstore.Reader) error) func(tenantstore.Reader) error {
+	if ctx.Value(postgresFixtureWrapScope{}) == nil {
+		return read
+	}
+	return func(reader tenantstore.Reader) error {
 		return read(postgresSourceRecoveryReader{Reader: reader, pageCalls: r.pageCalls})
-	})
+	}
+}
+
+func (r postgresSourceRecoveryRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, r.wrap(ctx, read))
 }
 
 func (r postgresSourceRecoveryRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		return read(postgresSourceRecoveryReader{Reader: reader, pageCalls: r.pageCalls})
-	})
+	return r.Repository.ReadTenant(ctx, organization, workload, r.wrap(ctx, read))
 }
 
 type postgresSourceRecoveryReader struct {
@@ -1347,19 +1356,19 @@ type postgresProgressReceiptRepository struct {
 }
 
 func (r *postgresProgressReceiptRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, r.reader(read))
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, r.reader(ctx, read))
 }
 
 func (r *postgresProgressReceiptRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	return r.Repository.ReadTenant(ctx, organization, workload, r.reader(read))
+	return r.Repository.ReadTenant(ctx, organization, workload, r.reader(ctx, read))
 }
 
-func (r *postgresProgressReceiptRepository) reader(read func(tenantstore.Reader) error) func(tenantstore.Reader) error {
+func (r *postgresProgressReceiptRepository) reader(ctx context.Context, read func(tenantstore.Reader) error) func(tenantstore.Reader) error {
 	return func(reader tenantstore.Reader) error {
 		r.mu.Lock()
 		hide := r.hideReceipt
 		r.mu.Unlock()
-		if !hide {
+		if !hide || ctx.Value(postgresFixtureWrapScope{}) == nil {
 			return read(reader)
 		}
 		return read(postgresProgressReceiptReader{Reader: reader, repository: r})
@@ -1367,6 +1376,9 @@ func (r *postgresProgressReceiptRepository) reader(read func(tenantstore.Reader)
 }
 
 func (r *postgresProgressReceiptRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	if ctx.Value(postgresFixtureWrapScope{}) == nil {
+		return r.Repository.WriteTenant(ctx, organization, workload, write)
+	}
 	return r.Repository.WriteTenant(ctx, organization, workload, func(writer tenantstore.Writer) error {
 		return write(postgresProgressDeniedWriter{Writer: writer})
 	})
