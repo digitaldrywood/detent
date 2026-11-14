@@ -101,7 +101,11 @@ func ReviewCompatibilityOf(value tracker.ChangeReviewPolicy) *policystore.Review
 	if changerequest.ValidateChecks(value.RequiredChecks) != nil {
 		return nil
 	}
-	return &policystore.ReviewFacts{RequireReview: value.RequireReview, RequiredChecks: slices.Clone(value.RequiredChecks)}
+	facts := &policystore.ReviewFacts{RequireReview: value.RequireReview}
+	if len(value.RequiredChecks) > 0 {
+		facts.RequiredChecks = slices.Clone(value.RequiredChecks)
+	}
+	return facts
 }
 
 func (c *Content) ReviewPolicy(ctx context.Context, row ReviewPolicy) (tracker.ChangeReviewPolicy, error) {

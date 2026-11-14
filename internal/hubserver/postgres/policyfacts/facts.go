@@ -196,3 +196,14 @@ func BackfillReview(ctx context.Context, tx pgcore.Transaction, row eventstore.R
 	}
 	return RecordReview(ctx, tx, row)
 }
+
+func WithReview(ctx context.Context, tx pgcore.Transaction, row eventstore.ReviewPolicy) (eventstore.ReviewPolicy, error) {
+	facts, err := Reviews(ctx, tx, row.ProjectID, []string{row.ReviewPolicyID})
+	if err != nil {
+		return eventstore.ReviewPolicy{}, err
+	}
+	if stored, found := facts[row.ReviewPolicyID]; found && stored.PolicyID == row.PolicyRevisionID && stored.PayloadSHA256 == row.PayloadSHA256 {
+		row.Compatibility = &stored.ReviewFacts
+	}
+	return row, nil
+}

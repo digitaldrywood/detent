@@ -516,7 +516,7 @@ func (s *session) ReviewPolicy(ctx context.Context, project tracker.ProjectID) (
 	if err != nil {
 		return eventstore.ReviewPolicy{}, mapError(ctx, err)
 	}
-	return reviewPolicyRecord(pgquery.ChangeReviewPolicyRevision(row)), nil
+	return policyfacts.WithReview(ctx, s.transactionHandle(), reviewPolicyRecord(pgquery.ChangeReviewPolicyRevision(row)))
 }
 
 func (s *session) SetReviewPolicy(ctx context.Context, row eventstore.ReviewPolicy, expected string) error {

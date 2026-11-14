@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"math/rand/v2"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -253,5 +254,25 @@ func TestSourceBundleRefusesCorruptionAndExpansion(t *testing.T) {
 	}
 	if _, err := content.PrepareSourceBundle(t.Context(), "org_example", expanded); err == nil || strings.Contains(err.Error(), secret) {
 		t.Fatalf("expected bounded refusal, got %v", err)
+	}
+}
+
+func TestReviewCompatibilityOfMatchesStoredCheckSet(t *testing.T) {
+	check := tracker.ChangeCheckSpec{Name: "ci", PrincipalID: "ci", WorkflowID: "ci.yml", WorkflowSHA256: strings.Repeat("a", 64), Source: "independent", MaxAgeSeconds: 3600}
+	for _, tc := range []struct {
+		name   string
+		checks []tracker.ChangeCheckSpec
+		want   []tracker.ChangeCheckSpec
+	}{
+		{name: "absent"},
+		{name: "known empty", checks: []tracker.ChangeCheckSpec{}},
+		{name: "listed", checks: []tracker.ChangeCheckSpec{check}, want: []tracker.ChangeCheckSpec{check}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := ReviewCompatibilityOf(tracker.ChangeReviewPolicy{RequireReview: true, RequiredChecks: tc.checks})
+			if facts == nil || !facts.RequireReview || !reflect.DeepEqual(facts.RequiredChecks, tc.want) {
+				t.Fatalf("facts = %+v, want require review with checks %#v", facts, tc.want)
+			}
+		})
 	}
 }

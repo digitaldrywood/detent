@@ -65,7 +65,7 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 	}
 
 	policy := pgstoretest.PolicyTestRevision(organizations[0], "prj_first", "policy_1", now)
-	review := eventstore.ReviewPolicy{OrganizationID: organizations[0], ProjectID: "prj_first", PolicyRevisionID: policy.PolicyID, ReviewPolicyID: "review_1", Revision: 1, UpdatedBy: "admin", UpdatedAt: now, PayloadObjectKey: policy.PayloadObjectKey, PayloadSHA256: policy.PayloadSHA256, PayloadBytes: policy.PayloadBytes, PayloadContentBytes: policy.PayloadContentBytes}
+	review := eventstore.ReviewPolicy{OrganizationID: organizations[0], ProjectID: "prj_first", PolicyRevisionID: policy.PolicyID, ReviewPolicyID: "review_1", Revision: 1, UpdatedBy: "admin", UpdatedAt: now, PayloadObjectKey: policy.PayloadObjectKey, PayloadSHA256: policy.PayloadSHA256, PayloadBytes: policy.PayloadBytes, PayloadContentBytes: policy.PayloadContentBytes, Compatibility: &policystore.ReviewFacts{RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "ci", PrincipalID: "ci", WorkflowID: "ci.yml", WorkflowSHA256: strings.Repeat("a", 64), Source: "independent", MaxAgeSeconds: 3600}}}}
 	if err := repository.WriteTenant(t.Context(), organizations[0], corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.SetReviewPolicy(t.Context(), review, ""); err != nil {
 			return err
@@ -663,7 +663,7 @@ func samePolicyGate(left, right *bool) bool {
 }
 
 func reviewPolicyEqual(left, right eventstore.ReviewPolicy) bool {
-	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyRevisionID == right.PolicyRevisionID && left.ReviewPolicyID == right.ReviewPolicyID && left.Revision == right.Revision && left.UpdatedBy == right.UpdatedBy && left.UpdatedAt.Equal(right.UpdatedAt) && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
+	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyRevisionID == right.PolicyRevisionID && left.ReviewPolicyID == right.ReviewPolicyID && left.Revision == right.Revision && left.UpdatedBy == right.UpdatedBy && left.UpdatedAt.Equal(right.UpdatedAt) && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes && reflect.DeepEqual(left.Compatibility, right.Compatibility)
 }
 
 func TestPolicyRevisionCompatibilityFactsAreImmutableCompanions(t *testing.T) {
