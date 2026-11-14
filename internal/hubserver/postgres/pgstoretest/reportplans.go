@@ -346,13 +346,32 @@ func (s reportStatement) closure(block int, planned map[string]bool, into map[re
 	}
 }
 
-func (s reportStatement) scope(block int, planned map[string]bool) (string, bool) {
+func (s reportStatement) scopes(block int, planned map[string]bool, visited map[string]bool) map[string]bool {
 	for ; block > 0; block = s.blocks[block].parent {
-		if name := s.blocks[block].cte; name != "" {
-			return name, !planned[name]
+		name := s.blocks[block].cte
+		if name == "" {
+			continue
 		}
+		if planned[name] {
+			return map[string]bool{name: true}
+		}
+		out := map[string]bool{}
+		if visited[name] {
+			return out
+		}
+		visited[name] = true
+		for index, reader := range s.blocks {
+			for relation := range reader.relations {
+				if relation.name == name {
+					for scope := range s.scopes(index, planned, visited) {
+						out[scope] = true
+					}
+				}
+			}
+		}
+		return out
 	}
-	return "", false
+	return map[string]bool{"": true}
 }
 
 func reportTokens(statement string) []string {
@@ -520,12 +539,12 @@ func (a *reportAnalysis) limitCount(node reportPlanNode, ctx reportContext) floa
 		if block.limit == nil {
 			continue
 		}
-		if scope, inlined := a.statement.scope(index, a.planCTEs); !inlined && scope != ctx.scope {
+		if !a.statement.scopes(index, a.planCTEs, map[string]bool{})[ctx.scope] {
 			continue
 		}
 		closure := map[reportRelation]bool{}
 		a.statement.closure(index, a.planCTEs, closure)
-		direct, inside := false, true
+		direct, inside := len(block.relations) == 0, true
 		for relation := range planned {
 			direct = direct || reportHasRelation(block.relations, relation)
 			inside = inside && reportHasRelation(closure, relation)
