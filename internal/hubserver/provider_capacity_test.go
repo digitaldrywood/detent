@@ -20,7 +20,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -731,7 +730,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 		{name: "revoked exhaustion", authority: "revoked", availability: "exhausted", bound: 4, state: "available"},
 		{name: "future authority", authority: "future", bound: 4, state: "available"},
 		{name: "invalid expiry", authority: "invalid", bound: 4, state: "available"},
-		{name: "missing expiry", authority: "missing", bound: 4, state: "available"},
+		{name: "missing expiry is non-expiring authority", authority: "missing", bound: 2, state: "available"},
 		{name: "same alias on another owner does not supersede pinned shared bound", sameAlias: true, authority: "expired", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
 		{name: "expired pinned lease until expiry", authority: "expired", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
 		{name: "revoked pinned lease until expiry", authority: "revoked", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
@@ -748,13 +747,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 			current.reportCapacity(t)
 			otherFixture := f
 			if test.otherOrganization {
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_other", corestore.Serving, func(w tenantstore.Writer) error {
-					return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_other", Name: "Other", Slug: "other", CreatedAt: now})
-				}); err != nil {
-					t.Fatal(err)
-				}
-				otherFixture = newNativeFixture(t, f.service, "org_other", "other-provider")
-				approveHubTestPolicy(t, f.service, otherFixture.base+"/policy", hubTestPolicy())
+				otherFixture = newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "other-provider")
 			}
 			otherRunner := prepareRunner(t, otherFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			otherRunner.enroll(t)
