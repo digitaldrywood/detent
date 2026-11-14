@@ -626,10 +626,14 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 				if err == nil && (receipt.CleanupAcknowledgedAt == nil || receipt.CleanupAcknowledgedAt.IsZero() || receipt.Sequence != event.Data.Sequence) {
 					t.Fatalf("cleanup receipt missing: %+v", receipt)
 				}
+				if err == nil && (receipt.CheckpointObjectKey == nil || archived.Attempt.CheckpointObjectKey == nil || *receipt.CheckpointObjectKey != *archived.Attempt.CheckpointObjectKey || receipt.ClaimDisposition == nil || archived.Attempt.ClaimDisposition == nil || *receipt.ClaimDisposition != *archived.Attempt.ClaimDisposition) {
+					t.Fatalf("cleanup acknowledgment changed the source reference or claim disposition: before=%+v after=%+v", archived.Attempt, receipt)
+				}
 				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			if reads := checkpointReads(); reads != 1 {
 				t.Fatalf("cleanup acknowledgment hydrated checkpoint %d times", reads)
 			}

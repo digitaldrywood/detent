@@ -442,7 +442,8 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		previousRunEventFound = false
 	}
 	var effectiveCheckpoint *tracker.NativeCheckpoint
-	if checkpointSnapshot != nil {
+	recordedDisposition := termination && cleanupPredecessor != nil && cleanupPredecessor.attempt.ClaimDisposition != nil
+	if checkpointSnapshot != nil && !recordedDisposition {
 		effectiveCheckpoint, err = s.readNativeAttemptCheckpointTenant(ctx, *checkpointSnapshot)
 		if err != nil {
 			return nil, err
@@ -762,6 +763,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 			effectiveCheckpoint = event.Data.Handoff
 		}
 		preparedEvent := preparedNativeRunEvent{artifactList: artifactList, independent: independent, dependencies: dependencies, authority: authority, attempt: attemptEvent, history: history, claimDisposition: nativeAttemptClaimDisposition(event.Data, effectiveCheckpoint, scope.Project)}
+		if recordedDisposition {
+			preparedEvent.claimDisposition = *cleanupPredecessor.attempt.ClaimDisposition
+		}
 		if i == len(events)-1 && usageCorrection {
 			preparedEvent.previousAttempt, preparedEvent.previousEvent = previousAttempt, previousRunEvent
 		}
