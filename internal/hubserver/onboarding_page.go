@@ -147,27 +147,6 @@ func (s *Service) getOnboardingPage(c echo.Context) error {
 	})
 	if err == nil && cold {
 		value, err = s.projectOnboarding(c.Request().Context(), scope)
-		if err == nil {
-			viewer, key, viewerErr := onboardingViewer(scope.Credential)
-			if viewerErr != nil {
-				return s.nativeAPIError(c, viewerErr)
-			}
-			queueErr := s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := s.authorizeAccessScope(c.Request().Context(), w, scope, false); err != nil {
-					return err
-				}
-				writer, ok := w.(projectstore.OnboardingPageWriter)
-				if !ok {
-					return errors.New("onboarding page storage unavailable")
-				}
-				return writer.RequestOnboardingPage(c.Request().Context(), scope.Project, key, viewer)
-			})
-			if errors.Is(queueErr, accessstore.ErrDenied) || errors.Is(queueErr, auth.ErrHostedIdentity) {
-				err = queueErr
-			} else if queueErr != nil && s.config.Logger != nil {
-				s.config.Logger.WarnContext(c.Request().Context(), "request onboarding page preparation", "error", queueErr)
-			}
-		}
 		value = onboardingpage.Summary(value)
 	}
 	if err != nil {

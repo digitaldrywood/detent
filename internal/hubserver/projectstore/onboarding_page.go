@@ -30,9 +30,8 @@ type OnboardingPageReader interface {
 }
 
 type OnboardingPageWriter interface {
-	RequestOnboardingPage(context.Context, tracker.ProjectID, string, OnboardingViewer) error
 	ClaimOnboardingPage(context.Context) (OnboardingCandidate, error)
 	PublishOnboardingPage(context.Context, OnboardingCandidate, onboarding.Project, time.Time) error
 	DiscardOnboardingPage(context.Context, OnboardingCandidate) error
-	InvalidateOnboardingPage(context.Context, tracker.ProjectID, string) error
+	InvalidateOnboardingPage(context.Context, tracker.ProjectID, string, OnboardingViewer) error
 }

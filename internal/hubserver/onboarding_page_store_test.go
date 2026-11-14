@@ -34,7 +34,7 @@ func TestOnboardingPageFencesPublicationAndAccess(t *testing.T) {
 				return repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { return fn(w.(projectstore.OnboardingPageWriter)) })
 			}
 			if err := write(func(w projectstore.OnboardingPageWriter) error {
-				return w.RequestOnboardingPage(t.Context(), fixture.project.ID, key, projectstore.OnboardingViewer{ID: "example", Scope: "operator"})
+				return w.InvalidateOnboardingPage(t.Context(), fixture.project.ID, key, projectstore.OnboardingViewer{ID: "example", Scope: "operator"})
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -168,6 +168,7 @@ func TestOnboardingPageKeepsViewerVisibilityAndRevocation(t *testing.T) {
 				{name: "other administrator", token: other.Token, runners: 0},
 			} {
 				t.Run(test.name, func(t *testing.T) {
+					saveOnboardingView(t, service, fixture.base, test.token)
 					cold := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/onboarding", test.token, nil)
 					requireNativeStatus(t, cold, http.StatusOK)
 					var expected onboarding.Project
@@ -216,6 +217,15 @@ func TestOnboardingPageKeepsViewerVisibilityAndRevocation(t *testing.T) {
 	}
 }
 
+func saveOnboardingView(t *testing.T, service *Service, base, token string) {
+	t.Helper()
+	current := performHubAPIRequest(t, service, http.MethodGet, base+"/onboarding", token, nil)
+	requireNativeStatus(t, current, http.StatusOK)
+	var page onboarding.Project
+	decodeHubResponse(t, current, &page)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, base+"/onboarding", token, map[string]any{"idempotency_key": hubapi.NewID("onboarding"), "progress": page.Progress}), http.StatusOK)
+}
+
 type onboardingQueueFailureRepository struct {
 	tenantstore.Repository
 	failure error
@@ -232,15 +242,26 @@ func TestOnboardingColdFallbackSurvivesPreparationFailure(t *testing.T) {
 	original := service.config.TenantRepository
 	t.Cleanup(func() { service.config.TenantRepository = original })
 	for _, test := range []struct {
-		name    string
-		failure error
-		status  int
+		name   string
+		revoke bool
+		status int
 	}{
-		{name: "preparation unavailable", failure: errors.New("example preparation failure"), status: http.StatusOK},
-		{name: "access revoked", failure: accessstore.ErrDenied, status: http.StatusForbidden},
+		{name: "preparation unavailable", status: http.StatusOK},
+		{name: "access revoked", revoke: true, status: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service.config.TenantRepository = onboardingQueueFailureRepository{Repository: original, failure: test.failure}
+			if test.revoke {
+				credential, _, err := service.authenticateTenantAPIHash(t.Context(), fixture.project.OrganizationID, apikey.HashToken(fixture.token), "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := original.WriteTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.DeleteAccessTokenGrant(t.Context(), credential.ID, fixture.project.ID)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			service.config.TenantRepository = onboardingQueueFailureRepository{Repository: original, failure: errors.New("example preparation failure")}
 			response := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/onboarding", fixture.token, nil)
 			requireNativeStatus(t, response, test.status)
 			if test.status == http.StatusOK {
@@ -262,7 +283,7 @@ func TestOnboardingPageKeepsSavedProgressCurrent(t *testing.T) {
 			fixture := newNativeFixture(t, service, organization, "Example")
 			tenant := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
 			prepare := func(token string) {
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/onboarding", token, nil), http.StatusOK)
+				saveOnboardingView(t, service, fixture.base, token)
 				ctx := (hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), tenant)
 				if err := service.OnboardingPageMaintenanceFeature().Step(ctx, tenant, hubmaintenance.Budget{}); err != nil {
 					t.Fatal(err)
@@ -297,7 +318,7 @@ func TestOnboardingPageKeepsSavedProgressCurrent(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			response := performHubAPIRequest(t, service, http.MethodPut, fixture.base+"/onboarding", fixture.token, map[string]any{"idempotency_key": "example-progress", "progress": onboarding.Progress{Repository: "existing", Artifacts: "local"}})
+			response := performHubAPIRequest(t, service, http.MethodPut, fixture.base+"/onboarding", fixture.token, map[string]any{"idempotency_key": "example-progress", "progress": onboarding.Progress{Revision: 2, Repository: "existing", Artifacts: "local"}})
 			requireNativeStatus(t, response, http.StatusOK)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
 				return w.(projectstore.OnboardingPageWriter).PublishOnboardingPage(t.Context(), candidate, stale, service.config.Clock())
@@ -308,7 +329,7 @@ func TestOnboardingPageKeepsSavedProgressCurrent(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var page onboarding.Project
 			decodeHubResponse(t, response, &page)
-			if page.Progress.Revision != 1 || page.Progress.Artifacts != "local" {
+			if page.Progress.Revision != 3 || page.Progress.Artifacts != "local" {
 				t.Errorf("saved progress disappeared on the next read: %+v", page.Progress)
 			}
 			admin, _, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(testHubAdminToken), "", "")

@@ -27,11 +27,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
@@ -282,6 +286,34 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 			})
 		}
+		t.Run("/onboarding warm", func(t *testing.T) {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding", f.token, map[string]any{"idempotency_key": "reader-guard-progress", "progress": onboarding.Progress{Repository: "existing", Artifacts: "local"}}), http.StatusOK)
+			cold := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+			requireNativeStatus(t, cold, http.StatusOK)
+			tenant := hubmaintenance.Tenant{Organization: string(f.project.OrganizationID), Generation: 1}
+			if err := f.service.OnboardingPageMaintenanceFeature().Step((hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), tenant), tenant, hubmaintenance.Budget{}); err != nil {
+				t.Fatal(err)
+			}
+			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, key, err := onboardingViewer(credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.(projectstore.OnboardingPageReader).OnboardingPage(t.Context(), f.project.ID, key)
+				return err
+			}); err != nil {
+				t.Fatalf("saved viewer page was not prepared: %v", err)
+			}
+			warm := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+			requireNativeStatus(t, warm, http.StatusOK)
+			if warm.Body.String() != cold.Body.String() {
+				t.Fatalf("warm onboarding changed the response:\ncold=%s\nwarm=%s", cold.Body.String(), warm.Body.String())
+			}
+		})
 		f.service.tokenUseWork.Wait()
 		guard.mu.Lock()
 		defer guard.mu.Unlock()

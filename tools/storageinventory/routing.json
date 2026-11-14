@@ -12499,9 +12499,7 @@
           "session.OnboardingPage:SQL": 1,
           "session.PublishOnboardingPage:Exec": 1,
           "session.PublishOnboardingPage:QueryRow": 3,
-          "session.PublishOnboardingPage:SQL": 4,
-          "session.RequestOnboardingPage:Exec": 2,
-          "session.RequestOnboardingPage:SQL": 2
+          "session.PublishOnboardingPage:SQL": 4
         },
         "tables": [
           "hub/projects"

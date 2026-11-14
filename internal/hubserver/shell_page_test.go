@@ -45,8 +45,7 @@ func TestOnboardingPageDoesNotReadObjects(t *testing.T) {
 				runner.enroll(t)
 				seeded++
 			}
-			cold := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/onboarding", fixture.token, nil)
-			requireNativeStatus(t, cold, http.StatusOK)
+			saveOnboardingView(t, service, fixture.base, fixture.token)
 			previousHosted := service.config.Hosted
 			service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(organization)}
 			scheduler, err := service.newReadModelMaintenance()

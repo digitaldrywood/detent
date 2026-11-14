@@ -35,24 +35,6 @@ func (s *session) OnboardingPage(ctx context.Context, project tracker.ProjectID,
 	return onboardingPageLayout.Project(values)
 }
 
-func (s *session) RequestOnboardingPage(ctx context.Context, project tracker.ProjectID, key string, v projectstore.OnboardingViewer) error {
-	if project == "" || len(key) != 64 {
-		return corestore.ErrInvalidPage
-	}
-	if _, err := s.db.Exec(ctx, `INSERT INTO project_onboarding_page_access(organization_id) VALUES($1) ON CONFLICT DO NOTHING`, s.organization); err != nil {
-		return mapError(ctx, err)
-	}
-	projects, blocked := v.Projects, v.BlockedProjects
-	if projects == nil {
-		projects = []string{}
-	}
-	if blocked == nil {
-		blocked = []string{}
-	}
-	_, err := s.db.Exec(ctx, `INSERT INTO project_onboarding_page_viewers(organization_id,project_id,viewer_key,`+onboardingViewerColumns+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT DO NOTHING`, s.organization, project, key, v.ID, v.Hash, v.SessionHash, v.Scope, v.UserID, v.Membership, v.Principal, v.Role, v.KeyScope, v.KeyKind, v.ProjectAccess, v.RunnerID, v.EntryKind, v.EntryAccess, v.EntryID, v.EntryBinding, v.EntryPermission, v.NativeOnly, projects, blocked)
-	return mapError(ctx, err)
-}
-
 func (s *session) ClaimOnboardingPage(ctx context.Context) (projectstore.OnboardingCandidate, error) {
 	var c projectstore.OnboardingCandidate
 	v := &c.Viewer
@@ -120,14 +102,26 @@ func (s *session) DiscardOnboardingPage(ctx context.Context, c projectstore.Onbo
 	return mapError(ctx, err)
 }
 
-func (s *session) InvalidateOnboardingPage(ctx context.Context, project tracker.ProjectID, viewer string) error {
+func (s *session) InvalidateOnboardingPage(ctx context.Context, project tracker.ProjectID, key string, v projectstore.OnboardingViewer) error {
+	if project == "" || len(key) != 64 {
+		return corestore.ErrInvalidPage
+	}
 	var current tracker.ProjectID
 	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL FOR KEY SHARE`, s.organization, project).Scan(&current); err != nil {
 		return mapError(ctx, err)
 	}
-	if _, err := s.db.Exec(ctx, `UPDATE project_onboarding_page_viewers SET generation=DEFAULT WHERE organization_id=$1 AND project_id=$2 AND viewer_key=$3`, s.organization, project, viewer); err != nil {
+	projects, blocked := v.Projects, v.BlockedProjects
+	if projects == nil {
+		projects = []string{}
+	}
+	if blocked == nil {
+		blocked = []string{}
+	}
+	if _, err := s.db.Exec(ctx, `WITH access AS (INSERT INTO project_onboarding_page_access(organization_id) VALUES($1) ON CONFLICT DO NOTHING)
+ INSERT INTO project_onboarding_page_viewers(organization_id,project_id,viewer_key,`+onboardingViewerColumns+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+ ON CONFLICT(organization_id,project_id,viewer_key) DO UPDATE SET generation=DEFAULT`, s.organization, project, key, v.ID, v.Hash, v.SessionHash, v.Scope, v.UserID, v.Membership, v.Principal, v.Role, v.KeyScope, v.KeyKind, v.ProjectAccess, v.RunnerID, v.EntryKind, v.EntryAccess, v.EntryID, v.EntryBinding, v.EntryPermission, v.NativeOnly, projects, blocked); err != nil {
 		return mapError(ctx, err)
 	}
-	_, err := s.db.Exec(ctx, `DELETE FROM project_onboarding_pages WHERE organization_id=$1 AND project_id=$2 AND viewer_key=$3`, s.organization, project, viewer)
+	_, err := s.db.Exec(ctx, `DELETE FROM project_onboarding_pages WHERE organization_id=$1 AND project_id=$2 AND viewer_key=$3`, s.organization, project, key)
 	return mapError(ctx, err)
 }

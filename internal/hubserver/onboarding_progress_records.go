@@ -48,7 +48,7 @@ func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope hubsc
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.Progress.Revision < 0 {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes and a nonnegative revision are required")
 	}
-	_, viewerKey, err := onboardingViewer(scope.Credential)
+	viewer, viewerKey, err := onboardingViewer(scope.Credential)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope hubsc
 		if !ok {
 			return errors.New("onboarding page storage unavailable")
 		}
-		if err := writer.InvalidateOnboardingPage(ctx, scope.Project, viewerKey); err != nil {
+		if err := writer.InvalidateOnboardingPage(ctx, scope.Project, viewerKey, viewer); err != nil {
 			return err
 		}
 		if err := w.SaveProjectOnboardingProgress(ctx, scope.Project, progress, request.Progress.Revision); err != nil {

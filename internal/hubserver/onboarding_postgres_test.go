@@ -267,12 +267,12 @@ func (r *onboardingReplayRepository) WriteTenant(ctx context.Context, organizati
 		return write(onboardingReplayWriter{Writer: w, OnboardingPageWriter: w.(projectstore.OnboardingPageWriter), repository: r})
 	})
 }
-func (w onboardingReplayWriter) InvalidateOnboardingPage(ctx context.Context, project tracker.ProjectID, viewer string) error {
+func (w onboardingReplayWriter) InvalidateOnboardingPage(ctx context.Context, project tracker.ProjectID, key string, viewer projectstore.OnboardingViewer) error {
 	w.repository.ready <- struct{}{}
 	select {
 	case <-w.repository.release:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return w.OnboardingPageWriter.InvalidateOnboardingPage(ctx, project, viewer)
+	return w.OnboardingPageWriter.InvalidateOnboardingPage(ctx, project, key, viewer)
 }

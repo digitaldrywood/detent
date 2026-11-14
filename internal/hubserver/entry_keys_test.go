@@ -208,8 +208,8 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 			if err := f.admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM project_onboarding_page_viewers WHERE organization_id=$1 AND project_id=$2),(SELECT count(*) FROM project_onboarding_pages WHERE organization_id=$1 AND project_id=$2)`, organization, f.project).Scan(&viewers, &pages); err != nil {
 				t.Fatal(err)
 			}
-			if viewers != 2 || pages != 2 {
-				t.Errorf("hosted onboarding viewers=%d ready=%d want=2/2", viewers, pages)
+			if viewers != 0 || pages != 0 {
+				t.Errorf("hosted onboarding reads queued viewers=%d ready=%d want=0/0", viewers, pages)
 			}
 			f.exec(t, `CREATE OR REPLACE FUNCTION reject_support_audit_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$`)
 			f.exec(t, "CREATE TRIGGER reject_support_audit BEFORE INSERT ON hosted_audit FOR EACH ROW WHEN (NEW.organization_id='"+organization+"' AND NEW.event='action') EXECUTE FUNCTION reject_support_audit_write()")
