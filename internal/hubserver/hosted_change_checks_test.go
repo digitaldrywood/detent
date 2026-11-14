@@ -461,7 +461,7 @@ func testHostedCheckRevocation(t *testing.T, f *browserHostedFixture, base, path
 							return errors.New("credential fixture grant was not restored")
 						}
 						actualPolicy, err := r.ReviewPolicy(cleanup, project)
-						if err == nil && actualPolicy != variants.original {
+						if err == nil && !reflect.DeepEqual(actualPolicy, variants.original) {
 							return errors.New("review policy fixture reference was not restored")
 						}
 						return err
