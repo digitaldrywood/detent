@@ -380,8 +380,8 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 	if len(original.Items) != 1 {
 		t.Fatalf("searched native list items=%d want=1", len(original.Items))
 	}
-	if original.Items[0].Body != expectedByID[original.Items[0].WorkItemID].Body || len(original.Items[0].OmittedFields) != 0 {
-		t.Fatal("original list resource lost its complete body")
+	if original.Items[0].Body != expectedByID[original.Items[0].WorkItemID].Body || !slices.Equal(original.Items[0].OmittedFields, []string{"linked_source", "external_references", "change"}) {
+		t.Fatalf("original list resource lost its complete body: body_bytes=%d omitted=%v", len(original.Items[0].Body), original.Items[0].OmittedFields)
 	}
 	executor := hostedOperatorExecutor{service: f.service}
 	args := operatortool.WorkReadRequest{ProjectID: string(f.project.ID), Query: needle, State: "Todo", Label: "bounded", Limit: 1, Cursor: original.NextCursor}

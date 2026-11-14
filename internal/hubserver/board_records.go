@@ -130,10 +130,10 @@ func (s *Service) readBoardRecords(ctx context.Context, scope hubscope.NativeSco
 }
 
 func (s *Service) readBoardRecordsFor(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
-	return s.readBoardProjection(ctx, scope, params, legacy, false)
+	return s.readBoardProjection(ctx, scope, params, legacy, false, false)
 }
 
-func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact, bodies bool) (tracker.NativeIssuePage, error) {
 	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
 		return tracker.NativeIssuePage{}, hubapi.NativePublicInvalid("archive_url supports true or false")
 	}
@@ -143,6 +143,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.Native
 		return tracker.NativeIssuePage{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page tracker.NativeIssuePage
+	var cursors []string
 	var compatible bool
 	read := func(ctx context.Context) error {
 		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -171,7 +172,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.Native
 			return err
 		}
 		var err error
-		page, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy, compact)
+		page, cursors, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy, compact, bodies)
 		return err
 	}
 	var err error
@@ -187,47 +188,55 @@ func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.Native
 	if err == nil && compatible {
 		return s.readQueueWorkItems(ctx, scope, params)
 	}
+	if err == nil && len(cursors) > 0 {
+		var kept int
+		kept, err = s.workItemReader().ListBodies(ctx, scope, page.Items, operatortool.MaxResultBytes)
+		if err == nil && kept < len(page.Items) {
+			page.Items, page.NextCursor = page.Items[:kept], cursors[kept-1]
+		}
+	}
 	return page, err
 }
 
-func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact bool) (tracker.NativeIssuePage, error) {
-	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
+func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact, bodies bool) (page tracker.NativeIssuePage, cursors []string, err error) {
+	page = tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
-		return page, hubapi.NativeWorkItemStorageUnavailable()
+		return page, nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	if _, err := nativeIssuePickerRequested(params); err != nil {
-		return page, err
+	picker, err := nativeIssuePickerRequested(params)
+	if err != nil {
+		return page, nil, err
 	}
 	includeBoard := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "board" })
 	includeWork := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
 	includeSummary := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "summary" })
 	if includeSummary && includeWork {
-		return page, hubapi.NativePublicInvalid("summary cannot include work")
+		return page, nil, hubapi.NativePublicInvalid("summary cannot include work")
 	}
 	if includeBoard {
 		page.Cards = []tracker.NativeBoardCard{}
 		if params.Get("include") != "board" {
-			return page, hubapi.NativePublicInvalid("board cannot include other projections")
+			return page, nil, hubapi.NativePublicInvalid("board cannot include other projections")
 		}
 		if params.Has("created_after") || params.Has("created_before") || params.Has("updated_after") {
-			return page, hubapi.NativePublicInvalid("Date filters require an issue list projection")
+			return page, nil, hubapi.NativePublicInvalid("Date filters require an issue list projection")
 		}
 	}
 	if sort := params.Get("sort"); sort != "" && sort != "closed" {
-		return page, hubapi.NativePublicInvalid("sort supports closed")
+		return page, nil, hubapi.NativePublicInvalid("sort supports closed")
 	}
 	selection, err := boardRecordSelection(scope, params)
 	if err != nil {
-		return page, err
+		return page, nil, err
 	}
 	selection.SearchText = strings.TrimSpace(params.Get("q"))
 	selection.SearchRanked = !includeBoard && selection.SearchText != ""
 	if len(selection.SearchText) > searchstore.MaxQueryTextBytes {
-		return page, hubapi.NativePublicInvalid("Search query is too long")
+		return page, nil, hubapi.NativePublicInvalid("Search query is too long")
 	}
 	selectedWindow, err := nativeShippedWindow(params.Get("completed_window"))
 	if err != nil {
-		return page, err
+		return page, nil, err
 	}
 	path, maximum := "/api/v2/organizations/"+url.PathEscape(string(scope.Organization))+"/projects/"+url.PathEscape(string(scope.Project))+"/work-items", hubapi.MaxAPIPageLimit
 	if includeBoard {
@@ -239,7 +248,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	}
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, cursorParams, maximum, hubapi.DefaultAPIPageLimit)
 	if err != nil {
-		return page, err
+		return page, nil, err
 	}
 	if !legacy {
 		limit = min(limit, 200)
@@ -253,7 +262,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		if position.Activity != "" {
 			at, err := time.Parse(time.RFC3339Nano, position.Activity)
 			if err != nil {
-				return page, corestore.ErrInvalidCursor
+				return page, nil, corestore.ErrInvalidCursor
 			}
 			selection.After.Activity = &at
 		}
@@ -293,10 +302,10 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		return s.authorizeBoardModel(ctx, reader, scope, &snapshot)
 	})
 	if err != nil {
-		return page, hubapi.ProjectRecordError(err)
+		return page, nil, hubapi.ProjectRecordError(err)
 	}
 	if selection.AfterSequence != nil && *selection.AfterSequence != snapshot.Sequence {
-		return page, hubapi.NativePublicInvalid("Work list order changed; restart the query")
+		return page, nil, hubapi.NativePublicInvalid("Work list order changed; restart the query")
 	}
 	page.ProjectionPending, page.ProjectionOldestPendingAt = snapshot.Pending, snapshot.OldestPendingAt
 	page.ChangeSequence = snapshot.Sequence
@@ -349,7 +358,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		applyNativeShippedWindows(page.Work, windows, selectedWindow)
 	}
 	if err := s.hydrateBoardRecordActorNames(ctx, scope.Organization, snapshot.Records, snapshot.WorkRecords); err != nil {
-		return page, err
+		return page, nil, err
 	}
 	if selection.SearchText != "" || selection.Fingerprint != "" {
 		for _, records := range [][]viewstore.BoardRecord{snapshot.Records, snapshot.WorkRecords} {
@@ -357,7 +366,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 				row := &records[index]
 				issue := row.PageIssue
 				if issue == nil {
-					return page, viewstore.ErrInvalidView
+					return page, nil, viewstore.ErrInvalidView
 				}
 				if selection.Compact {
 					compact := operatortool.NativeListIssue(*issue)
@@ -371,7 +380,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 						SearchScore float64 `json:"search_score"`
 					}{issue.Snippet, issue.SearchScore})
 					if err != nil {
-						return page, err
+						return page, nil, err
 					}
 					row.ListBytes += len(extra)
 				}
@@ -389,14 +398,14 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	for _, row := range records {
 		if selection.Compact && !compact && used+row.ListBytes > operatortool.WorkListPageBytes {
 			if len(page.Items) == 0 {
-				return page, operatortool.ErrResultTooLarge
+				return page, nil, operatortool.ErrResultTooLarge
 			}
 			hasMore = true
 			break
 		}
 		card, err := boardModelCard(scope, row)
 		if err != nil {
-			return page, err
+			return page, nil, err
 		}
 		oversized := false
 		if compact {
@@ -407,11 +416,11 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 			next.Issues = boardRecordCursor(row, selection.ClosedOrder, snapshot.Sequence)
 			candidate.NextCursor, err = encodeNativeCursor(next, key)
 			if err != nil {
-				return page, err
+				return page, nil, err
 			}
 			raw, err := json.Marshal(operatortool.NativeSummaryPageView(candidate))
 			if err != nil {
-				return page, err
+				return page, nil, err
 			}
 			oversized = len(raw) > operatortool.WorkListPageBytes
 			if oversized {
@@ -421,7 +430,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 				}
 				card.Issue, err = operatortool.BoundNativeListIssue(card.Issue)
 				if err != nil {
-					return page, err
+					return page, nil, err
 				}
 			}
 		}
@@ -446,27 +455,38 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		for _, row := range work {
 			if used+row.ListBytes > operatortool.WorkListPageBytes {
 				if len(page.Work.Items) == 0 {
-					return page, operatortool.ErrResultTooLarge
+					return page, nil, operatortool.ErrResultTooLarge
 				}
 				page.Work.Truncated = true
 				break
 			}
 			card, err := boardModelCard(scope, row)
 			if err != nil {
-				return page, err
+				return page, nil, err
 			}
 			used += row.ListBytes
 			page.Work.Items = append(page.Work.Items, card.Issue)
 		}
 	}
+	if bodies && !picker && !legacy && !compact && !includeBoard && !includeWork && !includeSummary {
+		for _, row := range returned {
+			next := cursor
+			next.Issues = boardRecordCursor(row, selection.ClosedOrder, snapshot.Sequence)
+			encoded, err := encodeNativeCursor(next, key)
+			if err != nil {
+				return page, nil, err
+			}
+			cursors = append(cursors, encoded)
+		}
+	}
 	if hasMore {
 		if len(returned) == 0 {
-			return page, operatortool.ErrResultTooLarge
+			return page, nil, operatortool.ErrResultTooLarge
 		}
 		cursor.Issues = boardRecordCursor(returned[len(returned)-1], selection.ClosedOrder, snapshot.Sequence)
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 	}
-	return page, err
+	return page, cursors, err
 }
 
 func (s *Service) hydrateBoardRecordActorNames(ctx context.Context, organization tracker.OrganizationID, groups ...[]viewstore.BoardRecord) error {
