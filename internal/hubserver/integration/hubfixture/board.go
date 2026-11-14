@@ -1,15 +1,42 @@
 package hubfixture
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (h *Hub) RefreshBoard(t *testing.T, organization tracker.OrganizationID) {
+	t.Helper()
+	for range 64 {
+		h.refreshBoardPass(t, organization)
+		var queued viewstore.BoardCandidate
+		err := h.Repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
+			var err error
+			queued, err = r.NextBoardCandidate(t.Context(), "")
+			return err
+		})
+		if errors.Is(err, corestore.ErrNotFound) {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if queued.QueuedAt == nil {
+			return
+		}
+	}
+	t.Fatal("board cards queued by neighbor changes did not settle within the fixture bound")
+}
+
+func (h *Hub) refreshBoardPass(t *testing.T, organization tracker.OrganizationID) {
 	t.Helper()
 	var after tracker.NativeWorkItemID
 	var attempted []tracker.NativeWorkItemID
