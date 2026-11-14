@@ -2175,9 +2175,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 					t.Fatal(err)
 				}
 				if approved {
-					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE policy_revision_approvals SET approved_by='updated-approver',approved_at='2026-10-27T12:00:00Z' WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3", f.project.OrganizationID, f.project.ID, descriptor.ID); err != nil {
-						t.Fatal(err)
-					}
+					tamperPostgresRows(t, hostedPostgresAdmin(t, f.service), "UPDATE policy_revision_approvals SET approved_by='updated-approver',approved_at='2026-10-27T12:00:00Z' WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3", f.project.OrganizationID, f.project.ID, descriptor.ID)
 					current, err := requireTestTenantProjectPolicy(ctx, f.service, scope)
 					if err != nil || current.ApprovedBy != "updated-approver" || current.ApprovedAt != "2026-10-27T12:00:00Z" {
 						t.Fatalf("cached approval metadata: %+v, %v", current, err)
