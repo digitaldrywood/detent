@@ -945,10 +945,21 @@ type configurationSerializationRepository struct {
 	attempts atomic.Int64
 }
 
+type configurationSerializationWriter struct {
+	tenantstore.Writer
+	attempts *atomic.Int64
+}
+
+func (w configurationSerializationWriter) LockRunnerUpdate(context.Context, string) error {
+	w.attempts.Add(1)
+	return corestore.ErrSerializationFailure
+}
+
 func (r *configurationSerializationRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	if ctx.Value(configurationSerializationKey{}) == true {
-		r.attempts.Add(1)
-		return corestore.ErrSerializationFailure
+		return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error {
+			return write(configurationSerializationWriter{Writer: w, attempts: &r.attempts})
+		})
 	}
 	return r.Repository.WriteTenant(ctx, org, workload, write)
 }
