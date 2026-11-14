@@ -1,4 +1,4 @@
-package hubserver
+package policyauthority_test
 
 import (
 	"errors"
@@ -11,6 +11,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -37,8 +38,8 @@ type policyAuthoritySnapshot struct {
 }
 
 type policyAuthorityFixture struct {
-	nativeFixture
-	runner   runnerFixture
+	hubfixture.Native
+	runner   hubfixture.Runner
 	original policy.Descriptor
 }
 
@@ -96,46 +97,41 @@ func authorityCloudConfigurationPolicy(t *testing.T, markdown, digestMarkdown st
 
 func newPolicyAuthorityFixture(t *testing.T, mode string, approved bool) policyAuthorityFixture {
 	t.Helper()
-	f := newNativeFixture(t, nil, "", "policy authority "+mode)
-	clearNativeFixturePolicy(t, f)
-	fixture := policyAuthorityFixture{nativeFixture: f}
+	f := hubfixture.NewNative(t, nil, "", "policy authority "+mode)
+	f.ClearPolicy(t)
+	fixture := policyAuthorityFixture{Native: f}
 	switch mode {
 	case "none":
-		fixture.original = hubTestPolicy()
+		fixture.original = hubfixture.Policy()
 	case "cloud":
-		saveWorkflowPolicyFixtureGuidance(t, f, authorityCloudMarkdown)
+		saveGuidance(t, f, authorityCloudMarkdown)
 		fixture.original = authorityCloudPolicy(t, workflowconfig.ProjectDefinitionSources{Workflow: []byte(authorityCloudMarkdown)})
 	case "repository":
-		updateWorkflowPolicyFixtureProject(t, f, func(project *projectstore.Record) { project.Settings.CheckoutRepository = authorityRepository })
+		updateProject(t, f, func(project *projectstore.Record) { project.Settings.CheckoutRepository = authorityRepository })
 		fixture.original = authorityRepositoryPolicy(t, "Run the work.\n", "gate:\n  run: make check\n  security_audit:\n    enabled: true\n", strings.Repeat("a", 40))
 	default:
 		t.Fatalf("unknown policy mode %q", mode)
 	}
-	seedNativeFixturePolicy(t, f.service, string(f.project.OrganizationID)+"/"+string(f.project.ID))
-	f.create(t, "Existing work")
-	clearNativeFixturePolicy(t, f)
+	seedPolicy(t, f)
+	f.Create(t, "Existing work")
+	f.ClearPolicy(t)
 	if approved {
-		approveHubTestPolicy(t, f.service, f.base+"/policy", fixture.original)
+		hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", fixture.original)
 	}
-	fixture.runner = prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-	fixture.runner.enroll(t)
-	fixture.runner.reportCapacity(t)
+	fixture.runner = hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	fixture.runner.Enroll(t)
+	fixture.runner.ReportCapacity(t)
 	return fixture
 }
 
 func (f policyAuthorityFixture) snapshot(t *testing.T) policyAuthoritySnapshot {
 	t.Helper()
-	approval, revision, err := f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	project, err := f.service.readTenantProjectRecord(t.Context(), analyticsTestScope(t, f.nativeFixture))
-	if err != nil {
-		t.Fatal(err)
-	}
+	approval, revision := readApproval(t, f.Native)
+	project := readProject(t, f.Native)
 	result := policyAuthoritySnapshot{approval: approval, approvedAt: revision.ApprovedAt, states: project.States, workflowSource: project.Core.WorkflowSource, workflowRevision: project.Core.WorkflowSourceRevision, workflowKey: project.Settings.WorkflowKey}
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-		result.review, err = r.ReviewPolicy(t.Context(), f.project.ID)
+	if err := f.Hub.Repository.ReadTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		result.review, err = r.ReviewPolicy(t.Context(), f.Project.ID)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -143,7 +139,7 @@ func (f policyAuthorityFixture) snapshot(t *testing.T) policyAuthoritySnapshot {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM project_workflow_applies WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&result.applies); err != nil {
+	if err := f.Hub.Admin.QueryRowContext(t.Context(), "SELECT count(*) FROM project_workflow_applies WHERE organization_id=$1 AND project_id=$2", f.Project.OrganizationID, f.Project.ID).Scan(&result.applies); err != nil {
 		t.Fatal(err)
 	}
 	return result
@@ -152,7 +148,7 @@ func (f policyAuthorityFixture) snapshot(t *testing.T) policyAuthoritySnapshot {
 func (f policyAuthorityFixture) observations(t *testing.T, policyID string) int {
 	t.Helper()
 	var count int
-	if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM project_policy_observations WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3", f.project.OrganizationID, f.project.ID, policyID).Scan(&count); err != nil {
+	if err := f.Hub.Admin.QueryRowContext(t.Context(), "SELECT count(*) FROM project_policy_observations WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3", f.Project.OrganizationID, f.Project.ID, policyID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count
@@ -160,22 +156,22 @@ func (f policyAuthorityFixture) observations(t *testing.T, policyID string) int 
 
 func (f policyAuthorityFixture) requireNoNewClaimAuthority(t *testing.T, candidateID, approvedID string, reported bool) {
 	t.Helper()
-	fresh := f.create(t, "Claim after runner observation")
-	claim := tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidateID, MachineID: f.runner.binding.MachineID, SessionID: "observed", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	fresh := f.Create(t, "Claim after runner observation")
+	claim := tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidateID, MachineID: f.runner.Binding.MachineID, SessionID: "observed", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	switch {
 	case candidateID == approvedID:
 	case !reported:
-		requireClaimRefusedWithoutLease(t, f.nativeFixture, f.runner.redemption.Credential, claim, http.StatusUnprocessableEntity, "invalid_request")
+		requireClaimRefusedWithoutLease(t, f.Native, f.runner.Redemption.Credential, claim, http.StatusUnprocessableEntity, "invalid_request")
 	case approvedID == "":
-		requireClaimRefusedWithoutLease(t, f.nativeFixture, f.runner.redemption.Credential, claim, http.StatusConflict, "policy_not_approved")
+		requireClaimRefusedWithoutLease(t, f.Native, f.runner.Redemption.Credential, claim, http.StatusConflict, "policy_not_approved")
 	default:
-		requireClaimRefusedWithoutLease(t, f.nativeFixture, f.runner.redemption.Credential, claim, http.StatusConflict, "policy_mismatch")
+		requireClaimRefusedWithoutLease(t, f.Native, f.runner.Redemption.Credential, claim, http.StatusConflict, "policy_mismatch")
 	}
 	if approvedID == "" {
 		return
 	}
 	claim.PolicyID, claim.SessionID = approvedID, "approved"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential, claim), http.StatusOK)
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/claims", f.runner.Redemption.Credential, claim), http.StatusOK)
 }
 
 func authorityWithFiles(t *testing.T, descriptor policy.Descriptor, files map[string]string) policy.Descriptor {
@@ -263,47 +259,47 @@ func TestRunnerPolicyObservationCannotApprovePolicy(t *testing.T) {
 			return policy.Observation{Descriptor: candidate.WithID(), Source: nil}
 		}},
 		{name: "real receipt with unauthored policy content", modes: []string{"repository"}, status: http.StatusNoContent, setup: func(t *testing.T, f policyAuthorityFixture) {
-			seedWorkflowPolicyNativeLanding(t, f.nativeFixture, strings.Repeat("b", 40), "develop", false)
+			seedLanding(t, f.Native, strings.Repeat("b", 40), "develop")
 		}, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
-			candidate := hubTestPolicy()
+			candidate := hubfixture.Policy()
 			candidate.Gates.PlanReview, candidate.Gates.AutomatedReview = "none", "off"
 			candidate.Workflow = &policy.Workflow{Source: "detent.yaml", Revision: strings.Repeat("b", 40), States: f.original.Workflow.States}
 			return policy.Observation{Descriptor: candidate.WithID(), Source: changedSource(false)}
 		}},
 		{name: "real receipt with fabricated authored files", modes: []string{"repository"}, status: http.StatusNoContent, setup: func(t *testing.T, f policyAuthorityFixture) {
-			seedWorkflowPolicyNativeLanding(t, f.nativeFixture, strings.Repeat("b", 40), "develop", false)
+			seedLanding(t, f.Native, strings.Repeat("b", 40), "develop")
 		}, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
 			return policy.Observation{Descriptor: weakRepository(t), Source: changedSource(false)}
 		}},
 		{name: "foreign project source receipt", modes: []string{"repository"}, status: http.StatusNoContent, setup: func(t *testing.T, f policyAuthorityFixture) {
-			foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign receipt project")
-			updateWorkflowPolicyFixtureProject(t, foreign, func(project *projectstore.Record) { project.Settings.CheckoutRepository = authorityRepository })
-			seedNativeFixturePolicy(t, foreign.service, string(foreign.project.OrganizationID)+"/"+string(foreign.project.ID))
-			seedWorkflowPolicyNativeLanding(t, foreign, strings.Repeat("b", 40), "develop", false)
+			foreign := hubfixture.NewNative(t, f.Hub, f.Project.OrganizationID, "foreign receipt project")
+			updateProject(t, foreign, func(project *projectstore.Record) { project.Settings.CheckoutRepository = authorityRepository })
+			seedPolicy(t, foreign)
+			seedLanding(t, foreign, strings.Repeat("b", 40), "develop")
 		}, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
 			return policy.Observation{Descriptor: weakRepository(t), Source: changedSource(false)}
 		}},
 		{name: "foreign organization source receipt", modes: []string{"repository"}, status: http.StatusNoContent, setup: func(t *testing.T, f policyAuthorityFixture) {
-			foreign := newNativeFixture(t, f.service, "org_first_second", "foreign receipt organization")
-			updateWorkflowPolicyFixtureProject(t, foreign, func(project *projectstore.Record) { project.Settings.CheckoutRepository = authorityRepository })
-			seedNativeFixturePolicy(t, foreign.service, string(foreign.project.OrganizationID)+"/"+string(foreign.project.ID))
-			seedWorkflowPolicyNativeLanding(t, foreign, strings.Repeat("b", 40), "develop", false)
+			foreign := hubfixture.NewNative(t, f.Hub, hubfixture.Secondary, "foreign receipt organization")
+			updateProject(t, foreign, func(project *projectstore.Record) { project.Settings.CheckoutRepository = authorityRepository })
+			seedPolicy(t, foreign)
+			seedLanding(t, foreign, strings.Repeat("b", 40), "develop")
 		}, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
 			return policy.Observation{Descriptor: weakRepository(t), Source: changedSource(false)}
 		}},
 		{name: "stale approved revision", modes: []string{"repository"}, status: http.StatusNoContent, setup: func(t *testing.T, f policyAuthorityFixture) {
 			newer := authorityRepositoryPolicy(t, "Newer approved work.\n", "gate:\n  run: make check\n  security_audit:\n    enabled: true\n", strings.Repeat("d", 40))
-			approveHubTestPolicy(t, f.service, f.base+"/policy", newer)
+			hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", newer)
 		}, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
 			source := changedSource(true)
 			source.Commit, source.DefaultBranchHead = f.original.Workflow.Revision, f.original.Workflow.Revision
 			return policy.Observation{Descriptor: f.original, Source: source}
 		}},
 		{name: "runner without project access", modes: []string{"none", "repository"}, status: http.StatusNotFound, code: "not_found", silent: true, token: func(t *testing.T, f policyAuthorityFixture) string {
-			other := newNativeFixture(t, f.service, f.project.OrganizationID, "unrelated runner project")
-			outsider := prepareRunner(t, other, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-			outsider.enroll(t)
-			return outsider.redemption.Credential
+			other := hubfixture.NewNative(t, f.Hub, f.Project.OrganizationID, "unrelated runner project")
+			outsider := hubfixture.PrepareRunner(t, other, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			outsider.Enroll(t)
+			return outsider.Redemption.Credential
 		}, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
 			if f.original.Workflow != nil {
 				return policy.Observation{Descriptor: weakRepository(t), Source: changedSource(true)}
@@ -313,18 +309,18 @@ func TestRunnerPolicyObservationCannotApprovePolicy(t *testing.T) {
 			return policy.Observation{Descriptor: candidate.WithID()}
 		}},
 		{name: "runner from another organization", modes: []string{"repository"}, status: http.StatusUnauthorized, code: "unauthorized", silent: true, token: func(t *testing.T, f policyAuthorityFixture) string {
-			foreign := newNativeFixture(t, f.service, "org_first_second", "foreign runner organization")
-			outsider := prepareRunner(t, foreign, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-			outsider.enroll(t)
-			return outsider.redemption.Credential
+			foreign := hubfixture.NewNative(t, f.Hub, hubfixture.Secondary, "foreign runner organization")
+			outsider := hubfixture.PrepareRunner(t, foreign, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			outsider.Enroll(t)
+			return outsider.Redemption.Credential
 		}, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
 			return policy.Observation{Descriptor: weakRepository(t), Source: changedSource(true)}
 		}},
 		{name: "revoked runner", modes: []string{"repository"}, status: http.StatusUnauthorized, silent: true, token: func(t *testing.T, f policyAuthorityFixture) string {
-			revoked := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-			revoked.enroll(t)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, revoked.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
-			return revoked.redemption.Credential
+			revoked := hubfixture.PrepareRunner(t, f.Native, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			revoked.Enroll(t)
+			hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodDelete, revoked.IdentityPath(), f.Hub.AdminToken(), nil), http.StatusNoContent)
+			return revoked.Redemption.Credential
 		}, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
 			return policy.Observation{Descriptor: weakRepository(t), Source: changedSource(true)}
 		}},
@@ -336,16 +332,16 @@ func TestRunnerPolicyObservationCannotApprovePolicy(t *testing.T) {
 			test.setup(t, f)
 		}
 		observation := test.observe(t, f)
-		token := f.runner.redemption.Credential
+		token := f.runner.Redemption.Credential
 		if test.token != nil {
 			token = test.token(t, f)
 		}
 		before := f.snapshot(t)
-		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, observation)
+		response := f.Hub.Request(t, http.MethodPost, f.Base+"/policy/observed", token, observation)
 		if test.code != "" {
-			requireNativeError(t, response, test.status, test.code)
+			hubfixture.RequireCode(t, response, test.status, test.code)
 		} else {
-			requireNativeStatus(t, response, test.status)
+			hubfixture.RequireStatus(t, response, test.status)
 		}
 		after := f.snapshot(t)
 		if !reflect.DeepEqual(after, before) {
@@ -380,15 +376,15 @@ func TestRunnerPolicyObservationCannotApprovePolicy(t *testing.T) {
 
 func TestRunnerPolicyReobservationKeepsNewerGuidance(t *testing.T) {
 	t.Parallel()
-	updateIntegration := func(t *testing.T, f policyAuthorityFixture, update func(*updateProjectIntegrationRequest)) {
+	updateIntegration := func(t *testing.T, f policyAuthorityFixture, update func(*integrationUpdate)) {
 		t.Helper()
-		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/integration", testHubAdminToken, nil)
-		requireNativeStatus(t, response, http.StatusOK)
+		response := f.Hub.Request(t, http.MethodGet, f.Base+"/integration", f.Hub.AdminToken(), nil)
+		hubfixture.RequireStatus(t, response, http.StatusOK)
 		var integration projectstore.Integration
-		decodeHubResponse(t, response, &integration)
-		request := updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: "newer-guidance"}, ExpectedRevision: integration.Revision, Intake: "disabled", Projection: "disabled"}
+		hubfixture.Decode(t, response, &integration)
+		request := integrationUpdate{Mutation: tracker.Mutation{IdempotencyKey: "newer-guidance"}, ExpectedRevision: integration.Revision, Intake: "disabled", Projection: "disabled"}
 		update(&request)
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, request), http.StatusOK)
+		hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, f.Base+"/integration", f.Hub.AdminToken(), request), http.StatusOK)
 	}
 	for _, test := range []struct {
 		name   string
@@ -399,19 +395,19 @@ func TestRunnerPolicyReobservationKeepsNewerGuidance(t *testing.T) {
 	}{
 		{name: "Cloud guidance saved after approval", mode: "cloud", status: http.StatusConflict, newer: func(t *testing.T, f policyAuthorityFixture) {
 			markdown := strings.Replace(authorityCloudMarkdown, "Existing guidance", "Newer guidance", 1)
-			updateIntegration(t, f, func(request *updateProjectIntegrationRequest) { request.WorkflowMarkdown = &markdown })
+			updateIntegration(t, f, func(request *integrationUpdate) { request.WorkflowMarkdown = &markdown })
 		}},
 		{name: "board states edited after approval", mode: "none", status: http.StatusNoContent, newer: func(t *testing.T, f policyAuthorityFixture) {
-			states := append(nativeFixtureStates(), tracker.NativeState{Name: "Review", Dispatchable: true, Transitions: []string{"Done"}})
-			updateIntegration(t, f, func(request *updateProjectIntegrationRequest) { request.States = &states })
+			states := append(hubfixture.States(), tracker.NativeState{Name: "Review", Dispatchable: true, Transitions: []string{"Done"}})
+			updateIntegration(t, f, func(request *integrationUpdate) { request.States = &states })
 		}},
 		{name: "manual review policy after approval", mode: "repository", status: http.StatusNoContent, source: &policy.RepositorySource{Repository: authorityRepository, Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("a", 40), DefaultBranchReachable: true}, newer: func(t *testing.T, f policyAuthorityFixture) {
-			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/change-review-policy", testHubAdminToken, nil)
-			requireNativeStatus(t, response, http.StatusOK)
+			response := f.Hub.Request(t, http.MethodGet, f.Base+"/change-review-policy", f.Hub.AdminToken(), nil)
+			hubfixture.RequireStatus(t, response, http.StatusOK)
 			var current tracker.ChangeReviewPolicy
-			decodeHubResponse(t, response, &current)
+			hubfixture.Decode(t, response, &current)
 			rules := tracker.ChangeReviewPolicy{PolicyID: f.original.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "manual-review"}, ExpectedID: current.ID, Policy: rules}), http.StatusOK)
+			hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, f.Base+"/change-review-policy", f.Hub.AdminToken(), tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "manual-review"}, ExpectedID: current.ID, Policy: rules}), http.StatusOK)
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -423,8 +419,8 @@ func TestRunnerPolicyReobservationKeepsNewerGuidance(t *testing.T) {
 			if reflect.DeepEqual(before, initial) {
 				t.Fatal("newer authorized guidance did not change project state")
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", f.runner.redemption.Credential, policy.Observation{Descriptor: f.original, Source: test.source})
-			requireNativeStatus(t, response, test.status)
+			response := f.Hub.Request(t, http.MethodPost, f.Base+"/policy/observed", f.runner.Redemption.Credential, policy.Observation{Descriptor: f.original, Source: test.source})
+			hubfixture.RequireStatus(t, response, test.status)
 			if after := f.snapshot(t); !reflect.DeepEqual(after, before) {
 				t.Fatalf("re-observing the current policy undid newer guidance:\nbefore=%+v\nafter=%+v", before, after)
 			}
