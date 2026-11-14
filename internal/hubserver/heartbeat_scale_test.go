@@ -1014,6 +1014,7 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			freezeReportPlannerInputs(t, admin)
 			if _, err := admin.ExecContext(t.Context(), "ANALYZE issues,native_attempts,leases,runner_lease_assignments"); err != nil {
 				t.Fatal(err)
 			}
@@ -1026,6 +1027,9 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				pages = []int{100, test.pending - 100, 100, 0}
 			}
 			for poll, want := range pages {
+				if _, err := admin.ExecContext(t.Context(), "ANALYZE native_attempts"); err != nil {
+					t.Fatal(err)
+				}
 				var mu sync.Mutex
 				var statements []tracedStatement
 				timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
