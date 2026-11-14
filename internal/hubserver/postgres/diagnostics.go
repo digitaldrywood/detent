@@ -24,23 +24,7 @@ func (s *session) DiagnosticsSnapshot(ctx context.Context, projects []tracker.Pr
 	for i, id := range projects {
 		ids[i] = string(id)
 	}
-	rows, err := s.db.Query(ctx, `WITH RECURSIVE states AS (
- SELECT p.project_id,first.name,1 AS depth FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL (
-  SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND NOT i.archived AND i.workflow_state_name IS NOT NULL ORDER BY i.workflow_state_name LIMIT 1
- ) first
- UNION ALL
- SELECT s.project_id,next.name,s.depth+1 FROM states s CROSS JOIN LATERAL (
-  SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name>s.name ORDER BY i.workflow_state_name LIMIT 1
- ) next WHERE s.depth<=$5
-), issues_by_state AS MATERIALIZED (
- SELECT i.id FROM states s CROSS JOIN LATERAL (
-  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name=s.name ORDER BY i.id LIMIT $6
- ) i WHERE s.depth<=$5
- UNION ALL
- SELECT i.id FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL (
-  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND NOT i.archived AND i.workflow_state_name IS NULL ORDER BY i.id LIMIT $6
- ) i
-)
+	rows, err := s.db.Query(ctx, `WITH RECURSIVE states AS ( SELECT p.project_id,first.name,1 AS depth FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL ( SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND NOT i.archived AND i.workflow_state_name IS NOT NULL ORDER BY i.workflow_state_name LIMIT 1 ) first UNION ALL SELECT s.project_id,next.name,s.depth+1 FROM states s CROSS JOIN LATERAL ( SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name>s.name ORDER BY i.workflow_state_name LIMIT 1 ) next WHERE s.depth<=$5 ), issues_by_state AS MATERIALIZED ( SELECT i.id FROM states s CROSS JOIN LATERAL ( SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name=s.name ORDER BY i.id LIMIT $6 ) i WHERE s.depth<=$5 UNION ALL SELECT i.id FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL ( SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND NOT i.archived AND i.workflow_state_name IS NULL ORDER BY i.id LIMIT $6 ) i )
 SELECT i.project_id,i.native_id,coalesce(i.workflow_state_name,''),i.native_created_at,EXISTS(SELECT 1 FROM states WHERE depth>$5) OR (SELECT count(*) FROM issues_by_state)>=$6
 FROM issues_by_state c CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=c.id LIMIT 1) i
 WHERE NOT i.archived AND ($4='' OR i.actor_principal_id=$4) ORDER BY c.id LIMIT $3`, s.organization, ids, diagnosticstore.Limit+1, principal, maxReportStateNames, maxOverviewCandidateRows+1)
@@ -100,15 +84,23 @@ WHERE NOT i.archived AND ($4='' OR i.actor_principal_id=$4) ORDER BY c.id LIMIT 
 		return cmp.Or(a.RecordedAt.Compare(b.RecordedAt), cmp.Compare(a.ID, b.ID))
 	})
 
-	rows, err = s.db.Query(ctx, `SELECT l.acquired_at,least(coalesce(l.released_at,l.expires_at),l.expires_at) FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE l.organization_id=$1 AND i.project_id=ANY($2) AND ($6='' OR i.actor_principal_id=$6) AND l.acquired_at<$4 AND least(coalesce(l.released_at,l.expires_at),l.expires_at)>$3 ORDER BY l.acquired_at,l.lease_id LIMIT $5`, s.organization, ids, from, to, diagnosticstore.Limit+1, principal)
+	rows, err = s.db.Query(ctx, `WITH RECURSIVE lease_machines AS ( SELECT first.machine_id,1 AS depth FROM (SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 ORDER BY l.machine_id LIMIT 1) first UNION ALL SELECT next.machine_id,m.depth+1 FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id>m.machine_id ORDER BY l.machine_id LIMIT 1 ) next WHERE m.depth<=$8 ), windowed AS MATERIALIZED ( SELECT l.lease_id FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.lease_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id=m.machine_id AND l.expires_at>$3 ORDER BY l.expires_at LIMIT $7 ) l WHERE m.depth<=$8 )
+SELECT l.acquired_at,least(coalesce(l.released_at,l.expires_at),l.expires_at),EXISTS(SELECT 1 FROM lease_machines WHERE depth>$8) OR (SELECT count(*) FROM windowed)>=$7
+FROM windowed w CROSS JOIN LATERAL (SELECT * FROM leases l WHERE l.organization_id=$1 AND l.lease_id=w.lease_id LIMIT 1) l
+CROSS JOIN LATERAL (SELECT i.project_id,i.actor_principal_id FROM issues i WHERE i.organization_id=$1 AND i.id=l.issue_id LIMIT 1) i
+WHERE i.project_id=ANY($2) AND ($6='' OR i.actor_principal_id=$6) AND l.acquired_at<$4 AND least(coalesce(l.released_at,l.expires_at),l.expires_at)>$3 ORDER BY l.acquired_at,l.lease_id LIMIT $5`, s.organization, ids, from, to, diagnosticstore.Limit+1, principal, maxOverviewCandidateRows+1, maxReportProjects)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var row diagnosticstore.Lease
-		if err := rows.Scan(&row.AcquiredAt, &row.FinishedAt); err != nil {
+		var truncated bool
+		if err := rows.Scan(&row.AcquiredAt, &row.FinishedAt, &truncated); err != nil {
 			return out, mapError(ctx, err)
+		}
+		if truncated {
+			out.Partial = true
 		}
 		out.Leases = append(out.Leases, row)
 	}
