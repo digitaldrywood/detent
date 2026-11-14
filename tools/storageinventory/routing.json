@@ -12361,6 +12361,20 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261114134551_report_attempt_tie_order.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_attempts"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
