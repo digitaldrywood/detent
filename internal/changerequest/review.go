@@ -83,6 +83,10 @@ func ValidateVisualArtifacts(artifacts []tracker.ChangeArtifact, organization, p
 }
 
 func ValidatePolicy(rules tracker.ChangeReviewPolicy, approved policy.Descriptor) error {
+	return validatePolicy(rules, CompatibilityPolicyOf(approved))
+}
+
+func validatePolicy(rules tracker.ChangeReviewPolicy, approved CompatibilityPolicy) error {
 	if rules.PolicyID != approved.ID || len(rules.RequiredChecks) > 256 || len(rules.RequiredChecks) < approved.Gates.RequiredChecks {
 		return errors.New("review policy must match the approved repository policy and required check floor")
 	}
@@ -133,7 +137,49 @@ func SummarizeCurrentVersionWithAuditDispositions(detail tracker.ChangeDetail, p
 	return summarize(detail, policyID, reviewPolicyID, now, priorApproval, dispositions)
 }
 
+type CompatibilityGates struct {
+	LandingMode          string
+	Kind                 string
+	LandingCommandDigest string
+	GitHubCIDigest       string
+	PlanReview           string
+	AutomatedReview      string
+	RequiredChecks       int
+	Validator            bool
+	SecurityAudit        bool
+	HumanReview          bool
+	PlanEnabled          bool
+	GitHubPullRequest    bool
+}
+
+type CompatibilityPolicy struct {
+	ID    string
+	Gates CompatibilityGates
+}
+
+type CompatibilityVersion struct {
+	PolicyID     string
+	Policy       CompatibilityPolicy
+	ReviewPolicy tracker.ChangeReviewPolicy
+}
+
+func CompatibilityPolicyOf(descriptor policy.Descriptor) CompatibilityPolicy {
+	g := descriptor.Gates
+	return CompatibilityPolicy{ID: descriptor.ID, Gates: CompatibilityGates{
+		LandingMode: g.LandingMode, Kind: g.Kind, LandingCommandDigest: g.LandingCommandDigest, GitHubCIDigest: g.GitHubCIDigest,
+		PlanReview: g.PlanReview, AutomatedReview: g.AutomatedReview, RequiredChecks: g.RequiredChecks, Validator: g.Validator,
+		SecurityAudit: g.SecurityAudit, HumanReview: g.HumanReview, PlanEnabled: g.PlanEnabled, GitHubPullRequest: g.GitHubPullRequest,
+	}}
+}
+
 func CurrentPolicyIdentities(version *tracker.ChangeVersion, approved policy.Descriptor, rules tracker.ChangeReviewPolicy) (string, string) {
+	if version == nil {
+		return CompatiblePolicyIdentities(nil, CompatibilityPolicyOf(approved), rules)
+	}
+	return CompatiblePolicyIdentities(&CompatibilityVersion{PolicyID: version.PolicyID, Policy: CompatibilityPolicyOf(version.Policy), ReviewPolicy: version.ReviewPolicy}, CompatibilityPolicyOf(approved), rules)
+}
+
+func CompatiblePolicyIdentities(version *CompatibilityVersion, approved CompatibilityPolicy, rules tracker.ChangeReviewPolicy) (string, string) {
 	policyID, reviewID := approved.ID, rules.ID
 	if version == nil {
 		return policyID, reviewID
@@ -143,16 +189,20 @@ func CurrentPolicyIdentities(version *tracker.ChangeVersion, approved policy.Des
 	}
 	rules.PolicyID = policyID
 	if version.PolicyID != version.Policy.ID || version.ReviewPolicy.ID == "" ||
-		policyID != "" && reviewID == "" || ValidatePolicy(rules, approved) != nil {
+		policyID != "" && reviewID == "" || validatePolicy(rules, approved) != nil {
 		return policyID, reviewID
 	}
 	if policyID != "" && !gatesSatisfied(version.Policy.Gates, approved.Gates) ||
 		rules.RequireReview && !version.ReviewPolicy.RequireReview {
 		return policyID, reviewID
 	}
+	prior := make(map[string][]tracker.ChangeCheckSpec, len(version.ReviewPolicy.RequiredChecks))
+	for _, check := range version.ReviewPolicy.RequiredChecks {
+		prior[check.Name] = append(prior[check.Name], check)
+	}
 	for _, check := range rules.RequiredChecks {
-		if !slices.ContainsFunc(version.ReviewPolicy.RequiredChecks, func(prior tracker.ChangeCheckSpec) bool {
-			return prior.Name == check.Name && prior.PrincipalID == check.PrincipalID &&
+		if !slices.ContainsFunc(prior[check.Name], func(prior tracker.ChangeCheckSpec) bool {
+			return prior.PrincipalID == check.PrincipalID &&
 				prior.WorkflowID == check.WorkflowID && prior.WorkflowSHA256 == check.WorkflowSHA256 &&
 				prior.Source == check.Source && prior.MaxAgeSeconds <= check.MaxAgeSeconds
 		}) {
@@ -162,7 +212,7 @@ func CurrentPolicyIdentities(version *tracker.ChangeVersion, approved policy.Des
 	return version.PolicyID, version.ReviewPolicy.ID
 }
 
-func gatesSatisfied(version, current policy.Gates) bool {
+func gatesSatisfied(version, current CompatibilityGates) bool {
 	if current.Validator && !version.Validator || current.SecurityAudit && !version.SecurityAudit ||
 		current.HumanReview && !version.HumanReview || current.PlanEnabled && !version.PlanEnabled ||
 		current.GitHubPullRequest && !version.GitHubPullRequest ||

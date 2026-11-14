@@ -1,6 +1,8 @@
 package changerequest
 
 import (
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -294,6 +296,52 @@ func TestSummarizePolicyAndExternalAuthority(t *testing.T) {
 		{name: "missing version review policy", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
 			v.ReviewPolicy.ID = ""
 		}},
+		{name: "instruction-only change", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.SourceDigest, p.ConfigDigest, p.Gates.PlanStopDigest, p.Gates.AutoPromote = "changed-instructions", "changed-config", "changed-stop", true
+		}},
+		{name: "required check removed", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			p.Gates.RequiredChecks, r.RequiredChecks = 0, []tracker.ChangeCheckSpec{}
+		}},
+		{name: "version check superset", edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			check := v.ReviewPolicy.RequiredChecks[0]
+			check.Name = "extra"
+			v.ReviewPolicy.RequiredChecks = append(append([]tracker.ChangeCheckSpec(nil), v.ReviewPolicy.RequiredChecks...), check)
+		}},
+		{name: "same check name later in version order", edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			stale := v.ReviewPolicy.RequiredChecks[0]
+			stale.MaxAgeSeconds = 7 * 24 * 60 * 60
+			v.ReviewPolicy.RequiredChecks = append([]tracker.ChangeCheckSpec{stale}, v.ReviewPolicy.RequiredChecks...)
+		}},
+		{name: "default review policy", edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			p.Gates.RequiredChecks = 0
+			*r = tracker.ChangeReviewPolicy{PolicyID: p.ID, RequireReview: p.Gates.HumanReview, RequiredChecks: []tracker.ChangeCheckSpec{}}
+			r.ID = PolicyID(*r)
+		}},
+		{name: "current review policy bound to another policy", edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.PolicyID = "another-policy"
+		}},
+		{name: "current check names repeat", stale: true, edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks = append(r.RequiredChecks, r.RequiredChecks[0])
+		}},
+		{name: "current check digest invalid", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks[0].WorkflowSHA256 = strings.Repeat("F", 64)
+			v.ReviewPolicy.RequiredChecks = r.RequiredChecks
+		}},
+		{name: "current check freshness out of range", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks[0].MaxAgeSeconds = 30
+			v.ReviewPolicy.RequiredChecks = r.RequiredChecks
+		}},
+		{name: "current human review kind without review", stale: true, edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.Kind, p.Gates.Kind, r.RequireReview = gate.KindHumanReview, gate.KindHumanReview, false
+		}},
+		{name: "current checks over the maximum", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			for index := range 256 {
+				check := r.RequiredChecks[0]
+				check.Name = "check-" + strconv.Itoa(index)
+				r.RequiredChecks = append(r.RequiredChecks, check)
+			}
+			v.ReviewPolicy.RequiredChecks = r.RequiredChecks
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			detail, now := reviewFixture()
@@ -317,6 +365,10 @@ func TestSummarizePolicyAndExternalAuthority(t *testing.T) {
 				test.edit(version, &approved, &rules)
 			}
 			policyID, reviewID := CurrentPolicyIdentities(version, approved, rules)
+			typed := CompatibilityVersion{PolicyID: version.PolicyID, Policy: typedPolicy(version.Policy), ReviewPolicy: version.ReviewPolicy}
+			if typedID, typedReview := CompatiblePolicyIdentities(&typed, typedPolicy(approved), rules); typedID != policyID || typedReview != reviewID {
+				t.Fatalf("typed identities = %q, %q; descriptor identities = %q, %q", typedID, typedReview, policyID, reviewID)
+			}
 			detail.Summary = Summarize(detail, policyID, reviewID, now)
 			want := "reviewed"
 			if test.stale {
@@ -329,6 +381,43 @@ func TestSummarizePolicyAndExternalAuthority(t *testing.T) {
 				t.Fatalf("review state = %#v; stale = %t", state, test.stale)
 			}
 		})
+	}
+}
+
+func typedPolicy(descriptor policy.Descriptor) CompatibilityPolicy {
+	g := descriptor.Gates
+	return CompatibilityPolicy{ID: descriptor.ID, Gates: CompatibilityGates{LandingMode: g.LandingMode, Kind: g.Kind, LandingCommandDigest: g.LandingCommandDigest, GitHubCIDigest: g.GitHubCIDigest, PlanReview: g.PlanReview, AutomatedReview: g.AutomatedReview, RequiredChecks: g.RequiredChecks, Validator: g.Validator, SecurityAudit: g.SecurityAudit, HumanReview: g.HumanReview, PlanEnabled: g.PlanEnabled, GitHubPullRequest: g.GitHubPullRequest}}
+}
+
+func TestCompatibilityPolicyCoversEveryComparedGate(t *testing.T) {
+	t.Parallel()
+	ignored := map[string]bool{"MergeMethod": true, "PlanStopDigest": true, "AutoPromote": true}
+	gates, typed := reflect.TypeFor[policy.Gates](), reflect.TypeFor[CompatibilityGates]()
+	for index := range gates.NumField() {
+		field := gates.Field(index)
+		mapped, found := typed.FieldByName(field.Name)
+		if found == ignored[field.Name] {
+			t.Fatalf("gate %s: typed field present=%v, ignored=%v; classify every gate as compared or not compared", field.Name, found, ignored[field.Name])
+		}
+		if !found {
+			continue
+		}
+		var descriptor policy.Descriptor
+		value := reflect.ValueOf(&descriptor.Gates).Elem().Field(index)
+		switch value.Kind() {
+		case reflect.String:
+			value.SetString("set")
+		case reflect.Bool:
+			value.SetBool(true)
+		case reflect.Int:
+			value.SetInt(7)
+		default:
+			t.Fatalf("gate %s has unclassified kind %s", field.Name, value.Kind())
+		}
+		got := reflect.ValueOf(CompatibilityPolicyOf(descriptor).Gates).FieldByIndex(mapped.Index)
+		if !got.Equal(value) {
+			t.Fatalf("CompatibilityPolicyOf dropped gate %s: got %v want %v", field.Name, got, value)
+		}
 	}
 }
 
