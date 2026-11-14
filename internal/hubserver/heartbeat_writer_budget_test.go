@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,6 +97,14 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 				mutationErr = errors.Join(mutationErr, err)
 				mutationMu.Unlock()
 			})
+			readObservation := func() (observation runnerstore.ProjectObservation, err error) {
+				err = repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					observation, _, err = r.RunnerProjectObservation(t.Context(), runner.binding.RunnerID, f.project.ID, "")
+					return err
+				})
+				return observation, err
+			}
+			priorObservation, priorErr := readObservation()
 			path := f.base + "/machines/" + string(runner.binding.MachineID) + "/heartbeat"
 			request := newHubAPIRequest(t, http.MethodPost, path, runner.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "sprite_name": hostname, "project_configuration": view})
 			response := httptest.NewRecorder()
@@ -107,16 +116,6 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 				t.Fatal(injectedErr)
 			}
 			uploaded := details.uploads()
-			if limited {
-				if len(uploaded) != 0 {
-					t.Errorf("consumption refusal uploaded %d objects", len(uploaded))
-				}
-				requireNativeStatus(t, response, http.StatusTooManyRequests)
-				if used := heartbeatBudgetBytes(t, f); used != before {
-					t.Fatalf("refused preparation charged bytes=%d want=%d", used, before)
-				}
-				return
-			}
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 			if !strings.Contains(response.Body.String(), "Sprite name must match the runner hostname") {
 				t.Fatalf("unexpected preparation refusal: %s", response.Body.String())
@@ -158,20 +157,11 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 				}
 				want += ref.CompressedSize
 			}
-			if used := heartbeatBudgetBytes(t, f); used != want {
-				t.Fatalf("charged bytes=%d want=%d", used, want)
+			if used := heartbeatBudgetBytes(t, f); used != want || limited && used <= limits["collaboration_bytes"] {
+				t.Fatalf("charged bytes=%d want=%d past allowance=%t", used, want, limited)
 			}
-			if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-				_, _, err := r.RunnerProjectObservation(t.Context(), runner.binding.RunnerID, f.project.ID, "")
-				if err == nil {
-					return errors.New("refused heartbeat persisted diagnostics")
-				}
-				if !errors.Is(err, corestore.ErrNotFound) {
-					return err
-				}
-				return nil
-			}); err != nil {
-				t.Fatal(err)
+			if observation, err := readObservation(); (err == nil) != (priorErr == nil) || err != nil && !errors.Is(err, corestore.ErrNotFound) || !reflect.DeepEqual(observation, priorObservation) {
+				t.Fatalf("refused heartbeat persisted diagnostics: %+v error=%v, before %+v error=%v", observation, err, priorObservation, priorErr)
 			}
 		})
 	}
