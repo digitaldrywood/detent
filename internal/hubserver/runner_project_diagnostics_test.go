@@ -272,6 +272,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	}
 	t.Run("expires after preparation", func(t *testing.T) {
 		preparedAt := f.service.config.Clock()
+		view.Diagnostics.ObservedAt = view.Diagnostics.ObservedAt.Add(time.Second)
 		view.Diagnostics.Records[1].LeaseExpiresAt = preparedAt.Add(time.Second)
 		defer func() { view.Diagnostics.Records[1].LeaseExpiresAt = now.Add(-time.Hour) }()
 		view.Paused = true
@@ -317,6 +318,65 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		}
 		if digest != wantDigest {
 			t.Fatalf("stored digest = %s, want pruned snapshot digest %s", digest, wantDigest)
+		}
+	})
+	t.Run("same-time conflicting report keeps the stored observation", func(t *testing.T) {
+		other := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "second diagnostics")
+		otherRunner := prepareRunner(t, other, runnerauth.Read, runnerauth.Heartbeat)
+		otherRunner.enroll(t)
+		heartbeat := func(runner runnerFixture, base string, report runnerauth.ProjectConfiguration) *httptest.ResponseRecorder {
+			return performHubAPIRequest(t, f.service, http.MethodPost, base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": runner.redemption.BackendIsolation, "project_configuration": report})
+		}
+		clone := func(report runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
+			raw, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var copied runnerauth.ProjectConfiguration
+			if err := json.Unmarshal(raw, &copied); err != nil {
+				t.Fatal(err)
+			}
+			return copied
+		}
+		otherView := clone(view)
+		otherView.ProjectID = string(other.project.ID)
+		requireNativeStatus(t, heartbeat(otherRunner, other.base, otherView), http.StatusOK)
+		beforeState, before := readDiagnosticFixtureState(t, f, r.binding.RunnerID)
+		otherBefore, _ := readDiagnosticFixtureState(t, other, otherRunner.binding.RunnerID)
+		conflicting := clone(view)
+		conflicting.Diagnostics.Admissions[0].Predicate = "conflicting_same_time"
+		clock.Add(int64(time.Second))
+		otherView.Diagnostics.ObservedAt = otherView.Diagnostics.ObservedAt.Add(time.Second)
+		responses := make(chan *httptest.ResponseRecorder, 3)
+		var reports sync.WaitGroup
+		for range 2 {
+			reports.Go(func() { responses <- heartbeat(r, f.base, conflicting) })
+		}
+		reports.Go(func() { responses <- heartbeat(otherRunner, other.base, otherView) })
+		reports.Wait()
+		close(responses)
+		conflicts := 0
+		for response := range responses {
+			if response.Code == http.StatusConflict && strings.Contains(response.Body.String(), `"code":"revision_conflict"`) {
+				conflicts++
+				continue
+			}
+			requireNativeStatus(t, response, http.StatusOK)
+		}
+		if conflicts != 2 {
+			t.Fatalf("same-time conflicting reports answered %d typed conflicts, want 2", conflicts)
+		}
+		afterState, after := readDiagnosticFixtureState(t, f, r.binding.RunnerID)
+		if !reflect.DeepEqual(afterState.Observation, beforeState.Observation) || !reflect.DeepEqual(afterState.Attempts, beforeState.Attempts) || afterState.Command.Observation != beforeState.Command.Observation || !reflect.DeepEqual(after.Diagnostics, before.Diagnostics) {
+			t.Fatalf("conflicting report changed the stored observation: before=%+v after=%+v", beforeState.Observation, afterState.Observation)
+		}
+		if otherAfter, _ := readDiagnosticFixtureState(t, other, otherRunner.binding.RunnerID); otherAfter.Observation.DiagnosticsAt == nil || otherBefore.Observation.DiagnosticsAt == nil || !otherAfter.Observation.DiagnosticsAt.After(*otherBefore.Observation.DiagnosticsAt) || !otherAfter.Observation.ObservedAt.After(otherBefore.Observation.ObservedAt) {
+			t.Fatalf("other organization's newer report was not stored: before=%+v after=%+v", otherBefore.Observation, otherAfter.Observation)
+		}
+		clock.Add(int64(time.Second))
+		requireNativeStatus(t, heartbeat(r, f.base, view), http.StatusOK)
+		if replayState, _ := readDiagnosticFixtureState(t, f, r.binding.RunnerID); replayState.Observation.SnapshotDigest != beforeState.Observation.SnapshotDigest {
+			t.Fatalf("identical replay changed the snapshot digest: before=%s after=%s", beforeState.Observation.SnapshotDigest, replayState.Observation.SnapshotDigest)
 		}
 	})
 	for _, runtimeFresh := range []bool{true, true, false} {

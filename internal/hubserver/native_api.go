@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -214,7 +215,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 	if errors.As(err, &request) {
 		return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, request)
 	}
-	if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, leasestore.ErrAttemptConflict) {
+	if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, leasestore.ErrAttemptConflict) || errors.Is(err, runnerstore.ErrStaleObservation) {
 		return s.nativeAPIError(c, hubapi.NativeConflict(0), attributes...)
 	}
 	if errors.Is(err, mutation.ErrConflict) {

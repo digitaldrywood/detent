@@ -16,16 +16,11 @@ func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.Nat
 	if view.ProjectID != string(scope.Project) || view.ObservedAt.IsZero() {
 		return runnerstore.ErrInvalidRecord
 	}
-	digest, err := projectConfigurationDigest(view)
-	if err != nil {
-		return err
-	}
 	observation := runnerstore.ProjectObservation{
 		OrganizationID: scope.Organization,
 		RunnerID:       scope.Credential.Runner.RunnerID,
 		ProjectID:      tracker.ProjectID(view.ProjectID),
 		ObservedAt:     receivedAt,
-		SnapshotDigest: digest,
 	}
 	var attempts []runnerstore.ProjectDiagnosticAttempt
 	if view.Diagnostics != nil {
@@ -70,6 +65,15 @@ func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.Nat
 			attempts = append(attempts, attempt)
 		}
 	}
+	stored := view
+	if observation.Diagnostics != nil {
+		stored.Diagnostics = observation.Diagnostics
+	}
+	digest, err := projectConfigurationDigest(stored)
+	if err != nil {
+		return err
+	}
+	observation.SnapshotDigest = digest
 	return writer.ReplaceRunnerProjectObservation(ctx, observation, attempts)
 }
 
