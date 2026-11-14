@@ -1073,6 +1073,12 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 		decodeHubResponse(t, response, &setup)
 		return setup
 	}
+	pending := read()
+	if pending.Policy == nil || pending.Policy.Policy.ID != hubTestPolicy().ID || len(pending.ObservedPolicies) != 2 {
+		t.Fatalf("runner configuration reports changed approval without a human: %+v", pending)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: hubTestPolicy().ID, ObservedPolicyID: descriptors[0].ID}), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptors[0].ID, ObservedPolicyID: descriptors[1].ID}), http.StatusOK)
 	initial := read()
 	if initial.Policy == nil || initial.Policy.Policy.ID != descriptors[1].ID {
 		t.Fatalf("latest runner configuration was not selected: %+v", initial.Policy)
@@ -1091,6 +1097,10 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 	if err := pro.CheckProjectPolicy(t.Context(), "shared", "", descriptor); err != nil {
 		t.Fatal(err)
 	}
+	if current := read(); current.Policy == nil || current.Policy.Policy.ID != descriptors[1].ID {
+		t.Fatalf("combined runner report changed approval without a human: %+v", current.Policy)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptors[1].ID, ObservedPolicyID: descriptor.ID}), http.StatusOK)
 	for i, runner := range []*hubclient.Scheduler{pro, air} {
 		local := []workflowconfig.Workflow{proWorkflow, airWorkflow}[i]
 		resolved, err := runner.ResolveProjectWorkflow(t.Context(), "shared", local, nil)
