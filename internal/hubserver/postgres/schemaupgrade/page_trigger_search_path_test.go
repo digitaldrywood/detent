@@ -11,6 +11,7 @@ import (
 )
 
 func TestPageTriggersSurviveRestrictedCallerSearchPath(t *testing.T) {
+	t.Parallel()
 	admin, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261107062510)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO public.organizations(organization_id,name,local,created_at) VALUES($1,$1,false,now())`, org); err != nil {

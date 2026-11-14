@@ -12,6 +12,7 @@ import (
 )
 
 func TestShellPageIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
+	t.Parallel()
 	const migrationVersion = 20261107060935
 	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261107051229)
 	db.SetMaxOpenConns(1)

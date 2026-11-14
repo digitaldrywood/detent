@@ -15,6 +15,7 @@ import (
 )
 
 func TestSourceCatalogTargetsMatchPostgres(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	catalog, err := storagecatalog.Read(os.DirFS("../../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
@@ -48,6 +49,7 @@ func TestSourceCatalogTargetsMatchPostgres(t *testing.T) {
 }
 
 func TestSourceCatalogSyntheticRawSchemas(t *testing.T) {
+	t.Parallel()
 	db := pgstoretest.Template.Database(t)
 	for _, statement := range []string{
 		`CREATE SCHEMA raw_legacy_fixture`,

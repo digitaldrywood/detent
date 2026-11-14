@@ -31,6 +31,7 @@ import (
 )
 
 func TestLocalBoardBillingActivityIndexesRecoverInterruptedBuild(t *testing.T) {
+	t.Parallel()
 	const version = 20261110042737
 	const name = "20261110042737_billing_activity_timestamp_indexes.sql"
 	admin, _ := pgstoretest.MigrationDatabaseAtVersion(t, version-1)
@@ -80,6 +81,7 @@ func TestLocalBoardBillingActivityIndexesRecoverInterruptedBuild(t *testing.T) {
 }
 
 func TestLocalBoardRetainedEventsInitializeSnapshotDelta(t *testing.T) {
+	t.Parallel()
 	const activationVersion = 20261110042748
 	const initializationVersion = 20261110042758
 	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261110042736)
@@ -267,6 +269,7 @@ VALUES($1,'prj_shared','wi_shared',$2,$3,1,'orgs/'||$1||'/blobs/sha256/aa/'||rep
 }
 
 func TestLocalBoardPopulationResumesWithoutLosingConcurrentSource(t *testing.T) {
+	t.Parallel()
 	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109030623)
 	pgstoretest.SeedCore(t, admin)
 	for _, org := range []string{"org_first", "org_second"} {
@@ -456,6 +459,7 @@ func TestLocalBoardPopulationResumesWithoutLosingConcurrentSource(t *testing.T) 
 }
 
 func TestLocalBoardHistoryPopulationBatchesCounterWrites(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
 	if _, err := admin.ExecContext(t.Context(), `
@@ -514,6 +518,7 @@ FROM issues CROSS JOIN generate_series(1,2) n`, 40, 2, "23505"},
 }
 
 func TestLocalBoardIssuePopulationBatchesCounterWrites(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
 	if _, err := admin.ExecContext(t.Context(), `
@@ -592,6 +597,7 @@ FROM projects p JOIN fixture_issue_project_updates u ON u.organization_id=p.orga
 }
 
 func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
+	t.Parallel()
 	type step func(context.Context, tenantstore.Writer) error
 	archive := func(ctx context.Context, w tenantstore.Writer) error { return w.LockArchiveAccounting(ctx) }
 	receipt := func(ctx context.Context, w tenantstore.Writer) error {
@@ -799,6 +805,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"issue delete while archive holder checks keys", extra, archive, converseOn("wi_first_3"), noop, remove("wi_first_3"), false, 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			admin := pgstoretest.Template.Database(t)
 			repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 			admin.SetMaxOpenConns(2)

@@ -16,6 +16,7 @@ import (
 )
 
 func TestShellPageMigrationsResumeInterruptedDDL(t *testing.T) {
+	t.Parallel()
 	_, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261107062507)
 	for _, tc := range []struct {
 		file    string

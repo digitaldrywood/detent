@@ -16,6 +16,7 @@ import (
 )
 
 func TestWorkItemTerminalStreakSurvivesEditsAndRestartsOnReopen(t *testing.T) {
+	t.Parallel()
 	t.Run("populated restore provenance", func(t *testing.T) {
 		db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261111225811)
 		pgstoretest.SeedCore(t, db)
@@ -100,6 +101,7 @@ func TestWorkItemTerminalStreakSurvivesEditsAndRestartsOnReopen(t *testing.T) {
 
 	for _, constructor := range []string{"Open", "NewRepository"} {
 		t.Run(constructor, func(t *testing.T) {
+			t.Parallel()
 			admin := pgstoretest.Template.Database(t)
 			pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 			now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)

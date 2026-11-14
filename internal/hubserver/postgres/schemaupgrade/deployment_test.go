@@ -10,6 +10,7 @@ import (
 )
 
 func TestDeploymentRejectsUnsupportedRuntimeCapabilities(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		statement string
@@ -35,6 +36,7 @@ func TestDeploymentRejectsUnsupportedRuntimeCapabilities(t *testing.T) {
 		{"unforced RLS", `ALTER TABLE leases NO FORCE ROW LEVEL SECURITY`, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			admin := pgstoretest.Template.Database(t)
 			pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 			statement := test.statement

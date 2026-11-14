@@ -9,6 +9,7 @@ import (
 )
 
 func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) {
+	t.Parallel()
 	const requiredVersion = 20261108232743
 	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261108224925)
 	pgstoretest.SeedCore(t, db)

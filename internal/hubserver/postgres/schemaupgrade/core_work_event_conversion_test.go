@@ -25,6 +25,7 @@ import (
 )
 
 func TestCoreWorkEventObjectsConvertPopulatedUpgrade(t *testing.T) {
+	t.Parallel()
 	db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
 	pgstoretest.SeedCore(t, db)
 	payloads := map[string][]byte{}
@@ -176,6 +177,7 @@ func (s *coreWorkEventFaultObjects) ReadDetail(ctx context.Context, org string, 
 }
 
 func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"rejected", "uncertain", "corrupt", "corrupt-object", "interrupted"} {
 		t.Run(mode, func(t *testing.T) {
 			db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
@@ -235,6 +237,7 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 	}
 	for _, aggregates := range []int{1, 3} {
 		t.Run(fmt.Sprintf("interrupted progress/%d aggregates", aggregates), func(t *testing.T) {
+			t.Parallel()
 			db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
 			pgstoretest.SeedCore(t, db)
 			payloads := map[int64][]byte{}
@@ -370,6 +373,7 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 }
 
 func TestCoreWorkEventObjectsFenceConcurrentReplay(t *testing.T) {
+	t.Parallel()
 	db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
 	pgstoretest.SeedCore(t, db)
 	for _, org := range []string{"org_first", "org_second"} {

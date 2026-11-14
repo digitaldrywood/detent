@@ -157,8 +157,10 @@ func assertConvertedRecords(t *testing.T, objects *pgstoretest.HistoryObjects, s
 }
 
 func TestStorageConversionTenantRecovery(t *testing.T) {
+	t.Parallel()
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
+			t.Parallel()
 			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 			objects := pgstoretest.NewHistoryObjects()
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -235,9 +237,11 @@ func (r conversionRepository) CommitConversion(ctx context.Context, candidate st
 }
 
 func TestStorageConversionCrashPoints(t *testing.T) {
+	t.Parallel()
 	for _, family := range conversionFamilies() {
 		for _, point := range []string{"before upload", "uncertain upload", "after upload", "before commit", "uncertain commit", "corrupt source", "corrupt target", "transform failure"} {
 			t.Run(string(family)+"/"+point, func(t *testing.T) {
+				t.Parallel()
 				r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 				pgstoretest.SeedRepository(t, r, "org_first")
 				scope := conversionScope("org_first", family, false)
@@ -330,8 +334,10 @@ func TestStorageConversionCrashPoints(t *testing.T) {
 }
 
 func TestStorageConversionConcurrentRuns(t *testing.T) {
+	t.Parallel()
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
+			t.Parallel()
 			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 			pgstoretest.SeedRepository(t, r, "org_first")
 			scope := conversionScope("org_first", family, false)
@@ -393,8 +399,10 @@ func TestStorageConversionConcurrentRuns(t *testing.T) {
 }
 
 func TestStorageConversionLateCommit(t *testing.T) {
+	t.Parallel()
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
+			t.Parallel()
 			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 			pgstoretest.SeedRepository(t, r, "org_first")
 			scope := conversionScope("org_first", family, false)
@@ -451,8 +459,10 @@ func TestStorageConversionLateCommit(t *testing.T) {
 }
 
 func TestStorageConversionCompareAndSwap(t *testing.T) {
+	t.Parallel()
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
+			t.Parallel()
 			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 			pgstoretest.SeedRepository(t, r, "org_first")
 			scope := conversionScope("org_first", family, false)
@@ -505,8 +515,10 @@ func TestStorageConversionCompareAndSwap(t *testing.T) {
 }
 
 func TestStorageConversionRollbackAndAuthority(t *testing.T) {
+	t.Parallel()
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
+			t.Parallel()
 			admin := pgstoretest.Template.Database(t)
 			r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 			objects := pgstoretest.NewHistoryObjects()
@@ -607,9 +619,11 @@ CREATE TRIGGER reject_conversion_progress BEFORE INSERT OR UPDATE ON storage_con
 }
 
 func TestStorageConversionBudgets(t *testing.T) {
+	t.Parallel()
 	for _, family := range conversionFamilies() {
 		for _, size := range []int{400_000, 1_100_000} {
 			t.Run(fmt.Sprintf("%s/%d", family, size), func(t *testing.T) {
+				t.Parallel()
 				r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 				pgstoretest.SeedRepository(t, r, "org_first")
 				scope := conversionScope("org_first", family, false)
@@ -643,8 +657,10 @@ func TestStorageConversionBudgets(t *testing.T) {
 }
 
 func TestStorageConversionValidationAndFailedRowProgress(t *testing.T) {
+	t.Parallel()
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
+			t.Parallel()
 			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 			pgstoretest.SeedRepository(t, r, "org_first")
 			scope := conversionScope("org_first", family, false)
@@ -712,6 +728,7 @@ func TestStorageConversionValidationAndFailedRowProgress(t *testing.T) {
 }
 
 func TestStorageConversionOwnerTick(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	objects := pgstoretest.NewHistoryObjects()

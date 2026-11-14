@@ -14,6 +14,7 @@ import (
 )
 
 func TestArtifactCatalogMigrationBackfillsExistingTenants(t *testing.T) {
+	t.Parallel()
 	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261108195800)
 	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
