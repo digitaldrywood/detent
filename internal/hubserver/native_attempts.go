@@ -14,11 +14,13 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -302,13 +304,29 @@ func nativeAttemptAuthorityProjection(attempt tracker.NativeAttempt) tracker.Nat
 }
 
 func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.NativeExecutionIdentity {
-	if attempt.Identity == nil {
+	if attempt.Runtime == nil {
+		return nativeExecutionDisplayIdentity(attempt.Identity, nil)
+	}
+	return nativeExecutionDisplayIdentity(attempt.Identity, &attempt.Runtime.Identity)
+}
+
+func nativeRecordedAttemptIdentity(attempt leasestore.Attempt, runtime bool) (*tracker.NativeExecutionIdentity, bool) {
+	if attempt.IdentitySequence == 0 {
+		return nil, false
+	}
+	if !runtime {
+		return nativeExecutionDisplayIdentity(attempt.Identity.Execution, nil), true
+	}
+	return nativeExecutionDisplayIdentity(attempt.Identity.Execution, &attempt.Identity.Runtime), true
+}
+
+func nativeExecutionDisplayIdentity(execution *tracker.NativeExecutionIdentity, runtime *agentidentity.Identity) *tracker.NativeExecutionIdentity {
+	if execution == nil {
 		return nil
 	}
-	identity := *attempt.Identity
+	identity := *execution
 	identity.ReasoningEffort = ""
-	if attempt.Runtime != nil {
-		runtime := attempt.Runtime.Identity
+	if runtime != nil {
 		identity.ReasoningEffort = runtime.ReasoningEffort.Value
 		if runtime.ResolvedModel.Value != "" {
 			identity.Model = runtime.ResolvedModel.Value

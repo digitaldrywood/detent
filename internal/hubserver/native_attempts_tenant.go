@@ -204,11 +204,16 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope hubscop
 		if err != nil {
 			return nativeAttemptPage{}, err
 		}
-		if view != "" && view != "detail" {
+		runtime := view == "" || view == "detail"
+		if !runtime {
 			attempt.Runtime = nil
 			attempt.RuntimeFreshness = "unavailable"
 		}
-		attempt.Identity = nativeAttemptDisplayIdentity(attempt)
+		if recorded, ok := nativeRecordedAttemptIdentity(snapshot.Attempt, runtime); ok {
+			attempt.Identity = recorded
+		} else {
+			attempt.Identity = nativeAttemptDisplayIdentity(attempt)
+		}
 		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
 		next := cursor
 		next.After = strconv.FormatInt(snapshot.Attempt.FencingToken, 10)

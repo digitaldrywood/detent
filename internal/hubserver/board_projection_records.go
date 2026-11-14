@@ -383,13 +383,18 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 					}
 				}
 				latest = attempt
-				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: nativeAttemptDisplayIdentity(*attempt), StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
+				identity, recorded := nativeRecordedAttemptIdentity(historical.Attempt, true)
+				if !recorded {
+					identity = nativeAttemptDisplayIdentity(*attempt)
+				}
+				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: identity, StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
 			} else {
 				status := historical.Attempt.Status
 				if status == "running" {
 					status = "interrupted"
 				}
-				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: historical.Attempt.ID, Status: status, MachineID: historical.Lease.MachineID, StartedAt: historical.Attempt.StartedAt, ExpiresAt: historical.Lease.ExpiresAt}
+				identity, _ := nativeRecordedAttemptIdentity(historical.Attempt, true)
+				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: historical.Attempt.ID, Status: status, MachineID: historical.Lease.MachineID, Identity: identity, StartedAt: historical.Attempt.StartedAt, ExpiresAt: historical.Lease.ExpiresAt}
 			}
 		}
 		if lease := snapshot.lease; lease != nil && lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt) {
