@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2110,6 +2111,38 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 			}
 			if _, err := r.(reportstore.Reader).ReadFacets(ctx, []tracker.ProjectID{project, flood}, now.Add(-time.Hour), now.Add(time.Hour), actorID, 10); err != nil {
 				t.Fatalf("principal-scoped facets failed after another filer's flood: %v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("facets read the window and open issues, not retained history", func(t *testing.T) {
+		history := tracker.ProjectID("project_reports_facet_history")
+		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: history, Name: "Example history", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Done", Terminal: true}}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		old := now.Add(-400 * 24 * time.Hour)
+		if _, err := admin.ExecContext(ctx, `INSERT INTO issues(organization_id,id,project_id,native_id,number,title,actor_kind,actor_principal_id,workflow_state_name,archived,created_at,native_created_at,native_updated_at,terminal_entered_at) VALUES
+($1,30001,$2,'wi_facet_closed',30001,'Example','human','actor_closed','Done',true,$3,$3,$3,$3),
+($1,30002,$2,'wi_facet_open',30002,'Example','human','actor_open','Todo',false,$3,$3,$3,NULL),
+($1,30003,$2,'wi_facet_recent',30003,'Example','human','actor_recent','Done',false,$4,$4,$4,$4)`, organization, history, old, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+			facets, err := r.(reportstore.Reader).ReadFacets(ctx, []tracker.ProjectID{history}, now.Add(-time.Hour), now.Add(time.Hour), "", 10)
+			if err != nil {
+				return err
+			}
+			got := []string{}
+			for _, filer := range facets.FiledBy {
+				got = append(got, filer.ID)
+			}
+			if !slices.Equal(got, []string{"actor_open", "actor_recent"}) {
+				t.Fatalf("facet filers=%v want the open and in-window issues only", got)
 			}
 			return nil
 		}); err != nil {

@@ -329,7 +329,15 @@ func (s *session) ReadFacets(ctx context.Context, projects []tracker.ProjectID, 
 	for i, project := range projects {
 		projectIDs[i] = string(project)
 	}
-	rows, err := s.db.Query(ctx, `SELECT i.id,coalesce(i.actor_principal_id,''),coalesce(nullif(t.name,''),i.actor_principal_id,'') FROM issues i LEFT JOIN api_tokens t ON t.organization_id=i.organization_id AND t.id=i.actor_principal_id WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND ($3='' OR i.actor_principal_id=$3) ORDER BY i.id LIMIT 5001`, s.organization, projectIDs, principal)
+	windowIDs, err := s.readOverviewCandidates(ctx, projectIDs, from.UTC(), to.UTC(), nil)
+	if err != nil {
+		return out, err
+	}
+	openIDs, err := s.readOpenCandidates(ctx, projectIDs, to.UTC())
+	if err != nil {
+		return out, err
+	}
+	rows, err := s.db.Query(ctx, `SELECT i.id,coalesce(i.actor_principal_id,''),coalesce(nullif(t.name,''),i.actor_principal_id,'') FROM (SELECT DISTINCT id FROM unnest($4::bigint[] || $5::bigint[]) candidate(id)) candidate CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i LEFT JOIN api_tokens t ON t.organization_id=i.organization_id AND t.id=i.actor_principal_id WHERE i.project_id=ANY($2::text[]) AND ($3='' OR i.actor_principal_id=$3) ORDER BY i.id LIMIT 5001`, s.organization, projectIDs, principal, windowIDs, openIDs)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
