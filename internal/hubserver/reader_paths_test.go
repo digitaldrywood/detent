@@ -298,11 +298,41 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 			cfg.Hosted.EntitlementAdministrator = "test-operator"
 		})
 		installWriterReadGuard(t, f.service, guard)
+		board := func(project, state string) string {
+			return browserHostedOrganizationBase + "/work-board?project=" + project + "&state=" + url.QueryEscape(state)
+		}
+		active := `{"view":"board","tab":"active","sort":"default","completedWindow":"24h"}`
+		refusals := []struct {
+			name, account, path string
+			status              int
+		}{
+			{"invalid state", "owner", board(f.project, `{"view":"board","unknown":true}`), http.StatusUnprocessableEntity},
+			{"hidden project", "viewer", board(f.privateProject, active), http.StatusNotFound},
+			{"revoked session", "revoked", board(f.project, active), http.StatusUnauthorized},
+		}
+		t.Run("/work-board pending", func(t *testing.T) {
+			requireNativeCode(t, f.page(t, "owner", board(f.project, active)), http.StatusServiceUnavailable, "not_ready")
+			for _, refusal := range refusals {
+				requireNativeStatus(t, f.page(t, refusal.account, refusal.path), refusal.status)
+			}
+		})
+		drainTestNativeBoard(t, f.service)
+		t.Run("/work-board ready", func(t *testing.T) {
+			response := f.page(t, "owner", board(f.project, active))
+			requireNativeStatus(t, response, http.StatusOK)
+			var projects []workBoardProject
+			decodeHubResponse(t, response, &projects)
+			if len(projects) != 1 || string(projects[0].Project.ID) != f.project || len(projects[0].Issues) != 1 || projects[0].Issues[0].Title != "Review the invitation flow" {
+				t.Fatalf("ready work board did not return the visible issue: %s", response.Body.String())
+			}
+			for _, refusal := range refusals {
+				requireNativeStatus(t, f.page(t, refusal.account, refusal.path), refusal.status)
+			}
+		})
 		for _, path := range []string{
 			"/projects", "/project-rank", "/members", "/fleet", "/plan", "/billing", "/secrets/" + flySpritesToken,
 			"/monthly-budget", "/model-selection", "/integrations/slack",
 			"/sprite-pool", "/work-view-preference", "/work-views",
-			"/work-board?project=" + f.project + "&state=" + url.QueryEscape(`{"view":"board","tab":"active","sort":"default","completedWindow":"24h"}`),
 			"/issue-notification-preference", "/daily-summary-preference",
 			"/projects/" + f.project + "/work-view-preference",
 			"/activity?project=" + f.project,
