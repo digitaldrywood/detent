@@ -133,7 +133,7 @@ func WorkReadCatalog() []Definition {
 		{WorkPRComments, "Read a bounded page of the work item's linked PR discussion through the existing forge reader. The application selects the repository and PR; deployments without a PR discussion reader are unavailable.", "reference offset limit"},
 		{WorkHistory, "Read durable application history, identifying the tracker or workflow source; separate from recent_activity's live snapshot.", "reference cursor offset limit"},
 		{WorkVersion, "Read a saved native issue or comment revision.", "reference comment_id revision"},
-		{WorkRelationships, "Read authorized dependencies, relationships and external references.", "reference"},
+		{WorkRelationships, "Read authorized dependencies, relationships and external references. Follow data.next_cursor with the same reference until absent.", "reference cursor"},
 		{WorkRuns, "Read bounded work-item run summaries. Full native runtime detail is available through work_attempt_receipt, explain_item and board_session_history.", "reference cursor offset limit"},
 		{WorkReferences, "Read PR, change, diff and artifact identifiers and links; detail is owned by the review/artifact tools.", "reference cursor offset limit"},
 		{WorkBulkExport, "Export complete stored work items and comments in one authorized native project. Cursor pages default to 500 items with a 16 MiB byte budget; total and truncated describe continuation. Reads never refresh linked sources.", "states open labels archived cursor limit"},

@@ -15,6 +15,7 @@ type issueContextReader struct {
 	fail         string
 	malformed    bool
 	repeated     bool
+	moreLinks    bool
 	calls        map[string]int
 }
 
@@ -42,7 +43,11 @@ func (r *issueContextReader) ReadWork(_ context.Context, name string, request Wo
 	case WorkItem:
 		data = map[string]string{"body": "entire issue body" + strings.Repeat("x", 5000) + " tail evidence"}
 	case WorkRelationships:
-		data = map[string]any{"dependencies": []string{"dependency"}, "blockers": []string{"blocker"}}
+		links := map[string]any{"dependencies": []string{"dependency"}, "blockers": []string{"blocker"}}
+		if r.moreLinks {
+			links["next_cursor"] = "links-after-page"
+		}
+		data = links
 	case WorkReferences:
 		if request.Offset == 0 {
 			data = OffsetPage([]string{"change", "PR open"}, 0, 1)
@@ -68,8 +73,10 @@ func TestReadIssueContext(t *testing.T) {
 		want                error
 		failure             error
 		largeHistory        bool
+		moreLinks           bool
 	}{
 		{name: "complete paginated history"},
+		{name: "relationship continuation is a limit", moreLinks: true},
 		{name: "current authority denial", fail: WorkHistory, want: ErrAccessDenied, failure: ErrAccessDenied},
 		{name: "unavailable history", fail: WorkHistory, failure: ErrReadUnavailable},
 		{name: "wrapped unavailable history stays opaque", fail: WorkHistory, failure: &ReadUnavailableError{Err: errors.New("private fault sentinel")}},
@@ -79,7 +86,7 @@ func TestReadIssueContext(t *testing.T) {
 		{name: "non advancing history", repeated: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			reader := &issueContextReader{fail: test.fail, failure: test.failure, largeHistory: test.largeHistory, malformed: test.malformed, repeated: test.repeated, calls: map[string]int{}}
+			reader := &issueContextReader{fail: test.fail, failure: test.failure, largeHistory: test.largeHistory, malformed: test.malformed, repeated: test.repeated, moreLinks: test.moreLinks, calls: map[string]int{}}
 			result, err := ReadIssueContext(t.Context(), reader, WorkReadRequest{ProjectID: "project", Reference: "issue"})
 			if test.want != nil {
 				if !errors.Is(err, test.want) {
@@ -123,6 +130,9 @@ func TestReadIssueContext(t *testing.T) {
 					}
 				}
 				return
+			}
+			if limit, ok := result.Limits[WorkRelationships]; ok != test.moreLinks || test.moreLinks && (limit.Cursor != "links-after-page" || limit.Error != "") || reader.calls[WorkRelationships] != 1 {
+				t.Fatalf("relationship continuation=%+v present=%t want %t calls=%d", limit, ok, test.moreLinks, reader.calls[WorkRelationships])
 			}
 			if len(result.Comments) != 2 || len(result.History) != 2 || len(result.Attempts) != 2 || len(result.References) != 2 || result.LatestWorkpad == nil || result.LatestWorkpad.ID != "latest" {
 				t.Fatalf("incomplete context: %+v", result)

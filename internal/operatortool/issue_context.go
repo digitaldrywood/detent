@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -62,6 +63,14 @@ func ReadIssueContext(ctx context.Context, reader WorkReader, request WorkReadRe
 				candidate.Item = envelope.Data
 			case WorkRelationships:
 				candidate.Relationships = envelope.Data
+				if err := json.Unmarshal(envelope.Data, &page); err != nil {
+					return result, err
+				}
+				if page.NextCursor != "" {
+					candidate.Limits = maps.Clone(candidate.Limits)
+					candidate.Limits[section] = IssueContextLimit{Cursor: page.NextCursor}
+					page.NextCursor = ""
+				}
 			default:
 				if err := json.Unmarshal(envelope.Data, &page); err != nil {
 					return result, err
