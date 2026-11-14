@@ -200,22 +200,27 @@ func TestSearchWorkItemFilterIgnoresSameReporterCrowd(t *testing.T) {
 	if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='example-principal' WHERE organization_id='org_first' AND native_id='wi_first_1'`); err != nil {
 		t.Fatal(err)
 	}
-	d := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "commonterm"}, 0)
+	d := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "commonterm", Body: postingScopeBody}, 0)
 	f.drain(t, "org_first")
-	seedReporterHistory(t, f, d, "example-principal", 1, searchstore.CandidateLimit+1)
-	for _, reporter := range []bool{false, true} {
-		t.Run(fmt.Sprintf("reporter=%t", reporter), func(t *testing.T) {
-			query := searchstore.Query{Text: "commonterm", WorkItemID: "wi_first_1"}
-			if reporter {
-				query.Reporter = new("example-principal")
-			}
-			if got := fmt.Sprint(searchIDs(f.find(t, "org_first", query))); got != "[wi_first_1]" {
-				t.Fatalf("work item search=%s", got)
-			}
-			if work := searchHelperWork(t, f, "commonterm", "wi_first_1", reporter, "example-principal"); work > searchstore.CandidateLimit {
-				t.Fatalf("work item candidate work=%.0f", work)
-			}
-		})
+	seedReporterRows(t, f, d, "example-principal", 1, searchstore.CandidateLimit+1)
+	for _, statistics := range []string{"unanalyzed", "analyzed"} {
+		if statistics == "analyzed" {
+			analyzeSearchHistory(t, f)
+		}
+		for _, reporter := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reporter=%t", statistics, reporter), func(t *testing.T) {
+				query := searchstore.Query{Text: "commonterm", WorkItemID: "wi_first_1"}
+				if reporter {
+					query.Reporter = new("example-principal")
+				}
+				if got := fmt.Sprint(searchIDs(f.find(t, "org_first", query))); got != "[wi_first_1]" {
+					t.Fatalf("work item search=%s", got)
+				}
+				if work := searchHelperWork(t, f, "commonterm", "wi_first_1", reporter, "example-principal"); work > searchstore.CandidateLimit {
+					t.Fatalf("work item candidate work=%.0f", work)
+				}
+			})
+		}
 	}
 }
 
@@ -558,6 +563,12 @@ func seedOtherReporterHistory(t *testing.T, f searchFixture, d searchstore.Docum
 
 func seedReporterHistory(t *testing.T, f searchFixture, d searchstore.Document, principal string, start, end int) {
 	t.Helper()
+	seedReporterRows(t, f, d, principal, start, end)
+	analyzeSearchHistory(t, f)
+}
+
+func seedReporterRows(t *testing.T, f searchFixture, d searchstore.Document, principal string, start, end int) {
+	t.Helper()
 	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,native_id,project_id,number,title,actor_principal_id)
  SELECT 'org_first','wi_reporter_'||n,'prj_first',n+10,'commonterm',$3 FROM generate_series($1::int,$2::int) n`, start, end, principal); err != nil {
 		t.Fatal(err)
@@ -578,6 +589,10 @@ func seedReporterHistory(t *testing.T, f searchFixture, d searchstore.Document, 
  FROM search_documents d CROSS JOIN (VALUES ($1::text),('~all')) p(term) WHERE d.organization_id='org_first' AND d.id IN (SELECT 'reporter_'||n FROM generate_series($2::int,$3::int) n)`, searchstore.Prefix("org_first", "prj_first")+"wcommonterm", start, end, principal); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func analyzeSearchHistory(t *testing.T, f searchFixture) {
+	t.Helper()
 	if _, err := f.admin.ExecContext(t.Context(), "VACUUM (ANALYZE) search_documents, search_postings, issues"); err != nil {
 		t.Fatal(err)
 	}
