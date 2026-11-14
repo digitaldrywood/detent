@@ -48,7 +48,11 @@ Select the server explicitly with `DETENT_TEST_POSTGRES`:
   mode requires Unix sockets and `/bin/sh`. It uses `fsync=off`,
   `synchronous_commit=off` and `full_page_writes=off`, following PostgreSQL's
   [non-durable settings](https://www.postgresql.org/docs/current/non-durability.html)
-  for disposable correctness tests. Crash-recovery and durability tests must use
+  for disposable correctness tests. On PostgreSQL 18 it also sets
+  `file_copy_method = clone` for fixture cloning when the platform supports it,
+  so `CREATE DATABASE ... STRATEGY FILE_COPY` clones template files (APFS
+  `clonefile`, Linux `copy_file_range`) instead of copying them; PostgreSQL 17
+  keeps the plain copy. Crash-recovery and durability tests must use
   a normally durable disposable URL server instead. URL attachment never changes
   server durability settings.
 - `postgres://example:fake@127.0.0.1:55432/postgres`: attach to a disposable local

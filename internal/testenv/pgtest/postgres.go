@@ -477,7 +477,8 @@ func openServerAt(ctx context.Context, selection, tempDir string) (_ *server, re
 		return nil, errNotConfigured
 	}
 	stop := func(context.Context) error { return nil }
-	if selection == "binary" {
+	disposable := selection == "binary"
+	if disposable {
 		var err error
 		selection, stop, err = startBinary(ctx, tempDir)
 		if err != nil {
@@ -509,6 +510,18 @@ func openServerAt(ctx context.Context, selection, tempDir string) (_ *server, re
 	if major != 17 && major != 18 {
 		s.admin.Close()
 		return nil, fmt.Errorf("PostgreSQL fixture requires version 17 or 18, got %d", major)
+	}
+	if disposable && major >= 18 {
+		if _, err := s.admin.ExecContext(ctx, "ALTER DATABASE postgres SET file_copy_method = 'clone'"); err == nil {
+			if err := s.admin.Close(); err != nil {
+				return nil, err
+			}
+			if s.admin, err = s.database("postgres"); err != nil {
+				return nil, err
+			}
+			s.admin.SetMaxOpenConns(adminConnectionLimit)
+			s.admin.SetMaxIdleConns(adminConnectionLimit)
+		}
 	}
 	return s, nil
 }

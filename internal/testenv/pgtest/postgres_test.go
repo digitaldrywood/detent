@@ -927,9 +927,10 @@ func TestBinaryDurabilitySettingsAndURLPreservation(t *testing.T) {
 		name     string
 		attached bool
 		want     string
+		copy     string
 	}{
-		{name: "disposable binary", want: "off"},
-		{name: "caller durable URL", attached: true, want: "on"},
+		{name: "disposable binary", want: "off", copy: "clone"},
+		{name: "caller durable URL", attached: true, want: "on", copy: "copy"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := testContext(t)
@@ -969,6 +970,19 @@ func TestBinaryDurabilitySettingsAndURLPreservation(t *testing.T) {
 				}
 				if got != tc.want {
 					t.Errorf("%s = %s, want %s", setting, got, tc.want)
+				}
+			}
+			var version int
+			if err := s.admin.QueryRowContext(ctx, "SHOW server_version_num").Scan(&version); err != nil {
+				t.Fatal(err)
+			}
+			if version >= 180000 {
+				var method string
+				if err := s.admin.QueryRowContext(ctx, "SHOW file_copy_method").Scan(&method); err != nil {
+					t.Fatal(err)
+				}
+				if method != tc.copy {
+					t.Errorf("file_copy_method = %s, want %s", method, tc.copy)
 				}
 			}
 		})
