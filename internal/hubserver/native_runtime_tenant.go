@@ -341,6 +341,7 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 	if attempt.Status == "running" && !attempt.Current {
 		attempt.Status = "interrupted"
 	}
+	attempt.Runtime = runtimeLandingTarget(attempt.Runtime, snapshot.attempt.Event, snapshot.transition)
 	result := tracker.NativeRuntimeEvidence{
 		Issue: issue, Attempt: &attempt, ObservedAt: now, Selection: "selected",
 		Unavailable: []string{"efficiency_receipt", "source_recovery_projection", "scheduler_history_projection", "change_gate_projection", "runner_capacity_projection", "native_admission_projection"},
@@ -440,4 +441,18 @@ func selectedRuntimeAttempt(ctx context.Context, r tenantstore.Reader, scope hub
 		}
 	}
 	return r.Attempt(ctx, attemptID)
+}
+
+func runtimeLandingTarget(runtime *tracker.NativeRuntimeObservation, attempt, transition eventstore.Event) *tracker.NativeRuntimeObservation {
+	if runtime == nil || runtime.Landing == nil || runtime.Landing.TargetState != "" || transition.ID == "" || transition.Type != "workflow.transitioned" || transition.ToState == "" {
+		return runtime
+	}
+	if transition.ActorKind != "runner" || transition.ActorPrincipalID == "" || transition.ActorPrincipalID != attempt.ActorPrincipalID || transition.WorkItemID != attempt.WorkItemID || transition.Sequence <= attempt.Sequence {
+		return runtime
+	}
+	landing := *runtime.Landing
+	landing.TargetState = transition.ToState
+	derived := *runtime
+	derived.Landing = &landing
+	return &derived
 }
