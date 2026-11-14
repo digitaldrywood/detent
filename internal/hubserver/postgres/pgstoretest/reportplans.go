@@ -147,6 +147,7 @@ var (
 	reportArrayLiteral = regexp.MustCompile(`'\{([^']*)\}'::[a-z ]+\[\]`)
 	reportDepthFilter  = regexp.MustCompile(`\(\w+\.depth <= (\d+)\)`)
 	reportIdentifier   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	reportPlanAlias    = regexp.MustCompile(`^(.+)_[0-9]+$`)
 )
 
 type reportLimit struct {
@@ -154,83 +155,156 @@ type reportLimit struct {
 	valid bool
 }
 
-type reportLimitKind int
+type reportRelation struct {
+	name  string
+	alias string
+}
 
-const (
-	reportLimitTop reportLimitKind = iota
-	reportLimitOnce
-	reportLimitPerLoop
-)
+type reportBlock struct {
+	parent    int
+	cte       string
+	limit     *reportLimit
+	relations map[reportRelation]bool
+	children  []int
+}
 
 type reportStatement struct {
-	limits   map[string]map[reportLimitKind][]reportLimit
-	ctes     map[string]bool
+	blocks   []reportBlock
+	ctes     map[string]int
 	problems []string
 }
 
+var reportAliasStop = map[string]bool{"WHERE": true, "JOIN": true, "LEFT": true, "RIGHT": true, "INNER": true, "CROSS": true, "FULL": true, "OUTER": true, "NATURAL": true, "ON": true, "USING": true, "GROUP": true, "ORDER": true, "LIMIT": true, "OFFSET": true, "UNION": true, "EXCEPT": true, "INTERSECT": true, "WINDOW": true, "HAVING": true, "FOR": true, "RETURNING": true, "SET": true, "AND": true, "OR": true, "WITH": true, "SELECT": true, "FETCH": true, "TABLESAMPLE": true}
+
+var reportClauseEnd = map[string]bool{"WHERE": true, "GROUP": true, "ORDER": true, "LIMIT": true, "OFFSET": true, "HAVING": true, "UNION": true, "EXCEPT": true, "INTERSECT": true, "WINDOW": true, "FETCH": true, "FOR": true}
+
 func parseReportStatement(statement string, args []any, limitCap int) reportStatement {
-	parsed := reportStatement{limits: map[string]map[reportLimitKind][]reportLimit{}, ctes: map[string]bool{}}
+	parsed := reportStatement{blocks: []reportBlock{{parent: -1, relations: map[reportRelation]bool{}}}, ctes: map[string]int{}}
 	tokens := reportTokens(statement)
-	type paren struct {
-		cte      string
-		subquery bool
-		kind     reportLimitKind
-	}
-	stack := []paren{}
+	stack := []int{0}
+	inFrom := map[int]bool{}
 	pending := ""
+	at := func(index int) string {
+		if index < 0 || index >= len(tokens) {
+			return ""
+		}
+		return tokens[index]
+	}
+	current := func() int {
+		for i := len(stack) - 1; i >= 0; i-- {
+			if stack[i] >= 0 {
+				return stack[i]
+			}
+		}
+		return 0
+	}
+	fromItem := func(index int) {
+		block := current()
+		next := index + 1
+		for strings.EqualFold(at(next), "LATERAL") || strings.EqualFold(at(next), "ONLY") {
+			next++
+		}
+		name := at(next)
+		if name == "(" || name == "" || !reportIdentifier.MatchString(strings.ReplaceAll(name, ".", "_")) {
+			return
+		}
+		next++
+		relation := strings.ToLower(name[strings.LastIndexByte(name, '.')+1:])
+		if at(next) == "(" {
+			relation = ""
+			depth := 0
+			for ; next < len(tokens); next++ {
+				if tokens[next] == "(" {
+					depth++
+				} else if tokens[next] == ")" {
+					depth--
+					if depth == 0 {
+						next++
+						break
+					}
+				}
+			}
+			if strings.EqualFold(at(next), "WITH") && strings.EqualFold(at(next+1), "ORDINALITY") {
+				next += 2
+			}
+		}
+		if strings.EqualFold(at(next), "AS") {
+			next++
+		}
+		alias := relation
+		if candidate := at(next); reportIdentifier.MatchString(candidate) && !reportAliasStop[strings.ToUpper(candidate)] {
+			alias = strings.ToLower(candidate)
+		}
+		if alias == "" {
+			parsed.problems = append(parsed.problems, "statement has a function source without an alias")
+			return
+		}
+		parsed.blocks[block].relations[reportRelation{name: relation, alias: alias}] = true
+	}
 	for index, token := range tokens {
 		upper := strings.ToUpper(token)
 		switch {
 		case token == "(":
-			open := paren{}
-			next := ""
-			if index+1 < len(tokens) {
-				next = strings.ToUpper(tokens[index+1])
-			}
-			previous := ""
-			if index > 0 {
-				previous = strings.ToUpper(tokens[index-1])
-			}
+			next := strings.ToUpper(at(index + 1))
 			switch {
 			case pending != "":
-				if parsed.ctes[pending] {
+				if _, repeated := parsed.ctes[pending]; repeated {
 					parsed.problems = append(parsed.problems, "statement repeats common table expression "+pending)
 				}
-				parsed.ctes[pending] = true
-				open = paren{cte: pending, subquery: true, kind: reportLimitTop}
+				parsed.blocks = append(parsed.blocks, reportBlock{parent: current(), cte: pending, relations: map[reportRelation]bool{}})
+				parsed.ctes[pending] = len(parsed.blocks) - 1
 				pending = ""
 			case next == "SELECT" || next == "WITH" || next == "VALUES":
-				open = paren{subquery: true, kind: reportLimitPerLoop}
-				if previous == "FROM" || previous == "JOIN" {
-					open.kind = reportLimitOnce
-				}
+				parsed.blocks = append(parsed.blocks, reportBlock{parent: current(), relations: map[reportRelation]bool{}})
+			default:
+				stack = append(stack, -1)
+				continue
 			}
-			stack = append(stack, open)
+			child := len(parsed.blocks) - 1
+			parent := parsed.blocks[child].parent
+			parsed.blocks[parent].children = append(parsed.blocks[parent].children, child)
+			stack = append(stack, child)
 			continue
 		case token == ")":
-			if len(stack) > 0 {
+			if len(stack) > 1 {
 				stack = stack[:len(stack)-1]
 			}
 			continue
-		case upper == "AS" && index > 1 && reportIdentifier.MatchString(tokens[index-1]) && (tokens[index-2] == "," || strings.EqualFold(tokens[index-2], "WITH") || strings.EqualFold(tokens[index-2], "RECURSIVE")):
+		case upper == "AS" && index > 1 && reportIdentifier.MatchString(at(index-1)) && (at(index-2) == "," || strings.EqualFold(at(index-2), "WITH") || strings.EqualFold(at(index-2), "RECURSIVE")):
 			next := index + 1
-			for next < len(tokens) && (strings.EqualFold(tokens[next], "NOT") || strings.EqualFold(tokens[next], "MATERIALIZED")) {
+			for strings.EqualFold(at(next), "NOT") || strings.EqualFold(at(next), "MATERIALIZED") {
 				next++
 			}
-			if next < len(tokens) && tokens[next] == "(" {
-				pending = strings.ToLower(tokens[index-1])
+			if at(next) == "(" {
+				pending = strings.ToLower(at(index - 1))
 			}
 			continue
-		case upper == "FETCH":
-			parsed.problems = append(parsed.problems, "statement uses FETCH instead of a validated LIMIT")
+		case upper == "FROM" || upper == "JOIN":
+			if stack[len(stack)-1] >= 0 {
+				inFrom[current()] = true
+				fromItem(index)
+			}
 			continue
-		case upper != "LIMIT" && upper != "OFFSET":
+		case token == ",":
+			if top := stack[len(stack)-1]; top >= 0 && inFrom[top] {
+				fromItem(index)
+			}
+			continue
+		case reportClauseEnd[upper]:
+			if top := stack[len(stack)-1]; top >= 0 {
+				inFrom[top] = false
+			}
+			if upper == "FETCH" {
+				parsed.problems = append(parsed.problems, "statement uses FETCH instead of a validated LIMIT")
+				continue
+			}
+			if upper != "LIMIT" && upper != "OFFSET" {
+				continue
+			}
+		default:
 			continue
 		}
-		value := ""
-		if index+1 < len(tokens) {
-			value = tokens[index+1]
-		}
+		value := at(index + 1)
 		resolved := value
 		if strings.HasPrefix(value, "$") {
 			position, err := strconv.Atoi(value[1:])
@@ -252,22 +326,33 @@ func parseReportStatement(statement string, args []any, limitCap int) reportStat
 		if !limit.valid {
 			parsed.problems = append(parsed.problems, fmt.Sprintf("statement LIMIT %s is not a validated count between 1 and %d", value, limitCap+1))
 		}
-		scope, kind, found := "", reportLimitTop, false
-		for i := len(stack) - 1; i >= 0; i-- {
-			if stack[i].cte != "" {
-				scope = stack[i].cte
-				break
-			}
-			if stack[i].subquery && !found {
-				kind, found = stack[i].kind, true
-			}
+		block := current()
+		if parsed.blocks[block].limit != nil {
+			parsed.problems = append(parsed.problems, "statement block has more than one LIMIT")
 		}
-		if parsed.limits[scope] == nil {
-			parsed.limits[scope] = map[reportLimitKind][]reportLimit{}
-		}
-		parsed.limits[scope][kind] = append(parsed.limits[scope][kind], limit)
+		parsed.blocks[block].limit = &limit
 	}
 	return parsed
+}
+
+func (s reportStatement) closure(block int, into map[reportRelation]bool) {
+	for relation := range s.blocks[block].relations {
+		into[relation] = true
+	}
+	for _, child := range s.blocks[block].children {
+		if s.blocks[child].cte == "" && s.blocks[child].limit == nil {
+			s.closure(child, into)
+		}
+	}
+}
+
+func (s reportStatement) scope(block int, planned map[string]bool) string {
+	for ; block > 0; block = s.blocks[block].parent {
+		if name := s.blocks[block].cte; name != "" && planned[name] {
+			return name
+		}
+	}
+	return ""
 }
 
 func reportTokens(statement string) []string {
@@ -392,42 +477,75 @@ func CheckReportPlan(raw []byte, statement string, args []any, contract ReportPl
 	return a.result, nil
 }
 
-func (a *reportAnalysis) limitCount(ctx reportContext) float64 {
-	kind := reportLimitOnce
-	switch {
-	case ctx.top:
-		kind = reportLimitTop
-	case ctx.perLoop:
-		kind = reportLimitPerLoop
-	}
-	candidates := append([]reportLimit(nil), a.statement.limits[ctx.scope][kind]...)
-	if ctx.scope == "" && kind != reportLimitTop {
-		for name := range a.statement.ctes {
-			if a.planCTEs[name] {
-				continue
-			}
-			if kind == reportLimitPerLoop {
-				candidates = append(candidates, a.statement.limits[name][reportLimitPerLoop]...)
-			} else {
-				candidates = append(candidates, a.statement.limits[name][reportLimitTop]...)
-				candidates = append(candidates, a.statement.limits[name][reportLimitOnce]...)
-			}
+func reportPlanRelations(node reportPlanNode, into map[reportRelation]bool) {
+	for _, child := range node.Plans {
+		if child.Parent == "SubPlan" || child.Parent == "InitPlan" || child.Node == "Limit" {
+			continue
 		}
+		name := strings.ToLower(child.Relation)
+		if child.CTE != "" {
+			name = strings.ToLower(child.CTE)
+		}
+		if alias := strings.ToLower(child.Alias); alias != "" && (name != "" || child.Node == "Function Scan" || child.Node == "Values Scan") {
+			into[reportRelation{name: name, alias: alias}] = true
+		}
+		reportPlanRelations(child, into)
 	}
-	if kind == reportLimitTop && len(candidates) != 1 {
+}
+
+func reportHasRelation(relations map[reportRelation]bool, planned reportRelation) bool {
+	if relations[planned] {
+		return true
+	}
+	if match := reportPlanAlias.FindStringSubmatch(planned.alias); match != nil {
+		return relations[reportRelation{name: planned.name, alias: match[1]}]
+	}
+	return false
+}
+
+func (a *reportAnalysis) limitCount(node reportPlanNode, ctx reportContext) float64 {
+	planned := map[reportRelation]bool{}
+	reportPlanRelations(node, planned)
+	describe := make([]string, 0, len(planned))
+	for relation := range planned {
+		describe = append(describe, relation.name+" "+relation.alias)
+	}
+	slices.Sort(describe)
+	if len(planned) == 0 {
+		a.problem("Limit in scope %q reads no named relation to bind to a LIMIT clause", ctx.scope)
 		return math.Inf(1)
 	}
-	count := 0.0
-	for _, limit := range candidates {
-		if !limit.valid {
+	values := map[int]bool{}
+	for index, block := range a.statement.blocks {
+		if block.limit == nil || a.statement.scope(index, a.planCTEs) != ctx.scope {
+			continue
+		}
+		closure := map[reportRelation]bool{}
+		a.statement.closure(index, closure)
+		direct, inside := false, true
+		for relation := range planned {
+			direct = direct || reportHasRelation(block.relations, relation)
+			inside = inside && reportHasRelation(closure, relation)
+		}
+		if !direct || !inside {
+			continue
+		}
+		if !block.limit.valid {
 			return math.Inf(1)
 		}
-		count = max(count, float64(limit.value))
+		values[block.limit.value] = true
 	}
-	if count == 0 {
+	switch len(values) {
+	case 0:
+		a.problem("Limit over %s in scope %q binds to no LIMIT clause", strings.Join(describe, ","), ctx.scope)
 		return math.Inf(1)
+	case 1:
+		for value := range values {
+			return float64(value)
+		}
 	}
-	return count
+	a.problem("Limit over %s in scope %q binds ambiguously to LIMIT clauses with different counts", strings.Join(describe, ","), ctx.scope)
+	return math.Inf(1)
 }
 
 func (a *reportAnalysis) problem(format string, args ...any) {
@@ -470,7 +588,7 @@ func (a *reportAnalysis) visit(node reportPlanNode, ctx reportContext) float64 {
 	input := ctx.loops
 	switch node.Node {
 	case "Limit":
-		count := a.limitCount(ctx)
+		count := a.limitCount(node, ctx)
 		limited := min(ctx.cap, count*ctx.loops)
 		bound = limited
 		for _, child := range ordinary {
@@ -774,8 +892,8 @@ func (a *reportAnalysis) scan(node reportPlanNode, ctx reportContext) (float64, 
 	} else if lower := node.lowerExamined(); lower > examined*(1+1e-9)+1e-9 {
 		a.problem("%s examined at least %.2f rows above its proven bound %.0f", describe, lower, examined)
 	}
-	if class == "keyed" && node.Loops > 0 && scan.PerLoop > math.Max(1, examined/math.Max(ctx.loops, 1)) {
-		a.problem("%s examined %.2f rows per loop above its keyed allowance", describe, scan.PerLoop)
+	if class != "unbounded" && node.Loops > 0 && scan.PerLoop > math.Max(1, examined/math.Max(ctx.loops, 1)) {
+		a.problem("%s examined %.2f rows per loop above its %s allowance", describe, scan.PerLoop, class)
 	}
 	if elements := reportArrayElements(node.IndexCond); class == "keyed" && elements >= 0 && scan.PerLoop > float64(elements) {
 		a.problem("%s examined %.2f rows per loop above its %d keys", describe, scan.PerLoop, elements)
