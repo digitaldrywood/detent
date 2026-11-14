@@ -169,7 +169,7 @@ func (s *session) ReadReportUsageCoverage(ctx context.Context, query reportstore
 		ids[i] = a.AttemptID
 	}
 	rows, err := s.db.Query(ctx, `WITH sources AS MATERIALIZED(SELECT c.source_key,c.resource_id,c.revision FROM cost_sources c WHERE c.organization_id=$1 AND c.bucket='runner_api' AND c.resource_id=ANY($2::text[]) ORDER BY c.resource_id,c.source_key LIMIT 100001)
- SELECT c.resource_id,u.complete AND u.revision=c.revision AND a.usage_pending_sequence=0 AND (u.usage_kind IS NOT NULL OR NOT EXISTS(SELECT 1 FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model AND active.usage_sequence>0)) FROM sources c JOIN native_attempts a ON a.organization_id=$1 AND a.id=c.resource_id LEFT JOIN report_usage_current u ON u.organization_id=$1 AND u.source_key=c.source_key`, s.organization, ids)
+ SELECT c.resource_id,u.complete AND u.revision=c.revision AND a.usage_pending_sequence=0 AND (u.usage_kind IS NOT NULL OR NOT EXISTS(SELECT 1 FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model AND active.usage_sequence>0)) FROM sources c CROSS JOIN LATERAL (SELECT a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=c.resource_id LIMIT 1) a LEFT JOIN report_usage_current u ON u.organization_id=$1 AND u.source_key=c.source_key`, s.organization, ids)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
@@ -199,7 +199,8 @@ func (s *session) ReadReportUsageCoverage(ctx context.Context, query reportstore
 			missing = append(missing, id)
 		}
 	}
-	rows, err = s.db.Query(ctx, `WITH facts AS MATERIALIZED(SELECT u.attempt_id,u.usage_origin FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) ORDER BY u.attempt_id,u.period,u.provider,u.model LIMIT 100001) SELECT f.attempt_id,count(*),count(*) FILTER(WHERE f.usage_origin='import'),coalesce(c.row_count,0),a.usage_pending_sequence FROM facts f JOIN native_attempts a ON a.organization_id=$1 AND a.id=f.attempt_id LEFT JOIN report_usage_import_coverage c ON c.organization_id=$1 AND c.attempt_id=f.attempt_id GROUP BY f.attempt_id,c.row_count,a.usage_pending_sequence`, s.organization, missing)
+	rows, err = s.db.Query(ctx, `WITH facts AS MATERIALIZED(SELECT u.attempt_id,u.usage_origin FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) ORDER BY u.attempt_id,u.period,u.provider,u.model LIMIT 100001), counted AS (SELECT f.attempt_id,count(*) AS actual,count(*) FILTER(WHERE f.usage_origin='import') AS historical FROM facts f GROUP BY f.attempt_id)
+ SELECT f.attempt_id,f.actual,f.historical,coalesce(c.row_count,0),a.usage_pending_sequence FROM counted f CROSS JOIN LATERAL (SELECT a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=f.attempt_id LIMIT 1) a LEFT JOIN report_usage_import_coverage c ON c.organization_id=$1 AND c.attempt_id=f.attempt_id`, s.organization, missing)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
