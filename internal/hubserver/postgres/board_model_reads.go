@@ -19,10 +19,7 @@ import (
 
 const boardModelDisplayColumns = `b.card_display_ready,b.card_display_exact,b.card_provenance_provider IS NOT NULL,coalesce(b.card_provenance_provider,''),coalesce(b.card_provenance_external_id,''),coalesce(b.card_provenance_author_id,''),coalesce(b.card_provenance_author_display_name,''),coalesce(b.card_provenance_created_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_provenance_updated_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_provenance_observed_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_change_principal_id,''),coalesce(b.card_title,''),coalesce(b.card_actor_kind,''),coalesce(b.card_actor_via_key,''),coalesce(b.card_actor_display_name,''),coalesce(b.card_actor_agent,''),coalesce(b.card_reason,''),coalesce(b.card_status_line,''),coalesce(b.card_attempt_id,''),coalesce(b.card_attempt_count,0),coalesce(b.card_attempt_status,''),coalesce(b.card_attempt_runner_id,''),coalesce(b.card_attempt_machine_id,''),coalesce(b.card_attempt_started_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_attempt_expires_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_execution_id,''),coalesce(b.card_execution_running,false),coalesce(b.card_execution_stage,''),coalesce(b.card_execution_runner_id,''),b.card_execution_started_at,coalesce(b.card_execution_expires_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_change_id,''),coalesce(b.card_change_title,''),coalesce(b.card_change_status,''),coalesce(b.card_change_external_provider,''),coalesce(b.card_change_external_id,''),coalesce(b.card_change_external_url,''),coalesce(b.card_attempt_identity_role,''),coalesce(b.card_attempt_identity_backend,''),coalesce(b.card_attempt_identity_model,''),coalesce(b.card_attempt_identity_effort,''),coalesce(b.card_execution_identity_role,''),coalesce(b.card_execution_identity_backend,''),coalesce(b.card_execution_identity_model,''),coalesce(b.card_execution_identity_effort,''),coalesce(b.issue_number,0),b.card_change_base_status IS NOT NULL,coalesce(b.card_change_version_id,''),coalesce(b.card_change_policy_id,''),coalesce(b.card_change_review_policy_id,''),coalesce(b.card_change_base_status,'')`
 
-func (s *session) boardModelQuery(f viewstore.BoardSelection, authority accessstore.Authority) (string, []any, error) {
-	if f.Limit < 1 || f.Limit > 2001 {
-		return "", nil, corestore.ErrInvalidPage
-	}
+func (s *session) boardModelWhere(f viewstore.BoardSelection) (string, []any, error) {
 	if f.SearchText != "" || f.Fingerprint != "" {
 		return "", nil, searchstore.ErrIndexPending
 	}
@@ -54,6 +51,17 @@ func (s *session) boardModelQuery(f viewstore.BoardSelection, authority accessst
 		if filter.at != nil {
 			add(filter.column+filter.operator+"$%d", *filter.at)
 		}
+	}
+	return where, args, nil
+}
+
+func (s *session) boardModelQuery(f viewstore.BoardSelection, authority accessstore.Authority) (string, []any, error) {
+	if f.Limit < 1 || f.Limit > 2001 {
+		return "", nil, corestore.ErrInvalidPage
+	}
+	where, args, err := s.boardModelWhere(f)
+	if err != nil {
+		return "", nil, err
 	}
 	order := "b.lane_rank,b.state,b.priority_rank,b.activity_missing,coalesce(b.activity_at,'-infinity'::timestamptz) DESC,b.identifier"
 	prefix := "b.lane_rank,b.state,b.priority_rank,b.activity_missing"
@@ -162,6 +170,27 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 		batch.Queue(metaSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error { return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt) })
 	}
 
+	if selection.CountLanes {
+		where, laneArgs, err := s.boardModelWhere(selection)
+		if err != nil {
+			return result, err
+		}
+		batch.Queue("SELECT b.state,count(*),count(*) FILTER (WHERE b.running) FROM native_board_items b WHERE "+where+" GROUP BY b.state ORDER BY b.state LIMIT 201", laneArgs...).Query(func(rows pgx.Rows) error {
+			defer rows.Close()
+			result.Lanes = []viewstore.BoardLane{}
+			for rows.Next() {
+				var lane viewstore.BoardLane
+				if err := rows.Scan(&lane.State, &lane.Total, &lane.Running); err != nil {
+					return err
+				}
+				result.Lanes = append(result.Lanes, lane)
+			}
+			if len(result.Lanes) > 200 {
+				return corestore.ErrInvalidPage
+			}
+			return rows.Err()
+		})
+	}
 	batch.Queue(query, args...).Query(func(rows pgx.Rows) error {
 		defer rows.Close()
 		for rows.Next() {

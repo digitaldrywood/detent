@@ -255,6 +255,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		limit = min(limit, 200)
 	}
 	selection.Summary = (legacy || includeWork && selection.Terminal == nil) && selection.SupportsSummary()
+	selection.CountLanes = includeWork && !legacy && !selection.Summary && selection.SearchText == "" && selection.Fingerprint == ""
 	selection.Limit = limit + 1
 	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {
@@ -326,6 +327,12 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	}
 	if includeWork && (!selection.Summary || snapshot.Pending) {
 		page.Work.Lanes = nil
+		if selection.CountLanes && !snapshot.Pending {
+			page.Work.Lanes = make([]tracker.NativeWorkLane, 0, len(snapshot.Lanes))
+			for _, lane := range snapshot.Lanes {
+				page.Work.Lanes = append(page.Work.Lanes, tracker.NativeWorkLane{State: lane.State, Total: int(lane.Total), Running: int(lane.Running)})
+			}
+		}
 	}
 	if selection.Summary && !snapshot.Pending {
 		total := 0

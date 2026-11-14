@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -34,9 +36,14 @@ func TestWorkListLaneSummariesCountTheFilteredPopulation(t *testing.T) {
 		"backend_isolation": r.Redemption.BackendIsolation, "display_name": "runner", "capacity": 2, "version": "test", "provider_reports": []providercapacity.Report{provider},
 		"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: time.Now()},
 	}), http.StatusOK)
-	items := make([]tracker.NativeIssue, 4)
+	items := make([]tracker.NativeIssue, 5)
 	for i := range items {
-		items[i] = f.Create(t, fmt.Sprintf("lane item %d", i))
+		items[i] = createLaneItem(t, f, fmt.Sprintf("lane item %d", i), i)
+		createLaneItem(t, other, fmt.Sprintf("other tenant lane item %d", i), i)
+	}
+	twin := hubfixture.NewNativeInOrganization(t, f.Hub)
+	for i := range 3 {
+		createLaneItem(t, twin, fmt.Sprintf("twin tenant lane item %d", i), i)
 	}
 	leases := make([]tracker.NativeLease, 2)
 	for i := range leases {
@@ -54,7 +61,10 @@ func TestWorkListLaneSummariesCountTheFilteredPopulation(t *testing.T) {
 	moved := hubfixture.ReadWorkItem(t, f, items[3].WorkItemID, "")
 	transition := f.Hub.Request(t, http.MethodPost, f.Base+"/work-items/"+string(moved.WorkItemID)+"/workflow", f.Token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "lane-progress"}, ExpectedRevision: moved.Revision, State: "In Progress", Reason: "user_requested"})
 	hubfixture.RequireStatus(t, transition, http.StatusOK)
+	closed := hubfixture.ReadWorkItem(t, f, items[4].WorkItemID, "")
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/work-items/"+string(closed.WorkItemID)+"/workflow", f.Token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "lane-done"}, ExpectedRevision: closed.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
 	f.Hub.RefreshBoard(t, f.Project.OrganizationID)
+	f.Hub.RefreshBoard(t, twin.Project.OrganizationID)
 	want := map[string]tracker.NativeWorkLane{}
 	for i, item := range items {
 		state := hubfixture.ReadWorkItem(t, f, item.WorkItemID, "").State
@@ -137,8 +147,101 @@ func TestWorkListLaneSummariesCountTheFilteredPopulation(t *testing.T) {
 			t.Fatalf("plain list computed a work summary: %s", page["work"])
 		}
 	})
-	t.Run("filter without exact summary", func(t *testing.T) {
-		response := f.Hub.Request(t, http.MethodGet, f.Base+"/work-items?include=work&label=missing-label&type=bug", f.Token, nil)
+	listed := func(t *testing.T, fixture hubfixture.Native, params url.Values) map[string]tracker.NativeWorkLane {
+		params = maps.Clone(params)
+		params.Set("limit", "2")
+		result := map[string]tracker.NativeWorkLane{}
+		for pages := 0; ; pages++ {
+			response := f.Hub.Request(t, http.MethodGet, fixture.Base+"/work-items?"+params.Encode(), fixture.Token, nil)
+			hubfixture.RequireStatus(t, response, http.StatusOK)
+			var page tracker.NativeIssuePage
+			hubfixture.Decode(t, response, &page)
+			for _, issue := range page.Items {
+				lane := result[issue.State]
+				lane.State, lane.Total = issue.State, lane.Total+1
+				if issue.WorkItemID == items[0].WorkItemID {
+					lane.Running++
+				}
+				result[issue.State] = lane
+			}
+			if page.NextCursor == "" || pages > 20 {
+				return result
+			}
+			params.Set("cursor", page.NextCursor)
+		}
+	}
+	created := hubfixture.FormatTime(items[0].CreatedAt.Add(-time.Hour))
+	for _, test := range []struct {
+		name   string
+		params url.Values
+		args   map[string]any
+	}{
+		{"label on every item", url.Values{"label": {"lane-shared"}}, map[string]any{"labels": []string{"lane-shared"}}},
+		{"one label", url.Values{"label": {"lane-group-0"}}, map[string]any{"labels": []string{"lane-group-0"}}},
+		{"labels or", url.Values{"label": {"lane-group-0", "lane-group-1"}}, map[string]any{"labels": []string{"lane-group-0", "lane-group-1"}}},
+		{"missing label", url.Values{"label": {"lane-missing"}}, map[string]any{"labels": []string{"lane-missing"}}},
+		{"assignee", url.Values{"assignee": {"lane-owner-0"}}, map[string]any{"assignees": []string{"lane-owner-0"}}},
+		{"label and assignee", url.Values{"label": {"lane-group-1"}, "assignee": {"lane-owner-0"}}, map[string]any{"labels": []string{"lane-group-1"}, "assignees": []string{"lane-owner-0"}}},
+		{"type", url.Values{"type": {"bug"}}, map[string]any{"type": "bug"}},
+		{"priorities", url.Values{"priority": {"0", "2"}}, map[string]any{"priorities": []int{0, 2}}},
+		{"verification", url.Values{"verification": {"pending"}}, map[string]any{"verification": "pending"}},
+		{"author", url.Values{"created_by": {"me"}}, map[string]any{"created_by": "me"}},
+		{"open", url.Values{"open": {"true"}}, map[string]any{"open": true}},
+		{"closed", url.Values{"open": {"false"}}, map[string]any{"open": false}},
+		{"created after", url.Values{"created_after": {created}}, map[string]any{"created_after": created}},
+		{"label state and type", url.Values{"label": {"lane-shared"}, "state": {runningState}, "type": {"bug"}}, map[string]any{"labels": []string{"lane-shared"}, "states": []string{runningState}, "type": "bug"}},
+	} {
+		t.Run("filtered "+test.name, func(t *testing.T) {
+			want := listed(t, f, test.params)
+			params := maps.Clone(test.params)
+			params.Set("include", "work")
+			params.Set("limit", "1")
+			args := maps.Clone(test.args)
+			args["project_id"], args["include"], args["limit"] = string(f.Project.ID), []string{"work"}, 1
+			for pages := 0; ; pages++ {
+				response := f.Hub.Request(t, http.MethodGet, f.Base+"/work-items?"+params.Encode(), f.Token, nil)
+				hubfixture.RequireStatus(t, response, http.StatusOK)
+				var page tracker.NativeIssuePage
+				hubfixture.Decode(t, response, &page)
+				var tool operatortool.WorkReadResult[operatortool.NativeWorkPage]
+				if err := json.Unmarshal(hubfixture.MCPData(t, call("tools/call", operatortool.WorkList, args), false), &tool); err != nil {
+					t.Fatal(err)
+				}
+				if page.Work == nil || page.Work.Lanes == nil || tool.Data.Work == nil || tool.Data.Work.Lanes == nil {
+					t.Fatalf("page %d: rest work present=%t, mcp work present=%t, want counted lanes on both", pages, page.Work != nil, tool.Data.Work != nil)
+				}
+				if got := lanes(page.Work.Lanes); !maps.Equal(got, want) {
+					t.Fatalf("page %d: rest lanes=%v want listed=%v", pages, got, want)
+				}
+				if got := lanes(tool.Data.Work.Lanes); !maps.Equal(got, want) {
+					t.Fatalf("page %d: mcp lanes=%v want listed=%v", pages, got, want)
+				}
+				if page.NextCursor == "" || pages > len(items) {
+					break
+				}
+				params.Set("cursor", page.NextCursor)
+				args["cursor"] = tool.Data.NextCursor
+			}
+		})
+	}
+	t.Run("tenants with identical labels", func(t *testing.T) {
+		params := url.Values{"label": {"lane-shared"}, "include": {"work"}}
+		for _, fixture := range []hubfixture.Native{f, other, twin} {
+			want := listed(t, fixture, url.Values{"label": {"lane-shared"}})
+			response := f.Hub.Request(t, http.MethodGet, fixture.Base+"/work-items?"+params.Encode(), fixture.Token, nil)
+			hubfixture.RequireStatus(t, response, http.StatusOK)
+			var page tracker.NativeIssuePage
+			hubfixture.Decode(t, response, &page)
+			if page.Work == nil {
+				t.Fatalf("project %s returned no work summary", fixture.Project.ID)
+			}
+			if got := lanes(page.Work.Lanes); !maps.Equal(got, want) {
+				t.Fatalf("project %s lanes=%v want listed=%v", fixture.Project.ID, got, want)
+			}
+		}
+	})
+	t.Run("search lanes stay unavailable", func(t *testing.T) {
+		response := f.Hub.Request(t, http.MethodGet, f.Base+"/work-items?include=work&q=lane", f.Token, nil)
 		hubfixture.RequireStatus(t, response, http.StatusOK)
 		var page struct {
 			Work struct {
@@ -147,7 +250,100 @@ func TestWorkListLaneSummariesCountTheFilteredPopulation(t *testing.T) {
 		}
 		hubfixture.Decode(t, response, &page)
 		if string(page.Work.Lanes) != "null" {
-			t.Fatalf("unsupported filter lanes=%s want explicit unavailable null", page.Work.Lanes)
+			t.Fatalf("search lanes=%s want explicit unavailable null", page.Work.Lanes)
 		}
 	})
+}
+
+func createLaneItem(t *testing.T, fixture hubfixture.Native, title string, index int) tracker.NativeIssue {
+	t.Helper()
+	draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + title}, Title: title, Body: hubfixture.IssueBody(), State: "Todo",
+		Labels: []string{"lane-shared", fmt.Sprintf("lane-group-%d", index%2)}, Assignees: []string{fmt.Sprintf("lane-owner-%d", index/2)}, Priority: new(index % 3)}
+	if index%2 == 0 {
+		draft.Type = "bug"
+	}
+	response := fixture.CreateNotDuplicate(t, draft)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
+	var issue tracker.NativeIssue
+	hubfixture.Decode(t, response, &issue)
+	return issue
+}
+
+func TestWorkListLaneCountsFollowReporterVisibility(t *testing.T) {
+	t.Parallel()
+	hosted := hubfixture.NewHostedSecurity(t)
+	project := hubtest.Project(t, hosted.Repository, hosted.Primary, hubtest.ProjectOptions{ID: "prj_reporter_lanes", Name: "Example reporter lanes", States: projectstore.TriageStates(hubfixture.States())})
+	hubtest.Policy(t, hosted.Repository, hosted.Config.RunDetails, project, hubtest.PolicyOptions{Now: hosted.Now()})
+	hosted.Project, hosted.Base = project.ID, hubfixture.ProjectBase(hosted.Primary, project.ID)
+	writer := hosted.User(t, "writer", "member", "writer@example.test", "write", "")
+	reporter := hosted.User(t, "reporter", "reporter", "reporter@example.test", "write", "")
+	for index, author := range []hubfixture.HostedUser{writer, writer, writer, reporter, reporter} {
+		state, body := "Todo", hubfixture.IssueBody()
+		if author.Token == reporter.Token {
+			state, body = "Triage", "## Steps to reproduce\nOpen the example page.\n## Expected\nThe page loads.\n## Actual\nThe page fails.\n## Where\nThe example settings page.\n## Environment\nExample browser."
+		}
+		labels := []string{"lane-shared", fmt.Sprintf("lane-group-%d", index%2)}
+		response := hosted.Request(t, author, http.MethodPost, hosted.Base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("reporter-lanes-%d", index)}, Title: []string{"Example kiwi orchard", "Example granite bridge", "Example violet harbor", "Example copper meadow", "Example silent glacier"}[index], Body: body, State: state, Type: "bug", Labels: labels})
+		if response.Code != http.StatusOK {
+			t.Fatalf("create %d status=%d body=%s", index, response.Code, response.Body.Bytes())
+		}
+		if index == 2 {
+			var issue tracker.NativeIssue
+			hubfixture.Decode(t, response, &issue)
+			hubfixture.RequireStatus(t, hosted.Request(t, writer, http.MethodPost, hosted.Base+"/work-items/"+string(issue.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "reporter-lanes-done"}, ExpectedRevision: issue.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
+		}
+	}
+	hosted.RefreshBoard(t, hosted.Primary)
+	for _, test := range []struct {
+		name   string
+		viewer hubfixture.HostedUser
+		filter url.Values
+		total  int
+	}{
+		{"writer shared label", writer, url.Values{"label": {"lane-shared"}}, 5},
+		{"writer label and open", writer, url.Values{"label": {"lane-group-0"}, "open": {"true"}}, 2},
+		{"reporter shared label", reporter, url.Values{"label": {"lane-shared"}}, 2},
+		{"reporter one label", reporter, url.Values{"label": {"lane-group-1"}}, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			want, listed := map[string]tracker.NativeWorkLane{}, 0
+			params := maps.Clone(test.filter)
+			params.Set("limit", "1")
+			for pages := 0; pages <= test.total; pages++ {
+				response := hosted.Request(t, test.viewer, http.MethodGet, hosted.Base+"/work-items?"+params.Encode(), nil)
+				hubfixture.RequireStatus(t, response, http.StatusOK)
+				var page tracker.NativeIssuePage
+				hubfixture.Decode(t, response, &page)
+				for _, issue := range page.Items {
+					lane := want[issue.State]
+					lane.State, lane.Total = issue.State, lane.Total+1
+					want[issue.State] = lane
+					listed++
+				}
+				if page.NextCursor == "" {
+					break
+				}
+				params.Set("cursor", page.NextCursor)
+			}
+			if listed != test.total {
+				t.Fatalf("listed=%d want fixture total %d", listed, test.total)
+			}
+			params = maps.Clone(test.filter)
+			params.Set("include", "work")
+			response := hosted.Request(t, test.viewer, http.MethodGet, hosted.Base+"/work-items?"+params.Encode(), nil)
+			hubfixture.RequireStatus(t, response, http.StatusOK)
+			var page tracker.NativeIssuePage
+			hubfixture.Decode(t, response, &page)
+			if page.Work == nil || page.Work.Lanes == nil {
+				t.Fatalf("work present=%t want counted lanes", page.Work != nil)
+			}
+			got := map[string]tracker.NativeWorkLane{}
+			for _, lane := range page.Work.Lanes {
+				got[lane.State] = lane
+			}
+			if !maps.Equal(got, want) {
+				t.Fatalf("lanes=%v want listed=%v", got, want)
+			}
+		})
+	}
 }

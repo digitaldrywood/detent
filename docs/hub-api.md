@@ -1878,9 +1878,13 @@ inventory page. `work.lanes` contains state, total and observed running counts
 for the same authorized project and server filters, independent of the cursor.
 Running counts require a recorded running attempt with a current unreleased
 lease; In Progress membership is not evidence of a live worker.
-`work.lanes` is `null` while the board projection is pending or when the
-filters (search, labels, type, assignee, priority, verification, author, `open` or
-date bounds) have no exact maintained summary; unknown counts are never reported as zero.
+Lane counts are returned for unfiltered requests and for every combination of
+`state`, `label`, `assignee`, `type`, `priority`, `verification`, `created_by`,
+`open`, `archived` and the `created_after`, `created_before`, `updated_after`,
+`completed_from` and `completed_to` bounds; they equal the per-state totals of the unpaged filtered list under the
+viewer's visibility. `work.lanes` is `null` while the board projection is pending
+and for full-text search (`q`) or `fingerprint` requests, whose matches are
+answered only within the search budget; unknown counts are never reported as zero.
 `work.as_of` is the server observation time. `work.items` selects at most the
 requested page limit of nonterminal items, ordered by live attempt, dispatchable
 state and descending issue number. `work.truncated` marks additional open items;

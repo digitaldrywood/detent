@@ -98,6 +98,7 @@ type BoardCandidate struct {
 
 type BoardSelection struct {
 	Summary             bool
+	CountLanes          bool
 	Compact             bool
 	SearchText          string
 	SearchRanked        bool

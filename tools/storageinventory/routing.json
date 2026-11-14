@@ -4349,9 +4349,9 @@
       "inventory": {
         "operations": {
           "boardModelMetadataSQL:SQL": 1,
-          "session.BoardModelPages:Query": 2,
+          "session.BoardModelPages:Query": 3,
           "session.BoardModelPages:QueryRow": 1,
-          "session.BoardModelPages:SQL": 3,
+          "session.BoardModelPages:SQL": 4,
           "session.beginBoardSearch:QueryRow": 2,
           "session.beginBoardSearch:SQL": 1,
           "session.boardModelQuery:SQL": 1,
