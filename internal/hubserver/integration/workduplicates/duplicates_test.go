@@ -204,20 +204,88 @@ SELECT organization_id,project_id,'wi_scoped_cost_'||n,n,1,title,body_object_key
 
 func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 	f := newDefaultNativeFixture(t)
-	owner := f.create(t, "Original failure")
-	body := issueorigin.Stamp("Initial diagnostic"+issueContractTestSections, issueorigin.Origin{Kind: "worker", Fingerprint: "original-failure"})
-	path := f.base + "/work-items/" + string(owner.WorkItemID)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "duplicate-owner-body"}, ExpectedRevision: owner.Revision, Body: &body}), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "duplicate-owner-comment"}, Body: "internal/example/pool.go:23:4: undefined: capacity"}), http.StatusOK)
-	refreshNativeDuplicateSearchFixture(t, f.hub, f.project.OrganizationID)
-	credential, _, err := f.authenticateTenantAPIHash(t, f.project.OrganizationID, f.token)
-	if err != nil {
-		t.Fatal(err)
+	stamp := func(body, fingerprint string) string {
+		return issueorigin.Stamp(body+issueContractTestSections, issueorigin.Origin{Kind: "worker", Fingerprint: fingerprint})
 	}
-	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
-	request := tracker.CreateIssue{Body: issueorigin.Stamp("internal/example/pool.go:31:2: undefined: capacity", issueorigin.Origin{Kind: "worker", Fingerprint: "later-failure"})}
-	search, err := workduplicates.Prepare(t.Context(), f.duplicateDeps(), scope, request, true)
-	if err != nil || !search.Available || len(search.Matches) != 1 || search.Matches[0].WorkItemID != owner.WorkItemID {
-		t.Fatalf("search=%+v err=%v", search, err)
+	read := func(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID) tracker.NativeIssue {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item), f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		return issue
 	}
+	seed := func(t *testing.T, f nativeFixture, title, fingerprint, comment string) tracker.NativeIssue {
+		t.Helper()
+		issue := f.createIndependent(t, title)
+		body := stamp("Initial diagnostic", fingerprint)
+		path := f.base + "/work-items/" + string(issue.WorkItemID)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "body-" + title}, ExpectedRevision: issue.Revision, Body: &body}), http.StatusOK)
+		if comment != "" {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment-" + title}, Body: comment}), http.StatusOK)
+		}
+		refreshNativeDuplicateSearchFixture(t, f.hub, f.project.OrganizationID)
+		return read(t, f, issue.WorkItemID)
+	}
+	prepare := func(t *testing.T, f nativeFixture, title, body string) *workduplicates.Search {
+		t.Helper()
+		credential, _, err := f.authenticateTenantAPIHash(t, f.project.OrganizationID, f.token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
+		search, err := workduplicates.Prepare(t.Context(), f.duplicateDeps(), scope, tracker.CreateIssue{Title: title, Body: body}, true)
+		if err != nil || !search.Available {
+			t.Fatalf("search=%+v err=%v", search, err)
+		}
+		return search
+	}
+	requireMatches := func(t *testing.T, search *workduplicates.Search, want ...tracker.NativeWorkItemID) {
+		t.Helper()
+		var got []tracker.NativeWorkItemID
+		for _, match := range search.Matches {
+			if match.Why != "Matching machine fingerprint" {
+				t.Fatalf("machine match without verified fingerprint: %+v", match)
+			}
+			got = append(got, match.WorkItemID)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("matches=%v want %v: %+v", got, want, search.Matches)
+		}
+	}
+	diagnostic := "internal/example/pool.go:23:4: undefined: capacity"
+	later := issueorigin.Stamp("internal/example/pool.go:31:2: undefined: capacity", issueorigin.Origin{Kind: "worker", Fingerprint: "later-failure"})
+	owner := seed(t, f, "Original failure", "original-failure", diagnostic)
+	t.Run("different title with the same defect", func(t *testing.T) {
+		requireMatches(t, prepare(t, f, "Capacity symbol missing in pool", later), owner.WorkItemID)
+	})
+	t.Run("similar words with distinct fingerprints", func(t *testing.T) {
+		requireMatches(t, prepare(t, f, "Original failure", issueorigin.Stamp("internal/example/pool.go:23:4: undefined: capacities", issueorigin.Origin{Kind: "worker", Fingerprint: "distinct-failure"})))
+	})
+	t.Run("other tenant stays separate", func(t *testing.T) {
+		foreign := f.fixture(t, f.second, "Foreign duplicates")
+		copied := seed(t, foreign, "Foreign original failure", "original-failure", diagnostic)
+		requireMatches(t, prepare(t, f, "Later failure", later), owner.WorkItemID)
+		requireMatches(t, prepare(t, foreign, "Later failure", later), copied.WorkItemID)
+	})
+	t.Run("closed item still matches", func(t *testing.T) {
+		current := read(t, f, owner.WorkItemID)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(owner.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "close-owner"}, ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
+		refreshNativeDuplicateSearchFixture(t, f.hub, f.project.OrganizationID)
+		search := prepare(t, f, "Later failure", later)
+		requireMatches(t, search, owner.WorkItemID)
+		if !search.Matches[0].Terminal {
+			t.Fatalf("closed match=%+v", search.Matches[0])
+		}
+	})
+	t.Run("document update changes the indexed fingerprint", func(t *testing.T) {
+		updated := issueorigin.Stamp("Updated failure output", issueorigin.Origin{Kind: "worker", Fingerprint: "updated-failure"})
+		item := seed(t, f, "Rewritten report", "rewritten-before", "")
+		requireMatches(t, prepare(t, f, "Rewritten report", updated))
+		body := stamp("Rewritten diagnostic", "updated-failure")
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "rewrite-body"}, ExpectedRevision: item.Revision, Body: &body}), http.StatusOK)
+		refreshNativeDuplicateSearchFixture(t, f.hub, f.project.OrganizationID)
+		requireMatches(t, prepare(t, f, "Unrelated title", updated), item.WorkItemID)
+		requireMatches(t, prepare(t, f, "Rewritten report", issueorigin.Stamp("Old output", issueorigin.Origin{Kind: "worker", Fingerprint: "rewritten-before"})))
+	})
 }

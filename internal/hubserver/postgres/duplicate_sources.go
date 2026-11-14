@@ -10,7 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
-	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -92,13 +91,9 @@ func (s *session) DuplicateSources(ctx context.Context, query searchstore.Duplic
 		}
 	}
 	literal := searchstore.LiteralExpression(s.organization, searchQuery)
-	fingerprint := ""
-	if origin, ok := issueorigin.Parse(request.Body); ok {
-		values := searchstore.Expressions(s.organization, searchstore.Query{ProjectID: query.ProjectID, Text: origin.Fingerprint + " " + issueorigin.DefectFingerprint(request.Body), Exact: true})
-		if len(values) > 0 {
-			fingerprint = strings.Join(values, " | ")
-			expression = "(" + expression + ") | (" + fingerprint + ")"
-		}
+	fingerprint := searchstore.DuplicateFingerprintExpression(s.organization, query.ProjectID, request.Body)
+	if fingerprint != "" {
+		expression = "(" + expression + ") | (" + fingerprint + ")"
 	}
 	rows, err := s.queries.DuplicateSources(ctx, pgquery.DuplicateSourcesParams{Exact: query.Exact, Machine: query.Machine, LiteralExpression: literal, FingerprintExpression: fingerprint, TitleExpressions: titleExpressions, TitleMinimum: titleMinimum, BodyExpressions: bodyExpressions, BodyMinimum: bodyMinimum, Expression: expression, OrganizationID: s.organization, ProjectID: new(query.ProjectID), Reporter: query.Reporter != nil, PrincipalID: principal, TerminalAfter: query.Now.AddDate(0, 0, -30)})
 	if err != nil {

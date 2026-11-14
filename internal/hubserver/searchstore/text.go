@@ -211,6 +211,12 @@ func Vector(document Document, text Text) string {
 			}
 		}
 	}
+	if document.ProjectID != "" && (document.Kind == "issue" || document.Kind == "comment") {
+		prefix := Prefix(document.OrganizationID, document.ProjectID)
+		for _, key := range DuplicateFingerprintKeys(text.Body, document.Kind == "comment") {
+			add(fingerprintTerm(prefix, key), 0, "")
+		}
+	}
 	var vector strings.Builder
 	for _, entry := range entries {
 		if entry.term == "~complete" && !complete {

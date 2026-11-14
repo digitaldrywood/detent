@@ -1,6 +1,8 @@
 package searchstore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"slices"
 	"strings"
 
@@ -144,6 +146,33 @@ func MatchDuplicateLiteral(text Text, query string) bool {
 	}
 	query = lowerASCII(query)
 	return strings.Contains(lowerASCII(text.Title), query) || strings.Contains(lowerASCII(text.Body), query)
+}
+
+func DuplicateFingerprintKeys(body string, comment bool) []string {
+	var keys []string
+	if origin, stamped := issueorigin.Parse(body); stamped {
+		keys = append(keys, origin.Fingerprint)
+	} else if !comment {
+		return nil
+	}
+	keys = append(keys, issueorigin.DefectKeys(body)...)
+	slices.Sort(keys)
+	return slices.Compact(keys)
+}
+
+func DuplicateFingerprintExpression(organization tracker.OrganizationID, project tracker.ProjectID, body string) string {
+	keys := DuplicateFingerprintKeys(body, false)
+	prefix := Prefix(organization, project)
+	terms := make([]string, len(keys))
+	for i, key := range keys {
+		terms[i] = quote(fingerprintTerm(prefix, key))
+	}
+	return strings.Join(terms, " | ")
+}
+
+func fingerprintTerm(prefix, key string) string {
+	digest := sha256.Sum256([]byte(key))
+	return prefix + "f" + hex.EncodeToString(digest[:])
 }
 
 func DuplicateQueryExpressions(organization tracker.OrganizationID, project tracker.ProjectID, content string) []string {

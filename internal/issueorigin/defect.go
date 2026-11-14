@@ -25,6 +25,10 @@ func DefectFingerprint(body string) string {
 	return ""
 }
 
+func DefectKeys(body string) []string {
+	return defectFingerprints(body)
+}
+
 func HasDefect(body, fingerprint string) bool {
 	return slices.Contains(defectFingerprints(body), fingerprint)
 }
