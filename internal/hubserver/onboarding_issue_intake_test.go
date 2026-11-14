@@ -933,7 +933,7 @@ func TestGitHubBatchRunnerOperations(t *testing.T) {
 				t.Fatal(err)
 			}
 			if role == "member" {
-				f.command(t, tracker.GitHubBatchCommand{Action: "discover", RunnerID: f.runner.binding.RunnerID}, http.StatusNotFound)
+				f.command(t, tracker.GitHubBatchCommand{Action: "discover", RunnerID: f.runner.binding.RunnerID}, http.StatusForbidden)
 				if f.itemCount(t) != 0 {
 					t.Fatal("ordinary member created intake work")
 				}
