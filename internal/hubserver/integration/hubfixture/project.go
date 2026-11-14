@@ -76,7 +76,15 @@ func (p Native) Request(t *testing.T, method, path string, payload any) *httptes
 
 func (p Native) Create(t *testing.T, title string) tracker.NativeIssue {
 	t.Helper()
-	draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + title}, Title: title, Body: IssueBody(), State: "Todo"}
+	response := p.CreateNotDuplicate(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + title}, Title: title, Body: IssueBody(), State: "Todo"})
+	RequireStatus(t, response, http.StatusOK)
+	var issue tracker.NativeIssue
+	Decode(t, response, &issue)
+	return issue
+}
+
+func (p Native) CreateNotDuplicate(t *testing.T, draft tracker.CreateIssue) *httptest.ResponseRecorder {
+	t.Helper()
 	response := p.Hub.Request(t, http.MethodPost, p.Base+"/work-items", p.Token, draft)
 	if response.Code == http.StatusConflict {
 		var challenge struct {
@@ -88,7 +96,7 @@ func (p Native) Create(t *testing.T, title string) tracker.NativeIssue {
 		}
 		Decode(t, response, &challenge)
 		if challenge.Code != "possible_duplicates" || challenge.Token == "" || len(challenge.Matches) == 0 {
-			t.Fatalf("create %q: %s", title, response.Body.Bytes())
+			t.Fatalf("create %q: %s", draft.Title, response.Body.Bytes())
 		}
 		draft.ChallengeToken = challenge.Token
 		for _, match := range challenge.Matches {
@@ -96,10 +104,7 @@ func (p Native) Create(t *testing.T, title string) tracker.NativeIssue {
 		}
 		response = p.Hub.Request(t, http.MethodPost, p.Base+"/work-items", p.Token, draft)
 	}
-	RequireStatus(t, response, http.StatusOK)
-	var issue tracker.NativeIssue
-	Decode(t, response, &issue)
-	return issue
+	return response
 }
 
 func (p Native) Credential(t *testing.T, token string) (accessstore.Credential, error) {
