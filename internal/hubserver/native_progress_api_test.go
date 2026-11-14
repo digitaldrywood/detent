@@ -316,8 +316,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 						continue
 					}
 					found = true
-					plan, raw := reportsExplainPostgresPlan(t, admin, scope.Organization, statement)
-					if violations := reportsBudgetPlanViolations(statement, plan); len(violations) > 0 {
+					if violations, _, raw := tenantWriteWorkViolations(t, admin, scope.Organization, statement); len(violations) > 0 {
 						t.Fatalf("terminal history lookup is not indexed and bounded: %v plan=%s", violations, raw)
 					}
 				}
