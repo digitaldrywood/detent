@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -753,6 +754,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					decision = "changes_requested"
 				}
 				request := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "review-after-wait"}, Decision: decision, Body: "Review current source"}
+				if _, err := f.service.config.TenantRepository.(*postgres.Repository).BackfillCurrentChangeReviews(t.Context(), f.project.OrganizationID, eventstore.NewContent(f.service.runDetailStore()), corestore.MaxPageSize); err != nil {
+					t.Fatal(err)
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
 				want := "Fixing"
 				if current := f.reload(t); current.State != want {
