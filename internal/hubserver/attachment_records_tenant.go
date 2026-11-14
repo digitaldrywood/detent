@@ -630,6 +630,9 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 		if err != nil {
 			return result, err
 		}
+		if !found && !plan.Create {
+			return result, hubapi.NativeWorkItemStorageUnavailable()
+		}
 		if found {
 			valid = append(valid, id)
 		}
