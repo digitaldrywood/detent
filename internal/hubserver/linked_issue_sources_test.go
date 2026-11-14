@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -398,8 +399,8 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 						}
 						source.Set("collaboration_events", map[string]string{"work_item_id": string(item), "type": "issue.edited"}, updates)
 					}
-					input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-					if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+					input := coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+					if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 						t.Fatalf("historical ownership import count=%d error=%v", count, err)
 					}
 					issue = readWorkItem(t, f, "wi_core_import", "")

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -652,7 +653,7 @@ func TestBlockerHistoryUsesTypedPageFacts(t *testing.T) {
 				source.Add("collaboration_events", fields)
 				source.Set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3})
 			}
-			count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()})
+			count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()})
 			if err != nil || count != 2 {
 				t.Fatalf("historical blocker source import count=%d error=%v", count, err)
 			}
@@ -1016,8 +1017,8 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 		}
 		source.Set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3 + 3*(storageConversionRows+3), "workflow_state_id": 2})
 	}
-	input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+	input := coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 		t.Fatalf("past-budget historical source import count=%d error=%v", count, err)
 	}
 	drainTestNativeBoard(t, f.service)
@@ -1134,7 +1135,7 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "DELETE FROM linked_issue_sources WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", f.project.OrganizationID, f.project.ID, "wi_core_import"); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+	if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 		t.Fatalf("missing historical source replay count=%d error=%v", count, err)
 	}
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -1211,7 +1212,7 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 			return err
 		})
 	}}
-	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 || !interleaved {
+	if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 || !interleaved {
 		t.Fatalf("historical ownership replay count=%d interleaved=%t error=%v", count, interleaved, err)
 	}
 	input.Objects = store
@@ -1238,7 +1239,7 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE linked_issue_sources SET source_url=$1 WHERE organization_id=$2 AND project_id=$3 AND work_item_id=$4", "https://github.com/example-org/example-project/issues/999", f.project.OrganizationID, f.project.ID, id); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); !errors.Is(err, mutation.ErrConflict) || count != 1 {
+	if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); !errors.Is(err, mutation.ErrConflict) || count != 1 {
 		t.Fatalf("unsupported replay association accepted: count=%d error=%v", count, err)
 	}
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {

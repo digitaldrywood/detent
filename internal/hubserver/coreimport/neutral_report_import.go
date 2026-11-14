@@ -1,4 +1,4 @@
-package hubserver
+package coreimport
 
 import (
 	"context"

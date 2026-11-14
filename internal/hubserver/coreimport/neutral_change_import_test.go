@@ -1,4 +1,4 @@
-package hubserver
+package coreimport
 
 import (
 	"bytes"
@@ -15,7 +15,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport/coreimporttest"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
@@ -27,20 +28,18 @@ func TestCoreChangeImportsRefuseLegacyCopy(t *testing.T) {
 	if err := os.WriteFile(path, original, 0400); err != nil {
 		t.Fatal(err)
 	}
-	for _, family := range []string{"changes", "landings", "escapes", "usage", "tenant"} {
+	for _, family := range []string{"changes", "landings", "escapes", "usage"} {
 		for _, bundle := range []string{"", "unused-neutral-bundle"} {
 			var err error
 			switch family {
 			case "changes":
 				_, err = ImportCoreChanges(t.Context(), nil, CoreChangeImportSource{CopyPath: path, BundlePath: bundle})
 			case "landings":
-				_, err = ImportCoreReportLandings(t.Context(), nil, CoreChangeImportSource{CopyPath: path, BundlePath: bundle})
+				_, err = importCoreReportLandings(t.Context(), nil, CoreChangeImportSource{CopyPath: path, BundlePath: bundle})
 			case "escapes":
-				_, err = ImportCoreReportEscapes(t.Context(), nil, CoreChangeImportSource{CopyPath: path, BundlePath: bundle})
+				_, err = importCoreReportEscapes(t.Context(), nil, CoreChangeImportSource{CopyPath: path, BundlePath: bundle})
 			case "usage":
 				_, err = ImportCoreReportUsage(t.Context(), nil, ReportUsageImportSource{CopyPath: path, BundlePath: bundle})
-			case "tenant":
-				_, err = ImportTenantCoreCopy(t.Context(), postgres.Config{}, TenantCoreImportSource{CopyPath: path, BundlePath: bundle})
 			}
 			if !errors.Is(err, neutralimport.ErrInvalid) {
 				t.Fatalf("%s legacy selector error=%v", family, err)
@@ -58,15 +57,15 @@ func TestCoreChangeImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
 	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	for _, family := range []string{"changes", "landings", "escapes", "usage"} {
 		t.Run(family, func(t *testing.T) {
-			descriptor := hubTestPolicy()
+			descriptor := hubtest.PolicyDescriptor()
 			policyJSON, err := json.Marshal(descriptor)
 			if err != nil {
 				t.Fatal(err)
 			}
-			fixture := coreChangeNeutralFixture(t, "org_change_schema", "prj_example", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), descriptor, policyJSON)
+			fixture := coreimporttest.Changes(t, repositoryFS, "org_change_schema", "prj_example", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), descriptor, policyJSON)
 			tableName := "change_versions"
 			if family == "usage" {
-				fixture = coreExecutionNeutralFixture(t, "org_change_schema")
+				fixture = coreimporttest.Execution(t, repositoryFS, "org_change_schema")
 				tableName = "native_attempts"
 			}
 			table := fixture.Tables[tableName]
@@ -81,9 +80,9 @@ func TestCoreChangeImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
 			case "changes":
 				_, err = ImportCoreChanges(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.Organization, SourceObjects: objects, Objects: objects})
 			case "landings":
-				_, err = ImportCoreReportLandings(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.Organization, SourceObjects: objects, Objects: objects})
+				_, err = importCoreReportLandings(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.Organization, SourceObjects: objects, Objects: objects})
 			case "escapes":
-				_, err = ImportCoreReportEscapes(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.Organization, SourceObjects: objects, Objects: objects})
+				_, err = importCoreReportEscapes(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.Organization, SourceObjects: objects, Objects: objects})
 			case "usage":
 				_, err = ImportCoreReportUsage(t.Context(), repository, ReportUsageImportSource{BundlePath: path, OrganizationID: fixture.Organization, ExpectedSHA256: strings.Repeat("0", 64)})
 			}
@@ -163,7 +162,7 @@ func TestCoreNeutralUsageRefusesInvalidSourceBeforeWriting(t *testing.T) {
 	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	for _, scenario := range []string{"digest", "attempt scope", "currency"} {
 		t.Run(scenario, func(t *testing.T) {
-			fixture := coreExecutionNeutralFixture(t, "org_usage_refusal")
+			fixture := coreimporttest.Execution(t, repositoryFS, "org_usage_refusal")
 			switch scenario {
 			case "attempt scope":
 				fixture.Set("native_attempts", map[string]string{"id": "attempt_execution_import_second"}, map[string]any{"project_id": "prj_other"})

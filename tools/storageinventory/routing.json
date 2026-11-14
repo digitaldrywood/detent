@@ -2328,7 +2328,22 @@
         "tables": []
       }
     },
-    "internal/hubserver/core_work_item_import.go": {
+    "internal/hubserver/coreimport/coreimporttest/fixtures.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "SeedExecutionTarget:ExecContext": 1,
+          "SeedExecutionTarget:SQL": 1
+        },
+        "tables": [
+          "hub/policy_revisions"
+        ]
+      }
+    },
+    "internal/hubserver/coreimport/work_item_import.go": {
       "disposition": "non-storage",
       "families": [
         "non-storage"

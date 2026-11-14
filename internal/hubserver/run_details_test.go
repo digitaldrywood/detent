@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/activitystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -1439,9 +1440,9 @@ func importRunDetailHistory(t *testing.T, f nativeFixture, issue tracker.NativeI
 	fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "issues", "leases", "machines", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "api_tokens", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "native_attempts", "native_attempt_events", "work_events", "change_content_objects", "attachments", "attempt_diffs", "attempt_diff_files", "attempt_diff_file_archives")
 	fixture.Add("issues", map[string]any{"id": row.IssueID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "native_id": issue.WorkItemID})
 	fixture.Add("native_attempts", map[string]any{"id": row.ID, "organization_id": row.OrganizationID, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "lease_id": row.LeaseID, "fencing_token": row.FencingToken, "run_id": row.RunID, "sequence": row.Sequence, "status": row.Status, "work_item_revision": row.WorkItemRevision, "dispatch_generation": row.DispatchGeneration, "data_json": string(payload), "checkpoint_json": string(checkpoint), "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(row.StartedAt), "updated_at": hubapi.FormatHubTime(row.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
-	source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: objects, Objects: objects}
+	source := coreimport.CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: objects, Objects: objects}
 	for range 2 {
-		count, err := ImportCoreExecution(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source)
+		count, err := coreExecutions().Import(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source)
 		if err != nil || count != 1 {
 			t.Fatalf("verified historical attempt import=%d want=1 error=%v", count, err)
 		}
@@ -1500,16 +1501,16 @@ func importRunDetailHistoryIntoEmptyTarget(t *testing.T, issue tracker.NativeIss
 		execution.Add("native_attempt_events", map[string]any{"attempt_id": run.AttemptID, "sequence": sequence, "request_hash": fmt.Sprintf("%064x", sequence)})
 	}
 	execution.Add("native_attempts", map[string]any{"id": run.AttemptID, "project_id": target.project.ID, "work_item_id": issue.WorkItemID, "lease_id": run.LeaseID, "fencing_token": run.FencingToken, "run_id": run.RunID, "sequence": run.Sequence, "status": row.Status, "work_item_revision": row.WorkItemRevision, "dispatch_generation": row.DispatchGeneration, "data_json": string(historyTestJSON(t, run)), "checkpoint_json": string(historyTestJSON(t, checkpointPayload{Checkpoint: nativeTestCheckpoint()})), "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(row.StartedAt), "updated_at": hubapi.FormatHubTime(row.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
-	workSource := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: target.project.OrganizationID, ProjectID: target.project.ID, Objects: store}
+	workSource := coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: target.project.OrganizationID, ProjectID: target.project.ID, Objects: store}
 	for range 2 {
-		count, err := ImportCoreWorkItems(t.Context(), repository, workSource)
+		count, err := coreimport.ImportCoreWorkItems(t.Context(), repository, workSource)
 		if err != nil || count != 1 {
 			t.Fatalf("historical work item import=%d want1 error=%v", count, err)
 		}
 	}
-	executionSource := CoreExecutionImportSource{BundlePath: workSource.BundlePath, OrganizationID: target.project.OrganizationID, SourceObjects: store, Objects: store}
+	executionSource := coreimport.CoreExecutionImportSource{BundlePath: workSource.BundlePath, OrganizationID: target.project.OrganizationID, SourceObjects: store, Objects: store}
 	for range 2 {
-		count, err := ImportCoreExecution(t.Context(), repository, executionSource)
+		count, err := coreExecutions().Import(t.Context(), repository, executionSource)
 		if err != nil || count != 3 {
 			t.Fatalf("historical execution import=%d want3 error=%v", count, err)
 		}

@@ -1,6 +1,7 @@
-package hubserver
+package coreimport
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,14 +13,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport/coreimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -43,7 +44,7 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_change_import"}); err != nil {
 					return err
 				}
-				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Slug: "example-project", Profile: "native"}, Settings: projectstore.Settings{OrganizationID: organization, ProjectID: project}, States: nativeFixtureStates()}); err != nil {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Slug: "example-project", Profile: "native"}, Settings: projectstore.Settings{OrganizationID: organization, ProjectID: project}, States: hubtest.States()}); err != nil {
 					return err
 				}
 				for index, id := range []tracker.NativeWorkItemID{"wi_change_import_a", "wi_change_import_b"} {
@@ -56,7 +57,7 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			descriptor := hubTestPolicy()
+			descriptor := hubtest.PolicyDescriptor()
 			policyJSON, err := json.Marshal(descriptor)
 			if err != nil {
 				t.Fatal(err)
@@ -135,7 +136,7 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 			}
 			var landingDigest string
 			for range 2 {
-				parity, err := ImportCoreReportLandings(t.Context(), repository, source)
+				parity, err := importCoreReportLandings(t.Context(), repository, source)
 				if err != nil || parity.Landings != 2 || parity.SourceSHA256 == "" || parity.ProjectionSHA256 == "" {
 					t.Fatalf("source landing parity = %+v error %v", parity, err)
 				}
@@ -145,7 +146,7 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 				landingDigest = parity.ProjectionSHA256
 			}
 			for range 2 {
-				parity, err := ImportCoreReportEscapes(t.Context(), repository, source)
+				parity, err := importCoreReportEscapes(t.Context(), repository, source)
 				if err != nil || parity.Escapes != 2 || parity.SourceSHA256 == "" || parity.ProjectionSHA256 == "" {
 					t.Fatalf("source escape parity = %+v error %v", parity, err)
 				}
@@ -221,7 +222,7 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 						return fmt.Errorf("change %s landing timestamp was not preserved: %+v: %w", id, landingPayload, err)
 					}
 					bundle, err := content.SourceBundle(t.Context(), organization, versions[0], *version.Source)
-					if err != nil || string(bundle) != string(coreChangeBundle(version.BaseSHA, version.HeadSHA)) {
+					if err != nil || string(bundle) != string(coreimporttest.ChangeBundle(version.BaseSHA, version.HeadSHA)) {
 						return fmt.Errorf("change %s source bundle was not preserved: %w", id, err)
 					}
 					viewed, err := r.ViewedFiles(t.Context(), version.ID, "example-owner", 10)
@@ -322,61 +323,90 @@ VALUES ($1,$2,$3,$4,$5,$6,1,'succeeded',1,1,'example/payload',$7,$7,(SELECT proj
 
 func coreChangeSourceCopy(t *testing.T, organization tracker.OrganizationID, project tracker.ProjectID, createdAt time.Time, descriptor policy.Descriptor, policyJSON []byte) string {
 	t.Helper()
-	return coreChangeNeutralFixture(t, organization, project, createdAt, descriptor, policyJSON).Write()
-}
-func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID, project tracker.ProjectID, createdAt time.Time, descriptor policy.Descriptor, policyJSON []byte) *neutralimporttest.Fixture {
-	t.Helper()
-	fixture := newCoreNeutralFixture(t, organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-	fixture.Add("policy_revisions", map[string]any{"scope": string(organization) + "/" + string(project), "policy_id": descriptor.ID, "metadata_json": string(policyJSON)})
-	for index, suffix := range []string{"a", "b"} {
-		id := "change_import_" + suffix
-		item := "wi_change_import_" + suffix
-		change := tracker.ChangeRequest{ID: id, OrganizationID: organization, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(item), LinkedIssues: []tracker.NativeWorkItemID{tracker.NativeWorkItemID(item)}, Title: "Change " + id, Body: "Preserved discussion", CurrentVersion: "version_" + suffix, Revision: 2, CreatedAt: createdAt, UpdatedAt: createdAt.Add(time.Minute)}
-		changeJSON, err := json.Marshal(change)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fixture.Add("change_requests", map[string]any{"id": id, "organization_id": organization, "project_id": project, "work_item_id": item, "record_json": string(changeJSON)})
-		fixture.Add("change_issue_links", map[string]any{"change_id": id, "organization_id": organization, "project_id": project, "work_item_id": item})
-		validation := &gate.CommandResult{HeadSHA: strings.Repeat("b", 40), ExitCode: 0, DurationNS: int64(time.Second), Command: "go test", TreeSHA: strings.Repeat("c", 40), Output: "validated output"}
-		baseSHA, headSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
-		bundle := coreChangeBundle(baseSHA, headSHA)
-		source := &tracker.ChangeSource{Format: "git-bundle", BaseSHA: baseSHA, HeadSHA: headSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("e", 64), Bytes: int64(len(bundle))}
-		externalID := fmt.Sprintf("%d", 201+index)
-		version := tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: baseSHA, HeadSHA: headSHA, MergeBaseSHA: baseSHA, Repository: "https://github.com/example-org/example-project", AttemptID: "source_" + suffix, PolicyID: descriptor.ID, Code: tracker.ChangeArtifact{Kind: "code", URI: "bundle://example"}, Validation: validation, External: &tracker.ChangeExternalReference{Provider: "github", ID: externalID, URL: "https://github.com/example-org/example-project/pull/" + externalID}, Source: source}, ID: "version_" + suffix, ChangeID: id, Number: int64(index + 1), Policy: descriptor, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: createdAt}
-		versionJSON, err := json.Marshal(version)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": id, "number": version.Number, "record_json": string(versionJSON), "policy_revision_id": descriptor.ID, "payload_object_key": "", "repository": version.Repository, "created_at": createdAt.Format(time.RFC3339Nano)})
-		fixture.Add("change_sources", map[string]any{"version_id": version.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
-		fixture.Add("change_viewed_files", map[string]any{"version_id": version.ID, "principal_id": "example-owner", "manifest_sha256": strings.Repeat("d", 64), "file_sha256": strings.Repeat("f", 64), "viewed": 1})
-		fixture.Add("native_pr_publications", map[string]any{"version_id": version.ID, "change_id": id, "repository": version.Repository, "base_ref": "develop", "branch": "change/" + version.ID, "head_sha": headSHA, "policy_id": descriptor.ID, "source_attempt_id": version.AttemptID, "recorder_attempt_id": "recorder_" + version.ID, "provider": "github", "external_id": externalID, "external_url": version.Repository + "/pull/" + externalID})
-		frozen := tracker.ChangeLanding{VersionID: version.ID, HeadSHA: headSHA, MergeSHA: strings.Repeat("c", 40), BaseRef: "develop", Method: "merge", Actor: version.Actor, LandedAt: createdAt.Add(time.Minute + 123*time.Nanosecond), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 1, IssueBody: "Frozen contract " + suffix, Criteria: []string{"Preserved criterion"}, Missing: []string{}, Evidence: []gate.CriterionEvidence{}}}
-		frozenJSON, err := json.Marshal(frozen)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fixture.Add("quality_landings", map[string]any{"version_id": version.ID, "record_json": string(frozenJSON), "landed_at": hubapi.FormatHubTime(frozen.LandedAt)})
-		landing := tracker.NativeLandingReceipt{VersionID: version.ID, HeadSHA: headSHA, MergeSHA: strings.Repeat("c", 40), BaseRef: "develop", BaseSHA: baseSHA, Method: "merge", Landed: true, ObservedAt: createdAt.Add(time.Minute + 123*time.Nanosecond)}
-		landingJSON, err := json.Marshal(landing)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fixture.Add("change_landing_receipts", map[string]any{"attempt_id": version.AttemptID, "version_id": version.ID, "record_json": string(landingJSON)})
-		fixture.Add("release_deliveries", map[string]any{"work_item_id": item, "organization_id": organization, "project_id": project, "source_issue_id": item, "source_change_id": id, "source_merge_sha": strings.Repeat("c", 40), "repository_id": 47, "repository": version.Repository, "pr_number": 300 + index + 1, "head_ref": "release-pick/" + version.ID, "head_sha": headSHA, "base_ref": "release/v1.0", "base_sha": strings.Repeat("d", 40), "frozen_sha": strings.Repeat("e", 40), "change_id": id, "version_id": version.ID, "principal_id": "example-owner", "actor_kind": "human", "via_key": "example-release-key", "associated_at": createdAt.Add(2*time.Minute + 123*time.Nanosecond).Format(time.RFC3339Nano)})
-		discussion := tracker.ChangeDiscussion{ID: "discussion_" + suffix, VersionID: version.ID, Body: "Preserved discussion", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: createdAt.Add(2 * time.Minute), Escape: &tracker.QualityEscape{OccurrenceID: "occurrence_" + suffix, Kind: "scheduled_failure", Cause: "validator_miss", ObservedAt: createdAt.Add(90 * time.Second), HumanOverride: true}}
-		discussionJSON, err := json.Marshal(discussion)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fixture.Add("change_evidence", map[string]any{"sequence": 1, "change_id": id, "version_id": version.ID, "kind": "discussion", "source_key": nil, "record_json": string(discussionJSON), "payload_object_key": ""})
-	}
-	return fixture
+	return coreimporttest.Changes(t, repositoryFS, organization, project, createdAt, descriptor, policyJSON).Write()
 }
 
 func coreChangeString(value string) *string { return &value }
 
-func coreChangeBundle(base, head string) []byte {
-	return []byte(fmt.Sprintf("# v2 git bundle\n%s refs/heads/main\n-%s base\n\nbundle payload", head, base))
+type pausedDetails struct {
+	attachment.DetailStore
+	marker  []byte
+	failure error
+	fired   bool
+}
+
+func (s *pausedDetails) StoreDetail(ctx context.Context, organization string, raw []byte) (attachment.ArchiveReference, error) {
+	if !s.fired && bytes.Contains(raw, s.marker) {
+		s.fired = true
+		return attachment.ArchiveReference{}, s.failure
+	}
+	return s.DetailStore.StoreDetail(ctx, organization, raw)
+}
+
+func TestCoreChangeImportInterruptedLandingLeavesUnprovenState(t *testing.T) {
+	t.Parallel()
+	repository := coreImportPostgres(t)
+	objects := &memoryRunDetails{}
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	organization := hubtest.Organization(t, repository, hubtest.OrganizationOptions{ID: "org_unproven_import", Name: "Example organization", Slug: "example-unproven", Now: at})
+	project := hubtest.Project(t, repository, organization.OrganizationID, hubtest.ProjectOptions{Name: "Unproven project"})
+	item := hubtest.Issue(t, repository, objects, project, hubtest.IssueOptions{Title: "Unproven historical item", Now: at}).Issue
+	descriptor := hubtest.PolicyDescriptor()
+	unprovenVersion := tracker.ChangeVersion{ID: "unproven_historical_version", ChangeID: "unproven_historical_change", Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), Repository: "owner/repository", PolicyID: descriptor.ID}, Policy: descriptor, Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, CreatedAt: at.Add(-time.Minute)}
+	unprovenLanding := tracker.ChangeLanding{VersionID: unprovenVersion.ID, HeadSHA: unprovenVersion.HeadSHA, MergeSHA: strings.Repeat("4", 40), BaseRef: "develop", LandedAt: at, Actor: unprovenVersion.Actor}
+	unprovenChange := tracker.ChangeRequest{ID: unprovenVersion.ChangeID, OrganizationID: project.OrganizationID, ProjectID: project.ID, WorkItemID: item.WorkItemID, LinkedIssues: []tracker.NativeWorkItemID{item.WorkItemID}, Revision: 1, Title: "Unproven imported landing", CurrentVersion: unprovenVersion.ID, Landed: &unprovenLanding, CreatedAt: at.Add(-time.Hour), UpdatedAt: at}
+	encode := func(value any) string {
+		t.Helper()
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	unprovenSource := newCoreNeutralFixture(t, project.OrganizationID, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
+	unprovenSource.Add("change_requests", map[string]any{"id": unprovenChange.ID, "organization_id": project.OrganizationID, "project_id": project.ID, "work_item_id": item.WorkItemID, "created_at": nil, "record_json": encode(unprovenChange)})
+	unprovenSource.Add("change_issue_links", map[string]any{"change_id": unprovenChange.ID, "organization_id": project.OrganizationID, "project_id": project.ID, "work_item_id": item.WorkItemID})
+	unprovenSource.Add("change_versions", map[string]any{"id": unprovenVersion.ID, "change_id": unprovenChange.ID, "number": 1, "policy_revision_id": descriptor.ID, "repository": "owner/repository", "record_json": encode(unprovenVersion)})
+	unprovenSource.Add("policy_revisions", map[string]any{"scope": string(project.OrganizationID) + "/" + string(project.ID), "policy_id": descriptor.ID, "metadata_json": encode(descriptor)})
+	freezePause := errors.New("historical landing freeze pending")
+	paused := &pausedDetails{DetailStore: objects, marker: []byte(`"merge_sha":"` + strings.Repeat("4", 40) + `"`), failure: freezePause}
+	unprovenImport := CoreChangeImportSource{BundlePath: unprovenSource.Write(), OrganizationID: project.OrganizationID, SourceObjects: objects, Objects: paused}
+	if err := neutralimport.Read(t.Context(), unprovenImport.BundlePath, project.OrganizationID, func(bundle *neutralimport.Bundle) error {
+		if err := validateCoreNeutralChangeImport(bundle); err != nil {
+			return err
+		}
+		if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, objects); err != nil {
+			return err
+		}
+		tx := neutralimport.NewIndex(bundle)
+		rows, err := readCoreChangePage(t.Context(), tx, unprovenImport, "")
+		if err != nil {
+			return err
+		}
+		if len(rows) != 1 {
+			return eventstore.ErrInvalidRecord
+		}
+		if err := importCoreChange(t.Context(), tx, repository, eventstore.NewContent(objects), unprovenImport, bundle.Identity().SourceSHA256, rows[0]); err != nil {
+			return err
+		}
+		return importCoreChangeVersions(t.Context(), tx, repository, eventstore.NewContent(paused), unprovenImport, bundle.Identity().SourceSHA256, unprovenChange.ID)
+	}); !errors.Is(err, freezePause) {
+		t.Fatalf("interrupted landing freeze=%v", err)
+	}
+	if err := repository.ReadTenant(t.Context(), project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		change, err := r.Change(t.Context(), unprovenChange.ID)
+		if err != nil {
+			return err
+		}
+		version, err := r.Version(t.Context(), unprovenChange.ID, unprovenVersion.ID)
+		if err != nil {
+			return err
+		}
+		if change.LandedVersionID == nil || *change.LandedVersionID != unprovenVersion.ID || version.LandingHistoryKnown || version.FrozenLanding != nil {
+			t.Fatalf("fixture lost actual unproven import state: change=%+v version=%+v", change, version)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -1,4 +1,4 @@
-package hubserver
+package coreimport
 
 import (
 	"bytes"
@@ -172,7 +172,7 @@ func importCoreChange(ctx context.Context, tx *neutralimport.Index, target *post
 	if err != nil {
 		return err
 	}
-	receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change", row.change.ID, struct {
+	receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change", row.change.ID, struct {
 		Change eventstore.Change          `json:"change"`
 		Links  []tracker.NativeWorkItemID `json:"links"`
 	}{record, row.links})
@@ -206,7 +206,7 @@ func finalizeCoreChange(ctx context.Context, target *postgres.Repository, conten
 	if err != nil {
 		return err
 	}
-	receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change", change.ID, struct {
+	receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change", change.ID, struct {
 		Change eventstore.Change          `json:"change"`
 		Links  []tracker.NativeWorkItemID `json:"links"`
 	}{record, change.LinkedIssues})
@@ -338,7 +338,7 @@ func importCoreChangeVersions(ctx context.Context, tx *neutralimport.Index, targ
 				}
 				record.SourceObjectKey, record.SourceSHA256, record.SourceBytes, record.SourceContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
 			}
-			receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-version", row.id, struct {
+			receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-version", row.id, struct {
 				Version eventstore.Version `json:"version"`
 				Source  []byte             `json:"source,omitempty"`
 			}{record, bundle})
@@ -407,7 +407,7 @@ func importCoreChangePublications(ctx context.Context, tx *neutralimport.Index, 
 			if err := json.Unmarshal(raw, &version); err != nil || version.ID != row.record.VersionID || version.ChangeID != row.record.ChangeID || !publication.Matches(row.record.ChangeID, version) {
 				return errors.Join(eventstore.ErrInvalidRecord, err)
 			}
-			receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-publication", row.record.VersionID, row.record)
+			receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-publication", row.record.VersionID, row.record)
 			if err != nil {
 				return err
 			}
@@ -456,7 +456,7 @@ func importCoreReleaseDeliveries(ctx context.Context, tx *neutralimport.Index, t
 					return errors.Join(eventstore.ErrInvalidRecord, err)
 				}
 			}
-			receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-release-delivery", string(record.WorkItemID), record)
+			receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-release-delivery", string(record.WorkItemID), record)
 			if err != nil {
 				return err
 			}
@@ -553,7 +553,7 @@ func importCoreChangeEvidence(ctx context.Context, tx *neutralimport.Index, targ
 			if (record.SourceKey == nil) != (sourceKey == nil) || record.SourceKey != nil && *record.SourceKey != *sourceKey {
 				return eventstore.ErrInvalidRecord
 			}
-			receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-evidence", changeID+"/"+coreChangeEvidenceKey(row.sequence), record)
+			receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-evidence", changeID+"/"+coreChangeEvidenceKey(row.sequence), record)
 			if err != nil {
 				return err
 			}
@@ -615,7 +615,7 @@ func importCoreChangeLandings(ctx context.Context, tx *neutralimport.Index, targ
 			if err != nil {
 				return err
 			}
-			receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-landing", row.attemptID, record)
+			receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-landing", row.attemptID, record)
 			if err != nil {
 				return err
 			}
@@ -680,7 +680,7 @@ func importCoreChangeViewedFiles(ctx context.Context, tx *neutralimport.Index, t
 			if err != nil {
 				return err
 			}
-			receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-viewed-file", string(keyBytes), record)
+			receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-change-viewed-file", string(keyBytes), record)
 			if err != nil {
 				return err
 			}
@@ -748,7 +748,7 @@ func importCoreVersionLandingHistory(ctx context.Context, tx *neutralimport.Inde
 		}
 		prepared = &row
 	}
-	receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-version-landing-history", version.ID, struct {
+	receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-version-landing-history", version.ID, struct {
 		VersionID, HeadSHA string
 		Frozen             *eventstore.VersionLanding
 	}{version.ID, version.HeadSHA, prepared})

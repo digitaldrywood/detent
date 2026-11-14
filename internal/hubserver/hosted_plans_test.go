@@ -33,7 +33,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -1715,46 +1714,48 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "collaboration_events")
-					fixture.Add("collaboration_events", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "id": hubapi.NewID("event"), "sequence": 0, "type": event.Type, "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "recorded_at": hubapi.FormatHubTime(time.Now().UTC())})
-					source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-					if err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
-						var row corestore.WorkItem
-						if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-							var err error
-							row, err = r.WorkItem(ctx, scope.Project, issue.WorkItemID)
-							return err
-						}); err != nil {
+					recordedAt, err := time.Parse(time.RFC3339Nano, hubapi.FormatHubTime(time.Now().UTC()))
+					if err != nil {
+						t.Fatal(err)
+					}
+					var runData tracker.CollaborationData
+					if err := json.Unmarshal(data, &runData); err != nil {
+						t.Fatal(err)
+					}
+					var legacyActor tracker.Actor
+					if err := json.Unmarshal(actor, &legacyActor); err != nil {
+						t.Fatal(err)
+					}
+					var row corestore.WorkItem
+					if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						row, err = r.WorkItem(ctx, scope.Project, issue.WorkItemID)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					legacyEvent, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: row.ProjectID, AggregateType: "work_item", AggregateID: row.NativeID, Type: event.Type, SchemaVersion: 1, RecordedAt: recordedAt, Actor: legacyActor, Data: runData})
+					if err != nil {
+						t.Fatal(err)
+					}
+					content := eventstore.NewContent(f.service.runDetailStore())
+					historical, err := content.PrepareEvent(ctx, scope.Organization, legacyEvent)
+					if err != nil {
+						t.Fatal(err)
+					}
+					receipt, err := prepareCoreExecutionReceipt(ctx, content, scope.Organization, artifact.Digest(legacyEvent), "legacy-accounting", event.IdempotencyKey, historical)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+						if err := f.service.authorizeAccessScope(ctx, w, scope, true); err != nil {
 							return err
 						}
-						record := postgres.CoreWorkItemImport{Item: row}
-						if err := readCoreImportEvents(ctx, neutralimport.NewIndex(bundle), eventstore.NewContent(source.Objects), source, row, &record, make(map[string][]byte)); err != nil {
+						if _, err := w.AppendEvent(ctx, historical); err != nil {
 							return err
 						}
-						if len(record.Events) != 1 {
-							t.Fatal("verified historical fixture lost its event")
-						}
-						value, err := eventstore.NewContent(source.Objects).Event(ctx, record.Events[0])
-						if err != nil {
-							return err
-						}
-						if value.Data.Run == nil || value.Data.Run.Sequence != 0 || value.Data.Run.AttemptID != event.Data.AttemptID {
-							t.Fatal("historical event acquired runtime sequence authority")
-						}
-						receipt, err := prepareCoreExecutionReceipt(ctx, eventstore.NewContent(source.Objects), scope.Organization, bundle.Identity().SourceSHA256, "legacy-accounting", event.IdempotencyKey, record.Events[0])
-						if err != nil {
-							return err
-						}
-						return repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-							if err := f.service.authorizeAccessScope(ctx, w, scope, true); err != nil {
-								return err
-							}
-							if _, err := w.AppendEvent(ctx, record.Events[0]); err != nil {
-								return err
-							}
-							_, err := w.PutReceipt(ctx, receipt)
-							return err
-						})
+						_, err := w.PutReceipt(ctx, receipt)
+						return err
 					}); err != nil {
 						t.Fatal(err)
 					}

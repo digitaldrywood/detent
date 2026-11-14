@@ -19,6 +19,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -329,9 +330,9 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 						fixture.Add("pull_requests", map[string]any{"id": 1, "repository_id": 1, "issue_id": issue, "github_node_id": "PR_activity", "github_number": 1, "title": "Example PR", "url": "https://github.com/example-org/example-project/pull/1", "github_state": "open", "head_ref": "change/example", "head_sha": strings.Repeat("a", 40), "base_ref": "develop", "source_version": "source-v1", "source_updated_at": updated, "synchronized_at": synchronized, "created_at": "2026-10-01T00:00:00Z", "updated_at": updated})
 					}
 					objects := &memoryRunDetails{}
-					source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: organization, ProjectID: project, Objects: objects}
+					source := coreimport.CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: organization, ProjectID: project, Objects: objects}
 					for range 2 {
-						if count, err := ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
+						if count, err := coreimport.ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
 							t.Fatalf("activity source import rows=%d error=%v", count, err)
 						}
 					}
@@ -358,7 +359,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						var decoded struct{ ActivityRows []coreHistoricalActivityRow }
+						var decoded struct{ ActivityRows []historicalActivityReceiptRow }
 						if err := json.Unmarshal(raw, &decoded); err != nil {
 							return err
 						}
@@ -521,24 +522,24 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 			t.Fatal("pre-native fixture already contains manufactured native identity")
 		}
 		path := fixture.Write()
-		source := CoreWorkItemImportSource{BundlePath: path, OrganizationID: organization, ProjectID: project, Objects: objects}
+		source := coreimport.CoreWorkItemImportSource{BundlePath: path, OrganizationID: organization, ProjectID: project, Objects: objects}
 		if err := neutralimport.Read(t.Context(), path, organization, func(bundle *neutralimport.Bundle) error {
 			for _, id := range []int64{41, 43} {
-				source.IdentityMappings = append(source.IdentityMappings, CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: organization, SourceIssueID: id, SourceRepositoryID: 1, SourceRepositoryNodeID: "R_original", SourceGitHubNodeID: "I_original_" + strconv.FormatInt(id, 10), TargetProjectID: project, TargetWorkItemID: tracker.NativeWorkItemID("wi_original_" + strconv.FormatInt(id, 10))})
+				source.IdentityMappings = append(source.IdentityMappings, coreimport.CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: organization, SourceIssueID: id, SourceRepositoryID: 1, SourceRepositoryNodeID: "R_original", SourceGitHubNodeID: "I_original_" + strconv.FormatInt(id, 10), TargetProjectID: project, TargetWorkItemID: tracker.NativeWorkItemID("wi_original_" + strconv.FormatInt(id, 10))})
 			}
 			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
 		for range 2 {
-			if count, err := ImportCoreWorkItems(t.Context(), store.postgres, source); err != nil || count != 2 {
+			if count, err := coreimport.ImportCoreWorkItems(t.Context(), store.postgres, source); err != nil || count != 2 {
 				t.Fatalf("verified pre-native import=%d error=%v", count, err)
 			}
 		}
 		changed := source
-		changed.IdentityMappings = append([]CoreWorkItemIdentityMapping(nil), source.IdentityMappings...)
+		changed.IdentityMappings = append([]coreimport.CoreWorkItemIdentityMapping(nil), source.IdentityMappings...)
 		changed.IdentityMappings[0].TargetWorkItemID = "wi_changed"
-		if _, err := ImportCoreWorkItems(t.Context(), store.postgres, changed); !errors.Is(err, mutation.ErrConflict) && !errors.Is(err, corestore.ErrRevisionConflict) {
+		if _, err := coreimport.ImportCoreWorkItems(t.Context(), store.postgres, changed); !errors.Is(err, mutation.ErrConflict) && !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("changed mapping was accepted: %v", err)
 		}
 		if err := store.Close(); err != nil {
@@ -612,8 +613,8 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 					return err
 				}
 				var original struct {
-					Mapping CoreWorkItemIdentityMapping
-					Rows    []coreHistoricalActivityRow
+					Mapping coreimport.CoreWorkItemIdentityMapping
+					Rows    []historicalActivityReceiptRow
 				}
 				if err := json.Unmarshal(raw, &original); err != nil {
 					return err
@@ -749,7 +750,7 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 				return err
 			}
 			var original struct {
-				SourceRows []coreHistoricalSourceReference
+				SourceRows []historicalSourceReceiptReference
 			}
 			if err := json.Unmarshal(raw, &original); err != nil {
 				return err
@@ -810,4 +811,16 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+type historicalActivityReceiptRow struct {
+	Table        string
+	Row          neutralimport.Row
+	RecordSHA256 string
+	Timestamps   []string
+}
+
+type historicalSourceReceiptReference struct {
+	Table      string
+	CommandKey string
 }

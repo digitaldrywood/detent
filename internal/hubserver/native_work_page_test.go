@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -145,8 +146,8 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 	}
 	bundle := mergeCoreNeutralProjectSources(t, projectSources...).Write()
 	for _, fixture := range []nativeFixture{f, other} {
-		input := CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: fixture.project.OrganizationID, ProjectID: fixture.project.ID, Objects: fixture.service.runDetailStore()}
-		if count, err := ImportCoreWorkItems(t.Context(), fixture.service.database.postgres, input); err != nil || count != 2 {
+		input := coreimport.CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: fixture.project.OrganizationID, ProjectID: fixture.project.ID, Objects: fixture.service.runDetailStore()}
+		if count, err := coreimport.ImportCoreWorkItems(t.Context(), fixture.service.database.postgres, input); err != nil || count != 2 {
 			t.Fatalf("historical closure import count=%d error=%v", count, err)
 		}
 	}
@@ -958,8 +959,8 @@ func importNativeWorkPageIssues(t *testing.T, f nativeFixture, issues []tracker.
 			source.Add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_%s_%d", issue.WorkItemID, eventIndex), "organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "work_item_id": issue.WorkItemID, "sequence": eventIndex + 1, "type": event.Type, "schema_version": 1, "actor_json": actor, "data_json": string(historyTestJSON(t, event.Data)), "event_revision": event.Data.Revision, "recorded_at": hubapi.FormatHubTime(event.RecordedAt)})
 		}
 	}
-	input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != int64(len(issues)) {
+	input := coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != int64(len(issues)) {
 		t.Fatalf("historical page import count=%d error=%v", count, err)
 	}
 }

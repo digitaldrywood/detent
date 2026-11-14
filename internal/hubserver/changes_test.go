@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -699,14 +701,14 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	fixture.Set("issues", map[string]string{"id": "43"}, map[string]any{"number": 102})
 	original := fixture.Write()
 	if err := neutralimport.Read(t.Context(), original, f.project.OrganizationID, func(bundle *neutralimport.Bundle) error {
-		source := CoreWorkItemImportSource{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+		source := coreimport.CoreWorkItemImportSource{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 		reader := neutralimport.NewIndex(bundle)
 		for _, item := range []struct {
 			id     string
 			number int
 		}{{"wi_core_import", 100}, {"wi_core_import_second", 102}} {
 			for revision := int64(1); revision <= 2; revision++ {
-				raw, err := reconstructCoreNeutralVersion(t.Context(), reader, source.Objects, string(source.OrganizationID), string(source.ProjectID), item.id, item.id, revision)
+				raw, err := fixtureCollaborationVersion(t.Context(), reader, string(source.OrganizationID), string(source.ProjectID), item.id, revision)
 				if err != nil {
 					return err
 				}
@@ -726,9 +728,9 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	source := coreimport.CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 	for range 2 {
-		if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, source); err != nil || count != 2 {
+		if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, source); err != nil || count != 2 {
 			t.Fatalf("verified issue import = %d, error = %v", count, err)
 		}
 	}
@@ -1021,17 +1023,13 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		if snapshot.Payload == nil {
 			t.Fatal("historical fixture requires its registered immutable payload")
 		}
-		payload, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.Organization), *snapshot.Payload)
-		if err != nil {
+		if _, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.Organization), *snapshot.Payload); err != nil {
 			t.Fatal(err)
 		}
-		var checkpoint any
 		if snapshot.CheckpointPayload != nil {
-			raw, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.Organization), *snapshot.CheckpointPayload)
-			if err != nil {
+			if _, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.Organization), *snapshot.CheckpointPayload); err != nil {
 				t.Fatal(err)
 			}
-			checkpoint = string(raw)
 		}
 		var pinned policystore.LeasePolicy
 		if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -1039,65 +1037,6 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			pinned, err = r.LeasePolicy(t.Context(), actual.LeaseID)
 			return err
 		}); err != nil {
-			t.Fatal(err)
-		}
-		fixture := newCoreNeutralFixture(t, scope.Organization, "issues", "native_attempts", "leases", "lease_policies")
-		fixture.Add("issues", map[string]any{"id": snapshot.Attempt.IssueID, "organization_id": scope.Organization, "project_id": scope.Project, "native_id": local.issue.WorkItemID})
-		fixture.Add("native_attempts", map[string]any{"id": id, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": local.issue.WorkItemID, "lease_id": actual.LeaseID, "fencing_token": actual.FencingToken, "run_id": actual.RunID, "sequence": actual.Sequence, "status": snapshot.Attempt.Status, "work_item_revision": snapshot.Attempt.WorkItemRevision, "dispatch_generation": snapshot.Attempt.DispatchGeneration, "data_json": string(payload), "checkpoint_json": checkpoint, "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(snapshot.Attempt.StartedAt), "updated_at": hubapi.FormatHubTime(snapshot.Attempt.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
-		lease := snapshot.Lease
-		var released any
-		if lease.ReleasedAt != nil {
-			released = hubapi.FormatHubTime(*lease.ReleasedAt)
-		}
-		fixture.Add("leases", map[string]any{"fencing_token": lease.FencingToken, "lease_id": lease.LeaseID, "issue_id": lease.IssueID, "machine_id": lease.MachineID, "session_id": lease.SessionID, "work_item_revision": lease.WorkItemRevision, "landing_capacity": lease.LandingCapacity, "acquired_at": hubapi.FormatHubTime(lease.AcquiredAt), "renewed_at": hubapi.FormatHubTime(lease.RenewedAt), "expires_at": hubapi.FormatHubTime(lease.ExpiresAt), "released_at": released})
-		fixture.Add("lease_policies", map[string]any{"lease_id": lease.LeaseID, "scope": string(scope.Organization) + "/" + string(scope.Project), "policy_id": pinned.PolicyID})
-		source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: scope.Organization, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
-		repository := service.config.TenantRepository.(*postgres.Repository)
-		err = neutralimport.Read(t.Context(), source.BundlePath, scope.Organization, func(bundle *neutralimport.Bundle) error {
-			input := neutralimport.NewIndex(bundle)
-			rows, err := readCoreAttemptImportPage(t.Context(), input, scope.Organization, 0)
-			if err != nil {
-				return err
-			}
-			if len(rows) != 1 || rows[0].Attempt.ID != id || rows[0].Payload != string(payload) {
-				t.Fatal("verified attempt source changed identity or bytes")
-			}
-			prepared, err := prepareCoreExecutionAttempt(t.Context(), input, eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, rows[0])
-			if err != nil {
-				return err
-			}
-			if prepared.Attempt.PayloadObjectKey != snapshot.Attempt.PayloadObjectKey || prepared.Attempt.LeaseID != lease.LeaseID || prepared.Attempt.Sequence != actual.Sequence {
-				t.Fatal("attempt import lost the stored payload or fence")
-			}
-			if err := repository.ImportCoreAttempt(t.Context(), prepared); err != nil {
-				return err
-			}
-			if err := repository.CompleteCoreAttemptImport(t.Context(), prepared.Attempt, prepared.Receipt); err != nil {
-				return err
-			}
-			if includePolicy {
-				leases, err := readCoreLeaseImportPage(t.Context(), input, scope.Organization, 0)
-				if err != nil {
-					return err
-				}
-				if len(leases) != 1 || leases[0].LeasePolicy == nil || leases[0].LeasePolicy.PolicyID != pinned.PolicyID || leases[0].LeasePolicy.LeaseID != actual.LeaseID || leases[0].LeasePolicy.ProjectID != scope.Project {
-					t.Fatal("verified policy source lost its binding")
-				}
-				row := leases[0]
-				receipt, err := prepareCoreExecutionReceipt(t.Context(), eventstore.NewContent(source.Objects), scope.Organization, bundle.Identity().SourceSHA256, "core-lease", row.Lease.LeaseID, row)
-				if err != nil {
-					return err
-				}
-				if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Background, func(w tenantstore.Writer) error { _, err := w.PutReceipt(t.Context(), receipt); return err }); err != nil {
-					return err
-				}
-				if err := repository.ImportCoreLease(t.Context(), postgres.CoreLeaseImport{Lease: row.Lease, LeasePolicy: row.LeasePolicy, Receipt: receipt}); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
 			t.Fatal(err)
 		}
 		recovered, err := service.readNativeAttemptSnapshotTenant(t.Context(), scope, string(local.issue.WorkItemID), id)
@@ -1865,9 +1804,9 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				fixture.Add("change_requests", map[string]any{"id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "record_json": string(changeRaw)})
 				fixture.Add("change_issue_links", map[string]any{"change_id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID})
 				fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": f.change.ID, "number": 1, "record_json": string(versionRaw), "policy_revision_id": version.PolicyID, "payload_object_key": "", "repository": version.Repository, "created_at": hubapi.FormatHubTime(now), "head_sha": nil, "external_id": nil, "external_url": nil})
-				source := CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
+				source := coreimport.CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
 				for range 2 {
-					if count, err := ImportCoreChanges(t.Context(), service.database.postgres, source); err != nil || count != 1 {
+					if count, err := coreimport.ImportCoreChanges(t.Context(), service.database.postgres, source); err != nil || count != 1 {
 						t.Fatalf("pending historical version import = %d, error = %v", count, err)
 					}
 				}
@@ -3298,4 +3237,34 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 			}
 		})
 	}
+}
+
+func fixtureCollaborationVersion(ctx context.Context, reader *neutralimport.Index, organization, project, item string, revision int64) ([]byte, error) {
+	rows, err := reader.Rows(ctx, "collaboration_versions", map[string]string{"organization_id": organization, "project_id": project, "work_item_id": item, "record_id": item}, []string{"revision"}, []string{"0"}, int(revision))
+	if err != nil {
+		return nil, err
+	}
+	var raw []byte
+	for _, row := range rows {
+		var number int64
+		var encoding, value string
+		if err := row.Decode(map[string]any{"revision": &number, "encoding": &encoding, "record_json": &value}); err != nil {
+			return nil, err
+		}
+		switch encoding {
+		case "snapshot":
+			raw = []byte(value)
+		case "patch":
+			raw, err = neutralimport.ApplyVersionPatch(raw, []byte(value))
+			if err != nil {
+				return nil, err
+			}
+		default:
+			return nil, errors.New("unknown history encoding")
+		}
+		if number == revision {
+			return raw, nil
+		}
+	}
+	return nil, sql.ErrNoRows
 }

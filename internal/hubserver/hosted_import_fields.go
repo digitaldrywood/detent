@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -182,21 +183,21 @@ func extractCoreGitHubOutbox(ctx context.Context, bundle *neutralimport.Bundle, 
 		return value, corestore.ErrTenantMismatch
 	}
 	row.TargetNodeID = targetNode.String
-	row.CreatedAt, err = parseCoreImportTime(sql.NullString{String: created, Valid: true})
+	row.CreatedAt, err = coreimport.ParseImportTime(sql.NullString{String: created, Valid: true})
 	if err != nil {
 		return value, err
 	}
-	row.NextAttemptAt, err = parseCoreImportTime(sql.NullString{String: updated, Valid: true})
+	row.NextAttemptAt, err = coreimport.ParseImportTime(sql.NullString{String: updated, Valid: true})
 	if err != nil {
 		return value, err
 	}
 	for _, timestamp := range []sql.NullString{lastAttempt, nextRetry, completed, processing} {
-		if _, _, err := parseOptionalCoreImportTime(timestamp); err != nil {
+		if _, _, err := coreimport.ParseOptionalImportTime(timestamp); err != nil {
 			return value, err
 		}
 	}
 	if nextRetry.Valid && nextRetry.String != "" {
-		row.NextAttemptAt, err = parseCoreImportTime(nextRetry)
+		row.NextAttemptAt, err = coreimport.ParseImportTime(nextRetry)
 		if err != nil {
 			return value, err
 		}

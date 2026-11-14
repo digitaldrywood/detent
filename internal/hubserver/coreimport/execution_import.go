@@ -1,4 +1,4 @@
-package hubserver
+package coreimport
 
 import (
 	"bytes"
@@ -85,7 +85,31 @@ type coreWorkEventImportRow struct {
 	Event postgres.CoreWorkEventImport
 }
 
-func ImportCoreExecution(ctx context.Context, target *postgres.Repository, source CoreExecutionImportSource) (int64, error) {
+type legacyRunnerRouting struct {
+	MachineUse                  string                                  `json:"machine_use,omitempty"`
+	ProjectRanks                map[tracker.ProjectID]int               `json:"project_ranks,omitempty"`
+	ProjectConfigurationCommand *runnerauth.ProjectConfigurationCommand `json:"project_configuration_request,omitempty"`
+	UpdateRequest               *runnerauth.UpdateRequest               `json:"update_request,omitempty"`
+	CapacityRequest             *runnerauth.CapacityRequest             `json:"capacity_request,omitempty"`
+	IsolationTier               string                                  `json:"isolation_tier"`
+	HostServices                []string                                `json:"host_services"`
+	Availability                runnerauth.Availability                 `json:"availability"`
+}
+
+type Deps struct {
+	CleanupRequired  func(tracker.NativeRunData) bool
+	DecodeCheckpoint func(context.Context, leasestore.Attempt, []byte, func(context.Context, *hubrecords.RunDetailReference) ([]byte, error)) (*tracker.NativeCheckpoint, error)
+}
+
+type Executions struct {
+	deps Deps
+}
+
+func NewExecutions(deps Deps) *Executions {
+	return &Executions{deps: deps}
+}
+
+func (e *Executions) Import(ctx context.Context, target *postgres.Repository, source CoreExecutionImportSource) (int64, error) {
 	if source.CopyPath != "" {
 		return 0, neutralimport.ErrInvalid
 	}
@@ -109,7 +133,7 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 		}
 		for len(machines) != 0 {
 			for _, row := range machines {
-				record, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-machine", row.Machine.ID, row)
+				record, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-machine", row.Machine.ID, row)
 				if err != nil {
 					return fmt.Errorf("prepare core machine import: %w", err)
 				}
@@ -130,7 +154,7 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 		}
 		for len(enrollments) != 0 {
 			for _, row := range enrollments {
-				receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-runner-enrollment", row.Enrollment.ID, row.Enrollment)
+				receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-runner-enrollment", row.Enrollment.ID, row.Enrollment)
 				if err != nil {
 					return fmt.Errorf("prepare runner enrollment import: %w", err)
 				}
@@ -151,7 +175,7 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 		}
 		for len(identities) != 0 {
 			for _, row := range identities {
-				receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-runner-identity", row.Identity.RunnerID, row.Identity)
+				receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-runner-identity", row.Identity.RunnerID, row.Identity)
 				if err != nil {
 					return fmt.Errorf("prepare runner identity import: %w", err)
 				}
@@ -177,7 +201,7 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 		for len(leases) != 0 {
 			for _, row := range leases {
 				id := row.Lease.LeaseID
-				receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-lease", id, row)
+				receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-lease", id, row)
 				if err != nil {
 					return fmt.Errorf("prepare core lease import: %w", err)
 				}
@@ -198,7 +222,7 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 		}
 		for len(assignments) != 0 {
 			for _, row := range assignments {
-				receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-runner-lease-assignment", row.Assignment.LeaseID, row.Assignment)
+				receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-runner-lease-assignment", row.Assignment.LeaseID, row.Assignment)
 				if err != nil {
 					return fmt.Errorf("prepare runner lease assignment import: %w", err)
 				}
@@ -219,7 +243,7 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 		}
 		for len(attempts) != 0 {
 			for _, row := range attempts {
-				attempt, err := prepareCoreExecutionAttempt(ctx, tx, content, source, copyHash, row)
+				attempt, err := e.prepareCoreExecutionAttempt(ctx, tx, content, source, copyHash, row)
 				if err != nil {
 					return fmt.Errorf("prepare core attempt %s: %w", row.Attempt.ID, err)
 				}
@@ -253,7 +277,7 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 		for len(workEvents) != 0 {
 			for _, row := range workEvents {
 				event := row.Event
-				event.Receipt, err = prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-work-event", strconv.FormatInt(event.ID, 10), row)
+				event.Receipt, err = PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-work-event", strconv.FormatInt(event.ID, 10), row)
 				if err != nil {
 					return fmt.Errorf("prepare work event import: %w", err)
 				}
@@ -410,7 +434,7 @@ func readCoreRunnerIdentityImportPage(ctx context.Context, tx *neutralimport.Ind
 		if err := json.Unmarshal([]byte(operations), &identity.Operations); err != nil {
 			return nil, err
 		}
-		var settings runnerSettings
+		var settings legacyRunnerRouting
 		if err := json.Unmarshal([]byte(routing), &settings); err != nil {
 			return nil, err
 		}
@@ -527,7 +551,7 @@ func importCoreRunnerIdentityEvents(ctx context.Context, tx *neutralimport.Index
 			return nil
 		}
 		for _, event := range events {
-			receipt, err := prepareCoreExecutionReceipt(ctx, content, organization, copyHash, "core-runner-identity-event", strconv.FormatInt(event.SourceID, 10), event)
+			receipt, err := PrepareExecutionReceipt(ctx, content, organization, copyHash, "core-runner-identity-event", strconv.FormatInt(event.SourceID, 10), event)
 			if err != nil {
 				return err
 			}
@@ -723,7 +747,7 @@ func readCoreAttemptImportPage(ctx context.Context, tx *neutralimport.Index, org
 	return result, nil
 }
 
-func prepareCoreExecutionReceipt[T any](ctx context.Context, content *eventstore.Content, organization tracker.OrganizationID, copyHash, kind, id string, value T) (eventstore.Receipt, error) {
+func PrepareExecutionReceipt[T any](ctx context.Context, content *eventstore.Content, organization tracker.OrganizationID, copyHash, kind, id string, value T) (eventstore.Receipt, error) {
 	proof := struct {
 		CopyHash string `json:"copy_hash"`
 		Kind     string `json:"kind"`
@@ -739,7 +763,7 @@ func prepareCoreExecutionReceipt[T any](ctx context.Context, content *eventstore
 	return content.PrepareReceipt(ctx, receipt, raw)
 }
 
-func prepareCoreExecutionAttempt(ctx context.Context, tx *neutralimport.Index, content *eventstore.Content, source CoreExecutionImportSource, copyHash string, row coreAttemptImportRow) (postgres.CoreAttemptImport, error) {
+func (e *Executions) prepareCoreExecutionAttempt(ctx context.Context, tx *neutralimport.Index, content *eventstore.Content, source CoreExecutionImportSource, copyHash string, row coreAttemptImportRow) (postgres.CoreAttemptImport, error) {
 	attempt := row.Attempt
 	var checkpointDetails []attachmentstore.ArchiveRecord
 	var checkpointObjects []attachment.ArchiveReference
@@ -790,7 +814,7 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *neutralimport.Index, c
 		attempt.LocalAttemptID = run.Runtime.LocalAttemptID
 		attempt.LocalAttemptIDRecorded = attempt.LocalAttemptID > 0
 	}
-	attempt.WorkerCleanupRequired = new(nativeRunCleanupRequired(run))
+	attempt.WorkerCleanupRequired = new(e.deps.CleanupRequired(run))
 	attempt.RuntimeSummarySequence = attempt.Sequence
 	if run.Runtime != nil {
 		heartbeat := run.Runtime.HeartbeatAt
@@ -814,7 +838,7 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *neutralimport.Index, c
 		}
 		attempt.CheckpointObjectKey = &ref.Key
 		checkpointReference = ref
-		decoded, decodeErr := hubrecords.DecodeAttemptCheckpoint(ctx, attempt, checkpoint, func(ctx context.Context, detail *hubrecords.RunDetailReference) ([]byte, error) {
+		decoded, decodeErr := e.deps.DecodeCheckpoint(ctx, attempt, checkpoint, func(ctx context.Context, detail *hubrecords.RunDetailReference) ([]byte, error) {
 			key := detail.ObjectKey
 			var uploader string
 			if key == "" {
@@ -864,7 +888,7 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *neutralimport.Index, c
 		attempt.ArtifactsObjectKey = &ref.Key
 		artifactsReference = ref
 	}
-	receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-attempt", attempt.ID, row)
+	receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-attempt", attempt.ID, row)
 	if err != nil {
 		return postgres.CoreAttemptImport{}, err
 	}
@@ -985,7 +1009,7 @@ func importCoreExecutionDiffs(ctx context.Context, tx *neutralimport.Index, targ
 		}
 		diff.ArchiveID = "core_diff_" + artifact.Digest([]byte(string(source.OrganizationID) + "\n" + diff.ID + "\n" + published.Key))[:32]
 		archive := artifactstore.ArchiveObject{OrganizationID: source.OrganizationID, ID: diff.ArchiveID, Reference: published, CreatedAt: diff.CreatedAt}
-		receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-attempt-diff", diff.ID, struct {
+		receipt, err := PrepareExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-attempt-diff", diff.ID, struct {
 			Diff      leasestore.AttemptDiff
 			Reference attachment.ArchiveReference
 			BodyKeys  []string

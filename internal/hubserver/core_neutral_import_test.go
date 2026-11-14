@@ -5,9 +5,12 @@ import (
 	"os"
 	"strconv"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport/coreimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,4 +53,37 @@ func coreImportPostgresWithAdmin(t *testing.T, maxConnections int, configure ...
 		}
 	})
 	return repository, admin
+}
+
+func coreWorkItemNeutralFixture(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, malformedQueue bool) *neutralimporttest.Fixture {
+	t.Helper()
+	return coreimporttest.WorkItems(t, os.DirFS("../.."), org, project, malformedQueue, coreimporttest.WorkItemBody())
+}
+
+func coreWorkItemNeutralFixtureBody(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, malformedQueue bool, body string) *neutralimporttest.Fixture {
+	t.Helper()
+	return coreimporttest.WorkItems(t, os.DirFS("../.."), org, project, malformedQueue, body)
+}
+
+func coreImportBody() string {
+	return coreimporttest.WorkItemBody()
+}
+
+func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID, project tracker.ProjectID, createdAt time.Time, descriptor policy.Descriptor, policyJSON []byte) *neutralimporttest.Fixture {
+	t.Helper()
+	return coreimporttest.Changes(t, os.DirFS("../.."), organization, project, createdAt, descriptor, policyJSON)
+}
+
+func seedHistoricalImportTarget(t *testing.T, repository *postgres.Repository, organization tracker.OrganizationID, project tracker.ProjectID, profile string) {
+	t.Helper()
+	coreimporttest.SeedHistoricalTarget(t, repository, organization, project, profile)
+}
+
+func parseTestTime(t *testing.T, raw string) time.Time {
+	t.Helper()
+	value, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
 }

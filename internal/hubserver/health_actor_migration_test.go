@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -150,7 +151,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 						expectedEventPayloads[id] = expectedPayload
 					}
 				}
-				source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: organization, ProjectID: f.project.ID, Objects: objects}
+				source := coreimport.CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: organization, ProjectID: f.project.ID, Objects: objects}
 				sourceBytes := func() map[string][]byte {
 					t.Helper()
 					entries, err := os.ReadDir(source.BundlePath)
@@ -183,7 +184,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 							repository = service.database.postgres
 							first.service, f.service = service, service
 						}
-						count, err := ImportCoreWorkItems(t.Context(), repository, source)
+						count, err := coreimport.ImportCoreWorkItems(t.Context(), repository, source)
 						if err != nil || count != 2 {
 							t.Fatalf("import count=%d error=%v", count, err)
 						}

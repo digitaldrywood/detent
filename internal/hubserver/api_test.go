@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -262,7 +263,7 @@ func newRetainedWorkListFixtureWith(t *testing.T, objects *memoryRunDetails) (na
 			}
 		}
 	}
-	count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: organization, ProjectID: project, Objects: f.service.runDetailStore()})
+	count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: organization, ProjectID: project, Objects: f.service.runDetailStore()})
 	if err != nil || count != 4 {
 		t.Fatalf("retained work list import=%d error=%v", count, err)
 	}
@@ -650,16 +651,16 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		source.Add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
 	}
 	bundle := source.Write()
-	count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
+	count, err := coreimport.ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), coreimport.CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
 	if err != nil || count != int64(2+len(automated)) {
 		t.Fatalf("retained compatible import=%d error=%v", count, err)
 	}
-	if count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()}); err != nil || count != int64(2+len(automated)) {
+	if count, err := coreimport.ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), coreimport.CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()}); err != nil || count != int64(2+len(automated)) {
 		t.Fatalf("same-source import retry=%d error=%v", count, err)
 	}
 	other := newCoreNeutralFixture(t, organization, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
 	other.Add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
-	if _, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: other.Write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()}); !errors.Is(err, mutation.ErrConflict) {
+	if _, err := coreimport.ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), coreimport.CoreWorkItemImportSource{BundlePath: other.Write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()}); !errors.Is(err, mutation.ErrConflict) {
 		t.Fatalf("different core import source for the organization error=%v, want conflict", err)
 	}
 	seedHubAPIToken(t, service, "operator-token", "operator-secret-token", hubapi.APIScopeOperator)

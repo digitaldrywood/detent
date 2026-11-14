@@ -1,4 +1,4 @@
-package hubserver
+package coreimport
 
 import (
 	"context"
@@ -48,7 +48,7 @@ type ReportImportSummary struct {
 	ProjectionSHA256    string
 }
 
-func ImportCoreReportLandings(ctx context.Context, target ReportImportTarget, source CoreChangeImportSource) (ReportImportSummary, error) {
+func importCoreReportLandings(ctx context.Context, target ReportImportTarget, source CoreChangeImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
 	if source.CopyPath != "" {
 		return summary, neutralimport.ErrInvalid
@@ -288,7 +288,7 @@ func (s reportImportObjects) ReadDetail(ctx context.Context, organization string
 	return s.store.ReadDetail(ctx, organization, ref)
 }
 
-func ImportCoreReportEvents(ctx context.Context, target ReportImportTarget, source CoreWorkItemImportSource) (ReportImportSummary, error) {
+func importCoreReportEvents(ctx context.Context, target ReportImportTarget, source CoreWorkItemImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
 	if source.CopyPath != "" {
 		return summary, neutralimport.ErrInvalid
@@ -427,7 +427,7 @@ func ImportCoreReportEvents(ctx context.Context, target ReportImportTarget, sour
 	return summary, err
 }
 
-func ImportCoreReportEscapes(ctx context.Context, target ReportImportTarget, source CoreChangeImportSource) (ReportImportSummary, error) {
+func importCoreReportEscapes(ctx context.Context, target ReportImportTarget, source CoreChangeImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
 	if source.CopyPath != "" {
 		return summary, neutralimport.ErrInvalid

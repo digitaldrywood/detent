@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -245,8 +246,8 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 		}
 		fixture.Set("collaboration_versions", map[string]string{"record_id": string(test.id), "revision": "2"}, map[string]any{"encoding": encoding, "record_json": string(patch)})
 	}
-	source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-	if count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || count != 2 {
+	source := coreimport.CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || count != 2 {
 		t.Fatalf("historical issue import count=%d error=%v", count, err)
 	}
 	drainTestNativeBoard(t, f.service)

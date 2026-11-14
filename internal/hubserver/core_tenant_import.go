@@ -10,8 +10,10 @@ import (
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -121,12 +123,10 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	result.CurrentPolicies = policies.CurrentPolicies
 	result.ReviewPolicies = policies.ReviewPolicies
 	result.MonthlyPolicies = policies.MonthlyPolicies
-	var activity map[string]coreHistoricalActivity
-	var activityDigest string
+	var activity coreimport.HistoricalActivity
 	if err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 		var err error
-		activity, err = readCoreHistoricalActivity(ctx, bundle, source.OrganizationID)
-		activityDigest = bundle.Digest()
+		activity, err = coreimport.ReadHistoricalActivity(ctx, bundle, source.OrganizationID)
 		return err
 	}); err != nil {
 		return result, fmt.Errorf("read tenant historical activity: %w", err)
@@ -145,7 +145,7 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 			break
 		}
 		for _, project := range projects {
-			count, err := ImportCoreWorkItems(ctx, repository, CoreWorkItemImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, ProjectID: project.ID, Objects: source.Objects, Logger: source.Logger, activity: activity, activityDigest: activityDigest})
+			count, err := coreimport.ImportCoreWorkItems(ctx, repository, coreimport.CoreWorkItemImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, ProjectID: project.ID, Objects: source.Objects, Logger: source.Logger, Activity: activity})
 			if err != nil {
 				return result, fmt.Errorf("import tenant work items: %w", err)
 			}
@@ -157,21 +157,21 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err != nil {
 		return result, fmt.Errorf("import tenant GitHub outbound source: %w", err)
 	}
-	result.Dependencies, err = ImportCoreIssueDependencies(ctx, repository, CoreDependencyImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, Objects: source.Objects})
+	result.Dependencies, err = coreimport.ImportCoreIssueDependencies(ctx, repository, coreimport.CoreDependencyImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant dependencies: %w", err)
 	}
-	result.ExecutionRows, err = ImportCoreExecution(ctx, repository, CoreExecutionImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
+	result.ExecutionRows, err = coreExecutions().Import(ctx, repository, coreimport.CoreExecutionImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant execution: %w", err)
 	}
-	usage, err := ImportCoreReportUsage(ctx, repository, ReportUsageImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, ExpectedSHA256: identity.SourceSHA256})
+	usage, err := coreimport.ImportCoreReportUsage(ctx, repository, coreimport.ReportUsageImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, ExpectedSHA256: identity.SourceSHA256})
 	if err != nil {
 		return result, fmt.Errorf("import tenant usage facts: %w", err)
 	}
 	result.UsageRows = usage.UsageRows
 
-	result.Changes, err = ImportCoreChanges(ctx, repository, CoreChangeImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
+	result.Changes, err = coreimport.ImportCoreChanges(ctx, repository, coreimport.CoreChangeImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant changes: %w", err)
 	}
@@ -267,13 +267,13 @@ func importHistoricalTenantCoreCopy(ctx context.Context, config postgres.Config,
 		if err != nil {
 			return err
 		}
-		result.WorkItems, err = ImportCoreWorkItems(ctx, database.postgres, CoreWorkItemImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, ProjectID: project, Objects: source.Objects, Logger: source.Logger, IdentityMappings: mappings})
+		result.WorkItems, err = coreimport.ImportCoreWorkItems(ctx, database.postgres, coreimport.CoreWorkItemImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, ProjectID: project, Objects: source.Objects, Logger: source.Logger, IdentityMappings: mappings})
 		return err
 	})
 	return result, err
 }
 
-func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.Repository, bundle *neutralimport.Bundle, source TenantCoreImportSource) ([]CoreWorkItemIdentityMapping, tracker.ProjectID, error) {
+func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.Repository, bundle *neutralimport.Bundle, source TenantCoreImportSource) ([]coreimport.CoreWorkItemIdentityMapping, tracker.ProjectID, error) {
 	sourceNumbers := map[int64]int64{}
 	var sourceAfter []string
 	for {
@@ -293,7 +293,7 @@ func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.R
 			sourceAfter = row.Key
 		}
 	}
-	candidates := map[int64]CoreWorkItemIdentityMapping{}
+	candidates := map[int64]coreimport.CoreWorkItemIdentityMapping{}
 	if source.MappingBundlePath != "" {
 		if err := neutralimport.Read(ctx, source.MappingBundlePath, source.OrganizationID, func(mapping *neutralimport.Bundle) error {
 			if err := neutralimport.ValidateCoreTables(mapping, "projects", "issues", "repositories"); err != nil {
@@ -352,7 +352,7 @@ func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.R
 					if _, exists := candidates[id]; exists {
 						return corestore.ErrRevisionConflict
 					}
-					candidates[id] = CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: organization, SourceIssueID: id, SourceRepositoryID: repositoryID, SourceRepositoryNodeID: repositoryNode, SourceGitHubNodeID: node.String, TargetProjectID: project, TargetWorkItemID: item}
+					candidates[id] = coreimport.CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: organization, SourceIssueID: id, SourceRepositoryID: repositoryID, SourceRepositoryNodeID: repositoryNode, SourceGitHubNodeID: node.String, TargetProjectID: project, TargetWorkItemID: item}
 				}
 			}
 		}); err != nil {
@@ -408,7 +408,7 @@ func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.R
 			}
 		}
 	}
-	var result []CoreWorkItemIdentityMapping
+	var result []coreimport.CoreWorkItemIdentityMapping
 	var selected tracker.ProjectID
 	var after []string
 	for {
@@ -475,7 +475,7 @@ func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.R
 				return nil, "", err
 			}
 			if found {
-				existing := CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: source.OrganizationID, SourceIssueID: id, SourceRepositoryID: repositoryID, SourceRepositoryNodeID: repositoryNode, SourceGitHubNodeID: node, TargetProjectID: project, TargetWorkItemID: current.NativeID}
+				existing := coreimport.CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: source.OrganizationID, SourceIssueID: id, SourceRepositoryID: repositoryID, SourceRepositoryNodeID: repositoryNode, SourceGitHubNodeID: node, TargetProjectID: project, TargetWorkItemID: current.NativeID}
 				if supplied && candidate != existing {
 					return nil, "", corestore.ErrRevisionConflict
 				}
@@ -483,7 +483,9 @@ func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.R
 				if err != nil {
 					return nil, "", err
 				}
-				var saved struct{ Mapping CoreWorkItemIdentityMapping }
+				var saved struct {
+					Mapping coreimport.CoreWorkItemIdentityMapping
+				}
 				if err := json.Unmarshal(raw, &saved); err != nil {
 					return nil, "", err
 				}
@@ -492,7 +494,7 @@ func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.R
 				}
 				candidate = existing
 			}
-			expected := CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: source.OrganizationID, SourceIssueID: id, SourceRepositoryID: repositoryID, SourceRepositoryNodeID: repositoryNode, SourceGitHubNodeID: node, TargetProjectID: project, TargetWorkItemID: candidate.TargetWorkItemID}
+			expected := coreimport.CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: source.OrganizationID, SourceIssueID: id, SourceRepositoryID: repositoryID, SourceRepositoryNodeID: repositoryNode, SourceGitHubNodeID: node, TargetProjectID: project, TargetWorkItemID: candidate.TargetWorkItemID}
 			if candidate != expected || candidate.TargetWorkItemID == "" {
 				return nil, "", corestore.ErrTenantMismatch
 			}
@@ -507,4 +509,12 @@ func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.R
 		return nil, "", errors.New("historical recovery source has no mapped work items")
 	}
 	return result, selected, nil
+}
+
+func coreExecutions() *coreimport.Executions {
+	return coreimport.NewExecutions(coreimport.Deps{CleanupRequired: nativeRunCleanupRequired, DecodeCheckpoint: hubrecords.DecodeAttemptCheckpoint})
+}
+
+func prepareCoreExecutionReceipt[T any](ctx context.Context, content *eventstore.Content, organization tracker.OrganizationID, copyHash, kind, id string, value T) (eventstore.Receipt, error) {
+	return coreimport.PrepareExecutionReceipt(ctx, content, organization, copyHash, kind, id, value)
 }

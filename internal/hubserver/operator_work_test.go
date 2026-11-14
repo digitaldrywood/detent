@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -992,7 +993,7 @@ func TestHubMCPCompatibilityCommands(t *testing.T) {
 			source.Add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
 			source.Add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
 		}
-		count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
+		count, err := coreimport.ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
 		if err != nil || count != 2 {
 			t.Fatalf("retained compatible import=%d error=%v", count, err)
 		}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -357,4 +359,23 @@ func mustParseTestTime(t *testing.T, value string) time.Time {
 		t.Fatal(err)
 	}
 	return parsed
+}
+
+func TestTenantCoreImportRefusesLegacyCopy(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "historical-source.db")
+	original := []byte("preserved verified historical source")
+	if err := os.WriteFile(path, original, 0400); err != nil {
+		t.Fatal(err)
+	}
+	for _, bundle := range []string{"", "unused-neutral-bundle"} {
+		_, err := ImportTenantCoreCopy(t.Context(), postgres.Config{}, TenantCoreImportSource{CopyPath: path, BundlePath: bundle})
+		if !errors.Is(err, neutralimport.ErrInvalid) {
+			t.Fatalf("tenant legacy selector error=%v", err)
+		}
+	}
+	current, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(current, original) {
+		t.Fatalf("historical source changed: %v", err)
+	}
 }

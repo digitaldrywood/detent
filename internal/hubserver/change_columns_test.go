@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -24,7 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -292,9 +292,9 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 		}
 		expected[id] = version.ID
 	}
-	source := CoreChangeImportSource{BundlePath: sourceFixture.Write(), OrganizationID: scope.Organization, SourceObjects: objects, Objects: interrupted}
+	source := coreimport.CoreChangeImportSource{BundlePath: sourceFixture.Write(), OrganizationID: scope.Organization, SourceObjects: objects, Objects: interrupted}
 	repository := f.service.config.TenantRepository.(*postgres.Repository)
-	imported, err := ImportCoreChanges(t.Context(), repository, source)
+	imported, err := coreimport.ImportCoreChanges(t.Context(), repository, source)
 	if !errors.Is(err, pause) || imported != 1 {
 		t.Fatalf("partial historical import count=%d error=%v", imported, err)
 	}
@@ -318,7 +318,7 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 		}
 	}
 	interrupted.pause = nil
-	if imported, err := ImportCoreChanges(t.Context(), repository, source); err != nil || imported != 2 {
+	if imported, err := coreimport.ImportCoreChanges(t.Context(), repository, source); err != nil || imported != 2 {
 		t.Fatalf("resumed historical import count=%d error=%v", imported, err)
 	}
 	for range 2 {
@@ -327,7 +327,7 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 				t.Fatalf("pending=false landings=%+v want=2", rows)
 			}
 		}
-		if _, err := ImportCoreChanges(t.Context(), repository, source); err != nil {
+		if _, err := coreimport.ImportCoreChanges(t.Context(), repository, source); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -337,35 +337,29 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 	unprovenVersion := tracker.ChangeVersion{ID: "unproven_historical_version", ChangeID: "unproven_historical_change", Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), Repository: "owner/repository", PolicyID: descriptor.ID}, Policy: descriptor, Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, CreatedAt: at.Add(-time.Minute)}
 	unprovenLanding := tracker.ChangeLanding{VersionID: unprovenVersion.ID, HeadSHA: unprovenVersion.HeadSHA, MergeSHA: strings.Repeat("4", 40), BaseRef: "develop", LandedAt: at, Actor: unprovenVersion.Actor}
 	unprovenChange := tracker.ChangeRequest{ID: unprovenVersion.ChangeID, OrganizationID: unproven.Organization, ProjectID: unproven.Project, WorkItemID: unprovenItem.WorkItemID, LinkedIssues: []tracker.NativeWorkItemID{unprovenItem.WorkItemID}, Revision: 1, Title: "Unproven imported landing", CurrentVersion: unprovenVersion.ID, Landed: &unprovenLanding, CreatedAt: at.Add(-time.Hour), UpdatedAt: at}
-	unprovenSource := newCoreNeutralFixture(t, unproven.Organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-	unprovenSource.Add("change_requests", map[string]any{"id": unprovenChange.ID, "organization_id": unproven.Organization, "project_id": unproven.Project, "work_item_id": unprovenItem.WorkItemID, "created_at": nil, "record_json": string(historyTestJSON(t, unprovenChange))})
-	unprovenSource.Add("change_issue_links", map[string]any{"change_id": unprovenChange.ID, "organization_id": unproven.Organization, "project_id": unproven.Project, "work_item_id": unprovenItem.WorkItemID})
-	unprovenSource.Add("change_versions", map[string]any{"id": unprovenVersion.ID, "change_id": unprovenChange.ID, "number": 1, "policy_revision_id": descriptor.ID, "repository": "owner/repository", "record_json": string(historyTestJSON(t, unprovenVersion))})
-	unprovenSource.Add("policy_revisions", map[string]any{"scope": string(unproven.Organization) + "/" + string(unproven.Project), "policy_id": descriptor.ID, "metadata_json": string(historyTestJSON(t, descriptor))})
-	freezePause := errors.New("historical landing freeze pending")
-	paused := &historyRepairPauseDetails{DetailStore: objects, marker: []byte(`"merge_sha":"` + strings.Repeat("4", 40) + `"`), failure: freezePause}
-	unprovenImport := CoreChangeImportSource{BundlePath: unprovenSource.Write(), OrganizationID: unproven.Organization, SourceObjects: objects, Objects: paused}
-	if err := neutralimport.Read(t.Context(), unprovenImport.BundlePath, unproven.Organization, func(bundle *neutralimport.Bundle) error {
-		if err := validateCoreNeutralChangeImport(bundle); err != nil {
+	unprovenContent := eventstore.NewContent(objects)
+	unprovenInitial := unprovenChange
+	unprovenInitial.CurrentVersion = ""
+	unprovenChangeRecord, err := unprovenContent.PrepareChange(t.Context(), unproven.Organization, historyTestJSON(t, unprovenInitial))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unprovenVersionRecord, err := unprovenContent.PrepareVersion(t.Context(), unproven.Organization, historyTestJSON(t, unprovenVersion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unprovenVersionRecord.LandingHistoryKnown = false
+	if err := repository.WriteRecords(t.Context(), unproven.Organization, corestore.Background, func(w eventstore.Writer) error {
+		if _, err := w.CreateChange(t.Context(), unprovenChangeRecord); err != nil {
 			return err
 		}
-		if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, objects); err != nil {
+		if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: unproven.Organization, ProjectID: unproven.Project, WorkItemID: unprovenItem.WorkItemID, ChangeID: unprovenChange.ID}); err != nil {
 			return err
 		}
-		tx := neutralimport.NewIndex(bundle)
-		rows, err := readCoreChangePage(t.Context(), tx, unprovenImport, "")
-		if err != nil {
-			return err
-		}
-		if len(rows) != 1 {
-			return eventstore.ErrInvalidRecord
-		}
-		if err := importCoreChange(t.Context(), tx, repository, eventstore.NewContent(objects), unprovenImport, bundle.Identity().SourceSHA256, rows[0]); err != nil {
-			return err
-		}
-		return importCoreChangeVersions(t.Context(), tx, repository, eventstore.NewContent(paused), unprovenImport, bundle.Identity().SourceSHA256, unprovenChange.ID)
-	}); !errors.Is(err, freezePause) {
-		t.Fatalf("interrupted landing freeze=%v", err)
+		_, err := w.CreateVersion(t.Context(), unprovenVersionRecord)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := repository.ReadTenant(t.Context(), unproven.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		change, err := r.Change(t.Context(), unprovenChange.ID)
@@ -419,7 +413,7 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 	reopenedWindow := operatortool.AnalyticsWindow{From: at.Add(2 * time.Hour), To: at.Add(4 * time.Hour)}
 	for _, pending := range []bool{true, false} {
 		if !pending {
-			if _, err := ImportCoreChanges(t.Context(), repository, source); err != nil {
+			if _, err := coreimport.ImportCoreChanges(t.Context(), repository, source); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -626,8 +620,8 @@ func TestChangeColumnsSelectRecoveryComments(t *testing.T) {
 						fixture.Add("collaboration_versions", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "record_id": comment.ID, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, comment))})
 					}
 				}
-				source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-				if n, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || n != 2 {
+				source := coreimport.CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+				if n, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || n != 2 {
 					t.Fatalf("historical comment import=%d error=%v", n, err)
 				}
 				for _, id := range []tracker.NativeWorkItemID{"wi_core_import", "wi_core_import_second"} {
@@ -725,11 +719,10 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 			return []tracker.ChangeDiscussion{{ID: "discussion-0", VersionID: version.ID, Actor: fixtureScope.Actor(), CreatedAt: at, Escape: escape(ids[0], at)}, {ID: "discussion-1", VersionID: version.ID, Actor: fixtureScope.Actor(), CreatedAt: at, Escape: escape("unrelated", at)}, {ID: "ordinary", VersionID: version.ID, Actor: fixtureScope.Actor(), CreatedAt: at}, {ID: "other version", VersionID: old.ID, Actor: fixtureScope.Actor(), CreatedAt: at, Escape: escape(ids[0], at)}}
 		}
 		historical := make(map[tracker.NativeWorkItemID][2]tracker.ChangeVersion)
-		var historicalSource CoreChangeImportSource
+		historicalChanges := make(map[tracker.NativeWorkItemID]tracker.ChangeRequest)
 		if pending {
 			descriptor := hubTestPolicy()
-			var bundlePath string
-			items, events, bundlePath = changeColumnHistoricalWorkflow(t, native, at, func(fixture *neutralimporttest.Fixture, ids map[tracker.NativeWorkItemID][3]string) {
+			items, events, _ = changeColumnHistoricalWorkflow(t, native, at, func(fixture *neutralimporttest.Fixture, ids map[tracker.NativeWorkItemID][3]string) {
 				for name, table := range newCoreNeutralFixture(t, fixtureScope.Organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries").Tables {
 					fixture.Tables[name] = table
 				}
@@ -748,37 +741,49 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 						fixture.Add("change_evidence", map[string]any{"sequence": i + 2, "change_id": changeID, "version_id": discussion.VersionID, "kind": "discussion", "source_key": nil, "record_json": string(historyTestJSON(t, discussion)), "escape_occurrence_id": nil, "escape_observed_at": nil})
 					}
 					historical[item] = versions
+					historicalChanges[item] = change
 				}
 			})
-			objects := native.service.runDetailStore()
-			historicalSource = CoreChangeImportSource{BundlePath: bundlePath, OrganizationID: fixtureScope.Organization, SourceObjects: objects, Objects: objects}
+			content := eventstore.NewContent(native.service.runDetailStore())
 			repository := native.service.config.TenantRepository.(*postgres.Repository)
-			if err := neutralimport.Read(t.Context(), bundlePath, fixtureScope.Organization, func(bundle *neutralimport.Bundle) error {
-				if err := validateCoreNeutralChangeImport(bundle); err != nil {
-					return err
-				}
-				if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, objects); err != nil {
-					return err
-				}
-				tx := neutralimport.NewIndex(bundle)
-				rows, err := readCoreChangePage(t.Context(), tx, historicalSource, "")
+			if len(historicalChanges) != 2 {
+				t.Fatalf("historical change import: %v", eventstore.ErrInvalidRecord)
+			}
+			for item, change := range historicalChanges {
+				initial := change
+				initial.CurrentVersion = ""
+				record, err := content.PrepareChange(t.Context(), fixtureScope.Organization, historyTestJSON(t, initial))
 				if err != nil {
-					return err
+					t.Fatalf("historical change import: %v", err)
 				}
-				if len(rows) != 2 {
-					return eventstore.ErrInvalidRecord
+				var versions []eventstore.Version
+				for _, version := range historical[item] {
+					row, err := content.PrepareVersion(t.Context(), fixtureScope.Organization, historyTestJSON(t, version))
+					if err != nil {
+						t.Fatalf("historical change import: %v", err)
+					}
+					row.LandingHistoryKnown = false
+					versions = append(versions, row)
 				}
-				for _, row := range rows {
-					if err := importCoreChange(t.Context(), tx, repository, eventstore.NewContent(objects), historicalSource, bundle.Identity().SourceSHA256, row); err != nil {
+				if err := repository.WriteRecords(t.Context(), fixtureScope.Organization, corestore.Background, func(w eventstore.Writer) error {
+					if _, err := w.CreateChange(t.Context(), record); err != nil {
 						return err
 					}
-					if err := importCoreChangeVersions(t.Context(), tx, repository, eventstore.NewContent(objects), historicalSource, bundle.Identity().SourceSHA256, row.change.ID); err != nil {
+					if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: fixtureScope.Organization, ProjectID: fixtureScope.Project, WorkItemID: item, ChangeID: change.ID}); err != nil {
 						return err
 					}
+					for i, version := range versions {
+						if _, err := w.CreateVersion(t.Context(), version); err != nil {
+							return err
+						}
+						if err := w.ConfirmVersionUnlanded(t.Context(), change.ID, version.ID, historical[item][i].HeadSHA); err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatalf("historical change import: %v", err)
 				}
-				return nil
-			}); err != nil {
-				t.Fatalf("historical change import: %v", err)
 			}
 		} else {
 			items = []tracker.NativeIssue{native.create(t, "first escape"), native.create(t, "second escape")}
@@ -831,18 +836,17 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 					t.Fatalf("typed occurrence ignored: row=%+v error=%v", row, err)
 				}
 				if pending {
-					source := historicalSource
-					repository := f.service.config.TenantRepository.(*postgres.Repository)
-					if err := neutralimport.Read(t.Context(), source.BundlePath, scope.Organization, func(bundle *neutralimport.Bundle) error {
-						if err := validateCoreNeutralChangeImport(bundle); err != nil {
-							return err
+					for i, discussion := range discussions {
+						row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: f.change.ID, Sequence: int64(i + 2), VersionID: &discussion.VersionID, Kind: "discussion"}, historyTestJSON(t, discussion))
+						if err != nil {
+							t.Fatal(err)
 						}
-						if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, source.Objects); err != nil {
+						if err := f.service.config.TenantRepository.(*postgres.Repository).WriteRecords(t.Context(), scope.Organization, corestore.Background, func(w eventstore.Writer) error {
+							_, err := w.AppendEvidence(t.Context(), row)
 							return err
+						}); err != nil {
+							t.Fatal(err)
 						}
-						return importCoreChangeEvidence(t.Context(), neutralimport.NewIndex(bundle), repository, content, source, bundle.Identity().SourceSHA256, f.change.ID)
-					}); err != nil {
-						t.Fatal(err)
 					}
 				} else {
 					for _, discussion := range discussions {
@@ -961,8 +965,8 @@ func changeColumnHistoricalWorkflow(t *testing.T, f nativeFixture, at time.Time,
 		fixture.Records["queue_entries"][i] = row
 	}
 	extend(fixture, ids)
-	source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-	if n, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || n != 2 {
+	source := coreimport.CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	if n, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || n != 2 {
 		t.Fatalf("historical workflow import=%d error=%v", n, err)
 	}
 	var items []tracker.NativeIssue
@@ -1137,22 +1141,20 @@ func changeColumnAttempt(t *testing.T, f changeFixture, receipt *tracker.NativeL
 
 func changeColumnImportLandingReceipts(t *testing.T, f changeFixture, versions []tracker.ChangeVersion, attempts []leasestore.Attempt, receipts []tracker.NativeLandingReceipt) {
 	t.Helper()
-	fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-	for i, version := range versions {
-		fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": f.change.ID, "number": version.Number, "policy_revision_id": version.PolicyID, "repository": version.Repository, "record_json": string(historyTestJSON(t, version))})
-		fixture.Add("change_landing_receipts", map[string]any{"attempt_id": attempts[i].ID, "version_id": version.ID, "merge_sha": nil, "record_json": string(historyTestJSON(t, receipts[i]))})
-	}
-	source := historyRepairImportSource(t, f, fixture)
+	content := eventstore.NewContent(f.service.runDetailStore())
 	repository := f.service.config.TenantRepository.(*postgres.Repository)
-	for range 2 {
-		if err := neutralimport.Read(t.Context(), source.BundlePath, f.project.OrganizationID, func(bundle *neutralimport.Bundle) error {
-			if err := validateCoreNeutralChangeImport(bundle); err != nil {
-				return err
-			}
-			if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, source.Objects); err != nil {
-				return err
-			}
-			return importCoreChangeLandings(t.Context(), neutralimport.NewIndex(bundle), repository, eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
+	for i, version := range versions {
+		var value tracker.NativeLandingReceipt
+		if err := json.Unmarshal(historyTestJSON(t, receipts[i]), &value); err != nil || value.VersionID != version.ID {
+			t.Fatal(errors.Join(eventstore.ErrInvalidRecord, err))
+		}
+		record, err := content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: f.project.OrganizationID, AttemptID: attempts[i].ID, VersionID: version.ID, Repository: version.Repository, BaseRef: value.BaseRef}, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteRecords(t.Context(), f.project.OrganizationID, corestore.Background, func(w eventstore.Writer) error {
+			_, err := w.CreateLandingReceipt(t.Context(), record)
+			return err
 		}); err != nil {
 			t.Fatal(err)
 		}

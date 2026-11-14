@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
@@ -175,7 +176,7 @@ func TestImportedGitHubReferenceBackfill(t *testing.T) {
 		}
 	}
 	for _, fixture := range []hubfixture.Native{f, other} {
-		count, err := hubserver.ImportCoreWorkItems(t.Context(), repository, hubserver.CoreWorkItemImportSource{BundlePath: path, OrganizationID: organization, ProjectID: fixture.Project.ID, Objects: f.Hub.Config.RunDetails, Logger: logger})
+		count, err := coreimport.ImportCoreWorkItems(t.Context(), repository, coreimport.CoreWorkItemImportSource{BundlePath: path, OrganizationID: organization, ProjectID: fixture.Project.ID, Objects: f.Hub.Config.RunDetails, Logger: logger})
 		want := int64(len(tests) - 1)
 		if fixture.Project.ID == other.Project.ID {
 			want = 1
@@ -255,7 +256,7 @@ func TestImportedGitHubReferenceBackfill(t *testing.T) {
 	}
 	logs.Reset()
 	for _, fixture := range []hubfixture.Native{f, other} {
-		if _, err := hubserver.ImportCoreWorkItems(t.Context(), repository, hubserver.CoreWorkItemImportSource{BundlePath: path, OrganizationID: organization, ProjectID: fixture.Project.ID, Objects: f.Hub.Config.RunDetails, Logger: logger}); err != nil {
+		if _, err := coreimport.ImportCoreWorkItems(t.Context(), repository, coreimport.CoreWorkItemImportSource{BundlePath: path, OrganizationID: organization, ProjectID: fixture.Project.ID, Objects: f.Hub.Config.RunDetails, Logger: logger}); err != nil {
 			t.Fatal(err)
 		}
 	}

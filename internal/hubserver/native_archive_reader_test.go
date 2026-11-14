@@ -27,7 +27,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -576,14 +575,13 @@ func TestOlderArchiveViews(t *testing.T) {
 		f := newChangeFixture(t, nil)
 		version := f.publish(t, "legacy-version", "")
 		review := tracker.ChangeReview{ID: "legacy-review", VersionID: version.ID, Decision: "commented", Body: "Historical review", CreatedAt: f.service.config.Clock()}
-		fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-		fixture.Add("change_evidence", map[string]any{"change_id": f.change.ID, "sequence": int64(1), "version_id": version.ID, "kind": "review", "source_key": review.ID, "record_json": string(historyTestJSON(t, review)), "payload_object_key": ""})
-		source := CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: f.service.runDetailStore(), Objects: f.service.runDetailStore()}
-		if err := neutralimport.Read(t.Context(), source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
-			if err := validateCoreNeutralChangeImport(bundle); err != nil {
-				return err
-			}
-			return importCoreChangeEvidence(t.Context(), neutralimport.NewIndex(bundle), f.service.config.TenantRepository.(*postgres.Repository), eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
+		record, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: f.project.OrganizationID, ChangeID: f.change.ID, Sequence: 1, VersionID: &version.ID, Kind: "review", SourceKey: &review.ID}, historyTestJSON(t, review))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.config.TenantRepository.(*postgres.Repository).WriteRecords(t.Context(), f.project.OrganizationID, corestore.Background, func(w eventstore.Writer) error {
+			_, err := w.AppendEvidence(t.Context(), record)
+			return err
 		}); err != nil {
 			t.Fatal(err)
 		}

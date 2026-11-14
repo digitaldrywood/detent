@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -53,8 +54,8 @@ func TestDoctorProposalNeutralImportRepairsOnlyUnchangedHead(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		source := CoreWorkItemImportSource{BundlePath: coreWorkItemNeutralFixtureBody(t, org, project, false, body).Write(), OrganizationID: org, ProjectID: project, Objects: objects}
-		if count, err := ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
+		source := coreimport.CoreWorkItemImportSource{BundlePath: coreWorkItemNeutralFixtureBody(t, org, project, false, body).Write(), OrganizationID: org, ProjectID: project, Objects: objects}
+		if count, err := coreimport.ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
 			t.Fatalf("initial import count=%d error=%v", count, err)
 		}
 		result, err := lookup(org)
@@ -121,7 +122,7 @@ func TestDoctorProposalNeutralImportRepairsOnlyUnchangedHead(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if count, err := ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
+		if count, err := coreimport.ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
 			t.Fatalf("receipt identity repair count=%d error=%v", count, err)
 		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {

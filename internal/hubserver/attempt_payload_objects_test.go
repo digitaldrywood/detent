@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -569,7 +570,7 @@ func TestRunHistoryWritesOnlyObjectReferences(t *testing.T) {
 					source.Add("collaboration_events", map[string]any{"id": "event_history_unordered" + suffix, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": 3, "type": "run.finished", "schema_version": 1, "actor_json": string(actor), "data_json": string(payload), "recorded_at": "2026-10-02T01:00:00Z"})
 					source.Set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3})
 				}
-				count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()})
+				count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()})
 				if err != nil || count != 2 {
 					t.Fatalf("unordered historical run import count=%d error=%v", count, err)
 				}
@@ -904,10 +905,10 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 				}
 				fixture.Add("change_landing_receipts", map[string]any{"attempt_id": attempt.ID, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt))})
 				objects := f.service.runDetailStore()
-				source := CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: scope.Organization, SourceObjects: objects, Objects: objects}
+				source := coreimport.CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: scope.Organization, SourceObjects: objects, Objects: objects}
 				var first eventstore.LandingReceipt
 				for pass := range 2 {
-					count, err := ImportCoreChanges(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source)
+					count, err := coreimport.ImportCoreChanges(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source)
 					if err != nil || count != 1 {
 						t.Fatalf("historical landing import count=%d error=%v", count, err)
 					}
@@ -1108,11 +1109,11 @@ func payloadAssertHistoricalAttemptReads(t *testing.T, data tracker.NativeRunDat
 			run.ArtifactIDs = append([]string(nil), artifacts...)
 			expected[run.AttemptID] = run
 		}
-		source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
+		source := coreimport.CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
 		previous := map[string]tracker.NativeAttempt{}
 		charged := map[string]attachment.ArchiveReference{}
 		for pass := range 2 {
-			count, err := ImportCoreExecution(t.Context(), repository, source)
+			count, err := coreExecutions().Import(t.Context(), repository, source)
 			if err != nil || count != 14 {
 				t.Fatalf("historical payload import count=%d error=%v", count, err)
 			}
@@ -1199,11 +1200,11 @@ func payloadAssertHistoricalVersion(t *testing.T, f changeFixture, version track
 	fixture.Add("change_versions", map[string]any{"id": legacy.ID, "change_id": change.ID, "number": legacy.Number, "record_json": string(historyTestJSON(t, legacy)), "policy_revision_id": legacy.PolicyID})
 	fixture.Add("change_sources", map[string]any{"version_id": legacy.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
 	objects := f.service.runDetailStore()
-	source := CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: objects, Objects: objects}
+	source := coreimport.CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: objects, Objects: objects}
 	repository := f.service.config.TenantRepository.(*postgres.Repository)
 	var before tracker.ChangeVersion
 	for pass := range 2 {
-		count, err := ImportCoreChanges(t.Context(), repository, source)
+		count, err := coreimport.ImportCoreChanges(t.Context(), repository, source)
 		if err != nil || count != 1 {
 			t.Fatalf("historical version import count=%d error=%v", count, err)
 		}
@@ -1246,10 +1247,10 @@ func payloadAssertHistoricalDiff(t *testing.T, patch string) {
 			fixture.Add("attempt_diffs", map[string]any{"id": diffID, "organization_id": organization, "project_id": "prj_execution_import", "work_item_id": "wi_execution_import" + suffix, "attempt_id": "attempt_execution_import" + suffix, "source": "attempt", "source_id": "", "seq": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "producer_kind": "attempt", "producer_id": "attempt_execution_import" + suffix, "producer_runner_id": "runner_execution_import" + suffix, "producer_lease_id": "lease_execution_import" + suffix, "producer_fencing_token": 40 + index, "file_count": 1, "patch_bytes": len(patch), "posted_bytes": len(patch), "created_at": "2026-10-02T00:00:00Z"})
 			fixture.Add("attempt_diff_files", map[string]any{"diff_id": diffID, "position": 0, "path": "example.go", "old_path": "", "status": "modified", "additions": 0, "deletions": 0, "binary": false, "patch": patch, "truncated": false, "denied": false, "patch_expired": false})
 		}
-		source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
+		source := coreimport.CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
 		previous := map[string]tracker.AttemptDiff{}
 		for pass := range 2 {
-			count, err := ImportCoreExecution(t.Context(), repository, source)
+			count, err := coreExecutions().Import(t.Context(), repository, source)
 			if err != nil || count != 16 {
 				t.Fatalf("historical diff import count=%d error=%v", count, err)
 			}

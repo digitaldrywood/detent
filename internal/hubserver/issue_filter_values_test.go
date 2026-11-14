@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -31,7 +32,7 @@ func TestIssueFilterValues(t *testing.T) {
 		id      tracker.WorkItemID
 	}
 	var entries [2]entry
-	var sources []CoreWorkItemImportSource
+	var sources []coreimport.CoreWorkItemImportSource
 	var projectSources []*neutralimporttest.Fixture
 	for index, fixture := range []nativeFixture{f, other} {
 		source := coreWorkItemNeutralFixture(t, fixture.project.OrganizationID, fixture.project.ID, false)
@@ -106,8 +107,8 @@ func TestIssueFilterValues(t *testing.T) {
 	}
 	bundle := mergeCoreNeutralProjectSources(t, projectSources...).Write()
 	for index, fixture := range []nativeFixture{f, other} {
-		input := CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: fixture.project.OrganizationID, ProjectID: fixture.project.ID, Objects: f.service.runDetailStore()}
-		if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+		input := coreimport.CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: fixture.project.OrganizationID, ProjectID: fixture.project.ID, Objects: f.service.runDetailStore()}
+		if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 			t.Fatalf("filter source import count=%d error=%v", count, err)
 		}
 		sources = append(sources, input)
@@ -159,7 +160,7 @@ func TestIssueFilterValues(t *testing.T) {
 	}
 	assertMatches(true)
 	for _, source := range sources {
-		if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, source); err != nil || count != 2 {
+		if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, source); err != nil || count != 2 {
 			t.Fatalf("filter source replay count=%d error=%v", count, err)
 		}
 	}

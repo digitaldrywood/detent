@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -211,7 +212,7 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 				interrupted := errors.New("historical evidence import interrupted")
 				pause := &historyRepairPauseDetails{DetailStore: source.Objects, marker: []byte(`"check_run_id":"other-100"`), failure: interrupted}
 				source.Objects = pause
-				if _, err := ImportCoreChanges(t.Context(), target.service.config.TenantRepository.(*postgres.Repository), source); !errors.Is(err, interrupted) || !pause.fired {
+				if _, err := coreimport.ImportCoreChanges(t.Context(), target.service.config.TenantRepository.(*postgres.Repository), source); !errors.Is(err, interrupted) || !pause.fired {
 					t.Fatalf("historical import did not pause after the boundary: %v", err)
 				}
 				read := func(through int64, message string) {
@@ -408,15 +409,15 @@ func historyRepairSource(t *testing.T, f changeFixture, base tracker.ChangeVersi
 	return fixture, f, versions
 }
 
-func historyRepairImportSource(t *testing.T, target changeFixture, fixture *neutralimporttest.Fixture) CoreChangeImportSource {
+func historyRepairImportSource(t *testing.T, target changeFixture, fixture *neutralimporttest.Fixture) coreimport.CoreChangeImportSource {
 	t.Helper()
 	objects := target.service.runDetailStore()
-	return CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: target.project.OrganizationID, SourceObjects: objects, Objects: objects}
+	return coreimport.CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: target.project.OrganizationID, SourceObjects: objects, Objects: objects}
 }
 
-func historyRepairImport(t *testing.T, target changeFixture, source CoreChangeImportSource, count int64) {
+func historyRepairImport(t *testing.T, target changeFixture, source coreimport.CoreChangeImportSource, count int64) {
 	t.Helper()
-	got, err := ImportCoreChanges(t.Context(), target.service.config.TenantRepository.(*postgres.Repository), source)
+	got, err := coreimport.ImportCoreChanges(t.Context(), target.service.config.TenantRepository.(*postgres.Repository), source)
 	if err != nil || got != count {
 		t.Fatalf("historical repair import count=%d want=%d error=%v", got, count, err)
 	}

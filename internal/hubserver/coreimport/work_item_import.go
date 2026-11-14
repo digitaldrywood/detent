@@ -1,4 +1,4 @@
-package hubserver
+package coreimport
 
 import (
 	"bytes"
@@ -40,8 +40,17 @@ type CoreWorkItemImportSource struct {
 	Objects          attachment.DetailStore
 	IdentityMappings []CoreWorkItemIdentityMapping
 	Logger           *slog.Logger
-	activity         map[string]coreHistoricalActivity
-	activityDigest   string
+	Activity         HistoricalActivity
+}
+
+type HistoricalActivity struct {
+	items  map[string]coreHistoricalActivity
+	digest string
+}
+
+func ReadHistoricalActivity(ctx context.Context, bundle *neutralimport.Bundle, organization tracker.OrganizationID) (HistoricalActivity, error) {
+	items, err := readCoreHistoricalActivity(ctx, bundle, organization)
+	return HistoricalActivity{items: items, digest: bundle.Digest()}, err
 }
 
 type coreHistoricalSourceReference struct {
@@ -160,14 +169,13 @@ func ImportCoreWorkItems(ctx context.Context, target *postgres.Repository, sourc
 			}
 		}
 		tx := neutralimport.NewIndex(bundle)
-		if source.activity == nil {
+		if source.Activity.items == nil {
 			var err error
-			source.activity, err = readCoreHistoricalActivity(ctx, bundle, source.OrganizationID)
+			source.Activity, err = ReadHistoricalActivity(ctx, bundle, source.OrganizationID)
 			if err != nil {
 				return err
 			}
-			source.activityDigest = bundle.Digest()
-		} else if source.activityDigest != bundle.Digest() {
+		} else if source.Activity.digest != bundle.Digest() {
 			return neutralimport.ErrInvalid
 		}
 		copyHash := bundle.Identity().SourceSHA256
@@ -398,27 +406,27 @@ func readCoreWorkItemImportPage(ctx context.Context, tx *neutralimport.Index, so
 				return nil, corestore.ErrRevisionConflict
 			}
 		}
-		item.CreatedAt, err = parseCoreImportTime(created)
+		item.CreatedAt, err = ParseImportTime(created)
 		if err != nil {
 			return nil, err
 		}
-		item.UpdatedAt, err = parseCoreImportTime(updated)
+		item.UpdatedAt, err = ParseImportTime(updated)
 		if err != nil {
 			return nil, err
 		}
-		item.NativeCreatedAt, err = parseCoreImportTime(nativeCreated)
+		item.NativeCreatedAt, err = ParseImportTime(nativeCreated)
 		if err != nil {
 			return nil, err
 		}
-		item.NativeUpdatedAt, err = parseCoreImportTime(nativeUpdated)
+		item.NativeUpdatedAt, err = ParseImportTime(nativeUpdated)
 		if err != nil {
 			return nil, err
 		}
-		item.LastActivityAt, err = parseCoreImportTime(activity)
+		item.LastActivityAt, err = ParseImportTime(activity)
 		if err != nil {
 			return nil, err
 		}
-		if historical, ok := source.activity[string(item.NativeID)]; ok {
+		if historical, ok := source.Activity.items[string(item.NativeID)]; ok {
 			if historical.At.After(item.LastActivityAt) {
 				item.LastActivityAt = historical.At
 			}
@@ -426,7 +434,7 @@ func readCoreWorkItemImportPage(ctx context.Context, tx *neutralimport.Index, so
 		}
 
 		item.WorkflowStateName = nullStringPointer(row.WorkflowState)
-		entered, known, err := parseOptionalCoreImportTime(row.TerminalEnteredAt)
+		entered, known, err := ParseOptionalImportTime(row.TerminalEnteredAt)
 		if err != nil {
 			return nil, err
 		}
@@ -510,7 +518,7 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *neutralimport.Index, obj
 	if err := json.Unmarshal([]byte(row.Assignees), &assignees); err != nil {
 		return postgres.CoreWorkItemImport{}, eventstore.ErrInvalidRecord
 	}
-	waitValue, hasWait, err := parseOptionalCoreImportTime(row.DispatchWaitSince)
+	waitValue, hasWait, err := ParseOptionalImportTime(row.DispatchWaitSince)
 	if err != nil {
 		return postgres.CoreWorkItemImport{}, err
 	}
@@ -1260,14 +1268,14 @@ func verifiedCoreImportObject(ctx context.Context, objects attachment.DetailStor
 	return ref, nil
 }
 
-func parseCoreImportTime(raw sql.NullString) (time.Time, error) {
+func ParseImportTime(raw sql.NullString) (time.Time, error) {
 	if !raw.Valid || raw.String == "" {
 		return time.Time{}, errors.New("missing imported timestamp")
 	}
 	return time.Parse(time.RFC3339Nano, raw.String)
 }
 
-func parseOptionalCoreImportTime(raw sql.NullString) (time.Time, bool, error) {
+func ParseOptionalImportTime(raw sql.NullString) (time.Time, bool, error) {
 	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
 		return time.Time{}, false, nil
 	}
@@ -1811,7 +1819,7 @@ func importCoreHistoricalWorkItems(ctx context.Context, target *postgres.Reposit
 			return err
 		}
 		record.SourceReceipt = &receipt
-		record.Receipt, err = prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, bundle.Identity().SourceSHA256, "core-work-item", strconv.FormatInt(id, 10), mapping)
+		record.Receipt, err = PrepareExecutionReceipt(ctx, content, source.OrganizationID, bundle.Identity().SourceSHA256, "core-work-item", strconv.FormatInt(id, 10), mapping)
 		if err != nil {
 			return err
 		}
@@ -1850,7 +1858,7 @@ func importCoreHistoricalWorkItems(ctx context.Context, target *postgres.Reposit
 		if err != nil {
 			return err
 		}
-		record.Receipt, err = prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, bundle.Identity().SourceSHA256, "core-machine", record.Machine.ID, row)
+		record.Receipt, err = PrepareExecutionReceipt(ctx, content, source.OrganizationID, bundle.Identity().SourceSHA256, "core-machine", record.Machine.ID, row)
 		if err != nil {
 			return err
 		}
@@ -1890,7 +1898,7 @@ func importCoreHistoricalWorkItems(ctx context.Context, target *postgres.Reposit
 			}
 			lease.ReleasedAt = &at
 		}
-		record.Receipt, err = prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, bundle.Identity().SourceSHA256, "core-lease", lease.LeaseID, row)
+		record.Receipt, err = PrepareExecutionReceipt(ctx, content, source.OrganizationID, bundle.Identity().SourceSHA256, "core-lease", lease.LeaseID, row)
 		if err != nil {
 			return err
 		}
@@ -1927,7 +1935,7 @@ func importCoreHistoricalWorkItems(ctx context.Context, target *postgres.Reposit
 		if err != nil {
 			return err
 		}
-		record.Receipt, err = prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, bundle.Identity().SourceSHA256, "core-work-event", strconv.FormatInt(record.ID, 10), row)
+		record.Receipt, err = PrepareExecutionReceipt(ctx, content, source.OrganizationID, bundle.Identity().SourceSHA256, "core-work-event", strconv.FormatInt(record.ID, 10), row)
 		if err != nil {
 			return err
 		}

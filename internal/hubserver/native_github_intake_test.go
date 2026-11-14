@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -366,8 +367,8 @@ func pendingLinkedIssue(t *testing.T, f nativeFixture) tracker.NativeIssue {
 	if versions != 2 {
 		t.Fatalf("historical linked versions = %d, want 2", versions)
 	}
-	input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+	input := coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 		t.Fatalf("historical pending source import = %d, %v", count, err)
 	}
 	other := readWorkItem(t, f, "wi_core_import_second", "")

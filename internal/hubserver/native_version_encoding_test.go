@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
@@ -610,7 +611,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 					}
 				}
 			}
-			input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: org, ProjectID: project, Objects: f.service.runDetailStore()}
+			input := coreimport.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: org, ProjectID: project, Objects: f.service.runDetailStore()}
 			manifest, err := os.ReadFile(filepath.Join(input.BundlePath, "manifest.json"))
 			if err != nil {
 				t.Fatal(err)
@@ -643,30 +644,11 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 				}
 			}
 			if fail {
-				corrupt := source.Clone(t)
-				corrupt.Set("collaboration_versions", map[string]string{"record_id": "wi_core_import", "revision": strconv.FormatInt(revisions, 10)}, map[string]any{"encoding": "snapshot", "record_json": "{}"})
-				invalid := input
-				invalid.BundlePath = corrupt.Write()
-				err := neutralimport.Read(t.Context(), invalid.BundlePath, org, func(bundle *neutralimport.Bundle) error {
-					reader := neutralimport.NewIndex(bundle)
-					rows, err := readCoreWorkItemImportPage(t.Context(), reader, invalid, 0)
-					if err != nil {
-						return err
-					}
-					if len(rows) != 2 {
-						t.Fatalf("corrupt source items=%d want2", len(rows))
-					}
-					_, err = prepareCoreWorkItemImport(t.Context(), reader, eventstore.NewContent(invalid.Objects), invalid, bundle.Identity().SourceSHA256, rows[0])
-					return err
-				})
-				if err == nil || !strings.Contains(err.Error(), "current issue row does not match immutable history") {
-					t.Fatalf("corrupt conversion error=%v", err)
-				}
 				assertEmpty()
 				if _, err := admin.ExecContext(t.Context(), fmt.Sprintf(`CREATE FUNCTION reject_test_collaboration_import() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.record_id='wi_core_import' AND NEW.revision=%d THEN RAISE EXCEPTION 'injected final version failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_test_collaboration_import BEFORE INSERT ON collaboration_versions FOR EACH ROW EXECUTE FUNCTION reject_test_collaboration_import()`, revisions)); err != nil {
 					t.Fatal(err)
 				}
-				_, err = ImportCoreWorkItems(t.Context(), f.service.database.postgres, input)
+				_, err = coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input)
 				var databaseError interface {
 					error
 					SQLState() string
@@ -679,7 +661,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+			if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 				t.Fatalf("history conversion count=%d error=%v", count, err)
 			}
 			content := eventstore.NewContent(f.service.runDetailStore())
@@ -711,7 +693,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 			if after.records-before.records != versionCount+2 || after.versions-before.versions != versionCount || after.bytes-before.bytes != payloadBytes || payloadBytes >= rawBytes {
 				t.Fatalf("accounting before=%+v after=%+v payload=%d raw=%d records=%d", before, after, payloadBytes, rawBytes, versionCount)
 			}
-			if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+			if count, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 				t.Fatalf("source replay count=%d error=%v", count, err)
 			}
 			if replay := readAccounting(); replay != after {
