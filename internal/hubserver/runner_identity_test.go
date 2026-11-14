@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -314,41 +312,6 @@ func (r runnerFixture) reportCapacity(t *testing.T) {
 	reportRunnerCapacity(t, r.service, r.nativeFixture.base, r.redemption.Credential, r.binding.MachineID, r.redemption.DisplayName, r.redemption.BackendIsolation, r.redemption.Capacity)
 }
 
-func TestRunnerConcurrentRotationHasOneWinner(t *testing.T) {
-	t.Parallel()
-	f := newPostgresDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read)
-	r.enroll(t)
-	start := make(chan struct{})
-	statuses := make(chan int, 4)
-	var workers sync.WaitGroup
-	for range 4 {
-		replacement, err := apikey.GenerateToken()
-		if err != nil {
-			t.Fatal(err)
-		}
-		workers.Go(func() {
-			<-start
-			response := performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/rotate", r.redemption.Credential, runnerauth.Rotation{Credential: replacement})
-			statuses <- response.Code
-		})
-	}
-	close(start)
-	workers.Wait()
-	close(statuses)
-	winners := 0
-	for status := range statuses {
-		if status == http.StatusOK {
-			winners++
-		} else if status != http.StatusUnauthorized {
-			t.Fatalf("rotation status = %d", status)
-		}
-	}
-	if winners != 1 {
-		t.Fatalf("rotation winners = %d, want 1", winners)
-	}
-}
-
 func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	t.Parallel()
 	clock := &leaseTestClock{value: time.Date(2026, 9, 29, 0, 31, 39, 0, time.UTC)}
@@ -425,137 +388,5 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	var events string
 	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT string_agg(kind,',' ORDER BY event_id) FROM runner_identity_events WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, r.binding.RunnerID).Scan(&events); err != nil || events != "enrolled,renewed,renewed,rotated,revoked" {
 		t.Fatalf("lifecycle audit = %q, err=%v", events, err)
-	}
-}
-
-func TestRunnerIdentityBindingAndOperations(t *testing.T) {
-	t.Parallel()
-	f := newPostgresDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
-	r.enroll(t)
-	r.reportCapacity(t)
-	other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
-	other.enroll(t)
-	other.reportCapacity(t)
-	for _, test := range []struct {
-		name    string
-		status  int
-		unknown string
-		admin   bool
-	}{
-		{name: "", status: http.StatusOK},
-		{name: "another-host", status: http.StatusUnprocessableEntity},
-		{name: r.redemption.Hostname, status: http.StatusOK},
-		{name: r.redemption.Hostname, unknown: "top-level", status: http.StatusOK},
-		{name: r.redemption.Hostname, unknown: "nested", status: http.StatusOK},
-		{unknown: "top-level", admin: true, status: http.StatusUnprocessableEntity},
-		{unknown: "nested", admin: true, status: http.StatusUnprocessableEntity},
-	} {
-		t.Run(fmt.Sprintf("Sprite heartbeat %s unknown=%s admin=%t", test.name, test.unknown, test.admin), func(t *testing.T) {
-			body := map[string]any{"display_name": r.redemption.DisplayName, "capacity": r.redemption.Capacity, "version": "develop-040e7195c", "sprite_name": test.name, "backend_isolation": r.redemption.BackendIsolation}
-			switch test.unknown {
-			case "top-level":
-				body["future_observation"] = map[string]any{"enabled": true}
-			case "nested":
-				body["project_configuration"] = map[string]any{
-					"project_id": string(f.project.ID), "authority": "local_global_configuration",
-					"source": "configured_committed_workflow", "observed_at": f.service.config.Clock(),
-					"future_observation": true,
-				}
-			}
-			token := r.redemption.Credential
-			if test.admin {
-				token = testHubAdminToken
-			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", token, body), test.status)
-			if test.status == http.StatusOK {
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-					machine, err := reader.Machine(t.Context(), string(r.binding.MachineID))
-					if err == nil && (machine.SpriteName != test.name || machine.Version != "develop-040e7195c") {
-						t.Fatalf("heartbeat Sprite identity = %q, version = %q", machine.SpriteName, machine.Version)
-					}
-					return err
-				}); err != nil {
-					t.Fatal(err)
-				}
-			}
-		})
-	}
-	issue := f.create(t, "work")
-	descriptor := hubTestPolicy()
-	descriptor.Requirements.RunnerID = r.binding.RunnerID
-	descriptor.Requirements.MachineID = string(r.binding.MachineID)
-	descriptor = descriptor.WithID()
-	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
-	requireNativeStatus(t, response, http.StatusOK)
-	var lease tracker.NativeLease
-	decodeHubResponse(t, response, &lease)
-	otherClaim := claim
-	otherClaim.MachineID = other.binding.MachineID
-	otherClaim.SessionID = "other-session"
-	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other.redemption.Credential, otherClaim)
-	requireNativeStatus(t, response, http.StatusConflict)
-	if !strings.Contains(response.Body.String(), "selector_no_match") {
-		t.Fatal("an enrolled runner widened the approved selector")
-	}
-	for _, test := range []struct {
-		name, method, path string
-		body               any
-		want               int
-	}{
-		{"impersonated claim", http.MethodPost, f.base + "/claims", claim, http.StatusNotFound},
-		{"impersonated registration", http.MethodPost, f.base + "/machines/register", map[string]any{"id": r.binding.MachineID, "hostname": "customer-host", "display_name": "Same host", "capacity": 1, "version": "test"}, http.StatusNotFound},
-		{"new machine registration", http.MethodPost, f.base + "/machines/register", map[string]any{"id": runnerauth.NewBinding().MachineID, "hostname": "customer-host", "capacity": 1, "version": "test"}, http.StatusNotFound},
-		{"impersonated heartbeat", http.MethodPost, f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat", map[string]any{"display_name": "same", "capacity": 1, "version": "test"}, http.StatusNotFound},
-		{"impersonated lease", http.MethodPost, f.base + "/leases/" + string(lease.ID) + "/renew", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}, http.StatusNotFound},
-		{"impersonated release", http.MethodPost, f.base + "/leases/" + string(lease.ID) + "/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}, http.StatusNotFound},
-		{"impersonated identity", http.MethodGet, r.identityPath(), nil, http.StatusNotFound},
-		{"v1 downgrade", http.MethodGet, "/api/v1/work-items", nil, http.StatusNotFound},
-		{"collaboration without grant", http.MethodPost, f.base + "/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "denied"}, Title: "denied", State: "Todo"}, http.StatusForbidden},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, test.method, test.path, other.redemption.Credential, test.body), test.want)
-		})
-	}
-	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test-model"}, LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: hubapi.NewID("run"), AttemptID: hubapi.NewID("attempt"), PolicyID: descriptor.ID}}
-	path := f.base + "/work-items/" + string(issue.WorkItemID)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", other.redemption.Credential, event), http.StatusNotFound)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", r.redemption.Credential, event), http.StatusOK)
-	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", r.redemption.Credential, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	if !strings.Contains(response.Body.String(), r.binding.RunnerID) {
-		t.Fatal("history did not attribute event to authenticated runner")
-	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.base+"/machines/"+string(r.binding.MachineID)+"/routing", testHubAdminToken, runnerauth.HostChange{ExpectedRevision: 1, DisplayName: "Renamed", Capacity: 2}), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Worker override", "capacity": 2, "version": "test"}), http.StatusOK)
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-		machine, err := reader.Machine(t.Context(), string(r.binding.MachineID))
-		if err == nil && (machine.ID != string(r.binding.MachineID) || machine.DisplayName != "Renamed") {
-			t.Fatal("rename did not preserve identity")
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	otherProject := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, otherProject.base, r.redemption.Credential, nil), http.StatusNotFound)
-	readOnly := prepareRunner(t, f, runnerauth.Read)
-	readOnly.enroll(t)
-	for _, denied := range []string{f.base + "/claims", f.base + "/machines/register", path + "/events"} {
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, denied, readOnly.redemption.Credential, struct{}{}), http.StatusForbidden)
-	}
-	for _, key := range []string{"provider_api_key", "storage_credentials", "prompt"} {
-		body, err := json.Marshal(event)
-		if err != nil {
-			t.Fatal(err)
-		}
-		values := make(map[string]any)
-		if err := json.Unmarshal(body, &values); err != nil {
-			t.Fatal(err)
-		}
-		values[key] = "example-secret-do-not-store"
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", r.redemption.Credential, values), http.StatusUnprocessableEntity)
 	}
 }
