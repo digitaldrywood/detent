@@ -1,12 +1,12 @@
 -- name: DuplicateSourceState :one
-SELECT (p.duplicate_source_sequence+p.content_settings_revision)::bigint AS source_sequence,
+SELECT (p.duplicate_source_sequence+p.content_settings_revision+coalesce(s.revision,0))::bigint AS source_sequence,
 (NOT EXISTS (
  SELECT 1 FROM search_postings WHERE organization_id=p.organization_id
  AND scope IN (public.search_scope_key(p.id,'','work','','','false',''),public.search_scope_key(p.id,'','work','','','true','')) AND term='~pending'
 ) AND NOT EXISTS (
  SELECT 1 FROM search_scope_refresh WHERE organization_id=p.organization_id AND project_id=p.id
 ))::boolean AS ready
-FROM projects p WHERE p.organization_id=sqlc.arg(organization_id) AND p.id=sqlc.arg(project_id) AND p.deleted_at IS NULL;
+FROM projects p LEFT JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id WHERE p.organization_id=sqlc.arg(organization_id) AND p.id=sqlc.arg(project_id) AND p.deleted_at IS NULL;
 
 -- name: DuplicateSources :many
 WITH hits AS MATERIALIZED (

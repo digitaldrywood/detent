@@ -140,6 +140,23 @@ func TestDuplicateSourceFenceRejectsChangedVisibilityAndSerializesCandidateMutat
 	if !errors.Is(err, corestore.ErrRevisionConflict) {
 		t.Fatalf("post-commit source mutation was not fenced: %v", err)
 	}
+	f.drain(t, "org_first")
+	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO project_settings(organization_id,project_id) VALUES('org_first','prj_first') ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	state = duplicateState(t, f, "org_first")
+	if _, err := f.admin.ExecContext(t.Context(), `UPDATE project_settings SET revision=revision+1 WHERE organization_id='org_first' AND project_id='prj_first'`); err != nil {
+		t.Fatal(err)
+	}
+	if duplicateState(t, f, "org_second") != second {
+		t.Fatal("project settings fence crossed tenant boundary")
+	}
+	err = f.repository.WriteSearch(t.Context(), "org_first", corestore.Serving, func(w searchstore.Writer) error {
+		return w.(searchstore.DuplicateSourceWriter).LockDuplicateSource(t.Context(), "prj_first", state.Sequence)
+	})
+	if !errors.Is(err, corestore.ErrRevisionConflict) {
+		t.Fatalf("changed project settings revision was not fenced: %v", err)
+	}
 }
 
 func TestDuplicateSourceCandidatesRetainSourceRankingAndLiteralIdentity(t *testing.T) {
