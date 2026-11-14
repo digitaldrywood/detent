@@ -5372,7 +5372,10 @@
           "session.detailObject:QueryRow": 1,
           "session.detailObject:SQL": 1,
           "session.putDetailObject:Exec": 1,
-          "session.putDetailObject:SQL": 1
+          "session.putDetailObject:SQL": 1,
+          "session.reclaimDetailObjects:Exec": 1,
+          "session.reclaimDetailObjects:Query": 1,
+          "session.reclaimDetailObjects:SQL": 2
         },
         "tables": []
       }
@@ -5506,6 +5509,7 @@
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "priorApprovalCandidate:SQL": 1,
           "session.AppendEvent:QueryRow": 1,
           "session.AppendEvent:SQL": 1,
           "session.AppendEvent:generated:RecordAdvanceIssue": 1,
@@ -5601,7 +5605,6 @@
           "session.PRPublication:generated:RecordGetPRPublication": 1,
           "session.PRPublication:query-receiver": 1,
           "session.PriorApprovalCandidate:Query": 1,
-          "session.PriorApprovalCandidate:SQL": 1,
           "session.ProgressEvidenceSequence:QueryRow": 1,
           "session.ProgressEvidenceSequence:SQL": 1,
           "session.ProjectChanges:generated:RecordProjectChanges": 1,
@@ -5652,6 +5655,8 @@
           "session.ViewedFiles:query-receiver": 1,
           "session.WorkItemPullRequestVersion:generated:RecordWorkItemPullRequestVersion": 1,
           "session.WorkItemPullRequestVersion:query-receiver": 1,
+          "session.advanceLinkedIssueActivity:Exec": 1,
+          "session.advanceLinkedIssueActivity:SQL": 1,
           "session.changeSummaryEvidence:generated:RecordChangePriorApproval": 1,
           "session.changeSummaryEvidence:query-receiver": 1,
           "session.insertRecordChange:generated:RecordInsertChange": 1,
@@ -5671,6 +5676,7 @@
         },
         "tables": [
           "hub/change_evidence",
+          "hub/change_issue_links",
           "hub/change_landing_receipts",
           "hub/change_requests",
           "hub/change_versions",
@@ -12174,6 +12180,32 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261113205502_change_prior_approval_version.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_evidence"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261113223115_github_reconciliation_repository_page.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -14136,6 +14168,7 @@
         "tables": [
           "hub/conversation_usage",
           "hub/issues",
+          "hub/leases",
           "hub/machines",
           "hub/native_attempts",
           "hub/organization_secrets",
@@ -16834,6 +16867,7 @@
         "tables": [
           "hub/conversation_usage",
           "hub/issues",
+          "hub/leases",
           "hub/machines",
           "hub/native_attempts",
           "hub/organization_secrets",
@@ -18361,7 +18395,7 @@
       ],
       "inventory": {
         "operations": {
-          "Repository.transactionIsolation:Begin": 1,
+          "Repository.begin:Begin": 1,
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.transactionHandle:query-receiver": 1
         },
@@ -18478,6 +18512,8 @@
       ],
       "inventory": {
         "operations": {
+          "session.LockRunnerAdmissionItems:Query": 1,
+          "session.LockRunnerAdmissionItems:SQL": 1,
           "session.PendingRunnerAdmissionDecisions:Query": 1,
           "session.PendingRunnerAdmissionDecisions:SQL": 1
         },
