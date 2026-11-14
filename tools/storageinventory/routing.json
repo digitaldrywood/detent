@@ -14544,18 +14544,22 @@
         "operations": {
           "Queries.PolicyGetReviewChecks:Query": 1,
           "Queries.PolicyGetReviewCompatibility:Query": 1,
+          "Queries.PolicyGetReviewCurrentFacts:QueryRow": 1,
           "Queries.PolicyGetRevisionCompatibility:Query": 1,
           "Queries.PolicyInsertReviewChecks:Exec": 1,
           "Queries.PolicyInsertReviewCompatibility:Exec": 1,
           "Queries.PolicyInsertRevisionCompatibility:Exec": 1,
           "policyGetReviewChecks:SQL": 1,
           "policyGetReviewCompatibility:SQL": 1,
+          "policyGetReviewCurrentFacts:SQL": 1,
           "policyGetRevisionCompatibility:SQL": 1,
           "policyInsertReviewChecks:SQL": 1,
           "policyInsertReviewCompatibility:SQL": 1,
           "policyInsertRevisionCompatibility:SQL": 1
         },
-        "tables": []
+        "tables": [
+          "hub/change_review_policies"
+        ]
       }
     },
     "internal/hubserver/postgres/pgquery/project_intake_batch.sql.go": {
@@ -15730,8 +15734,6 @@
           "session.RecordProjectPolicyObservation:generated:PolicyInsertProjectRevision": 1,
           "session.RecordProjectPolicyObservation:generated:PolicyRecordProjectObservation": 1,
           "session.RecordProjectPolicyObservation:query-receiver": 3,
-          "session.ReviewPolicy:generated:PolicyGetReviewCurrent": 1,
-          "session.ReviewPolicy:query-receiver": 1,
           "session.SetReviewPolicy:generated:PolicyGetReviewRevision": 1,
           "session.SetReviewPolicy:generated:PolicyInsertReviewRevision": 1,
           "session.SetReviewPolicy:generated:PolicySetReviewCurrent": 1,
@@ -17282,12 +17284,15 @@
           "SQL": 1,
           "query:PolicyGetReviewChecks:many": 1,
           "query:PolicyGetReviewCompatibility:many": 1,
+          "query:PolicyGetReviewCurrentFacts:one": 1,
           "query:PolicyGetRevisionCompatibility:many": 1,
           "query:PolicyInsertReviewChecks:execrows": 1,
           "query:PolicyInsertReviewCompatibility:execrows": 1,
           "query:PolicyInsertRevisionCompatibility:execrows": 1
         },
-        "tables": []
+        "tables": [
+          "hub/change_review_policies"
+        ]
       }
     },
     "internal/hubserver/postgres/queries/project_intake_batch.sql": {

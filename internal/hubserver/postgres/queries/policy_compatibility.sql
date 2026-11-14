@@ -36,3 +36,22 @@ SELECT review_policy_id,ordinal,name,principal_id,workflow_id,workflow_sha256,so
 FROM review_policy_revision_checks
 WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND review_policy_id=ANY(sqlc.arg(review_policy_ids)::text[])
 ORDER BY review_policy_id,ordinal;
+
+-- name: PolicyGetReviewCurrentFacts :one
+SELECT r.organization_id,r.project_id,r.review_policy_id,r.policy_id,c.revision,
+       r.updated_by,r.updated_at,r.payload_object_key,r.payload_sha256,r.payload_bytes,r.payload_content_bytes,
+       (f.review_policy_id IS NOT NULL)::boolean AS has_facts,coalesce(f.require_review,false)::boolean AS require_review,
+       coalesce(f.required_check_count,0)::integer AS required_check_count,k.ordinals,k.names,k.principal_ids,k.workflow_ids,k.workflow_sha256s,k.sources,k.max_ages
+FROM change_review_policies c JOIN change_review_policy_revisions r
+  ON r.organization_id=c.organization_id AND r.project_id=c.project_id AND r.review_policy_id=c.review_policy_id
+LEFT JOIN review_policy_revision_compatibility f
+  ON f.organization_id=r.organization_id AND f.project_id=r.project_id AND f.review_policy_id=r.review_policy_id AND f.policy_id=r.policy_id AND f.payload_sha256=r.payload_sha256
+CROSS JOIN LATERAL (
+  SELECT coalesce(array_agg(x.ordinal ORDER BY x.ordinal),'{}')::integer[] AS ordinals,coalesce(array_agg(x.name ORDER BY x.ordinal),'{}')::text[] AS names,
+         coalesce(array_agg(x.principal_id ORDER BY x.ordinal),'{}')::text[] AS principal_ids,coalesce(array_agg(x.workflow_id ORDER BY x.ordinal),'{}')::text[] AS workflow_ids,
+         coalesce(array_agg(x.workflow_sha256 ORDER BY x.ordinal),'{}')::text[] AS workflow_sha256s,coalesce(array_agg(x.source ORDER BY x.ordinal),'{}')::text[] AS sources,
+         coalesce(array_agg(x.max_age_seconds ORDER BY x.ordinal),'{}')::bigint[] AS max_ages
+  FROM review_policy_revision_checks x
+  WHERE x.organization_id=f.organization_id AND x.project_id=f.project_id AND x.review_policy_id=f.review_policy_id
+) k
+WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id);

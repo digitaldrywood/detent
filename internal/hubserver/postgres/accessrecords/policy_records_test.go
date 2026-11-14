@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -708,6 +709,13 @@ func TestPolicyRevisionCompatibilityFactsAreImmutableCompanions(t *testing.T) {
 			for _, next := range []eventstore.ReviewPolicy{w.checked, w.empty, w.legacy} {
 				if err := tw.SetReviewPolicy(t.Context(), next, expected); err != nil {
 					return err
+				}
+				current, err := tw.ReviewPolicy(t.Context(), project)
+				if err != nil {
+					return err
+				}
+				if (current.Compatibility == nil) != (next.Compatibility == nil) || current.Compatibility != nil && (current.Compatibility.RequireReview != next.Compatibility.RequireReview || !slices.Equal(current.Compatibility.RequiredChecks, next.Compatibility.RequiredChecks)) {
+					t.Errorf("organization %s current review %s facts = %+v, want ordered %+v", organization, next.ReviewPolicyID, current.Compatibility, next.Compatibility)
 				}
 				expected = next.ReviewPolicyID
 			}

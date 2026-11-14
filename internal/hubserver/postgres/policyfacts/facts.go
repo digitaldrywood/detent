@@ -197,13 +197,26 @@ func BackfillReview(ctx context.Context, tx pgcore.Transaction, row eventstore.R
 	return RecordReview(ctx, tx, row)
 }
 
-func WithReview(ctx context.Context, tx pgcore.Transaction, row eventstore.ReviewPolicy) (eventstore.ReviewPolicy, error) {
-	facts, err := Reviews(ctx, tx, row.ProjectID, []string{row.ReviewPolicyID})
+func CurrentReview(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID) (eventstore.ReviewPolicy, error) {
+	row, err := tx.Queries.PolicyGetReviewCurrentFacts(ctx, pgquery.PolicyGetReviewCurrentFactsParams{OrganizationID: tx.Organization, ProjectID: project})
 	if err != nil {
-		return eventstore.ReviewPolicy{}, err
+		return eventstore.ReviewPolicy{}, pgcore.MapError(ctx, err)
 	}
-	if stored, found := facts[row.ReviewPolicyID]; found && stored.PolicyID == row.PolicyRevisionID && stored.PayloadSHA256 == row.PayloadSHA256 {
-		row.Compatibility = &stored.ReviewFacts
+	result := eventstore.ReviewPolicy{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, PolicyRevisionID: row.PolicyID, ReviewPolicyID: row.ReviewPolicyID, Revision: row.Revision, UpdatedBy: row.UpdatedBy, UpdatedAt: row.UpdatedAt, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes}
+	if !row.HasFacts {
+		return result, nil
 	}
-	return row, nil
+	count := len(row.Ordinals)
+	if count != int(row.RequiredCheckCount) || len(row.Names) != count || len(row.PrincipalIds) != count || len(row.WorkflowIds) != count || len(row.WorkflowSha256s) != count || len(row.Sources) != count || len(row.MaxAges) != count {
+		return eventstore.ReviewPolicy{}, eventstore.ErrInvalidRecord
+	}
+	facts := policystore.ReviewFacts{RequireReview: row.RequireReview}
+	for index, ordinal := range row.Ordinals {
+		if int(ordinal) != index {
+			return eventstore.ReviewPolicy{}, eventstore.ErrInvalidRecord
+		}
+		facts.RequiredChecks = append(facts.RequiredChecks, tracker.ChangeCheckSpec{Name: row.Names[index], PrincipalID: row.PrincipalIds[index], WorkflowID: row.WorkflowIds[index], WorkflowSHA256: row.WorkflowSha256s[index], Source: row.Sources[index], MaxAgeSeconds: row.MaxAges[index]})
+	}
+	result.Compatibility = &facts
+	return result, nil
 }
