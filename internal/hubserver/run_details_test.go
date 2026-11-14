@@ -158,6 +158,9 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	if f.service.outbox != nil {
 		f.service.outbox.stop()
 	}
+	store.mu.Lock()
+	fixtureUploads := store.uploads
+	store.mu.Unlock()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events)
@@ -285,8 +288,8 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	if input != 100 || cached != 20 || output != 10 || cost != 1.5 {
 		t.Fatalf("usage summary reset or double counted: %d/%d/%d cost=%g", input, cached, output, cost)
 	}
-	if store.uploads != 25 {
-		t.Fatalf("uploaded %d objects, want nine issue and policy objects plus sixteen attempt, checkpoint, receipt and history payloads", store.uploads)
+	if uploads := store.uploads - fixtureUploads; uploads != 24 {
+		t.Fatalf("uploaded %d objects after the fixture's plan and policy objects, want eight issue and review policy objects plus sixteen attempt, checkpoint, receipt and history payloads", uploads)
 	}
 	for _, table := range []string{"native_attempts", "collaboration_events"} {
 		var largest int
