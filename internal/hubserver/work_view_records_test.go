@@ -120,6 +120,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	var seedBoard []func()
 	for index, id := range []tracker.NativeWorkItemID{"wi_readable_example", "wi_second_example"} {
 		searchTitle := "Readable example"
 		if index == 1 {
@@ -138,21 +139,23 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, 0) }); err != nil {
 			t.Fatal(err)
 		}
-		card := tracker.NativeBoardCard{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: f.project, WorkItemID: id, Number: 42 + index, Revision: 1}, Title: "Example", State: "Todo", Actor: tracker.Actor{PrincipalID: "owner"}}}
-		ref, err := viewstore.NewContent(f.service.runDetailStore()).PrepareBoard(t.Context(), card)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			project, err := w.Project(t.Context(), f.project)
+		card := tracker.NativeBoardCard{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: f.project, WorkItemID: id, Number: 42 + index, Revision: 1}, Title: searchText.Title, Body: searchText.Body, Labels: searchText.Labels, State: "Todo", Actor: tracker.Actor{PrincipalID: "owner"}}}
+		seedBoard = append(seedBoard, func() {
+			ref, err := viewstore.NewContent(f.service.runDetailStore()).PrepareBoard(t.Context(), card)
 			if err != nil {
-				return err
+				t.Fatal(err)
 			}
-			record := viewstore.BoardRecord{OrganizationID: org, ProjectID: f.project, WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", ActivityMissing: true, Identifier: fmt.Sprintf("%s#%d", f.project, 42+index)}, ActorPrincipalID: "owner", CreatedAt: now, UpdatedAt: now, Payload: ref}
-			return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: f.project, WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.ContentSettingsRevision, Current: &record})
-		}); err != nil {
-			t.Fatal(err)
-		}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.Project(t.Context(), f.project)
+				if err != nil {
+					return err
+				}
+				record := viewstore.BoardRecord{OrganizationID: org, ProjectID: f.project, WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", ActivityMissing: true, Identifier: fmt.Sprintf("%s#%d", f.project, 42+index)}, Labels: searchText.Labels, ActorPrincipalID: "owner", CreatedAt: now, UpdatedAt: now, ProjectedAt: now, PageIssue: &card.Issue, ListIssue: &card.Issue, Payload: ref}
+				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: f.project, WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.ContentSettingsRevision, Current: &record})
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 	if f.service.outbox != nil {
 		f.service.outbox.stop()
@@ -177,6 +180,9 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	decodeHubResponse(t, pendingSearch, &pendingPage)
 	if !pendingPage.ProjectionPending {
 		t.Fatalf("search before refresh did not report a pending projection: %s", pendingSearch.Body.String())
+	}
+	for _, seed := range seedBoard {
+		seed()
 	}
 	refreshSearch(t)
 	for _, test := range []struct {
@@ -552,7 +558,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				record := viewstore.BoardRecord{OrganizationID: org, ProjectID: f.project, WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", ActivityMissing: true, Identifier: fmt.Sprintf("%s#%d", f.project, issue.Number)}, ActorPrincipalID: "owner", CreatedAt: now, UpdatedAt: now, Payload: ref}
+				record := viewstore.BoardRecord{OrganizationID: org, ProjectID: f.project, WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", ActivityMissing: true, Identifier: fmt.Sprintf("%s#%d", f.project, issue.Number)}, ActorPrincipalID: "owner", CreatedAt: now, UpdatedAt: now, ProjectedAt: now, PageIssue: &issue, ListIssue: &issue, Payload: ref}
 				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: f.project, WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.ContentSettingsRevision, Current: &record})
 			}); err != nil {
 				t.Fatal(err)
