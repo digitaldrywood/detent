@@ -805,7 +805,6 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"issue delete while archive holder checks keys", extra, archive, converseOn("wi_first_3"), noop, remove("wi_first_3"), false, 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			admin := pgstoretest.Template.Database(t)
 			repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 			admin.SetMaxOpenConns(2)
