@@ -601,7 +601,7 @@ func (s *Service) hydrateValidationAuditCandidate(ctx context.Context, scope hub
 		if rows.binding != nil {
 			result.NativeRunID = rows.binding.RunID
 			if rows.binding.LocalAttemptIDRecorded {
-				if rows.binding.LocalAttemptID <= 0 {
+				if rows.binding.LocalAttemptID < 0 {
 					return result, "", false, artifact.ErrIntegrity
 				}
 				result.LocalAttemptID = rows.binding.LocalAttemptID
