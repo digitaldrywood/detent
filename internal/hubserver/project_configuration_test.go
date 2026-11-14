@@ -214,7 +214,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "payload outage", "settlement without diagnostics", "settlement older diagnostics", "restart pending", "restart completion", "stale configuration", "stale policy", "stale source", "stale runner", "foreign runner", "foreign project", "busy", "busy binding enable", "busy binding disable", "racing binding enable", "serialization conflict", "replace pending", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "delayed report", "reordered observations", "bumped acknowledgment", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "payload outage", "settlement without diagnostics", "settlement older diagnostics", "restart pending", "restart completion", "stale configuration", "stale policy", "stale source", "stale runner", "foreign runner", "foreign project", "busy", "busy binding enable", "busy binding disable", "racing binding enable", "serialization conflict", "replace pending", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "project-configuration")
@@ -239,7 +239,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			if scenario == "cloud apply" {
 				view.Source = "cloud_workflow"
 			}
-			if scenario == "running apply" || scenario == "resume drained" {
+			if scenario == "running apply" || scenario == "resume drained" || scenario == "delayed report" || scenario == "reordered observations" || scenario == "bumped acknowledgment" {
 				view.Paused = false
 			}
 			if scenario == "drained apply" {
@@ -372,7 +372,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			if observed.RunnerID != r.binding.RunnerID || observed.ConfigRevision != view.ConfigRevision || observed.AllowLocalBinding || observed.LocalBindingPolicy == nil || observed.LocalBindingPolicy.ID != candidate.ID {
 				t.Fatalf("configuration=%s", result.Content)
 			}
-			if scenario == "drain" || scenario == "resume drained" || strings.HasPrefix(scenario, "entry ") {
+			if scenario == "drain" || scenario == "resume drained" || scenario == "delayed report" || scenario == "reordered observations" || scenario == "bumped acknowledgment" || strings.HasPrefix(scenario, "entry ") {
 				args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "drain", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID}
 				result, err := call("drain_local_project", args)
 				if scenario == "entry missing origin drain" {
@@ -409,6 +409,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 						entryClaims.Key.CredentialBinding = strings.Repeat("c", 64)
 					}
 				}
+				previous := view
 				objectsBefore := details.stores.Load()
 				request := heartbeat().ProjectConfigurationRequest
 				if request != nil && details.stores.Load() != objectsBefore {
@@ -425,6 +426,36 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 				if request == nil || request.Operation != "drain_local_project" || request.RequestID != args.RequestID {
 					t.Fatalf("drain delivery=%+v", request)
+				}
+				if scenario == "bumped acknowledgment" {
+					if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "UPDATE runner_identities SET revision = revision + 1 WHERE runner_id = $1", r.binding.RunnerID); err != nil {
+						t.Fatal(err)
+					}
+					acknowledgment := *request.Desired
+					acknowledgment.RuntimeRegistered = true
+					acknowledgment.RequestID, acknowledgment.Saved, acknowledgment.Applied, acknowledgment.Draining = args.RequestID, true, true, true
+					stale := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": acknowledgment})
+					requireNativeCode(t, stale, http.StatusUnprocessableEntity, "invalid_request")
+					view = previous
+					refused := heartbeat()
+					if refused.ProjectConfigurationRequest != nil {
+						t.Fatalf("drain delivered after an unrelated runner revision change: %+v", refused.ProjectConfigurationRequest)
+					}
+					if refused.ProjectConfiguration == nil || refused.ProjectConfiguration.Draining || refused.ProjectConfiguration.ConfigRevision != previous.ConfigRevision {
+						t.Fatalf("refused drain changed the authoritative configuration: %+v", refused.ProjectConfiguration)
+					}
+					result, err = call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID})
+					if err != nil || json.Unmarshal(result.Content, &observed) != nil || observed.Pending || observed.Draining || observed.Paused || observed.ConfigRevision != previous.ConfigRevision || observed.LastOperation == nil || observed.LastOperation.RequestID != args.RequestID || observed.LastOperation.Applied || !strings.Contains(observed.LastOperation.Constraint, "runner revision") {
+						t.Fatalf("bumped acknowledgment readback=%s %v", result.Content, err)
+					}
+					var pending int
+					if err := configurationTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM runner_project_configurations WHERE runner_id = $1 AND request_status='pending'", r.binding.RunnerID).Scan(&pending); err != nil || pending != 0 {
+						t.Fatalf("refused acknowledgment retained a pending command: %d %v", pending, err)
+					}
+					if heartbeat().ProjectConfigurationRequest != nil {
+						t.Fatal("refused drain was delivered again")
+					}
+					return
 				}
 				view = *request.Desired
 				view.RuntimeRegistered = true
@@ -445,6 +476,45 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				result, err = call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID})
 				if err != nil || json.Unmarshal(result.Content, &observed) != nil || observed.Paused || !observed.Draining || observed.UnsettledAttempts != 0 {
 					t.Fatalf("drain readback=%s %v", result.Content, err)
+				}
+				if scenario == "delayed report" || scenario == "reordered observations" {
+					settled := view
+					stale := previous
+					if scenario == "reordered observations" {
+						stale = settled
+						stale.Draining = false
+					}
+					stale.SelectedPolicy = &candidate
+					stale.ObservedAt = settled.ObservedAt.Add(-time.Minute)
+					view = stale
+					answer := heartbeat()
+					if answer.ProjectConfigurationRequest != nil {
+						t.Fatalf("stale report caused a delivery: %+v", answer.ProjectConfigurationRequest)
+					}
+					if answer.ProjectConfiguration == nil || !answer.ProjectConfiguration.Draining || answer.ProjectConfiguration.Paused || answer.ProjectConfiguration.ConfigRevision != settled.ConfigRevision || answer.ProjectConfiguration.EffectivePolicy == nil || answer.ProjectConfiguration.EffectivePolicy.ID != current.ID {
+						t.Fatalf("stale report replaced the authoritative configuration in the response: %+v", answer.ProjectConfiguration)
+					}
+					result, err = call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID})
+					var readback runnerauth.ProjectConfiguration
+					if err != nil || json.Unmarshal(result.Content, &readback) != nil || readback.Pending || readback.Paused || !readback.Draining || readback.ConfigRevision != settled.ConfigRevision || readback.EffectivePolicy == nil || readback.EffectivePolicy.ID != current.ID || readback.LastOperation == nil || readback.LastOperation.RequestID != args.RequestID || !readback.LastOperation.Applied {
+						t.Fatalf("stale report replaced the authoritative configuration: %s %v", result.Content, err)
+					}
+					var configRevision, state, observedRevision string
+					var paused bool
+					if err := configurationTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT config_revision, state, paused, observed_config_revision FROM runner_project_configurations WHERE runner_id = $1 AND project_id = $2", r.binding.RunnerID, f.project.ID).Scan(&configRevision, &state, &paused, &observedRevision); err != nil {
+						t.Fatal(err)
+					}
+					if configRevision != settled.ConfigRevision || state != "draining" || paused || observedRevision != settled.ConfigRevision {
+						t.Fatalf("stale report rewrote typed configuration: revision=%s state=%s paused=%t observed=%s", configRevision, state, paused, observedRevision)
+					}
+					var approval policy.Approval
+					response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", testHubAdminToken, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &approval)
+					if approval.Policy.ID != current.ID {
+						t.Fatalf("stale report approved policy %s", approval.Policy.ID)
+					}
+					return
 				}
 			}
 			if strings.HasPrefix(scenario, "resume") {
@@ -679,6 +749,11 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				oldReport.Saved = true
 				stale := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": oldReport})
 				requireNativeCode(t, stale, http.StatusUnprocessableEntity, "invalid_request")
+				afterStale, err := call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID})
+				var afterView runnerauth.ProjectConfiguration
+				if err != nil || json.Unmarshal(afterStale.Content, &afterView) != nil || !afterView.Pending || afterView.RequestID != args.RequestID || afterView.ConfigRevision != currentView.ConfigRevision || afterView.EffectivePolicy == nil || afterView.EffectivePolicy.ID != currentView.EffectivePolicy.ID {
+					t.Fatalf("superseded acknowledgment changed the authoritative configuration: %s %v", afterStale.Content, err)
+				}
 				view = currentView
 				view.RequestID = ""
 				view.RunnerRevision = 0
