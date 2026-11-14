@@ -22,10 +22,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubclient/recovery"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -1203,6 +1205,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 			}
 			after = view.DestinationsNext
 		}
+		delete(seen, base.RunnerID)
 		if len(seen) != runnerstore.SourceRecoveryPageLimit+1 || pageCalls != 2 {
 			t.Fatalf("project destination pagination: runners=%d pages=%d", len(seen), pageCalls)
 		}
@@ -1267,6 +1270,18 @@ type postgresSourceRecoveryReader struct {
 	pageCalls *int
 }
 
+func (r postgresSourceRecoveryReader) HasUnreleasedIssueLease(ctx context.Context, issue int64) (bool, error) {
+	return r.Reader.(leasestore.UnreleasedIssueLeaseReader).HasUnreleasedIssueLease(ctx, issue)
+}
+
+func (r postgresSourceRecoveryReader) SourceCheckpointAttempt(ctx context.Context, issue int64) (leasestore.Attempt, error) {
+	return r.Reader.(leasestore.CheckpointAttemptReader).SourceCheckpointAttempt(ctx, issue)
+}
+
+func (r postgresSourceRecoveryReader) SourceCheckpointAttempts(ctx context.Context, issue int64, limit int) ([]leasestore.Attempt, error) {
+	return r.Reader.(leasestore.CheckpointAttemptReader).SourceCheckpointAttempts(ctx, issue, limit)
+}
+
 func (r postgresSourceRecoveryReader) ProjectSourceRecoveryPage(ctx context.Context, project tracker.ProjectID, after string, limit int, now time.Time) (runnerstore.SourceRecoveryPage, error) {
 	*r.pageCalls++
 	if project != "project_example" || limit > runnerstore.SourceRecoveryPageLimit {
@@ -1289,6 +1304,16 @@ func (r postgresSourceRecoveryReader) FleetNames(context.Context, int) ([]runner
 
 func (r postgresSourceRecoveryReader) FleetProjectCount(context.Context, int) (int, error) {
 	return 0, errors.New("source recovery must not count fleet projects")
+}
+
+func (r postgresSourceRecoveryReader) ArchiveObjectByKey(ctx context.Context, key string) (artifactstore.ArchiveObject, error) {
+	return r.Reader.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(ctx, key)
+}
+
+func (r postgresSourceRecoveryReader) RunnerRecoveryEligibility(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (bool, error) {
+	return r.Reader.(interface {
+		RunnerRecoveryEligibility(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (bool, error)
+	}).RunnerRecoveryEligibility(ctx, project, item)
 }
 
 func (r postgresSourceRecoveryReader) CheckpointAttemptPage(ctx context.Context, issue int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
@@ -1322,15 +1347,23 @@ type postgresProgressReceiptRepository struct {
 }
 
 func (r *postgresProgressReceiptRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		return read(postgresProgressReceiptReader{Reader: reader, repository: r})
-	})
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, r.reader(read))
 }
 
 func (r *postgresProgressReceiptRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+	return r.Repository.ReadTenant(ctx, organization, workload, r.reader(read))
+}
+
+func (r *postgresProgressReceiptRepository) reader(read func(tenantstore.Reader) error) func(tenantstore.Reader) error {
+	return func(reader tenantstore.Reader) error {
+		r.mu.Lock()
+		hide := r.hideReceipt
+		r.mu.Unlock()
+		if !hide {
+			return read(reader)
+		}
 		return read(postgresProgressReceiptReader{Reader: reader, repository: r})
-	})
+	}
 }
 
 func (r *postgresProgressReceiptRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
