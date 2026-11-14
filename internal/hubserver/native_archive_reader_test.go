@@ -443,7 +443,7 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 				keys := map[string]string{"native_attempts": "id =", "change_versions": "id =", "collaboration_versions": "record_id =", "conversations": "id =", "conversation_messages": "conversation_id =", "collaboration_events": "work_item_id ="}
 				if key, ok := keys[node.Relation]; ok && node.Loops > 0 {
 					conditions, indexed := reportsBudgetConditions(node, node.Relation)
-					if node.Relation == "collaboration_events" && strings.Contains(statement.query, "id=$4") {
+					if node.Relation == "collaboration_events" && strings.Contains(statement.query, "-- name: RecordGetEvent :one") {
 						key = "id ="
 					}
 					if !indexed || !strings.Contains(conditions, "organization_id =") || !strings.Contains(conditions, key) {
