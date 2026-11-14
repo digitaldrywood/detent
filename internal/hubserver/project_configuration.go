@@ -920,7 +920,7 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 	}
 	view := p.view
 	view.RunnerID = identity.RunnerID
-	view.RunnerRevision = identity.Revision
+	view.RunnerRevision = 0
 	view.ObservedAt = now
 	snapshot.ProjectConfiguration = &view
 	if p.command.Status == "pending" && p.deliver && !p.settle {

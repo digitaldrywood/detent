@@ -429,13 +429,18 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				view = *request.Desired
 				view.RuntimeRegistered = true
 				view.RequestID, view.Saved, view.Applied, view.Draining = args.RequestID, true, true, true
-				if heartbeat().ProjectConfigurationRequest != nil {
+				acknowledged := heartbeat()
+				if acknowledged.ProjectConfigurationRequest != nil {
 					t.Fatal("acknowledged drain repeated")
 				}
 				if scenario == "drain" || strings.HasPrefix(scenario, "entry ") {
 					return
 				}
+				if acknowledged.ProjectConfiguration == nil {
+					t.Fatal("acknowledged drain returned no configuration")
+				}
 				view.RequestID = ""
+				view.RunnerRevision = acknowledged.ProjectConfiguration.RunnerRevision
 				heartbeat()
 				result, err = call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID})
 				if err != nil || json.Unmarshal(result.Content, &observed) != nil || observed.Paused || !observed.Draining || observed.UnsettledAttempts != 0 {
