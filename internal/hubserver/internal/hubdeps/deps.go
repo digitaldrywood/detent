@@ -33,6 +33,7 @@ type Deps struct {
 	Listen                      func(context.Context, string, string) (net.Listener, error)
 	RetentionTimeout            func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	SearchRefreshTimeout        func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	RequestTimeout              func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	Jitter                      func() float64
 	NewLeaseID                  func() string
 	NewTokenID                  func() string
@@ -64,6 +65,9 @@ func (d Deps) WithDefaults() Deps {
 	}
 	if d.SearchRefreshTimeout == nil {
 		d.SearchRefreshTimeout = context.WithTimeout
+	}
+	if d.RequestTimeout == nil {
+		d.RequestTimeout = context.WithTimeout
 	}
 	if d.Jitter == nil {
 		d.Jitter = RandomJitter

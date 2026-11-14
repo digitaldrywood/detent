@@ -117,7 +117,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	}
 	hostSummaries := prepareRunnerHostMetrics(request.HostMetrics)
 
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
+	ctx, cancel := s.requestTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	if request.SpriteName != "" {
 		if err := s.config.TenantRepository.ReadTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {

@@ -32,6 +32,7 @@ type HTTPDeps struct {
 	ExplanationRead func(context.Context) bool
 	BillingOwner    func() *BillingOwner
 	BindingError    error
+	RequestTimeout  func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 type HTTP struct{ deps HTTPDeps }
 
@@ -43,7 +44,11 @@ type apiErrorResponse struct {
 }
 
 func (s *HTTP) AdmitRunnerRequest(c echo.Context, credential hubauth.Credential) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
+	requestTimeout := s.deps.RequestTimeout
+	if requestTimeout == nil {
+		requestTimeout = context.WithTimeout
+	}
+	ctx, cancel := requestTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	m := s.deps.Collector
 	if m == nil || credential.Runner.RunnerID == "" {
