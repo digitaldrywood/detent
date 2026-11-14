@@ -90,7 +90,7 @@ func (s *Service) recheckHostedChangeCheckPrincipal(ctx context.Context, r tenan
 	if err != nil {
 		return err
 	}
-	if current != approved {
+	if !sameNativeClaimReviewPolicy(current, approved) {
 		return hubapi.NativeNotFound()
 	}
 	return nil
