@@ -12389,6 +12389,22 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261114185520_hosted_administrator_access.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "access"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/api_tokens",
+          "hub/hosted_members",
+          "hub/hosted_project_grants"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [

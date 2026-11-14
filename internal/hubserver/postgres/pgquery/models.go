@@ -1715,6 +1715,7 @@ type HostedProjectGrant struct {
 	ProjectID      tracker.ProjectID
 	CanWrite       bool
 	ManageRunner   bool
+	Explicit       bool
 }
 
 type HostedReleasePreference struct {
