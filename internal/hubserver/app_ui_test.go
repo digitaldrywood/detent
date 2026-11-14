@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -481,7 +480,6 @@ func TestAppBootstrapPayload(t *testing.T) {
 		}
 	})
 	t.Run("runner grants", func(t *testing.T) {
-		grantAppRunners(t, f)
 		response := f.appRequest(t, "owner", http.MethodGet, "/app/bootstrap")
 		browserHostedStatus(t, response, http.StatusOK)
 		var payload appBootstrap
@@ -598,7 +596,6 @@ func TestAppUpdates(t *testing.T) {
 		})
 	}
 	browserHostedStatus(t, f.appRequest(t, "owner", http.MethodGet, "/app/updates"), http.StatusOK)
-	grantAppRunners(t, f)
 	browserHostedStatus(t, f.appRequest(t, "viewer", http.MethodGet, "/app/updates"), http.StatusNotFound)
 	payload := read(t, "owner")
 	if payload.Source != "hub" || payload.Current != strings.TrimSpace(f.service.config.Version) {
@@ -767,13 +764,6 @@ type appTestRunner struct {
 	Credential string
 }
 
-func grantAppRunners(t *testing.T, f *browserHostedFixture) {
-	t.Helper()
-	for _, project := range []string{f.project, f.privateProject} {
-		browserHostedStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
-	}
-}
-
 func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version string, operations ...string) appTestRunner {
 	t.Helper()
 	organization := "/api/v2/organizations/org_browser_preview"
@@ -821,8 +811,7 @@ func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
 					config.Workspace = &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: test.terminal}}
 				}
 			})
-			grantAppRunners(t, f)
-			operations := []string{runnerauth.Claim}
+				operations := []string{runnerauth.Claim}
 			if test.mutation == "missing claim operation" {
 				operations = nil
 			}

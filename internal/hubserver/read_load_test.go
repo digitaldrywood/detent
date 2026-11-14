@@ -26,7 +26,6 @@ func TestProjectListAndRunnerReadContention(t *testing.T) {
 	plans := hostedplans.CapacityPlans()
 	plans.Base = hostedplans.PlanReference{ID: "scale", Version: 1}
 	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(cfg *Config) { cfg.Hosted.Plans = &plans; cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil)) })
-	grantAppRunners(t, f)
 	runners := make([]appTestRunner, 10)
 	for index := range runners {
 		runners[index] = enrollAppRunner(t, f, fmt.Sprintf("Load runner %d", index), "test")

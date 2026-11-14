@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -48,7 +47,6 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			base := "/api/v2/organizations/org_browser_preview/projects/" + test.project
-			requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {test.project}, "write": {"true"}}), http.StatusSeeOther)
 			descriptor := hubTestPolicy()
 			descriptor.ConfigDigest = policy.Digest([]byte(test.project))
 			descriptor.Gates.Kind = "command"

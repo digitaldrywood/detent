@@ -862,11 +862,6 @@ func (f *browserHostedFixture) seedPreview(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, project := range []string{f.project, f.privateProject} {
-		f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_owner/grants", map[string]any{
-			"idempotency_key": "preview-owner-runner-" + project, "project_id": project, "write": true, "runner": true,
-		}, http.StatusOK)
-	}
 	f.seedConversation(t)
 }
 

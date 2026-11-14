@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -106,13 +105,6 @@ func pilotHostedRunner(t *testing.T, f *browserHostedFixture, index int) runnera
 	return redemption
 }
 
-func pilotHostedGrants(t *testing.T, f *browserHostedFixture) {
-	t.Helper()
-	for _, project := range []string{f.project, f.privateProject} {
-		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
-	}
-}
-
 func TestPilotHostedWorkloads(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -128,7 +120,6 @@ func TestPilotHostedWorkloads(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
 			hostedTestPlans(t, f.service, map[string]int64{"registered_runners": 20, "connected_runners": 20})
-			pilotHostedGrants(t, f)
 			base := "/api/v2/organizations/org_browser_preview/projects/" + f.project
 			descriptor := hubTestPolicy()
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)

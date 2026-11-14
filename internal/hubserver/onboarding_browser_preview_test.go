@@ -16,7 +16,6 @@ func TestOnboardingBrowserPreview(t *testing.T) {
 	t.Parallel()
 	f := seedOnboardingBrowserJourney(t)
 	interrupted := f.createProject(t, "Interrupted setup")
-	requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {interrupted}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
 	info := map[string]string{"owner": f.server.URL + "/__preview/account/owner", "success": f.server.URL + "/projects/" + f.project, "auto_merge": f.server.URL + "/projects/" + f.privateProject, "interrupted": f.server.URL + "/projects/" + interrupted, "stop": f.server.URL + "/__preview/stop"}
 	raw, err := json.Marshal(info)
 	if err != nil {

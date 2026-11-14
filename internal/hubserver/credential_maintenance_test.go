@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -83,9 +82,6 @@ func TestCredentialMaintenanceAccess(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	for _, project := range []string{f.project, f.privateProject} {
-		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
-	}
 	binding := runnerauth.NewBinding()
 	path := "/api/v2/organizations/org_browser_preview/runner-enrollments"
 	response := f.setupRequest(t, "owner", http.MethodPost, path, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project)}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60})
@@ -687,7 +683,6 @@ func testMaintenanceLockOrder(t *testing.T) {
 			t.Run(family+"/"+operation, func(t *testing.T) {
 				f := newBrowserHostedFixture(t, true)
 				normal := f.service
-				requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {f.project}, "write": {"true"}}), http.StatusSeeOther)
 				maintenance := maintenanceOpen(t, normal)
 				var member accessstore.Member
 				if err := normal.accessRead(t.Context(), normal.accessOrganization(), func(r tenantstore.Reader) error {
@@ -1072,9 +1067,6 @@ func testMaintenanceInvitationOrder(t *testing.T) {
 		t.Run(operation, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
 			normal := f.service
-			for _, project := range []string{f.project, f.privateProject} {
-				requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}}), http.StatusSeeOther)
-			}
 			base := "/api/v2/organizations/org_browser_preview/members/invitations"
 			response := f.setupRequest(t, "owner", http.MethodPost, base, map[string]any{"email": "ordered-invitee@example.test", "role": "member", "idempotency_key": "ordered-invitation", "grants": []hostedMemberGrant{{ProjectID: f.project, Write: true}}})
 			requireNativeStatus(t, response, http.StatusCreated)

@@ -598,7 +598,6 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 
 func (f *browserHostedFixture) seedCoordinatorWorkflow(t *testing.T) {
 	t.Helper()
-	grantAppRunners(t, f)
 	r := enrollAppRunner(t, f, "Workflow runner", "test", runnerauth.Claim)
 	current := hubTestPolicy()
 	states := HostedProjectStates()

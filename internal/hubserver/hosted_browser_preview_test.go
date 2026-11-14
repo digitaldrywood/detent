@@ -122,11 +122,6 @@ func TestHostedBrowserPreview(t *testing.T) {
 	var capacityRunners []capacityRunner
 	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER") != "" {
 		base := browserHostedOrganizationBase
-		for _, project := range []string{f.project, f.privateProject} {
-			f.api(t, "owner", http.MethodPut, base+"/members/membership_user_browser_owner/grants", map[string]any{
-				"project_id": project, "write": true, "runner": true, "idempotency_key": "preview-runner-" + project,
-			}, http.StatusOK)
-		}
 		names := []string{"Settings runner"}
 		if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_CAPACITY") != "" {
 			names = append(names, "Second settings runner")
