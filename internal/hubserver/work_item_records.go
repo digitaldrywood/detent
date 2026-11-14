@@ -669,6 +669,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 	if err != nil {
 		return nil, err
 	}
+	sourceMoved := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -800,6 +801,9 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 				duplicateSearch, err = s.prepareWorkItemDuplicates(ctx, scope, request, false)
 				if err != nil {
 					return nil, err
+				}
+				if sourceMoved && !duplicateSearch.Available {
+					return nil, hubapi.NativeConflict(0)
 				}
 				if len(duplicateSearch.Matches) > 0 {
 					now := s.config.Clock().UTC().Truncate(time.Microsecond)
@@ -1041,6 +1045,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 						if machineSearch != nil && len(machineSearch.Matches) > 0 {
 							return hubapi.NativeConflict(0)
 						}
+						sourceMoved = true
 						return corestore.ErrSerializationFailure
 					}
 					return err
