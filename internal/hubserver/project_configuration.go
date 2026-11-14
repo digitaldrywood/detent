@@ -423,6 +423,7 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope hubsco
 		if err := s.readConfigurationPayload(ctx, scope.Organization, plan.Command.Observation, &observation); err != nil {
 			return plan, err
 		}
+		plan.View.Source = observation.Source
 		plan.View.SelectedPolicy = observation.SelectedPolicy
 		plan.View.LocalBindingPolicy = observation.LocalBindingPolicy
 		plan.View.RestrictedBindingPolicy = observation.RestrictedBindingPolicy
