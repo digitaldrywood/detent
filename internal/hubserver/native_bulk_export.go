@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 
 	"github.com/labstack/echo/v4"
@@ -150,6 +151,14 @@ func (s *Service) readBulkExport(ctx context.Context, scope hubscope.NativeScope
 			if err := s.authorizeBulkExportItem(ctx, r, scope, item.WorkItemID); err != nil {
 				return err
 			}
+		}
+		head, err := r.BoardSequence(ctx, scope.Project)
+		if err != nil {
+			return err
+		}
+		for index := range page.Items {
+			page.Items[index].ChangeSequence = head.Sequence
+			page.Items[index].OmittedFields = slices.DeleteFunc(page.Items[index].OmittedFields, func(field string) bool { return field == "change_sequence" })
 		}
 		return nil
 	}); err != nil {
