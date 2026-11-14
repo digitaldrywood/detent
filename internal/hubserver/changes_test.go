@@ -1825,7 +1825,7 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				t.Fatalf("pending=%v external change projection=%+v", pending, projected.Change)
 			}
 			key := projectstore.GitHubPullRequestRefreshKey{ProjectID: f.project.ID, ChangeID: version.ChangeID, Repository: "example/repo", Number: 1}
-			observe := func(head string) {
+			observe := func(head string) error {
 				t.Helper()
 				at := service.config.Clock().UTC()
 				if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -1835,15 +1835,16 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				}
 				provider := &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_example", Owner: "example", Name: "repo", UpdatedAt: at}, PullRequests: []PullRequestSource{{Number: 1, HeadSHA: head, UpdatedAt: at, State: "open"}}, PullRequestDetails: []PullRequestDetailSource{{Number: 1, HeadSHA: head, MergeableState: new("blocked"), Checks: &tracker.CheckSummary{Status: "completed", Conclusion: "failure", Total: 1, Failed: 1}, Reviews: &tracker.ReviewSummary{State: "known", Decision: "changes_requested", ChangesRequested: 1}}}}}}}
 				service.config.ReconcileBackend = provider
-				if err := service.maintainGitHubPullRequestRefresh(t.Context()); err != nil {
-					t.Fatal(err)
-				}
+				refreshErr := service.maintainGitHubPullRequestRefresh(t.Context())
 				requests := provider.Requests()
 				if len(requests) != 1 || len(requests[0].Hydrations) != 1 || requests[0].Hydrations[0].HeadSHA != version.HeadSHA || requests[0].Hydrations[0].GitHubNumber != 1 {
 					t.Fatalf("refresh request lost immutable version authority: %+v", requests)
 				}
+				return refreshErr
 			}
-			observe(version.HeadSHA)
+			if err := observe(version.HeadSHA); err != nil {
+				t.Fatal(err)
+			}
 			path := f.path + "/versions/" + version.ID
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "native-approval"}, Decision: "approved"}), http.StatusOK)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/checks", f.token, changeTestResult(version)), http.StatusOK)
@@ -1868,9 +1869,23 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 			if processed || err == nil || backend.verifyCalls != 1 || backend.executeCalls != 0 || backend.effects != 0 {
 				t.Fatalf("protected merge bypassed: processed=%v error=%v backend=%#v", processed, err, backend)
 			}
-			observe(strings.Repeat("c", 40))
-			if got := f.detail(t).Summary.ExternalReview; got != "stale_head" {
-				t.Fatalf("moved external head review = %s", got)
+			if err := observe(strings.Repeat("c", 40)); err == nil || !strings.Contains(err.Error(), "pull request refresh identity or head changed") {
+				t.Fatalf("refresh for the approved head applied a moved head: %v", err)
+			}
+			if moved := f.detail(t); moved.Summary.NativeReview != "approved" || moved.External != nil && moved.External.Merge.Ready {
+				t.Fatalf("moved head refusal changed the approved head's review state: %#v", moved)
+			}
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.(projectstore.GitHubPullRequestRefreshReader).GitHubPullRequestRefresh(t.Context(), key)
+				if err != nil {
+					return err
+				}
+				if row.Pending || row.RequestedHeadSHA != version.HeadSHA || row.Observation == nil || row.Observation.HeadSHA != version.HeadSHA {
+					return fmt.Errorf("moved head refusal recorded head B for head A: %+v", row)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
