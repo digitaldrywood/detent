@@ -12274,6 +12274,22 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/migrations/20261114052502_report_window_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events",
+          "hub/issues"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
