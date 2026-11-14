@@ -1285,11 +1285,14 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 	details := &memoryRunDetails{}
 	var objectMu sync.Mutex
 	objects := make(map[string][]byte)
+	var contentReads map[string]int
 	content := func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 		objectMu.Lock()
 		defer objectMu.Unlock()
 		if request.Write {
 			objects[request.Reference.Key] = bytes.Clone(request.Data)
+		} else if contentReads != nil {
+			contentReads[request.Reference.Key]++
 		}
 		data, found := objects[request.Reference.Key]
 		if !found {
@@ -1382,7 +1385,7 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 		hot       []byte
 	}{
 		{operatortool.WorkHistory, map[string]any{"reference": item, "limit": 1}, 1, events[0].PayloadObjectKey, nil},
-		{operatortool.WorkRuns, map[string]any{"reference": item}, 0, attempt.PayloadObjectKey, nil},
+		{operatortool.WorkRuns, map[string]any{"reference": item}, 1, attempt.PayloadObjectKey, nil},
 		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "native_attempt_id": f.attempt}, 1, attempt.PayloadObjectKey, nil},
 		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "attempt_id": 42}, 1, attempt.PayloadObjectKey, nil},
 		{operatortool.WorkItem, map[string]any{"reference": item, "view": "recovery"}, 1, attempt.PayloadObjectKey, nil},
@@ -1465,15 +1468,22 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 			details.mu.Lock()
 			details.keyReads = map[string]int{}
 			details.mu.Unlock()
+			objectMu.Lock()
+			contentReads = map[string]int{}
+			objectMu.Unlock()
 			archived := read(t, test.name, test.args)
 			assertArchiveGolden(t, test.hot, archived)
 			details.mu.Lock()
-			fetches, peerFetches := details.keyReads[test.objectKey], details.keyReads[peerRevision.PayloadObjectKey]
+			objectMu.Lock()
+			fetches, peerFetches := details.keyReads[test.objectKey]+contentReads[test.objectKey], details.keyReads[peerRevision.PayloadObjectKey]+contentReads[peerRevision.PayloadObjectKey]
 			totalFetches := 0
-			for _, count := range details.keyReads {
-				totalFetches += count
+			for _, reads := range []map[string]int{details.keyReads, contentReads} {
+				for _, count := range reads {
+					totalFetches += count
+				}
 			}
-			details.keyReads = nil
+			details.keyReads, contentReads = nil, nil
+			objectMu.Unlock()
 			details.mu.Unlock()
 			t.Logf("physical object reads=%d selected payload reads=%d", totalFetches, fetches)
 			if fetches != test.fetches || peerFetches != 0 {
@@ -1550,4 +1560,84 @@ func operatorRefreshSearch(t *testing.T, f nativeFixture) {
 		}
 	}
 	t.Fatal("operator search fixture refresh did not finish")
+}
+
+func TestOperatorWorkRunsHydrateEachListedAttemptOnce(t *testing.T) {
+	t.Parallel()
+	details := &memoryRunDetails{}
+	f := claimedAttemptDiffFixture(t, false, Config{RunDetails: details})
+	runAttempt := func(f *attemptDiffFixture, reclaim bool) string {
+		t.Helper()
+		if reclaim {
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.lease.MachineID, SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &f.lease)
+			f.attempt, f.run = hubapi.NewID("attempt"), hubapi.NewID("run")
+		}
+		f.start(t)
+		f.event(t, "run.finished", 2, "failed")
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/release", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, Reason: "failed"}), http.StatusNoContent)
+		return f.attempt
+	}
+	attempts := []string{runAttempt(f, false), runAttempt(f, true), runAttempt(f, true)}
+	payloads := map[string]string{}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		for _, id := range attempts {
+			attempt, err := r.Attempt(t.Context(), id)
+			if err != nil {
+				return err
+			}
+			payloads[id] = attempt.PayloadObjectKey
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list := func() ([]string, map[string]int) {
+		t.Helper()
+		details.mu.Lock()
+		details.keyReads = map[string]int{}
+		details.mu.Unlock()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/attempts?view=blockers&limit=2", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var page tracker.Page[tracker.NativeAttempt]
+		decodeHubResponse(t, response, &page)
+		details.mu.Lock()
+		reads := details.keyReads
+		details.keyReads = nil
+		details.mu.Unlock()
+		returned := make([]string, 0, len(page.Items))
+		for _, attempt := range page.Items {
+			returned = append(returned, attempt.AttemptID)
+		}
+		return returned, reads
+	}
+	check := func(label string, want []string) {
+		t.Helper()
+		returned, reads := list()
+		if !slices.Equal(returned, want) {
+			t.Fatalf("%s returned attempts=%v want %v", label, returned, want)
+		}
+		for _, id := range attempts {
+			expected := 0
+			if slices.Contains(returned, id) {
+				expected = 1
+			}
+			if reads[payloads[id]] != expected {
+				t.Fatalf("%s attempt %s payload hydrations=%d want %d", label, id, reads[payloads[id]], expected)
+			}
+		}
+	}
+	returned, _ := list()
+	if len(returned) != 2 || !slices.Contains(attempts, returned[0]) || !slices.Contains(attempts, returned[1]) || returned[0] == returned[1] {
+		t.Fatalf("multi-attempt page returned %v from %v", returned, attempts)
+	}
+	check("first page", returned)
+	for index := range 24 {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("excluded-history-%d", index)}, Body: "Excluded history comment"}), http.StatusOK)
+	}
+	other := claimAttemptDiffFixture(t, false, newNativeFixture(t, f.service, f.project.OrganizationID, "runs-second"))
+	runAttempt(other, false)
+	runAttempt(other, true)
+	check("after excluded history and a second project's attempts", returned)
 }
