@@ -5473,7 +5473,7 @@
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.DuplicateSourceState:generated:DuplicateSourceState": 1,
           "session.DuplicateSourceState:query-receiver": 1,
-          "session.DuplicateSources:Query": 2,
+          "session.DuplicateSources:Query": 1,
           "session.DuplicateSources:generated:DuplicateParentSource": 1,
           "session.DuplicateSources:generated:DuplicateSources": 1,
           "session.DuplicateSources:query-receiver": 2,
@@ -12204,6 +12204,21 @@
           "SQL": 1
         },
         "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261114011610_search_duplicate_fingerprint_terms.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "search"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/projects"
+        ]
       }
     },
     "internal/hubserver/postgres/monthly_costs.go": {
