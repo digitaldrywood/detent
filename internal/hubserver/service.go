@@ -663,12 +663,20 @@ func (t hostedMaintenanceTenant) Page(ctx context.Context, after string, limit i
 }
 
 func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
+	return hubmaintenance.New(hostedMaintenanceTenant{s.MaintenanceTenant()}, s.ReadModelMaintenanceFeatures())
+}
+
+func (s *Service) MaintenanceTenant() hubmaintenance.Tenant {
 	tenant := hubmaintenance.Tenant{Organization: s.appOrganizationID(), Generation: 1}
 	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
 		tenant.Generation = s.config.Hosted.SharedEntry.Generation
 	}
+	return tenant
+}
+
+func (s *Service) ReadModelMaintenanceFeatures() []hubmaintenance.Feature {
 	var after tracker.NativeWorkItemID
-	return hubmaintenance.New(hostedMaintenanceTenant{tenant}, []hubmaintenance.Feature{
+	return []hubmaintenance.Feature{
 		s.WorkItemPageMaintenanceFeature(),
 		s.IntegrationPageMaintenanceFeature(),
 		s.OnboardingPageMaintenanceFeature(),
@@ -696,7 +704,7 @@ func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
 			after = next
 			return hubmaintenance.Outcome{Progress: processed, Items: 1}, err
 		}},
-	})
+	}
 }
 
 func (s *Service) runPostgresMaintenance(ctx context.Context) {
