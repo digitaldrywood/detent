@@ -325,6 +325,13 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope hubsco
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
+		current, err := r.Project(ctx, scope.Project)
+		if errors.Is(err, corestore.ErrNotFound) || err == nil && current.DeletedAt != nil {
+			return hubapi.NativeNotFound()
+		}
+		if err != nil {
+			return err
+		}
 		runner := args.RunnerID
 		if runner == "" {
 			reader, ok := r.(runnerstore.ProjectObservationRunnerPageReader)
