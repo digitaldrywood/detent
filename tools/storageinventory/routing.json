@@ -12347,6 +12347,20 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261114134204_report_created_probe.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
