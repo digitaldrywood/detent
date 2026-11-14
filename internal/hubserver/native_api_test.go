@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -821,6 +822,63 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestNativeEditKeepsQueueFactsWhenHubClockMovesBackward(t *testing.T) {
+	t.Parallel()
+	clock := &leaseTestClock{value: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}), "", "Example project")
+	clock.Advance(time.Hour)
+	first := f.create(t, "first")
+	clock.Advance(time.Minute)
+	second := f.create(t, "second")
+	queue := func(t *testing.T) []claimstore.QueueEntry {
+		t.Helper()
+		var entries []claimstore.QueueEntry
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			for _, item := range []tracker.NativeIssue{first, second} {
+				entry, err := r.QueueEntry(t.Context(), f.project.ID, item.WorkItemID, string(f.project.ID))
+				if err != nil {
+					return err
+				}
+				entries = append(entries, entry)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return entries
+	}
+	edit := func(t *testing.T, at time.Time, key string) {
+		t.Helper()
+		clock.Advance(at.Sub(clock.Now()))
+		current := readWorkItem(t, f, first.WorkItemID, "")
+		title := "Edited at " + hubapi.FormatHubTime(at)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(first.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedRevision: current.Revision, Title: &title}), http.StatusOK)
+		if edited := readWorkItem(t, f, first.WorkItemID, ""); edited.Title != title || edited.Revision != current.Revision+1 {
+			t.Fatalf("edit at %s committed title=%q revision=%d", at, edited.Title, edited.Revision)
+		}
+	}
+	for _, test := range []struct {
+		name        string
+		at          time.Time
+		wantUpdated time.Time
+	}{
+		{"before queue creation", first.CreatedAt.Add(-30 * time.Minute), first.CreatedAt},
+		{"after queue creation", first.CreatedAt.Add(10 * time.Minute), first.CreatedAt.Add(10 * time.Minute)},
+		{"before previous update", first.CreatedAt.Add(5 * time.Minute), first.CreatedAt.Add(10 * time.Minute)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			edit(t, test.at, strings.ReplaceAll(test.name, " ", "-"))
+			entries := queue(t)
+			if !entries[0].CreatedAt.Equal(first.CreatedAt) || !entries[0].UpdatedAt.Equal(test.wantUpdated) || entries[0].State != "Todo" {
+				t.Fatalf("edited queue entry created=%s updated=%s state=%s; want created=%s updated=%s", entries[0].CreatedAt, entries[0].UpdatedAt, entries[0].State, first.CreatedAt, test.wantUpdated)
+			}
+			if !entries[1].CreatedAt.Equal(second.CreatedAt) || !entries[1].UpdatedAt.Equal(second.CreatedAt) || !entries[0].CreatedAt.Before(entries[1].CreatedAt) {
+				t.Fatalf("queue order changed: first created=%s second created=%s updated=%s", entries[0].CreatedAt, entries[1].CreatedAt, entries[1].UpdatedAt)
+			}
+		})
+	}
 }
 
 func TestNativeCommentsProvenanceAndIdempotency(t *testing.T) {

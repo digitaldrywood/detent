@@ -317,7 +317,8 @@ func WriteClaimFactsAndQueue(ctx context.Context, w tenantstore.Writer, plan Wor
 		entry = claimstore.QueueEntry{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, Scope: scope, Rank: string(issue.WorkItemID), CreatedAt: issue.CreatedAt}
 	}
 	entry.OrganizationID, entry.ProjectID, entry.WorkItemID = issue.OrganizationID, issue.ProjectID, issue.WorkItemID
-	entry.Scope, entry.State, entry.UpdatedAt = scope, issue.State, issue.UpdatedAt
+	entry.Scope, entry.State = scope, issue.State
+	entry.Touch(issue.UpdatedAt)
 	if issue.Profile != "github_compatible" {
 		entry.Priority = nil
 		if issue.Priority != nil {

@@ -165,7 +165,8 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeSc
 		} else if err != nil {
 			return err
 		}
-		entry.State, entry.UpdatedAt = request.State, now
+		entry.State = request.State
+		entry.Touch(now)
 		if name == operatortool.OrderItem {
 			entry.Rank = request.Rank
 		} else {

@@ -152,6 +152,15 @@ type QueueEntry struct {
 	UpdatedAt      time.Time
 }
 
+func (e *QueueEntry) Touch(at time.Time) {
+	for _, floor := range []time.Time{e.CreatedAt, e.UpdatedAt} {
+		if at.Before(floor) {
+			at = floor
+		}
+	}
+	e.UpdatedAt = at
+}
+
 type ProviderReservation struct {
 	OrganizationID tracker.OrganizationID
 	LeaseID        tracker.LeaseID
