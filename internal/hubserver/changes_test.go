@@ -2318,18 +2318,20 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET capacity_limit=4, reported_capacity=4 WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, owner.binding.RunnerID); err != nil {
 						t.Fatal(err)
 					}
-					other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim)
+					other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 					other.redemption.SpriteName = owner.redemption.SpriteName
 					other.enroll(t)
+					reportRunnerCapacity(t, f.service, f.base, other.redemption.Credential, other.binding.MachineID, other.redemption.DisplayName, other.redemption.BackendIsolation, other.redemption.Capacity)
 					independent := newLandingCapacityFixture(t, f.service, "independent-slots", false)
 					independent.requirement = f.requirement
 					if test.overflow {
 						independent.createIndependent(t, "independent source")
 					}
 					otherItem := independent.ready(t, "independent landing")
-					projectRunner := prepareRunner(t, independent.nativeFixture, runnerauth.Read, runnerauth.Claim)
+					projectRunner := prepareRunner(t, independent.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 					projectRunner.redemption.SpriteName = owner.redemption.SpriteName
 					projectRunner.enroll(t)
+					reportRunnerCapacity(t, independent.service, independent.base, projectRunner.redemption.Credential, projectRunner.binding.MachineID, projectRunner.redemption.DisplayName, projectRunner.redemption.BackendIsolation, projectRunner.redemption.Capacity)
 					if test.provider {
 						var reports []providercapacity.Report
 						if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
