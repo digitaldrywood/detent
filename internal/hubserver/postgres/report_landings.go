@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 )
@@ -11,8 +12,17 @@ func (s *session) ReadLandingFacts(ctx context.Context, query reportstore.Overvi
 	if err != nil {
 		return nil, err
 	}
+	if len(query.Projects) > maxReportProjects {
+		return nil, reportstore.ErrPopulationExceeded
+	}
+	candidates, err := s.readLandingCandidates(ctx, args[1].([]string), query.From.UTC(), query.To.UTC())
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, candidates)
 	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,c.id,c.landed_at,coalesce(tries.n,0),coalesce(tries.complete,false),c.landed_version_id,c.landed_head_sha,c.landed_merge_sha,c.landed_base_ref,coalesce(tries.observed,0)
-FROM change_requests c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
+FROM unnest($14::text[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM change_requests c WHERE c.organization_id=$1 AND c.id=candidate.id LIMIT 1) c
+CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id LIMIT 1) i
 JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id
 LEFT JOIN LATERAL (
  WITH candidate_attempts AS MATERIALIZED (
@@ -27,7 +37,7 @@ LEFT JOIN LATERAL (
  )
  SELECT success.n,success.n IS NOT NULL AND NOT EXISTS(SELECT 1 FROM numbered a WHERE a.n<=success.n AND NOT coalesce(a.landing_receipt,false)) AS complete,(SELECT count(*) FROM candidate_attempts) observed FROM success
 ) tries ON true
-WHERE `+reportIssueFilter+` AND c.landed_at<$5 AND (c.landed_at>=$4 OR EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.from_state='Done' AND e.recorded_at>=$4 AND e.recorded_at<$5) OR EXISTS(SELECT 1 FROM report_escape_facts f WHERE f.organization_id=c.organization_id AND f.change_id=c.id AND f.observed_at>=$4 AND f.observed_at<$5)) AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'
+WHERE `+reportIssueFilter+` AND c.landed_at<$5 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'
 ORDER BY c.landed_at DESC,c.id LIMIT $11`, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
@@ -52,4 +62,32 @@ ORDER BY c.landed_at DESC,c.id LIMIT $11`, args...)
 		return nil, reportstore.ErrPopulationExceeded
 	}
 	return out, nil
+}
+
+func (s *session) readLandingCandidates(ctx context.Context, projects []string, from, to time.Time) ([]string, error) {
+	var exceeded bool
+	var ids []string
+	err := s.db.QueryRow(ctx, `WITH landed AS MATERIALIZED (
+ SELECT c.id FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$3 AND c.landed_at<$4 ORDER BY c.project_id,c.landed_at,c.id LIMIT $5
+), reopened AS MATERIALIZED (
+ SELECT e.project_id,e.work_item_id FROM unnest($2::text[]) p(id) CROSS JOIN LATERAL (
+  SELECT e.project_id,e.work_item_id FROM collaboration_events e
+  WHERE e.organization_id=$1 AND e.project_id=p.id AND e.type='workflow.transitioned' AND e.from_state='Done' AND e.recorded_at>=$3 AND e.recorded_at<$4 LIMIT $5
+ ) e LIMIT $5
+), reopened_changes AS MATERIALIZED (
+ SELECT c.id FROM (SELECT DISTINCT project_id,work_item_id FROM reopened) r CROSS JOIN LATERAL (
+  SELECT c.id FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=r.project_id AND c.work_item_id=r.work_item_id AND c.landed_at<$4 LIMIT $5
+ ) c LIMIT $5
+), escaped AS MATERIALIZED (
+ SELECT f.change_id FROM report_escape_facts f WHERE f.organization_id=$1 AND f.observed_at>=$3 AND f.observed_at<$4 ORDER BY f.observed_at,f.change_id LIMIT $5
+)
+SELECT (SELECT count(*) FROM landed)>=$5 OR (SELECT count(*) FROM reopened)>=$5 OR (SELECT count(*) FROM reopened_changes)>=$5 OR (SELECT count(*) FROM escaped)>=$5,
+ coalesce((SELECT array_agg(id ORDER BY id) FROM (SELECT id FROM landed UNION SELECT id FROM reopened_changes UNION SELECT change_id FROM escaped) keyed),'{}'::text[])`, s.organization, projects, from, to, maxOverviewCandidateRows+1).Scan(&exceeded, &ids)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	if exceeded || len(ids) > maxOverviewCandidateRows {
+		return nil, reportstore.ErrPopulationExceeded
+	}
+	return ids, nil
 }
