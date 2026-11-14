@@ -192,6 +192,9 @@ func (s *Service) spriteAllocationRunnerAllowed(ctx context.Context, scope hubsc
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		record, err := owner.RunnerRoutingRecord(ctx, runnerID, s.config.Clock())
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
