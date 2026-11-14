@@ -3117,8 +3117,8 @@
           "session.AccessMemberSeatCounts:SQL": 2,
           "session.AccessOrganization:QueryRow": 1,
           "session.AccessOrganization:SQL": 1,
-          "session.AccessProjectGrant:QueryRow": 1,
-          "session.AccessProjectGrant:SQL": 1,
+          "session.AccessProjectGrant:QueryRow": 2,
+          "session.AccessProjectGrant:SQL": 2,
           "session.AccessPublicNames:Query": 1,
           "session.AccessPublicNames:SQL": 1,
           "session.AccessSession:QueryRow": 1,
@@ -3228,6 +3228,7 @@
           "hub/hosted_transactions",
           "hub/hosted_usage_counters",
           "hub/organizations",
+          "hub/projects",
           "hub/token_grants"
         ]
       }
@@ -15254,7 +15255,6 @@
           "hub/change_requests",
           "hub/change_versions",
           "hub/hosted_members",
-          "hub/hosted_project_grants",
           "hub/issues",
           "hub/leases",
           "hub/machines",
@@ -15263,8 +15263,7 @@
           "hub/policy_revisions",
           "hub/project_sprite_allocations",
           "hub/projects",
-          "hub/runner_identities",
-          "hub/token_grants"
+          "hub/runner_identities"
         ]
       }
     },
@@ -17827,7 +17826,6 @@
           "hub/change_requests",
           "hub/change_versions",
           "hub/hosted_members",
-          "hub/hosted_project_grants",
           "hub/issues",
           "hub/leases",
           "hub/machines",
@@ -17836,8 +17834,7 @@
           "hub/policy_revisions",
           "hub/project_sprite_allocations",
           "hub/projects",
-          "hub/runner_identities",
-          "hub/token_grants"
+          "hub/runner_identities"
         ]
       }
     },

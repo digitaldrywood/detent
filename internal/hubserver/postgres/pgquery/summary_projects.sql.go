@@ -13,11 +13,11 @@ import (
 
 const listSummaryProjects = `-- name: ListSummaryProjects :many
 SELECT p.id,p.name,p.slug
-FROM hosted_project_grants g
-JOIN projects p ON p.organization_id=g.organization_id AND p.id=g.project_id
-WHERE g.organization_id=$1
- AND g.user_id=$2
+FROM projects p
+WHERE p.organization_id=$1
  AND p.profile='native' AND p.deleted_at IS NULL
+ AND ((SELECT hosted_administrator_access($1,$2,''))
+  OR EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=$2))
 ORDER BY p.id LIMIT $3
 `
 

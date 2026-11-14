@@ -21,8 +21,8 @@ func (s *session) BoardAuthorizedItems(ctx context.Context, authority accessstor
 	rows, err := s.db.Query(ctx, `SELECT 'item',i.native_id,i.project_id FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
  WHERE i.organization_id=$1 AND i.native_id=ANY($2::text[]) AND p.deleted_at IS NULL AND p.profile='native'
  AND ($3::text='' OR i.actor_principal_id=$3)
- AND (NOT $4::boolean OR (($5::boolean OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=i.organization_id AND g.token_id=$6 AND g.project_id=i.project_id))
- AND ($7::text='' OR (EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=i.organization_id AND g.user_id=$7 AND g.project_id=i.project_id)
+ AND (NOT $4::boolean OR (($5::boolean OR ($7::text<>'' AND $6::text=$8::text AND (SELECT hosted_administrator_access($1,$7,$8))) OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=i.organization_id AND g.token_id=$6 AND g.project_id=i.project_id))
+ AND ($7::text='' OR (SELECT hosted_administrator_access($1,$7,$8)) OR (EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=i.organization_id AND g.user_id=$7 AND g.project_id=i.project_id)
  AND EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=i.organization_id AND g.token_id=$8 AND g.project_id=i.project_id)))))
  UNION ALL SELECT 'change',c.id,c.project_id FROM change_requests c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id WHERE c.organization_id=$1 AND c.project_id=$10 AND c.id=ANY($9::text[]) AND ($3::text='' OR i.actor_principal_id=$3)`, s.organization, ids, reporter, credential.NativeOnly || credential.Scope != "admin", credential.ProjectAccess == "all", credential.ID, authority.UserID, member.PrincipalID, changes, authority.ProjectID)
 	if err != nil {

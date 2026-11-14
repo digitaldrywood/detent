@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -237,6 +238,16 @@ func (s *session) AccessProjectGrant(ctx context.Context, user_id string, projec
 	}
 	var row accessstore.ProjectGrant
 	err := s.db.QueryRow(ctx, `SELECT organization_id,user_id,project_id,can_write,manage_runner FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3`+s.accessLock(), s.organization, user_id, project_id).Scan(&row.OrganizationID, &row.UserID, &row.ProjectID, &row.CanWrite, &row.ManageRunner)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && (!row.CanWrite || !row.ManageRunner) {
+		var administrator bool
+		roleErr := s.db.QueryRow(ctx, `SELECT hosted_administrator_access(m.organization_id,m.user_id,'') FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.id=$3 AND p.deleted_at IS NULL WHERE m.organization_id=$1 AND m.user_id=$2`+s.accessLockOf("m"), s.organization, user_id, project_id).Scan(&administrator)
+		switch {
+		case roleErr == nil && administrator:
+			row, err = accessstore.ProjectGrant{OrganizationID: s.organization, UserID: user_id, ProjectID: project_id, CanWrite: true, ManageRunner: true}, nil
+		case roleErr != nil && !errors.Is(roleErr, pgx.ErrNoRows):
+			err = roleErr
+		}
+	}
 	if err == nil && s.projectGrants != nil {
 		s.projectGrants[key] = row
 	}
@@ -644,6 +655,7 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 		}
 	}
 	if authority.ProjectID != "" && (credential.NativeOnly || credential.Scope != "admin") {
+		administrator := member.UserID != "" && accessstore.RoleAllows(accessstore.LesserRole(member.Role, cmp.Or(authority.Role, member.Role)), apikey.ScopeAdmin)
 		if member.UserID != "" {
 			grant, err := s.AccessProjectGrant(ctx, member.UserID, authority.ProjectID)
 			if err != nil {
@@ -652,11 +664,13 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 			if authority.Write && !grant.CanWrite {
 				return member, accessstore.ErrDenied
 			}
-			if _, err := s.AccessTokenGrant(ctx, member.PrincipalID, authority.ProjectID); err != nil {
-				return member, accessAuthorizationError(err)
+			if !administrator {
+				if _, err := s.AccessTokenGrant(ctx, member.PrincipalID, authority.ProjectID); err != nil {
+					return member, accessAuthorizationError(err)
+				}
 			}
 		}
-		if credential.ProjectAccess != "all" {
+		if credential.ProjectAccess != "all" && !(administrator && credential.ID == member.PrincipalID) {
 			if _, err := s.AccessTokenGrant(ctx, credential.ID, authority.ProjectID); err != nil {
 				if !errors.Is(err, corestore.ErrNotFound) || errors.Is(err, tenantauth.ErrUnavailable) || member.UserID != "" || credential.Scope != "worker" || credential.Kind != "service" {
 					return member, accessAuthorizationError(err)
@@ -699,6 +713,13 @@ func (s *session) accessLock() string {
 		return ""
 	}
 	return " FOR SHARE"
+}
+
+func (s *session) accessLockOf(table string) string {
+	if s.readOnly {
+		return ""
+	}
+	return " FOR SHARE OF " + table
 }
 
 func (s *session) EnsureAccessSession(ctx context.Context, row accessstore.Session) (bool, error) {

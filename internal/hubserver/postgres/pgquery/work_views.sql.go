@@ -274,7 +274,7 @@ SELECT v.organization_id, v.id, v.owner_id, v.name, v.scope, v.project_id, v.lay
  ARRAY(SELECT collapsed_filter.value FROM hosted_work_view_values collapsed_filter WHERE collapsed_filter.organization_id=v.organization_id AND collapsed_filter.view_id=v.id AND collapsed_filter.kind='collapsed' ORDER BY collapsed_filter.position)::text[] AS collapsed_values
 FROM hosted_work_views v
 WHERE v.organization_id=$1 AND v.id=$2 AND (v.owner_id=$3 OR v.scope='organization')
-AND (NOT $4::boolean OR NOT EXISTS (
+AND (NOT $4::boolean OR (SELECT hosted_administrator_access($1,$3,'')) OR NOT EXISTS (
  SELECT 1 FROM hosted_work_view_projects p WHERE p.organization_id=v.organization_id AND p.view_id=v.id
  AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.project_id AND g.user_id=$3)
 ))
@@ -360,7 +360,7 @@ func (q *Queries) SavedWorkView(ctx context.Context, arg SavedWorkViewParams) (S
 const savedWorkViewIDs = `-- name: SavedWorkViewIDs :many
 SELECT v.id FROM hosted_work_views v
 WHERE v.organization_id=$1 AND v.id>$2 AND (v.owner_id=$3 OR v.scope='organization')
-AND (NOT $4::boolean OR NOT EXISTS (
+AND (NOT $4::boolean OR (SELECT hosted_administrator_access($1,$3,'')) OR NOT EXISTS (
  SELECT 1 FROM hosted_work_view_projects p WHERE p.organization_id=v.organization_id AND p.view_id=v.id
  AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.project_id AND g.user_id=$3)
 )) ORDER BY v.id LIMIT $5

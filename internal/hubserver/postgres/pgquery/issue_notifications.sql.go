@@ -390,7 +390,7 @@ JOIN issues i ON i.organization_id=s.organization_id AND i.native_id=s.work_item
 JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
 JOIN public.organizations o ON o.organization_id=i.organization_id
 WHERE s.organization_id=$1 AND s.work_item_id=$2 AND s.user_id=$3 AND NOT s.unsubscribed AND m.notify_issues AND m.active AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>$4)
-AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=m.organization_id AND g.user_id=m.user_id AND g.project_id=i.project_id)
+AND (hosted_administrator_access(m.organization_id,m.user_id,m.principal_id) OR EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=m.organization_id AND g.user_id=m.user_id AND g.project_id=i.project_id))
 `
 
 type NotificationRecipientParams struct {
@@ -434,7 +434,7 @@ func (q *Queries) NotificationRecipient(ctx context.Context, arg NotificationRec
 
 const notificationRecipients = `-- name: NotificationRecipients :many
 SELECT m.principal_id AS principal,coalesce(i.actor_kind='human' AND i.actor_principal_id=m.principal_id,false)::boolean AS filer,m.user_id,
-(m.active AND m.notify_issues AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>$1::timestamptz) AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=m.organization_id AND g.user_id=m.user_id AND g.project_id=i.project_id))::boolean AS eligible
+(m.active AND m.notify_issues AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>$1::timestamptz) AND (hosted_administrator_access(m.organization_id,m.user_id,m.principal_id) OR EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=m.organization_id AND g.user_id=m.user_id AND g.project_id=i.project_id)))::boolean AS eligible
 FROM hosted_members m JOIN api_tokens t ON t.organization_id=m.organization_id AND t.id=m.principal_id JOIN issues i ON i.organization_id=m.organization_id AND i.native_id=$2
 WHERE m.organization_id=$3 AND m.principal_id>$4
 AND ((i.actor_kind='human' AND i.actor_principal_id=m.principal_id) OR EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.work_item_id=i.native_id AND e.type='comment.created' AND e.actor_kind='human' AND e.actor_principal_id=m.principal_id AND e.recorded_at<=$5 AND (e.work_item_id<>$6 OR e.sequence<=$7)))

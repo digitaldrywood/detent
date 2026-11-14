@@ -236,12 +236,10 @@ SELECT EXISTS (
  JOIN projects project ON project.organization_id=allocation.organization_id AND project.id=allocation.project_id AND project.deleted_at IS NULL
  WHERE allocation.organization_id=$1 AND allocation.project_id=$2
  AND token.revoked_at IS NULL AND token.created_at<=$3::timestamptz AND (token.expires_at IS NULL OR token.expires_at>$3::timestamptz)
- AND ((token.scope='admin' AND NOT token.native_only) OR token.operator_project_access='all' OR EXISTS(SELECT 1 FROM token_grants grant_row WHERE grant_row.organization_id=token.organization_id AND grant_row.token_id=token.id AND grant_row.project_id=allocation.project_id))
  AND (token.operator_key_scope='' OR token.operator_key_scope='admin')
  AND ((token.scope='admin' AND NOT token.native_only) OR EXISTS (
-  SELECT 1 FROM hosted_members member JOIN hosted_project_grants grant_row ON grant_row.organization_id=member.organization_id AND grant_row.user_id=member.user_id AND grant_row.project_id=allocation.project_id AND grant_row.can_write
-  WHERE member.organization_id=token.organization_id AND member.principal_id=token.id AND member.active AND member.role IN ('owner','admin')
- AND EXISTS(SELECT 1 FROM token_grants principal_grant WHERE principal_grant.organization_id=member.organization_id AND principal_grant.token_id=member.principal_id AND principal_grant.project_id=allocation.project_id)
+  SELECT 1 FROM hosted_members member
+  WHERE member.organization_id=token.organization_id AND member.principal_id=token.id AND hosted_administrator_access(member.organization_id,member.user_id,member.principal_id)
  ))
 )
 `
