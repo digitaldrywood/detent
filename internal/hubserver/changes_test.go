@@ -1710,7 +1710,7 @@ func TestChangeInvalidVersionAndReviewPolicy(t *testing.T) {
 		{"merge base", func(v *tracker.ChangeVersionInput) { v.MergeBaseSHA = "" }, http.StatusUnprocessableEntity},
 		{"repository", func(v *tracker.ChangeVersionInput) { v.Repository = "file:///source" }, http.StatusUnprocessableEntity},
 		{"code hash", func(v *tracker.ChangeVersionInput) { v.Code.SHA256 = "missing" }, http.StatusUnprocessableEntity},
-		{"unknown configuration", func(v *tracker.ChangeVersionInput) { v.PolicyID = "other" }, http.StatusConflict},
+		{"unknown configuration", func(v *tracker.ChangeVersionInput) { v.PolicyID = "other" }, http.StatusUnprocessableEntity},
 		{"unpaired attempt", func(v *tracker.ChangeVersionInput) { v.RunID = hubapi.NewID("run") }, http.StatusUnprocessableEntity},
 		{"stale review disposition", func(v *tracker.ChangeVersionInput) {
 			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.BaseSHA, ThreadID: "T1", Disposition: "fixed", Evidence: "regression passes"}}
