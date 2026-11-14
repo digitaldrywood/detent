@@ -20,6 +20,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/budget"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -1816,6 +1817,19 @@ func TestProjectSpriteLoginReadiness(t *testing.T) {
 	}
 }
 
+type countedRunDetails struct {
+	attachment.DetailStore
+	mu    sync.Mutex
+	reads int
+}
+
+func (c *countedRunDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	c.mu.Lock()
+	c.reads++
+	c.mu.Unlock()
+	return c.DetailStore.ReadDetail(ctx, organization, ref)
+}
+
 func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	t.Parallel()
 	f, scope, provider := newSpritePoolFixture(t, "")
@@ -1825,9 +1839,8 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	f.service.outbox.stop()
 	keys, hosted := f.service.config.SecretKeys, f.service.config.Hosted
 	f.service.config.SecretKeys, f.service.config.Hosted = nil, nil
-	store := &memoryRunDetails{}
+	store := &countedRunDetails{DetailStore: f.service.config.RunDetails}
 	f.service.config.RunDetails = store
-	f.service.config.Content = nil
 	r := placementFixtureRunner(t, f, "archive-worker", "local", false, 1, "gpt-6.1-sol", "test-model")
 	issue := f.create(t, "Archived execution")
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "archived-run"))
@@ -1837,7 +1850,7 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	event := nativeStartedEvent(lease)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
-	spriteFixtureExec(t, f, `UPDATE native_attempts SET status='succeeded',work_item_revision=1000,dispatch_generation=1000 WHERE organization_id=$1 AND id=$2`, scope.Organization, event.Data.AttemptID)
+	spriteFixtureExec(t, f, `UPDATE native_attempts SET status='succeeded' WHERE organization_id=$1 AND id=$2`, scope.Organization, event.Data.AttemptID)
 	setPlacementFixture(t, f, policy.Placement{Mode: "sprites_only"}, 2)
 	f.service.config.SecretKeys, f.service.config.Hosted = keys, hosted
 	store.mu.Lock()
