@@ -1430,6 +1430,31 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	approveNext := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-next-version"}, ExpectedRevision: detail.Change.Revision, ExpectedVersionID: nextVersion.ID, Decision: "approved", Body: "Reviewed current source"}
 	approveNextResponse := f.request(t, owner, http.MethodPost, changePath+"/versions/"+nextVersion.ID+"/reviews", approveNext)
 	requireNativeStatus(t, approveNextResponse, http.StatusOK)
+	if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "completed"); err != nil {
+			return err
+		}
+		workItem, err := w.WorkItem(t.Context(), projectID, item.WorkItemID)
+		if err != nil {
+			return err
+		}
+		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "landing-session", LeaseID: newNativeID("lease"), TTL: time.Hour})
+		if err != nil {
+			return err
+		}
+		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: orgID, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
+			return err
+		}
+		return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: orgID, ProjectID: projectID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: descriptor.ID, BoundAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	landingStart := start
+	landingStart.IdempotencyKey = "landing-run-start"
+	landingStart.Data.AttemptID, landingStart.Data.RunID = newNativeID("attempt"), newNativeID("run")
+	landingStart.Data.LeaseID, landingStart.Data.FencingToken = tracker.LeaseID(lease.LeaseID), tracker.FencingToken(lease.FencingToken)
+	landingStart.Data.Identity = &tracker.NativeExecutionIdentity{Role: "merge", Backend: "codex", Model: "example"}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, landingStart), http.StatusOK)
 	mergeSHA := strings.Repeat("d", 40)
 	landingRequest := tracker.LandChangeVersion{
 		Mutation: tracker.Mutation{IdempotencyKey: "land-next-version", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, MergeSHA: mergeSHA, BaseRef: "main", Method: "squash",
@@ -1480,7 +1505,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		if current.Revision != int64(change.Revision+2) || current.CurrentVersionID == nil || *current.CurrentVersionID != nextVersion.ID {
 			t.Fatalf("stale landing changed Change after new review evidence: %+v", current)
 		}
-		if _, err := r.LandingReceipt(t.Context(), string(attemptID)); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := r.LandingReceipt(t.Context(), landingStart.Data.AttemptID); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("stale landing retained receipt: %v", err)
 		}
 		if _, err := r.Receipt(t.Context(), workerID, "POST "+landingPath, staleLanding.IdempotencyKey); !errors.Is(err, corestore.ErrNotFound) {
@@ -1602,7 +1627,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		if current.Revision != int64(change.Revision+2) || current.EvidenceSequence != evidenceSequence+1 || current.CurrentVersionID == nil || *current.CurrentVersionID != nextVersion.ID {
 			t.Fatalf("concurrent evidence/landing state = %+v", current)
 		}
-		if _, err := r.LandingReceipt(t.Context(), string(attemptID)); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := r.LandingReceipt(t.Context(), landingStart.Data.AttemptID); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("rolled-back concurrent landing receipt lookup = %v, want not found", err)
 		}
 		return nil
@@ -1614,7 +1639,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	requireNativeStatus(t, failedLanding, http.StatusInternalServerError)
 	service.config.TenantRepository = repository
 	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
-		if _, err := r.LandingReceipt(t.Context(), string(attemptID)); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := r.LandingReceipt(t.Context(), landingStart.Data.AttemptID); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("rolled-back landing receipt lookup error = %v, want not found", err)
 		}
 		current, err := r.Change(t.Context(), change.ID)
@@ -1636,7 +1661,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		t.Fatal("landing retry changed the archived response")
 	}
 	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
-		stored, err := r.LandingReceipt(t.Context(), string(attemptID))
+		stored, err := r.LandingReceipt(t.Context(), landingStart.Data.AttemptID)
 		if err != nil {
 			return err
 		}
