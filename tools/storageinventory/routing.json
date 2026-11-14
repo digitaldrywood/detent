@@ -15518,6 +15518,23 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/pgstoretest/reportrequest.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "CheckReportRequest:Query": 4,
+          "ExplainReportPlan:BeginTx": 1,
+          "ExplainReportPlan:ExecContext": 3,
+          "ExplainReportPlan:Query": 1,
+          "ExplainReportPlan:QueryRowContext": 1,
+          "ExplainReportPlan:SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/pgstoretest/repository.go": {
       "disposition": "target-adapter",
       "families": [

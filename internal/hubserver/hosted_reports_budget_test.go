@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -136,7 +137,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 			captured := append([]tracedStatement(nil), statements...)
 			mu.Unlock()
 			statementCounts[test.name] = len(captured)
-			reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "issues", "collaboration_events", "native_attempts", "change_requests", "report_escape_facts")
+			reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "reports", "issues", "collaboration_events", "native_attempts", "change_requests", "report_escape_facts")
 
 		})
 	}
@@ -225,30 +226,21 @@ func freezeReportPlannerInputs(t *testing.T, admin *sql.DB) {
 	}
 }
 
-func reportsAssertPostgresPlans(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statements []tracedStatement, required ...string) {
+func reportsAssertPostgresPlans(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statements []tracedStatement, request string, required ...string) {
 	t.Helper()
-	families := map[string]bool{}
-	for execution, statement := range statements {
-		if !reportsBudgetReadStatement(statement.query) {
-			continue
-		}
-		relevant := false
-		for _, relation := range reportsBudgetHotRelations {
-			if strings.Contains(statement.query, relation) {
-				relevant = true
-				families[relation] = true
-			}
-		}
-		if !relevant {
-			continue
-		}
-		plan, raw := reportsExplainPostgresPlan(t, admin, organization, statement, "enable_seqscan=off")
-		if violations := reportsBudgetPlanViolations(statement, plan); len(violations) > 0 {
-			t.Errorf("actual report execution %d violates keyed source bounds: %v\nstatement: %s\nplan: %s", execution, violations, statement.query, raw)
-		}
+	plans := make([]pgstoretest.ReportStatement, len(statements))
+	for i, statement := range statements {
+		plans[i] = pgstoretest.ReportStatement{Query: statement.query, Args: statement.args}
+	}
+	report, err := pgstoretest.CheckReportRequest(t.Context(), admin, string(organization), plans, reportsBudgetHotRelations, pgstoretest.ReportRequestBudgets[request], "enable_seqscan=off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, problem := range report.Problems {
+		t.Errorf("actual %s read violates report source bounds: %s", request, problem)
 	}
 	for _, relation := range required {
-		if !families[relation] {
+		if !report.Relations[relation] {
 			t.Errorf("actual report did not exercise %s facts", relation)
 		}
 	}

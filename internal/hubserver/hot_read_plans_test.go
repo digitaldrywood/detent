@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -38,13 +39,12 @@ func TestHotReadQueryPlans(t *testing.T) {
 	seedRetainedReportHistory(t, admin, "org_browser_preview", 10)
 	freezeReportPlannerInputs(t, admin)
 	t.Run("rules reject injected unindexed reads", func(t *testing.T) {
-		for _, statement := range []tracedStatement{
-			{"SELECT count(*) FROM collaboration_events WHERE organization_id=$1", []any{"org_browser_preview"}},
-			{"SELECT id FROM native_attempts WHERE organization_id=$1 AND length(id)>0 ORDER BY length(id),id", []any{"org_browser_preview"}},
+		for _, statement := range []pgstoretest.ReportStatement{
+			{Query: "SELECT count(*) FROM collaboration_events WHERE organization_id=$1", Args: []any{"org_browser_preview"}},
+			{Query: "SELECT id FROM native_attempts WHERE organization_id=$1 AND length(id)>0 ORDER BY length(id),id", Args: []any{"org_browser_preview"}},
 		} {
-			plan, raw := reportsExplainPostgresPlan(t, admin, "org_browser_preview", statement)
-			if violations := reportsBudgetPlanViolations(statement, plan); len(violations) == 0 {
-				t.Fatalf("unindexed source read accepted: %s plan=%s", statement.query, raw)
+			if report, err := pgstoretest.CheckReportRequest(t.Context(), admin, "org_browser_preview", []pgstoretest.ReportStatement{statement}, reportsBudgetHotRelations, pgstoretest.ReportRequestBudget{Overhead: 1 << 30}); err != nil || len(report.Problems) == 0 {
+				t.Fatalf("unindexed source read accepted: %s error=%v", statement.Query, err)
 			}
 		}
 	})
@@ -111,7 +111,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 			if reads == 0 {
 				t.Fatal("no read statements were traced")
 			}
-			reportsAssertPostgresPlans(t, admin, "org_browser_preview", captured)
+			reportsAssertPostgresPlans(t, admin, "org_browser_preview", captured, read.name)
 		})
 	}
 }
@@ -179,7 +179,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 					if len(captured) == 0 {
 						t.Fatal("no report statements traced")
 					}
-					reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "issues", "native_attempts", "collaboration_events", "attempt_usage", "change_requests")
+					reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "reports", "issues", "native_attempts", "collaboration_events", "attempt_usage", "change_requests")
 				})
 			}
 		})
@@ -224,7 +224,7 @@ var retainedReportHistoryKeys = []struct {
 	relation string
 	keys     map[string]string
 }{
-	{"issues", map[string]string{"id": "offset", "native_id": "suffix", "number": "offset", "native_source_key": "suffix", "archived": "=archived OR EXISTS(SELECT 1 FROM project_workflow_states w WHERE w.organization_id=issues.organization_id AND w.project_id=issues.project_id AND w.name=issues.workflow_state_name AND w.terminal)"}},
+	{"issues", map[string]string{"id": "offset", "native_id": "suffix", "number": "offset", "native_source_key": "suffix", "archived": "=true"}},
 	{"leases", map[string]string{"lease_id": "suffix", "issue_id": "offset", "session_id": "suffix", "fencing_token": "offset", "released_at": "=coalesce(released_at,expires_at)-history_copy*interval '2880 hours'"}},
 	{"native_attempt_runs", map[string]string{"run_id": "suffix", "issue_id": "offset"}},
 	{"native_attempts", map[string]string{"id": "suffix", "issue_id": "offset", "lease_id": "suffix", "run_id": "suffix", "fencing_token": "offset", "status": "=CASE WHEN status='running' THEN 'cancelled' ELSE status END"}},
