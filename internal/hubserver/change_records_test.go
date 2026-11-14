@@ -876,6 +876,11 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if result, err := admin.ExecContext(t.Context(), "UPDATE project_settings SET duplicate_challenge=false WHERE organization_id=$1 AND project_id=$2", orgID, projectID); err != nil {
+		t.Fatal(err)
+	} else if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("duplicate-challenge fixture affected=%d error=%v", affected, err)
+	}
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-item"}, Title: "Version issue", Body: workItemRecordBody, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var item tracker.NativeIssue
