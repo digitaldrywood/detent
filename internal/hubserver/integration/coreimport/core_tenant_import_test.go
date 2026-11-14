@@ -1,4 +1,4 @@
-package hubserver
+package coreimport_test
 
 import (
 	"bytes"
@@ -11,10 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport/coreimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
@@ -26,17 +28,17 @@ import (
 
 func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 	t.Parallel()
-	admin := postgresStartupTemplate.Database(t)
-	connection := startupConnection(t, admin, "detent_runtime_v2", "")
+	admin := hubtest.Database(t)
+	connection := hubtest.PostgresConfig(t, admin).Connection
 	config := postgres.Config{
 		Connection: connection,
 		Pool:       postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1},
 	}
-	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
+	catalog, err := storagecatalog.Read(os.DirFS("../../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects := &memoryRunDetails{}
+	objects := newKeyedDetails()
 
 	for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
 		fixture := neutralimporttest.Read(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
@@ -53,10 +55,10 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 		fixture.Set("collaboration_versions", map[string]string{"record_id": string(issue.WorkItemID), "revision": "1"}, map[string]any{"record_json": string(historyTestJSON(t, issue))})
 		copyPath := fixture.Write()
 		var logs bytes.Buffer
-		source := TenantCoreImportSource{BundlePath: copyPath, OrganizationID: organization, Catalog: catalog, Objects: objects, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
-		var first TenantCoreImportResult
+		source := hubserver.TenantCoreImportSource{BundlePath: copyPath, OrganizationID: organization, Catalog: catalog, Objects: objects, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+		var first hubserver.TenantCoreImportResult
 		for replay := range 2 {
-			result, err := ImportTenantCoreCopy(t.Context(), config, source)
+			result, err := hubserver.ImportTenantCoreCopy(t.Context(), config, source)
 			if err != nil {
 				t.Fatalf("organization %s import replay %d: %v", organization, replay, err)
 			}
@@ -82,7 +84,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 		t.Fatalf("hosted tenant imports organizations=%d local=%d error=%v, want 2 organizations and none local", imported, local, err)
 	}
 	t.Run("historical recovery requires authoritative mappings", func(t *testing.T) {
-		store, err := openPostgresDatabase(t.Context(), config)
+		store, err := openHubRepository(t.Context(), config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,17 +95,17 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 		})
 		for _, organization := range []tracker.OrganizationID{"org_historical_a", "org_historical_b"} {
 			project := tracker.ProjectID("prj_historical")
-			seedHistoricalImportTarget(t, store.postgres, organization, project, "github_compatible")
+			coreimporttest.SeedHistoricalTarget(t, store, organization, project, "github_compatible")
 			fixture := neutralimporttest.HistoricalV7(t, organization)
 			path := fixture.Write()
-			source := TenantCoreImportSource{BundlePath: path, OrganizationID: organization, Catalog: catalog, Objects: objects}
-			result, err := ImportTenantCoreCopy(t.Context(), config, source)
+			source := hubserver.TenantCoreImportSource{BundlePath: path, OrganizationID: organization, Catalog: catalog, Objects: objects}
+			result, err := hubserver.ImportTenantCoreCopy(t.Context(), config, source)
 			if err == nil || !strings.Contains(err.Error(), "verified post-native mapping bundle") || result.CoreImportComplete {
 				t.Fatalf("missing mapping result=%+v error=%v", result, err)
 			}
 			assertUnwritten := func() {
 				t.Helper()
-				if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				if err := store.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 					rows, err := reader.WorkItems(t.Context(), project, 0, 10)
 					if err != nil {
 						return err
@@ -120,8 +122,8 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 				}
 			}
 			assertUnwritten()
-			mapping := coreWorkItemNeutralFixture(t, organization, project, false)
-			mapping.AddTables(t, os.DirFS("../.."), "projects")
+			mapping := coreimporttest.WorkItems(t, os.DirFS("../../../.."), organization, project, false, coreimporttest.WorkItemBody())
+			mapping.AddTables(t, os.DirFS("../../../.."), "projects")
 			mapping.Add("projects", map[string]any{"id": project, "organization_id": organization, "repository_id": 1, "name": "Historical mapping", "profile": "github_compatible", "created_at": "2026-09-01T12:00:00Z"})
 			mapping.Set("repositories", map[string]string{"id": "1"}, map[string]any{"github_node_id": "R_original"})
 			for index, id := range []int64{41, 43} {
@@ -134,19 +136,19 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 			bad := mapping.Clone(t)
 			bad.Set("issues", map[string]string{"native_id": "wi_core_import"}, map[string]any{"github_node_id": "I_foreign"})
 			source.MappingBundlePath = bad.Write()
-			result, err = ImportTenantCoreCopy(t.Context(), config, source)
+			result, err = hubserver.ImportTenantCoreCopy(t.Context(), config, source)
 			if err == nil || result.CoreImportComplete {
 				t.Fatalf("foreign identity mapping result=%+v error=%v", result, err)
 			}
 			assertUnwritten()
 			source.MappingBundlePath = mapping.Write()
 			for range 2 {
-				result, err = ImportTenantCoreCopy(t.Context(), config, source)
+				result, err = hubserver.ImportTenantCoreCopy(t.Context(), config, source)
 				if err != nil || result.CoreImportComplete || result.WorkItems != 2 {
 					t.Fatalf("verified historical recovery result=%+v error=%v", result, err)
 				}
 			}
-			if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := store.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				row, err := w.WorkItem(t.Context(), project, "wi_core_import")
 				if err != nil {
 					return err
@@ -161,11 +163,11 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 				t.Fatal(err)
 			}
 			source.MappingBundlePath = ""
-			result, err = ImportTenantCoreCopy(t.Context(), config, source)
+			result, err = hubserver.ImportTenantCoreCopy(t.Context(), config, source)
 			if err != nil || result.CoreImportComplete || result.WorkItems != 2 {
 				t.Fatalf("existing authoritative replay result=%+v error=%v", result, err)
 			}
-			if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := store.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				row, err := reader.WorkItem(t.Context(), project, "wi_core_import")
 				if err != nil {
 					return err
@@ -188,20 +190,20 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 		fixture := neutralimporttest.Read(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
 		delete(fixture.Tables, "issues")
 		delete(fixture.Records, "issues")
-		result, err := ImportTenantCoreCopy(t.Context(), config, TenantCoreImportSource{BundlePath: fixture.Write(), OrganizationID: organization, Catalog: catalog, Objects: objects})
+		result, err := hubserver.ImportTenantCoreCopy(t.Context(), config, hubserver.TenantCoreImportSource{BundlePath: fixture.Write(), OrganizationID: organization, Catalog: catalog, Objects: objects})
 		if err == nil || result.CoreImportComplete || result.HubIdentityRows != 1 || result.Projects != 1 {
 			t.Fatalf("missing issues changed current import route: result=%+v error=%v", result, err)
 		}
 	})
 
 	failedCopy := coreTenantAggregateSourceCopy(t, "org_aggregate_failure", true)
-	failedSource := TenantCoreImportSource{BundlePath: failedCopy, OrganizationID: "org_aggregate_failure", Catalog: catalog, Objects: objects}
-	failed, err := ImportTenantCoreCopy(t.Context(), config, failedSource)
+	failedSource := hubserver.TenantCoreImportSource{BundlePath: failedCopy, OrganizationID: "org_aggregate_failure", Catalog: catalog, Objects: objects}
+	failed, err := hubserver.ImportTenantCoreCopy(t.Context(), config, failedSource)
 	if err == nil || failed.CoreImportComplete || failed.HubIdentityRows != 1 || failed.Projects != 1 || failed.WorkItems != 1 || failed.ConversationRows < 2 || failed.CreditTransactions != 0 {
 		t.Fatalf("late credit-stage refusal result=%+v error=%v", failed, err)
 	}
 
-	store, err := openPostgresDatabase(t.Context(), config)
+	store, err := openHubRepository(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +226,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 		if suffix == "a" {
 			otherSuffix = "b"
 		}
-		if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := store.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			identity, err := reader.HubIdentity(t.Context())
 			if err != nil {
 				return fmt.Errorf("read imported Hub identity: %w", err)
@@ -275,7 +277,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 			t.Fatalf("verify organization %s: %v", organization, err)
 		}
 	}
-	if err := store.postgres.ReadTenant(t.Context(), "org_aggregate_failure", corestore.Serving, func(reader tenantstore.Reader) error {
+	if err := store.ReadTenant(t.Context(), "org_aggregate_failure", corestore.Serving, func(reader tenantstore.Reader) error {
 		_, err := reader.ConversationByID(t.Context(), "conversation_aggregate_failure")
 		return err
 	}); err != nil {
@@ -287,7 +289,7 @@ func coreTenantAggregateSourceCopy(t *testing.T, organization tracker.Organizati
 	t.Helper()
 	fixture := newCoreNeutralFixture(t, organization, "ai_credit_accounts", "ai_credit_packs", "ai_credit_periods", "ai_credit_purchases", "ai_credit_transactions", "api_tokens", "artifact_grants", "artifact_references", "artifact_services", "attachments", "attempt_diff_file_archives", "attempt_diff_files", "attempt_diffs", "attempt_usage", "change_command_outputs", "change_content_objects", "change_evidence", "change_finding_attributions", "change_issue_links", "change_landing_receipts", "change_requests", "change_review_policies", "change_sources", "change_versions", "change_viewed_files", "collaboration_events", "collaboration_versions", "conversation_attachment_blobs", "conversation_attachments", "conversation_audience_events", "conversation_commands", "conversation_events", "conversation_messages", "conversation_prices", "conversation_questions", "conversation_starts", "conversation_tool_revisions", "conversation_turn_batches", "conversation_usage", "conversations", "daily_summary_preferences", "daily_summary_receipts", "hosted_audit", "hosted_audit_times", "hosted_binding_migrations", "hosted_invitations", "hosted_member_reservations", "hosted_members", "hosted_project_grants", "hosted_release_preferences", "hosted_sessions", "hosted_tenant", "hosted_transactions", "hub_identity", "issue_dependencies", "issues", "lease_policies", "lease_runners", "leases", "machines", "message_references", "monthly_budget_admissions", "monthly_budget_leases", "monthly_budget_policies", "native_attempt_events", "native_attempts", "native_comments", "native_pr_publications", "organization_secret_audit", "organization_secrets", "organizations", "policy_revisions", "project_policies", "project_secret_audit", "project_secrets", "projects", "quality_landings", "queue_entries", "release_deliveries", "repositories", "runner_enrollment_projects", "runner_enrollments", "runner_identities", "runner_identity_events", "runner_project_capacity_limits", "runner_project_ranks", "token_grants", "usage_cost_observations", "work_events", "workflow_states")
 	const timestamp = "2026-10-01T00:00:00.000000000Z"
-	states, err := json.Marshal(nativeFixtureStates())
+	states, err := json.Marshal(hubtest.States())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,9 +320,9 @@ func coreTenantAggregateSourceCopy(t *testing.T, organization tracker.Organizati
 		Body:            "Example body " + suffix,
 		State:           "Todo",
 		Actor:           tracker.Actor{Kind: "human", PrincipalID: "example-owner"},
-		CreatedAt:       mustParseTestTime(t, timestamp),
-		UpdatedAt:       mustParseTestTime(t, timestamp),
-		LastActivityAt:  mustParseTestTime(t, timestamp),
+		CreatedAt:       parseTestTime(t, timestamp),
+		UpdatedAt:       parseTestTime(t, timestamp),
+		LastActivityAt:  parseTestTime(t, timestamp),
 	}
 	issueJSON, err := json.Marshal(issue)
 	if err != nil {
@@ -352,15 +354,6 @@ func coreTenantAggregateSourceCopy(t *testing.T, organization tracker.Organizati
 	return fixture.Write()
 }
 
-func mustParseTestTime(t *testing.T, value string) time.Time {
-	t.Helper()
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return parsed
-}
-
 func TestTenantCoreImportRefusesLegacyCopy(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "historical-source.db")
@@ -369,7 +362,7 @@ func TestTenantCoreImportRefusesLegacyCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, bundle := range []string{"", "unused-neutral-bundle"} {
-		_, err := ImportTenantCoreCopy(t.Context(), postgres.Config{}, TenantCoreImportSource{CopyPath: path, BundlePath: bundle})
+		_, err := hubserver.ImportTenantCoreCopy(t.Context(), postgres.Config{}, hubserver.TenantCoreImportSource{CopyPath: path, BundlePath: bundle})
 		if !errors.Is(err, neutralimport.ErrInvalid) {
 			t.Fatalf("tenant legacy selector error=%v", err)
 		}

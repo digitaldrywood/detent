@@ -202,7 +202,9 @@
       "TestReviewConversationHistoryDoesNotVetoLanding",
       "TestINV18RequestCommitDoesNoDerivedWork",
       "TestINV18HubMigrationsUseTypedColumns",
-      "TestINV20NoSQLOverJSON",
+      "TestINV20NoSQLOverJSON"
+    ],
+    "./internal/hubserver/postgres/schemaupgrade": [
       "TestINV20HubTableLifecycles",
       "TestTableLifecycleViolations"
     ],

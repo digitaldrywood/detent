@@ -1,4 +1,4 @@
-package hubserver
+package schemaupgrade_test
 
 import (
 	"bytes"
@@ -43,7 +43,7 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 		}
 	})
 	files := fstest.MapFS{}
-	entries, err := os.ReadDir("postgres/migrations")
+	entries, err := os.ReadDir("../migrations")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join("postgres/migrations", entry.Name()))
+		data, err := os.ReadFile(filepath.Join("../migrations", entry.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -85,7 +85,7 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
 			admin := fixture.Database(t)
-			migration := startupConnection(t, admin, "detent_migration_v2", "")
+			migration := roleConnection(t, fixture, admin, "detent_migration_v2")
 			if err := postgres.Migrate(t.Context(), migration, before); err != nil {
 				t.Fatal(err)
 			}
@@ -151,7 +151,7 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 			restored := restoration.Database(t)
 			restoreAdmin := restoration.Connection(t, restored, "", "")
 			recoveryPostgresTool(t, tools, restoreAdmin, "pg_restore", "--exit-on-error", "--dbname="+restoreAdmin.Database, backup)
-			restoreConnection := startupConnection(t, restored, "detent_migration_v2", "")
+			restoreConnection := roleConnection(t, restoration, restored, "detent_migration_v2")
 			if recoveryPostgresVersion(t, restored) != previousVersion || !reflect.DeepEqual(hubPostgresMigrationLedger(t, restored), ledger) {
 				t.Fatal("backup did not restore the preserved migration state")
 			}
@@ -165,7 +165,7 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 			if got := recoveryPostgresVersion(t, restored); got != currentVersion {
 				t.Fatalf("migration retry: got=%d want=%d", got, currentVersion)
 			}
-			runtime := startupConnection(t, restored, "detent_runtime_v2", "")
+			runtime := roleConnection(t, restoration, restored, "detent_runtime_v2")
 			repository, err := postgres.Open(t.Context(), postgres.Config{Connection: runtime, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}, files)
 			if err != nil {
 				t.Fatal(err)

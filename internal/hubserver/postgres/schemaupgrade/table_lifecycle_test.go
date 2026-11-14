@@ -1,4 +1,4 @@
-package hubserver
+package schemaupgrade_test
 
 import (
 	"database/sql"
@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 )
 
 type tableLifecycle struct {
@@ -23,7 +25,7 @@ type tableLifecyclePolicy struct {
 
 func readTableLifecyclePolicy(t *testing.T) tableLifecyclePolicy {
 	t.Helper()
-	data, err := os.ReadFile("../invariants/table_lifecycle_policy.json")
+	data, err := os.ReadFile("../../../invariants/table_lifecycle_policy.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +38,7 @@ func readTableLifecyclePolicy(t *testing.T) tableLifecyclePolicy {
 
 func tableLifecycleDatabase(t *testing.T) *sql.DB {
 	t.Helper()
-	return postgresStartupTemplate.Database(t)
+	return pgstoretest.Template.Database(t)
 }
 
 func tableLifecycleSchema(t *testing.T, db *sql.DB) map[string][]string {

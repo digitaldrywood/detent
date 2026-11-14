@@ -74,10 +74,6 @@ func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID,
 	return coreimporttest.Changes(t, os.DirFS("../.."), organization, project, createdAt, descriptor, policyJSON)
 }
 
-func seedHistoricalImportTarget(t *testing.T, repository *postgres.Repository, organization tracker.OrganizationID, project tracker.ProjectID, profile string) {
-	t.Helper()
-	coreimporttest.SeedHistoricalTarget(t, repository, organization, project, profile)
-}
 
 func parseTestTime(t *testing.T, raw string) time.Time {
 	t.Helper()

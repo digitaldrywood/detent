@@ -1,4 +1,4 @@
-package hubserver
+package coreimport_test
 
 import (
 	"bytes"
@@ -19,9 +19,12 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport/coreimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
@@ -35,23 +38,19 @@ import (
 
 func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	t.Parallel()
-	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
+	migrations, err := postgres.MigrationFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
 	historical := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-		roles, err := os.ReadFile("postgres/roles.sql")
-		if err != nil {
-			return err
-		}
-		if _, err := db.ExecContext(ctx, string(roles)); err != nil {
+		if _, err := db.ExecContext(ctx, postgres.RolesSQL()); err != nil {
 			return err
 		}
 		db.SetMaxOpenConns(1)
 		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
 			return err
 		}
-		provider, err := startupMigrationProvider(db)
+		provider, err := hubMigrationProvider(db)
 		if err != nil {
 			return err
 		}
@@ -67,7 +66,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 		}
 	})
 	admin := historical.Database(t)
-	objects := &memoryRunDetails{}
+	objects := newKeyedDetails()
 	content := eventstore.NewContent(objects)
 	stamp := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	expected := map[tracker.OrganizationID][]tracker.CollaborationEvent{}
@@ -141,7 +140,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "SET ROLE detent_migration_v2"); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := startupMigrationProvider(admin)
+	provider, err := hubMigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,13 +196,13 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if err := admin.QueryRowContext(t.Context(), `SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&schemaVersion); err != nil || schemaVersion != 20261107212206 {
 		t.Fatalf("failed rollback changed migration head: %d %v", schemaVersion, err)
 	}
-	migration := startupConnection(t, admin, "detent_migration_v2", "")
-	config := postgres.Config{Connection: startupConnection(t, admin, "detent_runtime_v2", ""), Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
+	migration := roleConnection(t, historical, admin, "detent_migration_v2")
+	config := postgres.Config{Connection: roleConnection(t, historical, admin, "detent_runtime_v2"), Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
 	if err := postgres.Migrate(t.Context(), migration, migrations); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
-		store, err := openPostgresDatabase(t.Context(), config)
+		store, err := openHubRepository(t.Context(), config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,7 +213,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 				}
 			}()
 			for organization, want := range expected {
-				if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				if err := store.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 					events, err := reader.Events(t.Context(), "prj_history", "wi_history", 0, 10)
 					if err != nil {
 						return err
@@ -250,9 +249,9 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 				repository, _ := coreImportPostgresWithAdmin(t, 3)
 				for _, organization := range []tracker.OrganizationID{"org_activity_first", "org_activity_second"} {
 					project := tracker.ProjectID("prj_activity")
-					seedHistoricalImportTarget(t, repository, organization, project, "native")
-					fixture := coreWorkItemNeutralFixture(t, organization, project, false)
-					fixture.AddTables(t, os.DirFS("../.."), "projects", "native_attempts", "work_events", "change_issue_links", "change_requests", "change_versions", "change_evidence", "pull_requests")
+					coreimporttest.SeedHistoricalTarget(t, repository, organization, project, "native")
+					fixture := coreimporttest.WorkItems(t, os.DirFS("../../../.."), organization, project, false, coreimporttest.WorkItemBody())
+					fixture.AddTables(t, os.DirFS("../../../.."), "projects", "native_attempts", "work_events", "change_issue_links", "change_requests", "change_versions", "change_evidence", "pull_requests")
 					fixture.Add("projects", map[string]any{"id": project, "organization_id": organization, "name": "Example activity", "profile": "native", "repository_id": 1, "created_at": "2026-10-01T00:00:00Z"})
 					base := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
 					at := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC).Add(time.Duration(index) * time.Microsecond)
@@ -267,7 +266,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 						fixture.Set("issues", map[string]string{"id": "41"}, map[string]any{"updated_at": stamp})
 					case "issue edit":
 						fixture.Set("issues", map[string]string{"id": "41"}, map[string]any{"native_updated_at": stamp})
-						value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: item, Number: 1, Revision: 2, Profile: "native"}, Title: "Updated title", Body: coreImportBody(), State: "Todo", Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: base.Add(-24 * time.Hour), UpdatedAt: at, LastActivityAt: at}
+						value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: item, Number: 1, Revision: 2, Profile: "native"}, Title: "Updated title", Body: coreimporttest.WorkItemBody(), State: "Todo", Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: base.Add(-24 * time.Hour), UpdatedAt: at, LastActivityAt: at}
 						raw, err := json.Marshal(value)
 						if err != nil {
 							t.Fatal(err)
@@ -329,7 +328,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 						}
 						fixture.Add("pull_requests", map[string]any{"id": 1, "repository_id": 1, "issue_id": issue, "github_node_id": "PR_activity", "github_number": 1, "title": "Example PR", "url": "https://github.com/example-org/example-project/pull/1", "github_state": "open", "head_ref": "change/example", "head_sha": strings.Repeat("a", 40), "base_ref": "develop", "source_version": "source-v1", "source_updated_at": updated, "synchronized_at": synchronized, "created_at": "2026-10-01T00:00:00Z", "updated_at": updated})
 					}
-					objects := &memoryRunDetails{}
+					objects := newKeyedDetails()
 					source := coreimport.CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: organization, ProjectID: project, Objects: objects}
 					for range 2 {
 						if count, err := coreimport.ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
@@ -359,7 +358,9 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						var decoded struct{ ActivityRows []historicalActivityReceiptRow }
+						var decoded struct {
+							ActivityRows []historicalActivityReceiptRow
+						}
 						if err := json.Unmarshal(raw, &decoded); err != nil {
 							return err
 						}
@@ -392,18 +393,18 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 
 func TestHubMigrationPreservesExistingData(t *testing.T) {
 	t.Parallel()
-	admin := postgresStartupTemplate.Database(t)
-	config := postgres.Config{Connection: startupConnection(t, admin, "detent_runtime_v2", ""), Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
-	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
+	admin := hubtest.Database(t)
+	config := postgres.Config{Connection: hubtest.PostgresConfig(t, admin).Connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
+	catalog, err := storagecatalog.Read(os.DirFS("../../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects := &memoryRunDetails{}
+	objects := newKeyedDetails()
 	const rawProgress = `{"policy_approved":true}`
 	const updated = "2026-10-01T00:00:00Z"
 	for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
 		fixture := neutralimporttest.Read(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
-		fixture.AddTables(t, os.DirFS("../.."), "project_onboarding")
+		fixture.AddTables(t, os.DirFS("../../../.."), "project_onboarding")
 		suffix := strings.TrimPrefix(string(organization), "org_aggregate_")
 		project := tracker.ProjectID("prj_aggregate_" + suffix)
 		fixture.Add("project_onboarding", map[string]any{"organization_id": organization, "project_id": project, "revision": 7, "progress_json": rawProgress, "updated_at": updated})
@@ -411,16 +412,16 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 		fixture.Add("token_grants", map[string]any{"token_id": "legacy-key", "organization_id": organization, "project_id": project})
 		identity := `{"subject":"reviewer","organization_id":"provider_` + string(organization) + `","session_id":"original-session","created_at":"2026-10-01T00:00:00Z","expires_at":"2027-01-01T00:00:00Z"}`
 		fixture.Add("hosted_sessions", map[string]any{"token_hash": "existing-session", "email": "reviewer@example.test", "identity_json": identity, "identity_subject": "reviewer", "created_at": updated, "expires_at": "2027-01-01T00:00:00Z"})
-		source := TenantCoreImportSource{BundlePath: fixture.Write(), OrganizationID: organization, Catalog: catalog, Objects: objects}
+		source := hubserver.TenantCoreImportSource{BundlePath: fixture.Write(), OrganizationID: organization, Catalog: catalog, Objects: objects}
 		for range 2 {
-			result, err := ImportTenantCoreCopy(t.Context(), config, source)
+			result, err := hubserver.ImportTenantCoreCopy(t.Context(), config, source)
 			if err != nil || !result.CoreImportComplete || result.WorkItems != 1 || result.ExecutionRows != 3 {
 				t.Fatalf("historical tenant import=%+v error=%v", result, err)
 			}
 		}
 	}
 	for range 2 {
-		store, err := openPostgresDatabase(t.Context(), config)
+		store, err := openHubRepository(t.Context(), config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -433,7 +434,7 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 			for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
 				suffix := strings.TrimPrefix(string(organization), "org_aggregate_")
 				project := tracker.ProjectID("prj_aggregate_" + suffix)
-				if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				if err := store.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 					credential, err := reader.CredentialByHash(t.Context(), apikey.HashToken("legacy-key-"+string(organization)))
 					if err != nil || credential.ID != "legacy-key" || credential.ProjectAccess != "selected" {
 						return fmt.Errorf("legacy selected key=%+v error=%v", credential, err)
@@ -484,9 +485,9 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 	}
 	failedOrg := tracker.OrganizationID("org_aggregate_incomplete")
 	failed := neutralimporttest.Read(t, coreTenantAggregateSourceCopy(t, failedOrg, false), failedOrg)
-	failed.AddTables(t, os.DirFS("../.."), "project_onboarding")
+	failed.AddTables(t, os.DirFS("../../../.."), "project_onboarding")
 	failed.Add("project_onboarding", map[string]any{"organization_id": failedOrg, "project_id": "prj_aggregate_incomplete", "revision": 7, "progress_json": "{", "updated_at": updated})
-	result, err := ImportTenantCoreCopy(t.Context(), config, TenantCoreImportSource{BundlePath: failed.Write(), OrganizationID: failedOrg, Catalog: catalog, Objects: objects})
+	result, err := hubserver.ImportTenantCoreCopy(t.Context(), config, hubserver.TenantCoreImportSource{BundlePath: failed.Write(), OrganizationID: failedOrg, Catalog: catalog, Objects: objects})
 	if err == nil || result.CoreImportComplete {
 		t.Fatalf("unaccounted onboarding source marked complete: %+v error=%v", result, err)
 	}
@@ -494,10 +495,10 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 
 func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 	t.Parallel()
-	admin := postgresStartupTemplate.Database(t)
-	config := postgres.Config{Connection: startupConnection(t, admin, "detent_runtime_v2", ""), Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
-	open := func() *database {
-		store, err := openPostgresDatabase(t.Context(), config)
+	admin := hubtest.Database(t)
+	config := postgres.Config{Connection: hubtest.PostgresConfig(t, admin).Connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
+	open := func() *postgres.Repository {
+		store, err := openHubRepository(t.Context(), config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -509,10 +510,10 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 		return store
 	}
 	store := open()
-	objects := &memoryRunDetails{}
+	objects := newKeyedDetails()
 	for _, organization := range []tracker.OrganizationID{"org_legacy_first", "org_legacy_second"} {
 		project := tracker.ProjectID("prj_legacy")
-		seedHistoricalImportTarget(t, store.postgres, organization, project, "github_compatible")
+		coreimporttest.SeedHistoricalTarget(t, store, organization, project, "github_compatible")
 		fixture := neutralimporttest.HistoricalV7(t, organization)
 		fixture.Add("workflow_states", map[string]any{"id": 2, "repository_id": 1, "source_name": "Done", "detent_state": "Done", "terminal": 1, "created_at": "2026-09-01T12:00:00Z", "updated_at": "2026-09-01T12:00:00Z"})
 		fixture.Set("issues", map[string]string{"id": "41"}, map[string]any{"workflow_state_id": 2, "github_state": "open"})
@@ -532,21 +533,21 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		for range 2 {
-			if count, err := coreimport.ImportCoreWorkItems(t.Context(), store.postgres, source); err != nil || count != 2 {
+			if count, err := coreimport.ImportCoreWorkItems(t.Context(), store, source); err != nil || count != 2 {
 				t.Fatalf("verified pre-native import=%d error=%v", count, err)
 			}
 		}
 		changed := source
 		changed.IdentityMappings = append([]coreimport.CoreWorkItemIdentityMapping(nil), source.IdentityMappings...)
 		changed.IdentityMappings[0].TargetWorkItemID = "wi_changed"
-		if _, err := coreimport.ImportCoreWorkItems(t.Context(), store.postgres, changed); !errors.Is(err, mutation.ErrConflict) && !errors.Is(err, corestore.ErrRevisionConflict) {
+		if _, err := coreimport.ImportCoreWorkItems(t.Context(), store, changed); !errors.Is(err, mutation.ErrConflict) && !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("changed mapping was accepted: %v", err)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
 		store = open()
-		if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := store.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			record, err := reader.ProjectRecord(t.Context(), project)
 			if err != nil || record.Core.Profile != "github_compatible" || record.Settings.Repository != "example-org/example-project" {
 				return fmt.Errorf("repository/profile identity changed: %+v error=%v", record, err)
@@ -658,7 +659,7 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 			name     string
 			metadata bool
 		}{{name: "metadata only", metadata: true}, {name: "unchanged title/body replay"}} {
-			if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			if err := store.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
 				current, err := writer.WorkItem(t.Context(), project, "wi_original_41")
 				if err != nil {
 					return err
@@ -693,7 +694,7 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 			}
 			config.LeaseClock = func() time.Time { return control.clock }
 			store = open()
-			if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			if err := store.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
 				current, err := writer.WorkItem(t.Context(), project, "wi_original_41")
 				if err != nil {
 					return err
@@ -725,7 +726,7 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		var edited corestore.WorkItem
-		if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := store.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
 			current, err := writer.WorkItem(t.Context(), project, "wi_original_41")
 			if err != nil {
 				return err
@@ -740,7 +741,7 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 		if !edited.LastActivityAt.Equal(edited.NativeUpdatedAt) || !edited.LastActivityAt.After(sourceStamp) {
 			t.Fatalf("import edit activity=%s native updated=%s", edited.LastActivityAt, edited.NativeUpdatedAt)
 		}
-		if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := store.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			receipt, err := reader.Receipt(t.Context(), "production-import", "core-work-item-source", "41")
 			if err != nil {
 				return err
@@ -789,7 +790,7 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		store = open()
-		if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := store.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			current, err := reader.WorkItem(t.Context(), project, "wi_original_41")
 			if err != nil {
 				return err
@@ -801,8 +802,8 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
-			if _, err := writer.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_native", Name: "Coexisting native", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+		if err := store.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			if _, err := writer.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_native", Name: "Coexisting native", Profile: "native"}, States: hubtest.States()}); err != nil {
 				return err
 			}
 			_, err := writer.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: "prj_native", NativeID: "wi_native", Number: 1, Title: "Native work"})
