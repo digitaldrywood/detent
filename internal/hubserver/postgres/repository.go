@@ -24,10 +24,14 @@ type PoolConfig struct {
 	MaxConnections        int
 	ServingConnections    int
 	BackgroundConnections int
+	SearchBudget          time.Duration
 }
+
+const defaultBoardSearchBudget = 750 * time.Millisecond
 
 type Repository struct {
 	leaseClock     func() time.Time
+	searchBudget   time.Duration
 	pool           *pgxpool.Pool
 	runtime        *Runtime
 	serving        chan struct{}
@@ -57,7 +61,11 @@ func NewRepository(ctx context.Context, pool *pgxpool.Pool, config PoolConfig, l
 	if len(leaseClock) == 1 {
 		clock = leaseClock[0]
 	}
-	return &Repository{leaseClock: clock, pool: pool, runtime: runtime, serving: make(chan struct{}, serving), background: make(chan struct{}, config.BackgroundConnections)}, nil
+	searchBudget := config.SearchBudget
+	if searchBudget <= 0 {
+		searchBudget = defaultBoardSearchBudget
+	}
+	return &Repository{leaseClock: clock, searchBudget: searchBudget, pool: pool, runtime: runtime, serving: make(chan struct{}, serving), background: make(chan struct{}, config.BackgroundConnections)}, nil
 }
 
 func (r *Repository) SetBoardCommitNotifier(notify func()) {
@@ -172,7 +180,7 @@ func (r *Repository) begin(ctx context.Context, organization tracker.Organizatio
 	}()
 	finishCallback := transactionSpan(ctx, "pg_callback")
 	db := timedQueries{DBTX: tx}
-	owner := &session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly, leaseClock: r.leaseClock, flushesBoardDeltas: !readOnly}
+	owner := &session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly, leaseClock: r.leaseClock, searchBudget: r.searchBudget, flushesBoardDeltas: !readOnly}
 	err = func() error {
 		defer finishCallback()
 		return run(owner)
@@ -236,6 +244,7 @@ type session struct {
 	collaborationUsed       int64
 
 	leaseClock         func() time.Time
+	searchBudget       time.Duration
 	searchDeadline     time.Time
 	searchAdmitted     bool
 	searchFallback     map[tracker.ProjectID]bool

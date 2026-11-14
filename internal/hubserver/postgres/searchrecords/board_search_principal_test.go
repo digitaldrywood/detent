@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/multitracer"
@@ -36,12 +37,29 @@ func (principalSearchTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, q
 		gate.once.Do(func() {
 			close(gate.ready)
 			<-gate.release
+			<-ctx.Done()
 		})
 	}
 	return ctx
 }
 
 func (principalSearchTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+type firedDeadline struct {
+	context.Context
+	done chan struct{}
+}
+
+func (d *firedDeadline) Done() <-chan struct{} { return d.done }
+
+func (d *firedDeadline) Err() error {
+	select {
+	case <-d.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
 
 func TestBoardSearchPrincipalAdmission(t *testing.T) {
 	f := newBoardSearchFixture(t)
@@ -59,7 +77,7 @@ func TestBoardSearchPrincipalAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository, err := postgres.NewRepository(ctx, pool, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	repository, err := postgres.NewRepository(ctx, pool, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1, SearchBudget: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +93,11 @@ func TestBoardSearchPrincipalAdmission(t *testing.T) {
 					t.Fatal(err)
 				}
 				gate := &principalSearchGate{ready: make(chan struct{}), release: make(chan struct{})}
+				deadline := &firedDeadline{Context: context.WithValue(ctx, principalSearchGateKey{}, gate), done: make(chan struct{})}
 				finished := make(chan struct{})
 				var hostileErr error
 				t.Cleanup(func() {
+					close(deadline.done)
 					close(gate.release)
 					<-finished
 					var pgErr *pgconn.PgError
@@ -89,9 +109,8 @@ func TestBoardSearchPrincipalAdmission(t *testing.T) {
 				go func() {
 					defer close(finished)
 					hostile := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "cabcab", Limit: 1, Reporter: true, ReporterPrincipalID: "example"}
-					hostileCtx := context.WithValue(ctx, principalSearchGateKey{}, gate)
-					hostileErr = repository.ReadTenant(hostileCtx, org, corestore.Serving, func(r tenantstore.Reader) error {
-						_, err := r.BoardPage(hostileCtx, hostile)
+					hostileErr = repository.ReadTenant(deadline, org, corestore.Serving, func(r tenantstore.Reader) error {
+						_, err := r.BoardPage(deadline, hostile)
 						return err
 					})
 				}()

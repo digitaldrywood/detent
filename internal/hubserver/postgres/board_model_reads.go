@@ -271,7 +271,11 @@ func (s *session) beginBoardSearch(ctx context.Context, selection viewstore.Boar
 	}
 	initial := s.searchDeadline.IsZero()
 	if initial {
-		s.searchDeadline = time.Now().Add(750 * time.Millisecond)
+		budget := s.searchBudget
+		if budget <= 0 {
+			budget = defaultBoardSearchBudget
+		}
+		s.searchDeadline = time.Now().Add(budget)
 		if deadline, ok := ctx.Deadline(); ok && deadline.Before(s.searchDeadline) {
 			s.searchDeadline = deadline
 		}
