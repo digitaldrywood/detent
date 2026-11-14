@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,9 +54,20 @@ func (r *runnerRuntime) state() (bool, []string) {
 	return r.draining, append([]string(nil), r.applied...)
 }
 
-func TestEnrolledRunnerReceivesSuccessiveConfigurationCommands(t *testing.T) {
+type configuredRunner struct {
+	runtime *runnerRuntime
+	tick    func(*testing.T) error
+	read    func(*testing.T) runnerauth.ProjectConfiguration
+	queue   func(*testing.T, string, string)
+	settled func(*testing.T, string, bool)
+	rename  func(*testing.T, string)
+	restart func(*testing.T)
+}
+
+func startConfiguredRunner(t *testing.T, hub func(http.Handler) http.Handler) configuredRunner {
+	t.Helper()
 	f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
-	server := httptest.NewServer(f.Hub.Handler())
+	server := httptest.NewServer(hub(f.Hub.Handler()))
 	t.Cleanup(server.Close)
 	organization := f.Organization()
 	path := filepath.Join(t.TempDir(), "private", "runner.json")
@@ -71,67 +84,75 @@ func TestEnrolledRunnerReceivesSuccessiveConfigurationCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	t.Cleanup(transport.CloseIdleConnections)
-	client, err := dispatch.New(dispatch.Config{URL: server.URL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var clockMu sync.Mutex
 	clock := time.Now().UTC()
 	interval := 30 * time.Second
-	scheduler, err := dispatch.NewScheduler(client, dispatch.SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"local": f.Project.ID}, Machine: machine, HeartbeatInterval: interval, LeaseTTL: 10 * time.Minute, Now: func() time.Time {
-		clockMu.Lock()
-		defer clockMu.Unlock()
-		return clock
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	runtime := &runnerRuntime{}
 	projectID := string(f.Project.ID)
-	scheduler.SetProjectConfigurationOwner(func(_ context.Context, id string, request *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration {
-		view := project.MissingConfigurationOwner(id)
-		view.Authority = "hub_configuration"
-		desired := client.CurrentProjectConfiguration(tracker.ProjectID(id))
-		requestID := ""
-		if request != nil {
-			if request.ProjectID != id || request.Desired == nil {
+	start := func(t *testing.T) *dispatch.Scheduler {
+		t.Helper()
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		t.Cleanup(transport.CloseIdleConnections)
+		client, err := dispatch.New(dispatch.Config{URL: server.URL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		scheduler, err := dispatch.NewScheduler(client, dispatch.SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"local": f.Project.ID}, Machine: machine, HeartbeatInterval: interval, LeaseTTL: 10 * time.Minute, Now: func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			return clock
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		scheduler.SetProjectConfigurationOwner(func(_ context.Context, id string, request *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration {
+			view := project.MissingConfigurationOwner(id)
+			view.Authority = "hub_configuration"
+			desired := client.CurrentProjectConfiguration(tracker.ProjectID(id))
+			requestID := ""
+			if request != nil {
+				if request.ProjectID != id || request.Desired == nil {
+					return view
+				}
+				desired, requestID = request.Desired, request.RequestID
+			}
+			if desired == nil || id != projectID {
 				return view
 			}
-			desired, requestID = request.Desired, request.RequestID
-		}
-		if desired == nil || id != projectID {
+			view = runtime.apply(*desired, requestID)
+			view.ProjectID = id
+			if request != nil {
+				view.RequestID = request.RequestID
+			}
 			return view
-		}
-		view = runtime.apply(*desired, requestID)
-		view.ProjectID = id
-		if request != nil {
-			view.RequestID = request.RequestID
-		}
-		return view
-	})
-	tick := func(t *testing.T) {
+		})
+		return scheduler
+	}
+	scheduler := start(t)
+	operator := hubfixture.MCP(t, f.Hub.Handler(), hubfixture.MCPPath(organization), hubfixture.AdminToken)
+	r := configuredRunner{runtime: runtime}
+	r.restart = func(t *testing.T) { scheduler = start(t) }
+	r.tick = func(t *testing.T) error {
 		t.Helper()
 		clockMu.Lock()
 		clock = clock.Add(interval)
 		clockMu.Unlock()
-		if err := scheduler.Heartbeat(t.Context()); err != nil {
-			t.Fatalf("runner heartbeat: %v", err)
-		}
+		return scheduler.Heartbeat(t.Context())
 	}
-	operator := hubfixture.MCP(t, f.Hub.Handler(), hubfixture.MCPPath(organization), hubfixture.AdminToken)
-	read := func(t *testing.T) runnerauth.ProjectConfiguration {
+	r.read = func(t *testing.T) runnerauth.ProjectConfiguration {
 		t.Helper()
 		var view runnerauth.ProjectConfiguration
 		if err := json.Unmarshal(hubfixture.MCPData(t, operator("tools/call", operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: projectID, RunnerID: identity.RunnerID}), false), &view); err != nil {
 			t.Fatal(err)
 		}
+		if view.RunnerID != identity.RunnerID {
+			t.Fatalf("runner configuration was not registered: %+v", view)
+		}
 		return view
 	}
-	queue := func(t *testing.T, name, requestID string) {
+	r.queue = func(t *testing.T, name, requestID string) {
 		t.Helper()
-		current := read(t)
+		current := r.read(t)
 		if current.EffectivePolicy == nil || current.Pending {
 			t.Fatalf("%s precondition=%+v", name, current)
 		}
@@ -143,40 +164,101 @@ func TestEnrolledRunnerReceivesSuccessiveConfigurationCommands(t *testing.T) {
 			t.Fatalf("%s was not queued: %+v", name, queued)
 		}
 	}
-	settled := func(t *testing.T, operation string, draining bool) {
+	r.settled = func(t *testing.T, operation string, draining bool) {
 		t.Helper()
-		view := read(t)
+		view := r.read(t)
 		if view.Pending || view.Draining != draining || view.LastOperation == nil || view.LastOperation.Operation != operation || !view.LastOperation.Applied {
 			t.Fatalf("%s readback=%+v last=%+v", operation, view, view.LastOperation)
 		}
 	}
-
-	tick(t)
-	tick(t)
-	if read(t).RunnerID != identity.RunnerID {
-		t.Fatal("runner configuration was not registered")
+	r.rename = func(t *testing.T, name string) {
+		t.Helper()
+		routing := f.Hub.Request(t, http.MethodPut, hubfixture.OrganizationBase(organization)+"/runners/"+identity.RunnerID+"/routing", hubfixture.AdminToken, map[string]any{"expected_revision": r.read(t).RunnerRevision, "display_name": name, "state": "active", "capacity_limit": 1, "project_ids": []tracker.ProjectID{f.Project.ID}})
+		hubfixture.RequireStatus(t, routing, http.StatusOK)
 	}
+	return r
+}
 
-	queue(t, "drain_local_project", "drain")
-	tick(t)
-	if draining, applied := runtime.state(); !draining || len(applied) != 1 || applied[0] != "drain" {
+func (r configuredRunner) mustTick(t *testing.T) {
+	t.Helper()
+	if err := r.tick(t); err != nil {
+		t.Fatalf("runner heartbeat: %v", err)
+	}
+}
+
+func TestEnrolledRunnerReceivesSuccessiveConfigurationCommands(t *testing.T) {
+	r := startConfiguredRunner(t, func(hub http.Handler) http.Handler { return hub })
+	r.mustTick(t)
+	r.mustTick(t)
+	r.read(t)
+
+	r.queue(t, "drain_local_project", "drain")
+	r.mustTick(t)
+	if draining, applied := r.runtime.state(); !draining || len(applied) != 1 || applied[0] != "drain" {
 		t.Fatalf("drain delivery draining=%t applied=%v", draining, applied)
 	}
-	settled(t, "drain_local_project", true)
-	tick(t)
+	r.settled(t, "drain_local_project", true)
+	r.mustTick(t)
 
-	routing := f.Hub.Request(t, http.MethodPut, hubfixture.OrganizationBase(organization)+"/runners/"+identity.RunnerID+"/routing", hubfixture.AdminToken, map[string]any{"expected_revision": read(t).RunnerRevision, "display_name": "Renamed runner", "state": "active", "capacity_limit": 1, "project_ids": []tracker.ProjectID{f.Project.ID}})
-	hubfixture.RequireStatus(t, routing, http.StatusOK)
-	tick(t)
+	r.rename(t, "Renamed runner")
+	r.mustTick(t)
 
-	queue(t, "resume_local_project", "resume")
-	tick(t)
-	if draining, applied := runtime.state(); draining || len(applied) != 2 || applied[1] != "resume" {
+	r.queue(t, "resume_local_project", "resume")
+	r.mustTick(t)
+	if draining, applied := r.runtime.state(); draining || len(applied) != 2 || applied[1] != "resume" {
 		t.Fatalf("resume delivery draining=%t applied=%v", draining, applied)
 	}
-	settled(t, "resume_local_project", false)
-	tick(t)
-	if _, applied := runtime.state(); len(applied) != 2 {
+	r.settled(t, "resume_local_project", false)
+	r.mustTick(t)
+	if _, applied := r.runtime.state(); len(applied) != 2 {
 		t.Fatalf("settled command was delivered again: %v", applied)
+	}
+}
+
+func TestTrappedRunnerRecoversAfterRestartOnUnboundHub(t *testing.T) {
+	var bound atomic.Bool
+	bound.Store(true)
+	r := startConfiguredRunner(t, func(hub http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if !bound.Load() || req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/heartbeat") {
+				hub.ServeHTTP(w, req)
+				return
+			}
+			recorder := httptest.NewRecorder()
+			hub.ServeHTTP(recorder, req)
+			var snapshot runnerauth.RoutingSnapshot
+			if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &snapshot) != nil || snapshot.ProjectConfiguration == nil {
+				for key, values := range recorder.Header() {
+					w.Header()[key] = values
+				}
+				w.WriteHeader(recorder.Code)
+				_, _ = w.Write(recorder.Body.Bytes())
+				return
+			}
+			snapshot.ProjectConfiguration.RunnerRevision = snapshot.Revision
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(snapshot)
+		})
+	})
+	r.mustTick(t)
+	r.mustTick(t)
+	r.queue(t, "drain_local_project", "drain")
+	if err := r.tick(t); err == nil {
+		t.Fatal("a report bound to the previous runner revision was accepted; the trapped runner precondition did not hold")
+	}
+
+	if _, applied := r.runtime.state(); len(applied) != 0 {
+		t.Fatalf("trapped runner applied a command it could not acknowledge: %v", applied)
+	}
+	bound.Store(false)
+	r.restart(t)
+	r.mustTick(t)
+	if draining, applied := r.runtime.state(); !draining || len(applied) != 1 || applied[0] != "drain" {
+		t.Fatalf("restarted runner drain delivery draining=%t applied=%v", draining, applied)
+	}
+	r.settled(t, "drain_local_project", true)
+	r.mustTick(t)
+	if _, applied := r.runtime.state(); len(applied) != 1 {
+		t.Fatalf("settled command was delivered again after restart: %v", applied)
 	}
 }
