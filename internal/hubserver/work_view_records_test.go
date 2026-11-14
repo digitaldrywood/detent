@@ -181,6 +181,14 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	if !pendingPage.ProjectionPending {
 		t.Fatalf("search before refresh did not report a pending projection: %s", pendingSearch.Body.String())
 	}
+	var cardBase int64
+	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+		sequence, err := r.BoardSequence(t.Context(), f.project)
+		cardBase = sequence.Sequence
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for _, seed := range seedBoard {
 		seed()
 	}
@@ -256,7 +264,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	requireNativeStatus(t, boardResponse, http.StatusOK)
 	decodeHubResponse(t, boardResponse, &board)
 	requireNativeStatus(t, f.request(t, other, http.MethodGet, boardURL+"&created_after=2999-01-01T00%3A00%3A00Z", nil), http.StatusUnprocessableEntity)
-	if len(board.Cards) != 1 || board.Cards[0].Issue.WorkItemID != "wi_readable_example" || board.Total != 2 || board.NextCursor == "" {
+	if len(board.Cards) != 1 || board.Cards[0].Issue.WorkItemID != "wi_readable_example" || board.Total != -1 || board.NextCursor == "" {
 		t.Fatalf("first board page=%+v", board)
 	}
 	t.Run("issue list keeps global count and search keyset across pages", func(t *testing.T) {
@@ -270,7 +278,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		}
 		path := f.base + "/work-items?q=example&limit=1"
 		first := read(path)
-		if first.Total != 2 || first.ChangeSequence == 0 || len(first.Items) != 1 || first.Items[0].WorkItemID != "wi_second_example" || first.NextCursor == "" {
+		if first.Total != -1 || first.ChangeSequence == 0 || len(first.Items) != 1 || first.Items[0].WorkItemID != "wi_second_example" || first.NextCursor == "" {
 			t.Fatalf("first issue list page=%+v", first)
 		}
 		second := read(path + "&cursor=" + url.QueryEscape(first.NextCursor))
@@ -278,7 +286,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 			t.Fatalf("second issue list page=%+v", second)
 		}
 		work := read(f.base + "/work-items?include=work&q=example&limit=1")
-		if work.Work == nil || work.Total != 2 || len(work.Work.Items) != 1 || work.Work.Items[0].WorkItemID != "wi_second_example" || !work.Work.Truncated {
+		if work.Work == nil || work.Total != -1 || len(work.Work.Items) != 1 || work.Work.Items[0].WorkItemID != "wi_second_example" || !work.Work.Truncated {
 			t.Fatalf("work issue list projection=%+v", work)
 		}
 		invalidPicker := f.request(t, other, http.MethodGet, f.base+"/work-items?fields=picker&include=summary", nil)
@@ -288,14 +296,14 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		requireNativeStatus(t, pickerResponse, http.StatusOK)
 		var picker nativeIssuePickerPage
 		decodeHubResponse(t, pickerResponse, &picker)
-		if picker.Total != 2 || len(picker.Items) != 1 || picker.Items[0].WorkItemID != "wi_second_example" || picker.NextCursor == "" {
+		if picker.Total != -1 || len(picker.Items) != 1 || picker.Items[0].WorkItemID != "wi_second_example" || picker.NextCursor == "" {
 			t.Fatalf("picker issue list=%+v", picker)
 		}
 		continuedPicker := f.request(t, other, http.MethodGet, pickerPath+"&cursor="+url.QueryEscape(picker.NextCursor), nil)
 		requireNativeStatus(t, continuedPicker, http.StatusOK)
 		picker = nativeIssuePickerPage{}
 		decodeHubResponse(t, continuedPicker, &picker)
-		if picker.Total != 2 || len(picker.Items) != 1 || picker.Items[0].WorkItemID != "wi_readable_example" || picker.NextCursor != "" {
+		if picker.Total != -1 || len(picker.Items) != 1 || picker.Items[0].WorkItemID != "wi_readable_example" || picker.NextCursor != "" {
 			t.Fatalf("continued picker issue list=%+v", picker)
 		}
 	})
@@ -333,7 +341,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	}
 	delivery := newDashboardDelivery(f.service)
 	delivery.config.PageSize = 1
-	subscription := &dashboardSubscription{request: streamRequest, scope: streamScope, board: true, initial: true, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
+	subscription := &dashboardSubscription{request: streamRequest, scope: streamScope, board: true, initial: true, sequence: cardBase, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
 	readFrame := func() tracker.NativeBoardFrame {
 		t.Helper()
 		select {
@@ -354,7 +362,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 			t.Fatalf("stream page %d: more=%v error=%v", pageIndex, more, err)
 		}
 		frame := readFrame()
-		if frame.Gap || len(frame.Deltas) != 1 || frame.Sequence != int64(pageIndex+1) || frame.GrantVersion != board.GrantVersion || frame.Work == nil {
+		if frame.Gap || len(frame.Deltas) != 1 || frame.Sequence != cardBase+int64(pageIndex+1) || frame.GrantVersion != board.GrantVersion || !frame.CountsIndependent {
 			t.Fatalf("stream frame=%+v", frame)
 		}
 	}
@@ -434,12 +442,12 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		}
 		ordinary := read("limit=10")
 		workspace := read("include=workspace&limit=10")
-		if ordinary.Total != 1 || len(ordinary.Items) != 1 || ordinary.Items[0].WorkItemID != "wi_readable_example" || workspace.Total != 2 {
+		if ordinary.Total != -1 || len(ordinary.Items) != 1 || ordinary.Items[0].WorkItemID != "wi_readable_example" || workspace.Total != -1 || len(workspace.Items) != 2 {
 			t.Fatalf("workspace list ordinary=%+v included=%+v", ordinary, workspace)
 		}
 		future := read("created_after=2999-01-01T00%3A00%3A00Z")
 		futureWorkspace := read("include=workspace&created_after=2999-01-01T00%3A00%3A00Z")
-		if future.Total != 0 || len(future.Items) != 0 || futureWorkspace.Total != 0 || len(futureWorkspace.Items) != 0 {
+		if future.Total != -1 || len(future.Items) != 0 || futureWorkspace.Total != -1 || len(futureWorkspace.Items) != 0 {
 			t.Fatalf("future created_after returned ordinary=%+v workspace=%+v", future, futureWorkspace)
 		}
 		document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: f.project, WorkItemID: "wi_readable_example", ID: "issue:wi_readable_example", SourceID: "wi_readable_example", Kind: "issue", Scope: "issue", Revision: 2, UpdatedAt: now}, searchstore.Text{Title: "Readable example", Body: "\nfingerprint: source-fingerprint-123\n", Labels: []string{"東京語"}})
@@ -451,7 +459,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		}
 		refreshSearch(t)
 		fingerprint := read("fingerprint=source-fingerprint-123")
-		if fingerprint.Total != 1 || len(fingerprint.Items) != 1 || fingerprint.Items[0].WorkItemID != "wi_readable_example" {
+		if fingerprint.Total != -1 || len(fingerprint.Items) != 1 || fingerprint.Items[0].WorkItemID != "wi_readable_example" {
 			t.Fatalf("fingerprint filter returned %+v", fingerprint)
 		}
 	})
@@ -569,8 +577,29 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		var result tracker.NativeIssuePage
 		decodeHubResponse(t, response, &result)
-		if result.Total != count {
-			t.Fatalf("search total=%d want=%d across candidate pages", result.Total, count)
+		if result.Total != -1 {
+			t.Fatalf("search total=%d want the unknown-total sentinel -1", result.Total)
+		}
+		matched := map[tracker.NativeWorkItemID]bool{}
+		widePath := f.base + "/work-items?include=board&limit=2000&q=windowmatch"
+		for pageIndex := 0; ; pageIndex++ {
+			if pageIndex >= 3 {
+				t.Fatal("search cursor did not finish across candidate pages")
+			}
+			wide := f.request(t, owner, http.MethodGet, widePath, nil)
+			requireNativeStatus(t, wide, http.StatusOK)
+			var widePage tracker.NativeIssuePage
+			decodeHubResponse(t, wide, &widePage)
+			for _, card := range widePage.Cards {
+				matched[card.Issue.WorkItemID] = true
+			}
+			if widePage.NextCursor == "" {
+				break
+			}
+			widePath = f.base + "/work-items?include=board&limit=2000&q=windowmatch&cursor=" + url.QueryEscape(widePage.NextCursor)
+		}
+		if len(matched) != count {
+			t.Fatalf("search matched=%d want=%d across candidate pages", len(matched), count)
 		}
 		if len(result.Cards) != 1 || result.Cards[0].Issue.WorkItemID != "wi_window_000" {
 			t.Fatalf("search did not preserve global board order: %+v", result.Cards)
