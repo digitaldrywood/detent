@@ -345,8 +345,8 @@ BEGIN
         AND (($6='thread' AND d.kind='thread') OR ($6='work' AND d.kind='issue'))
         AND ($7='' OR d.scope=$7) AND ($8='' OR d.status=$8)
         AND (d.project_id IS NULL OR COALESCE((SELECT p.deleted_at IS NULL FROM public.projects p WHERE p.organization_id=d.organization_id AND p.id=d.project_id),false))
-        AND (d.work_item_id IS NULL OR COALESCE((SELECT ($9='all' OR i.archived=($9='true')) AND (NOT $10 OR i.actor_principal_id=$11)
-            FROM public.issues i WHERE i.organization_id=d.organization_id AND i.project_id=d.project_id AND i.native_id=d.work_item_id),false))
+        AND (d.work_item_id IS NULL OR COALESCE((SELECT i.project_id=d.project_id AND ($9='all' OR i.archived=($9='true')) AND (NOT $10 OR i.actor_principal_id=$11)
+            FROM public.issues i WHERE i.organization_id=d.organization_id AND i.native_id=d.work_item_id),false))
         AND (d.kind<>'comment' OR COALESCE((SELECT NOT c.deleted FROM public.native_comments c WHERE c.organization_id=d.organization_id AND c.id=d.source_id),false))
  ), owners AS MATERIALIZED (
     SELECT d.id,owner.key,owner.term,owner.lexeme FROM scoped d CROSS JOIN LATERAL (
