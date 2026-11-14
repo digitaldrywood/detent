@@ -189,13 +189,24 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 			}
 			renewal := tracker.NativeLeaseMutation{FencingToken: expired.lease.FencingToken, TTLSeconds: 300}
 			renewPath := expired.base + "/leases/" + string(expired.lease.ID) + "/renew"
-			hubfixture.RequireStatus(t, first.Hub.Request(t, http.MethodPost, renewPath, r.Redemption.Credential, renewal), http.StatusConflict)
+			refuseExpiredRenewal := func(path string, mutation tracker.NativeLeaseMutation) {
+				t.Helper()
+				refused := first.Hub.Request(t, http.MethodPost, path, r.Redemption.Credential, mutation)
+				hubfixture.RequireStatus(t, refused, http.StatusConflict)
+				var failure struct{ Code string }
+				hubfixture.Decode(t, refused, &failure)
+				if failure.Code != "stale_fencing_token" {
+					t.Fatalf("expired lease renewal refusal=%q, want stale_fencing_token", failure.Code)
+				}
+			}
+			refuseExpiredRenewal(renewPath, renewal)
 			change(r, 8, map[tracker.ProjectID]int{})
 			if stored = read(r); len(stored.ProjectCapacityLimits) != 0 || len(stored.ProjectIDs) != 2 {
 				t.Fatalf("unsetting changed access=%+v", stored)
 			}
-			hubfixture.RequireStatus(t, first.Hub.Request(t, http.MethodPost, renewPath, r.Redemption.Credential, renewal), http.StatusOK)
+			refuseExpiredRenewal(renewPath, renewal)
 			claim(r, first, "inherited-total", http.StatusOK)
+			claim(r, first, "expired-slot", http.StatusOK)
 			claim(r, other, "inherited-ninth", http.StatusConflict)
 			expired = winners[1]
 			result, err = first.Hub.Admin.ExecContext(t.Context(), "UPDATE leases SET acquired_at=acquired_at+($1::timestamptz-expires_at),renewed_at=renewed_at+($1::timestamptz-expires_at),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3 AND fencing_token=$4 AND released_at IS NULL", now, first.Project.OrganizationID, expired.lease.ID, expired.lease.FencingToken)
@@ -205,33 +216,32 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 			if count, err := result.RowsAffected(); err != nil || count != 1 {
 				t.Fatalf("expired lease rows=%d error=%v", count, err)
 			}
-			item := first.Create(t, "renewal-race-contender")
-			contender := tracker.NativeClaim{PolicyID: hubfixture.Policy().ID, WorkItemID: item.WorkItemID, MachineID: r.Binding.MachineID, SessionID: "renewal-race-contender", TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			start := make(chan struct{})
 			statuses := make(chan int, 2)
 			var workers sync.WaitGroup
-			workers.Go(func() {
-				<-start
-				statuses <- first.Hub.Request(t, http.MethodPost, expired.base+"/leases/"+string(expired.lease.ID)+"/renew", r.Redemption.Credential, tracker.NativeLeaseMutation{FencingToken: expired.lease.FencingToken, TTLSeconds: 300}).Code
-			})
-			workers.Go(func() {
-				<-start
-				statuses <- first.Hub.Request(t, http.MethodPost, first.Base+"/claims", r.Redemption.Credential, contender).Code
-			})
+			for _, name := range []string{"expiry-race-first", "expiry-race-second"} {
+				item := first.Create(t, name)
+				contender := tracker.NativeClaim{PolicyID: hubfixture.Policy().ID, WorkItemID: item.WorkItemID, MachineID: r.Binding.MachineID, SessionID: name, TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				workers.Go(func() {
+					<-start
+					statuses <- first.Hub.Request(t, http.MethodPost, first.Base+"/claims", r.Redemption.Credential, contender).Code
+				})
+			}
 			close(start)
 			workers.Wait()
 			close(statuses)
-			renewed := 0
+			claimedSlots := 0
 			for status := range statuses {
 				if status == http.StatusOK {
-					renewed++
+					claimedSlots++
 				} else if status != http.StatusConflict {
-					t.Fatalf("renewal race status=%d", status)
+					t.Fatalf("expiry race status=%d", status)
 				}
 			}
-			if renewed != 1 || read(r).Used != 8 {
-				t.Fatalf("expired renewal raced beyond final slot: winners=%d", renewed)
+			if claimedSlots != 1 || read(r).Used != 8 {
+				t.Fatalf("claims after expiry raced beyond final slot: winners=%d", claimedSlots)
 			}
+			refuseExpiredRenewal(expired.base+"/leases/"+string(expired.lease.ID)+"/renew", tracker.NativeLeaseMutation{FencingToken: expired.lease.FencingToken, TTLSeconds: 300})
 
 		})
 	}
