@@ -216,6 +216,19 @@ func TestRunnerUpdateMCP(t *testing.T) {
 	}
 }
 
+func wireTestRunner(t *testing.T, runner runnerauth.Runner) runnerauth.Runner {
+	t.Helper()
+	raw, err := json.Marshal(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire runnerauth.Runner
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	return wire
+}
+
 func TestHubMCPFleetBoundary(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{GitHubRequestCounts: func() []GitHubRequestCount { return []GitHubRequestCount{} }})
@@ -378,6 +391,7 @@ Run focused diagnostics with an explicit timeout.
 						if err != nil || len(raw) <= operatortool.MaxResultBytes {
 							t.Fatalf("full routing fixture must overflow: bytes=%d error=%v", len(raw), err)
 						}
+						full = wireTestRunner(t, full)
 						for _, name := range []string{operatortool.ListRunnerRouting, operatortool.GetRunnerRouting} {
 							arguments := json.RawMessage(`{"project_id":"` + string(f.project.ID) + `","limit":200}`)
 							if name == operatortool.GetRunnerRouting {
@@ -477,7 +491,7 @@ Run focused diagnostics with an explicit timeout.
 							t.Fatal(err)
 						}
 						current, err := readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.Clock())
-						if err != nil || committed.ProjectCapacityLimits[f.project.ID] != 8 || committed.Availability.WindowSlots["Mon-Sun 00:00-24:00"] != 2 || committed.Revision != full.Revision+1 || committed.State != "draining" || committed.Used != 8 || committed.HostUsed != 8 || len(committed.Leases) != 8 || !reflect.DeepEqual(current, committed) {
+						if err != nil || committed.ProjectCapacityLimits[f.project.ID] != 8 || committed.Availability.WindowSlots["Mon-Sun 00:00-24:00"] != 2 || committed.Revision != full.Revision+1 || committed.State != "draining" || committed.Used != 8 || committed.HostUsed != 8 || len(committed.Leases) != 8 || !reflect.DeepEqual(wireTestRunner(t, current), committed) {
 							t.Fatalf("routing mutation receipt did not describe the committed revision: %v", err)
 						}
 						listed, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.ListRunnerRouting, Arguments: json.RawMessage(`{}`)})
@@ -508,7 +522,8 @@ Run focused diagnostics with an explicit timeout.
 						}
 						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken,
 							map[string]any{"expected_revision": committed.Revision, "display_name": committed.DisplayName, "tags": committed.Tags,
-								"state": "active", "capacity_limit": committed.CapacityLimit, "project_ids": committed.ProjectIDs}), http.StatusOK)
+								"state": "active", "capacity_limit": committed.CapacityLimit, "project_ids": committed.ProjectIDs,
+								"availability": runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}, WindowSlots: map[string]int{}}}), http.StatusOK)
 						reconnect := operatortool.BindConnection(ctx, "fleet-reconnect-"+policyCase.name, "direct-test")
 						if err := executor.OpenConnection(reconnect); err != nil {
 							t.Fatal(err)

@@ -14,13 +14,16 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -70,6 +73,7 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope hubscope.NativeSc
 		return runnerauth.Runner{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var runner runnerauth.Runner
+	var pinned map[routingPolicyKey]policystore.Revision
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		now := s.config.Clock().UTC()
 		if credential.Runner.RunnerID != "" {
@@ -119,6 +123,9 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope hubscope.NativeSc
 			return err
 		}
 		runner = runnerFromRoutingRecord(record, now, urgent)
+		if pinned, err = readRoutingLeasePolicies(ctx, reader, runner); err != nil {
+			return err
+		}
 		ranks, ok := reader.(runnerProjectRankReader)
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
@@ -128,6 +135,9 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope hubscope.NativeSc
 	})
 	if err != nil {
 		return runnerauth.Runner{}, hubapi.ProjectRecordError(err)
+	}
+	if err := s.pinRoutingLeasePolicies(ctx, pinned, runner); err != nil {
+		return runnerauth.Runner{}, err
 	}
 
 	projects := runnerManagementProjects(runner)
@@ -603,6 +613,7 @@ func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracke
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	result := []runnerauth.Runner{}
+	var pinned map[routingPolicyKey]policystore.Revision
 	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		fleet, ok := reader.(runnerstore.RoutingPageReader)
 		if !ok {
@@ -617,12 +628,79 @@ func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracke
 		if err != nil {
 			return err
 		}
-		for _, record := range records {
-			result = append(result, runnerFromRoutingRecord(record, now, urgent))
+		ranks, ok := reader.(runnerProjectRankReader)
+		if !ok {
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
-		return nil
+		for _, record := range records {
+			runner := runnerFromRoutingRecord(record, now, urgent)
+			if runner.ProjectRanks, err = ranks.RunnerProjectSchedulingRanks(ctx, runner.RunnerID, runnerstore.MaxRunnerProjectList); err != nil {
+				return err
+			}
+			result = append(result, runner)
+		}
+		pinned, err = readRoutingLeasePolicies(ctx, reader, result...)
+		return err
 	})
-	return result, hubapi.ProjectRecordError(err)
+	if err != nil {
+		return nil, hubapi.ProjectRecordError(err)
+	}
+	return result, s.pinRoutingLeasePolicies(ctx, pinned, result...)
+}
+
+type routingPolicyKey struct {
+	project tracker.ProjectID
+	id      string
+}
+
+func readRoutingLeasePolicies(ctx context.Context, reader policystore.Reader, runners ...runnerauth.Runner) (map[routingPolicyKey]policystore.Revision, error) {
+	rows := map[routingPolicyKey]policystore.Revision{}
+	for _, runner := range runners {
+		for _, lease := range runner.Leases {
+			key := routingPolicyKey{project: lease.ProjectID, id: lease.Policy.ID}
+			if key.id == "" {
+				continue
+			}
+			if _, found := rows[key]; found {
+				continue
+			}
+			row, err := reader.ProjectPolicyRevision(ctx, key.project, key.id)
+			if errors.Is(err, corestore.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			rows[key] = row
+		}
+	}
+	return rows, nil
+}
+
+func (s *Service) pinRoutingLeasePolicies(ctx context.Context, rows map[routingPolicyKey]policystore.Revision, runners ...runnerauth.Runner) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	descriptors := make(map[routingPolicyKey]policy.Descriptor, len(rows))
+	for key, row := range rows {
+		descriptor, err := content.ProjectPolicy(ctx, row)
+		if err != nil {
+			return err
+		}
+		if descriptor.ID != key.id {
+			return artifact.ErrIntegrity
+		}
+		descriptors[key] = descriptor
+	}
+	for _, runner := range runners {
+		for i, lease := range runner.Leases {
+			if descriptor, found := descriptors[routingPolicyKey{project: lease.ProjectID, id: lease.Policy.ID}]; found {
+				runner.Leases[i].Policy = descriptor
+			}
+		}
+	}
+	return nil
 }
 
 func runnerExcluded(exclusions []runnerauth.Exclusion) error {

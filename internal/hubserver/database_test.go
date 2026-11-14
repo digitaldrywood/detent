@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -220,6 +221,7 @@ func hubPostgresRepository(t *testing.T, maxConnections int) (*postgres.Reposito
 
 func readPostgresTestRunner(ctx context.Context, service *Service, organization tracker.OrganizationID, runnerID string, now time.Time) (runnerauth.Runner, error) {
 	var runner runnerauth.Runner
+	var pinned map[routingPolicyKey]policystore.Revision
 	err := service.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		routing, ok := reader.(runnerstore.RoutingReader)
 		if !ok {
@@ -234,9 +236,20 @@ func readPostgresTestRunner(ctx context.Context, service *Service, organization 
 			return err
 		}
 		runner = runnerFromRoutingRecord(record, now, urgent)
-		return nil
+		ranks, ok := reader.(runnerProjectRankReader)
+		if !ok {
+			return hubapi.NativeRunEventStorageUnavailable()
+		}
+		if runner.ProjectRanks, err = ranks.RunnerProjectSchedulingRanks(ctx, runnerID, runnerstore.MaxRunnerProjectList); err != nil {
+			return err
+		}
+		pinned, err = readRoutingLeasePolicies(ctx, reader, runner)
+		return err
 	})
-	return runner, err
+	if err != nil {
+		return runner, err
+	}
+	return runner, service.pinRoutingLeasePolicies(ctx, pinned, runner)
 }
 
 func newClockedPostgresNativeService(t *testing.T, cfg Config) *Service {
