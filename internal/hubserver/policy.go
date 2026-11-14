@@ -480,6 +480,11 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 		if currentID != change.ExpectedID && currentID != resolved.ID {
 			return hubapi.PolicyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 		}
+		if currentID == resolved.ID {
+			if err := validateApprovedWorkflowContent(project, canonical); err != nil {
+				return err
+			}
+		}
 		if err := s.chargeTenantPolicyCommand(ctx, writer, scope, command); err != nil {
 			return err
 		}
@@ -593,6 +598,18 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubsc
 			return policy.Approval{}, err
 		}
 	}
+	snapshot, err := s.readTenantProjectRecord(ctx, scope)
+	if err != nil {
+		return policy.Approval{}, err
+	}
+	var cloudWorkflowErr error
+	if approval.Policy.Workflow == nil && snapshot.Core.Profile == "native" {
+		markdown, err := s.projectRecordWorkflow(ctx, snapshot)
+		if err != nil {
+			return policy.Approval{}, err
+		}
+		cloudWorkflowErr = validateCloudWorkflowPolicy(markdown, approval.Policy)
+	}
 	replayed := false
 	var replayReceipt eventstore.Receipt
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
@@ -623,11 +640,20 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubsc
 		if !hubrecords.SameNativeClaimProjectPolicy(current, planned) {
 			return corestore.ErrRevisionConflict
 		}
-		if err := s.chargeTenantPolicyCommand(ctx, writer, scope, command); err != nil {
-			return err
-		}
 		project, err := writer.ProjectRecord(ctx, scope.Project)
 		if err != nil {
+			return err
+		}
+		if project.Core.Profile != snapshot.Core.Profile || project.Settings.WorkflowKey != snapshot.Settings.WorkflowKey || project.Settings.WorkflowSHA256 != snapshot.Settings.WorkflowSHA256 {
+			return corestore.ErrRevisionConflict
+		}
+		if err := validateApprovedWorkflowContent(project, approval.Policy); err != nil {
+			return err
+		}
+		if cloudWorkflowErr != nil {
+			return cloudWorkflowErr
+		}
+		if err := s.chargeTenantPolicyCommand(ctx, writer, scope, command); err != nil {
 			return err
 		}
 		if err := reconcileTenantWorkflowPolicy(ctx, writer, project, approval.Policy); err != nil {
@@ -1054,12 +1080,13 @@ func reconcileTenantWorkflowPolicy(ctx context.Context, writer tenantstore.Write
 		revision = descriptor.SourceRevision
 	}
 	states := hubrecords.NativeTriageStates(descriptor.Workflow.States)
-	if project.Core.WorkflowSource == descriptor.Workflow.Source && project.Core.WorkflowSourceRevision == revision && reflect.DeepEqual(project.States, states) {
+	if project.Core.WorkflowSource == descriptor.Workflow.Source && project.Core.WorkflowSourceRevision == revision && reflect.DeepEqual(project.States, states) && project.Settings.WorkflowKey == "" {
 		return nil
 	}
 	project.Core.WorkflowSource = descriptor.Workflow.Source
 	project.Core.WorkflowSourceRevision = revision
 	project.States = states
+	project.Settings.WorkflowKey, project.Settings.WorkflowSHA256, project.Settings.WorkflowBytes, project.Settings.WorkflowContentBytes = "", "", 0, 0
 	_, err := writer.UpdateProjectRecord(ctx, project)
 	return err
 }

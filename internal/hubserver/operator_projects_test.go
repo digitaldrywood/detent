@@ -660,6 +660,72 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read("get_change_review_policy")); err != nil {
 				t.Fatal(err)
 			}
+			t.Run("same policy reapproval", func(t *testing.T) {
+				committed, err := e.command(ctx, approve, projectCommandExecute)
+				if err != nil || committed == nil {
+					t.Fatalf("committed approval replay=%s err=%v", committed, err)
+				}
+				unchanged := projectCall(t, "approve_project_policy", id, "reapprove-unchanged", operatortool.PolicyApprovalInput{ExpectedID: candidate.ID, ObservedPolicyID: candidate.ID})
+				if raw, err := e.command(ctx, unchanged, projectCommandExecute); err != nil || raw == nil {
+					t.Fatalf("unchanged reapproval=%s err=%v", raw, err)
+				}
+				admin := hostedPostgresAdmin(t, f.service)
+				if _, err := admin.ExecContext(t.Context(), "UPDATE projects SET workflow_source=$3 WHERE organization_id=$1 AND id=$2", "org_security", f.project, "RENAMED-WORKFLOW.md"); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+					defer cancel()
+					if _, err := admin.ExecContext(cleanup, "UPDATE projects SET workflow_source=$3 WHERE organization_id=$1 AND id=$2", "org_security", f.project, candidate.Workflow.Source); err != nil {
+						t.Error(err)
+					}
+				})
+				scope := hubscope.NativeScope{Organization: "org_security", Project: f.project}
+				policyBefore, err := f.service.readTenantProjectPolicy(t.Context(), "org_security", f.project)
+				if err != nil {
+					t.Fatal(err)
+				}
+				recordBefore, err := f.service.readProjectRecord(t.Context(), scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reviewBefore, err := f.service.changeReviewPolicyRecord(t.Context(), scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, test := range []struct {
+					name  string
+					input operatortool.PolicyApprovalInput
+				}{
+					{"observed", operatortool.PolicyApprovalInput{ExpectedID: candidate.ID, ObservedPolicyID: candidate.ID}},
+					{"descriptor", operatortool.PolicyApprovalInput{ExpectedID: candidate.ID, Policy: candidate}},
+				} {
+					key := "reapprove-changed-" + test.name
+					var refusal *hubapi.NativeError
+					if raw, err := e.command(ctx, projectCall(t, "approve_project_policy", id, key, test.input), projectCommandExecute); !errors.As(err, &refusal) || refusal.Code != "policy_mismatch" || refusal.Status != http.StatusConflict || raw != nil {
+						t.Fatalf("%s reapproval after workflow change=%s err=%v", test.name, raw, err)
+					}
+					policyAfter, err := f.service.readTenantProjectPolicy(t.Context(), "org_security", f.project)
+					if err != nil || !reflect.DeepEqual(policyAfter, policyBefore) {
+						t.Fatalf("%s refusal changed policy=%+v err=%v", test.name, policyAfter, err)
+					}
+					recordAfter, err := f.service.readProjectRecord(t.Context(), scope)
+					if err != nil || !reflect.DeepEqual(projectIntegrationRecord(recordAfter), projectIntegrationRecord(recordBefore)) || recordAfter.Core.WorkflowSource != "RENAMED-WORKFLOW.md" {
+						t.Fatalf("%s refusal changed workflow=%+v err=%v", test.name, projectIntegrationRecord(recordAfter), err)
+					}
+					reviewAfter, err := f.service.changeReviewPolicyRecord(t.Context(), scope)
+					if err != nil || !reflect.DeepEqual(reviewAfter, reviewBefore) {
+						t.Fatalf("%s refusal changed review defaults=%+v err=%v", test.name, reviewAfter, err)
+					}
+					var receipts int
+					if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE organization_id=$1 AND command_key=$2", "org_security", key).Scan(&receipts); err != nil || receipts != 0 {
+						t.Fatalf("%s refusal receipts=%d err=%v", test.name, receipts, err)
+					}
+				}
+				if replay, err := e.command(ctx, approve, projectCommandExecute); err != nil || string(replay) != string(committed) {
+					t.Fatalf("committed approval replay after workflow change=%s want %s err=%v", replay, committed, err)
+				}
+			})
 			sources.Workflow = append(sources.Workflow, []byte("Changed policy.\n")...)
 			sources.ConfigPath = "stale-detent.yaml"
 			workflow, err = workflowconfig.ParseProjectDefinition(sources)

@@ -56,6 +56,16 @@ func validateNativeWorkflowPolicy(project projectstore.Record, descriptor policy
 	return nil
 }
 
+func validateApprovedWorkflowContent(project projectstore.Record, descriptor policy.Descriptor) error {
+	if descriptor.Workflow != nil {
+		project.Core.WorkflowSourceRevision = descriptor.Workflow.Revision
+		if project.Core.WorkflowSourceRevision == "" {
+			project.Core.WorkflowSourceRevision = descriptor.SourceRevision
+		}
+	}
+	return validateNativeWorkflowPolicy(project, descriptor, true)
+}
+
 func canonicalWorkflowStates(states []tracker.NativeState) []tracker.NativeState {
 	result := slices.Clone(states)
 	for i := range result {
