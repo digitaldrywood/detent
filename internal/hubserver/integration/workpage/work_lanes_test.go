@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -257,12 +258,12 @@ func TestWorkListLaneSummariesCountTheFilteredPopulation(t *testing.T) {
 
 func createLaneItem(t *testing.T, fixture hubfixture.Native, title string, index int) tracker.NativeIssue {
 	t.Helper()
-	draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + title}, Title: title, Body: hubfixture.IssueBody(), State: "Todo",
+	draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + title}, Title: title + " " + testenv.DistinctText("lane-title-"+title, 6), Body: testenv.DistinctText("lane-"+title, 24) + "\n" + hubfixture.IssueBody(), State: "Todo",
 		Labels: []string{"lane-shared", fmt.Sprintf("lane-group-%d", index%2)}, Assignees: []string{fmt.Sprintf("lane-owner-%d", index/2)}, Priority: new(index % 3)}
 	if index%2 == 0 {
 		draft.Type = "bug"
 	}
-	response := fixture.CreateNotDuplicate(t, draft)
+	response := fixture.Request(t, http.MethodPost, fixture.Base+"/work-items", draft)
 	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	hubfixture.Decode(t, response, &issue)
@@ -282,6 +283,7 @@ func TestWorkListLaneCountsFollowReporterVisibility(t *testing.T) {
 		if author.Token == reporter.Token {
 			state, body = "Triage", "## Steps to reproduce\nOpen the example page.\n## Expected\nThe page loads.\n## Actual\nThe page fails.\n## Where\nThe example settings page.\n## Environment\nExample browser."
 		}
+		body = testenv.DistinctText(fmt.Sprintf("reporter-lanes-%d", index), 24) + "\n" + body
 		labels := []string{"lane-shared", fmt.Sprintf("lane-group-%d", index%2)}
 		response := hosted.Request(t, author, http.MethodPost, hosted.Base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("reporter-lanes-%d", index)}, Title: []string{"Example kiwi orchard", "Example granite bridge", "Example violet harbor", "Example copper meadow", "Example silent glacier"}[index], Body: body, State: state, Type: "bug", Labels: labels})
 		if response.Code != http.StatusOK {
