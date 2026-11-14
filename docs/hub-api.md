@@ -2014,6 +2014,8 @@ population reads are bounded to 1,000 records per source. Clipping sets
 `quality.partial`, lists `quality_complete_population`, and leaves percentages
 null. A zero denominator also yields null rather than a measured zero.
 
+`GET /api/v2/organizations/{organization}/reports/options` answers `422` with code `report_population_too_large` and no options when the selected projects and range exceed the bounded report population or facet limit; narrow the range or projects instead of retrying, while storage failures remain `503`.
+
 `rework_percent` counts unique work items returned before landing by a review
 request or a Rework transition, divided by unique items worked in the window.
 Worked items include recorded Code/Rework attempts, working/review/landing

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"time"
@@ -137,8 +138,14 @@ func (s *Service) hostedReportOptionsPostgres(c echo.Context) error {
 		}
 		var err error
 		facets, err = reportReader.ReadFacets(ctx, projectIDs(projects), w.From, w.To, principal, reportsFacetLimit)
-		return err
+		if err != nil {
+			return fmt.Errorf("read report facets: %w", err)
+		}
+		return nil
 	})
+	if errors.Is(err, reportstore.ErrPopulationExceeded) {
+		return s.nativeAPIError(c, &hubapi.NativeError{Code: "report_population_too_large", Message: "Report filter population exceeds its bounded read limit; narrow the range or project", Status: http.StatusUnprocessableEntity, PublicMessage: true})
+	}
 	if err != nil {
 		return s.hostedJSONError(c, 503, "Report filters are temporarily unavailable")
 	}
