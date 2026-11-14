@@ -1,12 +1,14 @@
 package usagecosts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -182,6 +184,9 @@ func (s *Service) PrepareRunnerRecords(ctx context.Context, scope hubapi.Scope, 
 			}
 		}
 	}
+	if err := s.refuseKnownCostConflict(ctx, scope, observations, now); err != nil {
+		return nil, err
+	}
 	for i := range observations {
 		observation := &observations[i].Observation
 		raw, err := json.Marshal(observation)
@@ -198,4 +203,33 @@ func (s *Service) PrepareRunnerRecords(ctx context.Context, scope hubapi.Scope, 
 		records = append(records, billingstore.CostObservation{OrganizationID: scope.Organization, ProjectID: scope.Project, Observation: *observation, Reference: billingstore.AuditReferenceFromArchive(ref), ReceivedAt: now})
 	}
 	return records, nil
+}
+
+func (s *Service) refuseKnownCostConflict(ctx context.Context, scope hubapi.Scope, observations []RunnerObservation, now time.Time) error {
+	prepared := make([]billingstore.CostObservation, 0, len(observations))
+	for _, observation := range observations {
+		raw, err := json.Marshal(observation.Observation)
+		if err != nil {
+			return err
+		}
+		ref, _, err := attachment.PrepareArchive(string(scope.Organization), 1, bytes.NewReader(raw))
+		if err != nil {
+			return err
+		}
+		prepared = append(prepared, billingstore.CostObservation{OrganizationID: scope.Organization, ProjectID: scope.Project, Observation: observation.Observation, Reference: billingstore.AuditReferenceFromArchive(ref), ReceivedAt: now})
+	}
+	return s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(billingstore.CostConflictReader)
+		if !ok {
+			return nil
+		}
+		conflict, err := reader.BillingCostConflict(ctx, prepared)
+		if err != nil {
+			return err
+		}
+		if conflict {
+			return mutation.ErrConflict
+		}
+		return nil
+	})
 }

@@ -173,6 +173,45 @@ func (s *session) validateBillingCost(record billingstore.CostObservation) error
 	return err
 }
 
+func (s *session) BillingCostConflict(ctx context.Context, records []billingstore.CostObservation) (bool, error) {
+	if len(records) == 0 {
+		return false, nil
+	}
+	type expected struct {
+		revision          int64
+		hash, attribution string
+	}
+	keys := make([]string, 0, len(records))
+	want := make(map[string]expected, len(records))
+	for _, record := range records {
+		if err := s.checkOrganization(record.OrganizationID); err != nil {
+			return false, err
+		}
+		o := record.Observation
+		key := costIdentity(o.Provider, o.ProviderAccount, o.SourceID, o.From.UTC().Format(costPeriodLayout), o.To.UTC().Format(costPeriodLayout))
+		keys = append(keys, key)
+		want[key] = expected{revision: o.Revision, hash: record.Reference.SHA256, attribution: costIdentity(string(record.ProjectID), o.ResourceID, o.Bucket, o.Metric, o.Unit, o.Currency, o.AttemptID, o.WorkItemID, o.Model, o.UsageKind, o.RunnerID, o.MachineID, o.Placement)}
+	}
+	rows, err := s.db.Query(ctx, `SELECT source_key,revision,payload_hash,attribution_hash FROM cost_sources WHERE organization_id=$1 AND source_key=ANY($2::text[])`, s.organization, keys)
+	if err != nil {
+		return false, mapError(ctx, err)
+	}
+	defer rows.Close()
+	conflict := false
+	for rows.Next() {
+		var key, hash, attribution string
+		var revision int64
+		if err := rows.Scan(&key, &revision, &hash, &attribution); err != nil {
+			return false, mapError(ctx, err)
+		}
+		current := want[key]
+		if attribution != current.attribution || revision == current.revision && hash != current.hash {
+			conflict = true
+		}
+	}
+	return conflict, mapError(ctx, rows.Err())
+}
+
 func (s *session) recordBillingCost(ctx context.Context, record billingstore.CostObservation, amount int64, states map[string]*runnerCostState) (bool, []costMonthlyDelta, error) {
 	o := record.Observation
 	allocations, err := usagecost.AllocateMonths(amount, o.From, o.To)

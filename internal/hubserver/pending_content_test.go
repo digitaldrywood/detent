@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,8 +24,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/usagecost"
 )
 
 type s3RunDetails struct{ attachment.ArchiveContents }
@@ -352,6 +355,141 @@ func TestNativeEventRejectionsLeaveNoContent(t *testing.T) {
 				t.Fatalf("unexpected commit rejection: %s", response.Body.String())
 			}
 		})
+	}
+}
+
+type usageRaceDetails struct {
+	attachment.DetailStore
+	mu       sync.Mutex
+	armed    bool
+	keys     []string
+	raceOnce func([]byte)
+}
+
+func (d *usageRaceDetails) StoreDetail(ctx context.Context, organization string, raw []byte) (attachment.ArchiveReference, error) {
+	ref, err := d.DetailStore.StoreDetail(ctx, organization, raw)
+	d.mu.Lock()
+	race := d.armed && err == nil && bytes.Contains(raw, []byte(`"source_id"`))
+	if d.armed && err == nil {
+		d.keys = append(d.keys, ref.Key)
+	}
+	if race {
+		d.armed = false
+	}
+	d.mu.Unlock()
+	if race {
+		d.raceOnce(raw)
+	}
+	return ref, err
+}
+
+func TestNativeUsageConflictDuringPublicationLeavesOnlyReclaimableObjects(t *testing.T) {
+	t.Parallel()
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	f := claimedAttemptDiffFixture(t, false, Config{Clock: clock.Now})
+	objects := f.service.config.TenantRepository.(*postgres.Repository).DetailStore(clock.Now)
+	details := &usageRaceDetails{DetailStore: objects}
+	f.service.config.RunDetails = details
+	f.start(t)
+	start := clock.Now()
+	clock.Advance(time.Second)
+	loser := pendingRunEvent(f, "usage-loser")
+	loser.OccurredAt = clock.Now()
+	loser.Data.Usage = []tracker.NativeUsage{{Provider: "openai", Model: "example-model", Input: 2, Revision: 1, From: start, To: clock.Now()}}
+	var conflictKey string
+	details.raceOnce = func(raw []byte) {
+		var observation usagecost.Observation
+		if err := json.Unmarshal(raw, &observation); err != nil {
+			t.Error(err)
+			return
+		}
+		observation.Input++
+		conflicting, err := json.Marshal(observation)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		ref, err := objects.StoreDetail(t.Context(), string(f.project.OrganizationID), conflicting)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conflictKey = ref.Key
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.RecordBillingCosts(t.Context(), []billingstore.CostObservation{{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Observation: observation, Reference: billingstore.AuditReferenceFromArchive(ref), ReceivedAt: clock.Now()}})
+			return err
+		}); err != nil {
+			t.Error(err)
+		}
+	}
+	details.armed = true
+	before := readPendingRunSnapshot(t, f)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, pendingEventPath(f), f.worker, loser)
+	if conflictKey == "" {
+		t.Fatal("conflicting usage was not committed during the losing publication")
+	}
+	requireNativeCode(t, response, http.StatusConflict, "idempotency_conflict")
+	details.mu.Lock()
+	losingKeys := append([]string(nil), details.keys...)
+	details.mu.Unlock()
+	if len(losingKeys) == 0 {
+		t.Fatal("losing publication uploaded no objects before its write")
+	}
+	var events, receipts, revisions int
+	admin := usagePostgresAdmin(t, f.service)
+	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND type LIKE 'run.%' AND payload_object_key=ANY($2::text[])),(SELECT count(*) FROM native_commands WHERE organization_id=$1 AND command_key=$3),(SELECT count(*) FROM cost_observation_revisions WHERE organization_id=$1 AND object_key=ANY($2::text[]))", f.project.OrganizationID, losingKeys, loser.IdempotencyKey).Scan(&events, &receipts, &revisions); err != nil {
+		t.Fatal(err)
+	}
+	if events != 0 || receipts != 0 || revisions != 0 {
+		t.Fatalf("losing publication committed events=%d receipts=%d usage revisions=%d", events, receipts, revisions)
+	}
+	if after := readPendingRunSnapshot(t, f); after != before {
+		t.Fatalf("losing publication changed committed content: before=%+v after=%+v", before, after)
+	}
+	var winningKeys []string
+	rows, err := admin.QueryContext(t.Context(), "SELECT object_key FROM cost_observation_revisions WHERE organization_id=$1", f.project.OrganizationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		winningKeys = append(winningKeys, key)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil || len(winningKeys) == 0 {
+		t.Fatalf("winning usage revision keys=%v err=%v", winningKeys, err)
+	}
+	clock.Advance(attachment.OrphanTTL + time.Second)
+	if _, err := objects.Reclaim(t.Context(), f.project.OrganizationID, clock.Now().Add(-attachment.OrphanTTL)); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed := 0
+	for _, key := range losingKeys {
+		var present bool
+		if err := admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM hub_detail_objects WHERE organization_id=$1 AND object_key=$2)", f.project.OrganizationID, key).Scan(&present); err != nil {
+			t.Fatal(err)
+		}
+		var referenced bool
+		if err := admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=$1 AND payload_object_key=$2) OR EXISTS(SELECT 1 FROM native_attempts WHERE organization_id=$1 AND payload_object_key=$2) OR EXISTS(SELECT 1 FROM archive_objects WHERE organization_id=$1 AND object_key=$2) OR EXISTS(SELECT 1 FROM cost_observation_revisions WHERE organization_id=$1 AND object_key=$2)", f.project.OrganizationID, key).Scan(&referenced); err != nil {
+			t.Fatal(err)
+		}
+		if present != referenced {
+			t.Fatalf("object %s present=%t after reclaim, want %t (referenced by committed work)", key, present, referenced)
+		}
+		if !present {
+			reclaimed++
+		}
+	}
+	if reclaimed == 0 {
+		t.Fatal("reclaim left every object of the rejected publication")
+	}
+	for _, key := range winningKeys {
+		var present bool
+		if err := admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM hub_detail_objects WHERE organization_id=$1 AND object_key=$2)", f.project.OrganizationID, key).Scan(&present); err != nil || !present {
+			t.Fatalf("reclaim deleted committed usage object %s: present=%t err=%v", key, present, err)
+		}
 	}
 }
 

@@ -60,6 +60,10 @@ type MonthlyCostSnapshot struct {
 	UnreportedAttempts int64
 }
 
+type CostConflictReader interface {
+	BillingCostConflict(context.Context, []CostObservation) (bool, error)
+}
+
 type MonthlyCostReader interface {
 	ReadMonthlyCosts(context.Context, MonthlyCostQuery) (MonthlyCostSnapshot, error)
 }
