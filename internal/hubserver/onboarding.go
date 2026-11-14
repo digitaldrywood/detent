@@ -5,8 +5,11 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -23,6 +26,20 @@ func (s *Service) registerOnboardingRoutes(e *echo.Echo) {
 	e.PUT(hubapi.NativeBase+"/onboarding", s.saveOnboarding, write)
 	e.PUT(hubapi.NativeBase+"/onboarding/policy", s.approveProjectPolicy, s.requireOnboardingAdmin())
 	e.PUT(hubapi.NativeBase+"/onboarding/artifact-services/:service", s.bindArtifactService, s.requireOnboardingAdmin())
+}
+
+func (s *Service) onboardingAdministrationDenial(ctx context.Context, scope hubscope.NativeScope) error {
+	if s.config.TenantRepository == nil {
+		return hubapi.NativeNotFound()
+	}
+	scope.RequireHostedAdmin = true
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.authorizeAccessScope(ctx, r, scope, true)
+	})
+	if err == nil {
+		return accessstore.ErrDenied
+	}
+	return err
 }
 
 func (s *Service) projectOnboarding(ctx context.Context, scope hubscope.NativeScope) (onboarding.Project, error) {
@@ -52,15 +69,12 @@ func (s *Service) saveOnboarding(c echo.Context) error {
 func (s *Service) requireOnboardingAdmin() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return s.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin)(func(c echo.Context) error {
-			credential := hubscope.NativeRequestScope(c).Credential
-			if credential.Hosted != nil {
-				if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-					return s.nativeAPIError(c, hubapi.NativeNotFound())
-				}
-			} else if credential.Scope != hubapi.APIScopeAdmin {
-				return s.nativeAPIError(c, hubapi.NativeNotFound())
+			scope := hubscope.NativeRequestScope(c)
+			credential := scope.Credential
+			if credential.Hosted != nil && (credential.HostedRole == "owner" || credential.HostedRole == "admin") || credential.Hosted == nil && credential.Scope == hubapi.APIScopeAdmin {
+				return next(c)
 			}
-			return next(c)
+			return s.nativeAPIError(c, s.onboardingAdministrationDenial(c.Request().Context(), scope))
 		})
 	}
 }

@@ -147,7 +147,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		{"occupied state", []tracker.NativeState{{Name: "Backlog"}}, "2", "owner", http.StatusUnprocessableEntity},
 		{"stale settings", states, "1", "owner", http.StatusConflict},
 		{"viewer", states, "2", "viewer", http.StatusForbidden},
-		{"member with write grant", states, "2", "member", http.StatusNotFound},
+		{"member with write grant", states, "2", "member", http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload := map[string]any{"idempotency_key": test.name, "expected_revision": test.revision, "intake": "disabled", "projection": "disabled", "repository_enabled": false, "states": test.states}
@@ -312,7 +312,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		}
 		repositoryMarkdown := strings.Replace(markdown, "Complete the issue.", "Complete the repository-defined issue.", 1)
 		descriptor := resolveRepositoryPolicy(repositoryMarkdown, strings.Repeat("b", 40))
-		api(t, "member", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: descriptor}, http.StatusNotFound)
+		api(t, "member", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: descriptor}, http.StatusForbidden)
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: descriptor}, http.StatusOK)
 		integration = ProjectIntegration{}
 		browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/integration", nil, http.StatusOK), &integration)

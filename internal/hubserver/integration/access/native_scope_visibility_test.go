@@ -23,6 +23,11 @@ func TestInvisibleProjectMatchesMissingResource(t *testing.T) {
 	member := hosted.User(t, "member", "member", "member@example.test", "read", "")
 	reporter := hosted.User(t, "reporter", "reporter", "reporter@example.test", "read", "")
 	admin := hosted.User(t, "admin", "admin", "admin@example.test", "write", "")
+	writer := hosted.User(t, "writer", "member", "writer@example.test", "write", "")
+	viewer := hosted.User(t, "viewer", "viewer", "viewer@example.test", "read", "")
+	integration := func(key string) map[string]any {
+		return map[string]any{"idempotency_key": key, "expected_revision": "1", "intake": "disabled", "projection": "disabled"}
+	}
 	if err := hosted.Hub.Config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: "prj_ungranted", Name: "Example ungranted", Slug: "example-ungranted", Profile: "native"}, States: hubfixture.States()})
 		return err
@@ -85,6 +90,18 @@ func TestInvisibleProjectMatchesMissingResource(t *testing.T) {
 		{"member administrator", func(t *testing.T) *httptest.ResponseRecorder {
 			return hosted.Request(t, admin, http.MethodGet, hosted.Base, nil)
 		}, http.StatusOK, ""},
+		{"member write grant visible integration administration", func(t *testing.T) *httptest.ResponseRecorder {
+			return hosted.Request(t, writer, http.MethodPut, hosted.Base+"/onboarding/integration", integration("visible-writer"))
+		}, http.StatusForbidden, "access_denied"},
+		{"viewer visible integration administration", func(t *testing.T) *httptest.ResponseRecorder {
+			return hosted.Request(t, viewer, http.MethodPut, hosted.Base+"/onboarding/integration", integration("visible-viewer"))
+		}, http.StatusForbidden, "access_denied"},
+		{"member write grant invisible integration administration", func(t *testing.T) *httptest.ResponseRecorder {
+			return hosted.Request(t, writer, http.MethodPut, "/api/v2/organizations/org_security/projects/prj_ungranted/onboarding/integration", integration("hidden-writer"))
+		}, http.StatusNotFound, "not_found"},
+		{"member write grant visible policy approval", func(t *testing.T) *httptest.ResponseRecorder {
+			return hosted.Request(t, writer, http.MethodPut, hosted.Base+"/onboarding/policy", map[string]any{"expected_policy_id": "", "observed_policy_id": "policy_example"})
+		}, http.StatusForbidden, "access_denied"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := test.request(t)
