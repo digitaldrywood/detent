@@ -478,7 +478,7 @@ func TestHostedAnalyticsReads(t *testing.T) {
 		now := f.service.config.Clock().UTC()
 		window := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
 		owner := f.service.config.TenantRepository.(tenantstore.SnapshotRepository)
-		if err := owner.ReadTenantSnapshot(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := owner.ReadTenantSnapshot(t.Context(), scope.Organization, corestore.Background, func(reader tenantstore.Reader) error {
 			principal, err := f.service.analyticsSnapshotPrincipal(t.Context(), reader, scope)
 			if err != nil {
 				return err
