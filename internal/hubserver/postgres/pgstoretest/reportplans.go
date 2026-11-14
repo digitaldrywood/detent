@@ -335,24 +335,24 @@ func parseReportStatement(statement string, args []any, limitCap int) reportStat
 	return parsed
 }
 
-func (s reportStatement) closure(block int, into map[reportRelation]bool) {
+func (s reportStatement) closure(block int, planned map[string]bool, into map[reportRelation]bool) {
 	for relation := range s.blocks[block].relations {
 		into[relation] = true
 	}
 	for _, child := range s.blocks[block].children {
-		if s.blocks[child].cte == "" && s.blocks[child].limit == nil {
-			s.closure(child, into)
+		if s.blocks[child].limit == nil && (s.blocks[child].cte == "" || !planned[s.blocks[child].cte]) {
+			s.closure(child, planned, into)
 		}
 	}
 }
 
-func (s reportStatement) scope(block int, planned map[string]bool) string {
+func (s reportStatement) scope(block int, planned map[string]bool) (string, bool) {
 	for ; block > 0; block = s.blocks[block].parent {
-		if name := s.blocks[block].cte; name != "" && planned[name] {
-			return name
+		if name := s.blocks[block].cte; name != "" {
+			return name, !planned[name]
 		}
 	}
-	return ""
+	return "", false
 }
 
 func reportTokens(statement string) []string {
@@ -517,11 +517,14 @@ func (a *reportAnalysis) limitCount(node reportPlanNode, ctx reportContext) floa
 	}
 	values := map[int]bool{}
 	for index, block := range a.statement.blocks {
-		if block.limit == nil || a.statement.scope(index, a.planCTEs) != ctx.scope {
+		if block.limit == nil {
+			continue
+		}
+		if scope, inlined := a.statement.scope(index, a.planCTEs); !inlined && scope != ctx.scope {
 			continue
 		}
 		closure := map[reportRelation]bool{}
-		a.statement.closure(index, closure)
+		a.statement.closure(index, a.planCTEs, closure)
 		direct, inside := false, true
 		for relation := range planned {
 			direct = direct || reportHasRelation(block.relations, relation)
@@ -568,7 +571,10 @@ func (a *reportAnalysis) visit(node reportPlanNode, ctx reportContext) float64 {
 	for _, child := range node.Plans {
 		if name, ok := strings.CutPrefix(child.Subplan, "CTE "); ok {
 			name = strings.ToLower(name)
-			a.ctes[name] = a.visit(child, reportContext{scope: name, loops: 1, cap: math.Inf(1), top: true})
+			a.ctes[name] = a.visit(child, reportContext{scope: name, loops: ctx.loops, cap: math.Inf(1), top: true}) / ctx.loops
+			if math.IsInf(ctx.loops, 1) {
+				a.ctes[name] = math.Inf(1)
+			}
 		}
 	}
 	inf := math.Inf(1)
