@@ -62,6 +62,7 @@ func TestLocalBoardMigrationToLanding(t *testing.T) {
 	var lease tracker.NativeLease
 	decodeHubResponse(t, claim, &lease)
 	started := nativeStartedEvent(lease)
+	started.Data.Identity.Role = "code"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", worker, started), http.StatusOK)
 	mutation := tracker.Mutation{IdempotencyKey: "change", LeaseID: lease.ID, FencingToken: lease.FencingToken}
 	created := performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/changes", worker, tracker.CreateChange{Mutation: mutation, Title: "Example migration change"})
@@ -74,6 +75,8 @@ func TestLocalBoardMigrationToLanding(t *testing.T) {
 	input.Repository = "https://github.com/example-org/example-project"
 	input.RunID, input.AttemptID = started.Data.RunID, started.Data.AttemptID
 	bundle := changeTestSource(t, &input)
+	diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: input.AttemptID, RunnerID: runner.binding.RunnerID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+input.AttemptID+"/diff", worker, diff), http.StatusAccepted)
 	published := performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions", worker, tracker.PublishChangeVersion{Mutation: mutation, ChangeVersionInput: input, SourceBundle: bundle})
 	requireNativeStatus(t, published, http.StatusOK)
 	var version tracker.ChangeVersion
