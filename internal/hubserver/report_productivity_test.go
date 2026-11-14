@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -746,6 +747,9 @@ func productivitySeedItem(ctx context.Context, t testing.TB, repository tenantst
 			return err
 		}
 		if err := w.SetWorkItemLabels(ctx, project, id, labels); err != nil {
+			return err
+		}
+		if err := w.PutWorkItemFacts(ctx, claimstore.WorkItemFacts{OrganizationID: org, ProjectID: project, WorkItemID: id, Author: actor.PrincipalID}); err != nil {
 			return err
 		}
 		if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
