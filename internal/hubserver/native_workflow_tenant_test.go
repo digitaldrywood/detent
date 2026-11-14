@@ -39,6 +39,7 @@ func TestWorkerBlockedWithoutTypedActionNeedsCurrentRecordedHumanAction(t *testi
 		{name: "untyped historical action only", evidence: "historical", status: http.StatusUnprocessableEntity, code: "invalid_request"},
 		{name: "typed historical action only", evidence: "historical", typed: true, status: http.StatusOK},
 		{name: "untyped machine failure", evidence: "failure", status: http.StatusUnprocessableEntity, code: "invalid_request"},
+		{name: "untyped question before its run finishes", evidence: "unfinished", status: http.StatusUnprocessableEntity, code: "invalid_request"},
 	}
 	for _, organization := range []nativeOrganization{{ID: "org_skew_first", Name: "First", Slug: "skew-first"}, {ID: "org_skew_second", Name: "Second", Slug: "skew-second"}} {
 		t.Run(string(organization.ID), func(t *testing.T) {
@@ -73,7 +74,9 @@ func TestWorkerBlockedWithoutTypedActionNeedsCurrentRecordedHumanAction(t *testi
 					default:
 						finish.Data.Disposition = &tracker.NativeDisposition{Status: "complete"}
 					}
-					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
+					if test.evidence != "unfinished" {
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
+					}
 					current := readWorkItem(t, f, issue.WorkItemID, "")
 					switch test.evidence {
 					case "contract":
