@@ -250,8 +250,12 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			initialDiagnostics := view.Diagnostics
 			seedHubConfiguration(t, f, r.binding.RunnerID, view)
+			var entryNow time.Time
 			heartbeat := func() runnerauth.RoutingSnapshot {
 				t.Helper()
+				if !entryNow.IsZero() {
+					entryNow = entryNow.Add(time.Millisecond)
+				}
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
 				requireNativeStatus(t, response, http.StatusOK)
 				var snapshot runnerauth.RoutingSnapshot
@@ -270,7 +274,6 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/configuration-context-test", testHubAdminToken, nil), http.StatusOK)
 			ctx := <-contexts
 			var entryClaims cloudassert.Claims
-			var entryNow time.Time
 			var entryRevoked bool
 			var entryExpires time.Time
 			var entrySubject string
