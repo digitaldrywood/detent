@@ -438,20 +438,25 @@ func (s *session) ReadAttemptFacts(ctx context.Context, query reportstore.Attemp
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
+	candidateIDs, err := s.readAttemptCandidates(ctx, query.From.UTC(), query.To.UTC())
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,a.id,coalesce(r.runner_id,''),coalesce(r.display_name,''),CASE WHEN lost.ended_at<$5 THEN 'interrupted' ELSE coalesce(nullif(f.run_status,''),'running') END,a.started_at,CASE WHEN lost.ended_at<$5 THEN greatest(lost.ended_at,coalesce(f.recorded_at,a.started_at)) ELSE coalesce(f.recorded_at,a.started_at) END,coalesce(f.role,''),coalesce(f.model,''),coalesce(f.effort,''),f.event_id IS NOT NULL,coalesce(f.failed,false),coalesce(f.failure_class,''),coalesce(f.failure_kind,''),coalesce(f.landing_receipt,false),coalesce(f.landed,false),coalesce(f.landing_change_id,''),coalesce(f.duration_seconds,0),coalesce(f.event_id,'')
-FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
-LEFT JOIN report_attempt_facts af ON af.organization_id=a.organization_id AND af.attempt_id=a.id
-LEFT JOIN collaboration_events outcome ON outcome.organization_id=af.organization_id AND outcome.id=af.outcome_event_id
-LEFT JOIN collaboration_events latest ON latest.organization_id=af.organization_id AND latest.id=af.latest_event_id
-LEFT JOIN collaboration_events first ON first.organization_id=af.organization_id AND first.id=af.first_event_id
+FROM unnest($15::text[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM native_attempts a WHERE a.organization_id=$1 AND a.id=candidate.id LIMIT 1) a
+CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=a.organization_id AND i.id=a.issue_id LIMIT 1) i
+LEFT JOIN LATERAL (SELECT * FROM report_attempt_facts af WHERE af.organization_id=a.organization_id AND af.attempt_id=a.id LIMIT 1) af ON true
+LEFT JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=af.organization_id AND e.id=af.outcome_event_id LIMIT 1) outcome ON true
+LEFT JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=af.organization_id AND e.id=af.latest_event_id LIMIT 1) latest ON true
+LEFT JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=af.organization_id AND e.id=af.first_event_id LIMIT 1) first ON true
 LEFT JOIN LATERAL(SELECT CASE WHEN outcome.recorded_at<$5 THEN outcome.id WHEN latest.recorded_at<$5 THEN latest.id WHEN first.recorded_at<$5 THEN first.id END AS id) chosen ON true
-LEFT JOIN LATERAL(SELECT rf.*,e.recorded_at FROM collaboration_events e JOIN report_event_facts rf ON rf.organization_id=e.organization_id AND rf.event_id=e.id WHERE e.organization_id=a.organization_id AND e.id=chosen.id) f ON true
-LEFT JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
+LEFT JOIN LATERAL(SELECT rf.*,e.recorded_at FROM collaboration_events e JOIN report_event_facts rf ON rf.organization_id=e.organization_id AND rf.event_id=e.id WHERE e.organization_id=a.organization_id AND e.id=chosen.id LIMIT 1) f ON true
+LEFT JOIN LATERAL (SELECT * FROM leases l WHERE l.organization_id=a.organization_id AND l.lease_id=a.lease_id LIMIT 1) l ON true
 LEFT JOIN LATERAL(SELECT CASE WHEN coalesce(nullif(f.run_status,''),'running')='running' AND (l.released_at IS NOT NULL OR l.expires_at<=$14) THEN least(coalesce(l.released_at,l.expires_at),l.expires_at) END AS ended_at) lost ON true
-LEFT JOIN runner_lease_assignments la ON la.organization_id=a.organization_id AND la.lease_id=a.lease_id
-LEFT JOIN runner_identities r ON r.organization_id=la.organization_id AND r.runner_id=la.runner_id
+LEFT JOIN LATERAL (SELECT * FROM runner_lease_assignments la WHERE la.organization_id=a.organization_id AND la.lease_id=a.lease_id LIMIT 1) la ON true
+LEFT JOIN LATERAL (SELECT * FROM runner_identities r WHERE r.organization_id=la.organization_id AND r.runner_id=la.runner_id LIMIT 1) r ON true
 WHERE a.organization_id=$1 AND i.project_id=ANY($2::text[]) AND ($3='' OR i.actor_principal_id=$3)
-  AND a.started_at < $5 AND (f.recorded_at >= $4 OR coalesce(f.run_status,'running')='running' AND (lost.ended_at IS NULL OR lost.ended_at>=$4) OR EXISTS(SELECT 1 FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.attempt_id=a.id AND u.period>=$4 AND u.period<$5) OR EXISTS(SELECT 1 FROM report_usage_current u WHERE u.organization_id=a.organization_id AND u.attempt_id=a.id AND u.period>=$4 AND u.period<$5))
+  AND a.started_at < $5 AND (f.recorded_at >= $4 OR coalesce(f.run_status,'running')='running' AND (lost.ended_at IS NULL OR lost.ended_at>=$4) OR (SELECT true FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.attempt_id=a.id AND u.period>=$4 AND u.period<$5 LIMIT 1) OR (SELECT true FROM report_usage_current u WHERE u.organization_id=a.organization_id AND u.attempt_id=a.id AND u.period>=$4 AND u.period<$5 LIMIT 1))
   AND (coalesce(cardinality($6::text[]),0)=0 OR i.issue_type=ANY($6::text[]))
   AND (coalesce(cardinality($7::integer[]),0)=0 OR i.priority=ANY($7::integer[]))
   AND (coalesce(cardinality($8::text[]),0)=0 OR i.actor_principal_id=ANY($8::text[]))
@@ -459,7 +464,7 @@ WHERE a.organization_id=$1 AND i.project_id=ANY($2::text[]) AND ($3='' OR i.acto
   AND (coalesce(cardinality($10::text[]),0)=0 OR r.runner_id=ANY($10::text[]))
 AND (coalesce(cardinality($12::text[]),0)=0 OR coalesce(nullif(trim(f.model),''),'Unavailable')=ANY($12::text[]))
 AND (coalesce(cardinality($13::text[]),0)=0 OR coalesce(nullif(trim(f.role),''),'Unavailable')=ANY($13::text[]))
-ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages, now)
+ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages, now, candidateIDs)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -482,6 +487,58 @@ ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, projects, query.Principal
 		return nil, reportstore.ErrPopulationExceeded
 	}
 	return attempts, nil
+}
+
+func (s *session) readAttemptCandidates(ctx context.Context, from, to time.Time) ([]string, error) {
+	var exceeded bool
+	var ids []string
+	err := s.db.QueryRow(ctx, `WITH RECURSIVE machines AS (
+ SELECT first.machine_id,1 AS depth FROM (SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 ORDER BY l.machine_id LIMIT 1) first
+ UNION ALL
+ SELECT next.machine_id,m.depth+1 FROM machines m CROSS JOIN LATERAL (
+  SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id>m.machine_id ORDER BY l.machine_id LIMIT 1
+ ) next WHERE m.depth<=$5
+), usage_projects AS (
+ SELECT first.project_id,1 AS depth FROM (SELECT u.project_id FROM attempt_usage u WHERE u.organization_id=$1 ORDER BY u.project_id LIMIT 1) first
+ UNION ALL
+ SELECT next.project_id,p.depth+1 FROM usage_projects p CROSS JOIN LATERAL (
+  SELECT u.project_id FROM attempt_usage u WHERE u.organization_id=$1 AND u.project_id>p.project_id ORDER BY u.project_id LIMIT 1
+ ) next WHERE p.depth<=$5
+), current_projects AS (
+ SELECT first.project_id,1 AS depth FROM (SELECT u.project_id FROM report_usage_current u WHERE u.organization_id=$1 ORDER BY u.project_id LIMIT 1) first
+ UNION ALL
+ SELECT next.project_id,p.depth+1 FROM current_projects p CROSS JOIN LATERAL (
+  SELECT u.project_id FROM report_usage_current u WHERE u.organization_id=$1 AND u.project_id>p.project_id ORDER BY u.project_id LIMIT 1
+ ) next WHERE p.depth<=$5
+), leased AS MATERIALIZED (
+ SELECT a.id FROM machines m CROSS JOIN LATERAL (
+  SELECT l.lease_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id=m.machine_id AND l.expires_at>=$2 ORDER BY l.expires_at LIMIT $4
+ ) l CROSS JOIN LATERAL (
+  SELECT a.id FROM native_attempts a WHERE a.organization_id=$1 AND a.lease_id=l.lease_id LIMIT 1
+ ) a WHERE m.depth<=$5
+), evented AS MATERIALIZED (
+ SELECT e.attempt_id FROM collaboration_events e WHERE e.organization_id=$1 AND e.recorded_at>=$2 AND e.recorded_at<$3 AND nullif(e.attempt_id,'') IS NOT NULL ORDER BY e.recorded_at DESC,e.id DESC LIMIT $4
+), used AS MATERIALIZED (
+ SELECT u.attempt_id FROM usage_projects p CROSS JOIN LATERAL (
+  SELECT u.attempt_id FROM attempt_usage u WHERE u.organization_id=$1 AND u.project_id=p.project_id AND u.period>=$2 AND u.period<$3 ORDER BY u.period,u.attempt_id LIMIT $4
+ ) u WHERE p.depth<=$5
+ UNION ALL
+ SELECT u.attempt_id FROM current_projects p CROSS JOIN LATERAL (
+  SELECT u.attempt_id FROM report_usage_current u WHERE u.organization_id=$1 AND u.project_id=p.project_id AND u.period>=$2 AND u.period<$3 ORDER BY u.period LIMIT $4
+ ) u WHERE p.depth<=$5
+), keyed AS (
+ SELECT id FROM leased UNION SELECT attempt_id FROM evented UNION SELECT attempt_id FROM used
+)
+SELECT EXISTS(SELECT 1 FROM machines WHERE depth>$5) OR EXISTS(SELECT 1 FROM usage_projects WHERE depth>$5) OR EXISTS(SELECT 1 FROM current_projects WHERE depth>$5)
+ OR (SELECT count(*) FROM leased)>=$4 OR (SELECT count(*) FROM evented)>=$4 OR (SELECT count(*) FROM used)>=$4,
+ coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::text[])`, s.organization, from, to, maxOverviewCandidateRows+1, maxReportProjects).Scan(&exceeded, &ids)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	if exceeded || len(ids) > maxOverviewCandidateRows {
+		return nil, reportstore.ErrPopulationExceeded
+	}
+	return ids, nil
 }
 
 func (s *session) HasPriorData(ctx context.Context, projects []tracker.ProjectID, before time.Time, principal string) (bool, error) {
