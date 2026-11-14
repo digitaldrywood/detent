@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -15,7 +14,7 @@ import (
 
 func TestBoardCardsFollowCurrentTerminalStates(t *testing.T) {
 	t.Parallel()
-	h := hubfixture.Open(t, hubfixture.Config{RunDetails: hubtest.NewDetails()})
+	h := quietHub(t)
 	p := hubfixture.NewNative(t, h, "", "Example terminal states")
 	finished := p.Create(t, "Finished card")
 	hubfixture.RequireStatus(t, p.Request(t, http.MethodPost, p.Base+"/work-items/"+string(finished.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "finished"}, ExpectedRevision: finished.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)

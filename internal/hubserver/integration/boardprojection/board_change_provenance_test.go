@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -15,7 +14,7 @@ import (
 
 func TestBoardCardsRecordEvaluatedChangeProvenance(t *testing.T) {
 	t.Parallel()
-	h := hubfixture.Open(t, hubfixture.Config{RunDetails: hubtest.NewDetails()})
+	h := quietHub(t)
 	c := hubfixture.NewChangeInOrganization(t, h)
 	version := c.Publish(t, "provenance", "")
 	card := func(t *testing.T) viewstore.BoardRecord {
@@ -48,7 +47,7 @@ func TestBoardCardsRecordEvaluatedChangeProvenance(t *testing.T) {
 
 func TestLegacyCardsGainChangeProvenanceThroughMaintenance(t *testing.T) {
 	t.Parallel()
-	h := hubfixture.Open(t, hubfixture.Config{RunDetails: hubtest.NewDetails()})
+	h := quietHub(t)
 	c := hubfixture.NewChangeInOrganization(t, h)
 	version := c.Publish(t, "legacy", "")
 	h.RefreshBoard(t, c.Organization())
@@ -79,7 +78,7 @@ func TestLegacyCardsGainChangeProvenanceThroughMaintenance(t *testing.T) {
 
 func TestLegacyPolicyRevisionsGainCompatibilityFactsThroughMaintenance(t *testing.T) {
 	t.Parallel()
-	h := hubfixture.Open(t, hubfixture.Config{RunDetails: hubtest.NewDetails()})
+	h := quietHub(t)
 	legacy := hubfixture.NewChangeInOrganization(t, h)
 	version := legacy.Publish(t, "legacy-facts", "")
 	untouched := hubfixture.NewChangeInOrganization(t, h)
