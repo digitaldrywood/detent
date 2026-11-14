@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 )
@@ -64,8 +65,16 @@ func TestPostgresCreditWritesStayBoundedWithHistory(t *testing.T) {
 			service.config.AccessRepository, service.config.TenantRepository = measured, measured
 			service.database.billingRepository, service.database.postgres = measured, measured
 			t.Cleanup(func() {
+				if service.requestMetrics != nil {
+					if err := service.requestMetrics.Drain(context.WithoutCancel(t.Context()), service.config.Clock()); err != nil {
+						t.Error(err)
+					}
+				}
 				service.config.AccessRepository, service.config.TenantRepository = oldAccess, oldTenant
 				service.database.billingRepository, service.database.postgres = oldBilling, oldPostgres
+				if service.requestMetrics != nil {
+					service.requestMetrics.RecordUsage(service.database.metricsBillingOwner(), requestmetrics.Key{}, requestmetrics.Usage{})
+				}
 				if err := measured.Close(); err != nil {
 					t.Error(err)
 				}
