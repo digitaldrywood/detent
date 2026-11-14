@@ -1236,7 +1236,7 @@ func (s *routingGrantInterleaveDetails) StoreDetail(ctx context.Context, org str
 		return ref, err
 	}
 	var value runnerauth.Runner
-	if !s.fired && json.Unmarshal(raw, &value) == nil && value.RunnerID == "runner_one" && value.Scope == "organization" {
+	if !s.fired && json.Unmarshal(raw, &value) == nil && value.RunnerID == routingTenantRunnerID("one") && value.Scope == "organization" {
 		s.fired = true
 		err = s.afterStore(ctx)
 	}
