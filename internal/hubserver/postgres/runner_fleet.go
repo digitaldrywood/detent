@@ -81,6 +81,8 @@ WHEN p.requirement_backend='git' AND p.requirement_role='merge' AND l.session_id
 THEN l.machine_id||'/'||i.project_id||'/'||split_part(l.session_id,'/',2)||'/'||a.runner_id ELSE l.lease_id END),
 coalesce(min(nullif(p.max_concurrent,0)) FILTER(WHERE NOT EXISTS(
 SELECT 1 FROM runner_provider_reports fresh JOIN runner_provider_report_models m ON m.organization_id=fresh.organization_id AND m.runner_id=fresh.runner_id AND m.backend=fresh.backend
+JOIN runner_identities fr ON fr.organization_id=fresh.organization_id AND fr.runner_id=fresh.runner_id AND fr.removed_at IS NULL AND fr.expires_at>$3
+JOIN api_tokens ft ON ft.organization_id=fr.organization_id AND ft.id=fr.token_id AND ft.scope='worker' AND ft.key_kind='service' AND ft.revoked_at IS NULL AND ft.created_at<=$3 AND (ft.expires_at IS NULL OR ft.expires_at>$3)
 WHERE fresh.organization_id=p.organization_id AND fresh.runner_id=a.runner_id AND fresh.provider=p.provider AND fresh.backend=p.backend
 AND fresh.account_alias=p.account_alias AND fresh.shared_account_alias=p.shared_account_alias AND m.model_id=p.requirement_model
 AND fresh.observed_at<=$3 AND fresh.observed_at+interval '2 minutes'>$3)),0)
@@ -327,6 +329,8 @@ WHEN p.requirement_backend='git' AND p.requirement_role='merge' AND p.session_id
 THEN p.machine_id||'/'||p.project_id||'/'||split_part(p.session_id,'/',2)||'/'||p.runner_id ELSE p.lease_id END),
 coalesce(min(nullif(p.max_concurrent,0)) FILTER(WHERE NOT EXISTS(
 SELECT 1 FROM runner_provider_reports fresh JOIN runner_provider_report_models m ON m.organization_id=fresh.organization_id AND m.runner_id=fresh.runner_id AND m.backend=fresh.backend
+JOIN runner_identities fr ON fr.organization_id=fresh.organization_id AND fr.runner_id=fresh.runner_id AND fr.removed_at IS NULL AND fr.expires_at>$3
+JOIN api_tokens ft ON ft.organization_id=fr.organization_id AND ft.id=fr.token_id AND ft.scope='worker' AND ft.key_kind='service' AND ft.revoked_at IS NULL AND ft.created_at<=$3 AND (ft.expires_at IS NULL OR ft.expires_at>$3)
 WHERE fresh.organization_id=p.organization_id AND fresh.runner_id=p.runner_id AND fresh.provider=p.provider AND fresh.backend=p.backend
 AND fresh.account_alias=p.account_alias AND fresh.shared_account_alias=p.shared_account_alias AND m.model_id=p.requirement_model
 AND fresh.observed_at<=$3 AND fresh.observed_at+interval '2 minutes'>$3)),0), count(*)
