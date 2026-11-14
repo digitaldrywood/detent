@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -234,27 +235,32 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				}
 				var sourceKey string
 				var originalSource []byte
+				faultSource := func(fault bool) {
+					details.mu.Lock()
+					defer details.mu.Unlock()
+					switch {
+					case !fault:
+						details.archives[sourceKey] = bytes.Clone(originalSource)
+					case test.sourceFailure == "missing":
+						delete(details.archives, sourceKey)
+					case test.sourceFailure == "corrupt":
+						details.archives[sourceKey] = []byte{0}
+					}
+				}
 				if !test.checkpointOnly {
-					var key string
 					h.seed(func(writer tenantstore.Writer) error {
 						stored, err := writer.Version(t.Context(), change.ID, version.ID)
-						key = stored.SourceObjectKey
+						sourceKey = stored.SourceObjectKey
 						return err
 					})
 					details.mu.Lock()
-					original, present := details.archives[key]
-					original = bytes.Clone(original)
-					if test.sourceFailure == "missing" {
-						delete(details.archives, key)
-					} else if test.sourceFailure == "corrupt" {
-						details.archives[key] = []byte{0}
-					}
+					originalSource = bytes.Clone(details.archives[sourceKey])
 					details.mu.Unlock()
-					if !present || len(original) == 0 || key == "" {
+					if len(originalSource) == 0 || sourceKey == "" {
 						t.Fatal("selected source bundle was not stored")
 					}
-					sourceKey, originalSource = key, bytes.Clone(original)
-					t.Cleanup(func() { details.mu.Lock(); details.archives[key] = original; details.mu.Unlock() })
+					faultSource(true)
+					t.Cleanup(func() { faultSource(false) })
 				}
 
 				expectedSite := "recover native Change source"
@@ -305,29 +311,11 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						t.Fatal("same-runner recovery replaced the source object fault")
 					}
 				} else {
-					sameCandidate := h.claim(t, issue.ID)
-					sameMachine := h.scheduler.RunExecution(issue.ID)
-					if sameMachine.Recovery().Lease.MachineID != sourceMachine || sameMachine.Recovery().SourceAttemptID != attempt.AttemptID {
-						t.Fatal("same-runner refusal lost source identity")
-					}
-					sameProvider := &committingAgent{staged: true, validator: "pass", complete: true}
-					sameRunner, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: sameProvider})
+					sourceIdentity, err := h.native.Transport().RunnerIdentity(t.Context())
 					if err != nil {
 						t.Fatal(err)
 					}
-					sameRequest := runner.RunRequest{Execution: sameMachine, ProjectID: "local", Issue: sameCandidate, Mode: runner.RunModeImplement}
-					sameResult, reclaimed, sameErr := runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: sameRunner, completed: make(chan nativeCompletionRun, 1), expectSourceRefusal: true, expectedRecoverySite: expectedSite}, sameRequest, "In Progress")
-					if !errors.Is(sameErr, runner.ErrNativeRecoveryRequired) || !strings.Contains(sameErr.Error(), expectedSite) || sameResult.TurnStarted || sameProvider.calls != 0 || sameProvider.writableCalls != 0 {
-						t.Fatalf("unavailable source started on source runner: result=%+v calls=%d writable=%d error=%v", sameResult, sameProvider.calls, sameProvider.writableCalls, sameErr)
-					}
-					if err := h.scheduler.ReleaseClaim(t.Context(), reclaimed.ID, "released"); err != nil {
-						t.Fatal(err)
-					}
-					refused, err := h.admin.Recovery(t.Context(), item)
-					if err != nil || len(refused.Attempts) != 2 || refused.Attempts[1].AttemptID == attempt.AttemptID || refused.Attempts[1].MachineID != sourceMachine {
-						t.Fatalf("same-runner refusal attempt not recorded: attempts=%d error=%v", len(refused.Attempts), err)
-					}
-					sameRefusalAttempt = refused.Attempts[1].AttemptID
+					h.requireClaimSourceRefusal(t, issue.ID, sourceIdentity.RunnerID, "Checkpoint "+attempt.AttemptID+" on source runner "+string(sourceMachine)+" is ")
 					data, err := os.ReadFile(filepath.Join(info.Path, "CHANGE.md"))
 					if err != nil || string(data) != "retained source\n" {
 						t.Fatalf("source refusal lost original committed bytes: content=%q error=%v", data, err)
@@ -355,7 +343,23 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				if err != nil {
 					t.Fatal(err)
 				}
+				if test.sourceFailure != "intact" {
+					refusal := "Change " + change.ID + " version " + version.ID + " has no verified Hub source; recapture the exact head on source runner " + string(sourceMachine)
+					if test.sourceAvailability != "" {
+						refusal = "Checkpoint " + attempt.AttemptID + " on source runner " + string(sourceMachine) + " is "
+					}
+					h.requireClaimSourceRefusal(t, issue.ID, identity.RunnerID, refusal)
+					if test.checkpointOnly {
+						after, err := h.admin.Recovery(t.Context(), item)
+						if err != nil || !reflect.DeepEqual(after.Attempts, preserved.Attempts) || !reflect.DeepEqual(after.Change, preserved.Change) || !reflect.DeepEqual(after.ChangeDetail, preserved.ChangeDetail) {
+							t.Fatalf("source refusal changed retained evidence: before=%+v after=%+v error=%v", preserved, after, err)
+						}
+						return
+					}
+					faultSource(false)
+				}
 				candidate := h.claim(t, issue.ID)
+				faultSource(test.sourceFailure != "intact")
 				execution := h.scheduler.RunExecution(issue.ID)
 				if execution.Recovery().Lease.MachineID == sourceMachine || execution.Recovery().SourceAttemptID != attempt.AttemptID {
 					t.Fatalf("destination claim lost source/machine identity: %+v", execution.Recovery())
@@ -1077,4 +1081,8 @@ func RunNativeSourceResumesWithoutPreviousRuntime(t *testing.T, factories Constr
 			}
 		})
 	}
+}
+
+func (h *nativeChangeHub) requireClaimSourceRefusal(t *testing.T, issueID, runnerID, reason string) {
+	testsupport.RequireClaimSourceRefusal(t, h.candidates(t), h.admin, issueID, runnerID, reason)
 }

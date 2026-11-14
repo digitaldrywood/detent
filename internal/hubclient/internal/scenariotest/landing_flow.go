@@ -67,7 +67,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		{name: "direct landing capacity wait resumes on another machine", github: true, refusal: "direct_capacity_wait"},
 		{name: "SSH native landing", ssh: true},
 		{name: "landing and coding in one refresh", batch: true},
-		{name: "retained unpushed source remains available across machines", otherMachine: "unpushed"},
+		{name: "local reviewed head stays on its source machine", otherMachine: "unpushed"},
 		{name: "published reviewed head remains available across machines", otherMachine: "clean"},
 		{name: "non-gate policy approval preserves landing", policyChange: func(p *policy.Descriptor) {
 			p.ConfigDigest = policy.Digest([]byte("new non-gate configuration"))
@@ -635,12 +635,17 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			t.Fatal(err)
 		}
 		candidates, err := other.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Merging"}})
-		want := 1
+		want := 0
+		if otherMachine == "clean" {
+			want = 1
+		}
 		if err != nil || len(candidates) != want {
 			t.Fatalf("landing candidates for head availability %s: candidates=%v want=%d err=%v", otherMachine, candidates, want, err)
 		}
-		if err := other.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
-			t.Fatal(err)
+		if otherMachine == "clean" {
+			if err := other.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if otherMachine == "unpushed" {
 			if _, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: item, MachineID: otherHost.ID, SessionID: "wrong-host", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}); err == nil {
