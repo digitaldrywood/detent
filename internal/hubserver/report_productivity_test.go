@@ -361,7 +361,14 @@ func TestOrganizationProductivity(t *testing.T) {
 				if name == "human completed" {
 					project, wantKind, wantID, wantName = projects[0], "people", "person_one", ""
 				}
-				productivitySeedAttempt(t.Context(), t, f, project, id, "attempt_final_"+tt.kind+"_"+string(id), tt.runner, to.Add(-4*time.Hour), to.Add(-3*time.Hour))
+				attempt := "attempt_final_" + tt.kind + "_" + string(id)
+				productivitySeedAttempt(t.Context(), t, f, project, id, attempt, tt.runner, to.Add(-4*time.Hour), to.Add(-3*time.Hour))
+				if err := f.repository.ImportReportUsageFacts(t.Context(), []reportstore.UsageRecord{{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: project, WorkItemID: id, AttemptID: attempt, Period: to.Add(-4 * time.Hour), Provider: "provider", Model: "model", Cost: 0, Currency: "USD"}, UpdatedAt: to}}); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.repository.VerifyReportUsageImport(t.Context(), org, attempt, strings.Repeat("a", 64), 1); err != nil {
+					t.Fatal(err)
+				}
 				report := read(url.Values{"range": {"24h"}, "labels": {"productivity"}, "projects": {string(project)}})
 				if !slices.ContainsFunc(report.CompletedBy, func(actor productivityActor) bool {
 					return actor.Kind == wantKind && actor.ID == wantID && actor.Name == wantName && actor.Current == 1
