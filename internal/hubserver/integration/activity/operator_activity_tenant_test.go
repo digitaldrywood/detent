@@ -56,7 +56,7 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "owner", Hash: apikey.HashToken(string(org) + "_owner"), Name: "Example owner", Scope: "operator", NativeOnly: true, UserID: "user", MembershipID: "member", KeyScope: string(apikey.ScopeRead), ProjectAccess: "all", Kind: "personal", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return fmt.Errorf("CreateAccessCredential: %w", err)
 			}
-			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: "user", Email: "example@example.test", MembershipID: "member", Role: "owner", Active: true, PrincipalID: "owner", CreatedAt: now, UpdatedAt: now}); err != nil {
+			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: "user", Email: "example@example.test", MembershipID: "member", Role: "member", Active: true, PrincipalID: "owner", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
 			for projectNumber := 1; projectNumber <= 2; projectNumber++ {

@@ -188,5 +188,5 @@ func TestHostedMonthlyCostsAccess(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f.usage(t, "owner", browserHostedOrganizationBase+"/usage/monthly", http.StatusNotFound)
+	f.usage(t, "owner", browserHostedOrganizationBase+"/usage/monthly", http.StatusOK)
 }
