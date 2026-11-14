@@ -139,6 +139,9 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 		observation, _, err := r.RunnerProjectObservation(ctx, identity.RunnerID, scope.Project, "")
 		if errors.Is(err, corestore.ErrNotFound) {
 			page.Unavailable["runner"] = "not_authorized_or_unreported"
+			if err := isolation.ValidateTier(identity.IsolationTier, identity.OS); err != nil {
+				page.Unavailable["isolation_tier"] = err.Error()
+			}
 			return nil
 		}
 		if err != nil {

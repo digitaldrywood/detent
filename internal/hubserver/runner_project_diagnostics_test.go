@@ -625,7 +625,10 @@ func TestRunnerProjectDiagnosticsIsolationPlatform(t *testing.T) {
 				r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}
 			}
 			r.enroll(t)
-			r.reportCapacity(t)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{
+				"display_name": r.redemption.DisplayName, "capacity": r.redemption.Capacity, "version": "test", "os": test.goos, "backend_isolation": r.redemption.BackendIsolation,
+				"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: r.redemption.Capacity, ClientLimit: r.redemption.Capacity, RuntimeLimit: r.redemption.Capacity, Manageable: true, ObservedAt: f.service.config.Clock()},
+			}), http.StatusOK)
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var page runnerauth.DiagnosticPage
