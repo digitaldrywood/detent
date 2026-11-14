@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -22,13 +23,25 @@ type tenantChangeVersionAuthority struct {
 
 func (a tenantChangeVersionAuthority) Prepare(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion, _ time.Time) (hubrecords.ChangeVersionApproval, error) {
 	var rows hubrecords.CurrentChangePolicyRows
+	unreported := false
 	err := a.repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		rows, err = readCurrentChangePolicyRows(ctx, r, scope)
+		if err != nil || request.PolicyID == "" || request.PolicyID == rows.Project.PolicyID {
+			return err
+		}
+		_, err = r.ProjectPolicyRevision(ctx, scope.Project, request.PolicyID)
+		if errors.Is(err, corestore.ErrNotFound) {
+			unreported = true
+			return nil
+		}
 		return err
 	})
 	if err != nil {
 		return hubrecords.ChangeVersionApproval{}, hubapi.ProjectRecordError(err)
+	}
+	if unreported {
+		return hubrecords.ChangeVersionApproval{}, nativeRejection(hubapi.NativePublicInvalid("Change configuration has not been reported for this project"), "version_validation", "policy_id")
 	}
 	result, err := hydrateCurrentChangeVersionApproval(ctx, a.content, scope, rows, request.PolicyID)
 	if err != nil {
