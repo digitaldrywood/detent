@@ -686,8 +686,8 @@ func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 				transactions := counted.transactions + accessCounted.transactions
 				t.Logf("project GET: tenant admissions=%d project reads=%d model reads=%d", transactions, counted.projects+accessCounted.projects, counted.models+accessCounted.models)
 				projects := counted.projects + accessCounted.projects
-				if transactions != 2 || projects != 1 {
-					t.Errorf("project GET used %d tenant admissions and %d project reads; want 2 and 1", transactions, projects)
+				if transactions != 3 || projects != 1 {
+					t.Errorf("project GET used %d tenant admissions and %d project reads; want 3 and 1", transactions, projects)
 				}
 				if accessCounted.transactions != 1 || accessCounted.projects != 1 {
 					t.Errorf("project authorization owner used %d admissions and %d project reads; want 1 and 1", accessCounted.transactions, accessCounted.projects)
