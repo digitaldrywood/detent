@@ -396,6 +396,9 @@ func (r *Runner) publishSecurityAuditDiagnostic(ctx context.Context, req Securit
 		return err
 	}
 	name := "security-audit-" + execution.InvocationID + ".json"
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(directory, name), content, 0o600); err != nil {
 		return err
 	}

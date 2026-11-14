@@ -29,6 +29,7 @@ type nativeSecurityAuditTestExecution struct {
 	workspace      func() string
 	submitErr      error
 	publicationErr error
+	cleanWorkspace bool
 	evidence       []ValidationEvidence
 	diff           string
 }
@@ -64,6 +65,11 @@ func (e *nativeSecurityAuditTestExecution) RecordSecurityAudit(_ context.Context
 		return errors.New("audit workspace disappeared before submission")
 	}
 	if e.submitErr != nil {
+		if e.cleanWorkspace {
+			if err := os.RemoveAll(e.workspace()); err != nil {
+				return err
+			}
+		}
 		return e.submitErr
 	}
 	// Match the Hub admission boundary: local runner configuration is not
@@ -94,6 +100,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 		nonNative                   bool
 		processClockOffset          time.Duration
 		rejected, publicationFailed bool
+		cleanedWorkspace            bool
 		missingProcess              bool
 		severity                    string
 		localProjectID              string
@@ -112,6 +119,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 		{name: "blocking p2 finding", blocking: true, severity: "p2"},
 		{name: "incomplete process identity publishes diagnostics", missingProcess: true, failed: true},
 		{name: "Hub rejection publishes diagnostics", rejected: true, failed: true},
+		{name: "Hub rejection after worker cleanup publishes diagnostics", rejected: true, cleanedWorkspace: true, failed: true},
 		{name: "landing Hub rejection publishes diagnostics", rejected: true, failed: true, landing: true},
 		{name: "publication failure retains diagnostics", rejected: true, publicationFailed: true, failed: true},
 		{name: "landing publication failure retains diagnostics", rejected: true, publicationFailed: true, failed: true, landing: true},
@@ -196,6 +204,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			if test.publicationFailed {
 				execution.publicationErr = errors.New("Hub artifact unavailable")
 			}
+			execution.cleanWorkspace = test.cleanedWorkspace
 			patch := "+change"
 			if test.large {
 				patch = "diff --git a/file.go b/file.go\n@@ -0,0 +1 @@\n" + strings.Repeat("+record\n", 80000)
