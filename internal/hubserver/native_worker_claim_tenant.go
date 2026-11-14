@@ -1754,6 +1754,10 @@ func runnerIdentityClaimRefusal(identity runnerstore.Identity, scope hubscope.Na
 			return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
 		case "draining":
 			return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_draining", Message: "Runner is draining; active leases may finish"}})
+		case "active":
+			if identity.MachineID == machine && machine == scope.Credential.Runner.MachineID && identity.ExpiresAt.After(now) && slices.Contains(identity.Operations, runnerauth.Claim) {
+				return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_offline", Message: "Runner heartbeat is stale; work stays queued for this target"}})
+			}
 		}
 	}
 	return tracker.ErrMachineNotFound
