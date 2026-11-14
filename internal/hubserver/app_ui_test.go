@@ -841,17 +841,25 @@ func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
 						return err
 					}
 				case "missing runner grant", "missing write grant":
+					owner, err := writer.AccessMember(t.Context(), "user_browser_owner")
+					if err != nil {
+						return err
+					}
+					owner.Role = "member"
+					if err := writer.UpdateAccessMember(t.Context(), owner); err != nil {
+						return err
+					}
 					for _, project := range []string{f.project, f.privateProject} {
-						grant, err := writer.AccessProjectGrant(t.Context(), "user_browser_owner", tracker.ProjectID(project))
-						if err != nil {
-							return err
-						}
+						grant := accessstore.ProjectGrant{OrganizationID: f.service.accessOrganization(), UserID: owner.UserID, ProjectID: tracker.ProjectID(project), CanWrite: true, ManageRunner: true}
 						if test.mutation == "missing runner grant" {
 							grant.ManageRunner = false
 						} else {
 							grant.CanWrite = false
 						}
 						if err := writer.SetAccessProjectGrant(t.Context(), grant); err != nil {
+							return err
+						}
+						if err := writer.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: grant.OrganizationID, TokenID: owner.PrincipalID, ProjectID: grant.ProjectID}); err != nil {
 							return err
 						}
 					}

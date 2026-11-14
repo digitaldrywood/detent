@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -205,6 +206,16 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstService := service
+	setFirstRole := func(role string) {
+		t.Helper()
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(currentOrganization), corestore.Serving, func(w tenantstore.Writer) error {
+			member, err := w.AccessMember(t.Context(), "first")
+			member.Role = role
+			return errors.Join(err, w.UpdateAccessMember(t.Context(), member))
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(func() {
 		if err := firstService.Close(); err != nil {
 			t.Error(err)
@@ -380,6 +391,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 					}
 				})
 			}
+			setFirstRole("member")
 			for _, project := range []string{"hidden_project", "project_org_other", "project_org_startup"} {
 				if project == "project_"+currentOrganization {
 					continue
@@ -389,6 +401,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 					t.Fatalf("policy crossed project boundary: %d %s", response.Code, response.Body.String())
 				}
 			}
+			setFirstRole("owner")
 		})
 		for _, name := range []string{operatortool.ListComments, operatortool.ListChanges} {
 			t.Run(target.org+"/"+name, func(t *testing.T) {
@@ -661,7 +674,9 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 				switch scenario {
 				case "grant":
-					return w.DeleteAccessProjectGrant(t.Context(), "first", "project_org_startup")
+					member, err := w.AccessMember(t.Context(), "first")
+					member.Role = "member"
+					return errors.Join(err, w.UpdateAccessMember(t.Context(), member), w.DeleteAccessProjectGrant(t.Context(), "first", "project_org_startup"))
 				case "membership":
 					return w.RevokeAccessMember(t.Context(), "first", time.Now())
 				default:
@@ -699,6 +714,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 				}
 			}
 			if scenario == "grant" {
+				setFirstRole("owner")
 				if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 					return w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_startup", UserID: "first", ProjectID: "project_org_startup", CanWrite: true})
 				}); err != nil {

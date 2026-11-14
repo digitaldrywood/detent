@@ -1779,7 +1779,8 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 						member.Active = false
 					}
 					if test == "grant" {
-						return w.DeleteAccessProjectGrant(t.Context(), "owner", "project_example")
+						member.Role = "member"
+						return errors.Join(w.UpdateAccessMember(t.Context(), member), w.DeleteAccessProjectGrant(t.Context(), "owner", "project_example"))
 					}
 					if test == "reporter_target" {
 						member.Role = "reporter"
@@ -1799,7 +1800,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 						}
 						member.Active, member.Role = true, "owner"
 						if test == "grant" {
-							return w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_startup", UserID: "owner", ProjectID: "project_example", CanWrite: true})
+							return errors.Join(w.UpdateAccessMember(t.Context(), member), w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_startup", UserID: "owner", ProjectID: "project_example", CanWrite: true}))
 						}
 						return w.UpdateAccessMember(t.Context(), member)
 					}); err != nil {
