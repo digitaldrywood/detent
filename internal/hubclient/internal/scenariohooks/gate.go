@@ -9,34 +9,34 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
-type Gate struct {
+type GatedScheduler struct {
+	*dispatch.Scheduler
 	closed atomic.Bool
 	opened chan struct{}
 	once   sync.Once
 }
 
-func NewGate(t *testing.T) *Gate {
-	g := &Gate{opened: make(chan struct{})}
-	t.Cleanup(g.Open)
+func NewGatedScheduler(t *testing.T, scheduler *dispatch.Scheduler) *GatedScheduler {
+	g := &GatedScheduler{Scheduler: scheduler, opened: make(chan struct{})}
+	t.Cleanup(g.open)
 	return g
 }
 
-func (g *Gate) Close() { g.closed.Store(true) }
-
-func (g *Gate) Open() { g.once.Do(func() { close(g.opened) }) }
-
-func (g *Gate) Pass(id string) string {
+func (g *GatedScheduler) RunExecution(id string) runner.Execution {
 	if g.closed.Load() {
 		<-g.opened
 	}
-	return id
+	return g.Scheduler.RunExecution(id)
 }
 
-type GatedScheduler struct {
-	*dispatch.Scheduler
-	Gate *Gate
+func (g *GatedScheduler) Hold() *dispatch.Scheduler {
+	g.closed.Store(true)
+	return g.Scheduler
 }
 
-func (s GatedScheduler) RunExecution(id string) runner.Execution {
-	return s.Scheduler.RunExecution(s.Gate.Pass(id))
+func (g *GatedScheduler) Release(then func()) {
+	g.open()
+	then()
 }
+
+func (g *GatedScheduler) open() { g.once.Do(func() { close(g.opened) }) }
