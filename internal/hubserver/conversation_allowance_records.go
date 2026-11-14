@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -43,6 +44,13 @@ func (d *database) checkConversationCollaborationGrowthPostgres(ctx context.Cont
 		return &hostedplans.LimitError{Resource: "api_mutations", Allowance: limit, Consumption: result.Used}
 	}
 	return nil
+}
+
+func (s *Service) chargeProjectCommand(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, operation, key string) error {
+	if strings.TrimSpace(key) == "" {
+		key = hubapi.NewID("mutation")
+	}
+	return s.database.chargeAttachmentAPIMutationsPostgres(ctx, writer, "project-command/"+scope.Credential.ID+"/"+operation+"/"+key, s.config.Clock(), "command")
 }
 
 func (d *database) chargeAttachmentAPIMutationsPostgres(ctx context.Context, writer tenantstore.Writer, receiptID string, now time.Time, charges ...string) error {

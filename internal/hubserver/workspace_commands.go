@@ -199,6 +199,9 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 				return err
 			}
+			if err := s.chargeProjectCommand(ctx, w, scope, operation, request.IdempotencyKey); err != nil {
+				return err
+			}
 			currentPolicy, err := w.ProjectPolicy(ctx, scope.Project)
 			if errors.Is(err, corestore.ErrNotFound) {
 				if policyFound {

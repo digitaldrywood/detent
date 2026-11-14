@@ -480,6 +480,9 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 		if currentID != change.ExpectedID && currentID != resolved.ID {
 			return hubapi.PolicyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 		}
+		if err := s.chargeTenantPolicyCommand(ctx, writer, scope, command); err != nil {
+			return err
+		}
 		if currentID == resolved.ID {
 			if err := applyDefaultReviewPolicy(ctx, writer, review, actor, now); err != nil {
 				return err
@@ -564,6 +567,13 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 	return result, nil
 }
 
+func (s *Service) chargeTenantPolicyCommand(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, command *tenantPolicyCommandReceipt) error {
+	if command == nil {
+		return s.chargeProjectCommand(ctx, writer, scope, projectOperationID(scope, "PUT", "/policy"), "")
+	}
+	return s.chargeProjectCommand(ctx, writer, scope, command.Operation, command.Key)
+}
+
 func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubscope.NativeScope, approval policy.Approval, planned policystore.Revision, command *tenantPolicyCommandReceipt) (policy.Approval, error) {
 	review, err := s.prepareDefaultReviewPolicy(ctx, scope, approval.Policy)
 	if err != nil {
@@ -612,6 +622,9 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubsc
 		}
 		if !hubrecords.SameNativeClaimProjectPolicy(current, planned) {
 			return corestore.ErrRevisionConflict
+		}
+		if err := s.chargeTenantPolicyCommand(ctx, writer, scope, command); err != nil {
+			return err
 		}
 		project, err := writer.ProjectRecord(ctx, scope.Project)
 		if err != nil {

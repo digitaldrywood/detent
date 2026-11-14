@@ -703,6 +703,140 @@ func TestHostedPlansDisabledWithoutNetwork(t *testing.T) {
 	}
 }
 
+func TestHostedProjectMutationsChargeTheRequestOrganization(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service := newPostgresNativeService(t, Config{Clock: func() time.Time { return now }, Workspace: &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50}})
+	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.CapacityPlans()})
+	admin := usagePostgresAdmin(t, service)
+	plans := service.database.plansService().Plans()
+	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
+	organizations := []tracker.OrganizationID{"org_first", "org_first_second"}
+	fixtures := map[tracker.OrganizationID]nativeFixture{}
+	subjects := map[tracker.OrganizationID]tracker.NativeIssue{}
+	limits := map[tracker.OrganizationID]int64{}
+	for _, organization := range organizations {
+		fixtures[organization] = newNativeFixture(t, service, organization, "Example project")
+		subjects[organization] = fixtures[organization].create(t, "Workspace subject "+string(organization))
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			entitlement, err := hubapi.FeatureResult(service.database.plansService().EntitlementRecord(t.Context(), r, now))
+			limits[organization] = entitlement.Allowances["api_mutations"]
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if limits[organization] <= 1 {
+			t.Fatalf("%s api_mutations allowance=%d", organization, limits[organization])
+		}
+	}
+	used := func(t *testing.T, organization tracker.OrganizationID) int64 {
+		t.Helper()
+		var amount int64
+		if err := admin.QueryRowContext(t.Context(), "SELECT COALESCE((SELECT amount FROM hosted_usage_windows WHERE organization_id=$1 AND window_start=$2 AND metric='api_mutations'),0)", organization, window).Scan(&amount); err != nil {
+			t.Fatal(err)
+		}
+		return amount
+	}
+	setUsed := func(t *testing.T, organization tracker.OrganizationID, amount int64) {
+		t.Helper()
+		if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_usage_windows(organization_id,window_start,metric,amount) VALUES($1,$2,'api_mutations',$3) ON CONFLICT(organization_id,window_start,metric) DO UPDATE SET amount=excluded.amount", organization, window, amount); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(t *testing.T, table string, organization tracker.OrganizationID, key string) (effects, receipts int) {
+		t.Helper()
+		if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE organization_id=$1", organization).Scan(&effects); err != nil {
+			t.Fatal(err)
+		}
+		if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE organization_id=$1 AND command_key=$2", organization, key).Scan(&receipts); err != nil {
+			t.Fatal(err)
+		}
+		return effects, receipts
+	}
+	for _, test := range []struct {
+		name, suffix, table string
+		body                func(tracker.OrganizationID, string) map[string]any
+	}{
+		{"project action", "/actions", "project_actions", func(_ tracker.OrganizationID, key string) map[string]any {
+			return map[string]any{"idempotency_key": key, "name": "Example " + key, "command": "true"}
+		}},
+		{"workspace", "/workspaces", "workspace_sessions", func(organization tracker.OrganizationID, key string) map[string]any {
+			return map[string]any{"idempotency_key": key, "work_item_id": string(subjects[organization].WorkItemID)}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			exhausted, available := organizations[0], organizations[1]
+			post := func(organization tracker.OrganizationID, key string) *httptest.ResponseRecorder {
+				return performHubAPIRequest(t, service, http.MethodPost, fixtures[organization].base+test.suffix, fixtures[organization].token, test.body(organization, key))
+			}
+			setUsed(t, exhausted, limits[exhausted])
+			setUsed(t, available, 0)
+			refusedKey := "refused-" + test.table
+			effectsBefore, _ := count(t, test.table, exhausted, refusedKey)
+			refused := post(exhausted, refusedKey)
+			if refused.Code != http.StatusTooManyRequests || !strings.Contains(refused.Body.String(), "allowance_exhausted") || !strings.Contains(refused.Body.String(), "api_mutations") {
+				t.Fatalf("exhausted organization status=%d body=%s", refused.Code, refused.Body.String())
+			}
+			if effects, receipts := count(t, test.table, exhausted, refusedKey); effects != effectsBefore || receipts != 0 {
+				t.Fatalf("refused mutation effects=%d want %d receipts=%d", effects, effectsBefore, receipts)
+			}
+			if got := used(t, exhausted); got != limits[exhausted] {
+				t.Fatalf("refused mutation usage=%d want %d", got, limits[exhausted])
+			}
+			acceptedKey := "accepted-" + test.table
+			accepted := post(available, acceptedKey)
+			requireNativeStatus(t, accepted, http.StatusCreated)
+			if got := used(t, available); got != 1 {
+				t.Fatalf("request organization usage=%d want 1", got)
+			}
+			if got := used(t, exhausted); got != limits[exhausted] {
+				t.Fatalf("other organization usage=%d want %d", got, limits[exhausted])
+			}
+			replay := post(available, acceptedKey)
+			requireNativeStatus(t, replay, http.StatusCreated)
+			if replay.Body.String() != accepted.Body.String() {
+				t.Fatalf("replay=%s want %s", replay.Body.String(), accepted.Body.String())
+			}
+			if got := used(t, available); got != 1 {
+				t.Fatalf("exact replay usage=%d want 1", got)
+			}
+			setUsed(t, available, limits[available]-1)
+			effectsBefore, _ = count(t, test.table, available, "")
+			requests := []*http.Request{}
+			for _, key := range []string{"last-a-" + test.table, "last-b-" + test.table} {
+				requests = append(requests, newHubAPIRequest(t, http.MethodPost, fixtures[available].base+test.suffix, fixtures[available].token, test.body(available, key)))
+			}
+			responses := make([]*httptest.ResponseRecorder, len(requests))
+			var wait sync.WaitGroup
+			for i, request := range requests {
+				responses[i] = httptest.NewRecorder()
+				wait.Go(func() { service.Handler().ServeHTTP(responses[i], request) })
+			}
+			wait.Wait()
+			statuses := []int{responses[0].Code, responses[1].Code}
+			slices.Sort(statuses)
+			if !slices.Equal(statuses, []int{http.StatusCreated, http.StatusTooManyRequests}) {
+				t.Fatalf("last allowance statuses=%v bodies=%s / %s", statuses, responses[0].Body.String(), responses[1].Body.String())
+			}
+			if effects, _ := count(t, test.table, available, ""); effects != effectsBefore+1 {
+				t.Fatalf("last allowance effects=%d want %d", effects, effectsBefore+1)
+			}
+			if got := used(t, available); got != limits[available] {
+				t.Fatalf("last allowance usage=%d want %d", got, limits[available])
+			}
+		})
+	}
+	t.Run("self-hosted", func(t *testing.T) {
+		service.database.hostedRuntime.Store(nil)
+		organization := organizations[0]
+		setUsed(t, organization, limits[organization])
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, fixtures[organization].base+"/actions", fixtures[organization].token, map[string]any{"idempotency_key": "self-hosted", "name": "Example self-hosted", "command": "true"}), http.StatusCreated)
+		if got := used(t, organization); got != limits[organization] {
+			t.Fatalf("self-hosted usage=%d want %d", got, limits[organization])
+		}
+	})
+}
+
 func TestHostedRunnerAdmission(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

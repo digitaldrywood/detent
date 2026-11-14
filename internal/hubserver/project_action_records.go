@@ -228,6 +228,9 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope hubscope.NativeS
 			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 				return err
 			}
+			if err := s.chargeProjectCommand(ctx, w, scope, operation, mutation.IdempotencyKey); err != nil {
+				return err
+			}
 		}
 		var err error
 		if previous.Action.ID != "" {
