@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,4 +289,60 @@ func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 		requireMatches(t, prepare(t, f, "Unrelated title", updated), item.WorkItemID)
 		requireMatches(t, prepare(t, f, "Rewritten report", issueorigin.Stamp("Old output", issueorigin.Origin{Kind: "worker", Fingerprint: "rewritten-before"})))
 	})
+}
+
+func TestMachineDuplicateCommentOutsideParentAggregate(t *testing.T) {
+	f := newDefaultNativeFixture(t)
+	owner := f.createIndependent(t, "Long running failure")
+	path := f.base + "/work-items/" + string(owner.WorkItemID)
+	body := issueorigin.Stamp("Initial diagnostic"+issueContractTestSections, issueorigin.Origin{Kind: "worker", Fingerprint: "long-running-failure"})
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "long-owner-body"}, ExpectedRevision: owner.Revision, Body: &body}), http.StatusOK)
+	for index := range 2 {
+		filler := strings.Repeat("Unrelated progress notes for the long running failure. ", 700)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "filler-" + strconv.Itoa(index)}, Body: filler}), http.StatusOK)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "late-diagnostic"}, Body: "internal/example/queue.go:40:7: undefined: drain"}), http.StatusOK)
+	refreshNativeDuplicateSearchFixture(t, f.hub, f.project.OrganizationID)
+	var issueHasDiagnostic bool
+	if err := f.admin.QueryRowContext(t.Context(), "SELECT 'drain' = ANY(terms) FROM search_documents WHERE organization_id=$1 AND kind='issue' AND work_item_id=$2", f.project.OrganizationID, owner.WorkItemID).Scan(&issueHasDiagnostic); err != nil {
+		t.Fatal(err)
+	}
+	if issueHasDiagnostic {
+		t.Fatal("fixture diagnostic must lie outside the parent's 64 KiB aggregate")
+	}
+	credential, _, err := f.authenticateTenantAPIHash(t, f.project.OrganizationID, f.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
+	request := tracker.CreateIssue{Title: "Drain symbol missing", Body: issueorigin.Stamp("internal/example/queue.go:12:3: undefined: drain", issueorigin.Origin{Kind: "worker", Fingerprint: "later-drain-failure"})}
+	matches := func(t *testing.T) []tracker.NativeWorkItemID {
+		t.Helper()
+		search, err := workduplicates.Prepare(t.Context(), f.duplicateDeps(), scope, request, true)
+		if err != nil || !search.Available {
+			t.Fatalf("search=%+v err=%v", search, err)
+		}
+		var got []tracker.NativeWorkItemID
+		for _, match := range search.Matches {
+			got = append(got, match.WorkItemID)
+		}
+		return got
+	}
+	if got := matches(t); !slices.Equal(got, []tracker.NativeWorkItemID{owner.WorkItemID}) {
+		t.Fatalf("comment outside the aggregate matches=%v want %v", got, owner.WorkItemID)
+	}
+	fingerprints := searchstore.Prefix(f.project.OrganizationID, f.project.ID) + "f"
+	if _, err := f.admin.ExecContext(t.Context(), "UPDATE search_documents SET source_vector=ts_delete(source_vector,ARRAY(SELECT v.lexeme FROM unnest(source_vector) v WHERE starts_with(v.lexeme,$3))),vector=ts_delete(vector,ARRAY(SELECT v.lexeme FROM unnest(vector) v WHERE starts_with(v.lexeme,$3))) WHERE organization_id=$1 AND kind='comment' AND work_item_id=$2", f.project.OrganizationID, owner.WorkItemID, fingerprints); err != nil {
+		t.Fatal(err)
+	}
+	if got := matches(t); len(got) != 0 {
+		t.Fatalf("legacy comment without fingerprint terms matched %v", got)
+	}
+	if _, err := f.admin.ExecContext(t.Context(), "UPDATE search_documents SET indexed_revision=0,refresh_order=nextval('search_refresh_order') WHERE kind='comment' AND NOT placeholder AND indexed_revision=revision AND terms && ARRAY['go','fail','goos','duplic','detent']::text[] AND organization_id=$1 AND work_item_id=$2", f.project.OrganizationID, owner.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	refreshNativeDuplicateSearchFixture(t, f.hub, f.project.OrganizationID)
+	if got := matches(t); !slices.Equal(got, []tracker.NativeWorkItemID{owner.WorkItemID}) {
+		t.Fatalf("bounded refresh of the legacy comment matches=%v want %v", got, owner.WorkItemID)
+	}
 }
