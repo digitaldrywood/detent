@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -663,4 +664,125 @@ func samePolicyGate(left, right *bool) bool {
 
 func reviewPolicyEqual(left, right eventstore.ReviewPolicy) bool {
 	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyRevisionID == right.PolicyRevisionID && left.ReviewPolicyID == right.ReviewPolicyID && left.Revision == right.Revision && left.UpdatedBy == right.UpdatedBy && left.UpdatedAt.Equal(right.UpdatedAt) && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
+}
+
+func TestPolicyRevisionCompatibilityFactsAreImmutableCompanions(t *testing.T) {
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	organizations := []tracker.OrganizationID{"org_compat_first", "org_compat_second"}
+	project := tracker.ProjectID("prj_first")
+	now := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
+	check := func(name string) tracker.ChangeCheckSpec {
+		return tracker.ChangeCheckSpec{Name: name, PrincipalID: "ci", WorkflowID: "ci.yml", WorkflowSHA256: strings.Repeat("a", 64), Source: "independent", MaxAgeSeconds: 3600}
+	}
+	write := func(organization tracker.OrganizationID, fn func(tenantstore.Writer) error) error {
+		return repository.WriteTenant(t.Context(), organization, corestore.Serving, fn)
+	}
+	type written struct {
+		policy  policystore.Revision
+		checked eventstore.ReviewPolicy
+		empty   eventstore.ReviewPolicy
+		legacy  eventstore.ReviewPolicy
+	}
+	rows := map[tracker.OrganizationID]written{}
+	for index, organization := range organizations {
+		pgstoretest.SeedRepository(t, repository, organization)
+		row := pgstoretest.PolicyTestRevision(organization, project, fmt.Sprintf("policy_compat_%d", index), now)
+		row.Compatibility = &changerequest.CompatibilityGates{Kind: "command", SecurityAudit: index == 0, Validator: true, RequiredChecks: index + 1, AutomatedReview: "required", PlanEnabled: index == 1, PlanReview: "both"}
+		review := func(id string, revision int64, facts *policystore.ReviewFacts) eventstore.ReviewPolicy {
+			payload := pgstoretest.PolicyTestRevision(organization, project, id, now)
+			return eventstore.ReviewPolicy{OrganizationID: organization, ProjectID: project, PolicyRevisionID: row.PolicyID, ReviewPolicyID: id, Revision: revision, UpdatedBy: "admin", UpdatedAt: now, PayloadObjectKey: payload.PayloadObjectKey, PayloadSHA256: payload.PayloadSHA256, PayloadBytes: 1, PayloadContentBytes: 1, Compatibility: facts}
+		}
+		w := written{
+			policy:  row,
+			checked: review("review_checked", 1, &policystore.ReviewFacts{RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{check("zeta"), check("alpha")}}),
+			empty:   review("review_empty", 2, &policystore.ReviewFacts{RequiredChecks: []tracker.ChangeCheckSpec{}}),
+			legacy:  review("review_legacy", 3, nil),
+		}
+		rows[organization] = w
+		if err := write(organization, func(tw tenantstore.Writer) error {
+			if err := tw.ApproveProjectPolicy(t.Context(), w.policy, ""); err != nil {
+				return err
+			}
+			expected := ""
+			for _, next := range []eventstore.ReviewPolicy{w.checked, w.empty, w.legacy} {
+				if err := tw.SetReviewPolicy(t.Context(), next, expected); err != nil {
+					return err
+				}
+				expected = next.ReviewPolicyID
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, organization := range organizations {
+		w := rows[organization]
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			policies, err := r.PolicyCompatibility(t.Context(), project, []string{w.policy.PolicyID, rows[organizations[0]].policy.PolicyID, rows[organizations[1]].policy.PolicyID})
+			if err != nil {
+				return err
+			}
+			want := policystore.Compatibility{PayloadSHA256: w.policy.PayloadSHA256, Gates: *w.policy.Compatibility}
+			if len(policies) != 1 || policies[w.policy.PolicyID] != want {
+				t.Errorf("organization %s policy facts = %+v, want only %+v", organization, policies, want)
+			}
+			reviews, err := r.ReviewCompatibility(t.Context(), project, []string{"review_checked", "review_empty", "review_legacy"})
+			if err != nil {
+				return err
+			}
+			if got := reviews["review_checked"]; got.PolicyID != w.policy.PolicyID || got.PayloadSHA256 != w.checked.PayloadSHA256 || !got.RequireReview || !reflect.DeepEqual(got.RequiredChecks, w.checked.Compatibility.RequiredChecks) {
+				t.Errorf("organization %s checked review facts = %+v, want ordered %+v", organization, got, w.checked.Compatibility)
+			}
+			if got, found := reviews["review_empty"]; !found || got.RequireReview || len(got.RequiredChecks) != 0 {
+				t.Errorf("organization %s known-empty review facts = %+v found=%v", organization, got, found)
+			}
+			if got, found := reviews["review_legacy"]; found {
+				t.Errorf("organization %s review without facts reported %+v", organization, got)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first := rows[organizations[0]]
+	conflicting := first.policy
+	conflicting.Compatibility = new(*first.policy.Compatibility)
+	conflicting.Compatibility.SecurityAudit = false
+	if err := write(organizations[0], func(w tenantstore.Writer) error {
+		return w.ApproveProjectPolicy(t.Context(), conflicting, first.policy.PolicyID)
+	}); !errors.Is(err, corestore.ErrUniqueViolation) {
+		t.Fatalf("conflicting policy facts replay error = %v, want unique violation", err)
+	}
+	disagreeing := pgstoretest.PolicyTestRevision(organizations[0], project, "policy_compat_gate", now)
+	disagreeing.Compatibility = &changerequest.CompatibilityGates{GitHubPullRequest: true}
+	if err := write(organizations[0], func(w tenantstore.Writer) error {
+		return w.ApproveProjectPolicy(t.Context(), disagreeing, first.policy.PolicyID)
+	}); !errors.Is(err, eventstore.ErrInvalidRecord) {
+		t.Fatalf("facts disagreeing with the revision gate error = %v, want invalid record", err)
+	}
+	reordered := first.checked
+	reordered.Revision = 4
+	reordered.Compatibility = &policystore.ReviewFacts{RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{check("alpha"), check("zeta")}}
+	if err := write(organizations[0], func(w tenantstore.Writer) error {
+		return w.SetReviewPolicy(t.Context(), reordered, first.legacy.ReviewPolicyID)
+	}); !errors.Is(err, corestore.ErrUniqueViolation) {
+		t.Fatalf("reordered review facts replay error = %v, want unique violation", err)
+	}
+	if err := write(organizations[0], func(w tenantstore.Writer) error {
+		return w.ApproveProjectPolicy(t.Context(), first.policy, first.policy.PolicyID)
+	}); err != nil {
+		t.Fatalf("identical facts replay: %v", err)
+	}
+	for _, statement := range []string{
+		"UPDATE policy_revision_compatibility SET gate_validator=NOT gate_validator",
+		"DELETE FROM policy_revision_compatibility",
+		"UPDATE review_policy_revision_compatibility SET require_review=NOT require_review",
+		"DELETE FROM review_policy_revision_checks",
+	} {
+		if _, err := admin.ExecContext(t.Context(), statement); err == nil || !strings.Contains(err.Error(), "history is immutable") {
+			t.Errorf("%s error = %v, want immutable history refusal", statement, err)
+		}
+	}
 }

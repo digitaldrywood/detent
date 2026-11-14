@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/policyfacts"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -227,6 +228,9 @@ func (s *session) RecordProjectPolicyObservation(ctx context.Context, observatio
 	} else if !sameProjectPolicyContent(projectPolicyRecord(inserted), revision) {
 		return false, corestore.ErrTenantMismatch
 	}
+	if err := policyfacts.RecordPolicy(ctx, s.transactionHandle(), revision); err != nil {
+		return false, err
+	}
 	var source policy.RepositorySource
 	sourcePresent := observation.Source != nil
 	if sourcePresent {
@@ -361,6 +365,9 @@ func (s *session) ApproveProjectPolicy(ctx context.Context, row policystore.Revi
 	} else if !sameProjectPolicyContent(projectPolicyRecord(inserted), row) {
 		return corestore.ErrTenantMismatch
 	}
+	if err := policyfacts.RecordPolicy(ctx, s.transactionHandle(), row); err != nil {
+		return err
+	}
 	if err := s.queries.PolicyInsertRevisionApproval(ctx, pgquery.PolicyInsertRevisionApprovalParams{
 		OrganizationID: row.OrganizationID,
 		ProjectID:      row.ProjectID,
@@ -430,6 +437,9 @@ func (s *session) ImportProjectPolicyRevision(ctx context.Context, row policysto
 		return mapError(ctx, err)
 	} else if !sameProjectPolicyContent(projectPolicyRecord(inserted), row) {
 		return corestore.ErrTenantMismatch
+	}
+	if err := policyfacts.RecordPolicy(ctx, s.transactionHandle(), row); err != nil {
+		return err
 	}
 	var approvedBy string
 	var approvedAt time.Time
@@ -547,6 +557,9 @@ func (s *session) SetReviewPolicy(ctx context.Context, row eventstore.ReviewPoli
 		}
 	} else if err != nil {
 		return mapError(ctx, err)
+	}
+	if err := policyfacts.RecordReview(ctx, s.transactionHandle(), row); err != nil {
+		return err
 	}
 	var expectedID *string
 	if expected != "" {

@@ -944,7 +944,7 @@ func (s *Service) prepareConfigurationPolicyObservation(ctx context.Context, sco
 			return policystore.Observation{}, err
 		}
 		gate := observation.Gates.GitHubPullRequest
-		revision = policystore.Revision{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: observation.ID, GitHubPullRequest: &gate, PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}
+		revision = policystore.Revision{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: observation.ID, GitHubPullRequest: &gate, Compatibility: policystore.CompatibilityOf(observation.Descriptor), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}
 	}
 	return policystore.Observation{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: observation.ID, Source: observation.Source, Revision: revision}, nil
 }

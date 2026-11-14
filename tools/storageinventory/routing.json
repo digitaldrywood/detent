@@ -12375,6 +12375,20 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261114141245_policy_compatibility_facts.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/policy_revisions"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -14521,6 +14535,29 @@
         ]
       }
     },
+    "internal/hubserver/postgres/pgquery/policy_compatibility.sql.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "Queries.PolicyGetReviewChecks:Query": 1,
+          "Queries.PolicyGetReviewCompatibility:Query": 1,
+          "Queries.PolicyGetRevisionCompatibility:Query": 1,
+          "Queries.PolicyInsertReviewChecks:Exec": 1,
+          "Queries.PolicyInsertReviewCompatibility:Exec": 1,
+          "Queries.PolicyInsertRevisionCompatibility:Exec": 1,
+          "policyGetReviewChecks:SQL": 1,
+          "policyGetReviewCompatibility:SQL": 1,
+          "policyGetRevisionCompatibility:SQL": 1,
+          "policyInsertReviewChecks:SQL": 1,
+          "policyInsertReviewCompatibility:SQL": 1,
+          "policyInsertRevisionCompatibility:SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/pgquery/project_intake_batch.sql.go": {
       "disposition": "target-adapter",
       "families": [
@@ -15704,6 +15741,18 @@
           "hub/policy_revisions",
           "hub/project_policies"
         ]
+      }
+    },
+    "internal/hubserver/postgres/policyfacts/facts.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
+        },
+        "tables": []
       }
     },
     "internal/hubserver/postgres/project_access.go": {
@@ -17221,6 +17270,24 @@
           "hub/runner_identities",
           "hub/token_grants"
         ]
+      }
+    },
+    "internal/hubserver/postgres/queries/policy_compatibility.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1,
+          "query:PolicyGetReviewChecks:many": 1,
+          "query:PolicyGetReviewCompatibility:many": 1,
+          "query:PolicyGetRevisionCompatibility:many": 1,
+          "query:PolicyInsertReviewChecks:execrows": 1,
+          "query:PolicyInsertReviewCompatibility:execrows": 1,
+          "query:PolicyInsertRevisionCompatibility:execrows": 1
+        },
+        "tables": []
       }
     },
     "internal/hubserver/postgres/queries/project_intake_batch.sql": {

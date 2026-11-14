@@ -3631,6 +3631,26 @@ type PolicyRevisionApproval struct {
 	ApprovedAt     time.Time
 }
 
+type PolicyRevisionCompatibility struct {
+	OrganizationID           tracker.OrganizationID
+	ProjectID                tracker.ProjectID
+	PolicyID                 string
+	PayloadSHA256            string
+	CompatibilitySchema      int16
+	GateGithubPullRequest    bool
+	GateLandingMode          string
+	GateKind                 string
+	GateLandingCommandDigest string
+	GateGithubCiDigest       string
+	GatePlanReview           string
+	GateAutomatedReview      string
+	GateRequiredChecks       int32
+	GateValidator            bool
+	GateSecurityAudit        bool
+	GateHumanReview          bool
+	GatePlanEnabled          bool
+}
+
 type Project struct {
 	OrganizationID          tracker.OrganizationID
 	ID                      tracker.ProjectID
@@ -4608,6 +4628,30 @@ type RequestMinute struct {
 	SumMs          float64
 	MaxMs          float64
 	Histogram      []int64
+}
+
+type ReviewPolicyRevisionCheck struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ReviewPolicyID string
+	Ordinal        int32
+	Name           string
+	PrincipalID    string
+	WorkflowID     string
+	WorkflowSha256 string
+	Source         string
+	MaxAgeSeconds  int64
+}
+
+type ReviewPolicyRevisionCompatibility struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	ReviewPolicyID      string
+	PolicyID            string
+	PayloadSHA256       string
+	CompatibilitySchema int16
+	RequireReview       bool
+	RequiredCheckCount  int32
 }
 
 type RunnerAttemptTokenUsage struct {

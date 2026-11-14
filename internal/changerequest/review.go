@@ -93,8 +93,15 @@ func validatePolicy(rules tracker.ChangeReviewPolicy, approved CompatibilityPoli
 	if approved.Gates.Kind == "human_review" && !rules.RequireReview {
 		return errors.New("repository human review cannot be disabled")
 	}
+	return ValidateChecks(rules.RequiredChecks)
+}
+
+func ValidateChecks(checks []tracker.ChangeCheckSpec) error {
+	if len(checks) > 256 {
+		return errors.New("at most 256 required checks are permitted")
+	}
 	names := map[string]bool{}
-	for _, check := range rules.RequiredChecks {
+	for _, check := range checks {
 		if strings.TrimSpace(check.Name) == "" || len(check.Name) > 128 || names[check.Name] || check.PrincipalID == "" || len(check.PrincipalID) > 128 || strings.TrimSpace(check.WorkflowID) == "" || len(check.WorkflowID) > 256 || !ValidHash(check.WorkflowSHA256, 64) || !slices.Contains([]string{"customer", "independent"}, check.Source) || check.MaxAgeSeconds < 60 || check.MaxAgeSeconds > 7*24*60*60 {
 			return errors.New("checks require unique names, pinned principals and workflows, explicit source, and freshness from 60 seconds to 7 days")
 		}

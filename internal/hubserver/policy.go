@@ -400,6 +400,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 		if err != nil {
 			return policy.Approval{}, err
 		}
+		revision.Compatibility = policystore.CompatibilityOf(canonical)
 	}
 	now := s.config.Clock().UTC()
 	if !revisionFound {
@@ -412,7 +413,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 			return policy.Approval{}, err
 		}
 		gate := resolved.Gates.GitHubPullRequest
-		revision = policystore.Revision{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: resolved.ID, GitHubPullRequest: &gate, PayloadObjectKey: reference.PayloadObjectKey, PayloadSHA256: reference.PayloadSHA256, PayloadBytes: reference.PayloadBytes, PayloadContentBytes: reference.PayloadContentBytes}
+		revision = policystore.Revision{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: resolved.ID, GitHubPullRequest: &gate, Compatibility: policystore.CompatibilityOf(resolved), PayloadObjectKey: reference.PayloadObjectKey, PayloadSHA256: reference.PayloadSHA256, PayloadBytes: reference.PayloadBytes, PayloadContentBytes: reference.PayloadContentBytes}
 	}
 	revision.ApprovedBy = actor
 	revision.ApprovedAt = now
@@ -787,6 +788,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope hubscope
 		if err != nil {
 			return err
 		}
+		revision.Compatibility = policystore.CompatibilityOf(canonical)
 	}
 	if !found {
 		raw, err := json.Marshal(observation.Descriptor)
@@ -803,6 +805,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope hubscope
 			ProjectID:           scope.Project,
 			PolicyID:            observation.ID,
 			GitHubPullRequest:   &gate,
+			Compatibility:       policystore.CompatibilityOf(observation.Descriptor),
 			PayloadObjectKey:    receipt.PayloadObjectKey,
 			PayloadSHA256:       receipt.PayloadSHA256,
 			PayloadBytes:        receipt.PayloadBytes,

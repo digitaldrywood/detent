@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -13,12 +14,34 @@ type Revision struct {
 	ProjectID           tracker.ProjectID
 	PolicyID            string
 	GitHubPullRequest   *bool
+	Compatibility       *changerequest.CompatibilityGates
 	ApprovedBy          string
 	ApprovedAt          time.Time
 	PayloadObjectKey    string
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+}
+
+type Compatibility struct {
+	PayloadSHA256 string
+	Gates         changerequest.CompatibilityGates
+}
+
+type ReviewFacts struct {
+	RequireReview  bool
+	RequiredChecks []tracker.ChangeCheckSpec
+}
+
+type ReviewCompatibility struct {
+	PolicyID      string
+	PayloadSHA256 string
+	ReviewFacts
+}
+
+func CompatibilityOf(descriptor policy.Descriptor) *changerequest.CompatibilityGates {
+	gates := changerequest.CompatibilityPolicyOf(descriptor).Gates
+	return &gates
 }
 
 type LeasePolicy struct {
@@ -73,6 +96,8 @@ type Reader interface {
 	ProjectPolicyObservations(context.Context, tracker.ProjectID, string, string, time.Time, int) ([]ObservedRevision, int64, error)
 	CurrentProjectPolicyObservation(context.Context, tracker.ProjectID, string, time.Time) (bool, error)
 	ProjectWorkflowApplies(context.Context, tracker.ProjectID, int64, int) ([]WorkflowApply, error)
+	PolicyCompatibility(context.Context, tracker.ProjectID, []string) (map[string]Compatibility, error)
+	ReviewCompatibility(context.Context, tracker.ProjectID, []string) (map[string]ReviewCompatibility, error)
 }
 
 type Writer interface {

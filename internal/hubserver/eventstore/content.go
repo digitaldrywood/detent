@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -71,7 +73,7 @@ func (c *Content) LinkedIssueSnapshot(ctx context.Context, organization tracker.
 
 func (c *Content) PrepareProjectPolicy(ctx context.Context, organization tracker.OrganizationID, value policy.Descriptor) (policystore.Revision, error) {
 	ref, err := c.prepare(ctx, organization, value)
-	return policystore.Revision{OrganizationID: organization, PolicyID: value.ID, GitHubPullRequest: new(value.Gates.GitHubPullRequest), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}, err
+	return policystore.Revision{OrganizationID: organization, PolicyID: value.ID, GitHubPullRequest: new(value.Gates.GitHubPullRequest), Compatibility: policystore.CompatibilityOf(value), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}, err
 }
 
 func (c *Content) ProjectPolicy(ctx context.Context, row policystore.Revision) (policy.Descriptor, error) {
@@ -89,9 +91,17 @@ func (c *Content) PrepareReviewPolicy(ctx context.Context, row ReviewPolicy, val
 	}
 	ref, err := c.prepare(ctx, row.OrganizationID, value)
 	row.ReviewPolicyID = value.ID
+	row.Compatibility = ReviewCompatibilityOf(value)
 	row.PayloadObjectKey, row.PayloadSHA256 = ref.Key, ref.SHA256
 	row.PayloadBytes, row.PayloadContentBytes = ref.CompressedSize, ref.UncompressedSize
 	return row, err
+}
+
+func ReviewCompatibilityOf(value tracker.ChangeReviewPolicy) *policystore.ReviewFacts {
+	if changerequest.ValidateChecks(value.RequiredChecks) != nil {
+		return nil
+	}
+	return &policystore.ReviewFacts{RequireReview: value.RequireReview, RequiredChecks: slices.Clone(value.RequiredChecks)}
 }
 
 func (c *Content) ReviewPolicy(ctx context.Context, row ReviewPolicy) (tracker.ChangeReviewPolicy, error) {
