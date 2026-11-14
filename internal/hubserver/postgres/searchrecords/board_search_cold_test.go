@@ -133,10 +133,18 @@ func TestBoardSearchColdFallbackTenantWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	statement = strings.NewReplacer("$1", "$1::text", "$2", "$2::text[]", "$3", "$3::boolean", "$4", "$4::text", "$5", "$5::boolean").Replace(statement)
+	var serverVersion int
+	if err := f.admin.QueryRowContext(ctx, "SHOW server_version_num").Scan(&serverVersion); err != nil {
+		t.Fatal(err)
+	}
+	evictedExpression := "pg_buffercache_evict(bufferid)"
+	if serverVersion >= 180000 {
+		evictedExpression = "(pg_buffercache_evict(bufferid)).buffer_evicted"
+	}
 	evict := func() {
 		t.Helper()
 		var evicted int
-		err := f.admin.QueryRowContext(ctx, "SELECT count(*) FILTER (WHERE pg_buffercache_evict(bufferid)) FROM pg_buffercache WHERE reldatabase=(SELECT oid FROM pg_database WHERE datname=current_database()) AND relfilenode IN (SELECT pg_relation_filenode(oid) FROM pg_class WHERE relnamespace IN ('public'::regnamespace,'pg_toast'::regnamespace))").Scan(&evicted)
+		err := f.admin.QueryRowContext(ctx, "SELECT count(*) FILTER (WHERE "+evictedExpression+") FROM pg_buffercache WHERE reldatabase=(SELECT oid FROM pg_database WHERE datname=current_database()) AND relfilenode IN (SELECT pg_relation_filenode(oid) FROM pg_class WHERE relnamespace IN ('public'::regnamespace,'pg_toast'::regnamespace))").Scan(&evicted)
 		if err != nil {
 			t.Fatal(err)
 		}
