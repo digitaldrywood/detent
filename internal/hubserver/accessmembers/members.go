@@ -102,31 +102,22 @@ func (s *Service) Store(ctx context.Context, w tenantstore.Writer, identity auth
 		return err
 	}
 	if errors.Is(err, corestore.ErrNotFound) {
-		if err := w.CreateAccessMember(ctx, accessstore.Member{OrganizationID: s.deps.Organization, UserID: identity.Subject, Email: strings.ToLower(identity.Email), MembershipID: membership.ID, Role: membership.Role.Slug, Active: true, PrincipalID: principal, CreatedAt: now, UpdatedAt: now, NotifyIssues: true}); err != nil {
-			return err
-		}
-		if membership.Role.Slug == "owner" || membership.Role.Slug == "admin" {
-			return w.SyncHostedAdministratorProjectAccess(ctx, identity.Subject, principal)
-		}
-		return nil
+		return w.CreateAccessMember(ctx, accessstore.Member{OrganizationID: s.deps.Organization, UserID: identity.Subject, Email: strings.ToLower(identity.Email), MembershipID: membership.ID, Role: membership.Role.Slug, Active: true, PrincipalID: principal, CreatedAt: now, UpdatedAt: now, NotifyIssues: true})
 	}
 	if err != nil {
 		return err
 	}
-	roleChanged := member.Role != membership.Role.Slug
-	if member.MembershipID != membership.ID || !member.Active || roleChanged {
+	if member.MembershipID != membership.ID || !member.Active {
 		if err := w.ClearAccessMemberGrants(ctx, identity.Subject); err != nil {
+			return err
+		}
+	} else if accessstore.Demoted(member.Role, membership.Role.Slug) {
+		if err := w.ClearAccessRoleGrants(ctx, identity.Subject); err != nil {
 			return err
 		}
 	}
 	member.Email, member.MembershipID, member.Role, member.Active, member.UpdatedAt = strings.ToLower(identity.Email), membership.ID, membership.Role.Slug, true, now
-	if err := w.UpdateAccessMember(ctx, member); err != nil {
-		return err
-	}
-	if member.Role == "owner" || member.Role == "admin" {
-		return w.SyncHostedAdministratorProjectAccess(ctx, identity.Subject, principal)
-	}
-	return nil
+	return w.UpdateAccessMember(ctx, member)
 }
 
 func fingerprint(hash string) string {

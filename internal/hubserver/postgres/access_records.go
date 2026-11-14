@@ -258,7 +258,7 @@ func (s *session) CreateAccessProjectGrant(ctx context.Context, row accessstore.
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(ctx, `INSERT INTO hosted_project_grants (organization_id,user_id,project_id,can_write,manage_runner) VALUES ($1,$2,$3,$4,$5)`, row.OrganizationID, row.UserID, row.ProjectID, row.CanWrite, row.ManageRunner)
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_project_grants (organization_id,user_id,project_id,can_write,manage_runner,explicit) VALUES ($1,$2,$3,$4,$5,true)`, row.OrganizationID, row.UserID, row.ProjectID, row.CanWrite, row.ManageRunner)
 	return mapError(ctx, err)
 }
 
@@ -748,7 +748,7 @@ func (s *session) SetAccessProjectGrant(ctx context.Context, row accessstore.Pro
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(ctx, `INSERT INTO hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner) VALUES($1,$2,$3,$4,$5) ON CONFLICT(organization_id,user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner`, row.OrganizationID, row.UserID, row.ProjectID, row.CanWrite, row.ManageRunner)
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner,explicit) VALUES($1,$2,$3,$4,$5,true) ON CONFLICT(organization_id,user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner,explicit=true`, row.OrganizationID, row.UserID, row.ProjectID, row.CanWrite, row.ManageRunner)
 	return mapError(ctx, err)
 }
 

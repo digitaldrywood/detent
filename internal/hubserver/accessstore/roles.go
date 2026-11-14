@@ -42,3 +42,7 @@ func LesserRole(a, b string) string {
 	}
 	return b
 }
+
+func Demoted(from, to string) bool {
+	return RoleAllows(from, apikey.ScopeAdmin) && !RoleAllows(to, apikey.ScopeAdmin)
+}

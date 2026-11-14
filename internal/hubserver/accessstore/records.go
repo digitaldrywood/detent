@@ -293,7 +293,7 @@ type Writer interface {
 	SaveOperatorSession(context.Context, OperatorSession, int) error
 	CreateHubIdentity(context.Context, HubIdentity) error
 	UpdateAccessKeyAudit(context.Context, int64, string, string, tracker.ProjectID, string, int) error
-	SyncHostedAdministratorProjectAccess(context.Context, string, string) error
+	ClearAccessRoleGrants(context.Context, string) error
 	RecordAccessAudit(context.Context, Audit) (int64, error)
 	PruneAccessAuditReads(context.Context, int) (int, error)
 	PruneAccessAuditsBefore(context.Context, time.Time, int) (int, error)

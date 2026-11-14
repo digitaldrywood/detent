@@ -15783,16 +15783,16 @@
       ],
       "inventory": {
         "operations": {
+          "session.ClearAccessRoleGrants:Exec": 2,
+          "session.ClearAccessRoleGrants:SQL": 2,
           "session.DeleteAccessProjectGrants:Exec": 2,
           "session.DeleteAccessProjectGrants:SQL": 2,
-          "session.InitializeProjectAccess:Exec": 3,
-          "session.InitializeProjectAccess:SQL": 3,
+          "session.InitializeProjectAccess:Exec": 1,
+          "session.InitializeProjectAccess:SQL": 1,
           "session.ProjectAccessPage:Query": 1,
           "session.ProjectAccessPage:SQL": 1,
           "session.ProjectAllowanceUsage:QueryRow": 1,
           "session.ProjectAllowanceUsage:SQL": 1,
-          "session.SyncHostedAdministratorProjectAccess:Exec": 2,
-          "session.SyncHostedAdministratorProjectAccess:SQL": 2,
           "session.lockHostedOrganization:QueryRow": 1,
           "session.lockHostedOrganization:SQL": 1
         },

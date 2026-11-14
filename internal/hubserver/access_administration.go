@@ -242,6 +242,11 @@ func (s *Service) changeAccessRole(ctx context.Context, credential hubapi.APICre
 		if err != nil || !local {
 			return err
 		}
+		if accessstore.Demoted(target.Role, role) {
+			if err := w.ClearAccessRoleGrants(persist, target.UserID); err != nil {
+				return err
+			}
+		}
 		target.Role, target.UpdatedAt = role, s.config.Clock()
 		return w.UpdateAccessMember(persist, target)
 	}); err != nil {

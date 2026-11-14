@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -552,10 +553,7 @@ func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.
 				return err
 			}
 			member.Role, member.UpdatedAt = "admin", service.config.Clock().UTC()
-			if err := w.UpdateAccessMember(t.Context(), member); err != nil {
-				return err
-			}
-			return w.SyncHostedAdministratorProjectAccess(t.Context(), user, principal)
+			return w.UpdateAccessMember(t.Context(), member)
 		})
 	}()
 	testenv.WaitUntil(t, t.Context(), func() error {
@@ -591,8 +589,8 @@ func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.
 		if !grant.CanWrite || !grant.ManageRunner {
 			return errors.New("promoted administrator lacks the new project grant")
 		}
-		if _, err := r.AccessTokenGrant(t.Context(), principal, projectID); err != nil {
-			return err
+		if stored, err := r.AccessProjectGrants(t.Context(), user, "", 10); err != nil || len(stored) != 0 {
+			return fmt.Errorf("promoted administrator stored grants=%v err=%w", stored, err)
 		}
 		return nil
 	}); err != nil {

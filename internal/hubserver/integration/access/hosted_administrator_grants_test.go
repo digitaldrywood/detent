@@ -94,18 +94,6 @@ func TestHostedAdministratorProjectGrants(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				for range 2 {
-					if err := f.Repository.WriteTenant(t.Context(), f.Primary, corestore.Serving, func(w tenantstore.Writer) error {
-						for _, user := range users {
-							if err := w.SyncHostedAdministratorProjectAccess(t.Context(), "user_"+user.name, principals[user.name]); err != nil {
-								return err
-							}
-						}
-						return nil
-					}); err != nil {
-						t.Fatal(err)
-					}
-				}
 			case "foreign organization":
 				foreign := tracker.OrganizationID(hubapi.NewID("org"))
 				hubfixture.SeedOrganization(t, f.Repository, foreign, f.AdminToken(), f.Now())
@@ -168,14 +156,26 @@ func TestHostedAdministratorProjectGrants(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				want, wantWrite := 0, 0
 				if organization == "org_security" && user.active && (user.role == "owner" || user.role == "admin") {
-					want, wantWrite = 1, 1
-				} else if path == "backfill" {
+					var stored int
+					if err := f.Admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3", organization, "user_"+user.name, project).Scan(&stored); err != nil {
+						t.Fatal(err)
+					}
+					wantStored := 0
+					if path == "backfill" && user.name != "other-owner" {
+						wantStored = 1
+					}
+					if grants != 1 || write != 1 || runner != 1 || stored != wantStored {
+						t.Fatalf("%s role grant/write/runner/stored rows=%d/%d/%d/%d, want 1/1/1/%d", user.name, grants, write, runner, stored, wantStored)
+					}
+					continue
+				}
+				want := 0
+				if path == "backfill" {
 					want = 1
 				}
-				if grants != want || tokens != want || write != wantWrite || runner != wantWrite {
-					t.Fatalf("%s grants/write/runner/tokens=%d/%d/%d/%d, want %d/%d/%d/%d", user.name, grants, write, runner, tokens, want, wantWrite, wantWrite, want)
+				if grants != want || tokens != want || write != 0 || runner != 0 {
+					t.Fatalf("%s grants/write/runner/tokens=%d/%d/%d/%d, want %d/0/0/%d", user.name, grants, write, runner, tokens, want, want)
 				}
 			}
 			if path == "compatibility insertion" {

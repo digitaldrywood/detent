@@ -125,9 +125,6 @@ func (s *Service) Accept(ctx context.Context, identity auth.Identity, token stri
 				after = grant.ProjectID
 			}
 			if len(grants) < 200 {
-				if member.Active && (member.Role == "owner" || member.Role == "admin") {
-					return w.SyncHostedAdministratorProjectAccess(ctx, member.UserID, member.PrincipalID)
-				}
 				return nil
 			}
 		}
