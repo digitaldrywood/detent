@@ -20,6 +20,7 @@ import (
 )
 
 func TestActivityTypedAndHistoricalAttemptLinks(t *testing.T) {
+	t.Parallel()
 	const changeLegacyReadLimit = 100
 	f := newActivityPostgresFixture(t, "org_activity_links")
 	content := eventstore.NewContent(f.service.runDetailStore())

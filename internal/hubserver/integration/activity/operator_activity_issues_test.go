@@ -34,6 +34,7 @@ import (
 )
 
 func TestActivityIssueRead(t *testing.T) {
+	t.Parallel()
 	lanes := []tracker.NativeState{{Name: "Ideas"}, {Name: "Ready", Dispatchable: true}, {Name: "Build", Dispatchable: true}, {Name: "Waiting"}, {Name: "Shipped", Terminal: true}, {Name: "Cancelled", Terminal: true}}
 	type entry struct {
 		lane   string

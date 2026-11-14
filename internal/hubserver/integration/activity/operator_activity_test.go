@@ -41,6 +41,7 @@ import (
 )
 
 func TestHostedActivityReads(t *testing.T) {
+	t.Parallel()
 	f := newActivityPostgresFixture(t, "org_browser_preview")
 	now := f.now
 	historyProject := f.createProject(t, "Historical project")
@@ -230,6 +231,7 @@ func TestHostedActivityReads(t *testing.T) {
 		{name: "running excluded", status: "running", role: "code", phases: []tracker.NativePhase{{StartedAt: now.Add(-time.Minute), FinishedAt: now}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			isolated := newActivityPostgresFixture(t, "org_browser_preview", now)
 			for index, project := range []string{isolated.project, isolated.privateProject} {
 				raw, err := json.Marshal(map[string]any{"runtime": map[string]any{"identity": agentidentity.Configured("codex", "codex", "", tt.role, "a", "openai", "high", "", now), "phases": tt.phases, "phases_dropped": tt.dropped}})
@@ -278,7 +280,9 @@ func jsonEqualActivity(a, b []byte) bool {
 }
 
 func TestActivityPopulationCap(t *testing.T) {
+	t.Parallel()
 	t.Run("10001 terminal attempts clip without a running attempt", func(t *testing.T) {
+		t.Parallel()
 		terminal, _ := activityPopulationFixture(t, false)
 		response := terminal.page(t, "viewer", "/api/v2/organizations/org_security/activity?limit=1")
 		browserHostedStatus(t, response, http.StatusOK)
@@ -288,48 +292,51 @@ func TestActivityPopulationCap(t *testing.T) {
 			t.Fatalf("terminal-only clipped activity=%+v", report)
 		}
 	})
-	f, live := activityPopulationFixture(t, true)
-	started := time.Now()
-	var response *httptest.ResponseRecorder
-	f.assertPlans(t, func() { response = f.page(t, "viewer", "/api/v2/organizations/org_security/activity?limit=1") })
-	browserHostedStatus(t, response, http.StatusOK)
-	var report operatortool.ActivityReport
-	usageDecode(t, response, &report)
-	if !report.Partial || len(report.TypicalDurations) != 1 || !report.TypicalDurations[0].Partial || report.TypicalDurations[0].Count != 10000 || report.TypicalDurations[0].P50Seconds != 60 || len(report.Running) != 1 || report.Running[0].AttemptID != live.attempt.ID || len(report.Finished) != 1 {
-		t.Fatalf("capped activity=%+v", report)
-	}
-	t.Logf("11002-attempt complete activity HTTP read: %s", time.Since(started))
-	request := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_security/activity?limit=1", nil)
-	request.AddCookie(f.cookies["viewer"])
-	c := f.service.echo.NewContext(request, httptest.NewRecorder())
-	c.SetPath("/mcp")
-	authorityContexts := make(chan context.Context, 1)
-	if err := f.service.operatorAuthority(func(c echo.Context) error { authorityContexts <- c.Request().Context(); return nil })(c); err != nil {
-		t.Fatal(err)
-	}
-	if len(authorityContexts) == 0 {
-		t.Fatal("missing activity authority")
-	}
-	authority := <-authorityContexts
-	writer, err := f.admin.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := writer.Rollback(); err != nil && err != sql.ErrTxDone {
-			t.Error(err)
+	t.Run("10001 terminal attempts with a running attempt", func(t *testing.T) {
+		t.Parallel()
+		f, live := activityPopulationFixture(t, true)
+		started := time.Now()
+		var response *httptest.ResponseRecorder
+		f.assertPlans(t, func() { response = f.page(t, "viewer", "/api/v2/organizations/org_security/activity?limit=1") })
+		browserHostedStatus(t, response, http.StatusOK)
+		var report operatortool.ActivityReport
+		usageDecode(t, response, &report)
+		if !report.Partial || len(report.TypicalDurations) != 1 || !report.TypicalDurations[0].Partial || report.TypicalDurations[0].Count != 10000 || report.TypicalDurations[0].P50Seconds != 60 || len(report.Running) != 1 || report.Running[0].AttemptID != live.attempt.ID || len(report.Finished) != 1 {
+			t.Fatalf("capped activity=%+v", report)
 		}
-	}()
-	if _, err := writer.ExecContext(t.Context(), "SELECT id FROM issues WHERE organization_id=$1 AND id=$2 FOR UPDATE", f.organization, live.issue.ID); err != nil {
-		t.Fatal(err)
-	}
-	result, err := f.service.executeActivityRead(testenv.WaitContext(t, authority), operatortool.Call{Arguments: []byte(`{"limit":1}`)})
-	if err != nil {
-		t.Fatalf("activity read used the held writer: %v", err)
-	}
-	if !jsonEqualActivity(result.Content, response.Body.Bytes()) {
-		t.Fatalf("reader report changed: %s", result.Content)
-	}
+		t.Logf("11002-attempt complete activity HTTP read: %s", time.Since(started))
+		request := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_security/activity?limit=1", nil)
+		request.AddCookie(f.cookies["viewer"])
+		c := f.service.echo.NewContext(request, httptest.NewRecorder())
+		c.SetPath("/mcp")
+		authorityContexts := make(chan context.Context, 1)
+		if err := f.service.operatorAuthority(func(c echo.Context) error { authorityContexts <- c.Request().Context(); return nil })(c); err != nil {
+			t.Fatal(err)
+		}
+		if len(authorityContexts) == 0 {
+			t.Fatal("missing activity authority")
+		}
+		authority := <-authorityContexts
+		writer, err := f.admin.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := writer.Rollback(); err != nil && err != sql.ErrTxDone {
+				t.Error(err)
+			}
+		}()
+		if _, err := writer.ExecContext(t.Context(), "SELECT id FROM issues WHERE organization_id=$1 AND id=$2 FOR UPDATE", f.organization, live.issue.ID); err != nil {
+			t.Fatal(err)
+		}
+		result, err := f.service.executeActivityRead(testenv.WaitContext(t, authority), operatortool.Call{Arguments: []byte(`{"limit":1}`)})
+		if err != nil {
+			t.Fatalf("activity read used the held writer: %v", err)
+		}
+		if !jsonEqualActivity(result.Content, response.Body.Bytes()) {
+			t.Fatalf("reader report changed: %s", result.Content)
+		}
+	})
 }
 
 func activityPopulationFixture(t *testing.T, running bool) (*activityPostgresFixture, activityFixtureAttempt) {
