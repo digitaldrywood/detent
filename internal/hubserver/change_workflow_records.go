@@ -231,7 +231,18 @@ func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore
 	return !now.Before(p.evaluatedAt) && (p.until.IsZero() || now.Before(p.until)), nil
 }
 
+type changeWorkflowRoute struct {
+	rework bool
+	reason string
+	target func(tracker.NativeProject, string) string
+}
+
 func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, approval hubrecords.ChangeVersionApproval, rework bool, now time.Time) (*changeWorkflowTransition, error) {
+	return s.prepareChangeWorkflowRoute(ctx, scope, change, approval, changeWorkflowRoute{rework: rework, reason: "user_requested"}, now)
+}
+
+func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, approval hubrecords.ChangeVersionApproval, route changeWorkflowRoute, now time.Time) (*changeWorkflowTransition, error) {
+	rework := route.rework
 	if scope.Credential.Scope == hubapi.APIScopeWorker {
 		return nil, nil
 	}
@@ -266,6 +277,9 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope hub
 	target := landingTarget(tracker.NativeProject{States: project.States}, issue.State)
 	if rework {
 		target = reworkTarget(tracker.NativeProject{States: project.States}, issue.State)
+	}
+	if route.target != nil {
+		target = route.target(tracker.NativeProject{States: project.States}, issue.State)
 	}
 	if target == "" || target == issue.State {
 		return p, nil
@@ -373,7 +387,7 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope hub
 	if err != nil {
 		return nil, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: row.NativeID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: previous, ToState: target, Reason: "user_requested"}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: row.NativeID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: previous, ToState: target, Reason: route.reason}})
 	if err != nil {
 		return nil, err
 	}

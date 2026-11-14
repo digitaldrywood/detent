@@ -128,9 +128,21 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 	if err != nil {
 		return nil, err
 	}
+	var stale *staleLandingRoutes
+	if oldRules.ID != rules.ID {
+		stale, err = s.prepareStaleLandingRoutes(ctx, scope, hubrecords.ChangeVersionApproval{Policy: approval.Policy, ReviewPolicy: rules}, now)
+		if err != nil {
+			return nil, hubapi.ProjectRecordError(err)
+		}
+	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
+		}
+		if stale != nil && len(stale.moves) > 0 {
+			if err := w.LockRelationshipGraph(ctx); err != nil {
+				return err
+			}
 		}
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
@@ -165,6 +177,9 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 			if err := w.SetReviewPolicy(ctx, record, expected); err != nil {
 				return err
 			}
+		}
+		if err := s.applyStaleLandingRoutes(ctx, w, scope, stale); err != nil {
+			return err
 		}
 		_, err = w.PutReceipt(ctx, receipt)
 		return err
