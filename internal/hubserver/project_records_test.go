@@ -782,7 +782,7 @@ func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteAccessTokenGrant(t.Context(), credential, project) }); err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+string(project), token, nil), http.StatusForbidden)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+string(project), token, nil), http.StatusNotFound)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential, ProjectID: project}); err != nil {
 					return err
