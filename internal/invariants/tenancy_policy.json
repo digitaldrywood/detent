@@ -598,9 +598,6 @@
     "internal/hubserver/changes.go": {
       "organization:Hosted.OrganizationID": 1
     },
-    "internal/hubserver/conversation_allowance_records.go": {
-      "organization:hostedOrganization": 2
-    },
     "internal/hubserver/conversation_coordinator.go": {
       "timer:time.After": 2,
       "timer:time.NewTicker": 1,
@@ -889,9 +886,6 @@
     },
     "internal/hubserver/run_details.go": {
       "organization:Hosted.OrganizationID": 1
-    },
-    "internal/hubserver/runner_usage_tenant.go": {
-      "organization:hostedOrganization": 1
     },
     "internal/hubserver/runneradvice/recommendation.go": {
       "import:github.com/digitaldrywood/detent/internal/procgroup": 1
