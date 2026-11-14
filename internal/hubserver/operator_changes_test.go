@@ -1053,7 +1053,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		}
 		fragmentReviews := map[string][]byte{}
 		for _, size := range []int{operatortool.MaxResultBytes - 1, operatortool.MaxResultBytes, operatortool.MaxResultBytes + 1} {
-			review := tracker.ChangeReview{ID: "review_fragment_" + strconv.Itoa(size), VersionID: current.ID, Decision: "commented", Body: "Escaped <\"\n世界"}
+			review := tracker.ChangeReview{ID: "review_fragment_" + strconv.Itoa(size), VersionID: current.ID, Decision: "commented", Body: "Escaped <\"\n世界", Actor: actor, CreatedAt: at}
 			raw, err := json.Marshal(review)
 			if err != nil {
 				t.Fatal(err)
@@ -1173,7 +1173,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		if _, err := executor.Execute(ctx, changeToolCall(operatortool.ReviewChange, args)); !errors.Is(err, mutation.ErrConflict) {
 			t.Fatalf("stale approval accepted: %v", err)
 		}
-		insert(ctx, "discussion", current.ID, tracker.ChangeDiscussion{ID: "discussion_oversized", VersionID: current.ID, Body: strings.Repeat("customer-secret", operatortool.MaxResultBytes/7)})
+		insert(ctx, "discussion", current.ID, tracker.ChangeDiscussion{ID: "discussion_oversized", VersionID: current.ID, Body: strings.Repeat("customer-secret", operatortool.MaxResultBytes/7), Actor: actor, CreatedAt: at})
 		args = base
 		args.Section = "discussion"
 		for pages := range 20 {
