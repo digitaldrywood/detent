@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -770,7 +771,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if err := f.service.operatorChat.RestoreConnection(t.Context(), connection.ID); err != nil {
+				if err := f.service.operatorChat.RestoreConnection(context.WithValue(t.Context(), operatorChatOrganizationKey{}, tracker.OrganizationID(connection.Identity.OrganizationID)), connection.ID); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := f.service.operatorChat.Send(t.Context(), "next-session", "hello"); !errors.Is(err, chat.ErrUnavailable) {
