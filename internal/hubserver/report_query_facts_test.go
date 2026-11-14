@@ -128,7 +128,14 @@ func TestReportTypedQueryCompatibility(t *testing.T) {
 				reader := r.(reportstore.AttemptReader)
 				query := reportstore.AttemptQuery{Projects: []tracker.ProjectID{"prj_reports"}, From: now.Add(-time.Hour), To: now.Add(time.Hour), Limit: 10}
 				for index, identity := range identities {
-					query.Filter = reportstore.Filter{FiledBy: []string{"filer"}, Labels: []string{"label"}, Runners: []string{fmt.Sprintf("runner_%d", index)}, Models: []string{identity.model}, Stages: []string{identity.stage}}
+					model, stage := identity.model, identity.stage
+					if model == "" {
+						model = "Unavailable"
+					}
+					if stage == "" {
+						stage = "Unavailable"
+					}
+					query.Filter = reportstore.Filter{FiledBy: []string{"filer"}, Labels: []string{"label"}, Runners: []string{fmt.Sprintf("runner_%d", index)}, Models: []string{model}, Stages: []string{stage}}
 					rows, err := reader.ReadAttemptFacts(t.Context(), query)
 					if err != nil {
 						return err
