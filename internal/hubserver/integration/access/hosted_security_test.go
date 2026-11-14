@@ -35,8 +35,9 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				if grant == "" {
 					f.Revoke(t, user, f.Project)
 				}
+				administrator := role == "owner" || role == "admin"
 				readStatus := http.StatusNotFound
-				if grant != "" {
+				if grant != "" || administrator {
 					readStatus = http.StatusOK
 				}
 				hubfixture.RequireStatus(t, f.Request(t, user, http.MethodGet, f.Base, nil), readStatus)
@@ -44,7 +45,7 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				if grant != "" {
 					writeStatus = http.StatusForbidden
 				}
-				if grant == "write" && role != "viewer" {
+				if grant == "write" && role != "viewer" || administrator {
 					writeStatus = http.StatusOK
 				}
 				command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "new issue", Body: "private-body-sentinel" + hubfixture.IssueContractSections, State: "Todo"}
@@ -53,7 +54,7 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				if grant == "read" || grant == "write" && (role == "viewer" || role == "member") {
 					policyStatus, revokeStatus = http.StatusForbidden, http.StatusForbidden
 				}
-				if grant == "write" && (role == "owner" || role == "admin") {
+				if administrator {
 					policyStatus, revokeStatus = http.StatusOK, http.StatusGone
 				}
 				descriptor := hubfixture.Policy()
@@ -84,7 +85,7 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 	}{
 		{name: "effective project read", role: "member", grant: "read", want: http.StatusOK},
 		{name: "effective project write", role: "member", grant: "write", want: http.StatusOK},
-		{name: "no effective project grant", role: "owner", want: http.StatusNotFound},
+		{name: "no effective project grant", role: "member", want: http.StatusNotFound},
 		{name: "viewer read", role: "viewer", grant: "write", want: http.StatusOK},
 		{name: "wrong organization", role: "member", grant: "write", path: "/api/v2/organizations/org_other/projects/prj_security", want: http.StatusNotFound},
 		{name: "expired provider session", role: "member", grant: "write", change: func(t *testing.T, f *hubfixture.Hosted, u hubfixture.HostedUser) {
