@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -312,7 +313,9 @@ func TestHostedSharedEntryReplayIsDenied(t *testing.T) {
 
 func TestHostedSharedEntryScopesPagesAndMutations(t *testing.T) {
 	t.Parallel()
-	f := newHostedSharedFixture(t)
+	f := newHostedSharedFixture(t, func(c *Config) {
+		c.StaticFS = fstest.MapFS{conversationClientShell: &fstest.MapFile{Data: []byte("<!doctype html><html><head></head><body></body></html>")}}
+	})
 	owner := f.member(t, "owner", "owner", "write")
 	csrf := cloudassert.CSRFToken("shared-user_owner", "org_security")
 	page := f.serve(t, hostedSharedRequest{user: &owner, target: "/organizations/org_security/organization"})
