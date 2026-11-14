@@ -496,8 +496,12 @@ func TestClaimClassifiesLegacySourceWithinRequestBudget(t *testing.T) {
 				if want := min(claimSourceClassificationLimit, before); classified != want {
 					t.Fatalf("request %d classified %d of %d unknown checkpoints, want %d", request, classified, before, want)
 				}
-				if objectReads := details.checkpointReads() - reads; objectReads != classified {
-					t.Fatalf("request %d read %d checkpoint objects for %d classifications", request, objectReads, classified)
+				sourceFactReads := 0
+				if test.changeSource && request == requests-1 {
+					sourceFactReads = 1
+				}
+				if objectReads := details.checkpointReads() - reads; objectReads != classified+sourceFactReads {
+					t.Fatalf("request %d read %d checkpoint objects for %d classifications and %d claim source reads", request, objectReads, classified, sourceFactReads)
 				}
 				if request == 0 {
 					firstRequestReads[test.name] = details.checkpointReads() - reads
