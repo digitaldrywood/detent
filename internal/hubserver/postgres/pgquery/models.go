@@ -2815,6 +2815,10 @@ type NativeBoardItem struct {
 	ListReporterUnblocksReasonCurrentBasis        string
 	ListReporterUnblocksReasonRevision            int64
 	PageListBytes                                 int32
+	CardChangeVersionID                           *string
+	CardChangePolicyID                            *string
+	CardChangeReviewPolicyID                      *string
+	CardChangeBaseStatus                          *string
 }
 
 type NativeBoardPageSummary struct {
