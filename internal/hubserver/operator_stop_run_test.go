@@ -115,8 +115,17 @@ func TestHubMCPStopRun(t *testing.T) {
 				fields["fencing_token"] = lease.FencingToken + 1
 			case "replacement":
 				coordinatorActionRelease(t, f.service, f.project.OrganizationID, string(lease.ID), "replaced")
-				replacement := claim(r, issue, "replacement-session")
-				lease = replacement
+				coordinatorFixtureWrite(t, f.service, f.project.OrganizationID, func(w tenantstore.Writer) error {
+					item, err := w.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
+					if err != nil {
+						return err
+					}
+					_, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(r.binding.MachineID), SessionID: "replacement-session", LeaseID: "replacement-lease", RunnerID: r.binding.RunnerID, TTL: time.Hour})
+					return err
+				})
+				issue = readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
+				fields["expected_revision"] = fmt.Sprint(issue.Revision)
+				lease = tracker.NativeLease{ID: "replacement-lease"}
 			case "foreign project":
 				foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign")
 				fields["project_id"] = foreign.project.ID
