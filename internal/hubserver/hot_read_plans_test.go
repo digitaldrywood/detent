@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 	admin := hostedPostgresAdmin(t, f.service)
 	installReportsBudgetTrace(t, f.service)
 	seedProductionProject(t, f.service, hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}, productionProjectShape{issues: 594, attempts: 469, usage: 262, leases: 1682, comments: 7000})
+	seedRetainedReportHistory(t, admin, "org_browser_preview", 10)
 	freezeReportPlannerInputs(t, admin)
 	t.Run("rules reject injected unindexed reads", func(t *testing.T) {
 		for _, statement := range []tracedStatement{
@@ -134,6 +136,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 				seedReportsVolumeTransitions(t, f.service, scope, population.transitions)
 			}
 			admin := hostedPostgresAdmin(t, f.service)
+			seedRetainedReportHistory(t, admin, scope.Organization, 10)
 			freezeReportPlannerInputs(t, admin)
 			for _, window := range []string{"24h", "7d", "30d"} {
 				t.Run(window, func(t *testing.T) {
@@ -214,6 +217,64 @@ func seedReportsVolumeTransitions(t *testing.T, s *Service, scope hubscope.Nativ
 	var got int
 	if err := hostedPostgresAdmin(t, s).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND id LIKE 'event_volume_%' AND type='workflow.transitioned'", scope.Organization, scope.Project).Scan(&got); err != nil || got != count {
 		t.Fatalf("volume workflow events=%d want=%d error=%v", got, count, err)
+	}
+}
+
+var retainedReportHistoryKeys = []struct {
+	relation string
+	keys     map[string]string
+}{
+	{"issues", map[string]string{"id": "offset", "native_id": "suffix", "number": "offset", "native_source_key": "suffix", "archived": "=archived OR EXISTS(SELECT 1 FROM project_workflow_states w WHERE w.organization_id=issues.organization_id AND w.project_id=issues.project_id AND w.name=issues.workflow_state_name AND w.terminal)"}},
+	{"leases", map[string]string{"lease_id": "suffix", "issue_id": "offset", "session_id": "suffix", "fencing_token": "offset", "released_at": "=coalesce(released_at,expires_at)-history_copy*interval '2880 hours'"}},
+	{"native_attempt_runs", map[string]string{"run_id": "suffix", "issue_id": "offset"}},
+	{"native_attempts", map[string]string{"id": "suffix", "issue_id": "offset", "lease_id": "suffix", "run_id": "suffix", "fencing_token": "offset", "status": "=CASE WHEN status='running' THEN 'cancelled' ELSE status END"}},
+	{"collaboration_events", map[string]string{"id": "suffix", "work_item_id": "suffix", "aggregate_id": "suffix", "attempt_id": "suffix", "change_id": "suffix", "version_id": "suffix", "run_id": "suffix", "lease_id": "suffix"}},
+	{"change_requests", map[string]string{"id": "suffix", "work_item_id": "suffix", "current_version_id": "suffix", "landed_version_id": "suffix"}},
+	{"change_versions", map[string]string{"id": "suffix", "change_id": "suffix", "run_id": "suffix", "attempt_id": "suffix", "work_item_id": "suffix"}},
+	{"attempt_usage", map[string]string{"attempt_id": "suffix"}},
+}
+
+func seedRetainedReportHistory(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, copies int) {
+	t.Helper()
+	tx, err := admin.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for _, table := range retainedReportHistoryKeys {
+		rows, err := tx.QueryContext(t.Context(), `SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1 AND is_generated='NEVER' ORDER BY ordinal_position`, table.relation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var columns, values []string
+		for rows.Next() {
+			var name, kind string
+			if err := rows.Scan(&name, &kind); err != nil {
+				t.Fatal(err)
+			}
+			value := name
+			switch {
+			case strings.HasPrefix(table.keys[name], "="):
+				value = strings.TrimPrefix(table.keys[name], "=")
+			case table.keys[name] == "offset":
+				value = fmt.Sprintf("%s+history_copy*10000000", name)
+			case table.keys[name] == "suffix":
+				value = fmt.Sprintf("CASE WHEN %s IS NULL OR %s='' THEN %s ELSE %s||'_h'||history_copy END", name, name, name, name)
+			case strings.HasPrefix(kind, "timestamp"):
+				value = fmt.Sprintf("%s-history_copy*interval '2880 hours'", name)
+			}
+			columns, values = append(columns, name), append(values, value)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		statement := fmt.Sprintf(`INSERT INTO %s(%s) OVERRIDING SYSTEM VALUE SELECT %s FROM %s CROSS JOIN generate_series(1,$2) history_copy WHERE organization_id=$1`, table.relation, strings.Join(columns, ","), strings.Join(values, ","), table.relation)
+		if _, err := tx.ExecContext(t.Context(), statement, organization, copies); err != nil {
+			t.Fatalf("retained %s history: %v", table.relation, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }
 
