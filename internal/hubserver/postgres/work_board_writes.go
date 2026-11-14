@@ -22,7 +22,7 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 		return viewstore.ErrInvalidView
 	}
 	var projectID string
-	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, u.ProjectID).Scan(&projectID); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR NO KEY UPDATE`, s.organization, u.ProjectID).Scan(&projectID); err != nil {
 		return mapError(ctx, err)
 	}
 	project, err := s.Project(ctx, u.ProjectID)
