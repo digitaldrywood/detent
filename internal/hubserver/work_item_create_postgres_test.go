@@ -678,27 +678,12 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				}
 				committedContent += int64(len(raw))
 				if revision == 1 {
-					var fields map[string]json.RawMessage
-					if err := json.Unmarshal(raw, &fields); err != nil {
-						t.Fatal(err)
+					fields := struct{ Title, Body, Labels, Assignees json.RawMessage }{Labels: json.RawMessage("null"), Assignees: json.RawMessage("null")}
+					var text struct{ Title, Body string }
+					if json.Unmarshal(raw, &fields) != nil || json.Unmarshal(raw, &text) != nil {
+						t.Fatal("decode committed create version")
 					}
-					var title, body string
-					if err := json.Unmarshal(fields["title"], &title); err != nil {
-						t.Fatal(err)
-					}
-					if raw, ok := fields["body"]; ok {
-						if err := json.Unmarshal(raw, &body); err != nil {
-							t.Fatal(err)
-						}
-					}
-					committedContent += int64(len(title) + len(body))
-					for _, name := range []string{"labels", "assignees"} {
-						value, ok := fields[name]
-						if !ok {
-							value = json.RawMessage("null")
-						}
-						committedContent += int64(len(value))
-					}
+					committedContent += int64(len(text.Title) + len(text.Body) + len(fields.Labels) + len(fields.Assignees))
 				}
 			}
 			for _, event := range confirmedEvents {
@@ -1095,14 +1080,14 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 					t.Fatal(err)
 				}
 				current = read()
-				for index, changes := range []map[string]any{
-					{"title": "Example edited attachment issue", "priority": 2},
-					{"body": workItemRecordBody + "\nUpdated evidence.\n![Example](attachment:" + attachmentID + ")"},
-					{"priority": 1},
-				} {
-					key := fmt.Sprintf("edit-item-%d", index)
+				succeed := func(key string, changes map[string]any) {
+					t.Helper()
+					prior := accounting()
 					response := edit(key, current.Revision, changes, http.StatusOK)
 					next := read()
+					if accounting()[1] != prior[1]+1 {
+						t.Fatalf("edit %s advanced the event sequence %d -> %d, want one event", key, prior[1], accounting()[1])
+					}
 					if next.Revision != current.Revision+1 || next.WorkItemID != current.WorkItemID || next.State != current.State {
 						t.Fatal("edit changed identity, workflow state or revision incorrectly")
 					}
@@ -1139,6 +1124,20 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 					}
 					current = next
 				}
+				for index, changes := range []map[string]any{{"title": "Example edited attachment issue", "priority": 2}, {"body": workItemRecordBody + "\nUpdated evidence.\n![Example](attachment:" + attachmentID + ")"}, {"priority": 1}} {
+					succeed(fmt.Sprintf("edit-item-%d", index), changes)
+				}
+				references := func(organization tracker.OrganizationID, id string) (refs []attachmentstore.Reference) {
+					t.Helper()
+					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						refs, err = r.AttachmentReferences(t.Context(), project, id, 10)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					return refs
+				}
 				unavailableReference := func(key string, id string) {
 					t.Helper()
 					response := edit(key, current.Revision, map[string]any{"body": workItemRecordBody + "\n![Example](attachment:" + id + ")"}, http.StatusUnprocessableEntity)
@@ -1160,33 +1159,25 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				if read().Revision != current.Revision || accounting() != before {
 					t.Fatal("refused edit changed persisted state, accounting or event sequence")
 				}
-				edit("edit-remove-attachment", current.Revision, map[string]any{"body": workItemRecordBody + "\nUpdated issue without visual references."}, http.StatusOK)
-				current = read()
-				if current.Body != workItemRecordBody+"\nUpdated issue without visual references." {
-					t.Fatal("body edit did not remove visual references")
-				}
-				before = accounting()
-				unavailableReference("edit-new-attachment", attachmentID)
-				if read().Revision != current.Revision || accounting() != before {
-					t.Fatal("refused edit changed persisted state, accounting or event sequence")
+				succeed("edit-remove-attachment", map[string]any{"body": workItemRecordBody + "\nUpdated issue without visual references."})
+				if refs := references(org, attachmentID); len(refs) != 0 {
+					t.Fatalf("removed reference kept this issue's ordinary binding: %+v", refs)
 				}
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-					references, err := r.AttachmentReferences(t.Context(), project, attachmentID, 10)
-					if err == nil && (len(references) != 1 || references[0].WorkItemID != issue.WorkItemID || references[0].CommentID != "") {
-						t.Fatal("edit did not bind attachment to its tenant's issue exactly once")
+					record, err := r.Attachment(t.Context(), project, attachmentID)
+					if err == nil && (record.Metadata.DeletedAt != nil || record.ObjectDeletedAt != nil) {
+						return errors.New("removed reference deleted the attachment itself")
 					}
 					return err
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if err := repository.ReadTenant(t.Context(), foreignOrg, corestore.Serving, func(r tenantstore.Reader) error {
-					references, err := r.AttachmentReferences(t.Context(), project, foreignAttachmentID, 10)
-					if err == nil && len(references) != 0 {
-						t.Fatal("refused edit bound another tenant's attachment")
-					}
-					return err
-				}); err != nil {
-					t.Fatal(err)
+				succeed("edit-re-add-attachment", map[string]any{"body": workItemRecordBody + "\nReadded evidence.\n![Example](attachment:" + attachmentID + ")"})
+				if refs := references(org, attachmentID); len(refs) != 1 || refs[0].WorkItemID != issue.WorkItemID || refs[0].CommentID != "" {
+					t.Fatalf("re-added readable attachment was not bound to this issue exactly once: %+v", refs)
+				}
+				if refs := references(foreignOrg, foreignAttachmentID); len(refs) != 0 {
+					t.Fatal("refused edit bound another tenant's attachment")
 				}
 				issue = current
 			})
