@@ -642,10 +642,13 @@ func TestCutoverRefusesChangedAuthoritySourcesAndRollsBack(t *testing.T) {
 				status = http.StatusUnauthorized
 			case "changed checkpoint":
 				request.Checkpoint = strings.Repeat("a", 64)
+				status = http.StatusUnprocessableEntity
 			case "changed policy":
 				clearNativeFixturePolicy(t, f)
+				status = http.StatusUnprocessableEntity
 			case "changed source":
 				finishImportFixture(t, f, startImportFixture(t, f, 1, true, first.Revision))
+				status = http.StatusUnprocessableEntity
 			case "uncertain compatibility write":
 				payload, err := eventstore.NewContent(f.service.runDetailStore()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: f.project.OrganizationID}, []byte(`{"state":"Todo"}`))
 				if err != nil {
@@ -720,6 +723,9 @@ func TestCutoverRefusesChangedAuthoritySourcesAndRollsBack(t *testing.T) {
 			before := cutoverOwnedRows(t, f)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, target, token, request)
 			requireNativeStatus(t, response, status)
+			if strings.HasPrefix(name, "changed ") && !strings.Contains(response.Body.String(), `"code":"invalid_request","message":"Cutover checkpoint changed; repeat the dry run and review its receipt"`) {
+				t.Fatalf("changed cutover authority refusal = %s", response.Body.String())
+			}
 			after := cutoverOwnedRows(t, f)
 			for table, original := range before {
 				if !reflect.DeepEqual(after[table], original) {
