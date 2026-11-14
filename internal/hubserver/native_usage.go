@@ -172,6 +172,8 @@ func (s *nativeUsageEnvelopeStore) ReadDetail(ctx context.Context, organization 
 	return value, err
 }
 
+const usageRefreshRows = 100
+
 func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 	type cursor struct {
 		mu           sync.Mutex
@@ -211,7 +213,7 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 			if !ok {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
-			next, count, err := owner.RefreshReportUsagePage(ctx, organization, hubmaintenance.LimitDetails(s.runDetailStore()), current.sourcesAfter, 100)
+			next, count, err := owner.RefreshReportUsagePage(ctx, organization, hubmaintenance.LimitDetails(s.runDetailStore()), current.sourcesAfter, usageRefreshRows)
 			if err == nil {
 				current.sourcesAfter = next
 				if count == 0 {
@@ -257,7 +259,7 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
-		ready, err := owner.RefreshAttemptReportUsage(ctx, organization, pending.AttemptID, 100)
+		ready, err := owner.RefreshAttemptReportUsage(ctx, organization, pending.AttemptID, usageRefreshRows)
 		if err != nil || !ready {
 			return err
 		}
@@ -268,7 +270,7 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			var err error
-			events, err = reader.AttemptEvents(ctx, pending.ProjectID, pending.WorkItemID, pending.AttemptID, pending.AfterEventSequence, 100)
+			events, err = reader.AttemptEvents(ctx, pending.ProjectID, pending.WorkItemID, pending.AttemptID, pending.AfterEventSequence, budget.Items)
 			return err
 		}); err != nil {
 			return err
