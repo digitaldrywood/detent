@@ -138,12 +138,19 @@ func boardRecordSettled(ctx context.Context, r tenantstore.Reader, candidate vie
 	if err != nil || card.SourceRevision != item.Revision || card.SourceEventSequence != item.EventSequence {
 		return false, err
 	}
-	project, err := r.Project(ctx, candidate.ProjectID)
+	project, err := r.ProjectRecord(ctx, candidate.ProjectID)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return false, nil
 	}
-	if err != nil || project.Profile != "native" || project.DeletedAt != nil || card.SourceProjectRevision != project.ContentSettingsRevision {
+	if err != nil || project.Core.Profile != "native" || project.Core.DeletedAt != nil || card.SourceProjectRevision != project.Core.ContentSettingsRevision {
 		return false, err
+	}
+	lane, dispatchable, terminal := 2147483647, false, card.Terminal
+	if index := slices.IndexFunc(project.States, func(state tracker.NativeState) bool { return state.Name == card.Position.State }); index >= 0 {
+		lane, dispatchable, terminal = index, project.States[index].Dispatchable, project.States[index].Terminal
+	}
+	if card.Position.Lane != lane || card.Dispatchable != dispatchable || card.Terminal != terminal {
+		return false, nil
 	}
 	if _, err := r.LatestChange(ctx, candidate.ProjectID, candidate.WorkItemID); !errors.Is(err, corestore.ErrNotFound) {
 		return false, err
@@ -346,6 +353,9 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		issue, err := s.hydrateWorkItemRecord(ctx, snapshot.item, snapshot.version)
 		if err != nil {
 			return err
+		}
+		if index := slices.IndexFunc(snapshot.project.States, func(state tracker.NativeState) bool { return state.Name == issue.State }); index >= 0 {
+			issue.Terminal = snapshot.project.States[index].Terminal
 		}
 		if snapshot.transition != nil {
 			step = "transition_payload"

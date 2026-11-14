@@ -1390,11 +1390,11 @@ func drainTestNativeBoard(t *testing.T, service *Service) {
 				return err
 			}
 			expected := err == nil
-			project, err := r.Project(t.Context(), candidate.ProjectID)
+			project, err := r.ProjectRecord(t.Context(), candidate.ProjectID)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
-			expected = expected && err == nil && project.DeletedAt == nil && project.Profile == "native"
+			expected = expected && err == nil && project.Core.DeletedAt == nil && project.Core.Profile == "native"
 			row, err := r.BoardItem(t.Context(), candidate.ProjectID, candidate.WorkItemID)
 			if errors.Is(err, corestore.ErrNotFound) {
 				pending = expected || candidate.Required
@@ -1403,9 +1403,10 @@ func drainTestNativeBoard(t *testing.T, service *Service) {
 			if err != nil {
 				return err
 			}
+			state := slices.IndexFunc(project.States, func(state tracker.NativeState) bool { return state.Name == row.Position.State })
 			pending = !expected || candidate.Required || !row.Display.Ready || row.PageIssue == nil || row.ListIssue == nil ||
-				row.SourceRevision != item.Revision || row.SourceEventSequence != item.EventSequence ||
-				row.SourceProjectRevision != project.ContentSettingsRevision || row.RefreshAfter != nil && !row.RefreshAfter.After(service.config.Clock())
+				row.SourceRevision != item.Revision || row.SourceEventSequence != item.EventSequence || state >= 0 && (project.States[state].Terminal != row.Terminal || state != row.Position.Lane) ||
+				row.SourceProjectRevision != project.Core.ContentSettingsRevision || row.RefreshAfter != nil && !row.RefreshAfter.After(service.config.Clock())
 			return nil
 		})
 		if err != nil {
