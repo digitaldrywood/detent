@@ -39,6 +39,10 @@ func (r *humanWorkflowRaceRepository) WriteTenant(ctx context.Context, organizat
 	})
 }
 
+func (r *humanWorkflowRaceRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, fn func(tenantstore.Reader) error) error {
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, fn)
+}
+
 type humanWorkflowRaceWriter struct {
 	tenantstore.Writer
 	owner *humanWorkflowRaceRepository
@@ -78,7 +82,7 @@ func verifyHumanWorkflowCompletionRace(t *testing.T, service *Service, admin *sq
 	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)
 	attemptID := hubapi.NewID("attempt")
-	started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "human-race-start-" + variant}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: attemptID, RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}}
+	started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "human-race-start-" + variant}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: attemptID, RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: next.ProviderCandidates[0].Requirement.Role, Backend: next.ProviderCandidates[0].Requirement.Backend, Model: next.ProviderCandidates[0].Requirement.Model}}}
 	eventPath := base + "/work-items/" + string(item.WorkItemID) + "/events"
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventPath, worker, started), http.StatusOK)
 	repository := service.config.TenantRepository

@@ -706,7 +706,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 		var attemptLease tracker.NativeLease
 		decodeHubResponse(t, claimResponse, &attemptLease)
 		attemptID, runID := hubapi.NewID("attempt"), hubapi.NewID("run")
-		data := tracker.NativeRunData{AttemptID: attemptID, RunID: runID, LeaseID: attemptLease.ID, FencingToken: attemptLease.FencingToken, PolicyID: policy.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}
+		data := tracker.NativeRunData{AttemptID: attemptID, RunID: runID, LeaseID: attemptLease.ID, FencingToken: attemptLease.FencingToken, PolicyID: policy.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: claim.ProviderCandidates[0].Requirement.Role, Backend: claim.ProviderCandidates[0].Requirement.Backend, Model: claim.ProviderCandidates[0].Requirement.Model}}
 		path := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/work-items/" + url.PathEscape(string(issue.WorkItemID)) + "/events"
 		started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "start_" + attemptID}, Type: "run.started", SchemaVersion: 1, Data: data}
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, started), http.StatusOK)

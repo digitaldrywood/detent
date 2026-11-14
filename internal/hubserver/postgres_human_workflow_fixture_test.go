@@ -37,6 +37,7 @@ func configureHumanWorkflowProject(t *testing.T, service *Service, organization 
 			record.States[i].Transitions = append(slices.Clone(record.States[i].Transitions), "Blocked", "Needs input")
 		}
 	}
+	record.States = hubrecords.NativeTriageStates(record.States)
 	record.Core.WorkflowSource, record.Core.WorkflowSourceRevision = "detent.yaml", strings.Repeat("a", 40)
 	descriptor := configuredHumanWorkflowPolicy(hubTestPolicy(), record.States)
 	descriptor.Configuration = &policy.Configuration{Behavior: json.RawMessage(`{"BacklogAdmission":{"Sources":{"States":["Backlog"]},"TargetState":"Todo"}}`), Prompt: "Follow the approved workflow"}

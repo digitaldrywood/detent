@@ -5,17 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -297,7 +301,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	verifyPostgresHumanTenantIsolation(t, service, project, issue, owner, clock)
+	verifyPostgresHumanTenantIsolation(t, service, admin, project, issue, owner, clock)
 	for _, mutation := range []struct {
 		name  string
 		query string
@@ -318,7 +322,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 			requireNativeStatus(t, response, http.StatusOK)
 			var held tracker.NativeLease
 			decodeHubResponse(t, response, &held)
-			start := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: held.ID, FencingToken: held.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}}
+			start := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: held.ID, FencingToken: held.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: claim.ProviderCandidates[0].Requirement.Role, Backend: claim.ProviderCandidates[0].Requirement.Backend, Model: claim.ProviderCandidates[0].Requirement.Model}}}
 			events := base + "/work-items/" + string(item.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, events, worker, start), http.StatusOK)
 			credential, _, err := service.authenticateAccessHash(t.Context(), apikey.HashToken(worker), "", "")
@@ -410,7 +414,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 		t.Fatal("Rework did not claim a new fenced execution")
 	}
 	currentAttemptID := hubapi.NewID("attempt")
-	started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "human-current-start"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: currentAttemptID, RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}}
+	started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "human-current-start"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: currentAttemptID, RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: claim.ProviderCandidates[0].Requirement.Role, Backend: claim.ProviderCandidates[0].Requirement.Backend, Model: claim.ProviderCandidates[0].Requirement.Model}}}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, started), http.StatusOK)
 	for _, state := range []string{"Todo"} {
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, workflow(changed), owner, transition(changed, "human-active-"+state, state)), http.StatusConflict)
@@ -579,7 +583,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 	}
 }
 
-func verifyPostgresHumanTenantIsolation(t *testing.T, first *Service, project tracker.NativeProject, original tracker.NativeIssue, firstToken string, clock *atomic.Int64) {
+func verifyPostgresHumanTenantIsolation(t *testing.T, first *Service, admin *sql.DB, project tracker.NativeProject, original tracker.NativeIssue, firstToken string, clock *atomic.Int64) {
 	t.Helper()
 	const organization tracker.OrganizationID = "org_human_other"
 	const token = "example_other_human_token"
@@ -600,7 +604,7 @@ func verifyPostgresHumanTenantIsolation(t *testing.T, first *Service, project tr
 	}
 	approved.ProjectID, approved.ApprovedBy, approved.ApprovedAt = project.ID, "credential_human_other", now
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project.ID, Name: "Other example project", Slug: "other-example", Profile: "native", WorkflowSource: "detent.yaml", WorkflowSourceRevision: strings.Repeat("a", 40)}, States: humanWorkflowFixtureStates()}); err != nil {
+		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project.ID, Name: "Other example project", Slug: "other-example", Profile: "native", WorkflowSource: "detent.yaml", WorkflowSourceRevision: strings.Repeat("a", 40)}, States: hubrecords.NativeTriageStates(humanWorkflowFixtureStates())}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "credential_human_other", Name: "Other owner", Hash: apikey.HashToken(token), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: "user_human_other", MembershipID: "membership_user_human_other", KeyScope: "admin", ProjectAccess: "all", Kind: "personal"}); err != nil {
@@ -617,6 +621,9 @@ func verifyPostgresHumanTenantIsolation(t *testing.T, first *Service, project tr
 		}
 		return w.ApproveProjectPolicy(t.Context(), approved, "")
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{cfg.Postgres.Connection.Database}.Sanitize()+" CONNECTION LIMIT "+strconv.Itoa(6+cfg.Postgres.Pool.MaxConnections)); err != nil {
 		t.Fatal(err)
 	}
 	second, err := Open(t.Context(), cfg)
