@@ -268,7 +268,7 @@ func DiagnosticNativeFailures(snapshot diagnosticstore.Snapshot, values map[stri
 			continue
 		}
 		at := attempt.Event.RecordedAt
-		if attempt.FailureAt != nil {
+		if attempt.FailureAt != nil && class != "merge" {
 			at = *attempt.FailureAt
 		}
 		if at.Before(w.From) || !at.Before(w.To) {
