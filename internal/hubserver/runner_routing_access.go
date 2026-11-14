@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -71,7 +72,7 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 				return err
 			}
 			if !allowed {
-				return hubapi.NativeNotFound()
+				return &hubapi.NativeError{Code: "forbidden", Message: "Organization-wide runner scope needs manage_runner on every project; ask an owner or admin", Status: http.StatusForbidden, PublicMessage: true}
 			}
 		}
 	}

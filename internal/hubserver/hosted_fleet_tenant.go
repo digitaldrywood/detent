@@ -80,7 +80,9 @@ func (s *Service) readHostedFleetTenant(ctx context.Context, credential hubapi.A
 func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential hubapi.APICredential, projects []appBootstrapProject, selectedProject tracker.ProjectID, now time.Time) (hostedFleetResponse, []scopedProviderAccount, error) {
 	visible := map[tracker.ProjectID]bool{}
 	manageable := map[tracker.ProjectID]bool{}
+	names := map[tracker.ProjectID]string{}
 	for _, project := range projects {
+		names[tracker.ProjectID(project.ID)] = project.Name
 		if selectedProject == "" || tracker.ProjectID(project.ID) == selectedProject {
 			visible[tracker.ProjectID(project.ID)] = true
 		}
@@ -225,6 +227,10 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 						view.Editable = false
 					}
 				}
+			}
+
+			if !view.Editable {
+				view.EditRefusalReason = hostedRunnerEditRefusal(credential.HostedRole, identity, managementProjects[identity.RunnerID], projects, manageable, names)
 			}
 
 			owned := record.OwnerPrincipalID == credential.ID && credential.ID != "" || credential.Hosted != nil && record.OwnerUserID != "" && record.OwnerUserID == credential.Hosted.Subject
@@ -505,4 +511,26 @@ func (s *Service) readHostedRunnerHostHistoryTenant(ctx context.Context, credent
 		return nil, err
 	}
 	return s.readRunnerHostHistory(ctx, tracker.OrganizationID(s.appOrganizationID()), runnerID, from, to)
+}
+
+func hostedRunnerEditRefusal(role string, identity runnerstore.Identity, running []tracker.ProjectID, projects []appBootstrapProject, manageable map[tracker.ProjectID]bool, names map[tracker.ProjectID]string) string {
+	const refusal = "Runner changes need manage_runner on every allowed project and every project with running work; ask an owner or admin"
+	if role != "member" {
+		return refusal
+	}
+	required := slices.Concat(identity.ProjectIDs, running)
+	if identity.Scope == "organization" {
+		for _, project := range projects {
+			required = append(required, tracker.ProjectID(project.ID))
+		}
+	} else if len(required) == 0 {
+		return "An unassigned runner needs an owner or admin"
+	}
+	slices.Sort(required)
+	for _, project := range slices.Compact(required) {
+		if name, visible := names[project]; visible && !manageable[project] {
+			return fmt.Sprintf("project %q (%s) lacks a manage_runner grant; ask an owner or admin", name, project)
+		}
+	}
+	return refusal
 }

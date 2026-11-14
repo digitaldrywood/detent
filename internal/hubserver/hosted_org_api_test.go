@@ -914,21 +914,25 @@ func TestHostedRunnerRoutingAuthority(t *testing.T) {
 					if lease.ProjectID == nil || *lease.ProjectID != tracker.ProjectID(runningProject) || lease.RunnerID == nil || *lease.RunnerID != binding.RunnerID {
 						t.Fatalf("routing lease lost project or runner: %#v", lease)
 					}
-					return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: f.service.accessOrganization(), LeaseID: lease.LeaseID, RunnerID: binding.RunnerID, AssignedAt: lease.AcquiredAt})
+					return nil
 				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			browserHostedDecode(t, f.api(t, account, http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &fleet)
 			view := fleet.Runners[0]
-			if view.Editable != test.editable || view.Routing == nil || view.Routing.State != "draining" || !slices.Equal(view.Routing.Tags, []string{"build", "mac"}) || !slices.Equal(view.Routing.ProjectIDs, change.ProjectIDs) {
+			visibleProjects := change.ProjectIDs
+			if (test.role == "member" || test.role == "viewer") && !test.allGrants {
+				visibleProjects = slices.DeleteFunc(slices.Clone(change.ProjectIDs), func(project tracker.ProjectID) bool { return project == tracker.ProjectID(f.privateProject) })
+			}
+			if view.Editable != test.editable || view.Routing == nil || view.Routing.State != "draining" || !slices.Equal(view.Routing.Tags, []string{"build", "mac"}) || !slices.Equal(view.Routing.ProjectIDs, visibleProjects) {
 				t.Fatalf("fleet runner = %#v, routing = %#v, want editable %v", view, view.Routing, test.editable)
 			}
 			if !test.editable && (!strings.Contains(view.EditRefusalReason, "owner or admin") || !test.unassigned && !strings.Contains(view.EditRefusalReason, "manage_runner")) {
 				t.Fatalf("missing authority explanation: %q", view.EditRefusalReason)
 			}
-			if (test.shared || test.organizationScope) && test.role == "member" && !test.allGrants && !strings.Contains(view.EditRefusalReason, f.privateProject) {
-				t.Fatalf("refusal does not identify missing project grant: %q", view.EditRefusalReason)
+			if (test.role == "member" || test.role == "viewer") && !test.allGrants && strings.Contains(view.EditRefusalReason, f.privateProject) {
+				t.Fatalf("refusal reveals a project the caller cannot see: %q", view.EditRefusalReason)
 			}
 			if test.role == "member" && !test.allGrants && !test.shared && !test.unassigned && fleet.Editable {
 				t.Fatal("partial member unexpectedly gained organization-wide authority")
@@ -946,7 +950,7 @@ func TestHostedRunnerRoutingAuthority(t *testing.T) {
 			}
 			if test.addProject {
 				change.ProjectIDs = append(change.ProjectIDs, tracker.ProjectID(f.privateProject))
-				status = http.StatusForbidden
+				status = http.StatusNotFound
 			}
 			if test.widenScope {
 				change.Scope = "organization"
