@@ -261,7 +261,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 				firstHour := clock.Now().Truncate(time.Hour)
 				feature := service.UsageMaintenanceFeature()
 				selected := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
-				budget := hubmaintenance.Budget{Items: 1, Bytes: feature.Bytes}
+				budget := hubmaintenance.Budget{Items: 2, Bytes: feature.Bytes}
 				sawAttemptSeek, projectWalk := false, false
 				step := func(feature hubmaintenance.Feature) {
 					t.Helper()
@@ -522,7 +522,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 						writeOne(`DELETE FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2`, organization, claimed.attempt)
 						feature := service.UsageMaintenanceFeature()
 						selected := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
-						budget := hubmaintenance.Budget{Items: 1, Bytes: feature.Bytes}
+						budget := hubmaintenance.Budget{Items: 2, Bytes: feature.Bytes}
 						for turn := range 6 {
 							_, err := feature.Step(budget.Context(t.Context(), selected), selected, budget)
 							if tc.name == "conflicting report fact" && turn%2 == 0 {
