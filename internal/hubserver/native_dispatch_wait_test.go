@@ -1075,6 +1075,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+				reportRunnerCapacity(t, f.service, f.base, worker.redemption.Credential, worker.binding.MachineID, worker.redemption.DisplayName, worker.redemption.BackendIsolation, worker.redemption.Capacity)
 				claim := tracker.NativeClaim{MachineID: worker.binding.MachineID, SessionID: "ranked-tail", PolicyID: hubTestPolicy().ID, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}, WorkflowStates: []string{"todo"}}
 				selected, err := f.service.claimNativeIssueTenant(t.Context(), scope, claim, 90*time.Second)
 				if err != nil || selected.IssueID != tailRow.ID {
@@ -1087,6 +1088,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 					run.CompletionBody = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```"
 				})
 				probe.candidates.Store(0)
+				claim.SessionID = "ranked-preview"
 				_, err = f.service.previewProviderCandidatesTenant(t.Context(), scope, tracker.NativeCapacityPreview{NativeClaim: claim, After: tailID, Limit: 9}, f.service.config.Clock())
 				if !isProviderWait(err) || probe.candidates.Load() != 1 {
 					t.Errorf("answered cursor must refresh without reading next page: candidate_queries=%d err=%v", probe.candidates.Load(), err)
