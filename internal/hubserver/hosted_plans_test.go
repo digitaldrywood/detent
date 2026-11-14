@@ -2206,7 +2206,7 @@ func exerciseHostedPlanUnrestrictedWork(t *testing.T, service *Service) {
 		t.Fatalf("unlimited claim = %v", err)
 	}
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, "unrestricted-growth", 0, 1, service.config.Clock(), false); err != nil {
+		if err := service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, f.project.OrganizationID, "unrestricted-growth", 0, 1, service.config.Clock(), false); err != nil {
 			return err
 		}
 		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), w, "hosted_artifacts", service.config.Clock()))
@@ -2234,7 +2234,7 @@ func exerciseHostedPlanFreeDefault(t *testing.T, service *Service) {
 		}
 	}
 	err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, "free-default-growth", 1<<30, 1<<30+1, service.config.Clock(), false)
+		return service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, f.project.OrganizationID, "free-default-growth", 1<<30, 1<<30+1, service.config.Clock(), false)
 	})
 	var limit *hostedplans.LimitError
 	if !errors.As(err, &limit) || limit.Resource != "collaboration_bytes" || limit.Allowance != 1<<30 {

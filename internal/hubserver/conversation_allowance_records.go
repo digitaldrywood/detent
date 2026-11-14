@@ -11,9 +11,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (d *database) checkConversationCollaborationGrowthPostgres(ctx context.Context, writer tenantstore.Writer, receiptID string, before, after int64, now time.Time, completion bool) error {
+func (d *database) checkConversationCollaborationGrowthPostgres(ctx context.Context, writer tenantstore.Writer, organization tracker.OrganizationID, receiptID string, before, after int64, now time.Time, completion bool) error {
 	if before < 0 || after < 0 || strings.TrimSpace(receiptID) == "" || now.IsZero() {
 		return billingstore.ErrInvalidUsage
 	}
@@ -36,7 +37,7 @@ func (d *database) checkConversationCollaborationGrowthPostgres(ctx context.Cont
 		limit = math.MaxInt64
 	}
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
-	result, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: writer.BillingOrganization(), ID: receiptID + "/api_mutations", WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
+	result, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: organization, ID: receiptID + "/api_mutations", WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
 	if err != nil {
 		return err
 	}
@@ -50,10 +51,10 @@ func (s *Service) chargeProjectCommand(ctx context.Context, writer tenantstore.W
 	if strings.TrimSpace(key) == "" {
 		key = hubapi.NewID("mutation")
 	}
-	return s.database.chargeAttachmentAPIMutationsPostgres(ctx, writer, "project-command/"+scope.Credential.ID+"/"+operation+"/"+key, s.config.Clock(), "command")
+	return s.database.chargeAttachmentAPIMutationsPostgres(ctx, writer, scope.Organization, "project-command/"+scope.Credential.ID+"/"+operation+"/"+key, s.config.Clock(), "command")
 }
 
-func (d *database) chargeAttachmentAPIMutationsPostgres(ctx context.Context, writer tenantstore.Writer, receiptID string, now time.Time, charges ...string) error {
+func (d *database) chargeAttachmentAPIMutationsPostgres(ctx context.Context, writer tenantstore.Writer, organization tracker.OrganizationID, receiptID string, now time.Time, charges ...string) error {
 	if strings.TrimSpace(receiptID) == "" || now.IsZero() {
 		return billingstore.ErrInvalidUsage
 	}
@@ -68,7 +69,7 @@ func (d *database) chargeAttachmentAPIMutationsPostgres(ctx context.Context, wri
 	limit := entitlement.Allowances["api_mutations"]
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	for _, charge := range charges {
-		result, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: writer.BillingOrganization(), ID: receiptID + "/" + charge + "/api_mutations", WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
+		result, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: organization, ID: receiptID + "/" + charge + "/api_mutations", WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
 		if err != nil {
 			return err
 		}

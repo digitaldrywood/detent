@@ -50,7 +50,7 @@ func TestConversationCollaborationGrowthAllowancePostgres(t *testing.T) {
 			var gotLimit string
 			for range repeats {
 				err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
-					return database.checkConversationCollaborationGrowthPostgres(t.Context(), writer, "receipt_example", test.before, test.after, now, test.completion)
+					return database.checkConversationCollaborationGrowthPostgres(t.Context(), writer, organization, "receipt_example", test.before, test.after, now, test.completion)
 				})
 				var limit *hostedplans.LimitError
 				if errors.As(err, &limit) {
@@ -63,7 +63,7 @@ func TestConversationCollaborationGrowthAllowancePostgres(t *testing.T) {
 			}
 			if test.additionalReceipt {
 				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
-					return database.checkConversationCollaborationGrowthPostgres(t.Context(), writer, "receipt_second", 0, 0, now, false)
+					return database.checkConversationCollaborationGrowthPostgres(t.Context(), writer, organization, "receipt_second", 0, 0, now, false)
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -96,26 +96,61 @@ func TestConversationCollaborationGrowthAllowancePostgresIsTenantScoped(t *testi
 	second := tracker.OrganizationID("org_allowance_second")
 	seedConversationAllowancePostgres(t, repository, first, ref, allowances)
 	seedConversationAllowancePostgres(t, repository, second, ref, allowances)
-	database := conversationAllowanceDatabase(first, ref, allowances, repository)
 	now := time.Unix(120, 0).UTC()
-	err := repository.WriteTenant(t.Context(), second, corestore.Serving, func(writer tenantstore.Writer) error {
-		return database.checkConversationCollaborationGrowthPostgres(t.Context(), writer, "receipt_cross_tenant", 0, 0, now, false)
-	})
-	if !errors.Is(err, corestore.ErrTenantMismatch) {
-		t.Fatalf("cross-tenant allowance write=%v", err)
-	}
-	for _, organization := range []tracker.OrganizationID{first, second} {
+	usage := func(t *testing.T, organization tracker.OrganizationID) int64 {
+		t.Helper()
+		var used int64
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			used, err := conversationAllowanceUsage(t.Context(), reader, now)
-			if err != nil {
-				return err
-			}
-			if used != 0 {
-				return fmt.Errorf("organization %s usage=%d after cross-tenant write", organization, used)
-			}
-			return nil
+			var err error
+			used, err = conversationAllowanceUsage(t.Context(), reader, now)
+			return err
 		}); err != nil {
 			t.Fatal(err)
+		}
+		return used
+	}
+	charges := []struct {
+		name   string
+		charge func(*database, tenantstore.Writer, tracker.OrganizationID, string) error
+	}{
+		{"collaboration growth", func(d *database, writer tenantstore.Writer, organization tracker.OrganizationID, receipt string) error {
+			return d.checkConversationCollaborationGrowthPostgres(t.Context(), writer, organization, receipt, 0, 0, now, false)
+		}},
+		{"attachment mutation", func(d *database, writer tenantstore.Writer, organization tracker.OrganizationID, receipt string) error {
+			return d.chargeAttachmentAPIMutationsPostgres(t.Context(), writer, organization, receipt, now, "mutation")
+		}},
+	}
+	for _, direction := range []struct{ named, session tracker.OrganizationID }{{first, second}, {second, first}} {
+		for _, charge := range charges {
+			database := conversationAllowanceDatabase(direction.named, ref, allowances, repository)
+			err := repository.WriteTenant(t.Context(), direction.session, corestore.Serving, func(writer tenantstore.Writer) error {
+				return charge.charge(database, writer, direction.named, "receipt_cross_tenant_"+string(direction.named))
+			})
+			if !errors.Is(err, corestore.ErrTenantMismatch) {
+				t.Fatalf("%s for %s in %s: cross-tenant allowance write=%v", charge.name, direction.named, direction.session, err)
+			}
+		}
+	}
+	for _, organization := range []tracker.OrganizationID{first, second} {
+		if used := usage(t, organization); used != 0 {
+			t.Fatalf("organization %s usage=%d after cross-tenant write", organization, used)
+		}
+	}
+	database := conversationAllowanceDatabase(first, ref, allowances, repository)
+	for index, organization := range []tracker.OrganizationID{first, second} {
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			return charges[0].charge(database, writer, organization, "receipt_own_tenant")
+		}); err != nil {
+			t.Fatalf("own-organization allowance write for %s: %v", organization, err)
+		}
+		for later, other := range []tracker.OrganizationID{first, second} {
+			want := int64(0)
+			if later <= index {
+				want = 1
+			}
+			if used := usage(t, other); used != want {
+				t.Fatalf("after charging %s, organization %s usage=%d want %d", organization, other, used, want)
+			}
 		}
 	}
 }
@@ -164,7 +199,7 @@ func TestAttachmentAPIMutationChargesPostgres(t *testing.T) {
 	charge := func(organization tracker.OrganizationID, receiptID string) error {
 		database := conversationAllowanceDatabase(organization, ref, allowances, repository)
 		return repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
-			return database.chargeAttachmentAPIMutationsPostgres(t.Context(), writer, receiptID, now, "record", "mutation")
+			return database.chargeAttachmentAPIMutationsPostgres(t.Context(), writer, organization, receiptID, now, "record", "mutation")
 		})
 	}
 	for _, step := range []struct {
