@@ -57,6 +57,13 @@ func (r entryAuthFaultReader) AccessMember(ctx context.Context, user string) (ac
 	return r.Reader.AccessMember(ctx, user)
 }
 
+func (r entryAuthFaultReader) AccessMembers(ctx context.Context, after string, limit int) ([]accessstore.Member, error) {
+	if r.stage == "write" {
+		return nil, nil
+	}
+	return r.Reader.AccessMembers(ctx, after, limit)
+}
+
 func (r entryAuthFaultReader) AccessCredential(ctx context.Context, id string) (accessstore.Credential, error) {
 	if r.stage == "credential" {
 		return accessstore.Credential{}, r.err
