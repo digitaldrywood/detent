@@ -2,6 +2,7 @@ package coreimport_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,11 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
@@ -70,7 +73,10 @@ func TestImportedGitHubReferenceMapping(t *testing.T) {
 
 func TestImportedGitHubReferenceBackfill(t *testing.T) {
 	t.Parallel()
-	f := hubfixture.NewDefaultNative(t, hubserver.Config{})
+	f := hubfixture.NewNative(t, hubfixture.OpenDeps(t, hubfixture.Config{}, hubdeps.Deps{RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}}), "", "Example project")
 	other := hubfixture.NewNative(t, f.Hub, "", "other-imports")
 	const sourceURL = "https://github.com/digitaldrywood/detent/issues/2199"
 	tests := []struct {
