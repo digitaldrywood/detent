@@ -232,7 +232,7 @@ func reportsAssertPostgresPlans(t *testing.T, admin *sql.DB, organization tracke
 	for i, statement := range statements {
 		plans[i] = pgstoretest.ReportStatement{Query: statement.query, Args: statement.args}
 	}
-	report, err := pgstoretest.CheckReportRequest(t.Context(), admin, string(organization), plans, reportsBudgetHotRelations, pgstoretest.ReportRequestBudgets[request], "enable_seqscan=off")
+	report, err := pgstoretest.CheckReportRequest(t.Context(), admin, string(organization), plans, reportsBudgetHotRelations, pgstoretest.ReportRequestBudgets[request])
 	if err != nil {
 		t.Fatal(err)
 	}
