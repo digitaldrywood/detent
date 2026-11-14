@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -248,6 +249,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"object-backed missing key", func(r *tracker.ReviewChange) { objectOutput(r); r.IdempotencyKey = "" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"object-backed storage rollback", objectOutput, http.StatusInternalServerError, "needs_evidence", nil},
 		{"object-backed storage exhausted", objectOutput, http.StatusTooManyRequests, "needs_evidence", nil},
+		{"storage consumed during upload", objectOutput, http.StatusTooManyRequests, "needs_evidence", nil},
 
 		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed", nil},
 		{"recovered source inspection retains failed read history", func(r *tracker.ReviewChange) {
@@ -319,6 +321,10 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, validatorPGTrace{})
 			})
 			service := openLocalPostgresHubTestService(t, repository, cfg)
+			if test.name == "storage consumed during upload" {
+				service.database.detailObjects = repository.DetailStore(service.config.Clock)
+				service.config.RunDetails = hubmaintenance.LimitDetails(service.database.detailObjects)
+			}
 			organization := nativeOrganization{ID: "org_first", Name: "org_first", Slug: "org-first"}
 			for _, selected := range []nativeOrganization{{ID: "org_first_second", Name: "org_first_second", Slug: "org-first-second"}, organization} {
 				seedPostgresHubAdmin(t, repository, service, selected)
@@ -672,6 +678,14 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			if strings.HasSuffix(test.name, "retained history") {
 				seedValidatorReviewHistory(t, f, admin, change.ID, issue.WorkItemID, worker)
 			}
+			var allowance int64
+			if test.name == "object-backed storage exhausted" || test.name == "storage consumed during upload" {
+				allowance = validatorCollaborationBytes(t, f)
+				if test.name == "storage consumed during upload" {
+					allowance += 1 << 30
+				}
+				configureValidatorCollaborationAllowance(t, f, allowance)
+			}
 			var contentBefore, registeredBefore int64
 			var objectsBefore int
 			if objects != nil {
@@ -682,14 +696,6 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				objects.mu.Lock()
 				objectsBefore = len(objects.objects)
 				objects.mu.Unlock()
-			}
-			if test.name == "object-backed storage exhausted" {
-				f.service.database.hostedOrganization = f.project.OrganizationID
-				plans := hostedplans.PilotPlans()
-				plans.Plans[0].Allowances["collaboration_bytes"] = contentBefore
-				if err := serverapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
-					t.Fatal(err)
-				}
 			}
 			if strings.HasSuffix(test.name, "attempt changes during preparation") {
 				observation := event
@@ -708,6 +714,47 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatal("concurrent session change was not injected")
 				}
 				requireNativeStatus(t, observationResponse, http.StatusOK)
+			} else if test.name == "storage consumed during upload" {
+				var before string
+				if err := admin.QueryRowContext(t.Context(), "SELECT coalesce(string_agg(object_key,E'\\n'),'') FROM hub_detail_objects WHERE organization_id=$1", f.project.OrganizationID).Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				referenced := validatorReferencedDetailObjects(t, admin, f)
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects WHERE organization_id=$1", f.project.OrganizationID).Scan(&registeredBefore); err != nil {
+					t.Fatal(err)
+				}
+				probe := &validatorPGProbe{measurement: &changeWriterMeasurement{}, beforeReviewWrite: func() {
+					if _, err := admin.ExecContext(t.Context(), "UPDATE hosted_usage_counters SET value=$2 WHERE organization_id=$1 AND name='collaboration_bytes'", f.project.OrganizationID, allowance); err != nil {
+						t.Error(err)
+					}
+				}}
+				response = httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request).WithContext(context.WithValue(t.Context(), validatorPGProbeKey{}, probe)))
+				if probe.beforeReviewWrite != nil {
+					t.Fatal("allowance consumption was not injected before the review write")
+				}
+				var reviews, events, receipts, registered int
+				var charged int64
+				if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind='review'),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND type='change.review'),(SELECT count(*) FROM native_commands WHERE organization_id=$1 AND command_key=$3),(SELECT count(*) FROM archive_objects WHERE organization_id=$1),(SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes')`, f.project.OrganizationID, change.ID, request.IdempotencyKey).Scan(&reviews, &events, &receipts, &registered, &charged); err != nil {
+					t.Fatal(err)
+				}
+				if reviews != 0 || events != 0 || receipts != 0 || int64(registered) != registeredBefore || charged != allowance {
+					t.Fatalf("refused review committed reviews=%d events=%d receipts=%d registered=%d charged=%d, want 0/0/0/%d/%d", reviews, events, receipts, registered, charged, registeredBefore, allowance)
+				}
+				var uploaded string
+				if err := admin.QueryRowContext(t.Context(), "SELECT coalesce(string_agg(object_key,E'\\n'),'') FROM hub_detail_objects WHERE organization_id=$1 AND NOT object_key=ANY(string_to_array($2,E'\\n'))", f.project.OrganizationID, before).Scan(&uploaded); err != nil || uploaded == "" {
+					t.Fatalf("race did not upload review content before refusal: %v", err)
+				}
+				if _, err := f.service.database.detailObjects.Reclaim(t.Context(), f.project.OrganizationID, time.Now().Add(attachment.OrphanTTL)); err != nil {
+					t.Fatal(err)
+				}
+				var remaining int
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hub_detail_objects WHERE organization_id=$1 AND object_key=ANY(string_to_array($2,E'\\n'))", f.project.OrganizationID, uploaded).Scan(&remaining); err != nil || remaining != 0 {
+					t.Fatalf("orphan reclamation left %d refused uploads: %v", remaining, err)
+				}
+				if kept := validatorReferencedDetailObjects(t, admin, f); kept != referenced || kept == 0 {
+					t.Fatalf("orphan reclamation changed referenced objects: %d -> %d", referenced, kept)
+				}
 			} else if objects != nil {
 				measurement := &changeWriterMeasurement{}
 				ctx := context.WithValue(t.Context(), changeWriterMeasurementKey{}, measurement)
@@ -938,6 +985,18 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				objects.mu.Unlock()
 				if beforeBytes != afterBytes || beforeObjects != afterObjects || beforeWrites != afterWrites || beforeReferences != afterReferences {
 					t.Fatal("review replay or key conflict changed stored objects or allowance")
+				}
+				configureValidatorCollaborationAllowance(t, f, afterBytes)
+				objects.mu.Lock()
+				exhaustedObjects := len(objects.objects)
+				objects.mu.Unlock()
+				replay = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+				requireNativeStatus(t, replay, http.StatusOK)
+				objects.mu.Lock()
+				replayObjects := len(objects.objects)
+				objects.mu.Unlock()
+				if replay.Body.String() != original || validatorCollaborationBytes(t, f) != afterBytes || replayObjects != exhaustedObjects {
+					t.Fatal("committed review replay at exhausted storage changed its receipt, charges or objects")
 				}
 			}
 
@@ -1476,13 +1535,14 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 type validatorPGProbeKey struct{}
 
 type validatorPGProbe struct {
-	measurement *changeWriterMeasurement
-	writers     map[*pgx.Conn]int
-	beforeWrite func()
-	statements  []tracedStatement
-	current     map[*pgx.Conn][]tracedStatement
-	began       time.Time
-	elapsed     time.Duration
+	measurement       *changeWriterMeasurement
+	writers           map[*pgx.Conn]int
+	beforeWrite       func()
+	beforeReviewWrite func()
+	statements        []tracedStatement
+	current           map[*pgx.Conn][]tracedStatement
+	began             time.Time
+	elapsed           time.Duration
 }
 
 const validatorReviewRowVisits = 100
@@ -1535,6 +1595,11 @@ func traceValidatorStatement(ctx context.Context, conn *pgx.Conn, query string, 
 		return ctx
 	}
 	if count, active := probe.writers[conn]; probe.measurement != nil && active && statement != "commit" && statement != "rollback" {
+		if count == 1 && probe.beforeReviewWrite != nil && !strings.Contains(statement, "hub_detail_objects") {
+			inject := probe.beforeReviewWrite
+			probe.beforeReviewWrite = nil
+			inject()
+		}
 		probe.writers[conn] = count + 1
 		probe.measurement.statements = max(probe.measurement.statements, count+1)
 		if probe.current == nil {
@@ -1666,4 +1731,23 @@ func validatorReviewVisitViolations(node reportsBudgetPlan) []string {
 		violations = append(violations, validatorReviewVisitViolations(child)...)
 	}
 	return violations
+}
+
+func configureValidatorCollaborationAllowance(t *testing.T, f nativeFixture, allowance int64) {
+	t.Helper()
+	f.service.database.hostedOrganization = f.project.OrganizationID
+	plans := hostedplans.PilotPlans()
+	plans.Plans[0].Allowances["collaboration_bytes"] = allowance
+	if err := serverapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validatorReferencedDetailObjects(t *testing.T, admin *sql.DB, f nativeFixture) int {
+	t.Helper()
+	var count int
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM hub_detail_objects h WHERE h.organization_id=$1 AND (EXISTS(SELECT 1 FROM archive_objects a WHERE a.organization_id=h.organization_id AND a.object_key=h.object_key) OR EXISTS(SELECT 1 FROM change_versions v WHERE v.organization_id=h.organization_id AND h.object_key IN (v.payload_object_key,v.source_object_key)) OR EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=h.organization_id AND e.payload_object_key=h.object_key))`, f.project.OrganizationID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
