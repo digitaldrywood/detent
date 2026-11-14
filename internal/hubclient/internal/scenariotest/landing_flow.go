@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/githubfake"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -416,14 +418,16 @@ func RunLinkedLandingScenarios(t *testing.T, factories Constructors) {
 		name   string
 		github bool
 		ssh    bool
+		edit   []string
 	}{
 		{name: "source persists without PR"},
 		{name: "source persists with PR", github: true},
 		{name: "SSH carries source identity", github: true, ssh: true},
+		{name: "GitHub edit during landing claim", github: true, edit: []string{"source_edit"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, true, test.github, test.ssh, false, "", nil, false, factories, nil)
+			testNativeExecutionLandsReviewedVersion(t, true, test.github, test.ssh, false, "", nil, false, factories, nil, test.edit...)
 		})
 	}
 }
@@ -434,18 +438,28 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if completionOutage {
 		refusalKinds = nil
 	}
+	sourceEdited := len(refusalKinds) > 0 && refusalKinds[0] == "source_edit"
+	if sourceEdited {
+		refusalKinds = nil
+	}
 	staleAudit := len(refusalKinds) > 0 && refusalKinds[0] == "stale_audit"
 	directWait := len(refusalKinds) > 0 && refusalKinds[0] == "direct_capacity_wait"
 	if directWait {
 		refusalKinds[0] = "admission_refused"
 	}
-	intakeCalls := 0
-	backend := intakeRepositoryBackend{snapshot: func(request hubserver.GitHubImportRequest) tracker.GitHubIssueSnapshot {
-		if request.Stage == "issue" {
+	intakeCalls, edited, reconciling := 0, false, false
+	var reconcileCalls atomic.Int64
+	backend := githubfake.Backend{Steps: make(chan struct{}), Snapshot: func(request hubserver.GitHubImportRequest) tracker.GitHubIssueSnapshot {
+		if request.Stage == "issue" && reconciling {
+			reconcileCalls.Add(1)
+		} else if request.Stage == "issue" {
 			intakeCalls++
 		}
-		snapshot := intakeSnapshot()
+		snapshot := githubfake.Issue("Complete implementation context" + issueContractTestSections)
 		snapshot.Title = "Land me"
+		if edited {
+			snapshot.Body, snapshot.Provenance.UpdatedAt = "Edited on GitHub"+issueContractTestSections, snapshot.Provenance.UpdatedAt.Add(time.Minute)
+		}
 		return snapshot
 	}}
 	h := newPlannerHub(t, "Human Review", []tracker.NativeState{
@@ -493,7 +507,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.admin.IntakeSource(t.Context(), created.WorkItemID, tracker.GitHubIntake{Mutation: api.NativeMutationKey(), Snapshot: backend.snapshot(hubserver.GitHubImportRequest{})}); err != nil {
+		if _, err := h.admin.IntakeSource(t.Context(), created.WorkItemID, tracker.GitHubIntake{Mutation: api.NativeMutationKey(), Snapshot: backend.Snapshot(hubserver.GitHubImportRequest{})}); err != nil {
 			t.Fatal(err)
 		}
 		confirmIssueContract(t, h.admin, string(created.WorkItemID))
@@ -590,6 +604,25 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if state := h.state(t, issue.ID); state != "Merging" {
 		t.Fatalf("after approval the item is in %s, want Merging", state)
+	}
+	var claimRevision tracker.Revision
+	if linked {
+		approved, err := h.admin.Issue(t.Context(), item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		details := h.config.RunDetails.(*archivedRunDetails)
+		race := func(data []byte) {
+			if !bytes.Contains(data, []byte(`"outcome":"claimed"`)) || !details.stored.CompareAndSwap(details.stored.Load(), nil) {
+				return
+			}
+			edited, reconciling = sourceEdited, true
+			<-backend.Steps
+			for <-backend.Steps; reconcileCalls.Load() == 0; <-backend.Steps {
+			}
+		}
+		details.stored.Store(&race)
+		claimRevision = approved.Revision
 	}
 	if directWait {
 		for _, state := range []string{"Human Review", "In Progress"} {
@@ -693,6 +726,16 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		candidates = h.candidatesIn(t, "In Progress")
 	} else {
 		candidates = h.candidatesIn(t, "Merging")
+	}
+	if linked {
+		current, err := h.admin.Issue(t.Context(), item)
+		if sourceEdited && (err != nil || current.Revision != claimRevision+1 || len(candidates) != 0) {
+			t.Fatalf("GitHub edit during the landing claim: revision %d -> %d, candidates=%d, err=%v; want one bump and a refused claim", claimRevision, current.Revision, len(candidates), err)
+		} else if !sourceEdited && (err != nil || current.Revision != claimRevision) {
+			t.Fatalf("unchanged GitHub re-fetch moved revision %d -> %d: %v", claimRevision, current.Revision, err)
+		} else if sourceEdited {
+			candidates = h.candidatesIn(t, "Merging")
+		}
 	}
 	landingState := "Merging"
 	if directWait {
@@ -929,8 +972,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatalf("landing target = %#v", target)
 	}
 	if linked {
-		if len(target.SourceIssues) != 1 || target.SourceIssues[0].Repository != "example-org/example-project" || target.SourceIssues[0].Number != 12 || intakeCalls != 1 || sourceCalls != 0 {
-			t.Fatalf("landing lost durable source identity or polled GitHub: sources=%+v intake=%d calls=%d", target.SourceIssues, intakeCalls, sourceCalls)
+		if len(target.SourceIssues) != 1 || target.SourceIssues[0].Repository != "example-org/example-project" || target.SourceIssues[0].Number != 12 || intakeCalls != 1 || reconcileCalls.Load() != 1 || sourceCalls != 0 {
+			t.Fatalf("landing lost durable source identity or polled GitHub: sources=%+v intake=%d reconcile=%d calls=%d", target.SourceIssues, intakeCalls, reconcileCalls.Load(), sourceCalls)
 		}
 	} else if len(target.SourceIssues) != 0 {
 		t.Fatalf("native item acquired source issues: %+v", target.SourceIssues)
@@ -1203,8 +1246,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if _, err := execution.LandingTarget(guarded); !errors.Is(err, runner.ErrLandingNotReviewed) {
 		t.Fatalf("landing target after landing = %v, want %v", err, runner.ErrLandingNotReviewed)
 	}
-	if linked && (intakeCalls != 1 || sourceCalls != 0) {
-		t.Fatalf("source calls across implementation and native landing: intake=%d, runner=%d; want 1 and 0", intakeCalls, sourceCalls)
+	if linked && (intakeCalls != 1 || reconcileCalls.Load() != 1 || sourceCalls != 0) {
+		t.Fatalf("source calls across implementation and native landing: intake=%d, reconcile=%d, runner=%d; want 1, 1 and 0", intakeCalls, reconcileCalls.Load(), sourceCalls)
 	}
 	if workerStopped {
 		t.Fatal("merge worker was stopped before completion")

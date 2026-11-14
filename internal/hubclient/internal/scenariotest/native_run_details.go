@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -15,6 +16,7 @@ import (
 type archivedRunDetails struct {
 	mu       sync.Mutex
 	archives map[string][]byte
+	stored   atomic.Pointer[func([]byte)]
 }
 
 func (s *archivedRunDetails) ReadDetail(_ context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
@@ -42,6 +44,9 @@ func (s *archivedRunDetails) ReadDetail(_ context.Context, organization string, 
 }
 
 func (s *archivedRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	if stored := s.stored.Load(); stored != nil {
+		(*stored)(data)
+	}
 	ref, compressed, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
 	if err != nil {
 		return ref, err
