@@ -69,12 +69,17 @@ func (s *session) ReadHistory(ctx context.Context, query reportstore.OverviewQue
 	if stateCount > 5000 {
 		return nil, reportstore.ErrPopulationExceeded
 	}
+	candidateIDs, err := s.readHistoryCandidates(ctx, args[1].([]string), query.From.UTC(), query.To.UTC())
+	if err != nil {
+		return nil, err
+	}
 	rows, err = s.db.Query(ctx, `SELECT i.project_id,i.native_id,i.created_at,coalesce(
 (SELECT e.from_state FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence LIMIT 1),
-CASE WHEN EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created') THEN i.workflow_state_name END,'')
-FROM issues i LEFT JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name
-WHERE `+reportIssueFilter+` AND i.created_at<$5 AND (NOT coalesce(ws.terminal,false) OR i.native_updated_at>=$4 OR EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.recorded_at>=$4 AND e.recorded_at<$5))
-ORDER BY i.project_id,i.native_id LIMIT $11`, args...)
+CASE WHEN (SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created' LIMIT 1) THEN i.workflow_state_name END,'')
+FROM unnest($14::bigint[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i
+LEFT JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name
+WHERE `+reportIssueFilter+` AND i.created_at<$5 AND (NOT coalesce(ws.terminal,false) OR i.native_updated_at>=$4 OR (SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.recorded_at>=$4 AND e.recorded_at<$5 LIMIT 1))
+ORDER BY i.project_id,i.native_id LIMIT $11`, append(args, candidateIDs)...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -133,6 +138,51 @@ ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $5`, s.organization, itemP
 		return nil, reportstore.ErrPopulationExceeded
 	}
 	return out, nil
+}
+
+func (s *session) readHistoryCandidates(ctx context.Context, projects []string, from, to time.Time) ([]int64, error) {
+	if len(projects) > maxReportProjects {
+		return nil, reportstore.ErrPopulationExceeded
+	}
+	var exceeded bool
+	var ids []int64
+	err := s.db.QueryRow(ctx, `WITH RECURSIVE states AS (
+ SELECT p.project_id,first.name,1 AS depth FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL (
+  SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND i.workflow_state_name IS NOT NULL ORDER BY i.workflow_state_name LIMIT 1
+ ) first
+ UNION ALL
+ SELECT s.project_id,next.name,s.depth+1 FROM states s CROSS JOIN LATERAL (
+  SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND i.workflow_state_name>s.name ORDER BY i.workflow_state_name LIMIT 1
+ ) next WHERE s.depth<=$6
+), open AS MATERIALIZED (
+ SELECT i.id FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
+ CROSS JOIN LATERAL (
+  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND i.workflow_state_name=s.name LIMIT $5
+ ) i WHERE NOT coalesce(ws.terminal,false)
+ UNION ALL
+ SELECT i.id FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL (
+  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND i.workflow_state_name IS NULL LIMIT $5
+ ) i
+), updated AS MATERIALIZED (
+ SELECT i.id,i.project_id FROM issues i WHERE i.organization_id=$1 AND i.native_updated_at>=$3 ORDER BY i.native_updated_at DESC,i.id DESC LIMIT $5
+), active AS MATERIALIZED (
+ SELECT e.project_id,e.work_item_id FROM collaboration_events e WHERE e.organization_id=$1 AND e.recorded_at>=$3 AND e.recorded_at<$4 ORDER BY e.recorded_at DESC,e.id DESC LIMIT $5
+), keyed AS (
+ SELECT id FROM open
+ UNION SELECT id FROM updated WHERE project_id=ANY($2::text[])
+ UNION SELECT i.id FROM (SELECT DISTINCT project_id,work_item_id FROM active WHERE project_id=ANY($2::text[])) a CROSS JOIN LATERAL (
+  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=a.project_id AND i.native_id=a.work_item_id LIMIT 1
+ ) i
+)
+SELECT EXISTS(SELECT 1 FROM states WHERE depth>$6) OR (SELECT count(*) FROM open)>=$5 OR (SELECT count(*) FROM updated)>=$5 OR (SELECT count(*) FROM active)>=$5,
+ coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::bigint[])`, s.organization, projects, from, to, maxOverviewCandidateRows+1, maxReportStateNames).Scan(&exceeded, &ids)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	if exceeded || len(ids) > maxOverviewCandidateRows {
+		return nil, reportstore.ErrPopulationExceeded
+	}
+	return ids, nil
 }
 
 func (s *session) ReadHistoryIssueEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor reportstore.HistoryEventCursor, limit int) (reportstore.HistoryEventPage, error) {
