@@ -513,6 +513,12 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			enabled := true
 			args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "enable-local-binding", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID, PolicyID: candidate.ID, SourceRevision: candidate.SourceRevision, AllowLocalBinding: &enabled}
+			if scenario == "busy binding disable" {
+				enabled = false
+				view.AllowLocalBinding = true
+				view.RestrictedBindingPolicy = &candidate
+				seedHubConfiguration(t, f, r.binding.RunnerID, view)
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: current.ID, Policy: candidate}), http.StatusOK)
 			switch scenario {
 			case "stale configuration":
@@ -538,12 +544,6 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				view.UnsettledAttempts = 1
 				heartbeat()
 			case "busy binding enable", "busy binding disable":
-				if scenario == "busy binding disable" {
-					enabled = false
-					view.AllowLocalBinding = true
-					view.RestrictedBindingPolicy = &candidate
-					seedHubConfiguration(t, f, r.binding.RunnerID, view)
-				}
 				view.UnsettledAttempts = 1
 				heartbeat()
 			}
