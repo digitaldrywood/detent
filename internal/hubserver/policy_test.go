@@ -1348,7 +1348,7 @@ func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var project tracker.NativeProject
 			decodeHubResponse(t, response, &project)
-			if !reflect.DeepEqual(project.States, test.want.Workflow.States) {
+			if !reflect.DeepEqual(project.States, hubrecords.NativeTriageStates(test.want.Workflow.States)) {
 				t.Fatalf("reopened project workflow = %#v", project.States)
 			}
 		})
