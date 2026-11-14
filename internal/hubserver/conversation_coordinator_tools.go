@@ -410,8 +410,13 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 		projects = readable
 	}
 	result := coordinatorAttention{Scope: scope, Projects: projects, Blocked: []coordinatorAttentionItem{}, WaitingForInput: []coordinatorAttentionItem{}, Running: []coordinatorAttentionItem{}, Review: []coordinatorAttentionItem{}, Unavailable: []coordinatorAttentionItem{}}
+	_, viewer, err := t.workReadContext(ctx, record)
+	if err != nil {
+		return nil, err
+	}
+	visibility := corestore.RelationshipVisibility{Projects: slices.Sorted(slices.Values(readable)), Reporter: viewer.ReporterRestriction()}
 	s := t.coordinator.server
-	err := s.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(conversationstore.AttentionReader)
 		if !ok {
 			return conversationContentUnavailable()
@@ -456,7 +461,7 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 			}
 			running := err == nil && lease.ReleasedAt == nil && s.config.Clock().Before(lease.ExpiresAt)
 			var blockers []string
-			relationships, err := r.Relationships(ctx, row.ProjectID, row.NativeID, corestore.RelationshipCursor{}, corestore.MaxPageSize)
+			relationships, err := r.VisibleRelationships(ctx, row.ProjectID, row.NativeID, corestore.RelationshipCursor{}, corestore.MaxPageSize, visibility)
 			if err != nil {
 				return err
 			}
@@ -464,7 +469,7 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 				result.Truncated = true
 			}
 			for _, relationship := range relationships.Items {
-				if relationship.Type == "dependency" && relationship.Direction == "blocked_by" && !relationship.Terminal && slices.Contains(readable, relationship.RelatedProjectID) {
+				if relationship.Type == "dependency" && relationship.Direction == "blocked_by" && !relationship.Terminal {
 					blockers = append(blockers, string(relationship.RelatedWorkItemID))
 				}
 			}
