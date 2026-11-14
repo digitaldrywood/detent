@@ -795,6 +795,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"batch issue lock while archive holder checks keys", noop, batch, receipt, archive, converse, false, 4},
 		{"issue key change while archive holder checks keys", noop, renumber, receipt, archive, converse, false, 4},
 		{"project key change while archive holder checks keys", noop, archive, converse, noop, rename, true, 4},
+		{"work item update waits for archive holder checking keys", noop, archive, converse, noop, archiveItem("prj_first", "wi_first_1"), true, 3},
 		{"idle project check excludes conversation insert", noop, idle, receipt, archive, converse, true, 4},
 		{"idle project check waits for work item writer", noop, lock("prj_first", "wi_first_1"), receipt, noop, idle, true, 4},
 		{"idle project check waits for foreign key insert before receipt", noop, bind, receipt, noop, idle, true, 4},

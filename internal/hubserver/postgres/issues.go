@@ -126,15 +126,16 @@ func (s *session) updateWorkItem(ctx context.Context, record corestore.WorkItem,
 		if err := s.lockOrganizationCounter(ctx); err != nil {
 			return corestore.WorkItem{}, err
 		}
+		if _, err := s.queries.UpdateWorkItemKeys(ctx, pgquery.UpdateWorkItemKeysParams{Number: record.Number, NativeSourceKey: record.NativeSourceKey, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, NativeID: record.NativeID, ExpectedRevision: record.Revision}); err != nil {
+			return corestore.WorkItem{}, updated(ctx, err)
+		}
 	}
 	row, err := s.queries.UpdateWorkItem(ctx, pgquery.UpdateWorkItemParams{
 		ActivityClock:  activity,
 		SourceRevision: record.SourceRevision, SourceScheduled: record.SourceScheduled, SourceObservedAt: record.SourceObservedAt,
 		TerminalClock:          s.workItemTerminalClock(),
 		LastActivityAt:         optionalTime(record.LastActivityAt),
-		Number:                 record.Number,
 		EventSequence:          record.EventSequence,
-		NativeSourceKey:        record.NativeSourceKey,
 		Title:                  record.Title,
 		IssueType:              record.IssueType,
 		Priority:               record.Priority,

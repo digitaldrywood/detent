@@ -6196,7 +6196,8 @@
           "session.createWorkItem:query-receiver": 1,
           "session.updateWorkItem:generated:LockWorkItem": 1,
           "session.updateWorkItem:generated:UpdateWorkItem": 1,
-          "session.updateWorkItem:query-receiver": 2
+          "session.updateWorkItem:generated:UpdateWorkItemKeys": 1,
+          "session.updateWorkItem:query-receiver": 3
         },
         "tables": []
       }
@@ -14112,6 +14113,7 @@
           "Queries.PageWorkItems:Query": 1,
           "Queries.ScanWorkItems:Query": 1,
           "Queries.UpdateWorkItem:QueryRow": 1,
+          "Queries.UpdateWorkItemKeys:QueryRow": 1,
           "Queries.WorkItemScanThrough:QueryRow": 1,
           "compareAndSwapSourceRecovery:SQL": 1,
           "createWorkItem:SQL": 1,
@@ -14127,6 +14129,7 @@
           "pageWorkItems:SQL": 1,
           "scanWorkItems:SQL": 1,
           "updateWorkItem:SQL": 1,
+          "updateWorkItemKeys:SQL": 1,
           "workItemScanThrough:SQL": 1
         },
         "tables": [
@@ -16900,6 +16903,7 @@
           "query:PageWorkItems:many": 1,
           "query:ScanWorkItems:many": 1,
           "query:UpdateWorkItem:one": 1,
+          "query:UpdateWorkItemKeys:one": 1,
           "query:WorkItemScanThrough:one": 1
         },
         "tables": [

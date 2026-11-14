@@ -885,20 +885,20 @@ func (q *Queries) ScanWorkItems(ctx context.Context, arg ScanWorkItemsParams) ([
 const updateWorkItem = `-- name: UpdateWorkItem :one
 WITH published_source AS MATERIALIZED (
  SELECT v.revision AS source_revision,v.source_scheduled,v.source_observed_at FROM collaboration_versions v
- WHERE v.organization_id=$23 AND v.project_id=$24 AND v.work_item_id=$25 AND v.record_id=$25 AND v.revision=$2::bigint+1 AND v.source_known AND $1::bigint<>$2::bigint+1
+ WHERE v.organization_id=$21 AND v.project_id=$22 AND v.work_item_id=$23 AND v.record_id=$23 AND v.revision=$2::bigint+1 AND v.source_known AND $1::bigint<>$2::bigint+1
 ),
 previous AS MATERIALIZED (
     SELECT id,archived,workflow_state_name FROM issues
-    WHERE organization_id=$23 AND project_id=$24
-      AND native_id=$25 AND revision=$2
+    WHERE organization_id=$21 AND project_id=$22
+      AND native_id=$23 AND revision=$2
     FOR NO KEY UPDATE
 ), invalidated_admission AS (
     DELETE FROM monthly_budget_admissions a USING previous i
-    WHERE a.organization_id=$23 AND a.issue_id=i.id
-      AND (i.archived OR $21 OR EXISTS (
+    WHERE a.organization_id=$21 AND a.issue_id=i.id
+      AND (i.archived OR $19 OR EXISTS (
           SELECT 1 FROM project_workflow_states w
-          WHERE w.organization_id=$23 AND w.project_id=$24
-            AND w.name IN (i.workflow_state_name,$22)
+          WHERE w.organization_id=$21 AND w.project_id=$22
+            AND w.name IN (i.workflow_state_name,$20)
             AND (w.terminal OR lower(w.name) IN ('blocked','backlog','cancelled'))
       ))
 )
@@ -907,33 +907,31 @@ UPDATE issues SET
     source_scheduled=CASE WHEN $1::bigint=$2::bigint+1 THEN $3::boolean ELSE COALESCE((SELECT published_source.source_scheduled FROM published_source),issues.source_scheduled) END,
     source_observed_at=CASE WHEN $1::bigint=$2::bigint+1 THEN $4::timestamptz ELSE COALESCE((SELECT published_source.source_observed_at FROM published_source),issues.source_observed_at) END,
     last_activity_at=greatest(issues.last_activity_at,COALESCE($5::timestamptz,issues.last_activity_at),CASE WHEN (issues.title,issues.body_object_key) IS DISTINCT FROM ($6,$7) THEN COALESCE($8::timestamptz,$9::timestamptz,CURRENT_TIMESTAMP) ELSE issues.last_activity_at END),
-    number=$10,
-    event_sequence=$11,
-    native_source_key=$12,
+    event_sequence=$10,
     title=$6,
-    issue_type=$13,
-    priority=$14,
+    issue_type=$11,
+    priority=$12,
     body_object_key=$7,
-    issue_contract_object_key=$15,
-    report_context_object_key=$16,
-    actor_kind=$17,
-    actor_principal_id=$18,
-    provenance_provider=$19,
-    provenance_external_id=$20,
-    archived=$21,
-    archive_restored_at=CASE WHEN issues.archived AND NOT $21 THEN COALESCE($9::timestamptz,CURRENT_TIMESTAMP) ELSE issues.archive_restored_at END,
-    archive_restore_known=CASE WHEN issues.archived AND NOT $21 THEN true ELSE issues.archive_restore_known END,
-    workflow_state_name=$22,
+    issue_contract_object_key=$13,
+    report_context_object_key=$14,
+    actor_kind=$15,
+    actor_principal_id=$16,
+    provenance_provider=$17,
+    provenance_external_id=$18,
+    archived=$19,
+    archive_restored_at=CASE WHEN issues.archived AND NOT $19 THEN COALESCE($9::timestamptz,CURRENT_TIMESTAMP) ELSE issues.archive_restored_at END,
+    archive_restore_known=CASE WHEN issues.archived AND NOT $19 THEN true ELSE issues.archive_restore_known END,
+    workflow_state_name=$20,
     terminal_entered_at=CASE
-        WHEN NOT EXISTS (SELECT 1 FROM project_workflow_states w WHERE w.organization_id=$23 AND w.project_id=$24 AND w.name=$22 AND w.terminal) THEN NULL
-        WHEN EXISTS (SELECT 1 FROM project_workflow_states w WHERE w.organization_id=$23 AND w.project_id=$24 AND w.name=issues.workflow_state_name AND w.terminal) THEN issues.terminal_entered_at
+        WHEN NOT EXISTS (SELECT 1 FROM project_workflow_states w WHERE w.organization_id=$21 AND w.project_id=$22 AND w.name=$20 AND w.terminal) THEN NULL
+        WHEN EXISTS (SELECT 1 FROM project_workflow_states w WHERE w.organization_id=$21 AND w.project_id=$22 AND w.name=issues.workflow_state_name AND w.terminal) THEN issues.terminal_entered_at
         ELSE COALESCE($9::timestamptz,CURRENT_TIMESTAMP)
     END,
     revision=issues.revision+1,
     updated_at=COALESCE($9::timestamptz,CURRENT_TIMESTAMP),
     native_updated_at=COALESCE($9::timestamptz,CURRENT_TIMESTAMP)
 FROM previous
-WHERE issues.id=previous.id AND issues.organization_id=$23 AND issues.project_id=$24 AND issues.native_id=$25 AND issues.revision=$2 RETURNING issues.organization_id, issues.id, issues.native_id, issues.project_id, issues.number, issues.revision, issues.event_sequence, issues.native_source_key, issues.title, issues.body_object_key, issues.issue_contract_object_key, issues.report_context_object_key, issues.actor_kind, issues.actor_principal_id, issues.provenance_provider, issues.provenance_external_id, issues.archived, issues.created_at, issues.updated_at, issues.native_created_at, issues.native_updated_at, issues.workflow_state_name, issues.last_activity_at, issues.issue_type, issues.priority, issues.dispatch_generation, issues.dispatch_requested_at, issues.recovery_runner_id, issues.recovery_version_id, issues.doctor_identity_revision, issues.terminal_entered_at, issues.archive_restored_at, issues.archive_restore_known, issues.source_revision, issues.source_scheduled, issues.source_observed_at
+WHERE issues.id=previous.id AND issues.organization_id=$21 AND issues.project_id=$22 AND issues.native_id=$23 AND issues.revision=$2 RETURNING issues.organization_id, issues.id, issues.native_id, issues.project_id, issues.number, issues.revision, issues.event_sequence, issues.native_source_key, issues.title, issues.body_object_key, issues.issue_contract_object_key, issues.report_context_object_key, issues.actor_kind, issues.actor_principal_id, issues.provenance_provider, issues.provenance_external_id, issues.archived, issues.created_at, issues.updated_at, issues.native_created_at, issues.native_updated_at, issues.workflow_state_name, issues.last_activity_at, issues.issue_type, issues.priority, issues.dispatch_generation, issues.dispatch_requested_at, issues.recovery_runner_id, issues.recovery_version_id, issues.doctor_identity_revision, issues.terminal_entered_at, issues.archive_restored_at, issues.archive_restore_known, issues.source_revision, issues.source_scheduled, issues.source_observed_at
 `
 
 type UpdateWorkItemParams struct {
@@ -946,9 +944,7 @@ type UpdateWorkItemParams struct {
 	BodyObjectKey          *string
 	ActivityClock          *time.Time
 	TerminalClock          *time.Time
-	Number                 int64
 	EventSequence          int64
-	NativeSourceKey        *string
 	IssueType              string
 	Priority               *int
 	IssueContractObjectKey *string
@@ -975,9 +971,7 @@ func (q *Queries) UpdateWorkItem(ctx context.Context, arg UpdateWorkItemParams) 
 		arg.BodyObjectKey,
 		arg.ActivityClock,
 		arg.TerminalClock,
-		arg.Number,
 		arg.EventSequence,
-		arg.NativeSourceKey,
 		arg.IssueType,
 		arg.Priority,
 		arg.IssueContractObjectKey,
@@ -1032,6 +1026,35 @@ func (q *Queries) UpdateWorkItem(ctx context.Context, arg UpdateWorkItemParams) 
 		&i.SourceObservedAt,
 	)
 	return i, err
+}
+
+const updateWorkItemKeys = `-- name: UpdateWorkItemKeys :one
+UPDATE issues SET number=$1,native_source_key=$2
+WHERE organization_id=$3 AND project_id=$4
+  AND native_id=$5 AND revision=$6 RETURNING id
+`
+
+type UpdateWorkItemKeysParams struct {
+	Number           int64
+	NativeSourceKey  *string
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	NativeID         tracker.NativeWorkItemID
+	ExpectedRevision int64
+}
+
+func (q *Queries) UpdateWorkItemKeys(ctx context.Context, arg UpdateWorkItemKeysParams) (int64, error) {
+	row := q.db.QueryRow(ctx, updateWorkItemKeys,
+		arg.Number,
+		arg.NativeSourceKey,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.NativeID,
+		arg.ExpectedRevision,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const workItemScanThrough = `-- name: WorkItemScanThrough :one

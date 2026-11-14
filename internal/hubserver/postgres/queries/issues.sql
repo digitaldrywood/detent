@@ -133,9 +133,7 @@ UPDATE issues SET
     source_scheduled=CASE WHEN sqlc.arg(source_revision)::bigint=sqlc.arg(expected_revision)::bigint+1 THEN sqlc.arg(source_scheduled)::boolean ELSE COALESCE((SELECT published_source.source_scheduled FROM published_source),issues.source_scheduled) END,
     source_observed_at=CASE WHEN sqlc.arg(source_revision)::bigint=sqlc.arg(expected_revision)::bigint+1 THEN sqlc.narg(source_observed_at)::timestamptz ELSE COALESCE((SELECT published_source.source_observed_at FROM published_source),issues.source_observed_at) END,
     last_activity_at=greatest(issues.last_activity_at,COALESCE(sqlc.narg(last_activity_at)::timestamptz,issues.last_activity_at),CASE WHEN (issues.title,issues.body_object_key) IS DISTINCT FROM (sqlc.arg(title),sqlc.arg(body_object_key)) THEN COALESCE(sqlc.narg(activity_clock)::timestamptz,sqlc.narg(terminal_clock)::timestamptz,CURRENT_TIMESTAMP) ELSE issues.last_activity_at END),
-    number=sqlc.arg(number),
     event_sequence=sqlc.arg(event_sequence),
-    native_source_key=sqlc.arg(native_source_key),
     title=sqlc.arg(title),
     issue_type=sqlc.arg(issue_type),
     priority=sqlc.narg(priority),
@@ -160,6 +158,11 @@ UPDATE issues SET
     native_updated_at=COALESCE(sqlc.narg(terminal_clock)::timestamptz,CURRENT_TIMESTAMP)
 FROM previous
 WHERE issues.id=previous.id AND issues.organization_id=sqlc.arg(organization_id) AND issues.project_id=sqlc.arg(project_id) AND issues.native_id=sqlc.arg(native_id) AND issues.revision=sqlc.arg(expected_revision) RETURNING issues.*;
+
+-- name: UpdateWorkItemKeys :one
+UPDATE issues SET number=sqlc.arg(number),native_source_key=sqlc.arg(native_source_key)
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+  AND native_id=sqlc.arg(native_id) AND revision=sqlc.arg(expected_revision) RETURNING id;
 
 -- name: DeleteWorkItem :execrows
 DELETE FROM issues
