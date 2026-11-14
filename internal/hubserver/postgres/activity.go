@@ -324,9 +324,9 @@ func (s *session) activityDurationPopulation(ctx context.Context, filter activit
  SELECT id,issue_id,lease_id,status,started_at FROM native_attempts WHERE organization_id=$1 AND status<>'running' AND updated_at>=$3 ORDER BY updated_at DESC,id DESC LIMIT $5
 )
  SELECT i.project_id,a.id,coalesce(f.role,''),a.status,coalesce(f.duration_seconds,0),coalesce(f.phase_timing_status,'')<>'complete'
- FROM candidates a JOIN issues i ON i.organization_id=$1 AND i.id=a.issue_id JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ FROM candidates a CROSS JOIN LATERAL (SELECT i.organization_id,i.project_id,i.archived,i.actor_principal_id FROM issues i WHERE i.organization_id=$1 AND i.id=a.issue_id LIMIT 1) i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
  LEFT JOIN runner_lease_assignments r ON r.organization_id=$1 AND r.lease_id=a.lease_id
- LEFT JOIN report_attempt_facts af ON af.organization_id=$1 AND af.attempt_id=a.id
+ LEFT JOIN LATERAL (SELECT af.latest_event_id FROM report_attempt_facts af WHERE af.organization_id=$1 AND af.attempt_id=a.id LIMIT 1) af ON true
  LEFT JOIN report_event_facts f ON f.organization_id=$1 AND f.event_id=af.latest_event_id
  WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND a.started_at<$4 AND ($6='' OR i.actor_principal_id=$6) AND ($7='' OR r.runner_id=$7)
  ORDER BY a.id`, s.organization, projects, filter.From, filter.To, activitystore.PopulationLimit, filter.Principal, filter.RunnerID)
