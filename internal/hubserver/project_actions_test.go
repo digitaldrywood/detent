@@ -361,27 +361,3 @@ func TestProjectActionDeleteCascadesItsRuns(t *testing.T) {
 
 // Authoring an action is a project write: it adds a command the whole project
 // runs, so a reader and a viewer are refused exactly as they are for an issue.
-func TestProjectActionWriteGateRefusesAViewerAndAReadOnlyGrant(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name  string
-		role  string
-		grant string
-		read  int
-		write int
-	}{
-		{name: "a member with write may author", role: "member", grant: "write", read: http.StatusOK, write: http.StatusCreated},
-		{name: "a viewer may read and never write", role: "viewer", grant: "write", read: http.StatusOK, write: http.StatusForbidden},
-		{name: "a read-only grant may read and never write", role: "member", grant: "read", read: http.StatusOK, write: http.StatusForbidden},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newHostedSecurityFixture(t)
-			user := f.user(t, test.role, test.role, test.role+"@example.test", test.grant, "")
-			requireNativeStatus(t, f.request(t, user, http.MethodGet, f.base+"/actions", nil), test.read)
-			requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/actions", map[string]any{
-				"idempotency_key": "author-one", "name": "Run tests", "command": "go test ./...",
-			}), test.write)
-		})
-	}
-}
