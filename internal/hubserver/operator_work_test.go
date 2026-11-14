@@ -854,7 +854,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	} {
 		raw, failed = call(t, "set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": dependency.revision})
 		var item tracker.NativeIssue
-		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 6 || len(item.Dependencies) != 1 || item.Dependencies[0] != blocker.WorkItemID {
+		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 6 || len(item.Dependencies) != 0 || !slices.Contains(item.OmittedFields, "dependencies") || !slices.Equal(readWorkItem(t, f, created.WorkItemID, "").Dependencies, []tracker.NativeWorkItemID{blocker.WorkItemID}) {
 			t.Fatalf("dependency alias/replay=%s %v", raw, err)
 		}
 	}
