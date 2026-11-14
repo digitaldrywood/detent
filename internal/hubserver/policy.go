@@ -608,7 +608,7 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubsc
 		if err != nil {
 			return policy.Approval{}, err
 		}
-		cloudWorkflowErr = validateCloudWorkflowPolicy(markdown, approval.Policy)
+		_, cloudWorkflowErr = validateCloudWorkflowPolicy(markdown, approval.Policy)
 	}
 	replayed := false
 	var replayReceipt eventstore.Receipt
@@ -753,16 +753,16 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope hubscope
 	if err != nil {
 		return err
 	}
-	verifiedSource := observation.Workflow != nil
+	var savedGuidance bool
 	if observation.Workflow == nil && projectSnapshot.Core.Profile == "native" {
 		markdown, err := s.projectRecordWorkflow(ctx, projectSnapshot)
 		if err != nil {
 			return err
 		}
-		if err := validateCloudWorkflowPolicy(markdown, observation.Descriptor); err != nil {
+		savedGuidance, err = validateCloudWorkflowPolicy(markdown, observation.Descriptor)
+		if err != nil {
 			return err
 		}
-		verifiedSource = markdown != ""
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	revision, found, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.Organization, scope.Project, observation.Descriptor, content)
@@ -864,7 +864,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope hubscope
 		if !accepted || !apply {
 			return nil
 		}
-		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, review, preparedLanding, verifiedSource, now)
+		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, review, preparedLanding, savedGuidance, now)
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, writeObservation)
 	if !errors.Is(err, projectstore.ErrStateInUse) {
@@ -990,7 +990,7 @@ func samePolicyLandingSource(left, right eventstore.PolicyLanding) bool {
 	return reflect.DeepEqual(left, right)
 }
 
-func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, project projectstore.Record, reporter string, observation policy.Observation, canonical policy.Descriptor, previous policy.Approval, previousRevision, observedRevision policystore.Revision, review preparedDefaultReviewPolicy, preparedLanding eventstore.PolicyLanding, verifiedSource bool, now time.Time) error {
+func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, project projectstore.Record, reporter string, observation policy.Observation, canonical policy.Descriptor, previous policy.Approval, previousRevision, observedRevision policystore.Revision, review preparedDefaultReviewPolicy, preparedLanding eventstore.PolicyLanding, savedGuidance bool, now time.Time) error {
 	descriptor := observation.Descriptor
 	current, err := writer.ProjectPolicy(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -1033,9 +1033,6 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 			}
 			landing.Actor = preparedLanding.Actor
 		}
-		if !carryover && (sourceUnavailable || !source.DefaultBranchReachable && landing.ChangeID == "" && landing.PullRequestURL == "") {
-			return nil
-		}
 	}
 	if current.PolicyID == descriptor.ID {
 		if err := reconcileTenantWorkflowPolicy(ctx, writer, project, previous.Policy); err != nil {
@@ -1043,7 +1040,7 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 		}
 		return applyDefaultReviewPolicy(ctx, writer, review, previous.ApprovedBy, now)
 	}
-	if !verifiedSource && !carryover {
+	if !savedGuidance && !carryover {
 		return nil
 	}
 	actor := "repository-default-branch"
@@ -1266,27 +1263,27 @@ func decodeProjectPolicy(ctx context.Context, scope, id, raw string, result poli
 	return result, nil
 }
 
-func validateCloudWorkflowPolicy(markdown string, descriptor policy.Descriptor) error {
+func validateCloudWorkflowPolicy(markdown string, descriptor policy.Descriptor) (bool, error) {
 	if markdown == "" {
-		return nil
+		return false, nil
 	}
 	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
 	if err != nil {
-		return hubapi.PolicyMismatch("Saved Cloud workflow is invalid; correct its Markdown definition before approving execution")
+		return false, hubapi.PolicyMismatch("Saved Cloud workflow is invalid; correct its Markdown definition before approving execution")
 	}
 	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
 		workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
 		expected, err := workflowconfig.ResolvePolicy(workflow)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if descriptor.Authored.Files["WORKFLOW.md"] == expected.Authored.Files["WORKFLOW.md"] {
-			return nil
+			return descriptor.ID == expected.ID && descriptor.Configuration != nil && expected.Configuration != nil && descriptor.Configuration.DefinitionDigest == expected.Configuration.DefinitionDigest, nil
 		}
 	} else if descriptor.Configuration != nil && descriptor.Configuration.DefinitionDigest == workflow.SourceHash {
-		return nil
+		return false, nil
 	}
-	return hubapi.PolicyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
+	return false, hubapi.PolicyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
 }
 
 func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (string, error) {

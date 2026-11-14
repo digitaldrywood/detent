@@ -240,6 +240,42 @@ func seedWorkflowPolicyPullRequest(t *testing.T, f nativeFixture, commit, baseRe
 	}
 }
 
+func requireWorkflowPolicyPending(t *testing.T, f nativeFixture, approvedID, observedID string) {
+	t.Helper()
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", testHubAdminToken, nil)
+	if approvedID == "" && response.Code == http.StatusNotFound {
+		var observations int
+		if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM project_policy_observations WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3", f.project.OrganizationID, f.project.ID, observedID).Scan(&observations); err != nil || observations == 0 {
+			t.Fatalf("runner report was not retained for approval: %d %v", observations, err)
+		}
+		return
+	}
+	requireNativeStatus(t, response, http.StatusOK)
+	var view projectPolicyRead
+	decodeHubResponse(t, response, &view)
+	current := ""
+	if view.Policy != nil {
+		current = view.Policy.ID
+	}
+	pending := false
+	for _, observed := range view.ObservedPolicies {
+		pending = pending || observed.Policy.ID == observedID
+	}
+	if current != approvedID || !pending {
+		t.Fatalf("runner report changed approval or was not offered for approval: current=%s want=%s observed=%+v", current, approvedID, view.ObservedPolicies)
+	}
+}
+
+func approveWorkflowPolicyObservation(t *testing.T, f nativeFixture, approved bool, approvedID, observedID string) {
+	t.Helper()
+	expected := ""
+	if approved {
+		expected = approvedID
+	}
+	requireWorkflowPolicyPending(t, f, expected, observedID)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: expected, ObservedPolicyID: observedID}), http.StatusOK)
+}
+
 func TestObservedRepositoryWorkflowApply(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -262,34 +298,35 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		partialLanding, otherCommit                                                           bool
 		largeHistory                                                                          bool
 		changedSource, concurrentReports                                                      bool
+		humanGate                                                                             bool
 	}{
-		{name: "native landing applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "native", active: true, status: http.StatusNoContent, applied: true},
-		{name: "bound merged PR applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "pr", active: true, status: http.StatusNoContent, applied: true},
+		{name: "native landing instructions wait for human approval", humanGate: true, initial: true, canonical: true, changedInputs: true, landing: "native", active: true, status: http.StatusNoContent, applied: true},
+		{name: "bound merged PR instructions wait for human approval", humanGate: true, initial: true, canonical: true, changedInputs: true, landing: "pr", active: true, status: http.StatusNoContent, applied: true},
 		{name: "runner cannot authorize feature PR by calling it default", initial: true, canonical: true, changedInputs: true, landing: "pr", otherBranch: true, liesDefaultBranch: true, status: http.StatusNoContent},
-		{name: "native landing recorded after default branch apply gains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "native", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
-		{name: "merged PR recorded after default branch apply gains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "pr", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
+		{name: "native landing recorded after human apply gains provenance", humanGate: true, initial: true, canonical: true, changedInputs: true, reachable: true, landing: "native", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
+		{name: "merged PR recorded after human apply gains provenance", humanGate: true, initial: true, canonical: true, changedInputs: true, reachable: true, landing: "pr", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
 		{name: "native landing recorded after unlanded observation stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", lateLanding: true, status: http.StatusNoContent},
 		{name: "merged PR recorded after unlanded observation stays pending", initial: true, canonical: true, changedInputs: true, landing: "pr", lateLanding: true, status: http.StatusNoContent},
-		{name: "native default branch landing retains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "native", status: http.StatusNoContent, applied: true},
-		{name: "merged PR default branch landing retains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "pr", status: http.StatusNoContent, applied: true},
+		{name: "native default branch landing retains provenance after human approval", humanGate: true, initial: true, canonical: true, changedInputs: true, reachable: true, landing: "native", status: http.StatusNoContent, applied: true},
+		{name: "merged PR default branch landing retains provenance after human approval", humanGate: true, initial: true, canonical: true, changedInputs: true, reachable: true, landing: "pr", status: http.StatusNoContent, applied: true},
 		{name: "native landing on another branch stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", otherBranch: true, status: http.StatusNoContent},
-		{name: "partially backfilled native landing applies matching source", initial: true, canonical: true, changedInputs: true, landing: "native", partialLanding: true, status: http.StatusNoContent, applied: true},
+		{name: "partially backfilled native landing waits for human approval", humanGate: true, initial: true, canonical: true, changedInputs: true, landing: "native", partialLanding: true, status: http.StatusNoContent, applied: true},
 		{name: "partially backfilled native landing on another branch stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", partialLanding: true, otherBranch: true, status: http.StatusNoContent},
 		{name: "partially backfilled native landing of another commit stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", partialLanding: true, otherCommit: true, status: http.StatusNoContent},
 		{name: "merged PR on another branch stays pending", initial: true, canonical: true, changedInputs: true, landing: "pr", otherBranch: true, status: http.StatusNoContent},
 		{name: "unbound merged PR stays pending", initial: true, canonical: true, changedInputs: true, landing: "pr", unbound: true, status: http.StatusNoContent},
 		{name: "closed unmerged PR stays pending", initial: true, canonical: true, changedInputs: true, landing: "pr", unmerged: true, status: http.StatusNoContent},
 		{name: "runner current policy with retained authored history", initial: true, autoInitial: true, canonical: true, reachable: true, replay: true, largeHistory: true, status: http.StatusNoContent, applied: true},
-		{name: "instruction change with retained history", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 64, status: http.StatusNoContent, applied: true},
-		{name: "instruction change with legacy policy identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "policy", status: http.StatusNoContent, applied: true},
-		{name: "instruction change with legacy review identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "review", status: http.StatusNoContent, applied: true},
-		{name: "binding applies reported repository configuration", initial: true, bind: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
-		{name: "binding without approval applies first repository policy", bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "instruction change with retained history after human approval", humanGate: true, initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 64, status: http.StatusNoContent, applied: true},
+		{name: "instruction change with legacy policy identity after human approval", humanGate: true, initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "policy", status: http.StatusNoContent, applied: true},
+		{name: "instruction change with legacy review identity after human approval", humanGate: true, initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "review", status: http.StatusNoContent, applied: true},
+		{name: "binding reported repository configuration waits for human approval", humanGate: true, initial: true, bind: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "binding without approval waits for human approval", humanGate: true, bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "binding carries same authored approval", initial: true, bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
-		{name: "explicit repository adoption enables later updates", initial: true, bind: true, adopt: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
-		{name: "repository configuration replaces unversioned native definition", initial: true, nativeRevision: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "explicit repository adoption and later updates wait for human approval", humanGate: true, initial: true, bind: true, adopt: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "repository configuration replaces unversioned native definition after human approval", humanGate: true, initial: true, nativeRevision: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "external authored definition stays pending against legacy approval", initial: true, canonical: true, fromLegacy: true, local: true, active: true, status: http.StatusNoContent},
-		{name: "default branch replaces legacy approval", initial: true, canonical: true, fromLegacy: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "default branch report replaces legacy approval after human approval", humanGate: true, initial: true, canonical: true, fromLegacy: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "nil configuration projection carries only authored policy", initial: true, canonical: true, active: true, nilConfiguration: true, forge: "gate", status: http.StatusNoContent, applied: true},
 		{name: "nil configuration invented digest is refused", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "digest", status: http.StatusUnprocessableEntity},
 		{name: "canonical version carries feature approval", initial: true, canonical: true, status: http.StatusNoContent, applied: true},
@@ -309,14 +346,14 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		{name: "nil configuration cannot change selector", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "selector", status: http.StatusNoContent, applied: true},
 		{name: "nil configuration cannot change profile", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "profile", status: http.StatusNoContent, applied: true},
 		{name: "canonical version with changed inputs pending", initial: true, canonical: true, changedInputs: true, status: http.StatusNoContent},
-		{name: "default branch changed authored files auto apply", initial: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
-		{name: "default branch initial definition", reachable: true, status: http.StatusNoContent, applied: true},
-		{name: "second default branch revision auto applies", initial: true, autoInitial: true, reachable: true, active: true, fleet: true, status: http.StatusNoContent, applied: true},
+		{name: "default branch changed authored files wait for human approval", humanGate: true, initial: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "default branch initial definition waits for human approval", humanGate: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "second default branch revision waits for human approval", humanGate: true, initial: true, autoInitial: true, reachable: true, active: true, fleet: true, status: http.StatusNoContent, applied: true},
 		{name: "different tiers share authored approval", initial: true, canonical: true, active: true, fleet: true, status: http.StatusNoContent, applied: true},
 		{name: "human approval records each apply", initial: true, replay: true, active: true, fleet: true, status: http.StatusNoContent, applied: true, humanApproval: true},
 		{name: "feature branch pending", initial: true, status: http.StatusNoContent},
 		{name: "uncommitted definition pending", initial: true, local: true, reachable: true, status: http.StatusNoContent},
-		{name: "occupied lane stays pending", initial: true, reachable: true, occupied: true, status: http.StatusConflict},
+		{name: "occupied lane stays pending", initial: true, reachable: true, occupied: true, status: http.StatusNoContent},
 		{name: "different repository pending", initial: true, reachable: true, wrongRepository: true, status: http.StatusNoContent},
 		{name: "unenrolled reporter refused", initial: true, reachable: true, legacy: true, status: http.StatusNotFound},
 		{name: "missing commit pending", initial: true, reachable: true, missingRevision: true, status: http.StatusNoContent},
@@ -377,6 +414,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if test.autoInitial {
 					initialSource := &policy.RepositorySource{Repository: "example-org/example-project", Commit: original.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: original.Workflow.Revision, DefaultBranchReachable: true}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", runner.redemption.Credential, policy.Observation{Descriptor: original, Source: initialSource}), http.StatusNoContent)
+					requireWorkflowPolicyPending(t, f, "", original.ID)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ObservedPolicyID: original.ID}), http.StatusOK)
 				} else {
 					approveHubTestPolicy(t, f.service, f.base+"/policy", original)
 				}
@@ -652,13 +691,16 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					}
 					return
 				}
-				if test.occupied {
+				if test.occupied && test.status == http.StatusConflict {
 					var refused hubapi.NativeError
 					decodeHubResponse(t, response, &refused)
 					if refused.Code != "workflow_conflict" {
 						t.Fatalf("occupied lane refusal = %+v", refused)
 					}
 				}
+			}
+			if test.humanGate {
+				approveWorkflowPolicyObservation(t, f, test.initial, original.ID, candidate.ID)
 			}
 			if test.lateLanding {
 				seedLanding()
@@ -728,6 +770,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				source.Commit, source.DefaultBranchHead = candidate.Workflow.Revision, candidate.Workflow.Revision
 				report = policy.Observation{Descriptor: candidate, Source: source}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), http.StatusNoContent)
+				approveWorkflowPolicyObservation(t, f, true, original.ID, candidate.ID)
 			}
 			if test.humanApproval {
 				approval, _, err := f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
@@ -765,8 +808,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if test.initial && candidate.SameAuthoredInputs(original) && setup.Policy != nil && setup.Policy.ApprovedBy != initialApproval.ApprovedBy {
 					t.Fatalf("carryover changed approver: got %s, want %s", setup.Policy.ApprovedBy, initialApproval.ApprovedBy)
 				}
-				if test.reachable && !candidate.SameAuthoredInputs(original) && setup.Policy != nil && setup.Policy.ApprovedBy != "repository-default-branch" && test.landing == "" {
-					t.Fatalf("default branch apply attribution = %s", setup.Policy.ApprovedBy)
+				if test.humanGate && setup.Policy != nil && setup.Policy.ApprovedBy != "test_hub_admin" {
+					t.Fatalf("runner-reported apply attribution = %s, want the approving administrator", setup.Policy.ApprovedBy)
 				}
 				if setup.Policy == nil || setup.Policy.Policy.ID != candidate.ID || len(setup.ObservedPolicies) != 0 {
 					t.Fatalf("default-branch apply left pending approval: %+v", setup)
@@ -811,7 +854,11 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if setup.Policy == nil || setup.Policy.Policy.ID != candidate.ID {
 					t.Fatalf("older runner reverted approval: %+v", setup.Policy)
 				}
-				if len(setup.ObservedPolicies) != 0 {
+				if test.humanGate {
+					if len(setup.ObservedPolicies) != 1 || setup.ObservedPolicies[0].Policy.ID != original.ID || !setup.ObservedPolicies[0].PreviouslyApproved {
+						t.Fatalf("older report of a human-replaced revision was not offered as previously approved: %+v", setup.ObservedPolicies)
+					}
+				} else if len(setup.ObservedPolicies) != 0 {
 					t.Fatalf("historical approved revision requested reapproval: %+v", setup.ObservedPolicies)
 				}
 			}
@@ -893,8 +940,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					wantActor := landingActor
 					if test.initial && candidate.SameAuthoredInputs(original) {
 						wantActor = initialApproval.ApprovedBy
-					} else if test.lateLanding {
-						wantActor = "repository-default-branch"
+					} else if test.humanGate {
+						wantActor = "test_hub_admin"
 					}
 					if entry.AppliedBy != wantActor || approval.ApprovedBy != wantActor || test.landing == "native" && entry.ChangeID != "change_landed" || test.landing == "pr" && entry.PullRequestURL != "https://github.com/example-org/example-project/pull/1" {
 						t.Fatalf("missing landing provenance: %+v", approval)
