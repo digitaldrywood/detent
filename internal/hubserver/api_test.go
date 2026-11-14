@@ -286,7 +286,9 @@ func newRetainedWorkListFixtureWith(t *testing.T, objects *memoryRunDetails) (na
 func TestWorkItemAPIUsesStableFilteredCursorsAndDetailTimeline(t *testing.T) {
 	t.Parallel()
 	objects := &memoryRunDetails{}
-	f, _, ids, _ := newRetainedWorkListFixtureWith(t, objects)
+	f, runner, ids, descriptor := newRetainedWorkListFixtureWith(t, objects)
+	now := f.service.config.Clock()
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": "Example runner", "capacity": 8, "version": "test", "backend_isolation": runner.redemption.BackendIsolation, "provider_reports": []any{}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: now}, "admission": tracker.NativeAdmissionObservation{RunnerRevision: 1, Context: tracker.NativeAdmissionContext{ObservedAt: now, PolicyID: descriptor.ID, WorkflowStates: []string{"In Progress"}}}}), http.StatusOK)
 	list := f.base + "/work-items"
 	firstPath := list + "?repository=example-org%2Fexample-project&queue_scope=fleet&readiness=ready&priority=urgent&limit=1"
 	first := performHubAPIRequest(t, f.service, http.MethodGet, firstPath, testHubAdminToken, nil)
