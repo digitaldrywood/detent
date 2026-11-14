@@ -235,7 +235,11 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 			return errors.New("PostgreSQL report reader is unavailable")
 		}
 		var err error
-		priorRecorded, err = store.HasPriorData(ctx, projectIDsTyped, prior.To, query.Principal)
+		if projects, ok := reader.(reportstore.PriorProjectReader); ok && query.Principal == "" {
+			priorRecorded, err = projects.HasPriorProjects(ctx, projectIDsTyped, prior.To)
+		} else {
+			priorRecorded, err = store.HasPriorData(ctx, projectIDsTyped, prior.To, query.Principal)
+		}
 		if err != nil {
 			return err
 		}

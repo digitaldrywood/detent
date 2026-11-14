@@ -429,20 +429,42 @@ ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, projects, query.Principal
 }
 
 func (s *session) HasPriorData(ctx context.Context, projects []tracker.ProjectID, before time.Time, principal string) (bool, error) {
-	if len(projects) == 0 {
-		return false, errors.New("invalid PostgreSQL report projects")
+	projectIDs, err := priorProjectIDs(projects)
+	if err != nil {
+		return false, err
+	}
+	var recorded bool
+	if principal != "" {
+		err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM unnest($2::text[]) p(id) CROSS JOIN LATERAL (
+ SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.id AND i.actor_principal_id=$3 AND i.created_at<$4 ORDER BY i.created_at LIMIT 1
+) i)`, s.organization, projectIDs, principal, before.UTC()).Scan(&recorded)
+		return recorded, mapError(ctx, err)
+	}
+	err = s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=$1 AND id=ANY($2::text[]) AND deleted_at IS NULL AND created_at<$3) OR EXISTS(SELECT 1 FROM unnest($2::text[]) p(id) CROSS JOIN LATERAL (
+ SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.id AND i.created_at<$3 ORDER BY i.created_at LIMIT 1
+) i)`, s.organization, projectIDs, before.UTC()).Scan(&recorded)
+	return recorded, mapError(ctx, err)
+}
+
+func (s *session) HasPriorProjects(ctx context.Context, projects []tracker.ProjectID, before time.Time) (bool, error) {
+	projectIDs, err := priorProjectIDs(projects)
+	if err != nil {
+		return false, err
+	}
+	var recorded bool
+	err = s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=$1 AND id=ANY($2::text[]) AND deleted_at IS NULL AND created_at<$3)`, s.organization, projectIDs, before.UTC()).Scan(&recorded)
+	return recorded, mapError(ctx, err)
+}
+
+func priorProjectIDs(projects []tracker.ProjectID) ([]string, error) {
+	if len(projects) == 0 || len(projects) > maxReportProjects {
+		return nil, errors.New("invalid PostgreSQL report projects")
 	}
 	projectIDs := make([]string, len(projects))
 	for i, project := range projects {
 		projectIDs[i] = string(project)
 	}
-	var recorded bool
-	if principal != "" {
-		err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issues WHERE organization_id=$1 AND project_id=ANY($2::text[]) AND actor_principal_id=$3 AND created_at<$4)`, s.organization, projectIDs, principal, before.UTC()).Scan(&recorded)
-		return recorded, mapError(ctx, err)
-	}
-	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=$1 AND id=ANY($2::text[]) AND deleted_at IS NULL AND created_at<$3) OR EXISTS(SELECT 1 FROM issues WHERE organization_id=$1 AND project_id=ANY($2::text[]) AND created_at<$3)`, s.organization, projectIDs, before.UTC()).Scan(&recorded)
-	return recorded, mapError(ctx, err)
+	return projectIDs, nil
 }
 
 func (s *session) ReadAnalyticsAttemptPage(ctx context.Context, query reportstore.AnalyticsAttemptQuery) (reportstore.AnalyticsAttemptPage, error) {

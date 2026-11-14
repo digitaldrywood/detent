@@ -268,6 +268,10 @@ type Reader interface {
 	HasPriorData(context.Context, []tracker.ProjectID, time.Time, string) (bool, error)
 }
 
+type PriorProjectReader interface {
+	HasPriorProjects(context.Context, []tracker.ProjectID, time.Time) (bool, error)
+}
+
 type UsageCoverageReader interface {
 	ReadReportUsageCoverage(context.Context, OverviewQuery) (bool, error)
 }
