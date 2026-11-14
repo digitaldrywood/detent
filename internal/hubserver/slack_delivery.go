@@ -17,7 +17,6 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -166,16 +165,6 @@ func (s *Service) postSlack(ctx context.Context, webhook []byte, text string) sl
 		result.outcome = "rejected"
 	}
 	return result
-}
-
-func (s *Service) HealthSlackMaintenanceFeature() hubmaintenance.Feature {
-	return hubmaintenance.Feature{Name: "health-slack", Bytes: 1 << 20, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
-		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
-			return err
-		}
-		_, err := s.processSlackDelivery(ctx, tracker.OrganizationID(tenant.Organization))
-		return err
-	}}
 }
 
 func (s *Service) processSlackDelivery(ctx context.Context, organization tracker.OrganizationID) (bool, error) {

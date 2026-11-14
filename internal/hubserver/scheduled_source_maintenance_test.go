@@ -35,7 +35,11 @@ func TestScheduledSourceMaintenanceKeepsEachTenantOwnerAndPassesPoison(t *testin
 	repository := &scheduledSourceMaintenanceRepository{calls: map[tracker.OrganizationID][]postgres.ScheduledSourceCursor{}, failure: failure}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service := &Service{localOrganization: string(organization), config: Config{TenantRepository: repository}}
-		feature := service.ScheduledSourceMaintenanceFeature()
+		sources := service.newScheduledSourceMaintenance()
+		feature := hubmaintenance.Feature{Name: "scheduled-sources", Bytes: 64 << 20, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) error {
+			_, err := sources.step(ctx, tenant, budget.Items)
+			return err
+		}}
 		tenant := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
 		scheduler, err := hubmaintenance.New(hostedMaintenanceTenant{tenant}, []hubmaintenance.Feature{feature})
 		if err != nil {

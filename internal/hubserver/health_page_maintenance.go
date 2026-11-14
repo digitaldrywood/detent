@@ -52,7 +52,8 @@ func (s *Service) HealthPageMaintenanceFeature() hubmaintenance.Feature {
 		organization := tracker.OrganizationID(tenant.Organization)
 		observed := s.maintainHealthSources(ctx, organization, &state.cursor, budget)
 		_, projected := s.MaintainHealthPage(ctx, organization)
-		return errors.Join(observed, projected)
+		_, delivered := s.processSlackDelivery(ctx, organization)
+		return errors.Join(observed, projected, delivered)
 	}}
 }
 

@@ -673,10 +673,8 @@ func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
 		s.IntegrationPageMaintenanceFeature(),
 		s.OnboardingPageMaintenanceFeature(),
 		s.HealthPageMaintenanceFeature(),
-		s.HealthSlackMaintenanceFeature(),
 		s.ProjectPageMaintenanceFeature(),
 		s.UsageMaintenanceFeature(),
-		s.ScheduledSourceMaintenanceFeature(),
 		{Name: "github-intake", Bytes: 64 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
 			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
 				return err

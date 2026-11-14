@@ -20,22 +20,36 @@ import (
 )
 
 func (s *Service) WorkItemPageMaintenanceFeature() hubmaintenance.Feature {
+	sources := s.newScheduledSourceMaintenance()
 	return hubmaintenance.Feature{Name: "work-item-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) error {
 		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
 			return err
 		}
-		conversionItems := min(4, budget.Items/2)
-		conversionUsed, conversionErr := s.convertPostgresStorage(ctx, tenant, conversionItems)
+		background := min(4, budget.Items/2)
+		conversionUsed, conversionErr := s.convertPostgresStorage(ctx, tenant, background)
+		classify := func(items int) (int, error) {
+			if !sources.owns(tenant) {
+				return 0, nil
+			}
+			return sources.step(ctx, tenant, items)
+		}
+		sourceUsed, sourceErr := classify(background - conversionUsed)
+		remaining := budget.Items - conversionUsed - sourceUsed
 		var pageErr error
 		backfilled := false
-		for range budget.Items - conversionUsed {
+		idle := false
+		for range remaining {
 			worked, err := s.maintainWorkItemPage(ctx, tracker.OrganizationID(tenant.Organization), &backfilled)
 			if err != nil || !worked {
-				pageErr = err
+				pageErr, idle = err, err == nil
 				break
 			}
+			remaining--
 		}
-		return errors.Join(pageErr, conversionErr)
+		if idle && sourceErr == nil {
+			_, sourceErr = classify(remaining)
+		}
+		return errors.Join(pageErr, conversionErr, sourceErr)
 	}}
 }
 
