@@ -12262,6 +12262,18 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/migrations/20261114041647_search_candidates_document_key_roles.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "search"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [

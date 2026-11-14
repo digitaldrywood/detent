@@ -1019,6 +1019,8 @@ facts again. Startup verifies the helper's owner, security mode, search path
 and execution grant; runtime credentials gain no platform membership or pool.
 The separately provisioned functions persist across schema rollback, like roles.
 
+A change to a provisioned function body ships with a guard migration, because the schema version and fingerprint cover migrations only and a binary-only deploy would otherwise keep the old server-side function. For the search candidate document-key upgrade, apply the updated `roles.sql` as a PostgreSQL superuser, run `detent hub migrate-postgres` with the separate migration login, then start the new binary. Migration 20261114041647 refuses to run until the provisioned `search_index_candidates` body is current, and the new binary's startup schema check refuses a database without that migration, so a binary-only deploy fails its health check and rolls back to the previous release.
+
 The legacy board fallback uses `board_search_candidates`, owned by the separate
 `detent_search_reader_v2` role. This role cannot log in or inherit serving,
 platform or migration authority. It can read only the title/body keys and

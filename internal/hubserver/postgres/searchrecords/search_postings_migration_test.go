@@ -1,8 +1,10 @@
 package searchrecords_test
 
 import (
+	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -113,5 +115,63 @@ func TestSearchPostingsMigrationGuardAndOrphans(t *testing.T) {
 	}
 	if issueMarkers != 2 || orphanMarkers != 0 || orphanRefresh != 0 {
 		t.Fatalf("issue markers=%d orphan markers=%d orphan refresh=%d", issueMarkers, orphanMarkers, orphanRefresh)
+	}
+}
+
+func TestSearchCandidatesMigrationRequiresProvisionedFunction(t *testing.T) {
+	t.Parallel()
+	const version = 20261114041647
+	f := newSearchFixture(t)
+	f.admin.SetMaxOpenConns(1)
+	provider, err := pgstoretest.MigrationProvider(f.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asMigration := func(up bool) error {
+		t.Helper()
+		if _, err := f.admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
+			t.Fatal(err)
+		}
+		_, applyErr := provider.ApplyVersion(t.Context(), version, up)
+		if _, err := f.admin.ExecContext(t.Context(), `RESET ROLE`); err != nil {
+			t.Fatal(err)
+		}
+		return applyErr
+	}
+	if err := asMigration(false); err != nil {
+		t.Fatal(err)
+	}
+	roles, err := os.ReadFile("../roles.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := strings.ReplaceAll(string(roles), `sd.id COLLATE "default" AS id`, `sd.id`)
+	if stale == string(roles) {
+		t.Fatal("roles.sql lost the provisioned search candidate marker")
+	}
+	if _, err := f.admin.ExecContext(t.Context(), stale); err != nil {
+		t.Fatal(err)
+	}
+	var refused *pgconn.PgError
+	if err := asMigration(true); !errors.As(err, &refused) || refused.Code != "P0001" {
+		t.Fatalf("stale search candidate function migration error=%v", err)
+	}
+	if _, err := f.admin.ExecContext(t.Context(), string(roles)); err != nil {
+		t.Fatal(err)
+	}
+	if err := asMigration(true); err != nil {
+		t.Fatal(err)
+	}
+	definition := func(db *sql.DB) string {
+		t.Helper()
+		var value string
+		if err := db.QueryRowContext(t.Context(), `SELECT pg_get_functiondef(p.oid)||'|'||pg_get_userbyid(p.proowner)||'|'||COALESCE(array_to_string(p.proacl,','),'')
+ FROM pg_proc p WHERE p.oid='public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[])'::regprocedure`).Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	if upgraded, fresh := definition(f.admin), definition(pgstoretest.Template.Database(t)); upgraded != fresh {
+		t.Fatalf("upgraded search candidate function differs from a fresh provision:\nupgraded=%s\nfresh=%s", upgraded, fresh)
 	}
 }
