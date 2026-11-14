@@ -108,8 +108,14 @@ func TestRunnerCostPreparationPreservesArchivedEvidence(t *testing.T) {
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	now := from.Add(time.Hour)
 	objects := &memoryRunDetails{}
-	service := New(Deps{Details: objects, ValidateDetail: validateDetail})
-	scope := hubapi.Scope{Facts: hubapi.Facts{Organization: "org_example", Project: "project_example"}}
+	repository := hubtest.Repository(t)
+	org, err := createOrganization(t, repository, "Example organization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := hubtest.Project(t, repository, org.ID, hubtest.ProjectOptions{Name: "Example project"})
+	service := New(Deps{Repository: repository, Details: objects, ValidateDetail: validateDetail})
+	scope := hubapi.Scope{Facts: hubapi.Facts{Organization: org.ID, Project: project.ID}}
 	amount := int64(42)
 	request := tracker.NativeRunEvent{Type: "run.finished", Data: tracker.NativeRunData{AttemptID: "attempt_example", Sequence: 2, Usage: []tracker.NativeUsage{{Provider: "openai", Model: "example-model", Currency: "USD", BillingMode: "metered", ReportedCostMicros: &amount, CostSource: "backend_result", Input: 10}}}}
 	facts := RunnerFacts{WorkItemID: "item_example", RunnerID: "runner_example", MachineID: "machine_example", Placement: "local", StartedAt: from, EndedAt: now}
