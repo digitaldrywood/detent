@@ -50,7 +50,7 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "new issue", Body: "private-body-sentinel" + hubfixture.IssueContractSections, State: "Todo"}
 				hubfixture.RequireStatus(t, f.Request(t, user, http.MethodPost, f.Base+"/work-items", command), writeStatus)
 				policyStatus, revokeStatus := http.StatusNotFound, http.StatusNotFound
-				if grant == "read" || grant == "write" && role == "viewer" {
+				if grant == "read" || grant == "write" && (role == "viewer" || role == "member") {
 					policyStatus, revokeStatus = http.StatusForbidden, http.StatusForbidden
 				}
 				if grant == "write" && (role == "owner" || role == "admin") {

@@ -24,7 +24,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 	}{
 		{name: "owner deletes idle project", account: "owner", status: http.StatusOK},
 		{name: "admin deletes idle project", account: "owner", role: "admin", status: http.StatusOK},
-		{name: "member with write grant refused", account: "owner", role: "member", status: http.StatusNotFound},
+		{name: "member with write grant refused", account: "owner", role: "member", status: http.StatusForbidden},
 		{name: "viewer refused", account: "viewer", status: http.StatusForbidden},
 		{name: "cross organization session refused", account: "wrong-organization", status: http.StatusForbidden},
 		{name: "cross organization path refused", account: "owner", organization: "org_other", status: http.StatusNotFound},
@@ -131,6 +131,9 @@ func TestHostedProjectDeletion(t *testing.T) {
 			base := "/api/v2/organizations/" + organizationPath + "/projects/" + f.project
 			response := f.rawAPI(t, test.account, http.MethodDelete, base, string(body), headers)
 			browserHostedStatus(t, response, test.status)
+			if test.role == "member" && !strings.Contains(response.Body.String(), `"code":"access_denied"`) {
+				t.Fatalf("visible member deletion refusal = %s", response.Body.String())
+			}
 			if test.status != http.StatusOK {
 				if after := deletionDataSnapshot(t, db); before != after {
 					t.Fatalf("refused deletion changed project data\nbefore: %s\nafter: %s", before, after)

@@ -59,7 +59,7 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 		{"owner", "owner", "write", "owner@example.test", true, http.StatusOK},
 		{"admin without runner grants", "admin", "write", "admin@example.test", false, http.StatusOK},
 		{"owner without runner grants", "owner", "write", "owner@example.test", false, http.StatusOK},
-		{"member", "member", "write", "member@example.test", true, http.StatusNotFound},
+		{"member", "member", "write", "member@example.test", true, http.StatusForbidden},
 		{"viewer", "viewer", "write", "viewer@example.test", true, http.StatusForbidden},
 		{"read only owner", "owner", "read", "owner@example.test", true, http.StatusForbidden},
 		{"ungranted owner", "owner", "", "owner@example.test", false, http.StatusNotFound},
@@ -80,7 +80,12 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 				f.withoutProjectAccess(t, user)
 			}
 			request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, ExpectedID: seeded.ID, Policy: tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: false}}
-			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/change-review-policy", request), test.want)
+			response := f.request(t, user, http.MethodPut, f.base+"/change-review-policy", request)
+			if test.role == "member" {
+				requireNativeError(t, response, test.want, "access_denied")
+			} else {
+				requireNativeStatus(t, response, test.want)
+			}
 			var record eventstore.ReviewPolicy
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
