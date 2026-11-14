@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -183,7 +184,7 @@ func (u authorizedValidationUploader) Reserve(ctx context.Context, reservation a
 func TestUploadChangeValidationBudgetsPartialManifests(t *testing.T) {
 	now := time.Now().UTC()
 	clock := func() time.Time { return now }
-	cfg := testsupport.NativeChangePostgresConfig(t, hubserver.Config{InitialAdminToken: []byte("example-admin"), Clock: clock, Content: testsupport.ContentStore()})
+	cfg := testsupport.NativeChangePostgresConfig(t, hubserver.Config{InitialAdminToken: []byte("example-admin"), Clock: clock, Content: testsupport.ContentStore(), RunDetails: hubtest.NewDetails()})
 	hub, err := hubserver.Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
