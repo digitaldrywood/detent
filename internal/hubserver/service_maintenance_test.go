@@ -422,8 +422,8 @@ func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
 	service.config.Clock = func() time.Time { return now }
 	for _, test := range []struct{ size, ticks int }{{2, 48}, {50, 48}, {100, 48}, {1200, 360}} {
 		t.Run(fmt.Sprint(test.size), func(t *testing.T) {
-			size := test.size
 			for _, name := range []string{"first", "second"} {
+				size := test.size
 				org := tracker.OrganizationID(fmt.Sprintf("org_%s_%d", name, size))
 				seedStartupOrganization(t, repository, org)
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -461,9 +461,18 @@ func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				maxTransactions, maxStatements := 0, 0
-				var maxExchanges int64
-				for range test.ticks {
+				maxTransactions, maxStatements, maxExchanges := 0, 0, int64(0)
+				state := func() (values [4]int) {
+					if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM native_work_item_pages WHERE organization_id=$1 AND body=$1),(SELECT count(*) FROM native_work_item_page_dirty WHERE organization_id=$1),(SELECT count(*) FROM issues WHERE organization_id=$1 AND source_revision<>revision)+(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND source_revision<>revision),(SELECT coalesce(sum(source_generation),0) FROM native_work_item_pages WHERE organization_id=$1)`, org).Scan(&values[0], &values[1], &values[2], &values[3]); err != nil {
+						t.Fatal(err)
+					}
+					return values
+				}
+				var drained [4]int
+				for tick := range test.ticks + 24 {
+					if tick == test.ticks {
+						drained = state()
+					}
 					now = now.Add(time.Second)
 					before := exchanges.Load()
 					transactions, statements := 0, 0
@@ -483,15 +492,8 @@ func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
 					maxStatements = max(maxStatements, statements)
 					maxExchanges = max(maxExchanges, wireExchanges)
 				}
-				var pages, pending int
-				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_work_item_pages WHERE organization_id=$1 AND body=$1`, org).Scan(&pages); err != nil {
-					t.Fatal(err)
-				}
-				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_work_item_page_dirty WHERE organization_id=$1`, org).Scan(&pending); err != nil {
-					t.Fatal(err)
-				}
-				if pages != size || pending != 0 {
-					t.Errorf("tenant %s after %d ticks: body pages=%d/%d pending=%d", org, test.ticks, pages, size, pending)
+				if after := state(); drained[0] != size || drained[1] != 0 || drained[2] != 0 || after != drained {
+					t.Errorf("tenant %s after %d ticks: body pages=%d/%d pending=%d unclassified=%d; 24 ticks later %v (must not re-dirty or repeat pages)", org, test.ticks, drained[0], size, drained[1], drained[2], after)
 				}
 				t.Logf("tenant=%s backlog=%d ticks=%d max_transactions=%d max_statements=%d max_exchanges=%d", org, size, test.ticks, maxTransactions, maxStatements, maxExchanges)
 			}

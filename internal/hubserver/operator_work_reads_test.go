@@ -1615,8 +1615,8 @@ func TestOperatorWorkRunsHydrateEachListedAttemptOnce(t *testing.T) {
 	check := func(label string, want []string) {
 		t.Helper()
 		returned, reads := list()
-		if !slices.Equal(returned, want) {
-			t.Fatalf("%s returned attempts=%v want %v", label, returned, want)
+		if !slices.Equal(returned, want) || len(want) != 2 || want[0] == want[1] || !slices.Contains(attempts, want[0]) || !slices.Contains(attempts, want[1]) {
+			t.Fatalf("%s returned attempts=%v want two distinct of %v", label, returned, attempts)
 		}
 		for _, id := range attempts {
 			expected := 0
@@ -1629,9 +1629,6 @@ func TestOperatorWorkRunsHydrateEachListedAttemptOnce(t *testing.T) {
 		}
 	}
 	returned, _ := list()
-	if len(returned) != 2 || !slices.Contains(attempts, returned[0]) || !slices.Contains(attempts, returned[1]) || returned[0] == returned[1] {
-		t.Fatalf("multi-attempt page returned %v from %v", returned, attempts)
-	}
 	check("first page", returned)
 	for index := range 24 {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("excluded-history-%d", index)}, Body: "Excluded history comment"}), http.StatusOK)

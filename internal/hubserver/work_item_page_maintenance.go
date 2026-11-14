@@ -25,35 +25,24 @@ func (s *Service) WorkItemPageMaintenanceFeature() hubmaintenance.Feature {
 		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
 			return hubmaintenance.Outcome{}, err
 		}
-		background := min(4, budget.Items/2)
-		conversionUsed, conversionErr := s.convertPostgresStorage(ctx, tenant, background)
 		classify := func(items int) (int, error) {
 			if !sources.owns(tenant) {
 				return 0, nil
 			}
 			return sources.step(ctx, tenant, items)
 		}
-		sourceUsed, sourceErr := classify(background - conversionUsed)
-		remaining := budget.Items - conversionUsed - sourceUsed
-		var pageErr error
-		backfilled := false
-		idle := false
-		pages := 0
-		for range remaining {
-			worked, err := s.maintainWorkItemPage(ctx, tracker.OrganizationID(tenant.Organization), &backfilled)
-			remaining--
-			if err != nil || !worked {
-				pageErr, idle = err, err == nil
-				break
+		convert := func(items int) (int, error) { return s.convertPostgresStorage(ctx, tenant, items) }
+		pages := func(limit int) (int, int, bool, error) {
+			backfilled := false
+			for attempt := range limit {
+				worked, err := s.maintainWorkItemPage(ctx, tracker.OrganizationID(tenant.Organization), &backfilled)
+				if err != nil || !worked {
+					return attempt + 1, attempt, err == nil, err
+				}
 			}
-			pages++
+			return limit, limit, false, nil
 		}
-		leftover := 0
-		if idle && sourceErr == nil {
-			leftover, sourceErr = classify(remaining)
-			remaining -= leftover
-		}
-		return hubmaintenance.Outcome{Progress: conversionUsed+sourceUsed+pages+leftover > 0, Items: budget.Items - remaining}, errors.Join(pageErr, conversionErr, sourceErr)
+		return hubmaintenance.ShareItems(budget.Items, classify, convert, pages)
 	}}
 }
 
