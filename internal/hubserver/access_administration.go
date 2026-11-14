@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -168,6 +170,9 @@ func (s *Service) changeAccessGrant(ctx context.Context, credential hubapi.APICr
 		}
 		if !member.Active {
 			return auth.ErrHostedIdentity
+		}
+		if accessstore.RoleAllows(member.Role, apikey.ScopeAdmin) {
+			return &hubapi.NativeError{Code: "role_grants_project_access", Message: "Owners and admins have full access to every project from their organization role; change the role to restrict project access", Status: http.StatusConflict, PublicMessage: true}
 		}
 		if revoke {
 			if err := w.DeleteAccessProjectGrant(ctx, user, scope.Project); err != nil {

@@ -360,6 +360,9 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Select a member and project")
 	}
 	err = s.hostedGrant(c.Request().Context(), credential, user, project, hostedFormTrue(c, "write"), hostedFormTrue(c, "runner"), hostedFormTrue(c, "revoke"))
+	if native := (*hubapi.NativeError)(nil); errors.As(err, &native) && native.Status == http.StatusConflict {
+		return s.hostedError(c, native.Status, native.Message)
+	}
 	if err != nil {
 		if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
