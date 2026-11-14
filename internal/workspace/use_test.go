@@ -12,6 +12,7 @@ import (
 )
 
 func TestWorkspaceUseAndCleanup(t *testing.T) {
+	t.Parallel()
 	for _, workerFirst := range []bool{false, true} {
 		name := "cleanup first"
 		if workerFirst {
@@ -74,6 +75,7 @@ func TestWorkspaceUseAndCleanup(t *testing.T) {
 }
 
 func TestWorkspaceUseCancellation(t *testing.T) {
+	t.Parallel()
 	var uses workspaceUses
 	release, _ := uses.cleanup("path")
 	defer release()
@@ -133,6 +135,7 @@ func TestFilesystemCleanupProtectsWorker(t *testing.T) {
 }
 
 func TestFilesystemCleanupBatch(t *testing.T) {
+	t.Parallel()
 	for _, count := range []int{0, 1, 10, 11, 50} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			backend, err := NewFilesystem(FilesystemOptions{Root: t.TempDir()})

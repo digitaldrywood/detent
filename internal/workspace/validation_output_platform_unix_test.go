@@ -19,6 +19,7 @@ import (
 )
 
 func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
+	t.Parallel()
 	const limit = 64 * 1024
 	for _, test := range []struct {
 		name               string

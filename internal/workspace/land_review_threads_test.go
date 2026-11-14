@@ -68,6 +68,7 @@ func reviewThreadNode(id string, resolved bool, author, typename, body string, r
 }
 
 func TestResolveLandingReviewThreads(t *testing.T) {
+	t.Parallel()
 	const head = "1111111111111111111111111111111111111111"
 	const earlier = "2222222222222222222222222222222222222222"
 	surfacedEarlier := "Detent surfaced this conversation to Rework.\n\n<!-- detent:surfaced " + earlier + " -->"
@@ -311,6 +312,7 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 }
 
 func TestGitHubLandingRESTConversationRefusal(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		message      string

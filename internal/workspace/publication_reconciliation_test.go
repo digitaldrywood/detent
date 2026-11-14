@@ -12,6 +12,7 @@ import (
 )
 
 func TestPublicationReconciliationBeforeForgeRead(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		remote      string

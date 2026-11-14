@@ -74,6 +74,7 @@ func TestParseDiffStat(t *testing.T) {
 }
 
 func TestLocalGitSeedReviewHead(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name           string
 		advance        bool
@@ -401,6 +402,7 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 }
 
 func TestLocalGitSeedReviewHeadUsesPullRequestRef(t *testing.T) {
+	t.Parallel()
 	source := initSourceRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	runGit(t, t.TempDir(), "clone", "--bare", source, remote)
@@ -436,6 +438,7 @@ func TestLocalGitSeedReviewHeadUsesPullRequestRef(t *testing.T) {
 }
 
 func TestLocalGitSeedReviewHeadUsesPullRequestRepository(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name            string
 		stalePullRef    bool

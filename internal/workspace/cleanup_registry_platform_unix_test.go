@@ -13,7 +13,7 @@ import (
 )
 
 func TestLocalGitCleanupRetriesAfterGitDeregistration(t *testing.T) {
-
+	t.Parallel()
 	enclosing := initSourceRepo(t)
 	source := filepath.Join(enclosing, "source")
 	initSourceRepoAt(t, source)
@@ -82,7 +82,7 @@ func TestLocalGitCleanupRetriesAfterGitDeregistration(t *testing.T) {
 }
 
 func TestLocalGitReconcileResiduals(t *testing.T) {
-
+	t.Parallel()
 	tests := []struct {
 		name           string
 		active         bool

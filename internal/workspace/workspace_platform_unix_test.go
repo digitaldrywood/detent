@@ -98,7 +98,7 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 }
 
 func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
-
+	t.Parallel()
 	source := initSourceRepo(t)
 	alternateSource := filepath.Join(t.TempDir(), "source-worktree")
 	runGit(t, source, "worktree", "add", "--detach", alternateSource, "HEAD")
@@ -169,7 +169,7 @@ func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
 }
 
 func TestLocalGitCreateRunsAfterCreateHooksConcurrentlyForDifferentSources(t *testing.T) {
-
+	t.Parallel()
 	hookState := t.TempDir()
 	startedPath := filepath.Join(hookState, "first.started")
 	releasePath := filepath.Join(hookState, "first.release")
@@ -590,7 +590,7 @@ func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
 }
 
 func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
-
+	t.Parallel()
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
 	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
@@ -1161,7 +1161,7 @@ func TestLocalGitCreateQuarantinesCleanDetachedUnreferencedCommit(t *testing.T) 
 }
 
 func TestLocalGitCreateRepairsWorkspacePreparationFailures(t *testing.T) {
-
+	t.Parallel()
 	tests := []struct {
 		name string
 		run  func(*testing.T)
@@ -1464,7 +1464,7 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 }
 
 func TestLocalGitPreserveFailedWorkspaceReleasesBranch(t *testing.T) {
-
+	t.Parallel()
 	tests := []struct {
 		name       string
 		identifier string
@@ -1690,7 +1690,7 @@ func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
 }
 
 func TestLocalGitCreateReleasesStaleBranchHolders(t *testing.T) {
-
+	t.Parallel()
 	tests := []struct {
 		name      string
 		fresh     bool

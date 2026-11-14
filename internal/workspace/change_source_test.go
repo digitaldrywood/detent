@@ -13,6 +13,7 @@ import (
 )
 
 func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
+	t.Parallel()
 	source := initSourceRepo(t)
 	remote := initBareRemote(t)
 	repository := "https://github.com/example/source"
@@ -429,6 +430,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 
 // A release pick may exist only in the retained bundle on a fresh runner.
 func TestLocalGitReleaseDeliveryImportsRetainedHeadBeforeReview(t *testing.T) {
+	t.Parallel()
 	source := initSourceRepo(t)
 	remote := initBareRemote(t)
 	repository := "https://github.com/example/source"

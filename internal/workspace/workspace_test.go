@@ -1624,6 +1624,7 @@ func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
 }
 
 func TestLocalGitStaleQuarantineReleasesBranch(t *testing.T) {
+	t.Parallel()
 	for _, failDetach := range []bool{false, true} {
 		t.Run(fmt.Sprintf("detach_failure=%t", failDetach), func(t *testing.T) {
 			source := initSourceRepo(t)
@@ -1697,6 +1698,7 @@ func hookCompletionBudget(parallel, procs int) time.Duration {
 }
 
 func TestHookCompletionBudget(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name            string
 		parallel, procs int

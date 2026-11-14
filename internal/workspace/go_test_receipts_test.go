@@ -40,6 +40,7 @@ func (s *memoryGoTestReceipts) Record(_ context.Context, receipt gotestreceipt.R
 }
 
 func TestGoTestReceiptSocketStaysInAssignedScratch(t *testing.T) {
+	t.Parallel()
 	backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: initSourceRepo(t)})
 	if err != nil {
 		t.Fatal(err)

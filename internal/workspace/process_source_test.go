@@ -9,6 +9,7 @@ import (
 )
 
 func TestReapingUsesInjectedProcessSource(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		reap func(context.Context, string, string, time.Duration) (int, error)
