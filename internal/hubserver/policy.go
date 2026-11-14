@@ -684,13 +684,25 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubsc
 
 func (s *Service) readTenantObservedPolicy(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, approvedPolicyID, policyID string) (policy.Descriptor, error) {
 	var rows []policystore.ObservedRevision
+	unreported := false
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
 		rows, _, err = reader.ProjectPolicyObservations(ctx, project, approvedPolicyID, policyID, s.config.Clock(), 1)
+		if err != nil || len(rows) > 0 {
+			return err
+		}
+		_, err = reader.ProjectPolicyRevision(ctx, project, policyID)
+		if errors.Is(err, corestore.ErrNotFound) {
+			unreported = true
+			return nil
+		}
 		return err
 	})
 	if err != nil {
 		return policy.Descriptor{}, err
+	}
+	if unreported {
+		return policy.Descriptor{}, hubapi.NativePublicInvalid("observed_policy_id does not identify a current authorized observation in this project")
 	}
 	if len(rows) == 0 {
 		return policy.Descriptor{}, hubapi.PolicyMismatch("Observed repository policy is no longer reported by an authorized runner")
