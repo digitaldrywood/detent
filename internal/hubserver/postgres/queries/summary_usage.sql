@@ -23,7 +23,10 @@ WITH requested AS MATERIALIZED (
  FROM ROWS FROM(unnest(sqlc.arg(project_ids)::text[]),unnest(sqlc.arg(work_item_ids)::text[])) AS p(project_id,work_item_id)
 ), items AS MATERIALIZED (
  SELECT i.project_id,i.native_id AS work_item_id,i.id
- FROM requested r JOIN issues i ON i.organization_id=sqlc.arg(organization_id) AND i.project_id=r.project_id AND i.native_id=r.work_item_id
+ FROM requested r CROSS JOIN LATERAL (
+  SELECT i.project_id,i.native_id,i.id,i.actor_principal_id FROM issues i
+  WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=r.project_id AND i.native_id=r.work_item_id LIMIT 1
+ ) i
  WHERE sqlc.arg(principal)::text='' OR i.actor_principal_id=sqlc.arg(principal)
 ), attempts AS MATERIALIZED (
  SELECT i.project_id,i.work_item_id,a.id AS attempt_id

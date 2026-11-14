@@ -18,7 +18,10 @@ WITH requested AS MATERIALIZED (
  FROM ROWS FROM(unnest($1::text[]),unnest($2::text[])) AS p(project_id,work_item_id)
 ), items AS MATERIALIZED (
  SELECT i.project_id,i.native_id AS work_item_id,i.id
- FROM requested r JOIN issues i ON i.organization_id=$3 AND i.project_id=r.project_id AND i.native_id=r.work_item_id
+ FROM requested r CROSS JOIN LATERAL (
+  SELECT i.project_id,i.native_id,i.id,i.actor_principal_id FROM issues i
+  WHERE i.organization_id=$3 AND i.project_id=r.project_id AND i.native_id=r.work_item_id LIMIT 1
+ ) i
  WHERE $4::text='' OR i.actor_principal_id=$4
 ), attempts AS MATERIALIZED (
  SELECT i.project_id,i.work_item_id,a.id AS attempt_id
