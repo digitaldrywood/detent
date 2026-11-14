@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariohooks"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -497,7 +498,8 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			if test.hostHandoff {
 				cfg.ActiveStates = append(cfg.ActiveStates, "Rework")
 			}
-			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, Logger: logger}
+			completions := scenariohooks.NewGate(t)
+			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: scenariohooks.GatedScheduler{Scheduler: h.scheduler, Gate: completions}, Runner: agent, Logger: logger}
 			orch, err := orchestrator.New(cfg, dependencies)
 			if err != nil {
 				t.Fatal(err)
@@ -601,6 +603,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						rejectedVersion = detail.Versions[0]
 					}
 					if !deferred && test.stopped {
+						completions.Close()
 						owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 						change := publishedSource()
 						if err := owner.KeepWorker(func(context.Context) error { return nil }, nil); err != nil {
@@ -622,6 +625,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						if err := h.admin.Transport().Request(t.Context(), "GET", h.admin.Scope()+"/work-items/"+issue.ID+"/source-recovery", nil, &sourceRecovery); err != nil || !sourceRecovery.Quiesced || sourceRecovery.VersionID != change.VersionID || sourceRecovery.HeadSHA != change.HeadSHA {
 							t.Fatalf("confirmed worker cleanup lost recoverable source: %+v, %v", sourceRecovery, err)
 						}
+						completions.Open()
 						stopOrchestrator()
 						provider.releaseRetry()
 						candidate := h.claim(t, issue.ID)
