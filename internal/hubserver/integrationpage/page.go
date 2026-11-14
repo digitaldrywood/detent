@@ -42,12 +42,12 @@ func (s *Service) Read(ctx context.Context, scope hubapi.Scope) (projectstore.In
 }
 
 func (s *Service) MaintenanceFeature() hubmaintenance.Feature {
-	return hubmaintenance.Feature{Name: "integration-pages", Bytes: MaintenanceBytes, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+	return hubmaintenance.Feature{Name: "integration-pages", Bytes: MaintenanceBytes, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
-			return err
+			return hubmaintenance.Outcome{}, err
 		}
-		_, err := s.Maintain(ctx, tracker.OrganizationID(tenant.Organization))
-		return err
+		worked, err := s.Maintain(ctx, tracker.OrganizationID(tenant.Organization))
+		return hubmaintenance.Outcome{Progress: worked, Items: 1}, err
 	}}
 }
 

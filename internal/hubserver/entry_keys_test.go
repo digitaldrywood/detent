@@ -200,7 +200,7 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 			tenant := hubmaintenance.Tenant{Organization: organization, Generation: service.config.Hosted.SharedEntry.Generation}
 			for range 4 {
 				ctx := (hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), tenant)
-				if err := service.OnboardingPageMaintenanceFeature().Step(ctx, tenant, hubmaintenance.Budget{}); err != nil {
+				if _, err := service.OnboardingPageMaintenanceFeature().Step(ctx, tenant, hubmaintenance.Budget{}); err != nil {
 					t.Fatal(err)
 				}
 			}

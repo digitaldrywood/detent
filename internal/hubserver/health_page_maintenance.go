@@ -37,9 +37,9 @@ import (
 
 func (s *Service) HealthPageMaintenanceFeature() hubmaintenance.Feature {
 	var tenants sync.Map
-	return hubmaintenance.Feature{Name: "health-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) error {
+	return hubmaintenance.Feature{Name: "health-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
-			return err
+			return hubmaintenance.Outcome{}, err
 		}
 		value, _ := tenants.LoadOrStore(tenant.Organization, &healthMaintenanceState{})
 		state := value.(*healthMaintenanceState)
@@ -51,9 +51,9 @@ func (s *Service) HealthPageMaintenanceFeature() hubmaintenance.Feature {
 		}
 		organization := tracker.OrganizationID(tenant.Organization)
 		observed := s.maintainHealthSources(ctx, organization, &state.cursor, budget)
-		_, projected := s.MaintainHealthPage(ctx, organization)
-		_, delivered := s.processSlackDelivery(ctx, organization)
-		return errors.Join(observed, projected, delivered)
+		projected, projectErr := s.MaintainHealthPage(ctx, organization)
+		delivered, deliveryErr := s.processSlackDelivery(ctx, organization)
+		return hubmaintenance.Outcome{Progress: projected || delivered, Items: 1}, errors.Join(observed, projectErr, deliveryErr)
 	}}
 }
 

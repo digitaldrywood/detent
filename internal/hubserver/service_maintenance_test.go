@@ -283,7 +283,7 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 				budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: feature.Bytes}
 				var previousPages, previousEvents int64
 				for turn := 0; turn < 4; turn++ {
-					if err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
+					if _, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
 						t.Fatal(err)
 					}
 					var pages, events int64

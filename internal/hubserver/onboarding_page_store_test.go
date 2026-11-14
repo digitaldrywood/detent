@@ -178,7 +178,7 @@ func TestOnboardingPageKeepsViewerVisibilityAndRevocation(t *testing.T) {
 					}
 					for range 3 {
 						ctx := (hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), tenant)
-						if err := service.OnboardingPageMaintenanceFeature().Step(ctx, tenant, hubmaintenance.Budget{}); err != nil {
+						if _, err := service.OnboardingPageMaintenanceFeature().Step(ctx, tenant, hubmaintenance.Budget{}); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -285,7 +285,7 @@ func TestOnboardingPageKeepsSavedProgressCurrent(t *testing.T) {
 			prepare := func(token string) {
 				saveOnboardingView(t, service, fixture.base, token)
 				ctx := (hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), tenant)
-				if err := service.OnboardingPageMaintenanceFeature().Step(ctx, tenant, hubmaintenance.Budget{}); err != nil {
+				if _, err := service.OnboardingPageMaintenanceFeature().Step(ctx, tenant, hubmaintenance.Budget{}); err != nil {
 					t.Fatal(err)
 				}
 			}

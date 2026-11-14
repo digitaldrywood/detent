@@ -25,9 +25,9 @@ func (s *Service) ProjectPageMaintenanceFeature() hubmaintenance.Feature {
 	}
 	var mu sync.Mutex
 	cursors := make(map[string]cursor)
-	return hubmaintenance.Feature{Name: "project-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+	return hubmaintenance.Feature{Name: "project-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
-			return err
+			return hubmaintenance.Outcome{}, err
 		}
 		mu.Lock()
 		current := cursors[tenant.Organization]
@@ -35,12 +35,12 @@ func (s *Service) ProjectPageMaintenanceFeature() hubmaintenance.Feature {
 		if current.generation != tenant.Generation {
 			current = cursor{generation: tenant.Generation}
 		}
-		next, _, err := s.MaintainProjectPage(ctx, tracker.OrganizationID(tenant.Organization), current.after)
+		next, worked, err := s.MaintainProjectPage(ctx, tracker.OrganizationID(tenant.Organization), current.after)
 		current.after = next
 		mu.Lock()
 		cursors[tenant.Organization] = current
 		mu.Unlock()
-		return err
+		return hubmaintenance.Outcome{Progress: worked, Items: 1}, err
 	}}
 }
 

@@ -35,7 +35,7 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 	tenant := hubmaintenance.Tenant{Organization: "org_first", Generation: 1}
 	budget := (hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}).Context(t.Context(), tenant)
 	tenant.Generation++
-	if err := feature.Step(budget, tenant, hubmaintenance.Budget{}); err == nil {
+	if _, err := feature.Step(budget, tenant, hubmaintenance.Budget{}); err == nil {
 		t.Fatal("accepted mismatched tenant generation")
 	}
 	var expected [2]int

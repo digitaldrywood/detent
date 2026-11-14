@@ -36,9 +36,9 @@ func TestScheduledSourceMaintenanceKeepsEachTenantOwnerAndPassesPoison(t *testin
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service := &Service{localOrganization: string(organization), config: Config{TenantRepository: repository}}
 		sources := service.newScheduledSourceMaintenance()
-		feature := hubmaintenance.Feature{Name: "scheduled-sources", Bytes: 64 << 20, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) error {
-			_, err := sources.step(ctx, tenant, budget.Items)
-			return err
+		feature := hubmaintenance.Feature{Name: "scheduled-sources", Bytes: 64 << 20, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+			used, err := sources.step(ctx, tenant, budget.Items)
+			return hubmaintenance.Outcome{Progress: used > 0, Items: max(used, 1)}, err
 		}}
 		tenant := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
 		scheduler, err := hubmaintenance.New(hostedMaintenanceTenant{tenant}, []hubmaintenance.Feature{feature})
@@ -57,7 +57,7 @@ func TestScheduledSourceMaintenanceKeepsEachTenantOwnerAndPassesPoison(t *testin
 		}
 		foreign := hubmaintenance.Tenant{Organization: "org_foreign", Generation: 1}
 		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: 32 << 20}
-		if err := feature.Step(budget.Context(t.Context(), foreign), foreign, budget); err == nil || len(repository.calls["org_foreign"]) != 0 {
+		if _, err := feature.Step(budget.Context(t.Context(), foreign), foreign, budget); err == nil || len(repository.calls["org_foreign"]) != 0 {
 			t.Fatal("private tenant maintenance crossed archive ownership")
 		}
 	}

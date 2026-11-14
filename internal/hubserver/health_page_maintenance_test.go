@@ -251,7 +251,8 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 				go func() {
 					tenant := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
 					budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}
-					failures <- feature.Step(budget.Context(t.Context(), tenant), tenant, budget)
+					_, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget)
+					failures <- err
 				}()
 			}
 		}
@@ -326,7 +327,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 		}
 		clock.Advance(time.Second)
 		for range 20 {
-			if err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
+			if _, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -398,7 +399,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 				t.Fatalf("%s lost current unknown attempt metadata: %+v", kind, source)
 			}
 			for range 20 {
-				if err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
+				if _, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
 					t.Fatalf("%s failed observation cycle: %v", kind, err)
 				}
 			}
@@ -425,7 +426,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 		details.mu.Unlock()
 		failures := 0
 		for range 20 {
-			if err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
+			if _, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
 				failures++
 			}
 		}

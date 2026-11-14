@@ -17,6 +17,7 @@ const (
 	WorkerLimit = 2
 	ItemLimit   = 64
 	ByteLimit   = 16 << 30
+	ProbeLimit  = 4
 )
 
 type Tenant struct {
@@ -33,10 +34,15 @@ type Registry interface {
 	Page(context.Context, string, int) ([]Tenant, error)
 }
 
+type Outcome struct {
+	Progress bool
+	Items    int
+}
+
 type Feature struct {
 	Name  string
 	Bytes int64
-	Step  func(context.Context, Tenant, Budget) error
+	Step  func(context.Context, Tenant, Budget) (Outcome, error)
 }
 
 type Scheduler struct {
@@ -102,27 +108,60 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return errors.New("maintenance tick already running")
 	}
 	defer s.active.Store(false)
-	if err := ctx.Err(); err != nil {
-		return err
+	envelope := tickEnvelope{bytes: ByteLimit, items: make(map[string]int)}
+	var failure error
+	for range ProbeLimit {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		result, err := s.batch(ctx, &envelope)
+		failure = errors.Join(failure, err)
+		if err != nil || result.progress || result.exhausted {
+			break
+		}
 	}
+	return errors.Join(failure, ctx.Err())
+}
+
+type tickEnvelope struct {
+	mu    sync.Mutex
+	bytes int64
+	items map[string]int
+}
+
+type batchResult struct {
+	progress  bool
+	exhausted bool
+}
+
+func (s *Scheduler) batch(ctx context.Context, envelope *tickEnvelope) (batchResult, error) {
+	var result batchResult
 	page, err := s.registry.Page(ctx, s.cursor, TenantLimit)
 	if err != nil {
-		return fmt.Errorf("page maintenance tenants: %w", err)
+		return result, fmt.Errorf("page maintenance tenants: %w", err)
 	}
 	if len(page) > TenantLimit {
-		return errors.New("maintenance registry exceeded page budget")
+		return result, errors.New("maintenance registry exceeded page budget")
 	}
 	after := s.cursor
 	for _, tenant := range page {
 		if tenant.Organization <= after || len(tenant.Organization) > 128 || tenant.Generation <= 0 {
-			return errors.New("invalid maintenance tenant page")
+			return result, errors.New("invalid maintenance tenant page")
 		}
 		after = tenant.Organization
 	}
 	feature := s.features[s.family]
-	count := int(min(int64(len(page)), ByteLimit/feature.Bytes))
+	count := int(min(int64(len(page)), envelope.bytes/feature.Bytes))
+	for index, tenant := range page[:count] {
+		if envelope.items[tenant.Organization] >= ItemLimit {
+			count = index
+			break
+		}
+	}
+	result.exhausted = count < len(page)
 	jobs := make(chan Tenant)
 	failures := make(chan error, TenantLimit)
+	var progress atomic.Bool
 	var workers sync.WaitGroup
 	for range min(WorkerLimit, count) {
 		workers.Go(func() {
@@ -131,9 +170,28 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 					failures <- err
 					continue
 				}
-				budget := Budget{Items: ItemLimit, Bytes: feature.Bytes}
-				if err := feature.Step(budget.Context(ctx, tenant), tenant, budget); err != nil {
+				envelope.mu.Lock()
+				items := ItemLimit - envelope.items[tenant.Organization]
+				envelope.mu.Unlock()
+				budget := Budget{Items: items, Bytes: feature.Bytes}
+				allowance := &byteBudget{tenant: tenant, allowance: feature.Bytes, remaining: feature.Bytes}
+				outcome, err := feature.Step(context.WithValue(ctx, budgetKey{}, allowance), tenant, budget)
+				if err == nil && (outcome.Items < 0 || outcome.Items > budget.Items) {
+					err = errors.New("maintenance step reported items outside its budget")
+				}
+				allowance.mu.Lock()
+				consumed := allowance.allowance - allowance.remaining
+				allowance.mu.Unlock()
+				envelope.mu.Lock()
+				envelope.items[tenant.Organization] += max(outcome.Items, 1)
+				envelope.bytes -= consumed
+				envelope.mu.Unlock()
+				if err != nil {
 					failures <- fmt.Errorf("maintenance tenant %s feature %s: %w", tenant.Organization, feature.Name, err)
+					continue
+				}
+				if outcome.Progress {
+					progress.Store(true)
 				}
 			}
 		})
@@ -160,5 +218,6 @@ dispatch:
 	for err := range failures {
 		failure = errors.Join(failure, err)
 	}
-	return errors.Join(failure, ctx.Err())
+	result.progress = progress.Load()
+	return result, failure
 }

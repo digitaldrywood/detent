@@ -274,7 +274,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 							projectWalk = true
 						}
 					})
-					if err := feature.Step(ctx, selected, budget); err != nil {
+					if _, err := feature.Step(ctx, selected, budget); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -524,7 +524,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 						selected := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
 						budget := hubmaintenance.Budget{Items: 1, Bytes: feature.Bytes}
 						for turn := range 6 {
-							err := feature.Step(budget.Context(t.Context(), selected), selected, budget)
+							_, err := feature.Step(budget.Context(t.Context(), selected), selected, budget)
 							if tc.name == "conflicting report fact" && turn%2 == 0 {
 								if !errors.Is(err, corestore.ErrRevisionConflict) {
 									t.Fatalf("turn %d: conflicting immutable projection error=%v", turn, err)

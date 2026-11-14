@@ -22,7 +22,7 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 			tenant.Generation = s.config.Hosted.SharedEntry.Generation
 		}
 		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}
-		if err := s.WorkItemPageMaintenanceFeature().Step(budget.Context(ctx, tenant), tenant, budget); err != nil && !errors.Is(err, context.Canceled) {
+		if _, err := s.WorkItemPageMaintenanceFeature().Step(budget.Context(ctx, tenant), tenant, budget); err != nil && !errors.Is(err, context.Canceled) {
 			s.config.Logger.ErrorContext(ctx, "refresh work item page", "error", err)
 		}
 	}

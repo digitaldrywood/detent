@@ -27,11 +27,11 @@ func (s *Service) maintainGitHubReconciliationRecords(ctx context.Context) error
 	return s.githubReconcileService().Maintain(ctx)
 }
 func (s *Service) GitHubReconciliationMaintenanceFeature() hubmaintenance.Feature {
-	return hubmaintenance.Feature{Name: "github-reconciliation", Bytes: 4 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+	return hubmaintenance.Feature{Name: "github-reconciliation", Bytes: 4 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 		if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-			return err
+			return hubmaintenance.Outcome{}, err
 		}
-		return s.maintainGitHubReconciliationRecords(ctx)
+		return hubmaintenance.Outcome{Progress: true, Items: 1}, s.maintainGitHubReconciliationRecords(ctx)
 	}}
 }
 

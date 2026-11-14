@@ -55,20 +55,21 @@ func onboardingCredential(v projectstore.OnboardingViewer) hubapi.APICredential 
 }
 
 func (s *Service) OnboardingPageMaintenanceFeature() hubmaintenance.Feature {
-	return hubmaintenance.Feature{Name: "onboarding-pages", Bytes: integrationPageMaintenanceBytes, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+	return hubmaintenance.Feature{Name: "onboarding-pages", Bytes: integrationPageMaintenanceBytes, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
-			return err
+			return hubmaintenance.Outcome{}, err
 		}
-		return s.maintainOnboardingPage(ctx, tracker.OrganizationID(tenant.Organization))
+		worked, err := s.maintainOnboardingPage(ctx, tracker.OrganizationID(tenant.Organization))
+		return hubmaintenance.Outcome{Progress: worked, Items: 1}, err
 	}}
 }
 
-func (s *Service) maintainOnboardingPage(ctx context.Context, organization tracker.OrganizationID) error {
+func (s *Service) maintainOnboardingPage(ctx context.Context, organization tracker.OrganizationID) (bool, error) {
 	if err := hubmaintenance.RequireAllowance(ctx, string(organization), integrationPageMaintenanceBytes); err != nil {
-		return err
+		return false, err
 	}
 	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
-		return errors.New("maintenance requires byte-limited payload storage")
+		return false, errors.New("maintenance requires byte-limited payload storage")
 	}
 	var candidate projectstore.OnboardingCandidate
 	err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
@@ -81,12 +82,12 @@ func (s *Service) maintainOnboardingPage(ctx context.Context, organization track
 		return err
 	})
 	if err != nil || candidate.ProjectID == "" {
-		return err
+		return false, err
 	}
 	value, err := s.projectOnboardingRecord(ctx, hubscope.NativeScope{Organization: organization, Project: candidate.ProjectID, Credential: onboardingCredential(candidate.Viewer)})
 	var native *hubapi.NativeError
 	if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, corestore.ErrNotFound) || errors.As(err, &native) && native.Code == "not_found" {
-		return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		return true, s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 			writer, ok := w.(projectstore.OnboardingPageWriter)
 			if !ok {
 				return errors.New("onboarding page storage unavailable")
@@ -95,7 +96,7 @@ func (s *Service) maintainOnboardingPage(ctx context.Context, organization track
 		})
 	}
 	if err != nil {
-		return err
+		return true, err
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		writer, ok := w.(projectstore.OnboardingPageWriter)
@@ -107,7 +108,7 @@ func (s *Service) maintainOnboardingPage(ctx context.Context, organization track
 	if err == nil && s.config.Logger != nil {
 		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project onboarding page", slog.String("organization_id", string(organization)), slog.Int64("generation", candidate.Generation), slog.Duration("projection_lag", s.config.Clock().Sub(candidate.SourceAt)))
 	}
-	return err
+	return true, err
 }
 
 func (s *Service) getOnboardingPage(c echo.Context) error {

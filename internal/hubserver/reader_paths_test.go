@@ -291,7 +291,7 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 			cold := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
 			requireNativeStatus(t, cold, http.StatusOK)
 			tenant := hubmaintenance.Tenant{Organization: string(f.project.OrganizationID), Generation: 1}
-			if err := f.service.OnboardingPageMaintenanceFeature().Step((hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), tenant), tenant, hubmaintenance.Budget{}); err != nil {
+			if _, err := f.service.OnboardingPageMaintenanceFeature().Step((hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), tenant), tenant, hubmaintenance.Budget{}); err != nil {
 				t.Fatal(err)
 			}
 			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")

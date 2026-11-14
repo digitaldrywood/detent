@@ -675,26 +675,26 @@ func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
 		s.HealthPageMaintenanceFeature(),
 		s.ProjectPageMaintenanceFeature(),
 		s.UsageMaintenanceFeature(),
-		{Name: "github-intake", Bytes: 64 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+		{Name: "github-intake", Bytes: 64 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-				return err
+				return hubmaintenance.Outcome{}, err
 			}
-			return s.maintainGitHubBatches(ctx)
+			return hubmaintenance.Outcome{Progress: s.config.ImportBackend != nil, Items: 1}, s.maintainGitHubBatches(ctx)
 		}},
 		s.GitHubReconciliationMaintenanceFeature(),
-		{Name: "github-webhooks", Bytes: 4 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+		{Name: "github-webhooks", Bytes: 4 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-				return err
+				return hubmaintenance.Outcome{}, err
 			}
-			return s.maintainGitHubWebhookRecords(ctx)
+			return hubmaintenance.Outcome{Progress: true, Items: 1}, s.maintainGitHubWebhookRecords(ctx)
 		}},
-		{Name: "board", Bytes: BoardMaintenanceBytes, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+		{Name: "board", Bytes: BoardMaintenanceBytes, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-				return err
+				return hubmaintenance.Outcome{}, err
 			}
-			next, _, err := s.MaintainBoardRecord(ctx, tracker.OrganizationID(selected.Organization), after)
+			next, processed, err := s.MaintainBoardRecord(ctx, tracker.OrganizationID(selected.Organization), after)
 			after = next
-			return err
+			return hubmaintenance.Outcome{Progress: processed, Items: 1}, err
 		}},
 	})
 }

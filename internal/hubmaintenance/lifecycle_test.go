@@ -14,11 +14,11 @@ func TestCancellationJoinsExactlyTwoWorkersAndRejectsOverlap(t *testing.T) {
 		defer cancel()
 		started := make(chan struct{}, TenantLimit)
 		exited := make(chan struct{}, TenantLimit)
-		scheduler, err := New(registry(100), []Feature{{Name: "board", Bytes: 1, Step: func(ctx context.Context, _ Tenant, _ Budget) error {
+		scheduler, err := New(registry(100), []Feature{{Name: "board", Bytes: 1, Step: func(ctx context.Context, _ Tenant, _ Budget) (Outcome, error) {
 			started <- struct{}{}
 			<-ctx.Done()
 			exited <- struct{}{}
-			return ctx.Err()
+			return Outcome{}, ctx.Err()
 		}}})
 		if err != nil {
 			t.Fatal(err)
@@ -46,7 +46,7 @@ func TestRunUsesOneJitteredWakeAndKeepsWorkingAfterErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	failure := errors.New("candidate unavailable")
-	scheduler, err := New(registry(1), []Feature{{Name: "board", Bytes: 1, Step: func(context.Context, Tenant, Budget) error { return failure }}})
+	scheduler, err := New(registry(1), []Feature{{Name: "board", Bytes: 1, Step: func(context.Context, Tenant, Budget) (Outcome, error) { return Outcome{}, failure }}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -100,12 +100,12 @@ func TestPostgresVisitsOneItemPerTenantWithBoundedExchanges(t *testing.T) {
 		}
 		return tenants, rows.Err()
 	})
-	scheduler, err := New(registry, []Feature{{Name: "board", Bytes: 1024, Step: func(ctx context.Context, tenant Tenant, _ Budget) error {
+	scheduler, err := New(registry, []Feature{{Name: "board", Bytes: 1024, Step: func(ctx context.Context, tenant Tenant, _ Budget) (Outcome, error) {
 		work := &pgx.Batch{}
 		work.Queue(`UPDATE maintenance_items SET visits=visits+1 WHERE id=(SELECT id FROM maintenance_items WHERE visits=0 ORDER BY id LIMIT 1) RETURNING organization_id,id`)
 		tx, results, err := pools.BeginBatch(ctx, pgtransport.Scope{Organization: tracker.OrganizationID(tenant.Organization)}, pgtransport.Options{}, work)
 		if err != nil {
-			return err
+			return Outcome{}, err
 		}
 		defer func() {
 			if err := tx.Rollback(ctx); err != nil {
@@ -115,15 +115,15 @@ func TestPostgresVisitsOneItemPerTenantWithBoundedExchanges(t *testing.T) {
 		var org string
 		var id int
 		if err := results.QueryRow().Scan(&org, &id); err != nil {
-			return errors.Join(err, results.Close())
+			return Outcome{}, errors.Join(err, results.Close())
 		}
 		if org != tenant.Organization || id < 1 || id > 2 {
-			return errors.New("cross-tenant maintenance result")
+			return Outcome{}, errors.New("cross-tenant maintenance result")
 		}
 		if err := results.Close(); err != nil {
-			return err
+			return Outcome{}, err
 		}
-		return tx.Commit(ctx)
+		return Outcome{Progress: true, Items: 1}, tx.Commit(ctx)
 	}}})
 	if err != nil {
 		t.Fatal(err)

@@ -31,7 +31,7 @@ func TestBusyAndFailingTenantsCannotStarveCircularTraversal(t *testing.T) {
 	var mu sync.Mutex
 	visits := make(map[string]int)
 	failure := errors.New("candidate unavailable")
-	scheduler, err := New(registry(10000), []Feature{{Name: "board", Bytes: 1, Step: func(_ context.Context, tenant Tenant, budget Budget) error {
+	scheduler, err := New(registry(10000), []Feature{{Name: "board", Bytes: 1, Step: func(_ context.Context, tenant Tenant, budget Budget) (Outcome, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		visits[tenant.Organization]++
@@ -39,9 +39,9 @@ func TestBusyAndFailingTenantsCannotStarveCircularTraversal(t *testing.T) {
 			t.Errorf("invalid visit: %+v %+v", tenant, budget)
 		}
 		if tenant.Organization == "org_00000" {
-			return failure
+			return Outcome{}, failure
 		}
-		return nil
+		return Outcome{Progress: true, Items: 1}, nil
 	}}})
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestByteBudgetRetainsUndispatchedTenantsAndRotatesFeatures(t *testing.T) {
 	visits := make(map[string]map[string]int)
 	var features []Feature
 	for _, name := range []string{"board", "billing", "metrics"} {
-		features = append(features, Feature{Name: name, Bytes: ByteLimit / 2, Step: func(_ context.Context, tenant Tenant, budget Budget) error {
+		features = append(features, Feature{Name: name, Bytes: ByteLimit / 2, Step: func(_ context.Context, tenant Tenant, budget Budget) (Outcome, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			if visits[tenant.Organization] == nil {
@@ -76,7 +76,7 @@ func TestByteBudgetRetainsUndispatchedTenantsAndRotatesFeatures(t *testing.T) {
 			if budget.Bytes != ByteLimit/2 {
 				t.Errorf("wrong byte allowance: %d", budget.Bytes)
 			}
-			return nil
+			return Outcome{Progress: true, Items: 1}, nil
 		}})
 	}
 	scheduler, err := New(registry(5), features)
@@ -100,9 +100,9 @@ func TestByteBudgetRetainsUndispatchedTenantsAndRotatesFeatures(t *testing.T) {
 func TestMalformedRegistryPageFailsBeforeDispatch(t *testing.T) {
 	for _, page := range [][]Tenant{{{Organization: "org_a"}}, {{Organization: "org_b", Generation: 1}, {Organization: "org_a", Generation: 1}}} {
 		t.Run(fmt.Sprint(page), func(t *testing.T) {
-			scheduler, err := New(registryFunc(func(context.Context, string, int) ([]Tenant, error) { return page, nil }), []Feature{{Name: "metrics", Bytes: 1, Step: func(context.Context, Tenant, Budget) error {
+			scheduler, err := New(registryFunc(func(context.Context, string, int) ([]Tenant, error) { return page, nil }), []Feature{{Name: "metrics", Bytes: 1, Step: func(context.Context, Tenant, Budget) (Outcome, error) {
 				t.Error("dispatched malformed authority")
-				return nil
+				return Outcome{}, nil
 			}}})
 			if err != nil {
 				t.Fatal(err)
