@@ -18048,6 +18048,18 @@
         ]
       }
     },
+    "internal/hubserver/postgres/relationshipreads/reads.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/relationships.go": {
       "disposition": "target-adapter",
       "families": [
@@ -18067,8 +18079,6 @@
           "session.LockWorkItems:query-receiver": 1,
           "session.ProgressDependencies:Query": 1,
           "session.ProgressDependencies:SQL": 1,
-          "session.RelatedProjects:generated:RelatedProjects": 1,
-          "session.RelatedProjects:query-receiver": 1,
           "session.RelationshipExists:QueryRow": 1,
           "session.RelationshipExists:SQL": 1,
           "session.RemoveOwnedDependencies:Exec": 1,
@@ -18089,9 +18099,7 @@
           "session.checkDependencyCycle:SQL": 1,
           "session.expireProgressDependencies:Exec": 1,
           "session.expireProgressDependencies:Query": 1,
-          "session.expireProgressDependencies:SQL": 2,
-          "session.relationshipPage:generated:RelationshipPage": 1,
-          "session.relationshipPage:query-receiver": 1
+          "session.expireProgressDependencies:SQL": 2
         },
         "tables": [
           "hub/issue_dependencies",
@@ -20065,11 +20073,8 @@
       ],
       "inventory": {
         "operations": {
-          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.RelationshipProjects:Query": 1,
-          "session.RelationshipProjects:SQL": 1,
-          "session.WorkItemRelationshipFacts:generated:RelationshipBatch": 1,
-          "session.WorkItemRelationshipFacts:query-receiver": 1
+          "session.RelationshipProjects:SQL": 1
         },
         "tables": [
           "hub/hosted_project_grants",

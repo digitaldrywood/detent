@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/relationshipreads"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -28,20 +29,6 @@ func (s *session) WorkItemBlockers(ctx context.Context, project tracker.ProjectI
 		result[i] = corestore.WorkItemBlocker{WorkItemReference: corestore.WorkItemReference{ProjectID: tracker.ProjectID(row.BlockerProjectID), WorkItemID: row.NativeID}, IssueID: row.BlockerIssueID, NativeSourceKey: row.NativeSourceKey}
 	}
 	return result, nil
-}
-
-func relationshipState(state *string) string {
-	if state == nil {
-		return ""
-	}
-	return *state
-}
-
-func relationshipTime(value time.Time) *time.Time {
-	if value.IsZero() {
-		return nil
-	}
-	return &value
 }
 
 func (s *session) RelationshipExists(ctx context.Context, relationship corestore.Relationship) (bool, error) {
@@ -72,73 +59,15 @@ AND target.organization_id=$1 AND target.project_id=$4 AND target.native_id=$5`,
 }
 
 func (s *session) Relationships(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.RelationshipCursor, limit int) (corestore.RelationshipPage, error) {
-	return s.relationshipPage(ctx, project, item, cursor, limit, nil, nil)
+	return relationshipreads.Page(ctx, s.transactionHandle(), project, item, cursor, limit, nil, nil)
 }
 
 func (s *session) RelatedProjects(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) ([]tracker.ProjectID, error) {
-	rows, err := s.queries.RelatedProjects(ctx, pgquery.RelatedProjectsParams{OrganizationID: s.organization, ProjectID: string(project), NativeID: item})
-	projects := make([]tracker.ProjectID, len(rows))
-	for i, row := range rows {
-		projects[i] = tracker.ProjectID(row)
-	}
-	return projects, mapError(ctx, err)
+	return relationshipreads.RelatedProjects(ctx, s.transactionHandle(), project, item)
 }
 
 func (s *session) VisibleRelationships(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.RelationshipCursor, limit int, visibility corestore.RelationshipVisibility) (corestore.RelationshipPage, error) {
-	visible := make([]string, len(visibility.Projects))
-	for i, related := range visibility.Projects {
-		visible[i] = string(related)
-	}
-	return s.relationshipPage(ctx, project, item, cursor, limit, visible, visibility.Reporter)
-}
-
-func (s *session) relationshipPage(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.RelationshipCursor, limit int, visibleProjects []string, reporter *string) (corestore.RelationshipPage, error) {
-	if err := checkPage(limit); err != nil {
-		return corestore.RelationshipPage{}, err
-	}
-	rows, err := s.queries.RelationshipPage(ctx, pgquery.RelationshipPageParams{
-		OrganizationID:      s.organization,
-		AfterType:           cursor.Type,
-		AfterDirection:      cursor.Direction,
-		AfterProjectID:      string(cursor.RelatedProjectID),
-		AfterNativeID:       string(cursor.RelatedWorkItemID),
-		PageLimit:           int32(limit + 1),
-		ProjectID:           string(project),
-		NativeID:            item,
-		VisibleProjectIds:   visibleProjects,
-		ReporterPrincipalID: reporter,
-	})
-	if err != nil {
-		return corestore.RelationshipPage{}, mapError(ctx, err)
-	}
-	page := corestore.RelationshipPage{Items: make([]corestore.Relationship, 0, min(limit, len(rows)))}
-	for _, row := range rows[:min(limit, len(rows))] {
-		page.Items = append(page.Items, corestore.Relationship{
-			OrganizationID:    s.organization,
-			ProjectID:         project,
-			WorkItemID:        item,
-			RelatedProjectID:  tracker.ProjectID(row.RelatedProjectID),
-			RelatedWorkItemID: row.NativeID,
-			Type:              row.RelationshipType,
-			Direction:         row.Direction,
-			CreatedAt:         row.CreatedAt,
-			Number:            int(row.Number),
-			Title:             row.Title,
-			State:             relationshipState(row.WorkflowStateName),
-			Terminal:          row.Terminal,
-			Dispatchable:      row.Dispatchable,
-			ActorPrincipalID:  row.ActorPrincipalID,
-			OrganizationSlug:  row.OrganizationSlug,
-			ProjectSlug:       row.ProjectSlug,
-			ClosedAt:          relationshipTime(row.ClosedAt),
-			StartedAt:         relationshipTime(row.StartedAt),
-		})
-	}
-	if len(rows) > limit {
-		last := page.Items[len(page.Items)-1]
-		page.Next = corestore.RelationshipCursor{Type: last.Type, Direction: last.Direction, RelatedProjectID: last.RelatedProjectID, RelatedWorkItemID: last.RelatedWorkItemID}
-	}
-	return page, nil
+	return relationshipreads.Visible(ctx, s.transactionHandle(), project, item, cursor, limit, visibility)
 }
 
 func (s *session) LockRelationshipGraph(ctx context.Context) error {
