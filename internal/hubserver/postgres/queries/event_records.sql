@@ -357,13 +357,15 @@ WITH scoped AS NOT MATERIALIZED (
  ORDER BY review_kind,sequence DESC
 ), audit_block AS (
  SELECT * FROM scoped WHERE kind='review' AND review_kind='security_audit' AND decision='changes_requested' ORDER BY sequence DESC LIMIT 1
+), landing_review AS (
+ SELECT * FROM scoped WHERE kind='review' AND review_kind='security_audit' AND review_landing ORDER BY sequence DESC LIMIT 1
 ), other AS (
  SELECT * FROM scoped WHERE kind='review' AND review_kind='' ORDER BY sequence LIMIT 201
 ), checks AS (
  SELECT * FROM scoped WHERE kind='check' AND source_key=ANY(sqlc.arg(check_ids)::text[])
 )
 SELECT * FROM (
- SELECT * FROM human_decisions UNION SELECT * FROM recovery_humans UNION SELECT * FROM machine_latest UNION SELECT * FROM audit_block UNION SELECT * FROM other UNION SELECT * FROM checks
+ SELECT * FROM human_decisions UNION SELECT * FROM recovery_humans UNION SELECT * FROM machine_latest UNION SELECT * FROM audit_block UNION SELECT * FROM landing_review UNION SELECT * FROM other UNION SELECT * FROM checks
 ) selected ORDER BY sequence;
 
 -- name: RecordChangePriorApproval :one
