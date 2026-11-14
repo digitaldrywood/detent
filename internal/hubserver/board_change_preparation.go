@@ -6,12 +6,14 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -122,6 +124,41 @@ func (p boardChangePreparation) summary(ctx context.Context, s *Service, scope h
 	detail, err := s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, *row.Change, row.Version, p.policy, now, &row, p.approval, p.workload)
 	return detail.Summary, err
 }
+func (p boardChangePreparation) evaluate(ctx context.Context, s *Service, scope hubscope.NativeScope, item tracker.NativeWorkItemID, id string, now time.Time) (tracker.ChangeSummary, *viewstore.BoardChangeProvenance, error) {
+	if p.err != nil {
+		return tracker.ChangeSummary{}, nil, hubapi.ProjectRecordError(p.err)
+	}
+	row, ok := p.rows[tenantstore.BoardChangeRequest{WorkItemID: item, ChangeID: id}]
+	if !ok || row.Change == nil {
+		return tracker.ChangeSummary{}, nil, hubapi.NativeNotFound()
+	}
+	if row.Change.CurrentVersionID != nil && row.Version == nil {
+		return tracker.ChangeSummary{}, nil, hubapi.ProjectRecordError(corestore.ErrNotFound)
+	}
+	detail, err := s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, *row.Change, row.Version, p.policy, now, &row, p.approval, p.workload)
+	if err != nil {
+		return tracker.ChangeSummary{}, nil, err
+	}
+	if len(detail.Versions) == 0 {
+		return detail.Summary, &viewstore.BoardChangeProvenance{BaseStatus: detail.Summary.Status}, nil
+	}
+	version := detail.Versions[0]
+	provenance := &viewstore.BoardChangeProvenance{VersionID: version.ID, PolicyID: version.PolicyID, ReviewPolicyID: version.ReviewPolicy.ID, BaseStatus: detail.Summary.Status}
+	if p.approval != nil {
+		policyID, reviewID := changerequest.CurrentPolicyIdentities(&version, p.approval.Policy, p.approval.ReviewPolicy)
+		if policyID == version.PolicyID && reviewID == version.ReviewPolicy.ID {
+			return detail.Summary, provenance, nil
+		}
+	}
+	own := hubrecords.ChangeVersionApproval{Policy: version.Policy, ReviewPolicy: version.ReviewPolicy}
+	base, err := s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, *row.Change, row.Version, p.policy, now, &row, &own, p.workload)
+	if err != nil {
+		return tracker.ChangeSummary{}, nil, err
+	}
+	provenance.BaseStatus = base.Summary.Status
+	return detail.Summary, provenance, nil
+}
+
 func boardCurrentApproval(ctx context.Context, content *eventstore.Content, scope hubscope.NativeScope, rows hubrecords.CurrentChangePolicyRows, approval *hubrecords.ChangeVersionApproval) (hubrecords.ChangeVersionApproval, error) {
 	if approval != nil {
 		return *approval, nil

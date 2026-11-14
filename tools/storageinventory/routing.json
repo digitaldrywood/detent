@@ -12319,6 +12319,20 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261114131438_board_change_provenance.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "board"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_board_items"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [

@@ -33,6 +33,14 @@ type BoardDisplay struct {
 	Attempt           *tracker.NativeBoardAttempt
 	Execution         *tracker.NativeBoardExecution
 	Change            *tracker.NativeBoardChange
+	ChangeProvenance  *BoardChangeProvenance
+}
+
+type BoardChangeProvenance struct {
+	VersionID      string
+	PolicyID       string
+	ReviewPolicyID string
+	BaseStatus     string
 }
 
 type BoardReporterRelations struct {

@@ -430,6 +430,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 				card.Change.External = &tracker.ChangeExternalReference{Provider: v.ExternalProvider, ID: v.ExternalID, URL: v.ExternalURL}
 			}
 		}
+		var changeProvenance *viewstore.BoardChangeProvenance
 		if card.Change != nil {
 			scope := hubscope.NativeScope{Organization: organization, Project: candidate.ProjectID}
 			step = "change_rows"
@@ -444,15 +445,19 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 				card.Change, snapshot.changePrincipalID = nil, ""
 			} else {
 				step = "change_summary"
-				summary, err := changes.summary(ctx, s, scope, candidate.WorkItemID, card.Change.ID, now)
+				summary, provenance, err := changes.evaluate(ctx, s, scope, candidate.WorkItemID, card.Change.ID, now)
 				if err != nil {
 					return err
 				}
 				card.Change.Status = summary.Status
+				changeProvenance = provenance
 			}
 		}
 		card.StatusLine = nativeBoardStatusLine(card)
 		record := boardProjectionRecord(snapshot, card)
+		if card.Change != nil {
+			record.Display.ChangeProvenance = changeProvenance
+		}
 		record.ProjectedAt = now
 		issue.WebURL = hubrecords.IssueBrowserPath(snapshot.organizationSlug, snapshot.project.Core.Slug, issue.Number)
 		step = "issue_change"
