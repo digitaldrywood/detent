@@ -156,6 +156,7 @@ func (s *Service) workItemResource(ctx context.Context, scope hubscope.NativeSco
 	}
 
 	var issue tracker.NativeIssue
+	var source eventstore.LinkedSource
 	project, err := s.readTenantProjectRecord(ctx, scope)
 	if err != nil {
 		return issue, err
@@ -165,14 +166,15 @@ func (s *Service) workItemResource(ctx context.Context, scope hubscope.NativeSco
 	} else {
 		err = s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
 			var err error
-			issue, err = s.readWorkItemPageModel(ctx, scope, id)
+			issue, source, err = s.readWorkItemPageModel(ctx, scope, id)
 			return err
 		})
+		if err == nil {
+			issue, err = s.workItemReader().LinkSource(ctx, scope.Organization, issue, source)
+		}
 	}
 	if pageModelPending(err) {
 		issue, err = s.readWorkItemSourcePage(ctx, scope, id)
-	} else if err == nil {
-		err = s.hydrateWorkItemActorNames(ctx, scope.Organization, []*tracker.NativeIssue{&issue})
 	}
 	if err == nil {
 		issue.Queue, issue.Workpad = nil, nil
@@ -193,10 +195,10 @@ func (s *Service) workItemResource(ctx context.Context, scope hubscope.NativeSco
 	return issue, err
 }
 
-func (s *Service) readWorkItemPageModel(ctx context.Context, scope hubscope.NativeScope, id string) (tracker.NativeIssue, error) {
-
+func (s *Service) readWorkItemPageModel(ctx context.Context, scope hubscope.NativeScope, id string) (tracker.NativeIssue, eventstore.LinkedSource, error) {
+	var source eventstore.LinkedSource
 	if err := s.authorizeCommentWorkItem(ctx, scope, id); err != nil {
-		return tracker.NativeIssue{}, err
+		return tracker.NativeIssue{}, source, err
 	}
 	var record viewstore.ItemPageRecord
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -215,18 +217,16 @@ func (s *Service) readWorkItemPageModel(ctx context.Context, scope hubscope.Nati
 		if err != nil {
 			return err
 		}
-		head, err := r.BoardSequence(ctx, scope.Project)
-		if err != nil {
-			return err
+		source, err = r.LinkedSource(ctx, scope.Project, tracker.NativeWorkItemID(id))
+		if errors.Is(err, corestore.ErrNotFound) {
+			source, err = eventstore.LinkedSource{}, nil
 		}
-		record.Value.ChangeSequence = head.Sequence
-		record.Value.OmittedFields = slices.DeleteFunc(slices.Clone(record.Value.OmittedFields), func(field string) bool { return field == "change_sequence" })
-		return nil
+		return err
 	})
-	if err != nil {
-		return tracker.NativeIssue{}, hubapi.ProjectRecordError(err)
+	if err == nil {
+		err = s.workItemReader().Complete(ctx, scope, &record.Value)
 	}
-	return scope.ReporterIssue(record.Value), nil
+	return record.Value, source, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) GetWorkItemReferences(c echo.Context) error {
@@ -471,7 +471,7 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope hubscope.Nat
 			issue.Title, issue.State, issue.Archived = current.Title, hubapi.StringValue(current.WorkflowStateName), current.Archived
 			issue.Type, issue.Priority = current.IssueType, current.Priority
 			issue.Actor.Kind, issue.Actor.PrincipalID = hubapi.StringValue(current.ActorKind), hubapi.StringValue(current.ActorPrincipalID)
-			issue.CreatedAt, issue.UpdatedAt, issue.LastActivityAt = current.NativeCreatedAt, current.NativeUpdatedAt, current.LastActivityAt
+			issue.LastActivityAt = current.LastActivityAt
 			if currentSource.OrganizationID == "" {
 				issue.LinkedSource = nil
 			} else {
@@ -495,23 +495,9 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope hubscope.Nat
 		}); err != nil {
 			return err
 		}
-		if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue); err != nil {
-			return err
-		}
-		if err := s.hydrateWorkItemActorNames(ctx, scope.Organization, []*tracker.NativeIssue{&issue}); err != nil {
-			return err
-		}
-		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-			head, err := r.BoardSequence(ctx, scope.Project)
-			if err != nil {
-				return err
-			}
-			issue.ChangeSequence = head.Sequence
-			issue.OmittedFields = slices.DeleteFunc(slices.Clone(issue.OmittedFields), func(field string) bool { return field == "change_sequence" })
-			return nil
-		})
+		return s.workItemReader().Complete(ctx, scope, &issue)
 	})
-	return scope.ReporterIssue(issue), hubapi.ProjectRecordError(err)
+	return issue, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) hydrateWorkItemWorkpad(ctx context.Context, scope hubscope.NativeScope, issue *tracker.NativeIssue) error {

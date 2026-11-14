@@ -184,7 +184,8 @@ func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope 
 	page := workItemRelationshipPage{
 		Dependencies: []tracker.NativeWorkItemID{},
 		Blockers:     []tracker.NativeDependency{},
-		References:   item.ExternalReferences,
+		Dependents:   []tracker.NativeDependency{},
+		References:   append([]tracker.ExternalReference{}, item.ExternalReferences...),
 		Related:      []tracker.NativeDependency{},
 	}
 	params := url.Values{"reference": {request.Reference}}
