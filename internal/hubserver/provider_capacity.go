@@ -169,7 +169,7 @@ func validateTenantProviderAttempt(ctx context.Context, reader tenantstore.Reade
 		if !report.Supports(reservation.Requirement) || report.Provider != reservation.Report.Provider || report.AccountAlias != reservation.Report.AccountAlias || report.SharedAccountAlias != reservation.Report.SharedAccountAlias {
 			continue
 		}
-		used, err := reader.ProviderReservationUsage(ctx, report, runnerID, now)
+		used, err := reader.ProviderReservationUsage(ctx, report, runnerID, "", now)
 		if err != nil {
 			return err
 		}

@@ -187,7 +187,7 @@ type Reader interface {
 	QueueEntry(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (QueueEntry, error)
 	IsWorkspaceWorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (bool, error)
 	ProviderReservation(context.Context, tracker.LeaseID) (ProviderReservation, error)
-	ProviderReservationUsage(context.Context, providercapacity.Report, string, time.Time) (int, error)
+	ProviderReservationUsage(context.Context, providercapacity.Report, string, string, time.Time) (int, error)
 	LandingCapacityUsage(context.Context, tracker.ProjectID, time.Time) (LandingCapacityUsage, error)
 	LandingCapacityUsageExcludingLease(context.Context, tracker.ProjectID, time.Time, string) (LandingCapacityUsage, error)
 	ClaimCapacityUsage(context.Context, string, string, tracker.ProjectID, string, time.Time) (CapacityUsage, error)

@@ -1047,7 +1047,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		used, err := reader.ProviderReservationUsage(t.Context(), report, r.binding.RunnerID, f.service.config.Clock())
+		used, err := reader.ProviderReservationUsage(t.Context(), report, r.binding.RunnerID, "", f.service.config.Clock())
 		if err != nil {
 			return err
 		}

@@ -124,17 +124,20 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 	return row, nil
 }
 
-func (s *session) ProviderReservationUsage(ctx context.Context, report providercapacity.Report, runnerID string, now time.Time) (int, error) {
+func (s *session) ProviderReservationUsage(ctx context.Context, report providercapacity.Report, runnerID, joining string, now time.Time) (int, error) {
 	if runnerID == "" || report.Provider == "" || report.AccountAlias == "" || now.IsZero() {
 		return 0, claimstore.ErrInvalidCandidateFact
 	}
 	var used int
-	err := s.db.QueryRow(ctx, `SELECT count(*)
+	err := s.db.QueryRow(ctx, `SELECT count(DISTINCT slot.key)-count(DISTINCT slot.key) FILTER (WHERE slot.key=$7)
 		FROM provider_reservations p
 		JOIN leases l ON l.organization_id=p.organization_id AND l.lease_id=p.lease_id
+		JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 		JOIN runner_lease_assignments lr ON lr.organization_id=l.organization_id AND lr.lease_id=l.lease_id
+		CROSS JOIN LATERAL (SELECT CASE WHEN p.requirement_backend='git' AND p.requirement_role='merge' AND l.session_id ~ '^landing/[^/]+/[^/]+$'
+			THEN l.machine_id||'/'||i.project_id||'/'||split_part(l.session_id,'/',2)||'/'||lr.runner_id ELSE l.lease_id END AS key) slot
 		WHERE p.organization_id=$1 AND p.provider=$2 AND l.released_at IS NULL AND l.expires_at>$3
-		AND (($4<>'' AND p.shared_account_alias=$4) OR ($4='' AND p.shared_account_alias='' AND lr.runner_id=$5 AND p.account_alias=$6))`, s.organization, report.Provider, now, report.SharedAccountAlias, runnerID, report.AccountAlias).Scan(&used)
+		AND (($4<>'' AND p.shared_account_alias=$4) OR ($4='' AND p.shared_account_alias='' AND lr.runner_id=$5 AND p.account_alias=$6))`, s.organization, report.Provider, now, report.SharedAccountAlias, runnerID, report.AccountAlias, joining).Scan(&used)
 	return used, mapError(ctx, err)
 }
 

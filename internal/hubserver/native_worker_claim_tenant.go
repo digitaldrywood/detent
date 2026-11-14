@@ -974,6 +974,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			landingCapacity = capacity
 		}
 		exposure := budget.CostExposure{RunnerAPI: !workspaceItem && runnerAPI}
+		joining := ""
 		if replay == nil {
 			availableCapacity, projectCapacity, projectCapacityConfigured, err := runnerClaimCapacity(identity, scope.Project, authoritativeNow)
 			if err != nil {
@@ -1010,7 +1011,6 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			if usage.Runner >= int64(availableCapacity) || projectCapacityConfigured && usage.Project >= int64(projectCapacity) {
 				return providerWait("runner_capacity", "Runner has no available execution slots")
 			}
-			joining := ""
 			if batch != "" {
 				joining = landingCapacityKey(identity.MachineID, string(scope.Project), request.SessionID)
 			}
@@ -1078,7 +1078,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 					selectionRequired = providerWait("provider_incompatible", "Work item needs local model selection before a provider reservation can be claimed")
 				}
 			} else {
-				reservation, err := selectTenantProviderReservation(ctx, w, identity, request, item.NativeID, authoritativeNow)
+				reservation, err := selectTenantProviderReservation(ctx, w, identity, request, item.NativeID, joining, authoritativeNow)
 				if err != nil {
 					return err
 				}
@@ -1270,7 +1270,7 @@ func nativeClaimSelectionSourceRevision(project projectstore.Record, policy poli
 	}{project.Core.WorkflowSourceRevision, policy.PolicyID, policy.PayloadSHA256, query, settingsRevision, contentRevision, "created_before_preferences"})
 }
 
-func selectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, request tracker.NativeClaim, item tracker.NativeWorkItemID, now time.Time) (providercapacity.Reservation, error) {
+func selectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, request tracker.NativeClaim, item tracker.NativeWorkItemID, joining string, now time.Time) (providercapacity.Reservation, error) {
 	candidate := nativeClaimProviderCandidate(request, item)
 	if candidate == nil || candidate.Revision <= 0 || candidate.Requirement.Validate() != nil {
 		return providercapacity.Reservation{}, providerWait("provider_candidate_changed", "Work item needs a current local provider selection before it can be claimed")
@@ -1296,7 +1296,11 @@ func selectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, 
 	if !capacity.SelectedReport {
 		return providercapacity.Reservation{}, providerWait("provider_incompatible", "Runner no longer advertises the selected backend and model")
 	}
-	used, err := w.ProviderReservationUsage(ctx, *selected, identity.RunnerID, now)
+	group := ""
+	if joining != "" && candidate.Requirement.Backend == "git" && candidate.Requirement.Role == "merge" {
+		group = joining + "/" + identity.RunnerID
+	}
+	used, err := w.ProviderReservationUsage(ctx, *selected, identity.RunnerID, group, now)
 	if err != nil {
 		return providercapacity.Reservation{}, err
 	}

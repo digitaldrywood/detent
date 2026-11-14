@@ -15853,6 +15853,7 @@
           "session.ProviderReservationUsage:SQL": 1
         },
         "tables": [
+          "hub/issues",
           "hub/leases",
           "hub/provider_reservations"
         ]
