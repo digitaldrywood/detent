@@ -416,8 +416,22 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 	currentAttemptID := hubapi.NewID("attempt")
 	started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "human-current-start"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: currentAttemptID, RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: claim.ProviderCandidates[0].Requirement.Role, Backend: claim.ProviderCandidates[0].Requirement.Backend, Model: claim.ProviderCandidates[0].Requirement.Model}}}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, started), http.StatusOK)
-	for _, state := range []string{"Todo"} {
-		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, workflow(changed), owner, transition(changed, "human-active-"+state, state)), http.StatusConflict)
+	var leasesBefore int
+	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3", project.OrganizationID, project.ID, issue.WorkItemID).Scan(&leasesBefore); err != nil {
+		t.Fatal(err)
+	}
+	movedResponse := performHubAPIRequest(t, service, http.MethodPost, workflow(changed), owner, transition(changed, "human-active-Todo", "Todo"))
+	requireNativeStatus(t, movedResponse, http.StatusOK)
+	var moved tracker.NativeIssue
+	decodeHubResponse(t, movedResponse, &moved)
+	if moved.State != "Todo" || moved.Revision != changed.Revision+1 {
+		t.Fatalf("human move during a live attempt did not apply: state=%s revision=%d", moved.State, moved.Revision)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, workflow(changed), owner, transition(changed, "human-active-Todo-stale", "Rework")), http.StatusConflict)
+	changed = moved
+	var leasesAfter int
+	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3", project.OrganizationID, project.ID, issue.WorkItemID).Scan(&leasesAfter); err != nil || leasesAfter != leasesBefore {
+		t.Fatalf("human move dispatched another execution: leases before=%d after=%d err=%v", leasesBefore, leasesAfter, err)
 	}
 	if err := repository.ReadTenant(t.Context(), project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		current, err := r.Lease(t.Context(), string(lease.ID))
@@ -428,8 +442,8 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 		if err != nil {
 			return err
 		}
-		if current.ReleasedAt != nil || attempt.Status != "running" || attempt.Sequence != 1 {
-			return fmt.Errorf("human refusal changed current execution")
+		if current.ReleasedAt != nil || current.FencingToken != int64(lease.FencingToken) || attempt.Status != "running" || attempt.Sequence != 1 {
+			return fmt.Errorf("human move changed current execution")
 		}
 		return nil
 	}); err != nil {
