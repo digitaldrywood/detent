@@ -1211,6 +1211,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		}
 		input := current.ChangeVersionInput
 		input.HeadSHA, input.Source, input.Validation = strings.Repeat("7", 40), nil, nil
+		input.AttemptID, input.RunID = "", ""
 		response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "advance-after-cursor"}, ExpectedVersionID: current.ID, ChangeVersionInput: input})
 		requireNativeStatus(t, response, http.StatusOK)
 		args = base
