@@ -371,3 +371,35 @@ func TestWorkConservingSelectionStopsOnCancellationAndServesNewWork(t *testing.T
 		t.Fatalf("family that became busy served %d times in one rotation, want 1", c.steps["arriving"]-before)
 	}
 }
+
+func TestStepsNeverReceiveLessThanTheMinimumItemBudget(t *testing.T) {
+	c := newSelectionCounters()
+	var budgets []int
+	var mu sync.Mutex
+	heavy := func(_ Tenant, budget Budget) (Outcome, error) {
+		mu.Lock()
+		budgets = append(budgets, budget.Items)
+		mu.Unlock()
+		return Outcome{Items: min(budget.Items, 20)}, nil
+	}
+	scheduler, err := New(c.registry(1, one(1)), []Feature{c.feature("a", 1, heavy), c.feature("b", 1, heavy), c.feature("c", 1, heavy), c.feature("d", 1, heavy)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(budgets) != 3 || budgets[2] != ItemLimit-40 {
+		t.Fatalf("probe budgets=%v: a tenant with fewer than %d items left must not be probed", budgets, MinItems)
+	}
+	for _, items := range budgets {
+		if items < MinItems {
+			t.Fatalf("step received %d items, minimum %d", items, MinItems)
+		}
+	}
+	pageItems := 0
+	backfill := &shareQueue{backlog: 1 << 20}
+	if _, err := ShareItems(MinItems, backfill.step, (&shareQueue{backlog: 1 << 20}).step, endlessPages(&pageItems)); err != nil || backfill.used < 1 {
+		t.Fatalf("classification reserve rounded to zero at the minimum budget: used=%d err=%v", backfill.used, err)
+	}
+}

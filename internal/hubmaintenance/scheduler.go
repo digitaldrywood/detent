@@ -18,6 +18,7 @@ const (
 	ItemLimit   = 64
 	ByteLimit   = 16 << 30
 	ProbeLimit  = 4
+	MinItems    = 8
 )
 
 type Tenant struct {
@@ -153,7 +154,7 @@ func (s *Scheduler) batch(ctx context.Context, envelope *tickEnvelope) (batchRes
 	feature := s.features[s.family]
 	count := int(min(int64(len(page)), envelope.bytes/feature.Bytes))
 	for index, tenant := range page[:count] {
-		if envelope.items[tenant.Organization] >= ItemLimit {
+		if ItemLimit-envelope.items[tenant.Organization] < MinItems {
 			count = index
 			break
 		}
