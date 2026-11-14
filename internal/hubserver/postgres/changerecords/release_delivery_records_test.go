@@ -1,4 +1,4 @@
-package postgres_test
+package changerecords_test
 
 import (
 	"context"
