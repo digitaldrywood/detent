@@ -191,6 +191,12 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			}
 		}
 		return operatortool.NativeRuntimeResult(name, request, evidence)
+	case operatortool.WorkItem, operatortool.WorkExport:
+		if err := s.readOperatorItemChangeSequence(ctx, scope, &item); err != nil {
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
+		}
+	}
+	switch name {
 	case operatortool.WorkItem:
 		if request.View == "recovery" {
 			params := url.Values{"view": {"recovery"}, "limit": {"1"}, "cursor": {request.Cursor}}
@@ -505,4 +511,16 @@ func approvedReporterTemplates(ctx context.Context, organization tracker.Organiz
 		return nil, err
 	}
 	return config.ResolveReporterContracts(contract.Context)
+}
+
+func (s *Service) readOperatorItemChangeSequence(ctx context.Context, scope hubscope.NativeScope, item *tracker.NativeIssue) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		head, err := r.BoardSequence(ctx, scope.Project)
+		if err != nil {
+			return err
+		}
+		item.ChangeSequence = head.Sequence
+		item.OmittedFields = slices.DeleteFunc(slices.Clone(item.OmittedFields), func(field string) bool { return field == "change_sequence" })
+		return nil
+	})
 }
