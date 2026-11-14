@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/boardoverlay"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -268,6 +269,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		}
 	}
 	var snapshot viewstore.BoardModelPage
+	var overlay boardoverlay.Overlay
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
@@ -299,7 +301,13 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		if err != nil {
 			return err
 		}
-		return s.authorizeBoardModel(ctx, reader, scope, &snapshot)
+		if err := s.authorizeBoardModel(ctx, reader, scope, &snapshot); err != nil {
+			return err
+		}
+		if includeBoard {
+			overlay, err = boardoverlay.Read(ctx, reader, scope, snapshot.Records)
+		}
+		return err
 	})
 	if err != nil {
 		return page, nil, hubapi.ProjectRecordError(err)
@@ -438,6 +446,11 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		page.Items = append(page.Items, card.Issue)
 		returned = append(returned, row)
 		if includeBoard {
+			if card.Change != nil {
+				change := *card.Change
+				change.Status = overlay.Status(row)
+				card.Change = &change
+			}
 			page.Cards = append(page.Cards, card)
 		}
 		if oversized {

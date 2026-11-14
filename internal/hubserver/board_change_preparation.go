@@ -143,6 +143,9 @@ func (p boardChangePreparation) evaluate(ctx context.Context, s *Service, scope 
 		return detail.Summary, &viewstore.BoardChangeProvenance{BaseStatus: detail.Summary.Status}, nil
 	}
 	version := detail.Versions[0]
+	if version.PolicyID != version.Policy.ID {
+		return detail.Summary, &viewstore.BoardChangeProvenance{BaseStatus: detail.Summary.Status}, nil
+	}
 	provenance := &viewstore.BoardChangeProvenance{VersionID: version.ID, PolicyID: version.PolicyID, ReviewPolicyID: version.ReviewPolicy.ID, BaseStatus: detail.Summary.Status}
 	if p.approval != nil {
 		policyID, reviewID := changerequest.CurrentPolicyIdentities(&version, p.approval.Policy, p.approval.ReviewPolicy)
