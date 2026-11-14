@@ -56,6 +56,14 @@ func seedNotificationMembers(t *testing.T, repository *postgres.Repository, org 
 	pgstoretest.SeedTenantAccess(t, repository, org)
 	err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		for _, user := range []string{"first", "second"} {
+			member, err := w.AccessMember(t.Context(), user)
+			if err != nil {
+				return err
+			}
+			member.Role = "member"
+			if err := w.UpdateAccessMember(t.Context(), member); err != nil {
+				return err
+			}
 			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: user, ProjectID: "prj_first"}); err != nil {
 				return err
 			}
