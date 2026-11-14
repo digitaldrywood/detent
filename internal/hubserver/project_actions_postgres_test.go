@@ -236,6 +236,14 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 				if receipt.ResponseReplayUntilNs != now.Add(receiptstore.ReplayRetention).UnixNano() {
 					t.Fatalf("unexpected replay deadline: %d", receipt.ResponseReplayUntilNs)
 				}
+				var archiveID string
+				if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					object, err := r.ArchiveObjectByReference(t.Context(), eventstore.Reference(receipt.PayloadObjectKey, receipt.PayloadSHA256, receipt.PayloadBytes, receipt.PayloadContentBytes))
+					archiveID = object.ID
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
 				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 					expired, err := w.(receiptstore.RetentionWriter).ExpireReceipt(t.Context(), receipt, now.Add(receiptstore.ReplayRetention))
 					if err != nil {
@@ -264,12 +272,11 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 					if !errors.Is(err, receiptstore.ErrExpired) {
 						t.Fatalf("expired content read: %v", err)
 					}
-					object, err := r.ArchiveObjectByReference(t.Context(), eventstore.Reference(receipt.PayloadObjectKey, receipt.PayloadSHA256, receipt.PayloadBytes, receipt.PayloadContentBytes))
-					if err != nil {
-						return err
+					if object, err := r.ArchiveObjectByReference(t.Context(), eventstore.Reference(receipt.PayloadObjectKey, receipt.PayloadSHA256, receipt.PayloadBytes, receipt.PayloadContentBytes)); !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("expired response object retained: %+v %v", object, err)
 					}
 					var owners int
-					if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND archive_id=$2`, organization, object.ID).Scan(&owners); err != nil {
+					if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND archive_id=$2`, organization, archiveID).Scan(&owners); err != nil {
 						return err
 					}
 					if owners != 0 {
