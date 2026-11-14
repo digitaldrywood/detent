@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -21,13 +22,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type listRequestKey struct{}
+
 type countingDetails struct {
 	attachment.DetailStore
 	reads atomic.Int64
 }
 
 func (d *countingDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	d.reads.Add(1)
+	if ctx.Value(listRequestKey{}) != nil {
+		d.reads.Add(1)
+	}
 	return d.DetailStore.ReadDetail(ctx, organization, ref)
 }
 
@@ -77,8 +82,10 @@ func TestPlainWorkListReturnsSelectedBodiesWithinTheByteBudget(t *testing.T) {
 			seen := map[tracker.NativeWorkItemID]bool{}
 			pages := 0
 			for {
+				request := hubfixture.NewRequest(t, http.MethodGet, f.Base+"/work-items?"+params.Encode(), f.Token, nil)
+				response := httptest.NewRecorder()
 				before := details.reads.Load()
-				response := f.Request(t, http.MethodGet, f.Base+"/work-items?"+params.Encode(), nil)
+				h.Handler().ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), listRequestKey{}, true)))
 				reads := details.reads.Load() - before
 				hubfixture.RequireStatus(t, response, http.StatusOK)
 				if response.Body.Len() > operatortool.MaxResultBytes {
@@ -88,6 +95,15 @@ func TestPlainWorkListReturnsSelectedBodiesWithinTheByteBudget(t *testing.T) {
 				hubfixture.Decode(t, response, &page)
 				if len(page.Items) == 0 || len(page.Items) > limit || reads > int64(len(page.Items))+1 {
 					t.Fatalf("page %d items=%d payload reads=%d", pages, len(page.Items), reads)
+				}
+				complete := 0
+				for _, issue := range page.Items {
+					if issue.Body != "" {
+						complete++
+					}
+				}
+				if reads < int64(complete) {
+					t.Fatalf("page %d completed %d bodies with %d payload reads", pages, complete, reads)
 				}
 				for _, issue := range page.Items {
 					want, exists := bodies[issue.WorkItemID]
