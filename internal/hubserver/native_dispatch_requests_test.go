@@ -668,7 +668,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 						reply := call("tools/call", operatortool.MoveItem, map[string]any{"project_id": string(f.project.ID), "request_id": move.name, "identifier": move.identifier, "expected_revision": strconv.FormatInt(int64(before.Revision), 10), "target_state": before.State})
 						raw := hostedContextData(t, reply, true)
 						if move.denied {
-							want := operatortool.ErrAccessDenied.Error()
+							want := "work item not found in this project"
 							var result struct {
 								Content []struct{ Text string } `json:"content"`
 							}
