@@ -309,16 +309,15 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			started := make(chan struct{}, 2)
-			release := make(chan struct{})
+			started, release, abandoned := make(chan struct{}, 2), make(chan struct{}), make(chan struct{})
 			var calls atomic.Int32
 			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
 				calls.Add(1)
 				started <- struct{}{}
 				select {
 				case <-release:
-				case <-request.Context().Done():
-					return nil, request.Context().Err()
+				case <-abandoned:
+					return nil, errors.New("fixture provider abandoned")
 				}
 				if test.transportError {
 					return nil, errors.New("fixture provider failure")
@@ -326,6 +325,7 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 				return spritesTestResponse(`{"type":"complete"}`, test.status), nil
 			})}
 			f, scope, _ := newSpriteWakeFixture(t, client, true, time.Minute, "customer-host")
+			t.Cleanup(func() { close(abandoned) })
 			f.create(t, "initial")
 			waitSpriteWake(t, started)
 			done := spriteWakeDone(t, f.service, scope)
