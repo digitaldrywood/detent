@@ -97,19 +97,11 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				t.Setenv("MAKEFLAGS", "")
 				t.Setenv("MFLAGS", "")
 				source := initRunnerSourceRepo(t)
-				invariants := filepath.Join(source, "internal", "invariants")
-				if err := os.MkdirAll(invariants, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				for name, content := range map[string]string{
-					"sqlite_policy.json":  "{\"files\":{},\"modules\":{}}\n",
-					"tenancy_policy.json": "{\"test_support\":[],\"exceptions\":{},\"debt\":{}}\n",
-					"tenancy_test.go":     "package invariants\n",
-				} {
-					if err := os.WriteFile(filepath.Join(invariants, name), []byte(content), 0o600); err != nil {
-						t.Fatal(err)
-					}
-				}
+				writeRunnerFiles(t, source, map[string]string{
+					"internal/invariants/sqlite_policy.json":  "{\"files\":{},\"modules\":{}}\n",
+					"internal/invariants/tenancy_policy.json": "{\"test_support\":[],\"exceptions\":{},\"debt\":{}}\n",
+					"internal/invariants/tenancy_test.go":     "package invariants\n",
+				})
 				runRunnerGit(t, source, "add", "internal/invariants")
 				runRunnerGit(t, source, "commit", "-m", "initialize storage policy")
 				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py", "scripts/check-tenancy-policy.py", "scripts/check-landing.py"} {
@@ -120,31 +112,17 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 					if test.unsupported && !test.shadow && name == "scripts/check-landing.sh" {
 						content = append(content, []byte("\nprintf 'custom wrapper\\n'\n")...)
 					}
-					if err := os.MkdirAll(filepath.Dir(filepath.Join(source, name)), 0o700); err != nil {
-						t.Fatal(err)
-					}
-					if err := os.WriteFile(filepath.Join(source, name), content, 0o600); err != nil {
-						t.Fatal(err)
-					}
+					writeRunnerFiles(t, source, map[string]string{name: string(content)})
 					if test.shadow && name == "Makefile" {
-						if err := os.WriteFile(filepath.Join(source, "GNUmakefile"), content, 0o600); err != nil {
-							t.Fatal(err)
-						}
+						writeRunnerFiles(t, source, map[string]string{"GNUmakefile": string(content)})
 					}
 				}
-				module := "module example.test/project\n\ngo 1.26.0\ntoolchain go1.26.9\n"
-				if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte(module), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				for name, content := range map[string]string{
+				writeRunnerFiles(t, source, map[string]string{
+					"go.mod":            "module example.test/project\n\ngo 1.26.0\ntoolchain go1.26.9\n",
 					".gitignore":        "tmp/\nnode_modules/\n/static/app/conversation/\n/docs/config.md/\n",
 					".golangci-version": "v2.14.0\n",
 					"main.go":           "package main\nfunc main() {}\n",
-				} {
-					if err := os.WriteFile(filepath.Join(source, name), []byte(content), 0o600); err != nil {
-						t.Fatal(err)
-					}
-				}
+				})
 				runRunnerGit(t, source, "add", ".")
 				runRunnerGit(t, source, "commit", "-m", "landing fixture")
 				runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD~1")
@@ -353,5 +331,18 @@ fi
 				t.Fatalf("fresh acceptance review lost applicable source-review evidence: %+v", execution.validatorResult.Commands)
 			}
 		})
+	}
+}
+
+func writeRunnerFiles(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
