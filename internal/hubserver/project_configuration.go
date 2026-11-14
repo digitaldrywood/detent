@@ -519,7 +519,7 @@ func (s *Service) prepareConfigurationPayload(ctx context.Context, organization 
 	if err != nil {
 		return attachment.ArchiveReference{}, err
 	}
-	if err := s.registerChangeContent(ctx, string(organization), expected, true); err != nil {
+	if err := s.registerConfigurationContent(ctx, string(organization), expected); err != nil {
 		return attachment.ArchiveReference{}, err
 	}
 	ref, err := eventstore.NewContent(hubrecords.RunEventDetailStore{DetailStore: store}).PreparePayload(ctx, organization, raw)

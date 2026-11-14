@@ -151,6 +151,14 @@ func prepareMeteredContent(ctx context.Context, organization string, data []byte
 }
 
 func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference, billable bool) error {
+	return s.writeChangeContent(ctx, organization, ref, billable, true)
+}
+
+func (s *Service) registerConfigurationContent(ctx context.Context, organization string, ref attachment.ArchiveReference) error {
+	return s.writeChangeContent(ctx, organization, ref, true, false)
+}
+
+func (s *Service) writeChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference, billable, withinAllowance bool) error {
 	if err := ref.Validate(organization); err != nil {
 		return err
 	}
@@ -158,7 +166,7 @@ func (s *Service) registerChangeContent(ctx context.Context, organization string
 		return hubapi.AttachmentAccountingUnavailable()
 	}
 	return s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
-		return s.registerChangeContentRecord(ctx, w, organization, ref, billable)
+		return s.registerChangeContentRecord(ctx, w, organization, ref, billable, withinAllowance)
 	})
 }
 
@@ -171,7 +179,7 @@ func changeContentCompletion(ctx context.Context) bool {
 	return false
 }
 
-func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore.Writer, organization string, ref attachment.ArchiveReference, billable bool) error {
+func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore.Writer, organization string, ref attachment.ArchiveReference, billable, withinAllowance bool) error {
 	if err := ref.Validate(organization); err != nil {
 		return err
 	}
@@ -186,7 +194,7 @@ func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore
 		if err != nil {
 			return err
 		}
-		if allowance, ok := entitlement.Allowances["collaboration_bytes"]; ok && !completion {
+		if allowance, ok := entitlement.Allowances["collaboration_bytes"]; ok && !completion && withinAllowance {
 			limit = allowance
 		}
 	}

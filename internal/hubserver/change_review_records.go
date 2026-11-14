@@ -340,7 +340,7 @@ prepareReview:
 				}
 				slices.Sort(keys)
 				for _, key := range keys {
-					if err := s.registerChangeContentRecord(ctx, w, string(scope.Organization), preparedContent.prepared[key], true); err != nil {
+					if err := s.registerChangeContentRecord(ctx, w, string(scope.Organization), preparedContent.prepared[key], true, true); err != nil {
 						return err
 					}
 				}

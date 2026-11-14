@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -915,6 +916,132 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigurationPayloadsCountWithoutExhaustingStorage(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "configuration-storage")
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
+	r.enroll(t)
+	current := hubTestPolicy()
+	candidate := current
+	candidate.ConfigDigest = strings.Repeat("c", 64)
+	candidate = candidate.WithID()
+	approveHubTestPolicy(t, f.service, f.base+"/policy", current)
+	f.service.config.Hosted = &hostedplans.HostedConfig{}
+	f.service.config.Hosted.OrganizationID = string(f.project.OrganizationID)
+	configurationTestStorageLimit(t, f, 1)
+	f.service.config.Hosted = nil
+	ordinaryUploadRefused := func(t *testing.T) {
+		t.Helper()
+		_, err := prepareChangeContent(f.service.contentContext(t.Context()), string(f.project.OrganizationID), []byte(strings.Repeat("ordinary billable storage probe", 80)))
+		var quota *hostedplans.LimitError
+		if !errors.As(err, &quota) || quota.Resource != "collaboration_bytes" || quota.Allowance != 1 {
+			t.Fatalf("ordinary upload at the exhausted allowance = %v, want collaboration_bytes refusal", err)
+		}
+	}
+	charged := func(t *testing.T) int64 {
+		t.Helper()
+		var used int64
+		if err := configurationTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id = $1 AND name = 'collaboration_bytes'", f.project.OrganizationID).Scan(&used); err != nil {
+			t.Fatal(err)
+		}
+		return used
+	}
+	lastHeartbeat := func(t *testing.T) time.Time {
+		t.Helper()
+		var at time.Time
+		if err := configurationTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT last_heartbeat_at FROM runner_identities WHERE runner_id = $1", r.binding.RunnerID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	view := project.MissingConfigurationOwner(string(f.project.ID))
+	view.Authority = "hub_configuration"
+	view.SelectedPolicy = &candidate
+	heartbeat := func(t *testing.T) runnerauth.RoutingSnapshot {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
+		requireNativeStatus(t, response, http.StatusOK)
+		var snapshot runnerauth.RoutingSnapshot
+		decodeHubResponse(t, response, &snapshot)
+		return snapshot
+	}
+	ordinaryUploadRefused(t)
+	before := charged(t)
+	first := heartbeat(t)
+	if first.ProjectConfiguration == nil || first.ProjectConfiguration.EffectivePolicy == nil || first.ProjectConfiguration.EffectivePolicy.ID != current.ID {
+		t.Fatalf("first report over the storage allowance did not initialize configuration: %+v", first.ProjectConfiguration)
+	}
+	initialized := charged(t)
+	if initialized <= before || initialized <= 1 {
+		t.Fatalf("configuration initialization charged %d -> %d, want counted beyond the one-byte allowance", before, initialized)
+	}
+	view = *first.ProjectConfiguration
+	view.RunnerID, view.RuntimeRegistered, view.SelectedPolicy, view.ObservedAt = "", true, &candidate, time.Now().UTC()
+	heartbeat(t)
+	observed := charged(t)
+	view.ObservedAt = view.ObservedAt.Add(time.Second)
+	heartbeat(t)
+	if replayed := charged(t); replayed != observed {
+		t.Fatalf("unchanged observation replay charged %d -> %d", observed, replayed)
+	}
+	contexts := make(chan context.Context, 1)
+	f.service.echo.GET("/api/v2/organizations/:organization/configuration-storage-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/configuration-storage-test", testHubAdminToken, nil), http.StatusOK)
+	ctx := <-contexts
+	executor := hubProjectExecutor{f.service}
+	read := func(t *testing.T) runnerauth.ProjectConfiguration {
+		t.Helper()
+		raw, err := json.Marshal(operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.LocalProjectConfiguration, Arguments: raw})
+		var readback runnerauth.ProjectConfiguration
+		if err != nil || json.Unmarshal(result.Content, &readback) != nil {
+			t.Fatalf("configuration readback=%s %v", result.Content, err)
+		}
+		return readback
+	}
+	for _, command := range []struct {
+		name, request string
+		draining      bool
+	}{{"drain_local_project", "drain-over-allowance", true}, {"resume_local_project", "resume-over-allowance", false}} {
+		settledBefore := charged(t)
+		heartbeatBefore := lastHeartbeat(t)
+		readback := read(t)
+		raw, err := json.Marshal(operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID, ExpectedRunnerRevision: readback.RunnerRevision, RequestID: command.request, ExpectedConfigRevision: readback.ConfigRevision, ExpectedPolicyID: current.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		queued, err := executor.Execute(ctx, operatortool.Call{Name: command.name, Arguments: raw})
+		if err != nil || !strings.Contains(string(queued.Content), `"pending":true`) {
+			t.Fatalf("%s over the storage allowance was not queued: %s %v", command.name, queued.Content, err)
+		}
+		view.RequestID, view.RunnerRevision = "", 0
+		request := heartbeat(t).ProjectConfigurationRequest
+		if request == nil || request.RequestID != command.request || request.Desired == nil {
+			t.Fatalf("%s delivery over the storage allowance=%+v", command.name, request)
+		}
+		view = *request.Desired
+		view.RunnerID, view.RuntimeRegistered, view.SelectedPolicy = "", true, &candidate
+		view.RequestID, view.Saved, view.Applied, view.Paused, view.Draining = command.request, true, true, false, command.draining
+		if heartbeat(t).ProjectConfigurationRequest != nil {
+			t.Fatalf("%s acknowledgment over the storage allowance was not settled", command.name)
+		}
+		settled := read(t)
+		if settled.Pending || settled.Draining != command.draining || settled.LastOperation == nil || settled.LastOperation.RequestID != command.request || !settled.LastOperation.Applied {
+			t.Fatalf("%s settlement over the storage allowance=%+v last=%+v", command.name, settled, settled.LastOperation)
+		}
+		if charged(t) <= settledBefore {
+			t.Fatalf("%s control and settlement payloads were not counted", command.name)
+		}
+		if !lastHeartbeat(t).After(heartbeatBefore) {
+			t.Fatalf("%s heartbeats over the storage allowance did not keep the runner identity live", command.name)
+		}
+	}
+	ordinaryUploadRefused(t)
 }
 
 func configurationTestDatabase(t *testing.T, f nativeFixture) *sql.DB {
