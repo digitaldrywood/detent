@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -997,7 +998,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 		})
 	}
 	t.Cleanup(releaseWriter)
-	if _, err := hold.Exec(t.Context(), "LOCK TABLE health_findings IN SHARE MODE"); err != nil {
+	if _, err := hold.Exec(pgtest.UnboundProbe(t.Context()), "LOCK TABLE health_findings IN SHARE MODE"); err != nil {
 		t.Fatal(err)
 	}
 	writeStatement := regexp.MustCompile(`(?i)\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE)\b`)
