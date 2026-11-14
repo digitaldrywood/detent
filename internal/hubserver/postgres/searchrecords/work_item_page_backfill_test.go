@@ -160,3 +160,46 @@ func backfillPageFixture(t *testing.T, repository tenantstore.Repository, org tr
 	}
 	t.Fatal("fixture backfill did not complete")
 }
+
+func TestScheduledSourceClassificationKeepsPagesClean(t *testing.T) {
+	t.Parallel()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		dirty := func() int {
+			t.Helper()
+			var count int
+			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_work_item_page_dirty WHERE organization_id=$1`, org).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			return count
+		}
+		for _, test := range []struct {
+			name      string
+			statement string
+			dirty     bool
+		}{
+			{"issue classification", `UPDATE issues SET source_revision=revision,source_scheduled=NOT source_scheduled,source_observed_at=clock_timestamp() WHERE organization_id=$1`, false},
+			{"comment classification", `UPDATE native_comments SET source_revision=revision,source_scheduled=NOT source_scheduled,source_observed_at=clock_timestamp() WHERE organization_id=$1`, false},
+			{"issue title", `UPDATE issues SET title=title||' changed' WHERE organization_id=$1`, true},
+		} {
+			if _, err := admin.ExecContext(t.Context(), `DELETE FROM native_work_item_page_dirty WHERE organization_id=$1`, org); err != nil {
+				t.Fatal(err)
+			}
+			result, err := admin.ExecContext(t.Context(), test.statement, org)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rows, err := result.RowsAffected(); err != nil || rows == 0 {
+				t.Fatalf("%s %s updated no rows: %v", org, test.name, err)
+			}
+			if got := dirty() > 0; got != test.dirty {
+				t.Errorf("%s %s queued page work=%t want %t", org, test.name, got, test.dirty)
+			}
+		}
+	}
+}

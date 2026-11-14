@@ -12304,6 +12304,21 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261114073630_page_dirty_ignores_source_classification.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues",
+          "hub/native_comments"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
