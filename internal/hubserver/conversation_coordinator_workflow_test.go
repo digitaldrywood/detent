@@ -113,8 +113,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			if test.name == "grounded reads" || test.name == "disabled delivery" {
 				current.Gates.GitHubPullRequest = test.name == "grounded reads"
 				current.Gates.Validator = true
-				states := HostedProjectStates()
-				states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging", "Blocked"}})
+				states := append(HostedProjectStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging", "Blocked"}})
 				current.Workflow = &policy.Workflow{Source: "detent.yaml", Revision: current.SourceRevision, States: states}
 				current = current.WithID()
 			}
@@ -128,25 +127,27 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			if test.name == "approve authored policy" {
 				repository = "acme/orders"
 				selected = resolvedWorkflowPolicy(t, HostedProjectStates(), strings.Repeat("b", 40), false)
-				coordinatorFixtureProject(t, f.service, "org_security", f.project, func(row *projectstore.Record) { row.Settings.CheckoutRepository = repository })
 			}
 			coordinatorFixtureProject(t, f.service, "org_security", f.project, func(row *projectstore.Record) { row.Settings.CheckoutRepository = repository })
 			scope := "org_security/" + string(f.project)
-			if test.name == "first approval" {
-				coordinatorFixtureClearPolicyPin(t, f.service, "org_security", f.project)
-			}
 			if test.name != "first approval" {
 				if _, err := f.service.approveTestTenantPolicy(t.Context(), scope, "fixture", policy.Change{Policy: current}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project), Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", ConfigRevision: strings.Repeat("c", 64), SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.Clock()}
+			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project), Authority: "hub_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", ConfigRevision: strings.Repeat("c", 64), SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.Clock()}
 			if test.name == "uncommitted policy denied" {
 				view.Source = "configured_local_workflow_read_only"
 			}
-			post := func() {
+			post := func() (routing runnerauth.RoutingSnapshot) {
 				t.Helper()
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Workflow runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Workflow runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &routing)
+				return routing
+			}
+			if test.name != "first approval" && test.name != "missing runner owner" {
+				seedHubConfiguration(t, native, r.binding.RunnerID, view)
 			}
 			if test.name != "missing runner owner" {
 				post()
@@ -553,7 +554,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				}
 				var configuration runnerauth.ProjectConfiguration
 				decodeToolResult(t, read, &configuration)
-				if configuration.EffectivePolicy.ID != current.ID {
+				if test.name == "first approval" && configuration.EffectivePolicy.ID != "" || test.name != "first approval" && configuration.EffectivePolicy.ID != current.ID {
 					t.Fatal("approval claimed adoption")
 				}
 			}
@@ -567,10 +568,8 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				if !configuration.Pending || configuration.Applied || configuration.EffectivePolicy.ID != current.ID {
 					t.Fatalf("application not pending: %+v", configuration)
 				}
-				view.RequestID = action.RequestID
-				view.EffectivePolicy = &selected
-				view.Applied = true
-				view.Saved = true
+				view = *post().ProjectConfigurationRequest.Desired
+				view.RuntimeRegistered, view.Applied, view.Saved, view.Pending = true, true, true, false
 				post()
 				read, err = tools.handle(t.Context(), runner.AgentToolCall{Name: operatortool.LocalProjectConfiguration, Arguments: json.RawMessage(`{}`)})
 				if err != nil {
