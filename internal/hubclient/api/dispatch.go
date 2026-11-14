@@ -78,6 +78,7 @@ func (c *Client) FlushHostMetrics(ctx context.Context, summaries []hostmetrics.S
 	previous, path, supported := c.runner.heartbeat, c.runner.heartbeatPath, c.runner.hostMetricsSupported
 	previous.Problems = slices.Clone(c.runner.problems)
 	previous.SettingsRejected = c.runner.settingsRejected
+	previous.ProjectConfiguration = nil
 	c.runner.routingMu.Unlock()
 	if path == "" || !supported {
 		return nil, nil

@@ -40,6 +40,8 @@ const NativeProjectDiagnosticsCapability = "runner_project_diagnostics"
 
 const NativeProjectConfigurationCapability = "runner_project_configuration"
 
+const NativeHubProjectConfigurationCapability = "runner_hub_project_configuration"
+
 const NativeRunnerCapacityCapability = "runner_capacity_configuration"
 const NativeLocalChecksCapability = "runner_local_checks"
 const NativeProjectCheckoutCapability = "runner_project_checkout"

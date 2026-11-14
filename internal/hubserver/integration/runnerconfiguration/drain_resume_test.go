@@ -25,15 +25,17 @@ import (
 func TestMain(m *testing.M) { hubtest.Main(m) }
 
 type runnerRuntime struct {
-	mu       sync.Mutex
-	paused   bool
-	draining bool
-	applied  []string
+	mu           sync.Mutex
+	paused       bool
+	draining     bool
+	applied      []string
+	observations int
 }
 
 func (r *runnerRuntime) apply(desired runnerauth.ProjectConfiguration, requestID string) runnerauth.ProjectConfiguration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.observations++
 	r.paused, r.draining = desired.Paused, desired.Draining
 	if requestID != "" {
 		r.applied = append(r.applied, requestID)
@@ -57,6 +59,7 @@ func (r *runnerRuntime) state() (bool, []string) {
 type configuredRunner struct {
 	runtime *runnerRuntime
 	tick    func(*testing.T) error
+	flush   func(*testing.T) error
 	read    func(*testing.T) runnerauth.ProjectConfiguration
 	queue   func(*testing.T, string, string)
 	settled func(*testing.T, string, bool)
@@ -89,11 +92,13 @@ func startConfiguredRunner(t *testing.T, hub func(http.Handler) http.Handler) co
 	interval := 30 * time.Second
 	runtime := &runnerRuntime{}
 	projectID := string(f.Project.ID)
+	var client *dispatch.Client
 	start := func(t *testing.T) *dispatch.Scheduler {
 		t.Helper()
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		t.Cleanup(transport.CloseIdleConnections)
-		client, err := dispatch.New(dispatch.Config{URL: server.URL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+		started, err := dispatch.New(dispatch.Config{URL: server.URL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+		client = started
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -132,6 +137,11 @@ func startConfiguredRunner(t *testing.T, hub func(http.Handler) http.Handler) co
 	operator := hubfixture.MCP(t, f.Hub.Handler(), hubfixture.MCPPath(organization), hubfixture.AdminToken)
 	r := configuredRunner{runtime: runtime}
 	r.restart = func(t *testing.T) { scheduler = start(t) }
+	r.flush = func(t *testing.T) error {
+		t.Helper()
+		_, err := client.FlushHostMetrics(t.Context(), nil)
+		return err
+	}
 	r.tick = func(t *testing.T) error {
 		t.Helper()
 		clockMu.Lock()

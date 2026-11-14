@@ -102,7 +102,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				case r.URL.Path == "/api/v2/capabilities":
 					features := []string{"native_issues", "scoped_collaboration", "repository_policy"}
 					if test.supported {
-						features = append(features, tracker.NativeRunnerCapacityCapability, tracker.NativeRunnerUpdateCapability, tracker.NativeProjectConfigurationCapability)
+						features = append(features, tracker.NativeRunnerCapacityCapability, tracker.NativeRunnerUpdateCapability, tracker.NativeProjectConfigurationCapability, tracker.NativeHubProjectConfigurationCapability)
 					}
 					if err := json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": features}); err != nil {
 						t.Error(err)

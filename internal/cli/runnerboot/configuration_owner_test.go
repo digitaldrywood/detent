@@ -34,7 +34,7 @@ func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/capabilities"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeProviderCapacityCapability, tracker.NativeProjectConfigurationCapability}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeProviderCapacityCapability, tracker.NativeProjectConfigurationCapability, tracker.NativeHubProjectConfigurationCapability}})
 		case strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID):
 			_ = json.NewEncoder(w).Encode(identity)
 		case strings.HasSuffix(r.URL.Path, "/projects/prj_example"):

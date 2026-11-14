@@ -424,7 +424,7 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 		}
 	}
 	if machine.ProjectConfiguration != nil {
-		supported, err := c.HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
+		supported, err := c.HubFeature(ctx, tracker.NativeHubProjectConfigurationCapability)
 		if err != nil {
 			return err
 		}

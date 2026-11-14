@@ -75,7 +75,7 @@ func TestRetiredControllerCannotOverwriteReplacementWithAcknowledgment(t *testin
 				case strings.HasSuffix(request.URL.Path, "/runners/"+file.Identity.RunnerID):
 					response = file.Identity
 				case request.URL.Path == "/api/v2/capabilities":
-					response = map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability, tracker.NativeProjectConfigurationCapability}}
+					response = map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability, tracker.NativeProjectConfigurationCapability, tracker.NativeHubProjectConfigurationCapability}}
 				case strings.HasSuffix(request.URL.Path, "/projects/prj_test"):
 					response = tracker.NativeProject{Profile: "native"}
 				case strings.HasSuffix(request.URL.Path, "/heartbeat"):

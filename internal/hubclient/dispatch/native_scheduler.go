@@ -104,7 +104,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	s.mu.Unlock()
 	var ownerView *runnerauth.ProjectConfiguration
 	if projectOwner != nil && (previousConfiguration.IsZero() || !now.Before(previousConfiguration.Add(s.heartbeatInterval))) {
-		supported, err := source.NativeClient().HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
+		supported, err := source.NativeClient().HubFeature(ctx, tracker.NativeHubProjectConfigurationCapability)
 		if err != nil {
 			return err
 		}
