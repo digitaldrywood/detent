@@ -18249,7 +18249,9 @@
           "session.ReadHistory:Query": 3,
           "session.ReadHistory:SQL": 3,
           "session.ReadHistoryIssueEvents:Query": 1,
-          "session.ReadHistoryIssueEvents:SQL": 1
+          "session.ReadHistoryIssueEvents:SQL": 1,
+          "session.readHistoryCandidates:QueryRow": 1,
+          "session.readHistoryCandidates:SQL": 1
         },
         "tables": [
           "hub/collaboration_events",
@@ -18464,6 +18466,10 @@
           "session.ReadOpenFacts:SQL": 1,
           "session.ReadOverviewFacts:Query": 1,
           "session.ReadOverviewFacts:SQL": 1,
+          "session.readAttemptCandidates:QueryRow": 1,
+          "session.readAttemptCandidates:SQL": 1,
+          "session.readOpenCandidates:QueryRow": 1,
+          "session.readOpenCandidates:SQL": 1,
           "session.readOverviewCandidates:QueryRow": 1,
           "session.readOverviewCandidates:SQL": 1
         },

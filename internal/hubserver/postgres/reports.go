@@ -492,10 +492,10 @@ ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, projects, query.Principal
 func (s *session) readAttemptCandidates(ctx context.Context, from, to time.Time) ([]string, error) {
 	var exceeded bool
 	var ids []string
-	err := s.db.QueryRow(ctx, `WITH RECURSIVE machines AS (
+	err := s.db.QueryRow(ctx, `WITH RECURSIVE lease_machines AS (
  SELECT first.machine_id,1 AS depth FROM (SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 ORDER BY l.machine_id LIMIT 1) first
  UNION ALL
- SELECT next.machine_id,m.depth+1 FROM machines m CROSS JOIN LATERAL (
+ SELECT next.machine_id,m.depth+1 FROM lease_machines m CROSS JOIN LATERAL (
   SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id>m.machine_id ORDER BY l.machine_id LIMIT 1
  ) next WHERE m.depth<=$5
 ), usage_projects AS (
@@ -511,7 +511,7 @@ func (s *session) readAttemptCandidates(ctx context.Context, from, to time.Time)
   SELECT u.project_id FROM report_usage_current u WHERE u.organization_id=$1 AND u.project_id>p.project_id ORDER BY u.project_id LIMIT 1
  ) next WHERE p.depth<=$5
 ), leased AS MATERIALIZED (
- SELECT a.id FROM machines m CROSS JOIN LATERAL (
+ SELECT a.id FROM lease_machines m CROSS JOIN LATERAL (
   SELECT l.lease_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id=m.machine_id AND l.expires_at>=$2 ORDER BY l.expires_at LIMIT $4
  ) l CROSS JOIN LATERAL (
   SELECT a.id FROM native_attempts a WHERE a.organization_id=$1 AND a.lease_id=l.lease_id LIMIT 1
@@ -529,7 +529,7 @@ func (s *session) readAttemptCandidates(ctx context.Context, from, to time.Time)
 ), keyed AS (
  SELECT id FROM leased UNION SELECT attempt_id FROM evented UNION SELECT attempt_id FROM used
 )
-SELECT EXISTS(SELECT 1 FROM machines WHERE depth>$5) OR EXISTS(SELECT 1 FROM usage_projects WHERE depth>$5) OR EXISTS(SELECT 1 FROM current_projects WHERE depth>$5)
+SELECT EXISTS(SELECT 1 FROM lease_machines WHERE depth>$5) OR EXISTS(SELECT 1 FROM usage_projects WHERE depth>$5) OR EXISTS(SELECT 1 FROM current_projects WHERE depth>$5)
  OR (SELECT count(*) FROM leased)>=$4 OR (SELECT count(*) FROM evented)>=$4 OR (SELECT count(*) FROM used)>=$4,
  coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::text[])`, s.organization, from, to, maxOverviewCandidateRows+1, maxReportProjects).Scan(&exceeded, &ids)
 	if err != nil {
