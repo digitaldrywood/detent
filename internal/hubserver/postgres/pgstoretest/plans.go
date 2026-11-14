@@ -29,6 +29,9 @@ type SearchPlanNode struct {
 	Loops        float64          `json:"Actual Loops"`
 	Removed      float64          `json:"Rows Removed by Filter"`
 	IndexRemoved float64          `json:"Rows Removed by Index Recheck"`
+	Subplan      string           `json:"Subplan Name"`
+	SharedHit    float64          `json:"Shared Hit Blocks"`
+	SharedRead   float64          `json:"Shared Read Blocks"`
 	Plans        []SearchPlanNode `json:"Plans"`
 
 	rowsRounding, removedRounding, indexRemovedRounding float64
@@ -90,6 +93,21 @@ func (p SearchPlanNode) UsesIndex(name string) bool {
 		}
 	}
 	return false
+}
+
+func (p SearchPlanNode) PageVisits() float64 {
+	return p.SharedHit + p.SharedRead
+}
+
+func (p SearchPlanNode) CTERows(name string) float64 {
+	if p.Subplan == "CTE "+name {
+		return p.Rows * p.Loops
+	}
+	rows := float64(0)
+	for _, child := range p.Plans {
+		rows += child.CTERows(name)
+	}
+	return rows
 }
 
 func (p SearchPlanNode) DocumentWork() float64 {

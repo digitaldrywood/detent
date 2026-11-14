@@ -606,6 +606,14 @@ func analyzeSearchHistory(t *testing.T, f searchFixture) {
 
 func seedForeignIssueIndex(t *testing.T, f searchFixture, exemplar searchstore.Document, start, end int) {
 	t.Helper()
+	seedForeignIssueRows(t, f, exemplar, start, end)
+	if _, err := f.admin.ExecContext(t.Context(), "VACUUM (ANALYZE) search_documents, search_postings, issues"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedForeignIssueRows(t *testing.T, f searchFixture, exemplar searchstore.Document, start, end int) {
+	t.Helper()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,native_id,project_id,number,title,actor_principal_id)
  SELECT $1,'wi_foreign_'||n,'prj_second',n+10,'Repository association','other-principal' FROM generate_series($2::int,$3::int) n`, org, start, end); err != nil {
@@ -629,8 +637,5 @@ func seedForeignIssueIndex(t *testing.T, f searchFixture, exemplar searchstore.D
  WHERE d.organization_id=$1 AND d.id IN (SELECT 'foreign_'||n FROM generate_series($2::int,$3::int) n)`, org, start, end, searchstore.Prefix(org, "prj_second")+"w", words); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, err := f.admin.ExecContext(t.Context(), "VACUUM (ANALYZE) search_documents, search_postings, issues"); err != nil {
-		t.Fatal(err)
 	}
 }

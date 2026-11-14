@@ -356,17 +356,44 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 	}
 }
 
-func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
-	t.Parallel()
-	f := newSearchFixture(t)
-	d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "commonterm"}, 0)
-	f.drain(t, "org_first")
-	if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET archived=true,actor_principal_id='other-principal' WHERE organization_id='org_first' AND native_id='wi_first_1'`); err != nil {
+const searchPageBudget = 500
+
+var searchStatisticsStates = []struct{ name, statement string }{
+	{"before analyze", ""},
+	{"analyzed", "ANALYZE"},
+	{"vacuumed", "VACUUM (ANALYZE)"},
+}
+
+type searchCandidateWork struct {
+	examined, pages, candidates, windows float64
+}
+
+func measureSearchCandidates(t *testing.T, tx *sql.Tx, body string, args []any) (searchCandidateWork, []byte) {
+	t.Helper()
+	var raw []byte
+	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, args...).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='example-principal' WHERE organization_id='org_first' AND native_id='wi_first_2'`); err != nil {
+	var plan []struct{ Plan pgstoretest.SearchPlanNode }
+	if err := json.Unmarshal(raw, &plan); err != nil {
 		t.Fatal(err)
 	}
+	return searchCandidateWork{examined: plan[0].Plan.DocumentWork(), pages: plan[0].Plan.PageVisits(), candidates: plan[0].Plan.CTERows("windows"), windows: plan[0].Plan.CTERows("requested")}, raw
+}
+
+func (w searchCandidateWork) problems() []string {
+	var problems []string
+	if w.candidates > w.windows*(searchstore.CandidateLimit+searchstore.LexemeLimit) {
+		problems = append(problems, fmt.Sprintf("candidates=%.0f exceed %.0f windows", w.candidates, w.windows))
+	}
+	if w.pages > searchPageBudget {
+		problems = append(problems, fmt.Sprintf("page visits=%.0f exceed %d", w.pages, searchPageBudget))
+	}
+	return problems
+}
+
+func searchCandidateBody(t *testing.T, f searchFixture) string {
+	t.Helper()
 	var body string
 	if err := f.admin.QueryRowContext(t.Context(), `SELECT prosrc FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='search_index_candidates'`).Scan(&body); err != nil {
 		t.Fatal(err)
@@ -376,72 +403,145 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 		t.Fatal("search helper query missing")
 	}
 	body = strings.TrimSuffix(strings.TrimSpace(body), "END")
-	body = strings.TrimSuffix(strings.TrimSpace(body), ";")
-	seedForeignIssueIndex(t, f, d, 1, 200)
-	for _, size := range []int{2000, 10000} {
-		seedSearchPlanHistory(t, f, d, map[int]int{2000: 1, 10000: 2001}[size], size)
-		var pending bool
-		if err := f.admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM search_documents WHERE organization_id='org_first' AND project_id='prj_first' AND kind='issue' AND source_id='wi_first_1' AND indexed_revision<>revision)").Scan(&pending); err != nil {
-			t.Fatal(err)
-		}
-		if !pending {
-			t.Fatal("history source effects lost the pending parent")
-		}
-		for _, statement := range []string{"VACUUM (ANALYZE) search_documents", "VACUUM (ANALYZE) search_postings", "VACUUM (ANALYZE) search_scope_documents"} {
-			if _, err := f.admin.ExecContext(t.Context(), statement); err != nil {
-				t.Fatal(err)
+	return strings.TrimSuffix(strings.TrimSpace(body), ";")
+}
+
+func searchCandidateArgs(text, kind, archived string, reporter bool, cursor string) []any {
+	expression := strings.Join(searchstore.Expressions("org_first", searchstore.Query{ProjectID: "prj_first", Text: text}), " | ")
+	return []any{expression, "prj_first", []string{}, false, "", kind, "", "", archived, reporter, "example-principal", pgstoretest.HistoryAt(), cursor, int64(0),
+		searchstore.CandidateTerms("org_first", searchstore.Query{Kind: kind, ProjectID: "prj_first", Text: text}), false,
+		[]string{}, []string{}, []float64{}, []string{}, []int64{}, []bool{}}
+}
+
+func newExcludedHistoryFixture(t *testing.T) (searchFixture, searchstore.Document) {
+	t.Helper()
+	f := newSearchFixture(t)
+	d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "commonterm"}, 0)
+	f.drain(t, "org_first")
+	if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET archived=true,actor_principal_id='other-principal' WHERE organization_id='org_first' AND native_id='wi_first_1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='example-principal' WHERE organization_id='org_first' AND native_id='wi_first_2'`); err != nil {
+		t.Fatal(err)
+	}
+	return f, d
+}
+
+func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
+	t.Parallel()
+	for _, regime := range []struct {
+		name    string
+		foreign int
+	}{
+		{"tiny postings", 0}, {"shared postings", 200},
+	} {
+		t.Run(regime.name, func(t *testing.T) {
+			t.Parallel()
+			f, d := newExcludedHistoryFixture(t)
+			body := searchCandidateBody(t, f)
+			if regime.foreign > 0 {
+				seedForeignIssueRows(t, f, d, 1, regime.foreign)
 			}
-		}
-		for _, test := range []struct {
-			name, archived string
-			reporter       bool
-		}{
-			{"archived", "false", false}, {"reporter invisible", "all", true}, {"visible", "all", false},
-		} {
-			t.Run(fmt.Sprintf("%s/%d", test.name, size), func(t *testing.T) {
+			for _, size := range []int{2000, 10000} {
+				seedSearchPlanHistory(t, f, d, map[int]int{2000: 1, 10000: 2001}[size], size)
+				var pending bool
+				if err := f.admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM search_documents WHERE organization_id='org_first' AND project_id='prj_first' AND kind='issue' AND source_id='wi_first_1' AND indexed_revision<>revision)").Scan(&pending); err != nil {
+					t.Fatal(err)
+				}
+				if !pending {
+					t.Fatal("history source effects lost the pending parent")
+				}
+				for _, statistics := range searchStatisticsStates {
+					if statistics.statement != "" {
+						if _, err := f.admin.ExecContext(t.Context(), statistics.statement); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for _, test := range []struct {
+						name, archived string
+						reporter       bool
+					}{
+						{"archived", "false", false}, {"reporter invisible", "all", true}, {"visible", "all", false},
+					} {
+						t.Run(fmt.Sprintf("%s/%d/%s", test.name, size, statistics.name), func(t *testing.T) {
+							tx, err := f.admin.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+							if err != nil {
+								t.Fatal(err)
+							}
+							defer tx.Rollback()
+							if _, err := tx.ExecContext(t.Context(), `SET LOCAL ROLE detent_platform_v2; SELECT set_config('detent.organization_id','org_first',true)`); err != nil {
+								t.Fatal(err)
+							}
+							for _, cursor := range []string{"", "before-history"} {
+								for _, text := range []string{"commonterm", "common"} {
+									for _, kind := range []string{"thread", "work"} {
+										work, raw := measureSearchCandidates(t, tx, body, searchCandidateArgs(text, kind, test.archived, test.reporter, cursor))
+										key := test.name + "/" + kind + "/" + text + "/" + cursor
+										problems := work.problems()
+										if regime.foreign > 0 && work.examined > searchstore.CandidateLimit {
+											problems = append(problems, fmt.Sprintf("examined=%.0f exceed %d", work.examined, searchstore.CandidateLimit))
+										}
+										if len(problems) > 0 {
+											t.Errorf("%s history=%d %v: %s", key, size, problems, raw)
+										}
+										t.Logf("%s history=%d examined=%.0f pages=%.0f candidates=%.0f", key, size, work.examined, work.pages, work.candidates)
+									}
+								}
+							}
+							if err := tx.Commit(); err != nil {
+								t.Fatal(err)
+							}
+						})
+					}
+				}
+			}
+			page := f.find(t, "org_first", searchstore.Query{Text: "commonterm", Archived: "all", Reporter: new("example-principal")})
+			if got := searchIDs(page); fmt.Sprint(got) != "[wi_first_2]" {
+				t.Fatalf("visible result=%v", got)
+			}
+		})
+	}
+}
+
+func TestSearchCandidateWorkAcrossPlannerCrossover(t *testing.T) {
+	t.Parallel()
+	for _, foreign := range []int{0, 1, 2, 4, 8, 16, 32, 64, 200} {
+		t.Run(fmt.Sprintf("foreign=%d", foreign), func(t *testing.T) {
+			t.Parallel()
+			f, d := newExcludedHistoryFixture(t)
+			body := searchCandidateBody(t, f)
+			if foreign > 0 {
+				seedForeignIssueRows(t, f, d, 1, foreign)
+			}
+			for _, statistics := range searchStatisticsStates {
+				if statistics.statement != "" {
+					if _, err := f.admin.ExecContext(t.Context(), statistics.statement); err != nil {
+						t.Fatal(err)
+					}
+				}
 				tx, err := f.admin.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer tx.Rollback()
 				if _, err := tx.ExecContext(t.Context(), `SET LOCAL ROLE detent_platform_v2; SELECT set_config('detent.organization_id','org_first',true)`); err != nil {
 					t.Fatal(err)
 				}
-				for _, cursor := range []string{"", "before-history"} {
-					for _, text := range []string{"commonterm", "common"} {
-						for _, kind := range []string{"thread", "work"} {
-							expression := strings.Join(searchstore.Expressions("org_first", searchstore.Query{ProjectID: "prj_first", Text: text}), " | ")
-							args := []any{expression, "prj_first", []string{}, false, "", kind, "", "", test.archived, test.reporter, "example-principal", pgstoretest.HistoryAt(), cursor, int64(0)}
-							if strings.Contains(body, "$15") {
-								args = append(args, searchstore.CandidateTerms("org_first", searchstore.Query{Kind: kind, ProjectID: "prj_first", Text: text}), false)
-							}
-							args = append(args, []string{}, []string{}, []float64{}, []string{}, []int64{}, []bool{})
-							var raw []byte
-							if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, args...).Scan(&raw); err != nil {
-								t.Fatal(err)
-							}
-							var plan []struct{ Plan pgstoretest.SearchPlanNode }
-							if err := json.Unmarshal(raw, &plan); err != nil {
-								t.Fatal(err)
-							}
-							work := plan[0].Plan.DocumentWork()
-							key := test.name + "/" + kind + "/" + text + "/" + cursor
-							if work > searchstore.CandidateLimit {
-								t.Errorf("%s history=%d examined=%.0f: %s", kind, size, work, raw)
-							}
-							t.Logf("%s history=%d examined=%.0f", key, size, work)
-						}
-					}
-				}
-				if err := tx.Commit(); err != nil {
+				var postings int
+				if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM search_postings").Scan(&postings); err != nil {
 					t.Fatal(err)
 				}
-			})
-		}
-	}
-	page := f.find(t, "org_first", searchstore.Query{Text: "commonterm", Archived: "all", Reporter: new("example-principal")})
-	if got := searchIDs(page); fmt.Sprint(got) != "[wi_first_2]" {
-		t.Fatalf("visible result=%v", got)
+				for _, text := range []string{"commonterm", "common"} {
+					work, raw := measureSearchCandidates(t, tx, body, searchCandidateArgs(text, "work", "all", false, ""))
+					if problems := work.problems(); len(problems) > 0 {
+						t.Errorf("%s postings=%d %s %v: %s", statistics.name, postings, text, problems, raw)
+					}
+					t.Logf("%s postings=%d %s examined=%.0f pages=%.0f candidates=%.0f", statistics.name, postings, text, work.examined, work.pages, work.candidates)
+				}
+				if err := tx.Rollback(); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
