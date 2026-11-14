@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -45,14 +46,15 @@ func TestLostLeaseAttemptReadersFollowTheLease(t *testing.T) {
 		laterPeriod        bool
 		held, unsettled    bool
 		active, unreported int64
+		reported           string
 	}{
-		{name: "live running attempt holds work and is active", held: true, unsettled: true, active: 1, unreported: 1},
-		{name: "expired lease on a current runner waits for audited retirement but ends activity", expire: true, held: true, unreported: 1},
-		{name: "expired lease after audited retirement releases the sprite", expire: true, retire: true, unreported: 1},
-		{name: "raw release releases the sprite and ends activity", release: true, unreported: 1},
+		{name: "live running attempt holds work and is active", held: true, unsettled: true, active: 1, unreported: 1, reported: "running"},
+		{name: "expired lease on a current runner waits for audited retirement but ends activity", expire: true, held: true, unreported: 1, reported: "interrupted"},
+		{name: "expired lease after audited retirement releases the sprite", expire: true, retire: true, unreported: 1, reported: "interrupted"},
+		{name: "raw release releases the sprite and ends activity", release: true, unreported: 1, reported: "interrupted"},
 		{name: "lost attempt leaves later periods", expire: true, retire: true, laterPeriod: true},
-		{name: "interrupted checkpoint awaiting cleanup still holds the sprite", checkpoint: "interrupted", expire: true, retire: true, held: true, unsettled: true, unreported: 1},
-		{name: "lost running attempt with a checkpoint awaiting cleanup still holds the sprite", checkpoint: "running", expire: true, retire: true, held: true, unsettled: true, unreported: 1},
+		{name: "interrupted checkpoint awaiting cleanup still holds the sprite", checkpoint: "interrupted", expire: true, retire: true, held: true, unsettled: true, unreported: 1, reported: "interrupted"},
+		{name: "lost running attempt with a checkpoint awaiting cleanup still holds the sprite", checkpoint: "running", expire: true, retire: true, held: true, unsettled: true, unreported: 1, reported: "interrupted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock.Store(&start)
@@ -124,6 +126,27 @@ func TestLostLeaseAttemptReadersFollowTheLease(t *testing.T) {
 				}
 				if costs.ActiveAttempts != tc.active || costs.UnreportedAttempts != tc.unreported {
 					t.Errorf("monthly coverage active=%d unreported=%d want active=%d unreported=%d", costs.ActiveAttempts, costs.UnreportedAttempts, tc.active, tc.unreported)
+				}
+				facts, err := r.(reportstore.AttemptReader).ReadAttemptFacts(t.Context(), reportstore.AttemptQuery{Projects: []tracker.ProjectID{"prj_1"}, From: window.From, To: window.To, Limit: 10})
+				if err != nil {
+					return err
+				}
+				reported := ""
+				for _, fact := range facts {
+					if fact.AttemptID != event.ID {
+						continue
+					}
+					reported = fact.Status
+					ended := lease.ExpiresAt
+					if tc.release {
+						ended = start
+					}
+					if fact.Status == "interrupted" && !fact.OutcomeAt.Equal(ended) {
+						t.Errorf("interrupted attempt outcome=%s, want its lease end %s", fact.OutcomeAt, ended)
+					}
+				}
+				if reported != tc.reported {
+					t.Errorf("report attempt status=%q want %q", reported, tc.reported)
 				}
 				return nil
 			}); err != nil {
