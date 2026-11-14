@@ -1233,10 +1233,11 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			}
 			call(request, http.StatusForbidden)
 			token = ownerToken
+			setRole("member")
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteAccessTokenGrant(t.Context(), credential, project) }); err != nil {
 				t.Fatal(err)
 			}
-			call(request, http.StatusForbidden)
+			call(request, http.StatusNotFound)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential, ProjectID: project})
 			}); err != nil {
@@ -1256,7 +1257,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				})
 			}}
 			beforeGrantRace := accounting()
-			call(grantRace, http.StatusForbidden)
+			call(grantRace, http.StatusNotFound)
 			service.config.TenantRepository = repository
 			if accounting() != beforeGrantRace {
 				t.Fatal("revoked project selection changed durable accounting or events")

@@ -279,7 +279,7 @@ func TestHostedMemberManagement(t *testing.T) {
 			byUser[member.UserID] = member
 		}
 		owner, ok := byUser["user_browser_owner"]
-		if !ok || owner.Role != "owner" || owner.Email != "owner@example.test" || len(owner.Grants) != 2 {
+		if !ok || owner.Role != "owner" || owner.Email != "owner@example.test" || len(owner.Grants) != 0 {
 			t.Fatalf("owner membership = %#v", owner)
 		}
 		viewer, ok := byUser["user_browser_viewer"]
@@ -351,11 +351,6 @@ func TestHostedMemberManagement(t *testing.T) {
 func TestHostedFleetVisibility(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
-	for _, project := range []string{f.project, f.privateProject} {
-		f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_owner/grants", map[string]any{
-			"project_id": project, "write": true, "runner": true, "idempotency_key": "fleet-runner-" + project,
-		}, http.StatusOK)
-	}
 	wantNames := map[string]hostedRunnerName{}
 	var activeID, removedID string
 	var active runnerauth.Redemption
@@ -673,7 +668,7 @@ func TestHostedProjectRank(t *testing.T) {
 	}{
 		{name: "owner reorders", account: "owner", status: http.StatusOK},
 		{name: "admin reorders", account: "viewer", role: "admin", status: http.StatusOK},
-		{name: "visible slots retain hidden projects", account: "owner", hidden: true, status: http.StatusOK},
+		{name: "owner ranks ungranted projects", account: "owner", hidden: true, status: http.StatusOK},
 		{name: "member reads filtered order", account: "viewer", role: "member", hidden: true, readOnly: true},
 		{name: "viewer reads filtered order", account: "viewer", hidden: true, readOnly: true},
 		{name: "viewer cannot reorder", account: "viewer", status: http.StatusForbidden},
@@ -764,9 +759,7 @@ func TestHostedProjectRank(t *testing.T) {
 			browserHostedDecode(t, f.api(t, scenario.account, http.MethodGet, path, nil, http.StatusOK), &visible)
 			wantVisible := []tracker.ProjectID{tracker.ProjectID(f.project)}
 			if scenario.account == "owner" || scenario.role == "admin" {
-				wantVisible = slices.DeleteFunc(slices.Clone(before.ProjectIDs), func(id tracker.ProjectID) bool {
-					return id != tracker.ProjectID(f.project) && id != tracker.ProjectID(f.privateProject)
-				})
+				wantVisible = slices.Clone(before.ProjectIDs)
 			}
 			if !slices.Equal(visible.ProjectIDs, wantVisible) || visible.Revision != before.Revision {
 				t.Fatalf("read leaked or misordered projects: %#v, want %v", visible, wantVisible)
@@ -795,9 +788,6 @@ func TestHostedProjectRank(t *testing.T) {
 			expected, revision := before.ProjectIDs, before.Revision
 			if scenario.status == http.StatusOK {
 				expected, revision = ids, revision+1
-				if scenario.hidden {
-					expected = []tracker.ProjectID{tracker.ProjectID(f.privateProject), "prj_rank_hidden_a", tracker.ProjectID(f.project), "prj_rank_hidden_b"}
-				}
 			}
 			if !slices.Equal(after.ProjectIDs, expected) || after.Revision != revision {
 				t.Fatalf("rank changed incorrectly: %#v, want %v revision %d", after, expected, revision)
@@ -842,7 +832,7 @@ func TestHostedRunnerRoutingAuthority(t *testing.T) {
 				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_viewer/role", map[string]any{"role": test.role}, http.StatusOK)
 			}
 			for _, project := range []string{f.project, f.privateProject} {
-				if project == f.privateProject && !test.allGrants {
+				if project == f.privateProject && !test.allGrants || test.role == "admin" {
 					continue
 				}
 				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_viewer/grants", map[string]any{

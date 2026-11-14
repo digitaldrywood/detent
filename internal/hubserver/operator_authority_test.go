@@ -37,7 +37,7 @@ func TestHostedOperatorCurrentAuthority(t *testing.T) {
 				{name: "viewer billing denied", role: "viewer", kind: "billing", scope: apikey.ScopeRead, denied: true},
 				{name: "admin plan read", role: "admin", kind: "plan", scope: apikey.ScopeRead},
 				{name: "member plan denied", role: "member", kind: "plan", scope: apikey.ScopeRead, denied: true},
-				{name: "missing grant", role: "admin", scope: apikey.ScopeRead, denied: true},
+				{name: "missing grant", role: "member", scope: apikey.ScopeRead, denied: true},
 				{name: "foreign project", role: "owner", grant: "write", project: "other", scope: apikey.ScopeRead, denied: true},
 				{name: "local membership removed", role: "member", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f operatorSecurityFixture, u hostedSecurityUser) {
 					operatorPostgresSQL(t, f, "UPDATE hosted_members SET active=FALSE WHERE user_id=$1", u.identity.Subject)

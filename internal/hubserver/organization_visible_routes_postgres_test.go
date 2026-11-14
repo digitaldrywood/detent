@@ -65,6 +65,9 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_owner", Email: "owner@example.test", MembershipID: "membership_owner", Role: "owner", Active: true, PrincipalID: "credential_owner", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "credential_owner_key", Name: "Example owner key", Hash: "example_key", Scope: "admin", KeyScope: "admin", ProjectAccess: "selected", Kind: "personal", UserID: "user_owner", MembershipID: "membership_owner", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "credential_reporter", Name: "Example reporter", Hash: "example_reporter", Scope: "operator", KeyScope: "write", ProjectAccess: "selected", Kind: "personal", UserID: "user_reporter", MembershipID: "membership_reporter", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
@@ -82,6 +85,9 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 					return err
 				}
 				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "credential_owner", ProjectID: id}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "credential_owner_key", ProjectID: id}); err != nil {
 					return err
 				}
 			}
@@ -369,15 +375,11 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			t.Fatalf("%s flooded artifact list returned %d references, quiet service listed=%t", org, len(refs), quietListed)
 		}
 
-		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
-			return w.DeleteAccessTokenGrant(t.Context(), "credential_owner", "project_first")
-		}); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `WITH demoted AS (UPDATE hosted_members SET role='member' WHERE organization_id=$1 AND user_id='user_owner') DELETE FROM token_grants WHERE organization_id=$1 AND token_id='credential_owner' AND project_id='project_first'`, org); err != nil {
 			t.Fatal(err)
 		}
 		requireNativeStatus(t, publisherRequest(body["service_id"].(string), string(authorize)), http.StatusNotFound)
-		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
-			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(org), TokenID: "credential_owner", ProjectID: "project_first"})
-		}); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `WITH restored AS (UPDATE hosted_members SET role='owner' WHERE organization_id=$1 AND user_id='user_owner') INSERT INTO token_grants(organization_id,token_id,project_id) VALUES($1,'credential_owner','project_first')`, org); err != nil {
 			t.Fatal(err)
 		}
 		now = now.Add(time.Minute)
@@ -521,9 +523,9 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 	requireNativeStatus(t, request(http.MethodPut, base+"/project-rank", map[string]any{"expected_revision": rank.Revision, "project_ids": rank.ProjectIDs}), http.StatusForbidden)
 	subject, role = "user_owner", "owner"
 
-	ownerScope := hubscope.NativeScope{Organization: "org_startup", Credential: hubapi.APICredential{ID: "credential_owner", Hash: "example", Scope: hubapi.APIScopeAdmin, Hosted: &auth.HostedIdentity{Subject: "user_owner", ExpiresAt: now.Add(time.Hour)}, HostedRole: "owner", HostedMembership: "membership_owner", HostedPrincipal: "credential_owner"}}
+	ownerScope := hubscope.NativeScope{Organization: "org_startup", Credential: hubapi.APICredential{ID: "credential_owner_key", Hash: "example_key", HostedProjectAccess: hubapi.HostedProjectsSelected, Scope: hubapi.APIScopeAdmin, Hosted: &auth.HostedIdentity{Subject: "user_owner", ExpiresAt: now.Add(time.Hour)}, HostedRole: "owner", HostedMembership: "membership_owner", HostedPrincipal: "credential_owner"}}
 	if err := repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-		return w.DeleteAccessProjectGrant(t.Context(), "user_owner", "project_hidden")
+		return w.DeleteAccessTokenGrant(t.Context(), "credential_owner_key", "project_hidden")
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +563,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		t.Fatal("hidden project accepted in visible order")
 	}
 	if err := repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-		return w.DeleteAccessProjectGrant(t.Context(), "user_owner", "project_last")
+		return w.DeleteAccessTokenGrant(t.Context(), "credential_owner_key", "project_last")
 	}); err != nil {
 		t.Fatal(err)
 	}

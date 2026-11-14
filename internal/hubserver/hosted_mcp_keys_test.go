@@ -125,7 +125,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 									return w.InitializeProjectAccess(t.Context(), id, principal)
 								})
 							}
-							user := f.user(t, "operator", "owner", "operator@example.test", "write", "")
+							user := f.user(t, "operator", map[bool]string{true: "member", false: "owner"}[strings.Contains(scenario, "grant removed") || strings.Contains(scenario, "without")], "operator@example.test", "write", "")
 							credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
 							if err != nil {
 								t.Fatal(err)
@@ -708,7 +708,7 @@ func TestHostedProjectRankTools(t *testing.T) {
 					t.Fatal(err)
 				}
 				visible := envelope.Data
-				if !slices.Equal(visible.ProjectIDs, []tracker.ProjectID{f.project}) {
+				if !slices.Equal(visible.ProjectIDs, map[bool][]tracker.ProjectID{false: {f.project}, true: {f.project, "prj_rank_second"}}[role == "owner" || role == "admin"]) {
 					t.Fatalf("rank leaked hidden projects: %#v", visible)
 				}
 				before, err := readStoredRank()

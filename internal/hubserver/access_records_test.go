@@ -81,8 +81,8 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := service.requireOperatorRunners(t.Context(), nil, scope); err == nil {
-			t.Fatal("runner access accepted without management grant")
+		if err := service.requireOperatorRunners(t.Context(), nil, scope); err != nil {
+			t.Fatalf("administrator role runner management rejected without a grant: %v", err)
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: scope.Project, CanWrite: true, ManageRunner: true})

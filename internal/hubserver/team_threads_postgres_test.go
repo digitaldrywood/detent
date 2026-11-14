@@ -175,7 +175,7 @@ func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
 	for _, test := range []struct {
 		name, suffix, token, change, restore string
 	}{
-		{"list grant revoked", "", owner, `DELETE FROM hosted_project_grants WHERE organization_id='org_startup' AND user_id='user_owner' AND project_id='project_first'`, `INSERT INTO hosted_project_grants (organization_id,user_id,project_id,can_write,manage_runner) VALUES ('org_startup','user_owner','project_first',true,true)`},
+		{"list grant revoked", "", owner, `WITH demoted AS (UPDATE hosted_members SET role='member' WHERE organization_id='org_startup' AND user_id='user_owner') DELETE FROM hosted_project_grants WHERE organization_id='org_startup' AND user_id='user_owner' AND project_id='project_first'`, `WITH restored AS (UPDATE hosted_members SET role='owner' WHERE organization_id='org_startup' AND user_id='user_owner') INSERT INTO hosted_project_grants (organization_id,user_id,project_id,can_write,manage_runner) VALUES ('org_startup','user_owner','project_first',true,true)`},
 		{"list key revoked", "", owner, `UPDATE api_tokens SET revoked_at=clock_timestamp() WHERE organization_id='org_startup' AND id='credential_owner'`, `UPDATE api_tokens SET revoked_at=NULL WHERE organization_id='org_startup' AND id='credential_owner'`},
 		{"list role downgraded", "", owner, `UPDATE hosted_members SET role='reporter' WHERE organization_id='org_startup' AND user_id='user_owner'`, `UPDATE hosted_members SET role='owner' WHERE organization_id='org_startup' AND user_id='user_owner'`},
 		{"get role downgraded", "/th_project_second", owner, `UPDATE hosted_members SET role='reporter' WHERE organization_id='org_startup' AND user_id='user_owner'`, `UPDATE hosted_members SET role='owner' WHERE organization_id='org_startup' AND user_id='user_owner'`},
@@ -274,10 +274,13 @@ func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
 			details.beforeRead = nil
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
 			defer cancel()
-			if _, err := admin.ExecContext(ctx, `INSERT INTO hosted_project_grants (organization_id,user_id,project_id,can_write,manage_runner) VALUES ('org_startup','user_owner','project_second',true,true)`); err != nil {
+			if _, err := admin.ExecContext(ctx, `WITH restored AS (UPDATE hosted_members SET role='owner' WHERE organization_id='org_startup' AND user_id='user_owner') INSERT INTO hosted_project_grants (organization_id,user_id,project_id,can_write,manage_runner) VALUES ('org_startup','user_owner','project_second',true,true)`); err != nil {
 				t.Errorf("restore project grant: %v", err)
 			}
 		})
+		if _, err := admin.ExecContext(t.Context(), `UPDATE hosted_members SET role='member' WHERE organization_id='org_startup' AND user_id='user_owner'`); err != nil {
+			t.Fatal(err)
+		}
 		response := request(http.MethodGet, "/th_project_first?since=2", owner, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		if reads.Load() < 2 || changeErr != nil {

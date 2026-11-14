@@ -164,8 +164,8 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 		}{
 			{name: "selected_granted", user: "first", access: "selected", grant: true, want: 4},
 			{name: "selected_without_token_grant", user: "first", access: "selected", want: 1},
-			{name: "selected_without_member_grant", user: "second", access: "selected", grant: true, want: 1},
-			{name: "all_with_member_grants", user: "first", access: "all", want: 4},
+			{name: "selected_owner_without_member_grant", user: "second", access: "selected", grant: true, want: 4},
+			{name: "all_with_owner_role", user: "first", access: "all", want: 5},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				id := "service_" + tc.name
@@ -190,7 +190,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 					t.Fatalf("visible threads = %+v; want %d", page.Threads, tc.want)
 				}
 				for _, thread := range page.Threads {
-					if strings.Contains(thread.ID, "org_other") || thread.ID == "th_org_startup_hidden" || tc.want == 1 && thread.Scope != "general" {
+					if strings.Contains(thread.ID, "org_other") || thread.ID == "th_org_startup_hidden" && tc.access == "selected" || tc.want == 1 && thread.Scope != "general" {
 						t.Fatalf("unauthorized thread exposed: %+v", thread)
 					}
 					if thread.Preview == "" || len(thread.Participants) == 0 {
@@ -407,7 +407,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var page teamThreadPage
 			decodeThread(response, &page)
-			want := 4
+			want := max(4, map[string]int{"owner": 5, "admin": 5}[role])
 			if role == "reporter" {
 				want = 3
 			}
@@ -415,7 +415,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 				t.Fatalf("actual visible threads=%+v want %d", page, want)
 			}
 			for _, thread := range page.Threads {
-				if strings.Contains(thread.ID, "org_other") || thread.ID == "th_org_startup_hidden" || role == "reporter" && thread.ID == "th_org_startup_foreign" {
+				if strings.Contains(thread.ID, "org_other") || thread.ID == "th_org_startup_hidden" && want == 4 || role == "reporter" && thread.ID == "th_org_startup_foreign" {
 					t.Fatalf("invisible thread listed: %+v", thread)
 				}
 			}
@@ -487,8 +487,8 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 	currentRole = "account"
 	requireNativeStatus(t, call("get_thread", map[string]any{"thread_id": "th_org_startup_own"}, nil), http.StatusForbidden)
 	requireNativeStatus(t, call(operatortool.WorkItem, map[string]any{"project_id": "project_org_startup", "reference": "wi_own"}, nil), http.StatusForbidden)
-	currentRole = "owner"
-	setRole("owner")
+	currentRole = "member"
+	setRole("member")
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.DeleteAccessProjectGrant(t.Context(), "first", "project_org_startup")
 	}); err != nil {

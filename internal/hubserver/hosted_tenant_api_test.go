@@ -715,9 +715,6 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	organization := browserHostedOrganizationBase
-	for _, project := range []string{f.project, f.privateProject} {
-		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
-	}
 	base := organization + "/projects/" + f.privateProject
 	descriptor := hubTestPolicy()
 	descriptor.Gates.Kind, descriptor.Gates.AutomatedReview = "human_review", ""
@@ -787,7 +784,7 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if test.allProjects {
+				if test.allProjects && test.role != "admin" {
 					requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_viewer"}, "project": {f.privateProject}}), http.StatusSeeOther)
 				} else if err := f.service.accessWrite(t.Context(), f.service.accessOrganization(), func(w tenantstore.Writer) error {
 					return w.DeleteAccessProjectGrant(t.Context(), "user_browser_viewer", tracker.ProjectID(f.privateProject))

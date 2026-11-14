@@ -165,7 +165,7 @@ func TestHostedModelSelectionTools(t *testing.T) {
 					t.Fatalf("invalid effective selection saved: %v", err)
 				}
 			}
-			operatorPostgresSQL(t, f.operatorSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=$1", f.user.identity.Subject)
+			operatorPostgresSQL(t, f.operatorSecurityFixture, "WITH demoted AS (UPDATE hosted_members SET role='member' WHERE user_id=$1) DELETE FROM hosted_project_grants WHERE user_id=$1", f.user.identity.Subject)
 			for _, retryCtx := range []context.Context{ctx, operatortool.BindConnection(ctx, "revoked-replay", "test")} {
 				if _, err := executor.Execute(retryCtx, replayProjectCall); !errors.Is(err, operatortool.ErrAccessDenied) {
 					t.Fatalf("revoked replay=%v", err)
@@ -202,7 +202,8 @@ func TestModelSelectionToolAuthority(t *testing.T) {
 			{"admin", "admin", "", false, true, true, true, true},
 			{"member", "member", "", false, true, true, false, false},
 			{"viewer", "viewer", "", false, true, true, false, false},
-			{"no grant", "owner", "", true, true, false, true, false},
+			{"no grant", "owner", "", true, true, true, true, true},
+			{"member no grant", "member", "", true, true, false, false, false},
 			{"read key", "owner", apikey.ScopeRead, false, false, true, false, false},
 			{"write key", "owner", apikey.ScopeWrite, false, false, true, false, false},
 			{"admin key", "owner", apikey.ScopeAdmin, false, false, true, false, true},

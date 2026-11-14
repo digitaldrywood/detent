@@ -401,7 +401,9 @@ func TestHostedAnalyticsReads(t *testing.T) {
 			t.Run(read.name, func(t *testing.T) {
 				if read.name == "analytics revoked grants" {
 					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, scope.Project)
+						member, err := w.AccessMember(t.Context(), owner.identity.Subject)
+						member.Role = "member"
+						return errors.Join(err, w.UpdateAccessMember(t.Context(), member), w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, scope.Project))
 					}); err != nil {
 						t.Fatal(err)
 					}

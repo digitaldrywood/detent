@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -263,7 +262,8 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 		{"member with routed runner", "member", "write", 200, 200, 403, true, false, false},
 		{"viewer", "viewer", "read", 200, 403, 403, false, false, false},
 		{"viewer with routed runner", "viewer", "read", 200, 403, 403, true, false, false},
-		{"ungranted owner", "owner", "", 404, 404, 404, false, false, false},
+		{"ungranted owner", "owner", "", 200, 200, 200, false, false, false},
+		{"ungranted member", "member", "", 404, 404, 404, false, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newPostgresArtifactFixture(t, func(cfg *Config) {
@@ -317,11 +317,7 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 				routing := before.Routing
 				routing.ProjectIDs = append(slices.Clone(routing.ProjectIDs), f.project)
 				refused := f.request(t, user, http.MethodPut, route, runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: routing})
-				if tt.grant == "" {
-					requireNativeError(t, refused, http.StatusNotFound, "not_found")
-				} else {
-					requireNativeStatus(t, refused, http.StatusForbidden)
-				}
+				requireNativeStatus(t, refused, http.StatusForbidden)
 				var after runnerauth.Runner
 				decodeHubResponse(t, f.request(t, user, http.MethodGet, route, nil), &after)
 				if after.Revision != before.Revision || slices.Contains(after.ProjectIDs, f.project) {
@@ -504,8 +500,6 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("issues=%d", count)
 	}
-
-	requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {first}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
 }
 
 func TestOnboardingCustomerBindingValidation(t *testing.T) {
@@ -543,9 +537,6 @@ func seedOnboardingBrowserJourney(t *testing.T) *browserHostedFixture {
 func seedHostedOnboardingJourney(t *testing.T, f *browserHostedFixture) *browserHostedFixture {
 	t.Helper()
 	organization := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID
-	for _, project := range []string{f.project, f.privateProject} {
-		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
-	}
 	base := organization + "/projects/" + f.project
 	descriptor := hubTestPolicy()
 	descriptor.Gates.Kind, descriptor.Gates.AutomatedReview = "human_review", ""

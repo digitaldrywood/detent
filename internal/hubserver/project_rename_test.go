@@ -2,12 +2,14 @@ package hubserver
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -183,7 +185,7 @@ func TestHostedProjectRename(t *testing.T) {
 					}
 					member.Role = "member"
 					member.UpdatedAt = f.service.config.Clock()
-					return w.UpdateAccessMember(t.Context(), member)
+					return errors.Join(w.UpdateAccessMember(t.Context(), member), w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: scope.Organization, UserID: member.UserID, ProjectID: scope.Project, CanWrite: true}), w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.Organization, TokenID: member.PrincipalID, ProjectID: scope.Project}))
 				}); err != nil {
 					t.Fatal(err)
 				}

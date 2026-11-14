@@ -104,7 +104,7 @@ func (fixture threadUnreadFixture) viewer(t *testing.T, organization tracker.Org
 	user := "example_" + name
 	id := "credential_" + name
 	token := "token_" + name
-	member, err := service.config.Hosted.Provider.CreateMembership(ctx, user, service.config.Hosted.WorkOSOrganizationID, "owner")
+	member, err := service.config.Hosted.Provider.CreateMembership(ctx, user, service.config.Hosted.WorkOSOrganizationID, "member")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func (fixture threadUnreadFixture) viewer(t *testing.T, organization tracker.Org
 		if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: organization, ID: id, Name: name, Hash: apikey.HashToken(token), Scope: "operator", NativeOnly: true, Kind: "personal", KeyScope: "write", ProjectAccess: "selected", UserID: user, MembershipID: member.ID, CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessMember(ctx, accessstore.Member{OrganizationID: organization, UserID: user, MembershipID: member.ID, PrincipalID: id, Role: "owner", Active: true, Email: user + "@example.test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		if err := w.CreateAccessMember(ctx, accessstore.Member{OrganizationID: organization, UserID: user, MembershipID: member.ID, PrincipalID: id, Role: "member", Active: true, Email: user + "@example.test", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessProjectGrant(ctx, accessstore.ProjectGrant{OrganizationID: organization, UserID: user, ProjectID: project.ID, CanWrite: true}); err != nil {

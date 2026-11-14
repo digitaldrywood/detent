@@ -397,7 +397,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 							t.Fatal(err)
 						}
 					case "entry grant removed drain":
-						if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=$1 AND project_id=$2", entrySubject, f.project.ID); err != nil {
+						if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "WITH demoted AS (UPDATE hosted_members SET role='member' WHERE user_id=$1 AND role IN ('owner','admin')) DELETE FROM hosted_project_grants WHERE user_id=$1 AND project_id=$2", entrySubject, f.project.ID); err != nil {
 							t.Fatal(err)
 						}
 					case "entry scoped drain", "entry service scoped drain":

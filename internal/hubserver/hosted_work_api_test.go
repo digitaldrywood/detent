@@ -20,11 +20,12 @@ func TestHostedWorkAccess(t *testing.T) {
 		{name: "member", role: "member", grant: "write", allowed: true, write: true},
 		{name: "viewer", role: "viewer", grant: "write", allowed: true},
 		{name: "read grant", role: "member", grant: "read", allowed: true},
-		{name: "no grant", role: "owner"},
+		{name: "no grant", role: "member"},
+		{name: "owner without grant", role: "owner", allowed: true, write: true},
 		{name: "staff", role: "owner", grant: "write", email: "staff@example.test"},
 		{name: "revoked session", role: "owner", grant: "write", revoke: "session"},
 		{name: "revoked membership", role: "owner", grant: "write", revoke: "member"},
-		{name: "revoked grant", role: "owner", grant: "write", revoke: "grant"},
+		{name: "revoked grant", role: "member", grant: "write", revoke: "grant"},
 		{name: "wrong tenant", role: "owner", grant: "write", revoke: "tenant"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

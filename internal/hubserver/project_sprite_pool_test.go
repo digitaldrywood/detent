@@ -1527,12 +1527,12 @@ func TestHostedProjectSpriteAllocationAuthority(t *testing.T) {
 	if err != nil || !allowed {
 		t.Fatalf("configuring owner allowed=%t err=%v", allowed, err)
 	}
-	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `UPDATE hosted_project_grants SET can_write=false WHERE organization_id=$1 AND project_id=$2 AND user_id='user_browser_owner'`, organization, f.project); err != nil {
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `UPDATE hosted_members SET role='member' WHERE organization_id=$1 AND user_id='user_browser_owner' AND $2::text<>''`, organization, f.project); err != nil {
 		t.Fatal(err)
 	}
 	allowed, err = authority()
 	if err != nil || allowed {
-		t.Fatalf("revoked project grant allowed=%t err=%v", allowed, err)
+		t.Fatalf("demoted configuring owner allowed=%t err=%v", allowed, err)
 	}
 }
 

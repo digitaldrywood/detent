@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -391,7 +392,7 @@ func TestHostedProjectIcon(t *testing.T) {
 						return err
 					}
 					member.Role, member.UpdatedAt = "member", f.service.config.Clock().UTC()
-					return w.UpdateAccessMember(t.Context(), member)
+					return errors.Join(w.UpdateAccessMember(t.Context(), member), w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: scope.Organization, UserID: member.UserID, ProjectID: scope.Project, CanWrite: true}), w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.Organization, TokenID: member.PrincipalID, ProjectID: scope.Project}))
 				}); err != nil {
 					t.Fatal(err)
 				}

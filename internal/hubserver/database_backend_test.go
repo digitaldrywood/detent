@@ -804,7 +804,9 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 			}
 			assertVisibilityReset(deleted, 9)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-				return w.DeleteAccessProjectGrant(t.Context(), member.UserID, "project_first")
+				demoted, err := w.AccessMember(t.Context(), member.UserID)
+				demoted.Role = "member"
+				return errors.Join(err, w.UpdateAccessMember(t.Context(), demoted), w.DeleteAccessProjectGrant(t.Context(), member.UserID, "project_first"))
 			}); err != nil {
 				t.Fatal(err)
 			}

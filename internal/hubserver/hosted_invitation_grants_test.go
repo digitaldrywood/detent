@@ -44,20 +44,20 @@ func TestHostedInvitationGrants(t *testing.T) {
 		{name: "authorized admin replaces with none", actorGrant: "write", admin: true, existingOther: true, actorOther: true, none: true},
 		{name: "authorized admin replaces with A only", actorGrant: "write", admin: true, existingOther: true, actorOther: true},
 		{name: "authorized replacement rolls back", actorGrant: "write", admin: true, existingOther: true, actorOther: true, rollback: true},
-		{name: "restricted edit cannot replace with none", actorGrant: "write", existingOther: true, actorOther: true, edit: "none", editAdmin: true},
-		{name: "restricted edit cannot replace with A only", actorGrant: "write", existingOther: true, actorOther: true, edit: "read", editAdmin: true},
+		{name: "admin role edit replaces with none", actorGrant: "write", existingOther: true, actorOther: true, edit: "none", editAdmin: true},
+		{name: "admin role edit replaces with A only", actorGrant: "write", existingOther: true, actorOther: true, edit: "read", editAdmin: true},
 		{name: "read access", actorGrant: "read"},
 		{name: "write access", actorGrant: "write", write: true},
 		{name: "read and runners", actorGrant: "runner", runner: true},
 		{name: "write and runners", actorGrant: "all", write: true, runner: true},
 		{name: "edit to read", actorGrant: "write", write: true, edit: "read"},
 		{name: "edit to none", actorGrant: "write", write: true, edit: "none"},
-		{name: "edit escalation refused", actorGrant: "read", edit: "write"},
+		{name: "owner role edits beyond read grant", actorGrant: "read", edit: "write"},
 		{name: "revoke before accept", actorGrant: "write", revoke: true},
 		{name: "acceptance rolls back", actorGrant: "write", rollback: true},
-		{name: "write escalation refused", actorGrant: "read", write: true, status: http.StatusForbidden},
-		{name: "runner escalation refused", actorGrant: "write", runner: true, status: http.StatusForbidden},
-		{name: "ungranted project refused", status: http.StatusForbidden},
+		{name: "owner role delegates write beyond read grant", actorGrant: "read", write: true},
+		{name: "owner role delegates runner beyond write grant", actorGrant: "write", runner: true},
+		{name: "owner role delegates ungranted project"},
 		{name: "foreign project refused", actorGrant: "write", project: "prj_other", status: http.StatusForbidden},
 		{name: "duplicate project refused", actorGrant: "write", duplicate: true, status: http.StatusUnprocessableEntity},
 	} {
@@ -186,13 +186,8 @@ func TestHostedInvitationGrants(t *testing.T) {
 					second.project = "prj_second"
 					second.withoutProjectAccess(t, editor)
 				}
-				editStatus := http.StatusNoContent
-				if test.edit == "write" || test.editAdmin {
-					editStatus = http.StatusForbidden
-				} else {
-					grants = updated
-				}
-				requireNativeStatus(t, f.request(t, editor, http.MethodPut, path, map[string]any{"grants": updated}), editStatus)
+				grants = updated
+				requireNativeStatus(t, f.request(t, editor, http.MethodPut, path, map[string]any{"grants": updated}), http.StatusNoContent)
 			}
 			var pending hostedMembersResponse
 			decodeHubResponse(t, f.request(t, owner, http.MethodGet, base+"/members", nil), &pending)

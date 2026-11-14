@@ -30,8 +30,8 @@ func TestHostedChangeReviewRequiresAdminAndWriteGrant(t *testing.T) {
 		{"admin", "admin", "write", http.StatusUnprocessableEntity},
 		{"member with write grant", "member", "write", http.StatusNotFound},
 		{"viewer with write grant", "viewer", "write", http.StatusForbidden},
-		{"owner with read grant", "owner", "read", http.StatusForbidden},
-		{"admin without grant", "admin", "", http.StatusNotFound},
+		{"owner with read grant", "owner", "read", http.StatusUnprocessableEntity},
+		{"admin without grant", "admin", "", http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -61,8 +61,8 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 		{"owner without runner grants", "owner", "write", "owner@example.test", false, http.StatusOK},
 		{"member", "member", "write", "member@example.test", true, http.StatusForbidden},
 		{"viewer", "viewer", "write", "viewer@example.test", true, http.StatusForbidden},
-		{"read only owner", "owner", "read", "owner@example.test", true, http.StatusForbidden},
-		{"ungranted owner", "owner", "", "owner@example.test", false, http.StatusNotFound},
+		{"read only owner", "owner", "read", "owner@example.test", true, http.StatusOK},
+		{"ungranted owner", "owner", "", "owner@example.test", false, http.StatusOK},
 		{"staff owner", "owner", "write", "staff@example.test", true, http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -116,7 +116,6 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 	for _, project := range []string{f.project, f.privateProject} {
 		t.Run(project, func(t *testing.T) {
 			base := "/api/v2/organizations/org_browser_preview/projects/" + project
-			requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding", map[string]any{"idempotency_key": "setup", "progress": onboarding.Progress{Repository: "existing"}}), http.StatusOK)
 			descriptor := hubTestPolicy()
 			descriptor.ConfigDigest = policy.Digest([]byte(project))
@@ -231,10 +230,10 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var secondPolicy tracker.ChangeReviewPolicy
 	decodeHubResponse(t, response, &secondPolicy)
-	requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {f.project}, "revoke": {"true"}}), http.StatusSeeOther)
+	requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {f.project}, "revoke": {"true"}}), http.StatusConflict)
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
-		t.Run("revoked project/"+method, func(t *testing.T) {
-			requireNativeStatus(t, f.setupRequest(t, "owner", method, first+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "cross-project"}, Policy: secondPolicy}), http.StatusNotFound)
+		t.Run("role-held project/"+method, func(t *testing.T) {
+			requireNativeStatus(t, f.setupRequest(t, "owner", method, first+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "cross-project"}, Policy: secondPolicy}), map[string]int{http.MethodGet: http.StatusOK, http.MethodPut: http.StatusConflict}[method])
 		})
 	}
 	response = f.setupRequest(t, "owner", http.MethodGet, second+"/change-review-policy", nil)
@@ -363,9 +362,9 @@ func TestHostedChangePolicyRevocation(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"write grant", func(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser) {
+		{"local role", func(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser) {
 			t.Helper()
-			f.grant(t, user, false, true)
+			f.user(t, "owner", "member", "owner@example.test", "write", "")
 		}},
 		{"local membership", func(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser) {
 			t.Helper()

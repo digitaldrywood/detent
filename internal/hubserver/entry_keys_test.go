@@ -99,7 +99,7 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 							f.exec(t, "UPDATE projects SET deleted_at=NULL WHERE organization_id='org_security' AND id=$1", f.project)
 						}
 						if kind == "personal" && member {
-							f.exec(t, "DELETE FROM hosted_project_grants WHERE organization_id='org_security' AND user_id=$1", user.identity.Subject)
+							f.exec(t, "WITH demoted AS (UPDATE hosted_members SET role='member' WHERE organization_id='org_security' AND user_id=$1 AND role IN ('owner','admin')) DELETE FROM hosted_project_grants WHERE organization_id='org_security' AND user_id=$1", user.identity.Subject)
 							denied := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, target: f.base + "/work-items", mutate: mutate})
 							if denied.Code != http.StatusNotFound || !strings.Contains(denied.Body.String(), "not_found") {
 								t.Fatalf("removed grant=%d %s", denied.Code, denied.Body.String())

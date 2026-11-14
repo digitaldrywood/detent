@@ -812,7 +812,9 @@ func TestHostedProjectTools(t *testing.T) {
 				}
 			}
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-				return w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, newProject.ID)
+				member, err := w.AccessMember(t.Context(), owner.identity.Subject)
+				member.Role = "member"
+				return errors.Join(err, w.UpdateAccessMember(t.Context(), member), w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, newProject.ID))
 			}); err != nil {
 				t.Fatal(err)
 			}
