@@ -215,6 +215,26 @@ func FinalSummary(body string) string {
 	return body
 }
 
+func BlockedDetail(summary, humanAction string) string {
+	if signal, ok := SignalFromComment(summary, "", ""); ok && signal.Invalid == nil && signal.Status == StatusBlocked && strings.TrimSpace(signal.HumanAction) != "" {
+		return summary
+	}
+	status := fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", humanAction)
+	summary = FinalSummary(summary)
+	room := MaxFinalSummaryBytes - len(status) - len("\n\n")
+	if summary == "" || room <= len("…") {
+		return status
+	}
+	if len(summary) > room {
+		summary = summary[:room-len("…")]
+		for !utf8.ValidString(summary) {
+			summary = summary[:len(summary)-1]
+		}
+		summary += "…"
+	}
+	return summary + "\n\n" + status
+}
+
 func LastStatusBlock(body string) (string, bool) {
 	content, found, _ := lastStatusBlock(body)
 	return content, found

@@ -33,6 +33,33 @@ func TestFinalSummary(t *testing.T) {
 	}
 }
 
+func TestBlockedDetail(t *testing.T) {
+	t.Parallel()
+	prose := "The run succeeded and opened Change Request chg_1. Moved from In Progress to Blocked."
+	typed := "Needs approval.\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"Approve the schema change\"\n```"
+	for _, test := range []struct {
+		name, summary, action, wantAction, wantPrefix string
+	}{
+		{name: "prose summary gains the typed hold", summary: prose, action: "Confirm the acceptance criteria", wantAction: "Confirm the acceptance criteria", wantPrefix: prose + "\n\n```detent-status"},
+		{name: "empty summary", action: "Choose the \"vendor\"\nthen reply", wantAction: "Choose the \"vendor\"\nthen reply", wantPrefix: "```detent-status"},
+		{name: "other status block is replaced", summary: prose + "\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", action: "Answer the question", wantAction: "Answer the question", wantPrefix: prose + "\n\n```detent-status"},
+		{name: "typed hold is unchanged", summary: typed, action: "Different action", wantAction: "Approve the schema change", wantPrefix: typed},
+		{name: "oversized unicode summary stays bounded", summary: strings.Repeat("界", MaxFinalSummaryBytes), action: "Pick a direction", wantAction: "Pick a direction", wantPrefix: "界界"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := BlockedDetail(test.summary, test.action)
+			content, found := LastStatusBlock(got)
+			if !found || len(got) > MaxFinalSummaryBytes || !utf8.ValidString(got) || !strings.HasPrefix(got, test.wantPrefix) || strings.Count(got, "```detent-status") != 1 {
+				t.Fatalf("detail = %q (%d bytes)", got, len(got))
+			}
+			signal, err := ParseStatusBlock(content, "")
+			if err != nil || signal.Invalid != nil || signal.Status != StatusBlocked || signal.HumanAction != test.wantAction {
+				t.Fatalf("typed hold = %+v, %v; want blocked with %q", signal, err, test.wantAction)
+			}
+		})
+	}
+}
+
 func TestSignalFromComment(t *testing.T) {
 	t.Parallel()
 

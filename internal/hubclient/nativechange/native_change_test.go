@@ -23,18 +23,23 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -1359,7 +1364,7 @@ func TestHumanBlockedHoldOutranksRunnerLease(t *testing.T) {
 				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Blocked", Reason: "user_requested", ReasonDetail: "Operator lane owns this item"}); err != nil {
 					t.Fatal(err)
 				}
-			} else if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Blocked"); err != nil {
+			} else if err := h.connector.UpdateIssueState(connector.WithLaneTransitionReason(t.Context(), "human_action", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"Approve the held work\"\n```"), issue.ID, "Blocked"); err != nil {
 				t.Fatal(err)
 			}
 			err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Todo")
@@ -1371,6 +1376,55 @@ func TestHumanBlockedHoldOutranksRunnerLease(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunnerHumanActionHoldReachesHub(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHubWithStates(t, "In Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Blocked"}},
+		{Name: "Blocked", Transitions: []string{"In Progress"}},
+		{Name: "In Review", Transitions: []string{"In Progress"}},
+	})
+	issue := h.createInProgress(t, "question for a human")
+	h.claim(t, issue.ID)
+	action := "Confirm the acceptance criteria before work continues"
+	issue.IssueContract = &issuecontract.State{HumanAction: action, RecordedAt: time.Now().UTC()}
+	if err := orchestrator.InitializeIssueLane(t.Context(), orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}}, orchestrator.Dependencies{Connector: h.connector, LaneLedger: &memoryLaneLedger{}}, issue, "Blocked"); err != nil {
+		t.Fatalf("runner human-action hold refused: %v", err)
+	}
+	history, err := h.admin.History(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+	if err != nil || h.state(t, issue.ID) != "Blocked" {
+		t.Fatalf("runner hold history = %+v, %v", history, err)
+	}
+	held := false
+	for _, event := range history.Items {
+		if event.Type == "workflow.transitioned" && event.Data.ToState == "Blocked" && event.Actor.Kind == "runner" {
+			signal, ok := workpad.SignalFromComment(event.Data.ReasonDetail, "", "")
+			held = ok && signal.Invalid == nil && signal.Status == workpad.StatusBlocked && signal.HumanAction == action
+		}
+	}
+	if !held {
+		t.Fatalf("runner hold lost its typed human action: %+v", history.Items)
+	}
+}
+
+type memoryLaneLedger struct{ mu sync.Mutex }
+
+func (l *memoryLaneLedger) LaneWriteLock() sync.Locker { return &l.mu }
+func (l *memoryLaneLedger) PrepareLaneWrite(_ context.Context, _ string, write coordination.LaneWrite) (coordination.LaneWrite, error) {
+	write.InstanceIdentity, write.FenceToken = "test", 1
+	return write, nil
+}
+func (l *memoryLaneLedger) ResolveLaneWrite(context.Context, uint64, string) error { return nil }
+func (l *memoryLaneLedger) LatestLaneWrite(context.Context, store.IssueIdentity) (coordination.LaneWrite, string, error) {
+	return coordination.LaneWrite{}, "", store.ErrNotFound
+}
+func (l *memoryLaneLedger) LaneObservation(context.Context, store.IssueIdentity) (store.LaneObservation, error) {
+	return store.LaneObservation{}, store.ErrNotFound
+}
+func (l *memoryLaneLedger) SaveLaneObservation(context.Context, store.IssueIdentity, store.LaneObservation) error {
+	return nil
 }
 
 func (h *nativeChangeHub) move(t *testing.T, item, state string) {

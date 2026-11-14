@@ -217,7 +217,7 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		if strings.TrimSpace(action) == "" {
 			return errors.New("Blocked requires an explicit typed human action or operator stop")
 		}
-		metadata.HumanAction = strings.TrimSpace(action)
+		metadata.HumanAction, metadata.ReasonDetail = strings.TrimSpace(action), workpad.BlockedDetail(metadata.ReasonDetail, strings.TrimSpace(action))
 	}
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID

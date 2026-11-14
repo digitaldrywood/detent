@@ -348,7 +348,7 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	if issue.NativeLandingHeadSHA != "" {
 		metadata.BlockedRecovery.TargetState = autoPromoteMergingState
 	}
-	metadata.ReasonDetail = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", humanAction)
+	metadata.ReasonDetail = workpad.BlockedDetail("", humanAction)
 	metadata.BlockedRecovery.WorkAttemptID = running.WorkAttemptID
 	metadata.BlockedRecovery.AttemptNumber = running.Attempt
 	metadata.BlockedRecovery.AttemptError = detail
