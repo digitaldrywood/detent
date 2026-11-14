@@ -35,6 +35,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const (
+	healthFixedUnits = 4
+	healthRowScans   = 3
+)
+
 func (s *Service) HealthPageMaintenanceFeature() hubmaintenance.Feature {
 	var tenants sync.Map
 	return hubmaintenance.Feature{Name: "health-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
@@ -50,10 +55,14 @@ func (s *Service) HealthPageMaintenanceFeature() hubmaintenance.Feature {
 			state.generation = tenant.Generation
 		}
 		organization := tracker.OrganizationID(tenant.Organization)
-		observed := s.maintainHealthSources(ctx, organization, &state.cursor, budget)
-		projected, projectErr := s.MaintainHealthPage(ctx, organization)
-		delivered, deliveryErr := s.processSlackDelivery(ctx, organization)
-		return hubmaintenance.Outcome{Progress: projected || delivered, Items: 1}, errors.Join(observed, projectErr, deliveryErr)
+		rows := (budget.Items - healthFixedUnits) / healthRowScans
+		if rows < 1 {
+			return hubmaintenance.Outcome{}, corestore.ErrInvalidPage
+		}
+		observed := s.maintainHealthSources(ctx, organization, &state.cursor, hubmaintenance.Budget{Items: rows, Bytes: budget.Bytes})
+		_, projectErr := s.MaintainHealthPage(ctx, organization)
+		_, deliveryErr := s.processSlackDelivery(ctx, organization)
+		return hubmaintenance.Outcome{Progress: true, Items: healthFixedUnits + healthRowScans*rows}, errors.Join(observed, projectErr, deliveryErr)
 	}}
 }
 

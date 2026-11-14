@@ -489,8 +489,10 @@ func TestHealthSlackMaintenanceDeliversOnlyTheTenantQueueOnce(t *testing.T) {
 		wantPending int
 		retried     bool
 		wantFailed  bool
+		blocked     bool
 	}{
 		{name: "acknowledged", respond: func() (*http.Response, error) { return spritesTestResponse("ok", http.StatusOK), nil }},
+		{name: "blocked transport leaves the writer free", respond: func() (*http.Response, error) { return spritesTestResponse("ok", http.StatusOK), nil }, blocked: true},
 		{name: "uncertain transport", respond: func() (*http.Response, error) { return nil, errors.New("connection reset") }, wantFailed: true},
 		{name: "definite rejection", respond: func() (*http.Response, error) { return spritesTestResponse("no_service", http.StatusNotFound), nil }, wantPending: 2, retried: true, wantFailed: true},
 	} {
@@ -559,7 +561,26 @@ func TestHealthSlackMaintenanceDeliversOnlyTheTenantQueueOnce(t *testing.T) {
 				}
 				return rows
 			}
-			rotate()
+			if test.blocked {
+				arrived, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var released, signalled sync.Once
+				t.Cleanup(func() { released.Do(func() { close(release) }) })
+				respond := test.respond
+				test.respond = func() (*http.Response, error) {
+					signalled.Do(func() { close(arrived) })
+					<-release
+					return respond()
+				}
+				go func() { defer close(done); rotate() }()
+				<-arrived
+				if err := service.database.postgres.WriteSlack(t.Context(), primary, corestore.Serving, func(postgres.SlackWriter) error { return nil }); err != nil {
+					t.Fatalf("database writer unavailable while Slack was blocked: %v", err)
+				}
+				released.Do(func() { close(release) })
+				<-done
+			} else {
+				rotate()
+			}
 			if len(bodies) != 2 {
 				t.Fatalf("Slack POSTs after first rotation=%d %q", len(bodies), bodies)
 			}

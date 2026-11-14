@@ -327,8 +327,8 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 		}
 		clock.Advance(time.Second)
 		for range 20 {
-			if _, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
-				t.Fatal(err)
+			if outcome, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil || !outcome.Progress || outcome.Items != budget.Items {
+				t.Fatalf("health composite step outcome=%+v err=%v: it may make durable source progress and reserves the whole envelope", outcome, err)
 			}
 		}
 		clippedPage, healthyPage := read(clipped), read(healthy)

@@ -486,23 +486,8 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			}
 			refresh()
 			call(sourceConfirmation, http.StatusConflict)
-			archiveDebits := func() map[string]int64 {
-				t.Helper()
-				rows, err := admin.QueryContext(t.Context(), `SELECT id,collaboration_bytes FROM archive_objects WHERE organization_id=$1 AND collaboration_bytes<>0`, org)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer rows.Close()
-				debits := map[string]int64{}
-				for rows.Next() {
-					var id string
-					var bytes int64
-					if err := rows.Scan(&id, &bytes); err != nil {
-						t.Fatal(err)
-					}
-					debits[id] = bytes
-				}
-				if err := rows.Err(); err != nil {
+			archiveDebits := func() (debits string) {
+				if err := admin.QueryRowContext(t.Context(), `SELECT coalesce(string_agg(id||'='||collaboration_bytes,',' ORDER BY id),'') FROM archive_objects WHERE organization_id=$1 AND collaboration_bytes<>0`, org).Scan(&debits); err != nil {
 					t.Fatal(err)
 				}
 				return debits
@@ -649,17 +634,11 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				t.Fatal("confirmed issue detail lost related link")
 			}
 			afterConfirmation, debitsAfterConfirmation := accounting(), archiveDebits()
-			if afterConfirmation[1] != beforeRollback[1]+2 {
-				t.Fatalf("confirmation advanced project event sequence %d -> %d, want +2", beforeRollback[1], afterConfirmation[1])
+			if afterConfirmation[1] != beforeRollback[1]+2 || debitsAfterConfirmation != debitsBeforeRollback {
+				t.Fatalf("confirmation advanced project event sequence %d -> %d (want +2) or charged archive objects %q beside its collaboration debit", beforeRollback[1], afterConfirmation[1], debitsAfterConfirmation)
 			}
-			if !reflect.DeepEqual(debitsAfterConfirmation, debitsBeforeRollback) {
-				t.Fatalf("confirmation charged archive objects %v beside its collaboration debit", debitsAfterConfirmation)
-			}
-			committed := func() ([]eventstore.Event, int, []corestore.Relationship) {
+			committed := func() (events []eventstore.Event, population int, relationships []corestore.Relationship) {
 				t.Helper()
-				var events []eventstore.Event
-				var population int
-				var relationships []corestore.Relationship
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
 					if events, err = r.Events(t.Context(), project, created.WorkItemID, 0, 10); err != nil {
