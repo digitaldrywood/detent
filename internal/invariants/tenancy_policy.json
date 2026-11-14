@@ -284,9 +284,6 @@
     "internal/runner/agent.go": {
       "import:github.com/digitaldrywood/detent/internal/procgroup": 1
     },
-    "internal/runner/blocked_recovery.go": {
-      "import:os/exec": 1
-    },
     "internal/runner/checkpoint.go": {
       "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
       "import:os/exec": 1,
@@ -306,6 +303,9 @@
     },
     "internal/runner/progress_check.go": {
       "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/recoveryfingerprint/fingerprint.go": {
+      "import:os/exec": 1
     },
     "internal/runner/security_audit.go": {
       "import:github.com/digitaldrywood/detent/internal/procgroup": 1
