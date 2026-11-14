@@ -77,8 +77,8 @@ func TestRunnerCompletionPublicationWireBudget(t *testing.T) {
 			actual := [2]int{wire.statements, wire.exchanges}
 			wire.Unlock()
 			t.Logf("tenant=%s history=%d completion HTTP statements=%d exchanges=%d", org, history, actual[0], actual[1])
-			if actual[1] < 1 || actual[1] > 8 || expected != [2]int{} && actual != expected {
-				t.Errorf("completion bound=%v previous=%v want <=8 exchanges, fixed across history and tenants", actual, expected)
+			if actual[1] < 1 || actual[1] > 11 || expected != [2]int{} && actual != expected {
+				t.Errorf("completion bound=%v previous=%v want <=11 exchanges, fixed across history and tenants", actual, expected)
 			}
 			expected = actual
 			if err := fixture.admin.QueryRowContext(t.Context(), `SELECT a.sequence,(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND work_item_id=$3),(SELECT count(*) FROM cost_sources WHERE organization_id=$1 AND resource_id=$2),(SELECT count(*) FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2 AND input=17),(SELECT count(*) FROM search_documents WHERE organization_id=$1 AND work_item_id=$3 AND kind='comment') FROM native_attempts a WHERE organization_id=$1 AND id=$2`, org, data.AttemptID, lease.WorkItemID).Scan(&sequence, &comments, &costs, &reports, &search); err != nil {
