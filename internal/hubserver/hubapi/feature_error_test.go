@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -45,5 +46,42 @@ func TestFromFeatureError(t *testing.T) {
 	}
 	if got := hubapi.FromFeatureError(nil); got != nil {
 		t.Fatalf("nil mapped to %v", got)
+	}
+}
+
+func TestOperatorSourceRefusal(t *testing.T) {
+	t.Parallel()
+	private := "source bundle must advertise only the reviewed head; sentinel-private-source"
+	for _, test := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"version validation", hubapi.Rejection(hubapi.Invalid(private), "version_validation", "source"), true},
+		{"native version validation", fmt.Errorf("publish: %w", hubapi.FromFeatureError(hubapi.Rejection(hubapi.Invalid(private), "version_validation", "source"))), true},
+		{"source verification", hubapi.FromFeatureError(hubapi.Rejection(hubapi.Invalid(private), "source_verification", "source")), true},
+		{"policy validation", hubapi.Rejection(hubapi.Invalid(private), "version_validation", "policy_id"), false},
+		{"untyped invalid", hubapi.NativeInvalid(private), false},
+		{"conflict", hubapi.NativeConflict(3), false},
+		{"plain", errors.New(private), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			refusal, ok := hubapi.OperatorSourceRefusal(test.err)
+			if ok != test.want {
+				t.Fatalf("source refusal = %v, want %v", ok, test.want)
+			}
+			if !ok {
+				return
+			}
+			if refusal.Code != "invalid_request" || refusal.Message != hubapi.SourceRefusalGuidance {
+				t.Fatalf("refusal = %+v", refusal)
+			}
+		})
+	}
+	for _, phrase := range []string{"git bundle create", "verification budget"} {
+		if !strings.Contains(hubapi.SourceRefusalGuidance, phrase) {
+			t.Fatalf("guidance lacks %q", phrase)
+		}
 	}
 }

@@ -280,6 +280,9 @@ func hubSafeChangeError(err error) error {
 	if errors.Is(err, mutation.ErrUncertain) {
 		return mutation.ErrUncertain
 	}
+	if refusal, ok := hubapi.OperatorSourceRefusal(err); ok {
+		return refusal
+	}
 	if errors.As(err, &failure) {
 		if failure.Code == "invalid_request" && failure.PublicMessage {
 			return &operatortool.RequestError{Code: failure.Code, Message: failure.Message}

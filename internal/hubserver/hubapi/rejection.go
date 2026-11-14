@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
@@ -20,6 +21,20 @@ func Rejection(err error, category, field string) error {
 		result.Message, result.Public = failure.Message, true
 	}
 	return result
+}
+
+const SourceRefusalGuidance = "Source bundle metadata or pack is invalid or exceeds the verification budget; split large changes or recreate it with git bundle create <path> HEAD ^<base>"
+
+func OperatorSourceRefusal(err error) (*operatortool.RequestError, bool) {
+	var failure *NativeError
+	if !errors.As(FromFeatureError(err), &failure) || failure.Code != "invalid_request" {
+		return nil, false
+	}
+	rejection, ok := failure.Details["rejection"].(runnerauth.PublicationRejection)
+	if !ok || rejection.Field != "source" || rejection.Category != "version_validation" && rejection.Category != "source_verification" {
+		return nil, false
+	}
+	return &operatortool.RequestError{Code: failure.Code, Message: SourceRefusalGuidance}, true
 }
 
 func ValidID(id, prefix string) bool {
