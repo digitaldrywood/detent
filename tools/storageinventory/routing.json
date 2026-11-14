@@ -15505,6 +15505,19 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/pgstoretest/reportplans.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "LoadReportIndexes:QueryContext": 1,
+          "reportIndexesQuery:SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/pgstoretest/repository.go": {
       "disposition": "target-adapter",
       "families": [
