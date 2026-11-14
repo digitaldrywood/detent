@@ -825,7 +825,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if observed := readWorkItem(t, f, created.WorkItemID, ""); observed.State != current.State || observed.Revision != current.Revision {
 		t.Fatal("worker request changed workflow")
 	}
-	largeMoveBody := strings.Repeat("<", 60000)
+	largeMoveBody := strings.Repeat("<", 60000) + issueContractTestSections
 	response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+id, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "large-move-body"}, ExpectedRevision: current.Revision, Body: &largeMoveBody})
 	requireNativeStatus(t, response, http.StatusOK)
 	var bodyUpdated tracker.NativeIssue
@@ -834,7 +834,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		t.Fatalf("large move setup=%+v", bodyUpdated)
 	}
 	for _, key := range []string{"operator-move", "operator-move"} {
-		raw, failed = call(t, operatortool.MoveItem, key, map[string]any{"identifier": id, "expected_revision": bodyUpdated.Revision, "target_state": "In Progress"})
+		raw, failed = call(t, operatortool.MoveItem, key, map[string]any{"identifier": id, "expected_revision": strconv.FormatInt(int64(bodyUpdated.Revision), 10), "target_state": "In Progress"})
 		var moved tracker.NativeIssue
 		if err := json.Unmarshal(raw, &moved); err != nil || failed || moved.State != "In Progress" || moved.Revision != bodyUpdated.Revision+1 {
 			t.Fatalf("Hub workflow command=%s %v", raw, err)
