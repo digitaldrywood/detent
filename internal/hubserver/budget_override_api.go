@@ -83,8 +83,8 @@ func (s *Service) deleteBudgetOverride(c echo.Context) error {
 
 func (s *Service) writeBudgetOverride(c echo.Context, clear bool) error {
 	var command budgetOverrideCommand
-	if err := c.Bind(&command); err != nil {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid budget override request"))
+	if err := hubapi.DecodeAPIJSON(c, &command); err != nil {
+		return s.invalidAPIRequest(c, err)
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
