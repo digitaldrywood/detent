@@ -23,7 +23,7 @@ func (s *session) recordCatalogTraffic(ctx context.Context, arg CatalogTrafficRe
 	if err := s.checkOrganization(arg.OrganizationID); err != nil {
 		return err
 	}
-	if arg.ID == "" || len(arg.ID) > 200 || arg.Minute.IsZero() || !arg.Minute.Equal(arg.Minute.UTC().Truncate(time.Minute)) || arg.UploadBytes < 0 || arg.DownloadBytes < 0 || arg.Requests < 0 {
+	if arg.ID == "" || len(arg.ID) > 200 || arg.Minute.IsZero() || !arg.Minute.Equal(arg.Minute.UTC().Truncate(time.Minute)) || arg.UploadBytes < 0 || arg.UploadBytes > artifact.MaxArtifactBytes || arg.DownloadBytes < 0 || arg.DownloadBytes > artifact.MaxArtifactBytes || arg.Requests < 0 || arg.Requests > artifact.MaxObjects {
 		return artifact.ErrInvalid
 	}
 	if _, err := s.lockCatalogUsage(ctx); err != nil {
