@@ -11,7 +11,9 @@ CREATE TABLE work_item_identities (
     UNIQUE (organization_id,project_id,id)
 );
 LOCK TABLE issues IN SHARE ROW EXCLUSIVE MODE;
+CREATE POLICY work_item_identity_backfill ON issues FOR SELECT TO detent_migration USING (true);
 INSERT INTO work_item_identities SELECT organization_id,id,project_id,native_id FROM issues;
+DROP POLICY work_item_identity_backfill ON issues;
 ALTER TABLE work_item_identities OWNER TO detent_migration;
 REVOKE ALL ON work_item_identities FROM PUBLIC,detent_runtime,detent_platform;
 GRANT SELECT ON work_item_identities TO detent_runtime,detent_platform;

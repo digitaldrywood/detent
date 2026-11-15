@@ -172,7 +172,14 @@ func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedIdentityMigrationIssues(t, admin, org)
 	}
+	admin.SetMaxOpenConns(1)
+	if _, err := admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := provider.UpTo(t.Context(), migrationVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `RESET ROLE`); err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
