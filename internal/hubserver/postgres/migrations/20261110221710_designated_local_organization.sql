@@ -1,4 +1,7 @@
 -- +goose Up
+CREATE POLICY designated_local_organization_repair ON public.organizations TO detent_migration USING (true) WITH CHECK (true);
+UPDATE public.organizations SET local = false WHERE local AND (SELECT count(*) FROM public.organizations WHERE local) > 1;
+DROP POLICY designated_local_organization_repair ON public.organizations;
 CREATE UNIQUE INDEX organizations_single_local ON public.organizations (local) WHERE local;
 CREATE POLICY designated_local_organization_read ON public.organizations
     FOR SELECT TO detent_migration USING (true);
