@@ -84,13 +84,21 @@ func (r *Repository) ImportReportUsageFacts(ctx context.Context, records []repor
 }
 
 func (s *session) RefreshReportUsage(ctx context.Context, records []billingstore.CostObservation) error {
+	return s.refreshReportUsage(ctx, records, s.validateBillingCost)
+}
+
+func (s *session) refreshStoredReportUsage(ctx context.Context, records []billingstore.CostObservation) error {
+	return s.refreshReportUsage(ctx, records, s.validateStoredBillingCost)
+}
+
+func (s *session) refreshReportUsage(ctx context.Context, records []billingstore.CostObservation, validate func(billingstore.CostObservation) error) error {
 	if len(records) < 1 || len(records) > 128 {
 		return errors.New("invalid report usage refresh batch")
 	}
 	selected := make([]billingstore.CostObservation, 0, len(records))
 	positions := map[string]int{}
 	for _, record := range records {
-		if err := s.validateBillingCost(record); err != nil {
+		if err := validate(record); err != nil {
 			return err
 		}
 		o := record.Observation
@@ -307,13 +315,16 @@ LEFT JOIN cost_observation_revisions r ON r.organization_id=$1 AND r.source_key=
 			continue
 		}
 		expectedRevision := value.record.Observation.Revision
-		raw, err := objects.ReadDetail(ctx, string(organization), value.record.Reference.ArchiveReference())
+		ref := value.record.Reference.ArchiveReference()
+		stored, err := attachment.ReadVerifiedDetail(ctx, objects, string(organization), ref)
 		if err != nil {
 			return after, 0, err
 		}
+		raw, _ := stored.Content(ref)
 		if err := json.Unmarshal(raw, &value.record.Observation); err != nil {
 			return after, 0, errors.New("decode accepted report usage observation")
 		}
+		value.record.Stored = stored
 		o := value.record.Observation
 		key := costIdentity(o.Provider, o.ProviderAccount, o.SourceID, o.From.UTC().Format(costPeriodLayout), o.To.UTC().Format(costPeriodLayout))
 		if key != value.key || o.Revision != expectedRevision || o.Bucket != "runner_api" || o.ResourceID != value.attempt || o.AttemptID != value.attempt || o.WorkItemID != value.item {
@@ -322,7 +333,7 @@ LEFT JOIN cost_observation_revisions r ON r.organization_id=$1 AND r.source_key=
 		prepared = append(prepared, value.record)
 	}
 	if len(prepared) > 0 {
-		if err := r.internalWrite(ctx, organization, func(s *session) error { return s.RefreshReportUsage(ctx, prepared) }); err != nil {
+		if err := r.internalWrite(ctx, organization, func(s *session) error { return s.refreshStoredReportUsage(ctx, prepared) }); err != nil {
 			return after, 0, err
 		}
 	}
@@ -465,7 +476,7 @@ func (s *session) RecordAttemptUsage(ctx context.Context, report reportstore.Att
 		return corestore.ErrInvalidPage
 	}
 	if len(report.Historical) > 0 {
-		if err := s.RefreshReportUsage(ctx, report.Historical); err != nil {
+		if err := s.refreshStoredReportUsage(ctx, report.Historical); err != nil {
 			return err
 		}
 		for _, record := range report.Historical {

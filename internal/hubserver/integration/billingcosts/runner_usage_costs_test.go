@@ -1,6 +1,8 @@
 package billingcosts_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -8,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -235,6 +239,44 @@ func TestRunnerUsageCorrections(t *testing.T) {
 	if err := json.Unmarshal(raw, &original.Observation); err != nil {
 		t.Fatal(err)
 	}
+	var legacy bytes.Buffer
+	legacyWriter, err := gzip.NewWriterLevel(&legacy, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacyWriter.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacyWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	canonicalRef, legacyRef := original.Reference.ArchiveReference(), original.Reference.ArchiveReference()
+	legacyRef.SHA256, legacyRef.CompressedSize = artifact.Digest(legacy.Bytes()), int64(legacy.Len())
+	if legacyRef.Key, err = attachment.ArchiveKey(string(f.project.OrganizationID), legacyRef.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	if legacyRef.SHA256 == canonicalRef.SHA256 {
+		t.Fatal("legacy archive must not match the current encoding")
+	}
+	details := f.service.config.RunDetails.(*memoryRunDetails)
+	details.mu.Lock()
+	details.data[legacyRef.Key] = bytes.Clone(raw)
+	details.mu.Unlock()
+	substitute := func(from, to attachment.ArchiveReference, sources bool) {
+		t.Helper()
+		statement := `UPDATE cost_observation_revisions SET object_key=$3,sha256=$4,compressed_bytes=$5 WHERE organization_id=$1 AND object_key=$2 AND revision=1`
+		if sources {
+			statement = `WITH changed AS (` + statement + ` RETURNING source_key) UPDATE cost_sources SET payload_hash=$4 WHERE organization_id=$1 AND revision=1 AND source_key IN(SELECT source_key FROM changed)`
+		}
+		result, err := admin.ExecContext(t.Context(), statement, f.project.OrganizationID, from.Key, to.Key, to.SHA256, to.CompressedSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			t.Fatalf("archive substitution rows=%d error=%v", n, err)
+		}
+	}
+	substitute(canonicalRef, legacyRef, true)
 	paid := int64(20_001)
 	correction := finish
 	correction.IdempotencyKey, correction.Data.Sequence = "cost-correction", 3
@@ -242,6 +284,7 @@ func TestRunnerUsageCorrections(t *testing.T) {
 	corrected.Revision, corrected.ReportedCostMicros, corrected.CostSource = 2, &paid, "runner_report"
 	correction.Data.Usage = []tracker.NativeUsage{corrected}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, correction), http.StatusOK)
+	substitute(legacyRef, canonicalRef, false)
 	for _, test := range []struct {
 		name   string
 		edit   func(*tracker.NativeRunEvent)

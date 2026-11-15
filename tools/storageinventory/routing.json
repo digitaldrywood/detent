@@ -18623,11 +18623,11 @@
           "session.ReadReportUsageCoverage:SQL": 2,
           "session.RecordAttemptUsage:QueryRow": 4,
           "session.RecordAttemptUsage:SQL": 2,
-          "session.RefreshReportUsage:Exec": 1,
-          "session.RefreshReportUsage:SQL": 3,
           "session.ReplayAttemptUsage:Exec": 3,
           "session.ReplayAttemptUsage:QueryRow": 3,
-          "session.ReplayAttemptUsage:SQL": 6
+          "session.ReplayAttemptUsage:SQL": 6,
+          "session.refreshReportUsage:Exec": 1,
+          "session.refreshReportUsage:SQL": 3
         },
         "tables": [
           "hub/attempt_usage",

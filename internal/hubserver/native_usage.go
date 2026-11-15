@@ -141,15 +141,17 @@ func (s *Service) prepareAttemptUsageHistory(ctx context.Context, scope hubscope
 	}
 	records := make([]billingstore.CostObservation, 0, len(rows))
 	for _, row := range rows {
-		raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), row.revision.Reference.ArchiveReference())
+		ref := row.revision.Reference.ArchiveReference()
+		stored, err := attachment.ReadVerifiedDetail(ctx, s.runDetailStore(), string(scope.Organization), ref)
 		if err != nil {
 			return nil, err
 		}
+		raw, _ := stored.Content(ref)
 		var observation costObservation
 		if json.Unmarshal(raw, &observation) != nil || observation.Provider != row.source.Provider || observation.ProviderAccount != row.source.ProviderAccount || observation.SourceID != row.source.SourceID || !observation.From.Equal(row.source.From) || !observation.To.Equal(row.source.To) || observation.Revision != row.revision.Revision || observation.ResourceID != event.Data.AttemptID || observation.AttemptID != event.Data.AttemptID || observation.WorkItemID != string(item) || observation.Bucket != runnerCostBucket {
 			return nil, artifact.ErrIntegrity
 		}
-		records = append(records, billingstore.CostObservation{OrganizationID: scope.Organization, ProjectID: scope.Project, Observation: observation, Reference: row.revision.Reference, ReceivedAt: row.revision.ReceivedAt})
+		records = append(records, billingstore.CostObservation{OrganizationID: scope.Organization, ProjectID: scope.Project, Observation: observation, Reference: row.revision.Reference, ReceivedAt: row.revision.ReceivedAt, Stored: stored})
 	}
 	return records, nil
 }

@@ -2,16 +2,21 @@ package billingrecords_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -151,5 +156,212 @@ func TestBillingCostsCorrectMonthlySpendWithoutDoubleCounting(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestStoredUsageArchivesRevalidateWithoutRecompression(t *testing.T) {
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	ctx := t.Context()
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	for _, org := range []tracker.OrganizationID{"org_stored_first", "org_stored_second"} {
+		if _, err := admin.ExecContext(ctx, `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
+			t.Fatal(err)
+		}
+		pgstoretest.SeedLeaseFamily(t, repository, org)
+		lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
+		objects := pgstoretest.NewHistoryObjects()
+		payload, err := objects.StoreDetail(ctx, string(org), []byte(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: "attempt_stored", Fence: pgstoretest.LeaseFence(lease), RunID: "run_stored", Sequence: 1, Status: "running", StartedAt: pgstoretest.HistoryAt(), PayloadObjectKey: payload.Key})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cost := billingCostObservation(t, org, "prj_1", "stored_source", "attempt_stored", "runner_api", at.Add(-time.Hour), at, 1000000)
+		o := &cost.Observation
+		o.AttemptID, o.WorkItemID, o.Model, o.Input, o.Coverage, o.UsageKind = "attempt_stored", "wi_1", "stored-model", 100, "complete", "cumulative"
+		cost.ReceivedAt = at.Add(-time.Hour)
+		raw, err := json.Marshal(cost.Observation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := objects.StoreDetail(ctx, string(org), raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cost.Reference = billingstore.AuditReferenceFromArchive(canonical)
+		if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.RecordBillingCosts(ctx, []billingstore.CostObservation{cost})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var compressed bytes.Buffer
+		writer, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writer.Name = "observation.json"
+		if _, err := writer.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		stored := attachment.ArchiveReference{SHA256: artifact.Digest(compressed.Bytes()), CompressedSize: int64(compressed.Len()), UncompressedSize: int64(len(raw)), Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
+		if stored.Key, err = attachment.ArchiveKey(string(org), stored.SHA256); err != nil {
+			t.Fatal(err)
+		}
+		if decoded, err := attachment.DecodeArchive(string(org), stored, compressed.Bytes()); err != nil || !bytes.Equal(decoded, raw) {
+			t.Fatalf("historical archive does not decode: %v", err)
+		}
+		if again, _, err := attachment.PrepareArchive(string(org), 1, bytes.NewReader(raw)); err != nil || again.SHA256 == stored.SHA256 {
+			t.Fatalf("historical archive recompresses to its stored digest, so it cannot pin the regression: %v", err)
+		}
+		objects.Mu.Lock()
+		objects.Objects[stored.Key] = bytes.Clone(compressed.Bytes())
+		objects.Mu.Unlock()
+		var sourceKey string
+		if err := admin.QueryRowContext(ctx, `SELECT source_key FROM cost_observation_revisions WHERE organization_id=$1 AND object_key=$2 AND revision=1`, org, canonical.Key).Scan(&sourceKey); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `WITH changed AS (UPDATE cost_observation_revisions SET object_key=$3,sha256=$4,compressed_bytes=$5,content_bytes=$6 WHERE organization_id=$1 AND source_key=$2 AND revision=1 RETURNING source_key) UPDATE cost_sources SET payload_hash=$4 WHERE organization_id=$1 AND source_key IN(SELECT source_key FROM changed)`, org, sourceKey, stored.Key, stored.SHA256, stored.CompressedSize, stored.UncompressedSize); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Run(string(org)+"/maintenance refresh", func(t *testing.T) {
+			for _, test := range []struct {
+				name    string
+				object  []byte
+				wantErr bool
+			}{
+				{name: "corrupt stored bytes are rejected", object: append(bytes.Clone(compressed.Bytes()[:compressed.Len()-1]), compressed.Bytes()[compressed.Len()-1]^0xff), wantErr: true},
+				{name: "historical gzip encoding refreshes", object: compressed.Bytes()},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					objects.Mu.Lock()
+					objects.Objects[stored.Key] = bytes.Clone(test.object)
+					objects.Mu.Unlock()
+					t.Cleanup(func() {
+						objects.Mu.Lock()
+						objects.Objects[stored.Key] = bytes.Clone(compressed.Bytes())
+						objects.Mu.Unlock()
+					})
+					after, count, err := repository.RefreshReportUsagePage(ctx, org, objects, "", 100)
+					if test.wantErr {
+						if err == nil || after != "" || count != 0 {
+							t.Fatalf("corrupt archive advanced refresh: cursor=%q count=%d error=%v", after, count, err)
+						}
+						return
+					}
+					if err != nil || count != 1 || after != sourceKey {
+						t.Fatalf("refresh cursor=%q count=%d error=%v", after, count, err)
+					}
+					var input, revision int64
+					if err := admin.QueryRowContext(ctx, `SELECT input,revision FROM report_usage_current WHERE organization_id=$1 AND source_key=$2`, org, sourceKey).Scan(&input, &revision); err != nil {
+						t.Fatal(err)
+					}
+					if input != 100 || revision != 1 {
+						t.Fatalf("refreshed usage input=%d revision=%d", input, revision)
+					}
+				})
+			}
+		})
+
+		t.Run(string(org)+"/run event history", func(t *testing.T) {
+			verify := func(ref attachment.ArchiveReference) attachment.VerifiedDetail {
+				t.Helper()
+				verified, err := attachment.ReadVerifiedDetail(ctx, objects, string(org), ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return verified
+			}
+			verified := verify(stored)
+			content, _ := verified.Content(stored)
+			var observation usagecost.Observation
+			if err := json.Unmarshal(content, &observation); err != nil {
+				t.Fatal(err)
+			}
+			historical := billingstore.CostObservation{OrganizationID: org, ProjectID: "prj_1", Observation: observation, Reference: billingstore.AuditReferenceFromArchive(stored), ReceivedAt: cost.ReceivedAt, Stored: verified}
+			forged := observation
+			forged.Input = 900
+			forgedRaw, err := json.Marshal(forged)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(forgedRaw) != len(content) {
+				t.Fatalf("forged content length %d differs from stored %d", len(forgedRaw), len(content))
+			}
+			var forgedArchive bytes.Buffer
+			forgedWriter := gzip.NewWriter(&forgedArchive)
+			if _, err := forgedWriter.Write(forgedRaw); err != nil {
+				t.Fatal(err)
+			}
+			if err := forgedWriter.Close(); err != nil {
+				t.Fatal(err)
+			}
+			objects.Mu.Lock()
+			objects.Objects[stored.Key] = forgedArchive.Bytes()
+			objects.Mu.Unlock()
+			_, forgedErr := attachment.ReadVerifiedDetail(ctx, objects, string(org), stored)
+			objects.Mu.Lock()
+			objects.Objects[stored.Key] = bytes.Clone(compressed.Bytes())
+			objects.Mu.Unlock()
+			if !errors.Is(forgedErr, artifact.ErrIntegrity) {
+				t.Fatalf("content not matching the stored digest was verified: %v", forgedErr)
+			}
+			foreign := tracker.OrganizationID("org_stored_first")
+			if org == foreign {
+				foreign = "org_stored_second"
+			}
+			for _, test := range []struct {
+				name   string
+				change func(*billingstore.CostObservation)
+				want   error
+			}{
+				{name: "foreign tenant is rejected", change: func(r *billingstore.CostObservation) { r.OrganizationID = foreign }, want: corestore.ErrTenantMismatch},
+				{name: "observation differing from verified content is rejected", change: func(r *billingstore.CostObservation) { r.Observation = forged }, want: billingstore.ErrInvalidUsage},
+				{name: "missing verified content is rejected", change: func(r *billingstore.CostObservation) { r.Stored = attachment.VerifiedDetail{} }, want: billingstore.ErrInvalidUsage},
+				{name: "content verified under another reference is rejected", change: func(r *billingstore.CostObservation) { r.Stored = verify(canonical) }, want: billingstore.ErrInvalidUsage},
+				{name: "reference not matching its verified digest is rejected", change: func(r *billingstore.CostObservation) { r.Reference.SHA256 = strings.Repeat("0", 64) }, want: billingstore.ErrInvalidUsage},
+				{name: "verified archive that is not the persisted revision is rejected", change: func(r *billingstore.CostObservation) {
+					r.Reference, r.Stored = billingstore.AuditReferenceFromArchive(canonical), verify(canonical)
+				}, want: corestore.ErrRevisionConflict},
+				{name: "historical gzip encoding is accepted"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					record := historical
+					if test.change != nil {
+						test.change(&record)
+					}
+					report := reportstore.AttemptUsage{OrganizationID: org, ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_stored", LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, Sequence: 1, ReceivedAt: at, Currency: "USD", Totals: []reportstore.AttemptUsageTotal{{Provider: observation.Provider, Model: "stored-model", Input: 250, ReportedCost: new(2.5)}}, Historical: []billingstore.CostObservation{record}}
+					err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.(reportstore.UsageWriter).RecordAttemptUsage(ctx, report)
+					})
+					if test.want != nil {
+						if !errors.Is(err, test.want) {
+							t.Fatalf("error=%v want %v", err, test.want)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					var input int64
+					var cost float64
+					if err := admin.QueryRowContext(ctx, `SELECT sum(input),sum(cost_estimate) FROM attempt_usage WHERE organization_id=$1 AND attempt_id='attempt_stored' AND model='stored-model'`, org).Scan(&input, &cost); err != nil {
+						t.Fatal(err)
+					}
+					if input != 250 || cost != 2.5 {
+						t.Fatalf("usage over stored baseline input=%d cost=%v want 250/2.5", input, cost)
+					}
+				})
+			}
+		})
 	}
 }
