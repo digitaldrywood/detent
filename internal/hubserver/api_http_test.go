@@ -175,6 +175,10 @@ func TestAPIRefusals(t *testing.T) {
 		}},
 		{"claim ID", hubapi.NativeBase + "/claims", `{"work_item_id":-1}`, "invalid_request", "Request body contains an invalid field type", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},
 		{"claim body limit", hubapi.NativeBase + "/claims", `{"session_id":"` + strings.Repeat("x", hubapi.MaxAPIRequestBodyBytes) + `"}`, "payload_too_large", "Request body is too large", http.StatusRequestEntityTooLarge, (*Service).claimNativeIssue},
+		{"budget override body limit", hubapi.NativeBase + "/budget-override", `{"idempotency_key":"budget-limit","reason":"` + strings.Repeat("x", hubapi.MaxAPIRequestBodyBytes) + `"}`, "payload_too_large", "Request body is too large", http.StatusRequestEntityTooLarge, func(s *Service, c echo.Context) error {
+			c.Request().Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			return s.putBudgetOverride(c)
+		}},
 		{"claim TTL", hubapi.NativeBase + "/claims", `{"ttl_seconds":-1,"protocol_major":2,"capabilities":["native_issues","scoped_collaboration"]}`, "invalid_request", "Lease TTL is invalid", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},
 		{"dependency key", hubapi.NativeBase + "/work-items/:item/dependencies", `{}`, "invalid_request", "An idempotency key of at most 128 bytes is required", http.StatusUnprocessableEntity, (*Service).changeNativeDependency},
 		{"key administration", "/internal/keys/admin", "", "forbidden", "Organization administrator service access is required", http.StatusForbidden, (*Service).entryKeyAdmin},
