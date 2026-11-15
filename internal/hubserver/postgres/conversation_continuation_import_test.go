@@ -320,7 +320,7 @@ func TestConversationHistoryImportPreservesContinuationOwnership(t *testing.T) {
 				return err
 			}
 			refuse("missing declared source", nil)
-			if err := refuse("missing tenant source", sources[:1]); !strings.Contains(err.Error(), "continuation history is incomplete") {
+			if err := refuse("missing tenant source", sources[:1]); !strings.Contains(err.Error(), "missing event sequences cannot be proven compacted") {
 				t.Fatalf("missing tenant source error=%v", err)
 			}
 			foreign := slices.Clone(sources)

@@ -3,6 +3,7 @@ package schemaupgrade_test
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
@@ -14,10 +15,13 @@ func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) 
 	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261108224925)
 	pgstoretest.SeedCore(t, db)
 	cases := []struct {
-		name, delivery string
-		statuses       []string
-		want           bool
-		referenced     bool
+		name, delivery, status string
+		before, statuses       []string
+		deleted                []int64
+		tail                   int64
+		want                   bool
+		referenced             bool
+		unproven               bool
 	}{
 		{name: "referenced_interrupted", delivery: "delivered", statuses: []string{"running", "interrupted"}, referenced: true, want: true},
 		{name: "referenced_completed", delivery: "delivered", statuses: []string{"completed", "interrupted"}, referenced: true},
@@ -32,6 +36,11 @@ func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) 
 		{name: "completed_provider_turn", delivery: "completed", statuses: []string{"running"}, want: true},
 		{name: "paged_history", delivery: "interrupted"},
 		{name: "tenant_isolation", delivery: "interrupted", statuses: []string{"interrupted"}, want: true},
+		{name: "compacted_completion", delivery: "completed", statuses: []string{"running", "interrupted", "completed"}, deleted: []int64{2, 3}, status: "completed"},
+		{name: "compacted_before_continue", delivery: "saved", before: []string{"running", "completed"}, statuses: []string{"waiting_for_runner"}, deleted: []int64{1}, status: "waiting_for_runner", want: true},
+		{name: "compacted_tail", delivery: "completed", statuses: []string{"running", "completed"}, tail: 2, status: "completed"},
+		{name: "unproven_after_continue", delivery: "interrupted", statuses: []string{"running", "completed", "interrupted"}, deleted: []int64{3}, status: "interrupted", unproven: true},
+		{name: "unproven_status", delivery: "completed", statuses: []string{"running", "completed"}, deleted: []int64{2}, status: "running", unproven: true},
 	}
 	for i := range cases {
 		if cases[i].name == "paged_history" {
@@ -86,6 +95,9 @@ func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) 
 					t.Fatal(err)
 				}
 			}
+			for _, status := range tc.before {
+				appendEvent("execution.updated", map[string]string{"status": status})
+			}
 			appendEvent("message.accepted", map[string]string{"id": "message_" + tc.name, "kind": "continue"})
 			for _, status := range tc.statuses {
 				appendEvent("execution.updated", map[string]string{"status": status})
@@ -105,7 +117,10 @@ func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) 
 			if tc.name == "tenant_isolation" && organization == "org_second" {
 				appendEvent("execution.updated", map[string]string{"status": "completed"})
 			}
-			if _, err := db.ExecContext(t.Context(), `UPDATE conversations SET event_seq=$1 WHERE organization_id=$2 AND id=$3`, sequence, organization, id); err != nil {
+			if _, err := db.ExecContext(t.Context(), `DELETE FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2 AND seq=ANY($3)`, organization, id, tc.deleted); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `UPDATE conversations SET event_seq=$1,execution_status=NULLIF($2,'') WHERE organization_id=$3 AND id=$4`, sequence+tc.tail, tc.status, organization, id); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -127,8 +142,8 @@ func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.UpTo(t.Context(), requiredVersion); err == nil {
-		t.Fatal("incomplete accepted Continue history was silently migrated")
+	if _, err := provider.UpTo(t.Context(), requiredVersion); err == nil || !strings.Contains(err.Error(), "5 conversations with 5 missing event sequences cannot be proven compacted") {
+		t.Fatalf("unprovable event gaps were not counted and refused: %v", err)
 	}
 	if _, err := db.ExecContext(t.Context(), `RESET ROLE`); err != nil {
 		t.Fatal(err)
@@ -146,6 +161,10 @@ func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) 
 		t.Fatalf("incomplete history ownership unresolved=%t error=%v", unresolved, err)
 	}
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO conversation_events(organization_id,conversation_id,seq,type,body_json) VALUES('org_second','continuation_consumed',2,'execution.updated','{"status":"running"}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO conversation_events(organization_id,conversation_id,seq,type,body_json) SELECT organization_id,id,3,'execution.updated','{"status":"completed"}' FROM conversations WHERE id='continuation_unproven_after_continue';
+		UPDATE conversations SET execution_status='completed' WHERE id='continuation_unproven_status'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO conversations(organization_id,id,project_id,owner_principal_id,origin,visibility,status,event_seq) VALUES('org_first','unverified','prj_shared','continuation_owner','worker','shared','active',1);
