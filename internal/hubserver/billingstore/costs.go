@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/usagecost"
@@ -18,6 +19,7 @@ type CostObservation struct {
 	Observation    usagecost.Observation
 	Reference      AuditReference
 	ReceivedAt     time.Time
+	Stored         attachment.VerifiedDetail `json:"-"`
 }
 
 type CostSource struct {

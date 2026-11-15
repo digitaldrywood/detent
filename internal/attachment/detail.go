@@ -27,6 +27,29 @@ func ReadArchive(ctx context.Context, storage Storage, organization string, ref 
 	return decodeArchive(compressed, ref.CompressedSize, ref.UncompressedSize, true)
 }
 
+type VerifiedDetail struct {
+	ref     ArchiveReference
+	content []byte
+}
+
+func ReadVerifiedDetail(ctx context.Context, store DetailStore, organization string, ref ArchiveReference) (VerifiedDetail, error) {
+	content, err := store.ReadDetail(ctx, organization, ref)
+	if err != nil {
+		return VerifiedDetail{}, err
+	}
+	if int64(len(content)) != ref.UncompressedSize {
+		return VerifiedDetail{}, artifact.ErrIntegrity
+	}
+	return VerifiedDetail{ref: ref, content: bytes.Clone(content)}, nil
+}
+
+func (d VerifiedDetail) Content(ref ArchiveReference) ([]byte, bool) {
+	if d.content == nil || d.ref != ref {
+		return nil, false
+	}
+	return bytes.Clone(d.content), true
+}
+
 func DecodeArchive(organization string, ref ArchiveReference, compressed []byte) ([]byte, error) {
 	if ref.Validate(organization) != nil {
 		return nil, ErrInvalid

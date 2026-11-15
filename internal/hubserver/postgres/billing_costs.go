@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strconv"
 	"time"
@@ -163,13 +164,30 @@ func (s *session) validateBillingCost(record billingstore.CostObservation) error
 	if err != nil || archive.SHA256 != record.Reference.SHA256 || archive.UncompressedSize != record.Reference.ContentBytes || archive.CompressedSize != record.Reference.CompressedBytes {
 		return billingstore.ErrInvalidUsage
 	}
+	return s.validateBillingCostFields(record)
+}
+
+func (s *session) validateStoredBillingCost(record billingstore.CostObservation) error {
+	if err := s.checkOrganization(record.OrganizationID); err != nil {
+		return err
+	}
+	content, verified := record.Stored.Content(record.Reference.ArchiveReference())
+	var stored usagecost.Observation
+	if !verified || json.Unmarshal(content, &stored) != nil || !reflect.DeepEqual(stored, record.Observation) {
+		return billingstore.ErrInvalidUsage
+	}
+	return s.validateBillingCostFields(record)
+}
+
+func (s *session) validateBillingCostFields(record billingstore.CostObservation) error {
+	o := record.Observation
 	if record.Reference.ArchiveReference().Validate(string(s.organization)) != nil || record.ReceivedAt.IsZero() || o.Revision < 1 || o.Provider == "" || o.ProviderAccount == "" || o.SourceID == "" || o.ResourceID == "" || o.Bucket == "" || o.Metric == "" || o.Currency == "" {
 		return billingstore.ErrInvalidUsage
 	}
 	if o.AmountMicros != nil && (*o.AmountMicros < -1e15 || *o.AmountMicros > 1e15) {
 		return billingstore.ErrInvalidAmount
 	}
-	_, err = usagecost.AllocateMonths(0, o.From, o.To)
+	_, err := usagecost.AllocateMonths(0, o.From, o.To)
 	return err
 }
 
