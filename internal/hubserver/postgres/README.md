@@ -2,7 +2,8 @@
 
 This directory owns the PostgreSQL schema and transaction boundary for the
 core records, request metrics and platform registry/authentication families.
-Provision `roles.sql` as a PostgreSQL superuser, then apply `migrations/`
+Provision `roles.sql` in one transaction as a PostgreSQL superuser or a
+`CREATEROLE` database administrator login, then apply `migrations/`
 with the Goose PostgreSQL dialect as
 `detent_migration_v2` on an empty PostgreSQL 17 or 18 database. Existing installations
 apply only new timestamp migrations after provisioning the roles. PostgreSQL
@@ -60,8 +61,25 @@ registry, history scan or derived write is introduced (INV-18).
 role administration, database creation, replication or `BYPASSRLS` privileges.
 It rejects pre-existing groups with elevated attributes or combined authority.
 The schema grants apply only to the selected database. Re-running provisioning
-preserves existing roles and requires a PostgreSQL superuser; Goose migrations
-never create or drop cluster-wide roles.
+preserves existing roles; Goose migrations never create or drop cluster-wide roles.
+
+Provisioning runs as a PostgreSQL superuser or, on managed PostgreSQL without
+one, as a non-superuser `CREATEROLE` login that owns the database (or inherits
+its owner) and can already use the existing Detent groups, such as the provider's
+`postgres` administrator. Inside its one function-ownership statement the file
+temporarily gives that login membership in a function owner and gives the owner
+`CREATE` on schema `public` only where `ALTER FUNCTION ... OWNER TO` requires
+them, revokes both, and fails unless the login's memberships and the owners'
+schema privileges match their state before the statement and every security
+definer function has exactly its provisioned owner and grants. PostgreSQL grants
+a non-superuser creator `ADMIN` on each role it creates and the creator cannot
+remove that grant, so the bootstrap reader tolerates exactly one membership
+shape: `ADMIN` without `INHERIT` or `SET`, granted by a superuser to a superuser
+or `CREATEROLE` role that already holds the privileges of `detent_migration_v2`,
+the owner of every table the reader can read. Re-provisioning later needs a login holding or inheriting
+that `ADMIN` grant, so provision as the persistent administrator (for example
+`SET ROLE postgres` from a temporary login) rather than as a role that is later
+deleted.
 
 The versioned names isolate this authority family from roles left by prior
 installations. `postgres.RoleMigrations` renders the historical migration SQL
@@ -73,17 +91,17 @@ the checked-in migration files remain unchanged.
 | `detent_runtime_v2` | Tenant-scoped SELECT, INSERT, UPDATE and DELETE, plus issue identity sequence usage; no table ownership, schema creation or TRUNCATE. |
 | `detent_platform_v2` | Explicitly authorized cross-organization core data access through its own RLS policies; no schema migration authority. |
 | `detent_migration_v2` | Core table ownership and schema creation; forced RLS still denies unscoped data access until an authorized migration deliberately changes policy. |
-| `detent_local_bootstrap_reader_v2` | Column-level organization ID, name and Local designation reads through bootstrap discovery and authenticated instance organization pages; bound-tenant credential and runner columns authenticate the page function. This role has no members or inherited roles. |
+| `detent_local_bootstrap_reader_v2` | Column-level organization ID, name and Local designation reads through bootstrap discovery and authenticated instance organization pages; bound-tenant credential and runner columns authenticate the page function. This role inherits nothing and has no members beyond its creator's automatic `ADMIN`-only grant. |
 
 For the Local discovery isolation upgrade, apply the updated `roles.sql` as a
-PostgreSQL superuser before running `detent hub migrate-postgres` with the
+provisioning login described above before running `detent hub migrate-postgres` with the
 separate migration login. Provisioning creates the isolated function owner and
 the function. The migration grants the two column privileges and removes the
 old migration-role policy and function. Rollback across this migration requires
 restoring a compatible database and binary together. The down migration refuses
 to restore the broader policy, and an older binary expects the removed function.
 
-For the operator organization directory upgrade, apply the updated `roles.sql` as a PostgreSQL superuser, run `detent hub migrate-postgres` with the separate migration login, then start the new binary. The new startup check requires the provisioned directory function and its exact authorization profile.
+For the operator organization directory upgrade, apply the updated `roles.sql` as a provisioning login described above, run `detent hub migrate-postgres` with the separate migration login, then start the new binary. The new startup check requires the provisioned directory function and its exact authorization profile.
 
 An administrator provisions separate application, platform and migration login
 credentials and explicitly grants each login only its corresponding group.
@@ -1019,7 +1037,7 @@ facts again. Startup verifies the helper's owner, security mode, search path
 and execution grant; runtime credentials gain no platform membership or pool.
 The separately provisioned functions persist across schema rollback, like roles.
 
-A change to a provisioned function body ships with a guard migration, because the schema version and fingerprint cover migrations only and a binary-only deploy would otherwise keep the old server-side function. For the search candidate document-key upgrade, apply the updated `roles.sql` as a PostgreSQL superuser, run `detent hub migrate-postgres` with the separate migration login, then start the new binary. Migration 20261114041647 refuses to run until the provisioned `search_index_candidates` body is current, and the new binary's startup schema check refuses a database without that migration, so a binary-only deploy fails its health check and rolls back to the previous release.
+A change to a provisioned function body ships with a guard migration, because the schema version and fingerprint cover migrations only and a binary-only deploy would otherwise keep the old server-side function. For the search candidate document-key upgrade, apply the updated `roles.sql` as a provisioning login described above, run `detent hub migrate-postgres` with the separate migration login, then start the new binary. Migration 20261114041647 refuses to run until the provisioned `search_index_candidates` body is current, and the new binary's startup schema check refuses a database without that migration, so a binary-only deploy fails its health check and rolls back to the previous release.
 
 The legacy board fallback uses `board_search_candidates`, owned by the separate
 `detent_search_reader_v2` role. This role cannot log in or inherit serving,

@@ -74,7 +74,9 @@ func NewRuntime(ctx context.Context, reader, writer *pgxpool.Pool) (*Runtime, er
 			 AND NOT EXISTS(SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE'))
 			AND EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='detent_local_bootstrap_reader_v2'
 			 AND NOT (r.rolcanlogin OR r.rolinherit OR r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls)
-			 AND NOT EXISTS(SELECT 1 FROM pg_auth_members m WHERE r.oid IN (m.roleid,m.member)))
+			 AND NOT EXISTS(SELECT 1 FROM pg_auth_members m WHERE r.oid IN (m.roleid,m.member) AND NOT (m.roleid=r.oid AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option
+			  AND EXISTS(SELECT 1 FROM pg_roles g WHERE g.oid=m.grantor AND g.rolsuper) AND EXISTS(SELECT 1 FROM pg_roles a WHERE a.oid=m.member AND (a.rolsuper OR a.rolcreaterole)
+			  AND pg_has_role(a.oid,'detent_migration_v2','USAGE')))))
 			AND EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid='public.operator_organization_metadata_page(text,text,integer,integer)'::regprocedure
 			 AND p.proowner='detent_local_bootstrap_reader_v2'::regrole AND p.prosecdef AND p.provolatile='s'
 			 AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp'] AND has_function_privilege(current_user,p.oid,'EXECUTE')

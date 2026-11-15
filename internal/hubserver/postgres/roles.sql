@@ -55,13 +55,6 @@ BEGIN
             AND (pg_has_role(r.oid,'detent_search_reader_v2','MEMBER') OR pg_has_role('detent_search_reader_v2',r.oid,'MEMBER'))) THEN
         RAISE EXCEPTION 'Detent database roles must have separate authority';
     END IF;
-    IF EXISTS (
-        SELECT 1 FROM pg_roles r
-        WHERE r.rolname = 'detent_local_bootstrap_reader_v2'
-        AND (r.rolinherit OR EXISTS (SELECT 1 FROM pg_auth_members m WHERE r.oid IN (m.roleid, m.member)))
-    ) THEN
-        RAISE EXCEPTION 'Detent local bootstrap reader must have no role memberships';
-    END IF;
 END
 $roles$;
 
@@ -395,17 +388,41 @@ BEGIN
  UNION ALL SELECT b.document_id,true,b.key||':'||b.term||chr(9)||b.lexeme||CASE WHEN b.exhausted AND b.more_lexemes THEN chr(9)||'advance' ELSE '' END,b.impact,b.exhausted AND NOT b.more_lexemes FROM stream_boundaries b;
 END
 $search$;
-ALTER FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) OWNER TO detent_platform_v2;
-REVOKE ALL ON FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) TO detent_runtime_v2;
 
 GRANT USAGE ON SCHEMA public TO detent_search_reader_v2;
-DO $board_search_provision$
-DECLARE function_checking text:=current_setting('check_function_bodies');
+GRANT USAGE ON SCHEMA public TO detent_local_bootstrap_reader_v2;
+DO $owned_functions_provision$
+DECLARE
+    function_checking text := current_setting('check_function_bodies');
+    function_owners text[] := ARRAY['detent_platform_v2', 'detent_search_reader_v2', 'detent_local_bootstrap_reader_v2'];
+    provisioner oid := (SELECT oid FROM pg_roles WHERE rolname = current_user);
+    provisioner_memberships text[];
+    borrowed_memberships text[] := '{}';
+    borrowed_schema_creates text[] := '{}';
+    function_owner text;
 BEGIN
- PERFORM set_config('check_function_bodies','off',true);
- CREATE OR REPLACE FUNCTION public.board_search_candidates(project_id text,patterns text[],reporter boolean,principal_id text,body_only boolean)
- RETURNS TABLE(work_item_id text) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $board_search$
+    provisioner_memberships := ARRAY(
+        SELECT concat_ws(':', m.roleid, m.grantor, m.admin_option, m.inherit_option, m.set_option)
+        FROM pg_auth_members m WHERE m.member = provisioner AND m.roleid IN (SELECT oid FROM pg_roles WHERE rolname = ANY(function_owners))
+        ORDER BY 1);
+    FOREACH function_owner IN ARRAY function_owners LOOP
+        IF NOT (pg_has_role(current_user, function_owner, 'USAGE') AND pg_has_role(current_user, function_owner, 'SET')) THEN
+            EXECUTE format('GRANT %I TO CURRENT_USER WITH INHERIT TRUE, SET TRUE', function_owner);
+            borrowed_memberships := borrowed_memberships || function_owner;
+        END IF;
+        IF NOT has_schema_privilege(function_owner, 'public', 'CREATE') THEN
+            EXECUTE format('GRANT CREATE ON SCHEMA public TO %I', function_owner);
+            borrowed_schema_creates := borrowed_schema_creates || function_owner;
+        END IF;
+    END LOOP;
+
+    ALTER FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) OWNER TO detent_platform_v2;
+    REVOKE ALL ON FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) FROM PUBLIC;
+    GRANT EXECUTE ON FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) TO detent_runtime_v2;
+
+    PERFORM set_config('check_function_bodies', 'off', true);
+    CREATE OR REPLACE FUNCTION public.board_search_candidates(project_id text,patterns text[],reporter boolean,principal_id text,body_only boolean)
+    RETURNS TABLE(work_item_id text) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $board_search$
  SELECT b.work_item_id FROM public.native_board_items b
  WHERE b.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND b.project_id=$1
   AND $3 IS NOT NULL AND $5 IS NOT NULL AND cardinality($2) BETWEEN 1 AND 9
@@ -424,18 +441,6 @@ BEGIN
     AND i.native_id=b.work_item_id AND (NOT $3 OR (NULLIF($4,'') IS NOT NULL AND i.actor_principal_id=$4)))
   AND b.body COLLATE pg_catalog.pg_c_utf8 ILIKE ANY($2)
  $board_search$;
- PERFORM set_config('check_function_bodies',function_checking,true);
- ALTER FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) OWNER TO detent_search_reader_v2;
- REVOKE ALL ON FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) FROM PUBLIC,detent_platform_v2,detent_migration_v2;
- GRANT EXECUTE ON FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) TO detent_runtime_v2;
-END
-$board_search_provision$;
-
-GRANT USAGE ON SCHEMA public TO detent_local_bootstrap_reader_v2;
-DO $local_bootstrap_provision$
-DECLARE function_checking text := current_setting('check_function_bodies');
-BEGIN
-    PERFORM set_config('check_function_bodies', 'off', true);
     CREATE OR REPLACE FUNCTION public.lookup_designated_local_organization() RETURNS text
     LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
     AS $lookup$
@@ -475,11 +480,57 @@ BEGIN
     END;
     $operator_directory$;
     PERFORM set_config('check_function_bodies', function_checking, true);
+    ALTER FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) OWNER TO detent_search_reader_v2;
+    REVOKE ALL ON FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) FROM PUBLIC,detent_platform_v2,detent_migration_v2;
+    GRANT EXECUTE ON FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) TO detent_runtime_v2;
     ALTER FUNCTION public.operator_organization_metadata_page(text,text,integer,integer) OWNER TO detent_local_bootstrap_reader_v2;
     REVOKE ALL ON FUNCTION public.operator_organization_metadata_page(text,text,integer,integer) FROM PUBLIC,detent_platform_v2,detent_migration_v2,detent_search_reader_v2;
     GRANT EXECUTE ON FUNCTION public.operator_organization_metadata_page(text,text,integer,integer) TO detent_runtime_v2;
     ALTER FUNCTION public.lookup_designated_local_organization() OWNER TO detent_local_bootstrap_reader_v2;
     REVOKE ALL ON FUNCTION public.lookup_designated_local_organization() FROM PUBLIC, detent_platform_v2, detent_migration_v2, detent_search_reader_v2;
     GRANT EXECUTE ON FUNCTION public.lookup_designated_local_organization() TO detent_runtime_v2;
+
+    FOREACH function_owner IN ARRAY borrowed_schema_creates LOOP
+        EXECUTE format('REVOKE CREATE ON SCHEMA public FROM %I', function_owner);
+        IF has_schema_privilege(function_owner, 'public', 'CREATE') THEN
+            RAISE EXCEPTION 'Detent function owner kept temporary CREATE on schema public';
+        END IF;
+    END LOOP;
+    FOREACH function_owner IN ARRAY borrowed_memberships LOOP
+        EXECUTE format('REVOKE %I FROM CURRENT_USER', function_owner);
+    END LOOP;
+    IF ARRAY(
+        SELECT concat_ws(':', m.roleid, m.grantor, m.admin_option, m.inherit_option, m.set_option)
+        FROM pg_auth_members m WHERE m.member = provisioner AND m.roleid IN (SELECT oid FROM pg_roles WHERE rolname = ANY(function_owners))
+        ORDER BY 1) IS DISTINCT FROM provisioner_memberships THEN
+        RAISE EXCEPTION 'Detent provisioning login kept a temporary role membership';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM (VALUES
+            ('public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[])'::regprocedure, 'detent_platform_v2'::regrole),
+            ('public.board_search_candidates(text,text[],boolean,text,boolean)'::regprocedure, 'detent_search_reader_v2'::regrole),
+            ('public.operator_organization_metadata_page(text,text,integer,integer)'::regprocedure, 'detent_local_bootstrap_reader_v2'::regrole),
+            ('public.lookup_designated_local_organization()'::regprocedure, 'detent_local_bootstrap_reader_v2'::regrole)
+        ) f(function_oid, owner_oid)
+        JOIN pg_proc p ON p.oid = f.function_oid
+        WHERE p.proowner <> f.owner_oid OR p.proacl IS NULL
+            OR NOT EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee = 'detent_runtime_v2'::regrole AND a.privilege_type = 'EXECUTE')
+            OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantor <> p.proowner OR a.grantee NOT IN (p.proowner, 'detent_runtime_v2'::regrole) OR (a.grantee <> p.proowner AND a.is_grantable))
+    ) THEN
+        RAISE EXCEPTION 'Detent security definer functions must have their provisioned owners and grants';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_roles r
+        WHERE r.rolname = 'detent_local_bootstrap_reader_v2'
+        AND (r.rolinherit OR EXISTS (
+            SELECT 1 FROM pg_auth_members m
+            WHERE r.oid IN (m.roleid, m.member)
+            AND NOT (m.roleid = r.oid AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option
+                AND EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid = m.grantor AND g.rolsuper)
+                AND EXISTS (SELECT 1 FROM pg_roles a WHERE a.oid = m.member AND (a.rolsuper OR a.rolcreaterole) AND pg_has_role(a.oid, 'detent_migration_v2', 'USAGE')))))
+    ) THEN
+        RAISE EXCEPTION 'Detent local bootstrap reader must have no role memberships';
+    END IF;
 END
-$local_bootstrap_provision$;
+$owned_functions_provision$;
