@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,6 +31,8 @@ type runnerRuntime struct {
 	draining     bool
 	applied      []string
 	observations int
+	policyID     string
+	observed     *policy.Descriptor
 }
 
 func (r *runnerRuntime) apply(desired runnerauth.ProjectConfiguration, requestID string) runnerauth.ProjectConfiguration {
@@ -37,10 +40,16 @@ func (r *runnerRuntime) apply(desired runnerauth.ProjectConfiguration, requestID
 	defer r.mu.Unlock()
 	r.observations++
 	r.paused, r.draining = desired.Paused, desired.Draining
+	if desired.EffectivePolicy != nil {
+		r.policyID = desired.EffectivePolicy.ID
+	}
 	if requestID != "" {
 		r.applied = append(r.applied, requestID)
 	}
 	view := desired
+	if r.observed != nil {
+		view.SelectedPolicy = r.observed
+	}
 	view.Authority = "hub_configuration"
 	view.RuntimeRegistered = true
 	view.Paused, view.Draining = r.paused, r.draining
@@ -48,6 +57,18 @@ func (r *runnerRuntime) apply(desired runnerauth.ProjectConfiguration, requestID
 	view.Applied, view.Saved = true, true
 	view.ObservedAt = time.Now().UTC()
 	return view
+}
+
+func (r *runnerRuntime) appliedPolicy() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.policyID
+}
+
+func (r *runnerRuntime) observe(descriptor policy.Descriptor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.observed = &descriptor
 }
 
 func (r *runnerRuntime) state() (bool, []string) {
@@ -65,6 +86,7 @@ type configuredRunner struct {
 	settled func(*testing.T, string, bool)
 	rename  func(*testing.T, string)
 	restart func(*testing.T)
+	desired func() *runnerauth.ProjectConfiguration
 }
 
 func startConfiguredRunner(t *testing.T, hub func(http.Handler) http.Handler) configuredRunner {
@@ -72,9 +94,14 @@ func startConfiguredRunner(t *testing.T, hub func(http.Handler) http.Handler) co
 	f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
 	server := httptest.NewServer(hub(f.Hub.Handler()))
 	t.Cleanup(server.Close)
+	return enrollConfiguredRunner(t, f, server.URL)
+}
+
+func enrollConfiguredRunner(t *testing.T, f hubfixture.Native, url string) configuredRunner {
+	t.Helper()
 	organization := f.Organization()
 	path := filepath.Join(t.TempDir(), "private", "runner.json")
-	file, err := runnerauth.Initialize(path, server.URL)
+	file, err := runnerauth.Initialize(path, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +124,7 @@ func startConfiguredRunner(t *testing.T, hub func(http.Handler) http.Handler) co
 		t.Helper()
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		t.Cleanup(transport.CloseIdleConnections)
-		started, err := dispatch.New(dispatch.Config{URL: server.URL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+		started, err := dispatch.New(dispatch.Config{URL: url, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
 		client = started
 		if err != nil {
 			t.Fatal(err)
@@ -137,6 +164,7 @@ func startConfiguredRunner(t *testing.T, hub func(http.Handler) http.Handler) co
 	operator := hubfixture.MCP(t, f.Hub.Handler(), hubfixture.MCPPath(organization), hubfixture.AdminToken)
 	r := configuredRunner{runtime: runtime}
 	r.restart = func(t *testing.T) { scheduler = start(t) }
+	r.desired = func() *runnerauth.ProjectConfiguration { return client.CurrentProjectConfiguration(f.Project.ID) }
 	r.flush = func(t *testing.T) error {
 		t.Helper()
 		_, err := client.FlushHostMetrics(t.Context(), nil)
@@ -270,5 +298,50 @@ func TestTrappedRunnerRecoversAfterRestartOnUnboundHub(t *testing.T) {
 	r.mustTick(t)
 	if _, applied := r.runtime.state(); len(applied) != 1 {
 		t.Fatalf("settled command was delivered again after restart: %v", applied)
+	}
+}
+
+func TestApprovedPolicyReachesEveryRunner(t *testing.T) {
+	f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
+	server := httptest.NewServer(f.Hub.Handler())
+	t.Cleanup(server.Close)
+	runners := []configuredRunner{enrollConfiguredRunner(t, f, server.URL), enrollConfiguredRunner(t, f, server.URL)}
+	initial := hubfixture.Policy()
+	for _, r := range runners {
+		r.mustTick(t)
+		r.mustTick(t)
+		if view := r.read(t); view.EffectivePolicy == nil || view.EffectivePolicy.ID != initial.ID || r.runtime.appliedPolicy() != initial.ID {
+			t.Fatalf("initial runner policy=%+v applied=%s", view.EffectivePolicy, r.runtime.appliedPolicy())
+		}
+	}
+	unapproved := hubfixture.Policy()
+	unapproved.SourceRevision = strings.Repeat("c", 40)
+	unapproved = unapproved.WithID()
+	runners[1].runtime.observe(unapproved)
+	runners[1].mustTick(t)
+	approved := hubfixture.Policy()
+	approved.SourceRevision = strings.Repeat("b", 40)
+	approved = approved.WithID()
+	hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", approved)
+	for index, r := range runners {
+		r.mustTick(t)
+		if desired := r.desired(); desired == nil || desired.EffectivePolicy == nil || desired.EffectivePolicy.ID != approved.ID {
+			t.Fatalf("runner %d heartbeat after approval delivered %+v, want %s", index, desired, approved.ID)
+		}
+		r.mustTick(t)
+		if view := r.read(t); r.runtime.appliedPolicy() != approved.ID || view.EffectivePolicy == nil || view.EffectivePolicy.ID != approved.ID || view.Pending {
+			t.Fatalf("runner %d applied=%s configuration=%+v", index, r.runtime.appliedPolicy(), view)
+		}
+	}
+	current := f.Hub.Request(t, http.MethodGet, f.Base+"/policy", string(f.Hub.Config.InitialAdminToken), nil)
+	hubfixture.RequireStatus(t, current, http.StatusOK)
+	var approval policy.Approval
+	hubfixture.Decode(t, current, &approval)
+	if approval.Policy.ID != approved.ID {
+		t.Fatalf("a runner observation changed the approved policy to %s", approval.Policy.ID)
+	}
+	runners[1].mustTick(t)
+	if desired := runners[1].desired(); desired == nil || desired.EffectivePolicy == nil || desired.EffectivePolicy.ID != approved.ID {
+		t.Fatalf("a runner observation retargeted its own configuration to %+v", desired)
 	}
 }
