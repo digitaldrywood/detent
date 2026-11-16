@@ -134,6 +134,63 @@ func (e *nativeExecution) flushReasonUsage(ctx context.Context, before []tracker
 	}
 	data := e.data
 	data.Sequence++
+	data.Usage = correctUnsourcedUsage(data.Usage, data.Sequence)
 	e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
 	return e.flush(ctx)
+}
+
+// correctUnsourcedUsage folds usage reported without a source into the latest
+// sourced row of the same provider and model. The Hub accepts one source per
+// model over a period, so a correction keeps that source's identity and
+// period and raises its revision by the event revision.
+func correctUnsourcedUsage(usage []tracker.NativeUsage, revision int64) []tracker.NativeUsage {
+	corrected := slices.Clone(usage)
+	folded := make([]bool, len(corrected))
+	for i, entry := range usage {
+		if entry.SourceID != "" {
+			continue
+		}
+		original := -1
+		for j, candidate := range corrected {
+			if candidate.SourceID == "" || candidate.Provider != entry.Provider || candidate.Model != entry.Model || candidate.Currency != "" && entry.Currency != "" && candidate.Currency != entry.Currency {
+				continue
+			}
+			if original < 0 || corrected[original].To.Before(candidate.To) {
+				original = j
+			}
+		}
+		if original < 0 {
+			continue
+		}
+		source := corrected[original]
+		total := source
+		total.SourceID, total.UsageKind = "", ""
+		total = mergeNativeUsage([]tracker.NativeUsage{total}, entry)[0]
+		total.SourceID, total.UsageKind, total.Revision = source.SourceID, source.UsageKind, source.Revision+revision
+		total.From, total.To, total.ReportedAt = source.From, source.To, source.ReportedAt
+		corrected[original] = total
+		folded[i] = true
+	}
+	result := corrected[:0]
+	for i, entry := range corrected {
+		if !folded[i] {
+			result = append(result, entry)
+		}
+	}
+	return result
+}
+
+// usageWithoutRejection drops the usage rows the Hub refused so the rest of
+// the report, including gate and validator evidence, is still recorded.
+func usageWithoutRejection(usage []tracker.NativeUsage, overlap *tracker.UsageOverlap) []tracker.NativeUsage {
+	if overlap == nil {
+		return nil
+	}
+	kept := slices.DeleteFunc(slices.Clone(usage), func(entry tracker.NativeUsage) bool {
+		return tracker.UsageProviderID(entry.Provider) == overlap.Provider && strings.TrimSpace(entry.Model) == overlap.Model
+	})
+	if len(kept) == len(usage) {
+		return nil
+	}
+	return kept
 }

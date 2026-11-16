@@ -202,7 +202,12 @@ type preparedNativeRunEvent struct {
 func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.NativeRunEvent) (result json.RawMessage, resultErr error) {
 	defer func() {
 		if errors.Is(resultErr, billingstore.ErrCostOverlap) {
-			resultErr = hubapi.NativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
+			rejection := tracker.PublicationRejection{Category: "usage_validation", Field: "data.usage"}
+			var overlap *billingstore.CostOverlapError
+			if errors.As(resultErr, &overlap) {
+				rejection.Overlap = &overlap.Overlap
+			}
+			resultErr = &hubapi.NativeError{Code: "invalid_request", Message: "Overlapping usage must correct the original source period instead of adding another source", Status: http.StatusUnprocessableEntity, PublicMessage: true, Details: map[string]any{"rejection": rejection}}
 		}
 		if errors.Is(resultErr, leasestore.ErrAttemptConflict) {
 			resultErr = nativeExecutionConflict("Run event sequence conflicts with the persisted attempt")

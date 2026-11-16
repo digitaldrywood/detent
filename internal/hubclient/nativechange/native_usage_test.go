@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -88,6 +89,51 @@ func TestMergeNativeUsage(t *testing.T) {
 				if !reflect.DeepEqual(got[i], test.want[i]) {
 					t.Fatalf("mergeNativeUsage()[%d] = %+v, want %+v", i, got[i], test.want[i])
 				}
+			}
+		})
+	}
+}
+
+// A failure attribution or dependency reason turn reports unsourced usage for
+// the model the agent session already reported. The Hub refuses two sources
+// for one model over overlapping periods, so the finished report corrects the
+// session's original source and period instead of adding another row.
+func TestCorrectUnsourcedUsage(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 11, 16, 21, 34, 0, 0, time.UTC)
+	session := tracker.NativeUsage{Provider: "codex", Model: "gpt-6.1-sol", Input: 1000, CachedInput: 600, Output: 50, CostEstimate: 1.5, Currency: "USD", SourceID: "session_201", UsageKind: "incremental", Revision: 25, From: start, To: start.Add(3 * time.Minute), ReportedAt: start.Add(3 * time.Minute)}
+	audit := session
+	audit.SourceID, audit.Revision, audit.From, audit.To, audit.ReportedAt = "session_202_chunk_0", 4, start.Add(5*time.Minute), start.Add(9*time.Minute), start.Add(9*time.Minute)
+	attribution := tracker.NativeUsage{Provider: "codex", Model: "gpt-6.1-sol", Input: 70, CachedInput: 30, Output: 5, CostEstimate: 0.25, Currency: "USD"}
+	progress := tracker.NativeUsage{Provider: "codex", Model: "provider_default", Input: 40, Output: 2, CostEstimate: 0.1, Currency: "USD"}
+	euro := attribution
+	euro.Currency = "EUR"
+	corrected := session
+	corrected.Input, corrected.CachedInput, corrected.Output, corrected.CostEstimate, corrected.Revision = 1070, 630, 55, 1.75, 25+43
+	latest := audit
+	latest.Input, latest.CachedInput, latest.Output, latest.CostEstimate, latest.Revision = 1070, 630, 55, 1.75, 4+43
+	cases := []struct {
+		name  string
+		usage []tracker.NativeUsage
+		want  []tracker.NativeUsage
+	}{
+		{name: "unsourced turn folds into the session of its model", usage: []tracker.NativeUsage{session, attribution}, want: []tracker.NativeUsage{corrected}},
+		{name: "order of reports does not matter", usage: []tracker.NativeUsage{attribution, session}, want: []tracker.NativeUsage{corrected}},
+		{name: "the latest source of the model is corrected", usage: []tracker.NativeUsage{session, audit, attribution}, want: []tracker.NativeUsage{session, latest}},
+		{name: "another model keeps its own attempt row", usage: []tracker.NativeUsage{session, progress}, want: []tracker.NativeUsage{session, progress}},
+		{name: "unsourced usage without a session is unchanged", usage: []tracker.NativeUsage{attribution}, want: []tracker.NativeUsage{attribution}},
+		{name: "another currency is never combined", usage: []tracker.NativeUsage{session, euro}, want: []tracker.NativeUsage{session, euro}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			before := slices.Clone(test.usage)
+			got := correctUnsourcedUsage(test.usage, 43)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("correctUnsourcedUsage() = %+v, want %+v", got, test.want)
+			}
+			if !reflect.DeepEqual(test.usage, before) {
+				t.Fatalf("correctUnsourcedUsage() changed its input to %+v", test.usage)
 			}
 		})
 	}

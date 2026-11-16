@@ -13,6 +13,16 @@ import (
 
 var ErrCostOverlap = fmt.Errorf("cost period overlaps another source: %w", mutation.ErrConflict)
 
+// CostOverlapError names the provider, model and periods of a cost source
+// refused because it overlaps another source.
+type CostOverlapError struct {
+	Overlap tracker.UsageOverlap
+}
+
+func (e *CostOverlapError) Error() string { return ErrCostOverlap.Error() }
+
+func (e *CostOverlapError) Unwrap() error { return ErrCostOverlap }
+
 type CostObservation struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID

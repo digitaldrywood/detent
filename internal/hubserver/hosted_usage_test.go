@@ -623,6 +623,22 @@ func TestNativeRunEventRejectsInvalidUsage(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), test.status)
 		})
 	}
+	finished := base
+	finished.Type, finished.IdempotencyKey, finished.Data.Outcome, finished.Data.Handoff = "run.finished", "usage-overlap", "failed", nil
+	sessionFrom := time.Now().UTC()
+	finished.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "gpt-6-astra", Input: 5, SourceID: "session_1", UsageKind: "incremental", Revision: 1, From: sessionFrom, To: sessionFrom.Add(time.Millisecond)}, {Provider: "codex", Model: "gpt-6-astra", Input: 2}}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finished)
+	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+	var refusal struct {
+		Details struct {
+			Rejection tracker.PublicationRejection `json:"rejection"`
+		} `json:"details"`
+	}
+	decodeHubResponse(t, response, &refusal)
+	rejection := refusal.Details.Rejection
+	if rejection.Category != "usage_validation" || rejection.Field != "data.usage" || rejection.Overlap == nil || rejection.Overlap.Model != "gpt-6-astra" || !rejection.Overlap.OtherPeriodStart.Equal(sessionFrom) && !rejection.Overlap.PeriodStart.Equal(sessionFrom) {
+		t.Fatalf("overlapping usage rejection = %+v, want typed usage overlap for gpt-6-astra", rejection)
+	}
 }
 
 // GET /usage answers every member, refuses staff, validates the range and

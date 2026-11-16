@@ -909,7 +909,7 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	}
 	data := e.data
 	if kind == "run.finished" {
-		data.Usage = slices.Clone(data.Usage)
+		data.Usage = correctUnsourcedUsage(data.Usage, data.Sequence+1)
 		for i := range data.Usage {
 			if data.Usage[i].SourceID != "" {
 				continue
@@ -1031,6 +1031,11 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 			return &nativeCompletionRejection{failure: failure}
 		}
 		if (e.pending.Type == "run.finished" || e.pending.Type == "run.checkpointed" || e.preparedOutcome != "") && errors.As(err, &refusal) && refusal.PermanentInvalidRequest() {
+			if refusal.Rejection != nil && (refusal.Rejection.Category == "usage_validation" || refusal.Rejection.Category == "event_validation" && refusal.Rejection.Field == "") && len(e.pending.Data.Usage) > 0 {
+				e.pending.Data.Usage = usageWithoutRejection(e.pending.Data.Usage, refusal.Rejection.Overlap)
+				e.pending.IdempotencyKey = e.pending.Data.AttemptID + ":" + strconv.FormatInt(e.pending.Data.Sequence, 10) + ":usage" + strconv.Itoa(len(e.pending.Data.Usage))
+				return e.flush(ctx)
+			}
 			if e.rejected == nil {
 				e.rejected = e.pending
 			}
