@@ -1,13 +1,39 @@
 package tracker
 
 import (
+	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
+type UsagePeriod struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+}
+
+type UsageOverlap struct {
+	Model    string      `json:"model"`
+	Original UsagePeriod `json:"original"`
+	Incoming UsagePeriod `json:"incoming"`
+}
+
+func (o *UsageOverlap) Valid() bool {
+	if o == nil || len(o.Model) == 0 || len(o.Model) > 128 || o.Original.From.IsZero() || !o.Original.To.After(o.Original.From) || o.Incoming.From.IsZero() || !o.Incoming.To.After(o.Incoming.From) {
+		return false
+	}
+	for _, c := range o.Model {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("-_.:/", c)) {
+			return false
+		}
+	}
+	return true
+}
+
 type PublicationRejection struct {
-	Category string `json:"category"`
-	Field    string `json:"field,omitempty"`
+	UsageOverlap *UsageOverlap `json:"usage_overlap,omitempty"`
+	Category     string        `json:"category"`
+	Field        string        `json:"field,omitempty"`
 }
 
 func (r PublicationRejection) Valid() bool {
@@ -56,7 +82,12 @@ func (r PublicationRejection) DiagnosticError() string {
 	if !r.Valid() {
 		return "[private error text omitted]"
 	}
-	return "publication rejected: category=" + r.Category + " field=" + r.Field + " [private error text omitted]"
+	message := "publication rejected: category=" + r.Category + " field=" + r.Field + " [private error text omitted]"
+	if r.UsageOverlap.Valid() {
+		o := r.UsageOverlap
+		message += fmt.Sprintf(" model=%s original=%s/%s incoming=%s/%s", o.Model, o.Original.From.Format(time.RFC3339Nano), o.Original.To.Format(time.RFC3339Nano), o.Incoming.From.Format(time.RFC3339Nano), o.Incoming.To.Format(time.RFC3339Nano))
+	}
+	return message
 }
 
 func ParsePublicationRejection(value string) (PublicationRejection, bool) {

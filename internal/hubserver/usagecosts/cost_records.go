@@ -180,7 +180,7 @@ func (s *Service) PrepareRunnerRecords(ctx context.Context, scope hubapi.Scope, 
 		for _, prior := range observations[:i] {
 			previous := prior.Observation
 			if observation.Provider == previous.Provider && observation.Metric == previous.Metric && observation.From.Before(previous.To) && previous.From.Before(observation.To) {
-				return nil, hubapi.PublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
+				return nil, &hubapi.Error{Code: "invalid_request", Status: 422, Public: true, Message: "Overlapping usage must correct the original source period instead of adding another source", Details: map[string]any{"usage_overlap": tracker.UsageOverlap{Model: observation.Model, Original: tracker.UsagePeriod{From: previous.From, To: previous.To}, Incoming: tracker.UsagePeriod{From: observation.From, To: observation.To}}}}
 			}
 		}
 	}

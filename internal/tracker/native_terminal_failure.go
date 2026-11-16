@@ -60,6 +60,9 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	}
 	if stage := f.Rejection.TerminalStage(); stage != "" {
 		rejection := *f.Rejection
+		if !rejection.UsageOverlap.Valid() {
+			rejection.UsageOverlap = nil
+		}
 		f.Rejection = &rejection
 		f.Error = rejection.DiagnosticError()
 		f.Stage, f.ErrorClass = stage, stage

@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func Rejection(err error, category, field string) error {
@@ -15,7 +16,15 @@ func Rejection(err error, category, field string) error {
 	if !errors.As(err, &failure) || failure.Code != "invalid_request" || !rejection.Valid() {
 		return err
 	}
-	result := &Error{Code: failure.Code, Message: rejection.DiagnosticError(), Status: failure.Status, Details: map[string]any{"rejection": rejection}}
+	details := make(map[string]any)
+	if overlap, ok := failure.Details["usage_overlap"].(tracker.UsageOverlap); ok {
+		rejection.Category, rejection.Field = "usage_validation", "data.usage"
+		if overlap.Valid() {
+			details["usage_overlap"] = overlap
+		}
+	}
+	details["rejection"] = rejection
+	result := &Error{Code: failure.Code, Message: rejection.DiagnosticError(), Status: failure.Status, Details: details}
 	switch category {
 	case "event_validation", "runtime_validation", "execution_validation", "usage_validation", "owner_validation", "body_decode":
 		result.Message, result.Public = failure.Message, true

@@ -357,7 +357,8 @@ func (e *APIError) UnmarshalJSON(data []byte) error {
 		Message         string           `json:"message"`
 		CurrentRevision tracker.Revision `json:"current_revision,string"`
 		Details         struct {
-			Rejection *runnerauth.PublicationRejection `json:"rejection"`
+			Rejection    *runnerauth.PublicationRejection `json:"rejection"`
+			UsageOverlap *tracker.UsageOverlap            `json:"usage_overlap"`
 		} `json:"details"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
@@ -369,6 +370,9 @@ func (e *APIError) UnmarshalJSON(data []byte) error {
 	e.Rejection = nil
 	if value.Code == "invalid_request" && value.Details.Rejection != nil && value.Details.Rejection.Valid() {
 		e.Rejection = value.Details.Rejection
+		if value.Details.UsageOverlap.Valid() {
+			e.Rejection.UsageOverlap = value.Details.UsageOverlap
+		}
 	}
 	return nil
 }

@@ -914,8 +914,11 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 			if data.Usage[i].SourceID != "" {
 				continue
 			}
-			data.Usage[i].From = e.usageStartedAt
-			data.Usage[i].To, data.Usage[i].ReportedAt = at, at
+			if e.data.Outcome == "" || data.Usage[i].From.IsZero() || data.Usage[i].To.IsZero() {
+				data.Usage[i].From = e.usageStartedAt
+				data.Usage[i].To = at
+			}
+			data.Usage[i].ReportedAt = at
 			data.Usage[i].Revision = data.Sequence + 1
 		}
 	}
@@ -1047,6 +1050,15 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 				RunID: e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.claim.lease.PolicyID,
 				LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
 				Identity: e.data.Identity, Sequence: e.data.Sequence + 1, Outcome: "failed", TerminalFailure: &failure,
+			}
+			var apiFailure *APIError
+			usageRejected := failure.Rejection != nil && failure.Rejection.Category == "usage_validation"
+			if usageRejected || errors.As(err, &apiFailure) && apiFailure.Message == "Overlapping usage must correct the original source period instead of adding another source" {
+				data = e.pending.Data
+				data.Sequence = e.data.Sequence + 1
+				data.Usage = nil
+				data.Outcome = "failed"
+				data.TerminalFailure = &failure
 			}
 			if data.Identity == nil && e.data.Runtime != nil {
 				data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", LocalAttemptID: e.data.Runtime.LocalAttemptID, Generation: e.data.Runtime.Generation}

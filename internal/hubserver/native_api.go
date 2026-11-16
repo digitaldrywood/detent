@@ -41,17 +41,7 @@ import (
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 func nativeRejection(err error, category, field string) error {
-	var failure *hubapi.NativeError
-	rejection := runnerauth.PublicationRejection{Category: category, Field: field}
-	if !errors.As(err, &failure) || failure.Code != "invalid_request" || !rejection.Valid() {
-		return err
-	}
-	result := &hubapi.NativeError{Code: failure.Code, Message: rejection.DiagnosticError(), Status: failure.Status, Details: map[string]any{"rejection": rejection}}
-	switch category {
-	case "event_validation", "runtime_validation", "execution_validation", "usage_validation", "owner_validation", "body_decode":
-		result.Message, result.PublicMessage = failure.Message, true
-	}
-	return result
+	return hubapi.FromFeatureError(hubapi.Rejection(hubapi.ToFeatureError(err), category, field))
 }
 
 func operatorAuthorizationCause(err error) string {

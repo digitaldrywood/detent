@@ -3,7 +3,9 @@ package usagecosts
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,5 +167,43 @@ func TestRunnerCostPreparationPreservesArchivedEvidence(t *testing.T) {
 	request.Type = "run.observed"
 	if records, err := service.PrepareRunnerRecords(t.Context(), scope, request, facts, now); err != nil || len(records) != 0 {
 		t.Fatalf("unfinished run prepared costs: %d %v", len(records), err)
+	}
+}
+
+func TestRunnerOverlapRejectionIdentifiesPeriods(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	service := New(Deps{})
+	request := tracker.NativeRunEvent{Type: "run.finished", Data: tracker.NativeRunData{AttemptID: "attempt_example", CompletionBody: "private-customer-text", Usage: []tracker.NativeUsage{
+		{Provider: "codex", Model: "example-model", UsageKind: "incremental", SourceID: "session_1", Revision: 1, From: from, To: from.Add(time.Minute)},
+		{Provider: "codex", Model: "example-model", UsageKind: "incremental", SourceID: "session_2", Revision: 1, From: from, To: from.Add(2 * time.Minute)},
+	}}}
+	_, err := service.PrepareRunnerRecords(t.Context(), hubapi.Scope{}, request, RunnerFacts{}, from.Add(time.Hour))
+	err = hubapi.Rejection(err, "event_validation", "")
+	var rejection *hubapi.Error
+	if !errors.As(err, &rejection) {
+		t.Fatalf("rejection: %v", err)
+	}
+	raw, err := json.Marshal(rejection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Details struct {
+			Overlap *struct {
+				Model    string `json:"model"`
+				Original struct{ From, To time.Time }
+				Incoming struct{ From, To time.Time }
+			} `json:"usage_overlap"`
+		}
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "private-customer-text") {
+		t.Fatal("rejection leaked customer text")
+	}
+	overlap := decoded.Details.Overlap
+	if overlap == nil || overlap.Model != "example-model" || !overlap.Original.From.Equal(from) || !overlap.Original.To.Equal(from.Add(time.Minute)) || !overlap.Incoming.To.Equal(from.Add(2*time.Minute)) {
+		t.Fatalf("missing typed overlap: %s", raw)
 	}
 }

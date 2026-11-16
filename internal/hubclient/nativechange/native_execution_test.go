@@ -2121,3 +2121,59 @@ func TestNativeCompletionDuplicateKeepsOtherObservationFields(t *testing.T) {
 		})
 	}
 }
+
+func TestUsageRejectionPreservesFailureEvidence(t *testing.T) {
+	for _, category := range []string{"usage_validation", "event_validation"} {
+		t.Run(category, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Example failure")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model"}); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now().UTC()
+			steps := []tracker.NativeStepReceipt{{Step: "validation", CompletedAt: at, Validation: &gate.CommandResult{Command: "make lint", ExitCode: 1, Output: "example.go: lint failure"}}}
+			disposition := &tracker.NativeDisposition{Status: "complete"}
+			data := e.data
+			data.Sequence++
+			data.Outcome, data.Steps, data.Disposition, data.CompletionBody = "failed", steps, disposition, "Lint failed"
+			data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "example-model", Input: 10}}
+			e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "finish-example"}, Type: "run.finished", SchemaVersion: 1, Data: data}
+			client := e.claim.source.NativeClient().Transport()
+			next := fixtureClient(client).requests.Load()
+			var replacement tracker.NativeRunEvent
+			calls := 0
+			fixtureClient(client).requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/events") {
+					return next.RoundTrip(r)
+				}
+				calls++
+				var event tracker.NativeRunEvent
+				if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+					t.Fatal(err)
+				}
+				field := "data.usage"
+				if category == "event_validation" {
+					field = ""
+				}
+				status, body := 422, `{"code":"invalid_request","message":"Overlapping usage must correct the original source period instead of adding another source","details":{"rejection":{"category":"`+category+`","field":"`+field+`"},"usage_overlap":{"model":"example-model","original":{"from":"2026-01-01T00:00:00Z","to":"2026-01-01T00:01:00Z"},"incoming":{"from":"2026-01-01T00:00:00Z","to":"2026-01-01T00:02:00Z"}}}}`
+				if calls > 1 {
+					replacement = event
+					status, body = 200, `{"accepted":true}`
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			}))
+			var rejected *nativeCompletionRejection
+			if err := e.flush(t.Context()); !errors.As(err, &rejected) {
+				t.Fatalf("rejection: %v", err)
+			}
+			if calls != 2 || !reflect.DeepEqual(replacement.Data.Steps, steps) || !reflect.DeepEqual(replacement.Data.Disposition, disposition) || replacement.Data.CompletionBody != "Lint failed" || replacement.Data.Outcome != "failed" || len(replacement.Data.Usage) != 0 {
+				t.Fatalf("replacement discarded failure evidence: %+v", replacement.Data)
+			}
+			if replacement.Data.TerminalFailure.Rejection.UsageOverlap == nil || replacement.Data.TerminalFailure.Rejection.UsageOverlap.Model != "example-model" {
+				t.Fatal("terminal failure lost typed overlap")
+			}
+		})
+	}
+}

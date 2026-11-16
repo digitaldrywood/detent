@@ -242,3 +242,59 @@ func TestNativeUsageBudgetRefusalKeepsTurnLive(t *testing.T) {
 		})
 	}
 }
+
+func TestUsageCorrectionKeepsOriginalSourcePeriod(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, source := range []string{"", "session_1"} {
+		t.Run(source, func(t *testing.T) {
+			original := tracker.NativeUsage{Provider: "codex", Model: "example-model", SourceID: source, From: from, To: from.Add(time.Minute), Input: 10, Revision: 1}
+			e := &nativeExecution{data: tracker.NativeRunData{Outcome: "failed", Usage: []tracker.NativeUsage{original}}}
+			correction := original
+			correction.Input, correction.Revision, correction.To = 20, 2, from.Add(2*time.Minute)
+			if source == "" {
+				correction.Input = 10
+			}
+			if err := e.RecordUsage(t.Context(), correction); err != nil {
+				t.Fatal(err)
+			}
+			got := e.data.Usage[0]
+			if len(e.data.Usage) != 1 || got.Input != 20 || !got.From.Equal(original.From) || !got.To.Equal(original.To) {
+				t.Fatalf("correction created another source period: %+v", e.data.Usage)
+			}
+		})
+	}
+}
+
+func TestTerminalUsageCorrectionUsesAcceptedPeriod(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Example usage correction")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model"}); err != nil {
+		t.Fatal(err)
+	}
+	entry := tracker.NativeUsage{Provider: "codex", Model: "example-model", UsageKind: "incremental", SourceID: "session_1", Revision: 1, From: time.Now().UTC().Add(-time.Minute), Input: 10, Currency: "USD"}
+	if err := e.RecordUsage(t.Context(), entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.append(t.Context(), "run.finished", "failed", nil); err != nil {
+		t.Fatal(err)
+	}
+	original := e.data.Usage[0]
+	entry.Input, entry.Revision = 20, 2
+	before := e.data.Usage
+	if err := e.RecordUsage(t.Context(), entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.flushReasonUsage(t.Context(), before); err != nil {
+		t.Fatalf("Hub refused usage correction: %v", err)
+	}
+	recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+	if err != nil || len(recovery.Attempts) != 1 {
+		t.Fatalf("recovery: %+v %v", recovery, err)
+	}
+	got := recovery.Attempts[0].Usage
+	if len(got) != 1 || got[0].Input != 20 || !got[0].To.Equal(original.To) || !got[0].From.Equal(original.From) || got[0].Revision != 2 {
+		t.Fatalf("accepted usage correction: %+v", got)
+	}
+}

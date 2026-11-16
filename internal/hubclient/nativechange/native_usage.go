@@ -19,6 +19,9 @@ func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeU
 		entry.To, entry.ReportedAt = e.scheduler.now().UTC(), e.scheduler.now().UTC()
 	}
 	for _, existing := range e.data.Usage {
+		if e.data.Outcome != "" && existing.Provider == strings.TrimSpace(entry.Provider) && existing.Model == strings.TrimSpace(entry.Model) && existing.SourceID == entry.SourceID {
+			entry.From, entry.To = existing.From, existing.To
+		}
 		if existing.Provider == strings.TrimSpace(entry.Provider) && existing.Model == strings.TrimSpace(entry.Model) && existing.Currency != "" && entry.Currency != "" && existing.Currency != entry.Currency {
 			return errors.New("attempt usage cannot combine currencies for the same provider and model")
 		}
