@@ -2,6 +2,7 @@ package usagecosts
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -271,6 +272,12 @@ func TestCostLedgerReplay(t *testing.T) {
 			}
 			if changed, err := recordPostgresTestCost(t, s.Service, organization, "original", corrected, now); err != nil || changed {
 				t.Fatalf("old period resurrected after void: %t %v", changed, err)
+			}
+			overlapping := replacement
+			overlapping.SourceID, overlapping.Model = "meter-overlapping", "example-model"
+			var overlap *billingstore.CostOverlapError
+			if _, err := recordPostgresTestCost(t, s.Service, organization, "original", overlapping, now); !errors.As(err, &overlap) || overlap.Overlap.Model != "example-model" || !overlap.Overlap.PeriodStart.Equal(overlapping.From) || !overlap.Overlap.PeriodEnd.Equal(overlapping.To) {
+				t.Fatalf("overlapping stored source = %v, want a typed overlap naming its model and period", err)
 			}
 			final, err := s.Service.Monthly(t.Context(), organization, "organization", nil, before.Period, now)
 			if err != nil || len(final.Sources) != 1 || *final.Totals[0].KnownMicros != 10_000 || final.Sources[0].To != replacement.To {

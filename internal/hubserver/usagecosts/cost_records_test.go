@@ -3,11 +3,13 @@ package usagecosts
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
@@ -165,5 +167,26 @@ func TestRunnerCostPreparationPreservesArchivedEvidence(t *testing.T) {
 	request.Type = "run.observed"
 	if records, err := service.PrepareRunnerRecords(t.Context(), scope, request, facts, now); err != nil || len(records) != 0 {
 		t.Fatalf("unfinished run prepared costs: %d %v", len(records), err)
+	}
+}
+
+func TestRunnerCostPreparationNamesOverlappingSources(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 11, 16, 21, 34, 0, 0, time.UTC)
+	session := tracker.NativeUsage{Provider: "codex", Model: "example-model", Currency: "USD", Input: 10, SourceID: "session_1", UsageKind: "incremental", Revision: 3, From: from.Add(time.Minute), To: from.Add(3 * time.Minute)}
+	attribution := tracker.NativeUsage{Provider: "codex", Model: "example-model", Currency: "USD", Input: 4}
+	other := tracker.NativeUsage{Provider: "codex", Model: "other-model", Currency: "USD", Input: 4}
+	facts := RunnerFacts{WorkItemID: "item_example", RunnerID: "runner_example", MachineID: "machine_example", StartedAt: from, EndedAt: from.Add(20 * time.Minute)}
+	scope := hubapi.Scope{Facts: hubapi.Facts{Organization: "org_example", Project: "prj_example"}}
+	service := New(Deps{})
+	request := tracker.NativeRunEvent{Type: "run.finished", OccurredAt: from.Add(20 * time.Minute), Data: tracker.NativeRunData{AttemptID: "attempt_example", Sequence: 9, Usage: []tracker.NativeUsage{session, other, attribution}}}
+	_, err := service.PrepareRunnerRecords(t.Context(), scope, request, facts, from.Add(21*time.Minute))
+	var overlap *billingstore.CostOverlapError
+	if !errors.As(err, &overlap) || !errors.Is(err, billingstore.ErrCostOverlap) {
+		t.Fatalf("PrepareRunnerRecords() = %v, want a typed usage overlap", err)
+	}
+	want := tracker.UsageOverlap{Provider: "codex", Model: "example-model", PeriodStart: from, PeriodEnd: from.Add(20 * time.Minute), OtherPeriodStart: from.Add(time.Minute), OtherPeriodEnd: from.Add(3 * time.Minute)}
+	if overlap.Overlap != want {
+		t.Fatalf("overlap = %+v, want %+v", overlap.Overlap, want)
 	}
 }

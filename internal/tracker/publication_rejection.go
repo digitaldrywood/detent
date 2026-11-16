@@ -3,11 +3,24 @@ package tracker
 import (
 	"slices"
 	"strings"
+	"time"
 )
 
 type PublicationRejection struct {
-	Category string `json:"category"`
-	Field    string `json:"field,omitempty"`
+	Category string        `json:"category"`
+	Field    string        `json:"field,omitempty"`
+	Overlap  *UsageOverlap `json:"overlap,omitempty"`
+}
+
+// UsageOverlap names the provider, model and the two usage periods the Hub
+// refused to record as separate sources.
+type UsageOverlap struct {
+	Provider         string    `json:"provider"`
+	Model            string    `json:"model"`
+	PeriodStart      time.Time `json:"period_start"`
+	PeriodEnd        time.Time `json:"period_end"`
+	OtherPeriodStart time.Time `json:"other_period_start,omitzero"`
+	OtherPeriodEnd   time.Time `json:"other_period_end,omitzero"`
 }
 
 func (r PublicationRejection) Valid() bool {

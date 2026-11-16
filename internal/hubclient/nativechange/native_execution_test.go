@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1022,6 +1023,129 @@ func TestNativeRejectedCompletionReleasesClaim(t *testing.T) {
 				t.Fatalf("refused event retried: %v, %d", err, len(events))
 			}
 		})
+	}
+}
+
+func TestNativeFailedReportCorrectsSessionUsage(t *testing.T) {
+	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+		{Name: "Done", Terminal: true},
+	}, true)
+	issue := h.createInProgress(t, "completion")
+	h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	session := tracker.NativeUsage{Provider: "codex", Model: "test", Input: 10, Currency: "USD", SourceID: "session_1", UsageKind: "incremental", Revision: 1, From: time.Now().UTC().Add(-time.Second)}
+	attribution := tracker.NativeUsage{Provider: "codex", Model: "test", Input: 4, Currency: "USD"}
+	for _, usage := range []tracker.NativeUsage{session, attribution} {
+		if err := execution.RecordUsage(t.Context(), usage); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := execution.PrepareFinish(t.Context(), "failed", "The gate failed: example output.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+		t.Fatalf("failed report with session and attribution usage = %v", err)
+	}
+	evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+	if err != nil || evidence.Attempt == nil {
+		t.Fatalf("attempt = %+v, %v", evidence, err)
+	}
+	attempt := evidence.Attempt
+	if attempt.Status != "failed" || attempt.CompletionBody == "" || attempt.TerminalFailure != nil && attempt.TerminalFailure.Stage == "event_publication" {
+		t.Fatalf("failed report was not recorded: %+v", attempt)
+	}
+	if len(attempt.Usage) != 1 || attempt.Usage[0].SourceID != "session_1" || attempt.Usage[0].Input != 14 {
+		t.Fatalf("recorded usage = %+v, want the session corrected to 14 input tokens", attempt.Usage)
+	}
+}
+
+func TestNativeUsageRejectionKeepsCompletionEvidence(t *testing.T) {
+	overlap := tracker.UsageOverlap{Provider: "codex", Model: "test"}
+	for _, test := range []struct {
+		name      string
+		rejection tracker.PublicationRejection
+		wantUsage []string
+	}{
+		{name: "typed overlap drops only its model", rejection: tracker.PublicationRejection{Category: "usage_validation", Field: "data.usage", Overlap: &overlap}, wantUsage: []string{"other"}},
+		{name: "untyped refusal from an older Hub drops usage", rejection: tracker.PublicationRejection{Category: "event_validation"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testNativeUsageRejectionKeepsCompletionEvidence(t, test.rejection, test.wantUsage)
+		})
+	}
+}
+
+func testNativeUsageRejectionKeepsCompletionEvidence(t *testing.T, refused tracker.PublicationRejection, wantUsage []string) {
+	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+		{Name: "Done", Terminal: true},
+	}, true)
+	issue := h.createInProgress(t, "completion")
+	h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, usage := range []tracker.NativeUsage{{Provider: "codex", Model: "test", Input: 10, Currency: "USD"}, {Provider: "codex", Model: "other", Input: 4, Currency: "USD"}} {
+		if err := execution.RecordUsage(t.Context(), usage); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := execution.PrepareFinish(t.Context(), "failed", "The gate failed: example output.", nil); err != nil {
+		t.Fatal(err)
+	}
+	client := execution.claim.source.NativeClient().Transport()
+	next := fixtureClient(client).requests.Load()
+	var events []tracker.NativeRunEvent
+	fixtureClient(client).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(request.URL.Path, "/events") {
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Body = io.NopCloser(strings.NewReader(string(body)))
+			var event tracker.NativeRunEvent
+			if err := json.Unmarshal(body, &event); err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, event)
+			if len(events) == 1 {
+				payload, err := json.Marshal(map[string]any{"code": "invalid_request", "message": "private refusal text", "details": map[string]any{"rejection": refused}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(payload))), Request: request}, nil
+			}
+		}
+		return next.RoundTrip(request)
+	}))
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+		t.Fatalf("completion after a usage refusal = %v", err)
+	}
+	if len(events) != 2 || events[0].IdempotencyKey == events[1].IdempotencyKey || events[1].Data.Sequence != events[0].Data.Sequence {
+		t.Fatalf("usage refusal was not resent once: %+v", events)
+	}
+	resent := events[1].Data
+	if resent.Outcome != "failed" || resent.CompletionBody != events[0].Data.CompletionBody || resent.CompletionBody == "" || resent.TerminalFailure != nil && resent.TerminalFailure.Stage == "event_publication" {
+		t.Fatalf("resent report lost the completion evidence: %+v", resent)
+	}
+	var models []string
+	for _, entry := range resent.Usage {
+		models = append(models, entry.Model)
+	}
+	if !slices.Equal(models, wantUsage) {
+		t.Fatalf("resent usage models = %v, want %v", models, wantUsage)
+	}
+	evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+	if err != nil || evidence.Attempt == nil {
+		t.Fatalf("attempt = %+v, %v", evidence, err)
+	}
+	if attempt := evidence.Attempt; attempt.Status != "failed" || attempt.ClaimReleasedAt == nil || attempt.CompletionBody != resent.CompletionBody || attempt.TerminalFailure != nil && attempt.TerminalFailure.Stage == "event_publication" {
+		t.Fatalf("recorded attempt lost the completion evidence: %+v", attempt)
 	}
 }
 

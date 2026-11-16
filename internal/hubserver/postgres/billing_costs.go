@@ -280,7 +280,7 @@ func (s *session) recordBillingCost(ctx context.Context, record billingstore.Cos
 		return false, nil, mapError(ctx, err)
 	}
 	if overlap && !o.Voided {
-		return false, nil, billingstore.ErrCostOverlap
+		return false, nil, &billingstore.CostOverlapError{Overlap: tracker.UsageOverlap{Provider: o.Provider, Model: o.Model, PeriodStart: o.From.UTC(), PeriodEnd: o.To.UTC()}}
 	}
 	_, err = s.db.Exec(ctx, `INSERT INTO cost_sources (organization_id,source_key,project_id,provider,provider_account,resource_id,bucket,metric,period_start,period_end,revision,attribution_hash,payload_hash,amount_micros,currency,voided) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (organization_id,source_key) DO UPDATE SET revision=EXCLUDED.revision,payload_hash=EXCLUDED.payload_hash,amount_micros=EXCLUDED.amount_micros,voided=EXCLUDED.voided`, s.organization, key, record.ProjectID, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, from, to, o.Revision, attribution, record.Reference.SHA256, o.AmountMicros, o.Currency, o.Voided)
 	if err != nil {
