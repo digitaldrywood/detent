@@ -1257,8 +1257,6 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 						return err
 					}
 				}
-				if len(duplicateLinks) == 0 {
-				}
 				if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
 					return err
 				}
@@ -1305,8 +1303,6 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 					if _, err := w.AppendEvent(ctx, duplicate.event); err != nil {
 						return err
 					}
-				}
-				if len(duplicateLinks) > 0 {
 				}
 				attachmentItem := plan.Comment.WorkItemID
 				if plan.Comment.ID == "" {

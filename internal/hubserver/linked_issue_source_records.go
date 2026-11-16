@@ -344,8 +344,6 @@ func (s *Service) applyLinkedIssueRecordOnce(ctx context.Context, scope hubscope
 			return nil, err
 		}
 	}
-	if !stale {
-	}
 	if stale {
 		issue = originalIssue
 	}

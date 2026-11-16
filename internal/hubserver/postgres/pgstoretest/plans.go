@@ -7,8 +7,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 )
 
 type SearchPlanProbe struct {
