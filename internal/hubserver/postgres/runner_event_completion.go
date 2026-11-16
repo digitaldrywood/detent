@@ -29,7 +29,7 @@ func (f *runnerEventSession) CreateComment(ctx context.Context, record corestore
 	if record.OrganizationID != f.session.organization || record.ProjectID != f.command.Project || record.WorkItemID != f.command.WorkItem {
 		return corestore.Comment{}, corestore.ErrTenantMismatch
 	}
-	s := &session{organization: f.session.organization, queries: pgquery.New(runEventQueue{f.pending})}
+	s := &session{organization: f.session.organization, queries: pgquery.New(runEventAffectedQueue{runEventQueue{f.pending}})}
 	if _, err := s.CreateComment(ctx, record); err != nil {
 		return corestore.Comment{}, err
 	}
@@ -58,9 +58,9 @@ type runEventAffectedQueue struct{ runEventQueue }
 func (q runEventAffectedQueue) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	q.batch.Queue(sql, args...).Exec(func(tag pgconn.CommandTag) error {
 		if tag.RowsAffected() != 1 {
-			return corestore.ErrRevisionConflict
+			return corestore.ErrNotFound
 		}
 		return nil
 	})
-	return pgconn.NewCommandTag("INSERT 0 1"), nil
+	return pgconn.NewCommandTag("UPDATE 1"), nil
 }

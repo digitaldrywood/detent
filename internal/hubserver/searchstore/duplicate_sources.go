@@ -27,14 +27,17 @@ type DuplicateSourceQuery struct {
 
 const DuplicateCandidates = 50
 
+const DuplicateKeyedIssues = 200
+
 type DuplicateSource struct {
-	Document   Document
-	Text       Text
-	Statistics Statistics
-	Revision   tracker.Revision
-	Number     int64
-	State      string
-	Terminal   bool
+	Document    Document
+	Text        Text
+	Fingerprint bool
+	Statistics  Statistics
+	Revision    tracker.Revision
+	Number      int64
+	State       string
+	Terminal    bool
 }
 
 type DuplicateSourcePage struct {

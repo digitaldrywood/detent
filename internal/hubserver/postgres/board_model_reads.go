@@ -266,7 +266,7 @@ func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore
 	batch.Queue(boardModelMetadataSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt)
 	})
-	if selection.SearchRanked {
+	if selection.SearchRanked && selection.SearchText != "" {
 		windowArgs := []any{s.organization, selection.ProjectID}
 		batch.Queue("SELECT count(*),min(w.number) FROM "+boardSearchWindow(&windowArgs, selection, "number")+" w", windowArgs...).QueryRow(func(row pgx.Row) error {
 			var scanned int64
@@ -276,6 +276,20 @@ func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore
 			}
 			if scanned == searchstore.WindowRows && lowest != nil {
 				result.SearchWindowEnd = lowest
+			}
+			return nil
+		})
+	}
+	if selection.SearchRanked && selection.SearchText == "" && selection.Fingerprint != "" {
+		scanArgs := []any{s.organization, selection.ProjectID}
+		batch.Queue("SELECT count(*),max(k.work_item_id) FROM "+boardFingerprintScan(&scanArgs, selection)+" k", scanArgs...).QueryRow(func(row pgx.Row) error {
+			var scanned int64
+			var last *string
+			if err := row.Scan(&scanned, &last); err != nil {
+				return err
+			}
+			if scanned == searchstore.WindowRows && last != nil {
+				result.SearchFingerprintEnd = last
 			}
 			return nil
 		})

@@ -47,7 +47,7 @@ func TestPageBackfillResumesWithoutSourceWriteLocks(t *testing.T) {
 		if queuedAfterRollback != 0 || advancedAfterRollback != 0 {
 			t.Fatalf("interrupted backfill persisted queue=%d checkpoints=%d", queuedAfterRollback, advancedAfterRollback)
 		}
-		for step := 0; step < 14; step++ {
+		for step := 0; step < 20; step++ {
 			done := false
 			if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
 				backfill, ok := w.(interface {
@@ -94,6 +94,13 @@ func TestPageBackfillResumesWithoutSourceWriteLocks(t *testing.T) {
 				if invalidPairs != 0 {
 					t.Fatalf("backfill lost body-before-relationship ordering or propagation: %d", invalidPairs)
 				}
+				var fingerprintPhase int
+				if err := admin.QueryRowContext(t.Context(), `SELECT fingerprint_phase FROM native_work_item_page_progress WHERE organization_id=$1`, org).Scan(&fingerprintPhase); err != nil {
+					t.Fatal(err)
+				}
+				if fingerprintPhase != 2 {
+					t.Fatalf("backfill finished before the fingerprint pass: phase=%d", fingerprintPhase)
+				}
 				if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
 					complete, err := w.(interface {
 						BackfillWorkItemPages(context.Context) (bool, error)
@@ -107,7 +114,7 @@ func TestPageBackfillResumesWithoutSourceWriteLocks(t *testing.T) {
 				}
 				break
 			}
-			if step == 13 {
+			if step == 19 {
 				t.Fatal("backfill did not finish")
 			}
 		}

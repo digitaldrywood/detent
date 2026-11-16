@@ -48,17 +48,19 @@ type Cursor struct {
 }
 
 type IssuePosition struct {
-	Snapshot        string  `json:"snapshot"`
-	Sequence        *int64  `json:"sequence,omitempty"`
-	Score           float64 `json:"score,omitempty"`
-	Lane            int     `json:"lane"`
-	State           string  `json:"state"`
-	Priority        int     `json:"priority"`
-	ActivityMissing int     `json:"activity_missing"`
-	Activity        string  `json:"activity"`
-	Identifier      string  `json:"identifier"`
-	SearchExact     bool    `json:"search_exact,omitempty"`
-	SearchNumber    int64   `json:"search_number,omitempty"`
+	Snapshot               string  `json:"snapshot"`
+	Sequence               *int64  `json:"sequence,omitempty"`
+	Score                  float64 `json:"score,omitempty"`
+	Lane                   int     `json:"lane"`
+	State                  string  `json:"state"`
+	Priority               int     `json:"priority"`
+	ActivityMissing        int     `json:"activity_missing"`
+	Activity               string  `json:"activity"`
+	Identifier             string  `json:"identifier"`
+	SearchExact            bool    `json:"search_exact,omitempty"`
+	SearchNumber           int64   `json:"search_number,omitempty"`
+	SearchWindow           int64   `json:"search_window,omitempty"`
+	SearchFingerprintAfter string  `json:"search_fingerprint_after,omitempty"`
 }
 
 func (s *Service) ReadLimit(ctx context.Context, scope Caller, path string, params url.Values, maximum, defaultLimit int) (int, Cursor, []byte, error) {

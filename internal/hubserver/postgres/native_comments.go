@@ -22,8 +22,10 @@ func (s *session) CreateComment(ctx context.Context, record corestore.Comment) (
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return corestore.Comment{}, err
 	}
-	if err := s.lockDuplicateSourceProject(ctx, record.ProjectID, "comment"); err != nil {
-		return corestore.Comment{}, err
+	if record.ProjectID != "" {
+		if err := s.advanceDuplicateSource(ctx, record.ProjectID); err != nil {
+			return corestore.Comment{}, err
+		}
 	}
 	row, err := s.queries.CreateComment(ctx, pgquery.CreateCommentParams{
 		SourceRevision: record.SourceRevision, SourceScheduled: record.SourceScheduled, SourceObservedAt: record.SourceObservedAt,

@@ -95,42 +95,42 @@ func boardWhere(org tracker.OrganizationID, f viewstore.BoardSelection) (string,
 	}
 	args := []any{org, f.ProjectID}
 	clauses := []string{"b.organization_id=$1", "b.project_id=$2"}
-	var searchClauses []int
 	var reporterPredicate string
 	if f.SearchText != "" || f.Fingerprint != "" {
-		window := boardSearchWindow(&args, f, fmt.Sprintf("work_item_id,search_vector,left(body,%d) AS body", searchstore.WindowBodyChars))
-		owned, ownedNumber := "", ""
+		owned, ownedNumber := func(string) string { return "true" }, ""
 		if f.Reporter {
 			if f.ReporterPrincipalID == "" {
 				return "", nil, corestore.ErrNotFound
 			}
 			args = append(args, f.ReporterPrincipalID)
-			owned = fmt.Sprintf(" AND EXISTS(SELECT 1 FROM issues ri WHERE ri.organization_id=$1 AND ri.project_id=$2 AND ri.native_id=w.work_item_id AND ri.actor_principal_id=$%d OFFSET 0)", len(args))
-			ownedNumber = fmt.Sprintf(" AND i.actor_principal_id=$%d", len(args))
+			principal := len(args)
+			owned = func(alias string) string {
+				return fmt.Sprintf("EXISTS(SELECT 1 FROM issues ri WHERE ri.organization_id=$1 AND ri.project_id=$2 AND ri.native_id=%s.work_item_id AND ri.actor_principal_id=$%d OFFSET 0)", alias, principal)
+			}
+			ownedNumber = fmt.Sprintf(" AND i.actor_principal_id=$%d", principal)
 		}
 		var matches []string
 		if f.SearchText != "" {
 			if err := (searchstore.Query{Kind: "work", ProjectID: f.ProjectID, Text: f.SearchText, Limit: 1}).Validate(); err != nil {
 				return "", nil, err
 			}
+			window := boardSearchWindow(&args, f, "work_item_id,search_vector")
 			args = append(args, searchstore.WindowQuery(f.SearchText))
 			match := fmt.Sprintf("w.search_vector @@ to_tsquery('pg_catalog.english',$%d)", len(args))
 			if number, name := searchstore.Number(f.SearchText); number > 0 {
 				args = append(args, number, name)
 				matches = append(matches, fmt.Sprintf("SELECT i.native_id FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.number=$%d AND ($%d='' OR lower(i.project_id)=lower($%d) OR lower(p.name)=lower($%d))", len(args)-1, len(args), len(args), len(args))+ownedNumber)
 			}
-			matches = append(matches, "SELECT w.work_item_id FROM "+window+" w WHERE "+match+owned)
+			matches = append(matches, "SELECT w.work_item_id FROM "+window+" w WHERE "+match+" AND "+owned("w"))
 		}
 		if f.Fingerprint != "" {
-			args = append(args, "\nfingerprint: "+f.Fingerprint+"\n")
-			fingerprint := fmt.Sprintf("SELECT w.work_item_id FROM %s w WHERE position($%d IN w.body)>0", window, len(args)) + owned
+			fingerprint := "SELECT k.work_item_id FROM " + boardFingerprintScan(&args, f) + " k WHERE " + owned("k")
 			if len(matches) > 0 {
 				matches = []string{"(" + strings.Join(matches, " UNION ") + ") INTERSECT (" + fingerprint + ")"}
 			} else {
 				matches = []string{fingerprint}
 			}
 		}
-		searchClauses = append(searchClauses, len(clauses))
 		clauses = append(clauses, "b.work_item_id IN ("+strings.Join(matches, " UNION ")+")")
 	}
 	add := func(column, operator string, value any) {
@@ -273,11 +273,15 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 		numberArg, nameArg := len(args)-1, len(args)
 		exactProjection = fmt.Sprintf("CASE WHEN $%d>0 AND i.number=$%d AND ($%d='' OR lower($%d)=lower(i.project_id) OR lower($%d)=lower(p.name)) THEN true ELSE false END", numberArg, numberArg, nameArg, nameArg, nameArg)
 		rankProjection = "0::double precision"
+		if f.SearchText != "" {
+			args = append(args, searchstore.WindowQuery(f.SearchText))
+			rankProjection = fmt.Sprintf("coalesce((SELECT ts_rank(r.search_vector,to_tsquery('pg_catalog.english',$%d)) FROM native_work_item_pages r WHERE r.organization_id=b.organization_id AND r.project_id=b.project_id AND r.work_item_id=b.work_item_id),0)::double precision", len(args))
+		}
 		order = "issue_search_exact DESC"
 		if f.WorkOrder {
 			order += ",b.running DESC,b.dispatchable DESC,i.number DESC"
 		} else {
-			order += ",i.number DESC"
+			order += ",issue_search_rank DESC,i.number DESC"
 		}
 		order += ",b.identifier"
 	}
@@ -306,12 +310,12 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 	if p := f.After; p != nil {
 		base := len(args)
 		if searchRanked {
-			exactExpr := "(" + exactProjection + ")"
-			if p.SearchExact {
-				where += " AND NOT " + exactExpr
-			} else {
-				args = append(args, p.SearchNumber)
-				where += fmt.Sprintf(" AND NOT %s AND i.number<$%d", exactExpr, base+1)
+			if p.Identifier != "" {
+				args = append(args, p.SearchExact, p.SearchRank, p.SearchNumber, p.Identifier)
+				exactExpr, rankExpr := "("+exactProjection+")", "("+rankProjection+")"
+				where += fmt.Sprintf(" AND (%s<$%d OR (%s=$%d AND (%s<$%d OR (%s=$%d AND (i.number<$%d OR (i.number=$%d AND b.identifier>$%d))))))", exactExpr, base+1, exactExpr, base+1, rankExpr, base+2, rankExpr, base+2, base+3, base+3, base+4)
+			} else if p.SearchWindow > 0 {
+				where += " AND NOT (" + exactProjection + ")"
 			}
 		} else if f.ClosedOrder {
 			args = append(args, p.Activity, p.Identifier)
@@ -358,6 +362,9 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 			var number int64
 			row, err = scanBoard(rows, &exact, &rank, &number)
 			row.Position.SearchExact, row.Position.SearchRank, row.Position.SearchNumber = exact, rank, number
+			if f.After != nil && !f.WorkOrder {
+				row.Position.SearchWindow, row.Position.SearchFingerprintAfter = f.After.SearchWindow, f.After.SearchFingerprintAfter
+			}
 		} else {
 			row, err = scanBoard(rows)
 		}
@@ -614,10 +621,24 @@ func (s *session) BoardAttemptCount(ctx context.Context, issueID int64) (int64, 
 
 const boardWorkOrderPendingSQL = `SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND issue_number IS NULL)`
 
+func boardFingerprintScan(args *[]any, f viewstore.BoardSelection) string {
+	*args = append(*args, searchstore.FingerprintDigest(f.Fingerprint))
+	digest := len(*args)
+	start := ""
+	if p := f.After; p != nil && f.SearchRanked && p.SearchFingerprintAfter != "" && f.SearchText == "" {
+		*args = append(*args, p.SearchFingerprintAfter)
+		start = fmt.Sprintf(" AND f.work_item_id>$%d", len(*args))
+	}
+	next := func(after string) string {
+		return fmt.Sprintf("(SELECT f.work_item_id FROM native_work_item_fingerprints f WHERE f.organization_id=$1 AND f.project_id=$2 AND f.fingerprint_digest=$%d%s ORDER BY f.work_item_id LIMIT 1)", digest, after)
+	}
+	return "(WITH RECURSIVE scan(work_item_id,steps) AS (SELECT " + next(start) + ",1 UNION ALL SELECT " + next(" AND f.work_item_id>scan.work_item_id") + fmt.Sprintf(",scan.steps+1 FROM scan WHERE scan.work_item_id IS NOT NULL AND scan.steps<%d) SELECT work_item_id FROM scan WHERE work_item_id IS NOT NULL)", searchstore.WindowRows)
+}
+
 func boardSearchWindow(args *[]any, f viewstore.BoardSelection, columns string) string {
 	bound := ""
-	if p := f.After; p != nil && f.SearchRanked && !p.SearchExact && !f.WorkOrder {
-		*args = append(*args, p.SearchNumber)
+	if p := f.After; p != nil && f.SearchRanked && p.SearchWindow > 0 && !f.WorkOrder {
+		*args = append(*args, p.SearchWindow)
 		bound = fmt.Sprintf(" AND number<$%d", len(*args))
 	}
 	return fmt.Sprintf("(SELECT %s FROM native_work_item_pages WHERE organization_id=$1 AND project_id=$2%s ORDER BY number DESC,work_item_id LIMIT %d)", columns, bound, searchstore.WindowRows)

@@ -7,14 +7,15 @@ import (
 )
 
 type BoardModelPage struct {
-	Summaries       []BoardSummaryRecord
-	Lanes           []BoardLane
-	Pending         bool
-	OldestPendingAt *time.Time
-	Records         []BoardRecord
-	WorkRecords     []BoardRecord
-	Sequence        int64
-	SearchWindowEnd *int64
+	Summaries            []BoardSummaryRecord
+	Lanes                []BoardLane
+	Pending              bool
+	OldestPendingAt      *time.Time
+	Records              []BoardRecord
+	WorkRecords          []BoardRecord
+	Sequence             int64
+	SearchWindowEnd      *int64
+	SearchFingerprintEnd *string
 }
 
 type BoardSummaryRecord struct {

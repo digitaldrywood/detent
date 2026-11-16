@@ -7,6 +7,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -82,6 +84,21 @@ func (s *session) PublishWorkItemPage(ctx context.Context, candidate viewstore.P
 	if comment != nil && (candidate.Kind != "comment" || comment.Generation != candidate.Generation || comment.Value.OrganizationID != s.organization || comment.Value.ProjectID != candidate.ProjectID || comment.Value.WorkItemID != candidate.WorkItemID || comment.Value.ID != candidate.RecordID) {
 		return corestore.ErrTenantMismatch
 	}
+	var fingerprints []searchstore.FingerprintRow
+	if item != nil {
+		fingerprints = searchstore.FingerprintRows(candidate.ProjectID, item.Value.Body)
+	} else if comment != nil && !comment.Value.Deleted {
+		fingerprints = searchstore.FingerprintRows(candidate.ProjectID, comment.Value.Body)
+	}
+	var stored bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM native_work_item_fingerprints WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND kind=$4 AND record_id=$5)`, s.organization, candidate.ProjectID, candidate.WorkItemID, candidate.Kind, candidate.RecordID).Scan(&stored); err != nil {
+		return mapError(ctx, err)
+	}
+	if stored || len(fingerprints) > 0 {
+		if _, err := s.queries.AdvanceDuplicateSource(ctx, pgquery.AdvanceDuplicateSourceParams{OrganizationID: s.organization, ID: candidate.ProjectID}); err != nil {
+			return mapError(ctx, err)
+		}
+	}
 	var generation int64
 	err := s.db.QueryRow(ctx, `SELECT generation FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND record_id=$4 AND kind=$5 FOR UPDATE`, s.organization, candidate.ProjectID, candidate.WorkItemID, candidate.RecordID, candidate.Kind).Scan(&generation)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -119,6 +136,9 @@ func (s *session) PublishWorkItemPage(ctx context.Context, candidate viewstore.P
 			return mapError(ctx, err)
 		}
 	}
+	if err := s.replaceWorkItemFingerprints(ctx, candidate, fingerprints); err != nil {
+		return err
+	}
 	_, err = s.db.Exec(ctx, `DELETE FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND record_id=$4 AND kind=$5 AND generation=$6`, s.organization, candidate.ProjectID, candidate.WorkItemID, candidate.RecordID, candidate.Kind, candidate.Generation)
 	if err != nil {
 		return mapError(ctx, err)
@@ -148,6 +168,22 @@ func (s *session) WorkItemPageProjectionRevision(ctx context.Context) (int64, er
 func (s *session) advanceWorkItemPageProjectionRevision(ctx context.Context) error {
 	_, err := s.db.Exec(ctx, `INSERT INTO native_work_item_page_progress(organization_id,publication_revision) VALUES($1,1)
  ON CONFLICT(organization_id) DO UPDATE SET publication_revision=native_work_item_page_progress.publication_revision+1`, s.organization)
+	return mapError(ctx, err)
+}
+
+func (s *session) replaceWorkItemFingerprints(ctx context.Context, candidate viewstore.PageCandidate, rows []searchstore.FingerprintRow) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM native_work_item_fingerprints WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND kind=$4 AND record_id=$5`, s.organization, candidate.ProjectID, candidate.WorkItemID, candidate.Kind, candidate.RecordID); err != nil {
+		return mapError(ctx, err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	digests, origins, kinds, series := make([]string, len(rows)), make([]bool, len(rows)), make([]string, len(rows)), make([]string, len(rows))
+	for i, row := range rows {
+		digests[i], origins[i], kinds[i], series[i] = row.Digest, row.Origin, row.OriginKind, row.ReleaseSeries
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind,release_series)
+ SELECT $1,$2,$3,$4,$5,f.digest,f.origin,f.kind,f.series FROM unnest($6::text[],$7::boolean[],$8::text[],$9::text[]) AS f(digest,origin,kind,series)`, s.organization, candidate.ProjectID, candidate.WorkItemID, candidate.Kind, candidate.RecordID, digests, origins, kinds, series)
 	return mapError(ctx, err)
 }
 

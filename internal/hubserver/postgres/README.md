@@ -942,32 +942,17 @@ work-item-page maintenance owner already keeps for every issue. Its stored
 generated `search_vector` holds the title (weight A, first 1,024 characters) and
 description (weight D, first 32,768 characters), Unicode case folded through the
 built-in `pg_c_utf8` collation and parsed with the `english` configuration.
-Comments, labels and substrings inside words are not indexed. There is no
-separate search table, refresh owner or backfill: PostgreSQL computes the vector
-whenever the page row is written.
+Comments, labels and substrings inside words are not indexed. PostgreSQL computes
+the vector whenever the page row is written; text search has no separate table,
+refresh owner or backfill.
 
-A search request scans one window of at most 500 page rows of the requested
-project, newest issue number first, through the
-`(organization_id,project_id,number DESC,work_item_id)` index, and keeps rows
-whose vector matches the OR of the query words as prefixes. `@@` runs as a heap
-filter on those rows under the runtime role's row-level security, so no security
-definer helper is needed. Exact issue-number queries are added from `issues`.
-Results are ordered by exact number, then issue number descending. When the
-window ends before the page fills, the cursor continues from the window's lowest
-number, so a page can hold fewer items than its limit. Fingerprint filters match
-the marker line inside the same window.
+A search request scans the requested project's page rows newest issue number first through the `(organization_id,project_id,number DESC,work_item_id)` index, up to a ceiling of 2,500 rows (`searchstore.WindowRows`), and keeps rows whose vector matches the OR of the query words as prefixes. `@@` runs as a heap filter on those rows under the runtime role's row-level security, so no security definer helper is needed. Exact issue-number queries are added from `issues`. Results are ordered by exact number, then `ts_rank`, then issue number descending, with a keyset on those values. The ceiling is a safety bound, not a paging unit: the largest project has about 2,200 issues, so one request covers all of them. It is sized by the cold cost: a scan reads about 0.8 blocks per row (local measurement: 2,000 rows read 12.6 MB, 10,000 rows 62.5 MB, 50,000 rows 312 MB from outside shared buffers), and production reads a cold block in 0.3 to 0.45 ms, so 2,500 rows cost about 0.6 to 0.9 s fully cold and 5 to 10 ms warm. Only when a scan holds exactly the ceiling and the page is not full does the cursor carry `search_window` (the lowest number scanned) and continue with the next older window; exact-number matches are not repeated there.
 
-Duplicate detection reads the same newest-500 window, keeps non-archived rows
-(terminal rows only when closed within 30 days, unless machine filing), matches
-by fingerprint or by the title/body term thresholds, ranks at most 50 candidates
-and scores them from the page text. It is ready when the organization's page
-backfill has queued every issue and the project has no pending item page.
-Publishing an item page and the issue and comment update triggers advance
-`projects.duplicate_source_sequence`.
+Fingerprints live in `native_work_item_fingerprints`, a small typed table written only by `PublishWorkItemPage` in the transaction that publishes or removes an item or comment page. A row exists for each key of a stamped record: the parsed origin fingerprint (`is_origin`) and each `issueorigin.DefectKeys` key, stored as `fingerprint_digest = hex(sha256(key))`, with the record's `origin_kind` and, only in the Detent Cloud project, its release-stabilization series. Lookups are typed equalities, which PostgreSQL uses as index conditions under row-level security (a regex expression index is not usable there). The board `fingerprint` filter finds distinct issues for one key with a loose index scan on `(organization_id,project_id,fingerprint_digest,work_item_id)`, capped at the ceiling, and continues with `search_fingerprint_after` beyond it. When a record carrying keys is published or removed, publication first advances `projects.duplicate_source_sequence` (project row before the dirty row, then page and progress), so a duplicate challenge issued before the evidence changed is refused afterwards. Existing records are backfilled by the existing page backfill: after its phases 0 to 2, `fingerprint_phase` re-queues stamped item and comment pages 200 records per call through the same publisher, with compare-and-set progress updates on the phase and cursor.
 
-At INV-21 scale each request examines at most 500 index-ordered rows of one
-project plus their vectors, independent of project and tenant count; no periodic
-search work remains. Storage is the vector column, about 5 KB per issue.
+Duplicate detection reads the project's rows up to the same ceiling and keeps non-archived rows (terminal rows only when closed within 30 days, unless machine filing). It ranks at most 50 by the title/body term thresholds from the stored vectors and reads bodies only for those finalists. Fingerprint candidates come from `native_work_item_fingerprints` probes that encode `issueorigin.SameDefect`: P1 matches the request's origin fingerprint against origin rows, and P2 matches the request's origin and defect keys against any row when either side is a worker report. In the Detent Cloud project every probe also requires an equal release series. Each probe shape has an index with `work_item_id` right after its equality columns, examines at most 200 distinct issues per key, and the newest 50 eligible issues are kept. A test runs the same cases through `SameDefect` and through the probes so the two cannot drift. Detection is ready when the organization's page backfill has queued every issue and the project has no pending item page. Issue and comment creation and deletion, the issue and comment update triggers, and the publication of records carrying fingerprints advance `projects.duplicate_source_sequence`.
+
+At INV-21 scale each search request examines at most 2,500 index-ordered rows of one project plus their vectors, independent of project and tenant count, and each fingerprint request at most the ceiling of index descents for one key. No periodic search work remains beyond the one-time fingerprint backfill. Storage is the vector column (about 5 KB per issue) and the fingerprint table (a few MB).
 
 Backend selection, runtime wiring and whole-database cursor/import cutover
 remain with the shared PostgreSQL runtime cutover.

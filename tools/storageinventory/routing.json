@@ -4201,8 +4201,8 @@
           "session.beginBoardSearch:QueryRow": 2,
           "session.beginBoardSearch:SQL": 1,
           "session.boardModelQuery:SQL": 1,
-          "session.boardSearchModelPages:QueryRow": 3,
-          "session.boardSearchModelPages:SQL": 1
+          "session.boardSearchModelPages:QueryRow": 4,
+          "session.boardSearchModelPages:SQL": 2
         },
         "tables": [
           "hub/native_board_items",
@@ -5369,7 +5369,6 @@
           "session.lockDuplicateSourceProject:query-receiver": 1
         },
         "tables": [
-          "hub/issues",
           "hub/projects"
         ]
       }
@@ -12336,6 +12335,18 @@
           "hub/native_board_items",
           "hub/projects"
         ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261116222800_work_item_fingerprints.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "search"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
       }
     },
     "internal/hubserver/postgres/monthly_costs.go": {
@@ -20007,9 +20018,9 @@
       ],
       "inventory": {
         "operations": {
-          "session.BackfillWorkItemPages:Exec": 1,
-          "session.BackfillWorkItemPages:QueryRow": 3,
-          "session.BackfillWorkItemPages:SQL": 4
+          "session.BackfillWorkItemPages:Exec": 5,
+          "session.BackfillWorkItemPages:QueryRow": 5,
+          "session.BackfillWorkItemPages:SQL": 10
         },
         "tables": [
           "hub/issues",
@@ -20024,6 +20035,7 @@
       ],
       "inventory": {
         "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.AdvanceWorkItemPageCursor:Exec": 1,
           "session.AdvanceWorkItemPageCursor:SQL": 1,
           "session.CommentPageRecords:Query": 1,
@@ -20031,8 +20043,10 @@
           "session.NextWorkItemPageCandidate:QueryRow": 1,
           "session.NextWorkItemPageCandidate:SQL": 1,
           "session.PublishWorkItemPage:Exec": 2,
-          "session.PublishWorkItemPage:QueryRow": 1,
-          "session.PublishWorkItemPage:SQL": 3,
+          "session.PublishWorkItemPage:QueryRow": 2,
+          "session.PublishWorkItemPage:SQL": 4,
+          "session.PublishWorkItemPage:generated:AdvanceDuplicateSource": 1,
+          "session.PublishWorkItemPage:query-receiver": 1,
           "session.WorkItemDetailPage:QueryRow": 1,
           "session.WorkItemDetailPage:SQL": 1,
           "session.WorkItemPageProjectionRevision:QueryRow": 1,
@@ -20042,7 +20056,9 @@
           "session.WorkItemReferenceRecords:QueryRow": 1,
           "session.WorkItemReferenceRecords:SQL": 1,
           "session.advanceWorkItemPageProjectionRevision:Exec": 1,
-          "session.advanceWorkItemPageProjectionRevision:SQL": 1
+          "session.advanceWorkItemPageProjectionRevision:SQL": 1,
+          "session.replaceWorkItemFingerprints:Exec": 2,
+          "session.replaceWorkItemFingerprints:SQL": 2
         },
         "tables": []
       }

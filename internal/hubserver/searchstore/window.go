@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	WindowRows       = 500
+	WindowRows       = 2500
 	WindowTitleChars = 1024
 	WindowBodyChars  = 32768
 	maxQueryWordSize = 256

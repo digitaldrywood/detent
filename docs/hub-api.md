@@ -1564,16 +1564,7 @@ forward the lane ledger's reason as readable text through this field.
 Release reasons are `completed`, `cancelled`, `failed`, `released`,
 `work_item_hydration_failed` and `work_item_identity_missing`.
 
-Ordinary native work-item lists accept `q` (`query` on MCP `work_list`) for
-full-text search of issue titles and descriptions, open and closed. Search words
-use English stemming and prefix matching and combine with OR; comments, labels and
-substrings inside words are not searched. An exact issue number (`42` or
-`project#42`) is listed first, then matches newest issue first. Each request
-examines at most the 500 newest remaining issues of the project, so a page can
-hold fewer items than `limit`, or none, while `next_cursor` continues the search;
-follow `next_cursor` until it is absent. Each search hit includes a short
-`snippet`; matches are marked by brackets. Search composes with the existing
-exact filters, which apply within the same window.
+Ordinary native work-item lists accept `q` (`query` on MCP `work_list`) for full-text search of issue titles and descriptions, open and closed. Search words use English stemming and prefix matching and combine with OR; comments, labels and substrings inside words are not searched. An exact issue number (`42` or `project#42`) is listed first, then matches by relevance, then newest issue first. One request covers every issue of a project up to a safety ceiling of 2,500 issues, above every current project. Only beyond the ceiling does a page end early, with a `next_cursor` that continues with the next 2,500 older issues; keep following `next_cursor` until it is absent. Each search hit includes a short `snippet`; matches are marked by brackets. Search composes with the existing exact filters. `fingerprint` is an exact lookup across every issue in the project: an issue matches when its description, or one of its comments, carries a `detent-origin` stamp with that fingerprint or is a stamped report whose defect evidence (failing test, migration collision or Go diagnostic) has that fingerprint. With `q`, it narrows the text matches.
 
 `created_after` and `updated_after` are inclusive RFC3339 timestamp bounds;
 `created_before` is exclusive. Combine created bounds to select one day. Offsets
@@ -3591,7 +3582,7 @@ does not change a native pagination cursor's scope.
 Issue lists, run summaries, comments and factual timeline projections stay in PostgreSQL.
 Full history pages can resolve a history section using the original event sequences;
 continuations cross section boundaries without returning retired payload stubs.
-Work search reads a generated full-text column on the per-issue page projection; there is no separate search index or body copy. Comments, archived tool output and logs are not indexed.
+Work search reads a generated full-text column on the per-issue page projection; there is no separate text index or body copy. Comments, archived tool output and logs are not text-indexed; fingerprints carried by stamped issues and comments are kept as hashed keys in a small typed table.
 
 ## AI credit transaction reads
 

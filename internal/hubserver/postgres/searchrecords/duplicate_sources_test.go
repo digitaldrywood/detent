@@ -51,6 +51,13 @@ func TestDuplicateSourcesReadTheBoundedPageWindow(t *testing.T) {
 	if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_page_progress(organization_id,backfill_phase) VALUES('org_first',2),('org_second',2) ON CONFLICT (organization_id) DO UPDATE SET backfill_phase=2`); err != nil {
 		t.Fatal(err)
 	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, row := range searchstore.FingerprintRows("prj_first", issueorigin.Stamp("Unrelated body", fingerprint)) {
+			if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind,release_series) VALUES($1,'prj_first','wi_first_2','item','wi_first_2',$2,$3,$4,$5)`, org, row.Digest, row.Origin, row.OriginKind, row.ReleaseSeries); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	read := func(org tracker.OrganizationID, query searchstore.DuplicateSourceQuery) ([]tracker.NativeWorkItemID, error) {
 		var page searchstore.DuplicateSourcePage
 		err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {

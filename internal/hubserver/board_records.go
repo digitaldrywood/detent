@@ -97,7 +97,7 @@ func boardRecordSelection(scope hubscope.NativeScope, params url.Values) (viewst
 }
 
 func boardRecordCursor(row viewstore.BoardRecord, closed bool, sequence int64) *nativeIssuePageCursor {
-	position := &nativeIssuePageCursor{Sequence: &sequence, Score: row.Position.SearchRank, SearchExact: row.Position.SearchExact, SearchNumber: row.Position.SearchNumber, Lane: row.Position.Lane, State: row.Position.State, Priority: row.Position.Priority, Identifier: row.Position.Identifier}
+	position := &nativeIssuePageCursor{Sequence: &sequence, Score: row.Position.SearchRank, SearchExact: row.Position.SearchExact, SearchNumber: row.Position.SearchNumber, SearchWindow: row.Position.SearchWindow, SearchFingerprintAfter: row.Position.SearchFingerprintAfter, Lane: row.Position.Lane, State: row.Position.State, Priority: row.Position.Priority, Identifier: row.Position.Identifier}
 	if row.Position.ActivityMissing {
 		position.ActivityMissing = 1
 	}
@@ -259,7 +259,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	selection.Limit = limit + 1
 	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {
-		selection.After = &viewstore.BoardPosition{SearchExact: position.SearchExact, SearchRank: position.Score, SearchNumber: position.SearchNumber, Lane: position.Lane, State: position.State, Priority: position.Priority, ActivityMissing: position.ActivityMissing != 0, Identifier: position.Identifier}
+		selection.After = &viewstore.BoardPosition{SearchExact: position.SearchExact, SearchRank: position.Score, SearchNumber: position.SearchNumber, SearchWindow: position.SearchWindow, SearchFingerprintAfter: position.SearchFingerprintAfter, Lane: position.Lane, State: position.State, Priority: position.Priority, ActivityMissing: position.ActivityMissing != 0, Identifier: position.Identifier}
 		selection.AfterSequence = position.Sequence
 		if position.Activity != "" {
 			at, err := time.Parse(time.RFC3339Nano, position.Activity)
@@ -506,7 +506,10 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		cursor.Issues = boardRecordCursor(returned[len(returned)-1], selection.ClosedOrder, snapshot.Sequence)
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 	} else if selection.SearchRanked && snapshot.SearchWindowEnd != nil {
-		cursor.Issues = &nativeIssuePageCursor{Sequence: &snapshot.Sequence, SearchNumber: *snapshot.SearchWindowEnd}
+		cursor.Issues = &nativeIssuePageCursor{Sequence: &snapshot.Sequence, SearchWindow: *snapshot.SearchWindowEnd}
+		page.NextCursor, err = encodeNativeCursor(cursor, key)
+	} else if selection.SearchRanked && snapshot.SearchFingerprintEnd != nil {
+		cursor.Issues = &nativeIssuePageCursor{Sequence: &snapshot.Sequence, SearchFingerprintAfter: *snapshot.SearchFingerprintEnd}
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 	}
 	return page, cursors, err

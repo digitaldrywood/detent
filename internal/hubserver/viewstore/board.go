@@ -9,15 +9,17 @@ import (
 )
 
 type BoardPosition struct {
-	Lane            int
-	State           string
-	Priority        int
-	ActivityMissing bool
-	Activity        *time.Time
-	Identifier      string
-	SearchExact     bool
-	SearchRank      float64
-	SearchNumber    int64
+	Lane                   int
+	State                  string
+	Priority               int
+	ActivityMissing        bool
+	Activity               *time.Time
+	Identifier             string
+	SearchExact            bool
+	SearchRank             float64
+	SearchNumber           int64
+	SearchWindow           int64
+	SearchFingerprintAfter string
 }
 
 type BoardDisplay struct {

@@ -64,7 +64,7 @@ func Prepare(ctx context.Context, deps Deps, scope hubscope.NativeScope, request
 	if err != nil {
 		return nil, err
 	}
-	if len(page.Sources) > searchstore.WindowRows {
+	if len(page.Sources) > searchstore.WindowRows+searchstore.DuplicateCandidates {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var matches []searchstore.DuplicateMatch

@@ -21,8 +21,12 @@ func MatchDuplicateSource(source DuplicateSource, request Text) (DuplicateMatch,
 	if source.Statistics.Validate() != nil {
 		return match, false
 	}
-	previous := text.Body
+	if source.Fingerprint {
+		match.Fingerprint = true
+		return match, true
+	}
 	if _, stamped := issueorigin.Parse(request.Body); stamped {
+		previous := text.Body
 		same := issueorigin.SameDefect(previous, request.Body)
 		if string(source.Document.ProjectID) == issueorigin.DetentCloudProjectID {
 			before, after := issueorigin.ReleaseStabilizationSeries(previous), issueorigin.ReleaseStabilizationSeries(request.Body)

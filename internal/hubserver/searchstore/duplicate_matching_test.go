@@ -1,6 +1,8 @@
 package searchstore
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -38,4 +40,35 @@ func TestDuplicateCommentsPreserveReleaseIdentity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFingerprintRowsCarryStampedIdentity(t *testing.T) {
+	problem := "Problem: `go-test:example/pkg:TestOne`"
+	defect := FingerprintDigest(issueorigin.DefectFingerprint(problem))
+	release := issueorigin.Stamp("Release stabilization: `release/v1.2`", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/1", Fingerprint: issueorigin.ReleaseStabilizationFingerprint("release/v1.2")})
+	for _, test := range []struct {
+		name    string
+		project tracker.ProjectID
+		body    string
+		want    []FingerprintRow
+	}{
+		{"unstamped", "prj_example", problem, nil},
+		{"origin only", "prj_example", issueorigin.Stamp("Report", issueorigin.Origin{Kind: "doctor", Fingerprint: "example-key"}), []FingerprintRow{{Digest: FingerprintDigest("example-key"), Origin: true, OriginKind: "doctor"}}},
+		{"origin and defect key", "prj_example", issueorigin.Stamp(problem, issueorigin.Origin{Kind: "worker", Fingerprint: "example-key"}), sortedRows(FingerprintRow{Digest: FingerprintDigest("example-key"), Origin: true, OriginKind: "worker"}, FingerprintRow{Digest: defect, OriginKind: "worker"})},
+		{"origin equal to its defect key", "prj_example", issueorigin.Stamp(problem, issueorigin.Origin{Kind: "worker", Fingerprint: issueorigin.DefectFingerprint(problem)}), []FingerprintRow{{Digest: defect, Origin: true, OriginKind: "worker"}}},
+		{"release series in the cloud project", issueorigin.DetentCloudProjectID, release, []FingerprintRow{{Digest: FingerprintDigest(issueorigin.ReleaseStabilizationFingerprint("release/v1.2")), Origin: true, OriginKind: "doctor", ReleaseSeries: "release/v1.2"}}},
+		{"release series ignored elsewhere", "prj_example", release, []FingerprintRow{{Digest: FingerprintDigest(issueorigin.ReleaseStabilizationFingerprint("release/v1.2")), Origin: true, OriginKind: "doctor"}}},
+		{"long fingerprint", "prj_example", issueorigin.Stamp("Report", issueorigin.Origin{Kind: "doctor", Fingerprint: strings.Repeat("k", 4096)}), []FingerprintRow{{Digest: FingerprintDigest(strings.Repeat("k", 4096)), Origin: true, OriginKind: "doctor"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := FingerprintRows(test.project, test.body); !slices.Equal(got, test.want) {
+				t.Fatalf("rows=%+v want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+func sortedRows(rows ...FingerprintRow) []FingerprintRow {
+	slices.SortFunc(rows, func(a, b FingerprintRow) int { return strings.Compare(a.Digest, b.Digest) })
+	return rows
 }
