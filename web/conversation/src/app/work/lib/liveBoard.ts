@@ -370,7 +370,7 @@ export class LiveBoard {
       const counted = update !== undefined && update.sequence >= (this.workSequences.get(id) ?? 0);
       const work = counted && update.work !== undefined ? update.work : entry.work;
       if (counted) {
-        this.workSequences.set(id, entry.sequence);
+        this.workSequences.set(id, update.sequence);
         if (update.work === undefined) countsPending.add(id);
         else countsPending.delete(id);
       }

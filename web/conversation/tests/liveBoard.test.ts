@@ -19,7 +19,7 @@ class Source extends EventTarget {
 }
 
 const PROJECTS = [{ id: "proj_alpha", name: "alpha" }, { id: "proj_beta", name: "beta" }, { id: "proj_gamma", name: "gamma" }];
-type BoardBody = { projects: { project: { project_id: string }; projection_pending: boolean; work?: unknown }[]; cards: { issue: { work_item_id: string; project_id: string; actor: { kind: string } } }[] };
+type BoardBody = { projects: { project: { project_id: string }; sequence: number; projection_pending: boolean; work?: unknown }[]; cards: { issue: { work_item_id: string; project_id: string; actor: { kind: string } } }[] };
 
 let visibility: DocumentVisibilityState = "visible";
 beforeEach(() => {
@@ -223,6 +223,28 @@ describe("the live board", () => {
     expect(boards).toHaveLength(3);
     expect(boards[2]!.searchParams.getAll("item")).toEqual([target.id]);
     expect(read.snapshot().items.some((item) => item.id === target.id)).toBe(false);
+  });
+
+  it("keeps counts from a newer item response over a later response with an older sequence", async () => {
+    const sequences = [20, 15];
+    const { read, stream, openAll } = await liveBoard((body, url) => {
+      if (!url.searchParams.has("item")) return;
+      const sequence = sequences.shift()!;
+      for (const entry of body.projects) {
+        entry.sequence = sequence;
+        entry.work = { items: [], lanes: [{ state: "Todo", total: sequence, running: 0 }], truncated: false, as_of: "2026-11-06T12:00:00Z", completed: 0, cancelled: 0, shipped_windows: [] };
+      }
+    });
+    read.start();
+    openAll();
+    await vi.advanceTimersByTimeAsync(0);
+    const item = read.snapshot().items.find((candidate) => candidate.projectId === "proj_alpha")!;
+    for (const id of ["1", "2"]) {
+      stream("proj_alpha").emit("work_item", JSON.stringify({ entity_id: item.id, kind: "upsert" }), id);
+      await vi.advanceTimersByTimeAsync(LIVE_DELTA_WINDOW_MS);
+    }
+    expect(sequences).toHaveLength(0);
+    expect(read.projectSnapshot("proj_alpha").totals?.lanes.Todo).toBe(20);
   });
 
   it("reloads the remaining projects when one is revoked during a shared board read", async () => {
