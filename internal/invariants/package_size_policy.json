@@ -45,7 +45,7 @@
     "internal/hubserver": {
       "source_files": 454,
       "source_lines": 102127,
-      "test_files": 485,
+      "test_files": 487,
       "test_lines": 217479
     },
     "internal/hubserver/postgres": {

@@ -2250,6 +2250,74 @@ type NativeBoardAccessRevision struct {
 	Revision       int64
 }
 
+type NativeBoardCard struct {
+	OrganizationID         tracker.OrganizationID
+	ProjectID              tracker.ProjectID
+	WorkItemID             string
+	Number                 int64
+	Revision               int64
+	State                  string
+	Archived               bool
+	Terminal               bool
+	Ready                  bool
+	Workspace              bool
+	Running                bool
+	Dispatchable           bool
+	Priority               pgtype.Int4
+	PriorityRank           int32
+	ActivityAt             *time.Time
+	Identifier             string
+	ClosedAt               *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	LastActivityAt         time.Time
+	ActorPrincipalID       string
+	IssueType              string
+	Title                  string
+	Labels                 []string
+	Assignees              []string
+	HasLinks               bool
+	ProvenanceProvider     string
+	ProvenanceExternalID   string
+	ProvenanceCreatedAt    time.Time
+	ProvenanceUpdatedAt    time.Time
+	ProvenanceObservedAt   time.Time
+	PullRequestNumber      pgtype.Int8
+	PullRequestUrl         string
+	ListChangeBranch       *string
+	ListChangeHeadSha      string
+	CardReady              bool
+	StatusLine             string
+	AttemptID              string
+	AttemptCount           int64
+	AttemptStatus          string
+	AttemptRunnerID        string
+	AttemptMachineID       string
+	AttemptStartedAt       *time.Time
+	AttemptBackend         string
+	AttemptModel           string
+	AttemptEffort          string
+	ExecutionID            string
+	ExecutionRunning       bool
+	ExecutionStage         string
+	ExecutionRunnerID      string
+	ExecutionStartedAt     *time.Time
+	ExecutionBackend       string
+	ExecutionModel         string
+	ExecutionEffort        string
+	ChangeID               string
+	ChangeTitle            string
+	ChangeStatus           string
+	ChangeExternalProvider string
+	ChangeExternalID       string
+	ChangeExternalUrl      string
+	ChangePrincipalID      string
+	ChangeVersionID        string
+	ChangePolicyID         string
+	ChangeReviewPolicyID   string
+	ChangeBaseStatus       string
+}
+
 type NativeBoardCount struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -3002,6 +3070,18 @@ type NativeRelationshipPageHead struct {
 	ProjectedAt    time.Time
 }
 
+type NativeWorkItemFingerprint struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	WorkItemID        string
+	Kind              string
+	RecordID          string
+	FingerprintDigest string
+	IsOrigin          bool
+	OriginKind        string
+	ReleaseSeries     string
+}
+
 type NativeWorkItemPage struct {
 	OrganizationID                  tracker.OrganizationID
 	ProjectID                       tracker.ProjectID
@@ -3116,13 +3196,16 @@ type NativeWorkItemPageDirty struct {
 }
 
 type NativeWorkItemPageProgress struct {
-	OrganizationID      tracker.OrganizationID
-	CursorGeneration    int64
-	ExaminedAt          time.Time
-	PublicationRevision int64
-	BackfillPhase       int16
-	BackfillIssueID     int64
-	BackfillCommentID   string
+	OrganizationID       tracker.OrganizationID
+	CursorGeneration     int64
+	ExaminedAt           time.Time
+	PublicationRevision  int64
+	BackfillPhase        int16
+	BackfillIssueID      int64
+	BackfillCommentID    string
+	FingerprintPhase     int16
+	FingerprintIssueID   int64
+	FingerprintCommentID string
 }
 
 type NeutralImportRecord struct {

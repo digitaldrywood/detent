@@ -15038,26 +15038,6 @@
         ]
       }
     },
-    "internal/hubserver/postgres/pgquery/search_backfill.sql.go": {
-      "disposition": "target-adapter",
-      "families": [
-        "conversion",
-        "search"
-      ],
-      "inventory": {
-        "operations": {
-          "Queries.SearchBackfillPage:Query": 1,
-          "Queries.SearchBackfillQueue:Exec": 1,
-          "Queries.SearchBackfillWrap:Exec": 1,
-          "searchBackfillPage:SQL": 1,
-          "searchBackfillQueue:SQL": 1,
-          "searchBackfillWrap:SQL": 1
-        },
-        "tables": [
-          "hub/storage_conversion_cursors"
-        ]
-      }
-    },
     "internal/hubserver/postgres/pgquery/slack_contract.sql.go": {
       "disposition": "target-adapter",
       "families": [
@@ -17598,24 +17578,6 @@
         },
         "tables": [
           "hub/collaboration_events"
-        ]
-      }
-    },
-    "internal/hubserver/postgres/queries/search_backfill.sql": {
-      "disposition": "target-schema",
-      "families": [
-        "conversion",
-        "search"
-      ],
-      "inventory": {
-        "operations": {
-          "SQL": 1,
-          "query:SearchBackfillPage:many": 1,
-          "query:SearchBackfillQueue:exec": 1,
-          "query:SearchBackfillWrap:exec": 1
-        },
-        "tables": [
-          "hub/storage_conversion_cursors"
         ]
       }
     },
