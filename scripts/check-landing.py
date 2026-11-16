@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -111,9 +112,31 @@ def test_events(lines, emit=print):
     return 1 if errors else 0
 
 
+def package_digest(packages):
+    return hashlib.sha256("".join(package + "\n" for package in packages).encode()).hexdigest()
+
+
+def package_set(arguments, listed):
+    count = next((argument.split("=", 1)[1] for argument in arguments if argument.startswith("--package-count=")), None)
+    digest = next((argument.split("=", 1)[1] for argument in arguments if argument.startswith("--package-sha256=")), None)
+    rest = [argument for argument in arguments if not argument.startswith(("--package-count=", "--package-sha256="))]
+    if count is None and digest is None:
+        return rest
+    packages = [package for package in (listed or "").split("\n") if package]
+    if count != str(len(packages)) or digest != package_digest(packages):
+        raise ValueError("landing package list does not match its recorded count and digest")
+    return rest + packages
+
+
 def run_tests(arguments):
     environment = dict(os.environ)
     environment.pop("DETENT_API_TOKEN", None)
+    listed = environment.pop("DETENT_LANDING_PACKAGES", None)
+    try:
+        arguments = package_set(arguments, listed)
+    except ValueError as error:
+        print(error, file=sys.stderr, flush=True)
+        return 1
     environment["DETENT_TEST_POSTGRES"] = "binary"
     with subprocess.Popen(["go", "test", "-json", *arguments], env=environment, stdout=subprocess.PIPE, text=True) as process:
         inventory = test_events(process.stdout, lambda line: print(line, flush=True))
@@ -128,6 +151,8 @@ if __name__ == "__main__":
     if command == "packages":
         for package in REQUIRED_POSTGRES:
             print("./" + package.split("/detent/", 1)[1])
+    elif command == "digest":
+        print(package_digest(arguments))
     elif command == "tests":
         sys.exit(run_tests(arguments))
     elif command == "inventory":

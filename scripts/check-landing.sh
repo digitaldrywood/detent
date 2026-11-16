@@ -128,7 +128,9 @@ while IFS= read -r package; do
 done < <(printf '%s\n' "${test_packages[@]}" | sort)
 test_packages=("${sorted_packages[@]}")
 if [ "${#test_packages[@]}" -gt 0 ]; then
-    check_with_evidence unit-short python3 scripts/check-landing.py tests -p "$procs" -short -timeout=10m "${test_packages[@]}"
+    printf 'Landing test packages: %s\n' "${test_packages[*]}"
+    package_digest=$(python3 scripts/check-landing.py digest "${test_packages[@]}")
+    DETENT_LANDING_PACKAGES=$(printf '%s\n' "${test_packages[@]}") check_with_evidence unit-short python3 scripts/check-landing.py tests --package-count="${#test_packages[@]}" --package-sha256="$package_digest" -p "$procs" -short -timeout=10m
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     make -j1 "$linter" TEST_PROCS="$procs"

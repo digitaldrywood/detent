@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -38,6 +39,8 @@ if name == "go" and args[:1] == ["list"]:
         if not list(Path(directory).glob("*.go")):
             continue
         print(json.dumps({"Dir": str(Path(directory).resolve()), "ImportPath": "example.test/" + directory, "Imports": imports, "TestImports": test_imports, "EmbedFiles": ["data.txt"] if directory == "lib" else []}))
+    for directory in sorted(Path("many").glob("*/source.go")):
+        print(json.dumps({"Dir": str(directory.parent.resolve()), "ImportPath": "example.test/" + directory.parent.as_posix()}))
 if name == "go" and args[:1] == ["test"]:
     if "REAL_GO" in os.environ:
         environment = dict(os.environ, PATH=os.environ["REAL_PATH"])
@@ -160,6 +163,32 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
                 self.assertIn("assets", trace[0]["args"])
                 self.assertIn("generate-docs", trace[0]["args"])
+
+    def test_wide_selection_records_bounded_unit_evidence(self):
+        names = ["./many/" + "feature_package_with_a_long_descriptive_name_" + str(index) for index in range(150)]
+        for name in names:
+            (self.root / name).mkdir(parents=True)
+            (self.root / name / "source.go").write_text("package fixture\n")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        packages = sorted(names + self.required_packages)
+        test = next(call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test")
+        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], packages)
+        evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence: ")]
+        unit = next(check for check in evidence if check["scope"] == "unit-short")
+        self.assertRegex(unit["command"], r"^[a-zA-Z0-9_. /:+,=-]{1,256}$")
+        digest = hashlib.sha256("".join(package + "\n" for package in packages).encode()).hexdigest()
+        self.assertEqual(unit["command"], f"python3 scripts/check-landing.py tests --package-count={len(packages)} --package-sha256={digest} -p 2 -short -timeout=10m")
+
+    def test_unit_package_list_must_match_recorded_digest(self):
+        contract = runpy.run_path(str(ROOT / "scripts/check-landing.py"))
+        packages = ["./internal/pgtransport", "./lib"]
+        recorded = ["--package-count=2", "--package-sha256=" + hashlib.sha256(b"./internal/pgtransport\n./lib\n").hexdigest(), "-short"]
+        self.assertEqual(contract["package_set"](recorded, "\n".join(packages) + "\n"), ["-short"] + packages)
+        for name, listed in (("missing", None), ("extra", "\n".join(packages + ["./unrelated"])), ("changed", "./internal/pgtransport\n./app\n")):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                contract["package_set"](recorded, listed)
 
     def test_module_change_checks_all_current_packages(self):
         with (self.root / "go.mod").open("a") as stream:
