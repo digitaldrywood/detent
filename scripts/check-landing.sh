@@ -19,8 +19,15 @@ source scripts/check-evidence.sh
 
 head=$(git rev-parse --verify 'HEAD^{commit}')
 base_head=$(git rev-parse --verify "${base_ref}^{commit}")
-base=$base_head
-printf 'Landing comparison: base=%s head=%s\n' "$base" "$head"
+if ! base=$(git merge-base --all "$base_head" "$head"); then
+    printf 'Landing head %s has no merge base with landing target %s; fetch the shared history before validating.\n' "$head" "$base_head" >&2
+    exit 1
+fi
+if [[ $base == *$'\n'* ]]; then
+    printf 'Landing head %s has several merge bases with landing target %s; comparing against the target.\n' "$head" "$base_head"
+    base=$base_head
+fi
+printf 'Landing comparison: base=%s head=%s target=%s\n' "$base" "$head" "$base_head"
 
 if [ -z "${TMPDIR:-}" ] || [ ! -d "$TMPDIR" ] || [ ! -w "$TMPDIR" ]; then
     printf 'Landing PostgreSQL tests require a writable job TMPDIR.\n' >&2
@@ -41,8 +48,8 @@ for postgres_tool in initdb postgres; do
 done
 export DETENT_TEST_POSTGRES=binary
 
-check_with_evidence sqlite-policy python3 scripts/check-sqlite-policy.py "$base" "$head"
-check_with_evidence tenancy-policy python3 scripts/check-tenancy-policy.py "$base" "$head"
+check_with_evidence sqlite-policy python3 scripts/check-sqlite-policy.py "$base_head" "$head"
+check_with_evidence tenancy-policy python3 scripts/check-tenancy-policy.py "$base_head" "$head"
 check_with_evidence assets make -j1 assets generate-docs TEST_PROCS="$procs"
 check_with_evidence build go build -p "$procs" ./...
 

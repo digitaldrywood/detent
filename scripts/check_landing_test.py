@@ -384,15 +384,104 @@ func TestGateLifetime(t *testing.T) {
         self.assertIn("internal/hubserver/new.go: debt timer:time.NewTicker count 1 exceeds target baseline 0", result.stderr)
         self.assertEqual(self.trace(), [])
 
+    def test_moved_target_compares_only_candidate_commits(self):
+        policy = self.root / "internal/invariants/sqlite_policy.json"
+        policy.write_text('{"files":{"legacy.go":{"driver_import":1}},"modules":{}}\n')
+        self.commit()
+        fork = self.git("rev-parse", "HEAD").strip()
+        (self.root / "unrelated/source.go").write_text("package unrelated\nconst Value = 1\n")
+        self.commit()
+        target = self.git("rev-parse", "HEAD").strip()
+
+        def checkout(start):
+            self.git("checkout", "-q", "--detach", start)
+            return start
+
+        def candidate(start):
+            checkout(start)
+            (self.root / "lib/source_test.go").write_text("package lib\nconst TestValue = 1\n")
+            self.commit()
+            return self.git("rev-parse", "HEAD").strip()
+
+        def merged():
+            candidate(fork)
+            self.git("merge", "-q", "--no-edit", target)
+            return target
+
+        def criss_cross():
+            candidate(fork)
+            job = self.git("rev-parse", "HEAD").strip()
+            self.git("checkout", "-q", "--detach", target)
+            self.git("merge", "-q", "--no-commit", job)
+            (self.root / "lib/source.go").write_text("package lib\nconst Value = 2\n")
+            self.commit()
+            self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
+            self.git("checkout", "-q", "--detach", job)
+            self.git("merge", "-q", "--no-edit", target)
+            return self.git("rev-parse", "origin/develop").strip()
+
+        def lowered_baseline():
+            checkout(target)
+            policy.write_text('{"files":{},"modules":{}}\n')
+            self.commit()
+            self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
+            candidate(fork)
+
+        def disjoint():
+            self.git("checkout", "-q", "--orphan", "disjoint")
+            self.commit()
+
+        cases = (
+            ("behind target", lambda: checkout(fork), [], None, None),
+            ("equal to target", lambda: checkout(target), [], None, None),
+            ("based before target moved", lambda: candidate(fork) and fork, ["./lib"], ["./lib"], None),
+            ("merged target", merged, ["./lib"], ["./lib"], None),
+            ("criss-cross merge", criss_cross, ["./app", "./integration", "./lib"], ["./lib"], None),
+            ("target lowered a policy baseline", lowered_baseline, None, None, "legacy.go: SQLite driver_import count 1 exceeds target baseline 0"),
+            ("no shared history", disjoint, None, None, "no merge base with landing target {landing}"),
+        )
+        for name, prepare, tests, lint, refusal in cases:
+            with self.subTest(name=name):
+                self.git("update-ref", "refs/remotes/origin/develop", target)
+                comparison = prepare()
+                landing = self.git("rev-parse", "origin/develop").strip()
+                result = self.run_gate()
+                trace = self.trace()
+                if refusal:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(refusal.format(landing=landing), result.stderr)
+                    self.assertEqual(trace, [])
+                    continue
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                head = self.git("rev-parse", "HEAD").strip()
+                self.assertIn(f"Landing comparison: base={comparison} head={head} target={landing}", result.stdout)
+                self.assertIn(f"SQLite policy monotonicity passed: target={landing} candidate={head}", result.stdout)
+                self.assertIn(f"Tenancy policy monotonicity passed: target={landing} candidate={head}", result.stdout)
+                test = next(call for call in trace if call["tool"] == "go" and call["args"][0] == "test")
+                self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(tests + self.required_packages))
+                linted = [call for call in trace if call["tool"] == "golangci-lint"]
+                if lint is None:
+                    self.assertEqual(linted, [])
+                    continue
+                self.assertEqual([arg for arg in linted[0]["args"] if arg.startswith("./")], lint)
+                self.assertIn("--new-from-rev=" + comparison, linted[0]["args"])
+
     def test_shallow_candidate_uses_explicit_target_without_origin(self):
         (self.root / "lib/source.go").write_text("package lib\nconst Value = 1\n")
         self.commit()
         head = self.git("rev-parse", "HEAD").strip()
-        (self.root / ".git/shallow").write_text(head + "\n")
         self.git("update-ref", "-d", "refs/remotes/origin/develop")
-        result = self.run_gate(self.base)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Landing comparison: base=" + self.base, result.stdout)
+        for name, boundary, passes in (("target in history", self.base, True), ("target outside history", head, False)):
+            with self.subTest(name=name):
+                (self.root / ".git/shallow").write_text(boundary + "\n")
+                result = self.run_gate(self.base)
+                if passes:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("Landing comparison: base=" + self.base, result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("no merge base with landing target " + self.base, result.stderr)
+                    self.assertEqual(self.trace(), [])
 
 
 class PostgresInventoryTest(unittest.TestCase):
