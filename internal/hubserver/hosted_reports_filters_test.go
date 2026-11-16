@@ -336,7 +336,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 		}
 		for _, project := range []string{f.project, reportsAllProjects} {
 			var facets reportsFacets
-			usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+project+"&range=24h", http.StatusOK), &facets)
+			usageDecode(t, f.usage(t, "viewer", browserHostedOrganizationBase+"/reports/options?project="+project+"&range=24h", http.StatusOK), &facets)
 			runner := func(id string) bool {
 				return slices.ContainsFunc(facets.Runners, func(r reportsFacet) bool { return r.ID == id })
 			}
@@ -350,8 +350,8 @@ func TestReportsFilterDimensions(t *testing.T) {
 				t.Fatalf("%s options leak an unreadable project or an idle runner: %+v", project, facets)
 			}
 		}
-		f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+string(secret.Project)+"&range=24h", http.StatusNotFound)
-		f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project="+string(secret.Project)+"&range=24h", http.StatusNotFound)
+		f.usage(t, "viewer", browserHostedOrganizationBase+"/reports/options?project="+string(secret.Project)+"&range=24h", http.StatusNotFound)
+		f.usage(t, "viewer", browserHostedOrganizationBase+"/reports?project="+string(secret.Project)+"&range=24h", http.StatusNotFound)
 		var organization organizationProductivity
 		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?scope=organization&project=all&range=24h", http.StatusOK), &organization)
 		if organization.Current.Completed != unfiltered.Completion.Done {
