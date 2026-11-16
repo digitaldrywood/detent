@@ -663,94 +663,6 @@
       "family": "fleet",
       "organization": "organization-owned"
     },
-    "public.search_documents": {
-      "columns": {
-        "aggregate_bytes": "bigint",
-        "aggregate_content_bytes": "bigint",
-        "aggregate_object_key": "text",
-        "aggregate_sha256": "text",
-        "change_id": "text",
-        "comment_id": "text",
-        "event_id": "text",
-        "generation": "bigint",
-        "id": "text",
-        "indexed_revision": "bigint",
-        "kind": "text",
-        "organization_id": "text",
-        "payload_bytes": "bigint",
-        "payload_content_bytes": "bigint",
-        "payload_object_key": "text",
-        "payload_sha256": "text",
-        "placeholder": "boolean",
-        "progress_after_id": "text",
-        "progress_bytes": "bigint",
-        "progress_content_bytes": "bigint",
-        "progress_generation": "bigint",
-        "progress_object_key": "text",
-        "progress_sha256": "text",
-        "project_id": "text",
-        "refresh_order": "bigint",
-        "revision": "bigint",
-        "scope": "text",
-        "source_id": "text",
-        "source_vector": "tsvector",
-        "source_visible": "boolean",
-        "status": "text",
-        "term_frequencies": "bigint[]",
-        "terms": "text[]",
-        "title": "text",
-        "token_count": "bigint",
-        "updated_at": "timestamp with time zone",
-        "updated_at_submicrosecond": "bigint",
-        "vector": "tsvector",
-        "work_item_id": "text"
-      },
-      "contract": "Rebuild tenant-scoped approximate search from retained canonical source content with bounded candidate and refresh work.",
-      "family": "search",
-      "organization": "organization-owned"
-    },
-    "public.search_postings": {
-      "columns": {
-        "document_id": "text",
-        "impact": "double precision",
-        "literal_positions": "bigint[]",
-        "organization_id": "text",
-        "principal_id": "text",
-        "scope": "text",
-        "term": "text",
-        "thread": "boolean",
-        "updated_at": "timestamp with time zone",
-        "updated_at_submicrosecond": "bigint"
-      },
-      "contract": "Rebuild tenant-scoped approximate search from retained canonical source content with bounded candidate and refresh work.",
-      "family": "search",
-      "organization": "organization-owned"
-    },
-    "public.search_scope_documents": {
-      "columns": {
-        "id": "text",
-        "organization_id": "text",
-        "project_id": "text",
-        "work_item_id": "text"
-      },
-      "contract": "Rebuild tenant-scoped approximate search from retained canonical source content with bounded candidate and refresh work.",
-      "family": "search",
-      "organization": "organization-owned"
-    },
-    "public.search_scope_refresh": {
-      "columns": {
-        "after_id": "text",
-        "archived": "boolean",
-        "organization_id": "text",
-        "principal_id": "text",
-        "project_id": "text",
-        "refresh_order": "bigint",
-        "work_item_id": "text"
-      },
-      "contract": "Rebuild tenant-scoped approximate search from retained canonical source content with bounded candidate and refresh work.",
-      "family": "search",
-      "organization": "organization-owned"
-    },
     "public.cost_import_heads": {
       "columns": {
         "organization_id": "text",
@@ -1091,7 +1003,7 @@
         "version": "text",
         "build_time": "timestamp with time zone"
       },
-      "contract": "Preserve each hosted member\u2019s latest observed release version and build time.",
+      "contract": "Preserve each hosted member’s latest observed release version and build time.",
       "family": "delivery",
       "organization": "organization-owned"
     },

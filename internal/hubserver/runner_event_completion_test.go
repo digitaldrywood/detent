@@ -55,12 +55,12 @@ func TestRunnerCompletionPublicationWireBudget(t *testing.T) {
 			if response.Code < 500 {
 				t.Fatalf("publication rejection status=%d body=%s diagnostics=%s", response.Code, response.Body.String(), logs.String())
 			}
-			var sequence, comments, costs, reports, search int64
-			if err := fixture.admin.QueryRowContext(t.Context(), `SELECT a.sequence,(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND work_item_id=$3),(SELECT count(*) FROM cost_sources WHERE organization_id=$1 AND resource_id=$2),(SELECT count(*) FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2),(SELECT count(*) FROM search_documents WHERE organization_id=$1 AND work_item_id=$3 AND kind='comment') FROM native_attempts a WHERE organization_id=$1 AND id=$2`, org, data.AttemptID, lease.WorkItemID).Scan(&sequence, &comments, &costs, &reports, &search); err != nil {
+			var sequence, comments, costs, reports int64
+			if err := fixture.admin.QueryRowContext(t.Context(), `SELECT a.sequence,(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND work_item_id=$3),(SELECT count(*) FROM cost_sources WHERE organization_id=$1 AND resource_id=$2),(SELECT count(*) FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2) FROM native_attempts a WHERE organization_id=$1 AND id=$2`, org, data.AttemptID, lease.WorkItemID).Scan(&sequence, &comments, &costs, &reports); err != nil {
 				t.Fatal(err)
 			}
-			if sequence != 1 || comments != 0 || costs != 0 || reports != 0 || search != 0 {
-				t.Fatalf("rejected completion leaked publication: %d %d %d %d %d", sequence, comments, costs, reports, search)
+			if sequence != 1 || comments != 0 || costs != 0 || reports != 0 {
+				t.Fatalf("rejected completion leaked publication: %d %d %d %d", sequence, comments, costs, reports)
 			}
 			finish.IdempotencyKey = "finish"
 			wire.Lock()
@@ -81,11 +81,11 @@ func TestRunnerCompletionPublicationWireBudget(t *testing.T) {
 				t.Errorf("completion bound=%v previous=%v want <=11 exchanges, fixed across history and tenants", actual, expected)
 			}
 			expected = actual
-			if err := fixture.admin.QueryRowContext(t.Context(), `SELECT a.sequence,(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND work_item_id=$3),(SELECT count(*) FROM cost_sources WHERE organization_id=$1 AND resource_id=$2),(SELECT count(*) FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2 AND input=17),(SELECT count(*) FROM search_documents WHERE organization_id=$1 AND work_item_id=$3 AND kind='comment') FROM native_attempts a WHERE organization_id=$1 AND id=$2`, org, data.AttemptID, lease.WorkItemID).Scan(&sequence, &comments, &costs, &reports, &search); err != nil {
+			if err := fixture.admin.QueryRowContext(t.Context(), `SELECT a.sequence,(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND work_item_id=$3),(SELECT count(*) FROM cost_sources WHERE organization_id=$1 AND resource_id=$2),(SELECT count(*) FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2 AND input=17) FROM native_attempts a WHERE organization_id=$1 AND id=$2`, org, data.AttemptID, lease.WorkItemID).Scan(&sequence, &comments, &costs, &reports); err != nil {
 				t.Fatal(err)
 			}
-			if sequence != 2 || comments != 1 || costs != 1 || reports != 1 || search != 1 {
-				t.Fatalf("completion missing publication: %d %d %d %d %d", sequence, comments, costs, reports, search)
+			if sequence != 2 || comments != 1 || costs != 1 || reports != 1 {
+				t.Fatalf("completion missing publication: %d %d %d %d", sequence, comments, costs, reports)
 			}
 		}
 	}

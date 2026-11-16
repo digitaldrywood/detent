@@ -882,8 +882,6 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 		var event eventstore.Event
 		var growth workItemGrowth
 		var fields hubrecords.WorkItemRecordFields
-		var searchDocument searchstore.Document
-		var searchRevision int64
 		if !plan.Existing && challenge == nil {
 			fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
 			if err != nil {
@@ -896,21 +894,6 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 				id, revision, item, at = plan.Comment.ID, int64(plan.Comment.Revision), plan.Comment.WorkItemID, plan.Comment.UpdatedAt
 			}
 			version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, RecordID: id, Revision: revision}, valueRaw)
-			if err != nil {
-				return nil, err
-			}
-			searchDocument = searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, ID: "issue:" + id, SourceID: id, Kind: "issue", Scope: "issue", Revision: revision, UpdatedAt: at}
-			if len(duplicateLinks) > 0 {
-				searchDocument.Revision = int64(duplicateLinks[len(duplicateLinks)-1].issue.Revision)
-			}
-			searchText := searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels}
-			searchRevision = plan.Current.Revision
-			if plan.Comment.ID != "" {
-				searchDocument.ID, searchDocument.Kind = "comment:"+id, "comment"
-				searchText = searchstore.Text{Body: plan.Comment.Body}
-				searchRevision = plan.CommentRow.Revision
-			}
-			searchDocument, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchDocument, searchText)
 			if err != nil {
 				return nil, err
 			}
@@ -1275,9 +1258,6 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 					}
 				}
 				if len(duplicateLinks) == 0 {
-					if err := w.PutSearch(ctx, searchDocument, searchRevision); err != nil {
-						return err
-					}
 				}
 				if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
 					return err
@@ -1327,9 +1307,6 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 					}
 				}
 				if len(duplicateLinks) > 0 {
-					if err := w.PutSearch(ctx, searchDocument, searchRevision); err != nil {
-						return err
-					}
 				}
 				attachmentItem := plan.Comment.WorkItemID
 				if plan.Comment.ID == "" {

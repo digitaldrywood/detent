@@ -1,13 +1,10 @@
 package searchstore
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"slices"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type DuplicateMatch struct {
@@ -153,30 +150,6 @@ func DuplicateFingerprintKeys(body string, comment bool) []string {
 	keys = append(keys, issueorigin.DefectKeys(body)...)
 	slices.Sort(keys)
 	return slices.Compact(keys)
-}
-
-func DuplicateFingerprintExpression(organization tracker.OrganizationID, project tracker.ProjectID, body string) string {
-	keys := DuplicateFingerprintKeys(body, false)
-	prefix := Prefix(organization, project)
-	terms := make([]string, len(keys))
-	for i, key := range keys {
-		terms[i] = quote(fingerprintTerm(prefix, key))
-	}
-	return strings.Join(terms, " | ")
-}
-
-func fingerprintTerm(prefix, key string) string {
-	digest := sha256.Sum256([]byte(key))
-	return prefix + "f" + hex.EncodeToString(digest[:])
-}
-
-func DuplicateQueryExpressions(organization tracker.OrganizationID, project tracker.ProjectID, content string) []string {
-	terms := duplicateTerms(content)
-	prefix := Prefix(organization, project)
-	for i, term := range terms {
-		terms[i] = quote(prefix+"w"+term) + ":*"
-	}
-	return terms
 }
 
 func DuplicateWindowTerms(content string) []string {

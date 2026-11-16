@@ -24,7 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -321,7 +320,6 @@ type coordinatorAnswerComment struct {
 	comment corestore.Comment
 	version eventstore.CollaborationVersion
 	event   eventstore.Event
-	search  searchstore.Document
 }
 
 func (s *Service) prepareCoordinatorAnswerComment(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem, conversationID string, request tracker.Transition, now time.Time) (*coordinatorAnswerComment, error) {
@@ -354,20 +352,13 @@ func (s *Service) prepareCoordinatorAnswerComment(ctx context.Context, scope hub
 	if err != nil {
 		return nil, err
 	}
-	search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.NativeID, ID: "comment:" + comment.ID, SourceID: comment.ID, Kind: "comment", Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Body: body})
-	if err != nil {
-		return nil, err
-	}
 	sourceKey := provenance.Provider + ":" + provenance.ExternalID
 	row := corestore.Comment{OrganizationID: scope.Organization, ID: comment.ID, ProjectID: scope.Project, WorkItemID: item.NativeID, Revision: 1, Sequence: comment.Sequence, BodyObjectKey: bodyRef.PayloadObjectKey, ActorKind: actor.Kind, ActorPrincipalID: actor.PrincipalID, ProvenanceProvider: &provenance.Provider, ProvenanceExternalID: &provenance.ExternalID, SourceKey: &sourceKey, SourceRevision: 1, SourceObservedAt: &now, CreatedAt: now, UpdatedAt: now}
-	return &coordinatorAnswerComment{comment: row, version: version, event: event, search: search}, nil
+	return &coordinatorAnswerComment{comment: row, version: version, event: event}, nil
 }
 
 func (c *coordinatorAnswerComment) write(ctx context.Context, w tenantstore.Writer) error {
 	if _, err := w.CreateComment(ctx, c.comment); err != nil {
-		return err
-	}
-	if err := w.PutSearch(ctx, c.search, 0); err != nil {
 		return err
 	}
 	if _, err := w.CreateCollaborationVersion(ctx, c.version); err != nil {

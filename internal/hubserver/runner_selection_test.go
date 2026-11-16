@@ -25,7 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -1131,7 +1130,6 @@ func setSelectionFixtureState(t *testing.T, f nativeFixture, item tracker.Native
 func writeSelectionFixtureRecord(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID, change func(tenantstore.Writer, *corestore.WorkItem, *tracker.NativeIssue) error) tracker.NativeIssue {
 	t.Helper()
 	snapshot := readWorkItem(t, f, item, "")
-	previous := int64(snapshot.Revision)
 	var updated corestore.WorkItem
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		row, err := w.WorkItem(t.Context(), f.project.ID, item)
@@ -1155,15 +1153,11 @@ func writeSelectionFixtureRecord(t *testing.T, f nativeFixture, item tracker.Nat
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: item, ID: "issue:" + string(item), SourceID: string(item), Kind: "issue", Scope: "issue", Revision: updated.Revision, UpdatedAt: updated.NativeUpdatedAt}, searchstore.Text{Title: snapshot.Title, Body: snapshot.Body, Labels: snapshot.Labels})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
 			return err
 		}
-		return w.PutSearch(t.Context(), document, previous)
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -47,11 +47,6 @@ sql:
             go_type: "string"
           - db_type: "tsquery"
             go_type: "string"
-          - column: "search_documents.project_id"
-            go_type:
-              import: "github.com/digitaldrywood/detent/internal/tracker"
-              type: "ProjectID"
-              pointer: true
           - column: "hosted_work_views.project_id"
             go_type:
               import: "github.com/digitaldrywood/detent/internal/tracker"

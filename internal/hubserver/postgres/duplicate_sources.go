@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 
-
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -79,12 +78,14 @@ func (s *session) DuplicateSources(ctx context.Context, query searchstore.Duplic
  (SELECT count(*) FROM unnest($6::text[]) term WHERE w.search_vector @@ to_tsquery('pg_catalog.english',term)) AS body_hits
  FROM window_items w WHERE NOT w.archived AND ($11::boolean OR NOT w.terminal OR coalesce(w.closed_at,w.created_at)>=$12)
 )
-SELECT m.work_item_id,m.number,m.revision,m.title,m.body,m.terminal,i.workflow_state_name,m.fingerprint_hit
-FROM matched m JOIN issues i ON i.organization_id=$1 AND i.project_id=$2 AND i.native_id=m.work_item_id AND i.revision=m.revision AND NOT i.archived
-WHERE (m.fingerprint_hit OR (cardinality($4::text[])>0 AND m.title_hits>=$5) OR (cardinality($6::text[])>0 AND m.body_hits>=$7))
- AND (NOT $8::boolean OR i.actor_principal_id=$13)
-ORDER BY m.fingerprint_hit DESC,greatest(m.title_hits,m.body_hits) DESC,m.number DESC,m.work_item_id
-LIMIT $14`, s.organization, query.ProjectID, keys, titleTerms, titleMinimum, bodyTerms, bodyMinimum, query.Reporter != nil, searchstore.WindowBodyChars, searchstore.WindowRows, query.Machine, query.Now.AddDate(0, 0, -30), principal, searchstore.DuplicateCandidates)
+SELECT c.work_item_id,c.number,c.revision,c.title,c.body,c.terminal,c.workflow_state_name,c.fingerprint_hit FROM (
+ SELECT m.work_item_id,m.number,m.revision,m.title,m.body,m.terminal,i.workflow_state_name,m.fingerprint_hit,greatest(m.title_hits,m.body_hits) AS hits,
+  row_number() OVER (ORDER BY greatest(m.title_hits,m.body_hits) DESC,m.number DESC,m.work_item_id) AS term_rank
+ FROM matched m JOIN issues i ON i.organization_id=$1 AND i.project_id=$2 AND i.native_id=m.work_item_id AND i.revision=m.revision AND NOT i.archived
+ WHERE (m.fingerprint_hit OR (cardinality($4::text[])>0 AND m.title_hits>=$5) OR (cardinality($6::text[])>0 AND m.body_hits>=$7))
+  AND (NOT $8::boolean OR i.actor_principal_id=$13)
+) c WHERE c.fingerprint_hit OR c.term_rank<=$14
+ORDER BY c.fingerprint_hit DESC,c.hits DESC,c.number DESC,c.work_item_id`, s.organization, query.ProjectID, keys, titleTerms, titleMinimum, bodyTerms, bodyMinimum, query.Reporter != nil, searchstore.WindowBodyChars, searchstore.WindowRows, query.Machine, query.Now.AddDate(0, 0, -30), principal, searchstore.DuplicateCandidates)
 	if err != nil {
 		return page, mapError(ctx, err)
 	}
@@ -119,25 +120,6 @@ LIMIT $14`, s.organization, query.ProjectID, keys, titleTerms, titleMinimum, bod
 	return page, nil
 }
 
-func (s *session) lockDuplicateSourceProject(ctx context.Context, project tracker.ProjectID, kind string) error {
-	if project == "" || kind == "thread" {
-		return nil
-	}
-	_, err := s.queries.DuplicateProjectLock(ctx, pgquery.DuplicateProjectLockParams{OrganizationID: s.organization, ID: project})
-	return mapError(ctx, err)
-}
-
-func (s *session) lockDuplicateSourceDocument(ctx context.Context, id string) error {
-	identity, err := s.queries.DuplicateDocumentIdentity(ctx, pgquery.DuplicateDocumentIdentityParams{OrganizationID: s.organization, ID: id})
-	if err != nil {
-		return mapError(ctx, err)
-	}
-	if identity.ProjectID == nil {
-		return nil
-	}
-	return s.lockDuplicateSourceProject(ctx, *identity.ProjectID, identity.Kind)
-}
-
 func duplicateThreshold(content string, title bool) ([]string, int64) {
 	terms := searchstore.DuplicateWindowTerms(content)
 	minimum := max(2, (len(terms)*3+4)/5)
@@ -150,4 +132,12 @@ func duplicateThreshold(content string, title bool) ([]string, int64) {
 func (s *session) advanceDuplicateSource(ctx context.Context, project tracker.ProjectID) error {
 	count, err := s.queries.AdvanceDuplicateSource(ctx, pgquery.AdvanceDuplicateSourceParams{OrganizationID: s.organization, ID: project})
 	return affected(ctx, count, err)
+}
+
+func (s *session) lockDuplicateSourceProject(ctx context.Context, project tracker.ProjectID, kind string) error {
+	if project == "" || kind == "thread" {
+		return nil
+	}
+	_, err := s.queries.DuplicateProjectLock(ctx, pgquery.DuplicateProjectLockParams{OrganizationID: s.organization, ID: project})
+	return mapError(ctx, err)
 }

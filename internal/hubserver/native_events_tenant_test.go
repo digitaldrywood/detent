@@ -25,7 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -951,10 +950,6 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						document, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: organization.ID, ProjectID: project.ID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-						if err != nil {
-							t.Fatal(err)
-						}
 						if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 							item, err := w.WorkItem(t.Context(), project.ID, issue.WorkItemID)
 							if err != nil {
@@ -967,7 +962,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 							if _, err = w.CreateCollaborationVersion(t.Context(), version); err != nil {
 								return err
 							}
-							return w.PutSearch(t.Context(), document, int64(issue.Revision)-1)
+							return nil
 						}); err != nil {
 							t.Fatal(err)
 						}

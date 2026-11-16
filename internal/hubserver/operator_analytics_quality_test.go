@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -198,10 +197,6 @@ func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope hubscop
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, ID: "issue:" + string(item), SourceID: string(item), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockWorkItemProject(t.Context(), scope.Project); err != nil {
 			return err
@@ -213,7 +208,7 @@ func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope hubscop
 		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
 			return err
 		}
-		return w.PutSearch(t.Context(), document, int64(issue.Revision)-1)
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}

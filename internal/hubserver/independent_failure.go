@@ -133,7 +133,7 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 					if err != nil {
 						return nil, err
 					}
-					priority = &scheduledAttributionRecord{plan: planned.plan, fields: planned.fields, version: planned.version, event: planned.event, search: planned.document}
+					priority = &scheduledAttributionRecord{plan: planned.plan, fields: planned.fields, version: planned.version, event: planned.event}
 				}
 				repairPlan, err = s.planWorkItemRecord(ctx, scope, repairPlan, tracker.CreateComment{Body: issueorigin.Occurrence(request.Body)})
 				if err != nil {
@@ -354,13 +354,6 @@ func (s *Service) applyIndependentRecord(ctx context.Context, w tenantstore.Writ
 		return err
 	}
 	if _, err := w.AppendEvent(ctx, p.event); err != nil {
-		return err
-	}
-	expected := p.plan.Current.Revision
-	if p.plan.Comment.ID != "" {
-		expected = 0
-	}
-	if err := w.PutSearch(ctx, p.search, expected); err != nil {
 		return err
 	}
 	if p.plan.Comment.ID == "" {

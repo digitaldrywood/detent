@@ -184,7 +184,7 @@ func TestReporterNativeCommands(t *testing.T) {
 					requireNativeStatus(t, r, http.StatusOK)
 				}
 				decodeHubResponse(t, r, &own)
-				refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
+				projectNativeItemPages(t, f.service, "org_security")
 				if i == 0 {
 					sharedVisualIssue = own
 				}
@@ -543,7 +543,7 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 				if content.Data.State != "Triage" || content.Data.Type != []string{"bug", "change_request"}[i%2] {
 					t.Fatalf("result=%s", result.Content)
 				}
-				refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
+				projectNativeItemPages(t, f.service, "org_security")
 				wantContext := (*tracker.ReportContext)(nil)
 				if i == 0 {
 					wantContext = &tracker.ReportContext{URL: "https://app.example.test/settings", AppBuild: "v1.4.2", Browser: "Chrome 130", OS: "macOS 15", Viewport: "1440x900", CapturedAt: "2026-10-13T12:00:00Z"}
@@ -566,7 +566,7 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 					if content.Data.ReporterStatus != "submitted" || content.Data.Body != reporterBugSections+issueContractTestSections || len(content.Data.IssueContract.ConfirmedSections) != 0 {
 						t.Fatalf("MCP edit=%s", result.Content)
 					}
-					refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
+					projectNativeItemPages(t, f.service, "org_security")
 				}
 			}
 		})
@@ -808,7 +808,7 @@ func TestReporterCustomHostedProjectCreation(t *testing.T) {
 						if issue.State != "Triage" {
 							t.Fatalf("requested=%q resulting=%q", state, issue.State)
 						}
-						refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
+						projectNativeItemPages(t, f.service, "org_security")
 						seedNativeFixturePolicyContext(ctx, t, f.service, "org_security/"+string(issue.ProjectID))
 						response = f.request(t, member, http.MethodPost, base+"/work-items/"+string(issue.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("promote-%s-%d", entry, i)}, ExpectedRevision: issue.Revision, State: test.promotion, Reason: "user_requested"})
 						requireNativeStatus(t, response, http.StatusOK)
@@ -816,7 +816,7 @@ func TestReporterCustomHostedProjectCreation(t *testing.T) {
 						if issue.State != test.promotion {
 							t.Fatalf("promotion=%q, want %q", issue.State, test.promotion)
 						}
-						refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
+						projectNativeItemPages(t, f.service, "org_security")
 					}
 				})
 			}

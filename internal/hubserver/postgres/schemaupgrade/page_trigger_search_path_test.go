@@ -45,9 +45,6 @@ func TestPageTriggersSurviveRestrictedCallerSearchPath(t *testing.T) {
 					`SELECT count(*) FROM public.project_integration_page_dirty WHERE organization_id=$1 AND project_id='prj_first'`},
 				{"issue create", `INSERT INTO public.issues(organization_id,native_id,project_id,number,title) VALUES($1,'wi_example','prj_first',3,'Example')`,
 					`SELECT count(*) FROM public.native_work_item_page_dirty WHERE organization_id=$1 AND work_item_id='wi_example' AND kind='item'`},
-				{"search publication", `INSERT INTO public.search_documents(organization_id,id,project_id,work_item_id,kind,source_id,revision,title,scope,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
- VALUES($1,'issue/wi_first_1','prj_first','wi_first_1','issue','wi_first_1',1,'Example','issue',now(),'example/payload',repeat('a',64),1,1)`,
-					`SELECT count(*) FROM public.project_integration_page_dirty WHERE organization_id=$1 AND project_id='prj_first'`},
 				{"onboarding invalidation", `INSERT INTO public.projects(organization_id,id,name,profile) VALUES($1,'prj_example','Another example','native')`,
 					`SELECT count(*) FROM public.project_onboarding_page_access WHERE organization_id=$1`},
 				{"relationship invalidation", `INSERT INTO public.issue_dependencies(organization_id,dependent_issue_id,blocker_issue_id,dependent_project_id,blocker_project_id)

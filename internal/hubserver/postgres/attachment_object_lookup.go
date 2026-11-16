@@ -51,8 +51,6 @@ EXISTS (SELECT 1 FROM projects WHERE organization_id=$1 AND workflow_object_key=
 EXISTS (SELECT 1 FROM runner_audit_dispositions WHERE organization_id=$1 AND payload_object_key=$2) OR
 EXISTS (SELECT 1 FROM runner_session_history WHERE organization_id=$1 AND payload_object_key=$2) OR
 EXISTS (SELECT 1 FROM runner_sessions WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM search_documents WHERE organization_id=$1 AND aggregate_object_key=$2) OR
-EXISTS (SELECT 1 FROM search_documents WHERE organization_id=$1 AND payload_object_key=$2) OR
 EXISTS (SELECT 1 FROM team_thread_posts WHERE organization_id=$1 AND body_object_key=$2)`, s.organization, key).Scan(&exists)
 	return exists, mapError(ctx, err)
 }

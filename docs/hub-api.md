@@ -1564,13 +1564,16 @@ forward the lane ledger's reason as readable text through this field.
 Release reasons are `completed`, `cancelled`, `failed`, `released`,
 `work_item_hydration_failed` and `work_item_identity_missing`.
 
-Ordinary native work-item lists accept `q` (`query` on MCP `work_list`) for ranked
-full-text search of titles, bodies and comments. Search terms use stemming and
-prefix matching and combine with OR. Documents matching more distinct query
-terms rank first, followed by BM25 relevance and the ordinary
-list order. Legacy substring matches of titles, bodies, labels and identifiers
-remain included. Each search hit includes a short `snippet`; full-text matches are marked
-by brackets. Search composes with the existing exact filters.
+Ordinary native work-item lists accept `q` (`query` on MCP `work_list`) for
+full-text search of issue titles and descriptions, open and closed. Search words
+use English stemming and prefix matching and combine with OR; comments, labels and
+substrings inside words are not searched. An exact issue number (`42` or
+`project#42`) is listed first, then matches newest issue first. Each request
+examines at most the 500 newest remaining issues of the project, so a page can
+hold fewer items than `limit`, or none, while `next_cursor` continues the search;
+follow `next_cursor` until it is absent. Each search hit includes a short
+`snippet`; matches are marked by brackets. Search composes with the existing
+exact filters, which apply within the same window.
 
 `created_after` and `updated_after` are inclusive RFC3339 timestamp bounds;
 `created_before` is exclusive. Combine created bounds to select one day. Offsets
@@ -1589,7 +1592,7 @@ group items in configured workflow state order. Within nonterminal states,
 priority sorts first, then `last_activity_at` newest first; terminal states use
 activity alone. Missing priorities and activity sort last, and identifiers break
 ties. The first page retains matching item identities and SQL sort keys for the
-cursor's lifetime, including relevance scores and matched snippets for searches,
+cursor's lifetime, including the search window position for searches,
 so concurrent changes to state, priority, activity or filters
 cannot skip or repeat those items. New items appear in a fresh query. Each page
 loads current item details, so this is not a transactional export snapshot;
@@ -3588,10 +3591,7 @@ does not change a native pagination cursor's scope.
 Issue lists, run summaries, comments and factual timeline projections stay in PostgreSQL.
 Full history pages can resolve a history section using the original event sequences;
 continuations cross section boundaries without returning retired payload stubs.
-Issue/comment search retains its existing FTS index and bounded matched snippets;
-its external-content view reads canonical issue and comment bodies. The document
-identity table contains no second body copy. Archived tool output and logs are
-not indexed.
+Work search reads a generated full-text column on the per-issue page projection; there is no separate search index or body copy. Comments, archived tool output and logs are not indexed.
 
 ## AI credit transaction reads
 

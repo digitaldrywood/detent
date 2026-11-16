@@ -25,7 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
@@ -582,11 +581,6 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *neutralimport.Index, obj
 	item.IssueType, item.Priority = current.Type, current.Priority
 	item.ArchiveRestoredAt, item.ArchiveRestoreKnown = record.Item.ArchiveRestoredAt, record.Item.ArchiveRestoreKnown
 	record.Item = item
-	document, err := searchstore.NewContent(source.Objects).Prepare(ctx, searchstore.Document{OrganizationID: item.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.NativeID, ID: "issue:" + string(item.NativeID), SourceID: string(item.NativeID), Kind: "issue", Scope: "issue", Revision: item.Revision, UpdatedAt: current.UpdatedAt}, searchstore.Text{Title: current.Title, Body: current.Body, Labels: current.Labels})
-	if err != nil {
-		return postgres.CoreWorkItemImport{}, err
-	}
-	record.Search = &document
 	var sourceContract *issuecontract.State
 	if row.Contract.Valid && row.Contract.String != "" && (strings.TrimSpace(row.Contract.String) != "{}" || current.IssueContract != nil) {
 		if err := json.Unmarshal([]byte(row.Contract.String), &sourceContract); err != nil {
@@ -1784,11 +1778,7 @@ func importCoreHistoricalWorkItems(ctx context.Context, target *postgres.Reposit
 			return err
 		}
 		item := corestore.WorkItem{OrganizationID: source.OrganizationID, ID: id, NativeID: mapping.TargetWorkItemID, ProjectID: mapping.TargetProjectID, Number: number, Revision: 1, Title: title, BodyObjectKey: new(bodyRef.Key), ActorKind: new(value.Actor.Kind), ActorPrincipalID: new(value.Actor.PrincipalID), ProvenanceProvider: new("github"), ProvenanceExternalID: new(node), WorkflowStateName: nullStringPointer(sql.NullString{String: state, Valid: state != ""}), CreatedAt: createdAt, UpdatedAt: updatedAt, NativeCreatedAt: createdAt, NativeUpdatedAt: updatedAt, LastActivityAt: activity}
-		document, err := searchstore.NewContent(source.Objects).Prepare(ctx, searchstore.Document{OrganizationID: item.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.NativeID, ID: "issue:" + string(item.NativeID), SourceID: string(item.NativeID), Kind: "issue", Scope: "issue", Revision: item.Revision, UpdatedAt: value.UpdatedAt}, searchstore.Text{Title: value.Title, Body: value.Body, Labels: value.Labels})
-		if err != nil {
-			return err
-		}
-		record := postgres.CoreWorkItemImport{Item: item, Search: &document, Labels: value.Labels, Facts: claimstore.WorkItemFacts{OrganizationID: source.OrganizationID, ProjectID: mapping.TargetProjectID, WorkItemID: mapping.TargetWorkItemID, Author: author, Repository: owner + "/" + name, Assignees: value.Assignees}, Versions: []eventstore.CollaborationVersion{version}}
+		record := postgres.CoreWorkItemImport{Item: item, Labels: value.Labels, Facts: claimstore.WorkItemFacts{OrganizationID: source.OrganizationID, ProjectID: mapping.TargetProjectID, WorkItemID: mapping.TargetWorkItemID, Author: author, Repository: owner + "/" + name, Assignees: value.Assignees}, Versions: []eventstore.CollaborationVersion{version}}
 		if _, exists := bundle.Schema()["queue_entries"]; exists {
 			if err := readCoreImportQueues(ctx, tx, source, item, &record); err != nil {
 				return err

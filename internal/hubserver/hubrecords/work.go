@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -26,7 +25,6 @@ type AttachmentEvidencePublication struct {
 	Fields  WorkItemRecordFields            `json:"-"`
 	Version eventstore.CollaborationVersion `json:"-"`
 	Event   eventstore.Event                `json:"-"`
-	Search  searchstore.Document            `json:"-"`
 	Bytes   int64                           `json:"-"`
 }
 

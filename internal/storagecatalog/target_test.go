@@ -112,3 +112,30 @@ func TestMigrationCatalogPreservesPinnedHistory(t *testing.T) {
 		})
 	}
 }
+
+func TestDroppedMigrationTableLeavesTargetContract(t *testing.T) {
+	const created = "internal/hubserver/postgres/migrations/20990101000000_created.sql"
+	const dropped = "internal/hubserver/postgres/migrations/20990101000001_dropped.sql"
+	table := TargetTable{Family: "example", Contract: "Retain tenant-owned example records.", Organization: "organization-owned", Columns: map[string]string{"organization_id": "text"}}
+	for _, test := range []struct {
+		name   string
+		drop   string
+		tables map[string]TargetTable
+	}{
+		{"dropped", "-- +goose Up\nDROP TABLE IF EXISTS example;\n-- +goose Down\nCREATE TABLE example (organization_id text);", map[string]TargetTable{}},
+		{"recreated", "-- +goose Up\nDROP TABLE example;\nCREATE TABLE example (organization_id text);", map[string]TargetTable{"public.example": table}},
+		{"down only", "-- +goose Up\nSELECT 1;\n-- +goose Down\nDROP TABLE example;", map[string]TargetTable{"public.example": table}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			files := fstest.MapFS{
+				"internal/hubserver/postgres/migrations": {Mode: fs.ModeDir},
+				created:                                  {Data: []byte("CREATE TABLE example (organization_id text);")},
+				dropped:                                  {Data: []byte(test.drop)},
+			}
+			catalog := TargetCatalog{Version: "1", LegacyMigrations: map[string]string{}, Migrations: []string{created, dropped}, Tables: test.tables}
+			if err := catalog.ValidateMigrations(files, nil); err != nil {
+				t.Fatalf("catalog with %s table: %v", test.name, err)
+			}
+		})
+	}
+}

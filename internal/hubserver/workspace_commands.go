@@ -21,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -138,10 +137,6 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 		if err != nil {
 			return nil, err
 		}
-		search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + string(plan.Issue.WorkItemID), SourceID: string(plan.Issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
-		if err != nil {
-			return nil, err
-		}
 		raw, err := json.Marshal(record.resource())
 		if err != nil {
 			return nil, err
@@ -245,9 +240,6 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 				return err
 			}
 			if _, err := w.AppendEvent(ctx, event); err != nil {
-				return err
-			}
-			if err := w.PutSearch(ctx, search, 0); err != nil {
 				return err
 			}
 			for _, id := range attachmentIDs.Current {

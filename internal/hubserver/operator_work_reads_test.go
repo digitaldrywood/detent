@@ -32,7 +32,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -1553,16 +1552,7 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 func operatorRefreshSearch(t *testing.T, f nativeFixture) {
 	t.Helper()
 	drainTestNativeBoard(t, f.service)
-	for range 128 {
-		more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: f.service.config.TenantRepository}, f.project.OrganizationID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !more {
-			return
-		}
-	}
-	t.Fatal("operator search fixture refresh did not finish")
+	projectNativeItemPages(t, f.service, f.project.OrganizationID)
 }
 
 func TestOperatorWorkRunsHydrateEachListedAttemptOnce(t *testing.T) {

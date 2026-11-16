@@ -29,7 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -73,7 +72,6 @@ type nativeChangeHub struct {
 	seed            func(func(tenantstore.Writer) error)
 	projectBoard    func()
 	content         *eventstore.Content
-	search          *searchstore.Content
 	sourceDirectory string
 	review          string
 	organization    tracker.OrganizationID
@@ -276,7 +274,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &nativeChangeHub{content: eventstore.NewContent(config.RunDetails), search: searchstore.NewContent(config.RunDetails), review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
+	h := &nativeChangeHub{content: eventstore.NewContent(config.RunDetails), review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
 	h.projectBoard = func() { testsupport.DispatchRefreshProjections(t, config, service) }
 	h.seed = func(write func(tenantstore.Writer) error) {
 		dispatchWriteFixture(t, config, write)

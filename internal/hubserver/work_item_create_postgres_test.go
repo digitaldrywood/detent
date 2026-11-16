@@ -216,15 +216,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			}
 			refresh := func() {
 				t.Helper()
-				for {
-					more, err := searchstore.NewContent(details).RefreshOne(t.Context(), repository, org)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !more {
-						break
-					}
-				}
+				projectNativeItemPages(t, service, org)
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					page, err := r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: project, Text: "readiness", Now: now})
 					if err == nil && (!page.State.Ready || !page.Exhausted || page.NextID != "" || len(page.Sources) > 5) {
@@ -342,10 +334,6 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				document, err := searchstore.NewContent(details).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: issue.Body})
-				if err != nil {
-					t.Fatal(err)
-				}
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 					row, err := w.WorkItem(t.Context(), project, issue.WorkItemID)
 					if err != nil {
@@ -362,7 +350,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 					if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
 						return err
 					}
-					return w.PutSearch(t.Context(), document, int64(previous))
+					return nil
 				}); err != nil {
 					t.Fatal(err)
 				}

@@ -87,5 +87,5 @@ func (s *Service) writeVerificationComment(ctx context.Context, w tenantstore.Wr
 			return err
 		}
 	}
-	return w.PutSearch(ctx, comment.Search, 0)
+	return nil
 }

@@ -20,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -273,17 +272,7 @@ func linkedSnapshot() tracker.GitHubIssueSnapshot {
 
 func moveLinkedFixtureToTodo(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID) {
 	t.Helper()
-	previous := readWorkItem(t, f, item, "")
-	moved := monthlyBudgetState(t, f, item, "Todo")
-	document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: item, ID: "issue:" + string(item), SourceID: string(item), Kind: "issue", Scope: "issue", Revision: int64(moved.Revision), UpdatedAt: moved.UpdatedAt}, searchstore.Text{Title: moved.Title, Body: moved.Body, Labels: moved.Labels})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.PutSearch(t.Context(), document, int64(previous.Revision))
-	}); err != nil {
-		t.Fatal(err)
-	}
+	monthlyBudgetState(t, f, item, "Todo")
 }
 
 func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {

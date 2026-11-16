@@ -75,6 +75,15 @@ func (c TargetCatalog) Validate() error {
 
 var targetCreateTable = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?("[a-zA-Z_][a-zA-Z_0-9]*"|[a-zA-Z_][a-zA-Z_0-9]*)(?:\s*\.\s*("[a-zA-Z_][a-zA-Z_0-9]*"|[a-zA-Z_][a-zA-Z_0-9]*))?`)
 var targetCreateTableToken = regexp.MustCompile(`(?i)\bCREATE\s+TABLE\b`)
+var targetDropTable = regexp.MustCompile(`(?i)DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?("[a-zA-Z_][a-zA-Z_0-9]*"|[a-zA-Z_][a-zA-Z_0-9]*)(?:\s*\.\s*("[a-zA-Z_][a-zA-Z_0-9]*"|[a-zA-Z_][a-zA-Z_0-9]*))?`)
+
+func targetTableName(match [][]byte) (string, string) {
+	schema, name := "public", strings.Trim(string(match[1]), `"`)
+	if len(match[2]) != 0 {
+		schema, name = strings.Trim(string(match[1]), `"`), strings.Trim(string(match[2]), `"`)
+	}
+	return schema, name
+}
 
 func (c TargetCatalog) ValidateMigrations(files fs.FS, sourceTables map[string]json.RawMessage) error {
 	created := make(map[string]bool)
@@ -111,6 +120,7 @@ func (c TargetCatalog) ValidateMigrations(files fs.FS, sourceTables map[string]j
 		}
 		if !covered[migration] {
 			if catalogEnd != "" && migration > catalogEnd {
+				dropTargetTables(created, data)
 				continue
 			}
 			return errors.Join(ErrCatalog, errors.New("new PostgreSQL migration is missing target schema coverage"))
@@ -121,10 +131,7 @@ func (c TargetCatalog) ValidateMigrations(files fs.FS, sourceTables map[string]j
 			return errors.Join(ErrCatalog, errors.New("PostgreSQL migration has an unrecognized CREATE TABLE declaration"))
 		}
 		for _, match := range matches {
-			schema, name := "public", strings.Trim(string(match[1]), `"`)
-			if len(match[2]) != 0 {
-				schema, name = strings.Trim(string(match[1]), `"`), strings.Trim(string(match[2]), `"`)
-			}
+			schema, name := targetTableName(match)
 			if schema == "public" {
 				_, target := c.Tables["public."+name]
 				if _, exists := sourceTables["hub/"+name]; exists && !target {
@@ -133,6 +140,7 @@ func (c TargetCatalog) ValidateMigrations(files fs.FS, sourceTables map[string]j
 			}
 			created[schema+"."+name] = true
 		}
+		dropTargetTables(created, data)
 	}
 	if len(covered) != 0 || len(legacySeen) != len(c.LegacyMigrations) {
 		return errors.Join(ErrCatalog, errors.New("PostgreSQL migration coverage has stale entries"))
@@ -190,4 +198,23 @@ func slicesContainsTargetType(kind string) bool {
 		}
 	}
 	return false
+}
+
+func dropTargetTables(created map[string]bool, data []byte) {
+	up, _, _ := strings.Cut(string(data), "-- +goose Down")
+	for _, position := range targetDropTable.FindAllSubmatchIndex([]byte(up), -1) {
+		match := [][]byte{[]byte(up[position[0]:position[1]]), []byte(up[position[2]:position[3]]), nil}
+		if position[4] >= 0 {
+			match[2] = []byte(up[position[4]:position[5]])
+		}
+		schema, name := targetTableName(match)
+		recreated := false
+		for _, later := range targetCreateTable.FindAllSubmatch([]byte(up[position[1]:]), -1) {
+			laterSchema, laterName := targetTableName(later)
+			recreated = recreated || laterSchema == schema && laterName == name
+		}
+		if !recreated {
+			delete(created, schema+"."+name)
+		}
+	}
 }

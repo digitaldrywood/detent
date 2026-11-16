@@ -20,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -155,18 +154,11 @@ func (v verificationFixture) file(t *testing.T, filer, key string, actor *tracke
 		if err != nil {
 			t.Fatal(err)
 		}
-		document, err := searchstore.NewContent(v.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if err := v.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
 			if err := hubrecords.WriteWorkItemRecord(t.Context(), writer, plan, fields); err != nil {
 				return err
 			}
 			if _, err := writer.CreateCollaborationVersion(t.Context(), version); err != nil {
-				return err
-			}
-			if err := writer.PutSearch(t.Context(), document, plan.Current.Revision); err != nil {
 				return err
 			}
 			_, err := writer.AppendEvent(t.Context(), event)

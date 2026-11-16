@@ -28,7 +28,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
@@ -278,25 +277,15 @@ func DispatchRefreshProjections(t *testing.T, cfg hubserver.Config, service *hub
 	if !pagesComplete {
 		t.Fatal("work item projection exceeded fixture work bound")
 	}
-	for range 512 {
-		processed, err := searchstore.NewContent(cfg.RunDetails).RefreshOne(t.Context(), repository, tracker.OrganizationID(cfg.Hosted.OrganizationID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !processed {
-			admin, ok := dispatchPostgresAdmins.Load(cfg.Postgres.Connection.Database)
-			if !ok {
-				t.Fatal("PostgreSQL fixture owner is unavailable")
-			}
-			database, ok := admin.(*sql.DB)
-			if !ok {
-				t.Fatal("PostgreSQL fixture owner has an invalid type")
-			}
-			if _, err := database.ExecContext(t.Context(), "ANALYZE issues,search_documents,search_postings,search_scope_documents,native_board_items,native_work_item_pages"); err != nil {
-				t.Fatal(err)
-			}
-			return
-		}
+	admin, ok := dispatchPostgresAdmins.Load(cfg.Postgres.Connection.Database)
+	if !ok {
+		t.Fatal("PostgreSQL fixture owner is unavailable")
 	}
-	t.Fatal("search projection exceeded fixture work bound")
+	database, ok := admin.(*sql.DB)
+	if !ok {
+		t.Fatal("PostgreSQL fixture owner has an invalid type")
+	}
+	if _, err := database.ExecContext(t.Context(), "ANALYZE issues,native_board_items,native_work_item_pages"); err != nil {
+		t.Fatal(err)
+	}
 }

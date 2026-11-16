@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -107,7 +105,6 @@ type workspaceIssueClosePlan struct {
 	fields  hubrecords.WorkItemRecordFields
 	version eventstore.CollaborationVersion
 	event   eventstore.Event
-	search  searchstore.Document
 	move    bool
 }
 
@@ -152,7 +149,6 @@ func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope hubscope
 	if err != nil {
 		return out, err
 	}
-	out.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 	return out, err
 }
 
@@ -182,12 +178,6 @@ func (p workspaceIssueClosePlan) write(ctx context.Context, w tenantstore.Writer
 	}
 	if _, err := w.AppendEvent(ctx, p.event); err != nil {
 		return err
-	}
-	if err := w.PutSearch(ctx, p.search, current.Revision); err != nil {
-		if !errors.Is(err, corestore.ErrNotFound) {
-			return err
-		}
-		return w.PutSearch(ctx, p.search, 0)
 	}
 	return nil
 }

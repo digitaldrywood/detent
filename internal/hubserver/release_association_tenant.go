@@ -13,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -57,7 +56,6 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 	var fields hubrecords.WorkItemRecordFields
 	var version eventstore.CollaborationVersion
 	var events []eventstore.Event
-	var search searchstore.Document
 	if !unchanged {
 		if check.found {
 			change, err = s.readChangeRecord(ctx, scope, item, check.existing.ChangeID)
@@ -91,10 +89,6 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 		plan.Issue.ReleaseDelivery = &delivery
 		plan.Issue.Revision++
 		plan.Issue.UpdatedAt, plan.Issue.LastActivityAt = now, now
-		search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
-		if err != nil {
-			return nil, err
-		}
 		fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
 		if err != nil {
 			return nil, err
@@ -134,7 +128,6 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			if err != nil {
 				return nil, err
 			}
-			transition.search.Revision++
 			raw, err = json.Marshal(tracker.CollaborationEvent{ID: transition.event.ID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: transition.plan.Issue.Revision, FromState: plan.Issue.State, ToState: transition.plan.Issue.State, Reason: "user_requested"}})
 			if err != nil {
 				return nil, err
@@ -221,14 +214,6 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			}
 			if err := hubrecords.WriteWorkItemRecord(ctx, w, plan, fields); err != nil {
 				return err
-			}
-			if err := w.PutSearch(ctx, search, plan.Current.Revision); err != nil {
-				if !errors.Is(err, corestore.ErrNotFound) {
-					return err
-				}
-				if err := w.PutSearch(ctx, search, 0); err != nil {
-					return err
-				}
 			}
 			if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
 				return err

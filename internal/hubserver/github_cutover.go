@@ -24,7 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -75,7 +74,6 @@ type preparedCutoverItem struct {
 	event        eventstore.Event
 	dependencies []tracker.NativeWorkItemID
 	outbound     *projectstore.GitHubOutbound
-	search       searchstore.Document
 }
 
 func (s *Service) cutoverProject(c echo.Context) error {
@@ -469,9 +467,6 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope hubscop
 			if err := w.PutWorkItemFacts(ctx, claimstore.WorkItemFacts{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.current.NativeID, Author: author, Repository: snapshot.Project.Settings.Repository, Assignees: item.issue.Assignees, DispatchWaitSince: waitSince}); err != nil {
 				return err
 			}
-			if err := w.PutSearch(ctx, item.search, item.current.Revision); err != nil {
-				return err
-			}
 			for _, target := range item.dependencies {
 				relationship := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: target, Type: "dependency", CompatibilityEdge: true}
 				if err := w.SetRelationship(ctx, relationship, "add", now); err != nil {
@@ -553,11 +548,7 @@ func (s *Service) prepareCutoverItems(ctx context.Context, scope hubscope.Native
 		if err != nil {
 			return nil, err
 		}
-		search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: next.WorkItemID, ID: "issue:" + string(next.WorkItemID), SourceID: string(next.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(next.Revision), UpdatedAt: now}, searchstore.Text{Title: next.Title, Body: next.Body, Labels: next.Labels})
-		if err != nil {
-			return nil, err
-		}
-		prepared := preparedCutoverItem{current: snapshot.Sources[i].Item, issue: next, version: version, event: event, dependencies: dependencies[i], search: search}
+		prepared := preparedCutoverItem{current: snapshot.Sources[i].Item, issue: next, version: version, event: event, dependencies: dependencies[i]}
 		if request.CloseSource {
 			repository, number, err := cutoverSourceReference(issue)
 			if err != nil {

@@ -21,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -78,18 +77,11 @@ func seedArchiveIssues(t *testing.T, service *Service, scope hubscope.NativeScop
 		if err != nil {
 			t.Fatal(err)
 		}
-		document, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.CreateWorkItemWithClaimFacts(t.Context(), corestore.WorkItem{OrganizationID: scope.Organization, ProjectID: scope.Project, NativeID: issue.WorkItemID, Number: number, Revision: 1, Title: issue.Title, BodyObjectKey: &fields.Body, IssueContractObjectKey: fields.Contract, WorkflowStateName: &state, ActorKind: &actor.Kind, ActorPrincipalID: &actor.PrincipalID, CreatedAt: now, UpdatedAt: now, NativeCreatedAt: now, NativeUpdatedAt: now, LastActivityAt: now}, nil, claimstore.WorkItemFacts{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, Author: actor.PrincipalID}, claimstore.QueueEntry{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, Scope: string(scope.Project), State: state, Rank: string(issue.WorkItemID), CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
 			if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
-				return err
-			}
-			if err := w.PutSearch(t.Context(), document, 0); err != nil {
 				return err
 			}
 			_, err := w.AppendEvent(t.Context(), event)

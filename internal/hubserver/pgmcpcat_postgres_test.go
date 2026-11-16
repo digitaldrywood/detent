@@ -17,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -59,13 +58,6 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		document, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{
-			OrganizationID: blocker.OrganizationID, ProjectID: blocker.ProjectID, WorkItemID: blocker.WorkItemID, ID: "issue:" + string(blocker.WorkItemID),
-			SourceID: string(blocker.WorkItemID), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: now,
-		}, searchstore.Text{Title: blocker.Title})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), blocker.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{
 				OrganizationID: blocker.OrganizationID, ProjectID: blocker.ProjectID, NativeID: blocker.WorkItemID, Number: 2, Revision: 1,
@@ -77,7 +69,7 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 			if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
 				return err
 			}
-			return w.PutSearch(t.Context(), document, 0)
+			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}

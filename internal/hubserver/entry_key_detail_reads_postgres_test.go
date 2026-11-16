@@ -21,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -179,23 +178,6 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 			return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: tracker.ProjectID("project_" + string(org)), WorkItemID: "wi_0000000000000000000000000000b0b2", ChangeID: "change_wi_0000000000000000000000000000a0a1_1", CreatedAt: now})
 		}); err != nil {
 			t.Fatal(err)
-		}
-	}
-	for _, org := range []tracker.OrganizationID{"org_startup", "org_other"} {
-		for _, item := range []string{"wi_0000000000000000000000000000a0a1", "wi_0000000000000000000000000000b0b2"} {
-			for _, id := range []string{item, "c_" + item + "_1", "c_" + item + "_2", "c_" + item + "_3"} {
-				kind := "comment"
-				if id == item {
-					kind = "issue"
-				}
-				document, err := searchstore.NewContent(cfg.RunDetails).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: tracker.ProjectID("project_" + string(org)), WorkItemID: tracker.NativeWorkItemID(item), ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Title: "Example issue"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, 0) }); err != nil {
-					t.Fatal(err)
-				}
-			}
 		}
 	}
 	if err := store.Close(); err != nil {

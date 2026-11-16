@@ -24,7 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -212,7 +211,6 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	var nextIssue *tracker.NativeIssue
 	var nextItem *corestore.WorkItem
 	var nextItemVersion *eventstore.CollaborationVersion
-	var nextSearch *searchstore.Document
 	fromState := hubapi.StringValue(itemRow.WorkflowStateName)
 	if !issue.Terminal {
 		projectWorkflow := tracker.NativeProject{States: project.States}
@@ -248,12 +246,6 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		document := searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: updatedIssue.WorkItemID, ID: "issue:" + string(updatedIssue.WorkItemID), SourceID: string(updatedIssue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(updatedIssue.Revision), UpdatedAt: updatedIssue.UpdatedAt}
-		document, err = searchstore.NewContent(s.runDetailStoreFor(ctx)).Prepare(ctx, document, searchstore.Text{Title: updatedIssue.Title, Body: updatedIssue.Body, Labels: updatedIssue.Labels})
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		nextSearch = &document
 		nextIssue, nextItem, nextItemVersion = &updatedIssue, &updatedRow, &itemVersion
 	}
 
@@ -347,14 +339,6 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 				nextItem.EventSequence = storedEvent.Sequence
 				if _, err := w.UpdateWorkItem(ctx, *nextItem); err != nil {
 					return err
-				}
-				if err := w.PutSearch(ctx, *nextSearch, itemRow.Revision); err != nil {
-					if !errors.Is(err, corestore.ErrNotFound) {
-						return err
-					}
-					if err := w.PutSearch(ctx, *nextSearch, 0); err != nil {
-						return err
-					}
 				}
 				if scope.Credential.Scope == hubapi.APIScopeWorker {
 					if err := w.AdvanceLeaseWorkItemRevision(ctx, leasestore.Fence{LeaseID: string(request.LeaseID), FencingToken: int64(request.FencingToken)}, itemRow.ID, itemRow.Revision, int64(nextIssue.Revision)); err != nil {

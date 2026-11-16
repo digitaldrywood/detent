@@ -391,7 +391,7 @@ func withPlanSeedTransaction(ctx context.Context, admin *sql.DB, write func(pgx.
 }
 
 func planSeedColumns(ctx context.Context, tx pgx.Tx, table string, replace map[string]string) (string, string, error) {
-	if table != "issues" && table != "native_board_items" && table != "native_work_item_pages" && table != "search_postings" && table != "search_documents" {
+	if table != "issues" && table != "native_board_items" && table != "native_work_item_pages" {
 		return "", "", errors.New("unsupported projection fixture table")
 	}
 	rows, err := tx.Query(ctx, `SELECT attname FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 AND NOT attisdropped AND attgenerated='' ORDER BY attnum`, "public."+table)

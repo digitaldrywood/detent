@@ -334,12 +334,7 @@
     "runner_update_requests": {"class": "hot_state"},
     "runner_urgent_updates": {"class": "hot_state"},
     "runner_workspace_reports": {"class": "derived_with_retention", "retention": "latest runner workspace capability report"},
-    "scheduler_event_heads": {"class": "hot_state", "retention": "AppendEvent retains current per-item scheduler evidence heads with immutable event history and retained work item identity"},
-    "search_documents": {"class": "index"},
-    "search_document_index": {"class": "index"},
-    "search_postings": {"class": "index"},
-    "search_scope_documents": {"class": "index"},
-    "search_scope_refresh": {"class": "hot_state"}
+    "scheduler_event_heads": {"class": "hot_state", "retention": "AppendEvent retains current per-item scheduler evidence heads with immutable event history and retained work item identity"}
   },
   "legacy_payloads": {
     "conversation_attachments.artifact_ref": "conversation_attachments",

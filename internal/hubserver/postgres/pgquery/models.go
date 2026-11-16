@@ -3096,6 +3096,7 @@ type NativeWorkItemPage struct {
 	ReferenceUrls                   []string
 	ReferenceRepositories           []string
 	ReferenceNumbers                []int64
+	SearchVector                    interface{}
 }
 
 type NativeWorkItemPageDirty struct {
@@ -5398,96 +5399,6 @@ type SchedulerEventHead struct {
 	PushExternalEffect   string
 	PushEffectState      string
 	SchedulerOutcome     string
-}
-
-type SearchDocument struct {
-	OrganizationID          tracker.OrganizationID
-	ID                      string
-	ProjectID               *tracker.ProjectID
-	WorkItemID              *string
-	Kind                    string
-	SourceID                string
-	CommentID               *string
-	EventID                 *string
-	ChangeID                *string
-	Revision                int64
-	IndexedRevision         int64
-	Title                   string
-	Scope                   string
-	Status                  string
-	UpdatedAt               time.Time
-	UpdatedAtSubmicrosecond int64
-	PayloadObjectKey        string
-	PayloadSHA256           string
-	PayloadBytes            int64
-	PayloadContentBytes     int64
-	Vector                  string
-	TokenCount              int64
-	Terms                   []string
-	TermFrequencies         []int64
-	RefreshOrder            int64
-	SourceVector            string
-	Generation              int64
-	SourceVisible           bool
-	Placeholder             bool
-	AggregateObjectKey      *string
-	AggregateSha256         *string
-	AggregateBytes          pgtype.Int8
-	AggregateContentBytes   pgtype.Int8
-	ProgressGeneration      pgtype.Int8
-	ProgressAfterID         *string
-	ProgressObjectKey       *string
-	ProgressSha256          *string
-	ProgressBytes           pgtype.Int8
-	ProgressContentBytes    pgtype.Int8
-	ContentRevision         int64
-	ContentSha256           string
-	IndexedGeneration       int64
-	SearchFormat            int16
-}
-
-type SearchDocumentIndex struct {
-	OrganizationID  tracker.OrganizationID
-	DocumentID      string
-	Generation      int64
-	Format          int16
-	ContentSha256   string
-	WordVector      string
-	SearchText      string
-	SegmentEnds     []int32
-	TokenCount      int64
-	Terms           []string
-	TermFrequencies []int64
-}
-
-type SearchPosting struct {
-	OrganizationID          tracker.OrganizationID
-	Scope                   string
-	Term                    string
-	DocumentID              string
-	PrincipalID             string
-	Thread                  bool
-	Impact                  float64
-	UpdatedAt               time.Time
-	UpdatedAtSubmicrosecond int64
-	LiteralPositions        []int64
-}
-
-type SearchScopeDocument struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	WorkItemID     string
-	ID             string
-}
-
-type SearchScopeRefresh struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	WorkItemID     string
-	Archived       bool
-	PrincipalID    string
-	AfterID        string
-	RefreshOrder   int64
 }
 
 type SlackIntegration struct {

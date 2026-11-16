@@ -2021,18 +2021,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/attachment_records_tenant.go": {
-      "disposition": "serving",
-      "families": [
-        "collaboration"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareEvidenceCommentRecord:Prepare": 1
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/change_content.go": {
       "disposition": "serving",
       "families": [
@@ -2057,18 +2045,6 @@
           "queryChangeLegacyRows:QueryContext": 1,
           "queryLegacyPageRows:QueryContext": 1,
           "queryLegacyPageRows:SQL": 2
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/change_landing_records.go": {
-      "disposition": "serving",
-      "families": [
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.landChangeRecord:Prepare": 1
         },
         "tables": []
       }
@@ -2110,30 +2086,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/change_workflow_records.go": {
-      "disposition": "serving",
-      "families": [
-        "event"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareChangeWorkflowRoute:Prepare": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/conversation_coordinator_actions.go": {
-      "disposition": "non-storage",
-      "families": [
-        "non-storage"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareCoordinatorAnswerComment:Prepare": 1
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/conversation_coordinator_catalog.go": {
       "disposition": "non-storage",
       "families": [
@@ -2142,18 +2094,6 @@
       "inventory": {
         "operations": {
           "coordinatorToolset.findTools:Query": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/conversation_issue_archive.go": {
-      "disposition": "non-storage",
-      "families": [
-        "non-storage"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.archiveCoordinatorWorkItems:Prepare": 1
         },
         "tables": []
       }
@@ -2167,20 +2107,7 @@
       ],
       "inventory": {
         "operations": {
-          "Service.executeCoordinatorIssueSplit:SQL": 1,
-          "Service.prepareCoordinatorSplitRecord:Prepare": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/conversation_preference_issue.go": {
-      "disposition": "non-storage",
-      "families": [
-        "non-storage"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareConversationPreferenceIssue:Prepare": 1
+          "Service.executeCoordinatorIssueSplit:SQL": 1
         },
         "tables": []
       }
@@ -2343,19 +2270,6 @@
         ]
       }
     },
-    "internal/hubserver/coreimport/work_item_import.go": {
-      "disposition": "non-storage",
-      "families": [
-        "non-storage"
-      ],
-      "inventory": {
-        "operations": {
-          "importCoreHistoricalWorkItems:Prepare": 1,
-          "prepareCoreWorkItemImport:Prepare": 1
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/github_batch_records.go": {
       "disposition": "serving",
       "families": [
@@ -2382,20 +2296,7 @@
       ],
       "inventory": {
         "operations": {
-          "Service.prepareCutoverItems:Prepare": 1,
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/github_import_advance_records.go": {
-      "disposition": "non-storage",
-      "families": [
-        "non-storage"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareHistoricalGitHubImport:Prepare": 1
         },
         "tables": []
       }
@@ -2634,18 +2535,6 @@
         ]
       }
     },
-    "internal/hubserver/linked_issue_source_records.go": {
-      "disposition": "serving",
-      "families": [
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.applyLinkedIssueRecordOnce:Prepare": 1
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/linked_issue_sources.go": {
       "disposition": "serving",
       "families": [
@@ -2655,26 +2544,6 @@
         "operations": {
           "readLinkedIssueSourceProjection:QueryRowContext": 1,
           "readLinkedIssueSourceProjection:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/local_board_import_records.go": {
-      "atomic_groups": [
-        "work-item-command"
-      ],
-      "disposition": "serving",
-      "families": [
-        "access",
-        "billing",
-        "core",
-        "event",
-        "policy",
-        "search"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareLocalBoardMutation:Prepare": 1
         },
         "tables": []
       }
@@ -2788,18 +2657,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/native_issue_retention.go": {
-      "disposition": "non-storage",
-      "families": [
-        "non-storage"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.retainClosedWorkItem:Prepare": 1
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/native_issues.go": {
       "atomic_groups": [
         "native-command"
@@ -2871,18 +2728,6 @@
       "inventory": {
         "operations": {
           "Service.getNativeRuntime:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/native_workflow_tenant.go": {
-      "disposition": "serving",
-      "families": [
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.transitionNativeIssueTenantWithStop:Prepare": 1
         },
         "tables": []
       }
@@ -5520,8 +5365,6 @@
           "session.LockDuplicateSource:query-receiver": 1,
           "session.advanceDuplicateSource:generated:AdvanceDuplicateSource": 1,
           "session.advanceDuplicateSource:query-receiver": 1,
-          "session.lockDuplicateSourceDocument:generated:DuplicateDocumentIdentity": 1,
-          "session.lockDuplicateSourceDocument:query-receiver": 1,
           "session.lockDuplicateSourceProject:generated:DuplicateProjectLock": 1,
           "session.lockDuplicateSourceProject:query-receiver": 1
         },
@@ -6578,8 +6421,7 @@
           "hub/collaboration_events",
           "hub/issues",
           "hub/native_comments",
-          "hub/projects",
-          "public/search_documents"
+          "hub/projects"
         ]
       }
     },
@@ -6635,10 +6477,7 @@
         "tables": [
           "hub/issues",
           "hub/native_comments",
-          "hub/projects",
-          "public/search_postings",
-          "public/search_scope_documents",
-          "public/search_scope_refresh"
+          "hub/projects"
         ]
       }
     },
@@ -12162,9 +12001,7 @@
         },
         "tables": [
           "hub/issues",
-          "hub/projects",
-          "public/search_postings",
-          "public/search_postings"
+          "hub/projects"
         ]
       }
     },
@@ -12483,6 +12320,22 @@
           "SQL": 1
         },
         "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261116222700_remove_search_postings.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "search"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues",
+          "hub/native_board_items",
+          "hub/projects"
+        ]
       }
     },
     "internal/hubserver/postgres/monthly_costs.go": {
@@ -13758,22 +13611,11 @@
       "inventory": {
         "operations": {
           "Queries.AdvanceDuplicateSource:Exec": 1,
-          "Queries.DuplicateDocumentIdentity:QueryRow": 1,
-          "Queries.DuplicateParentSource:QueryRow": 1,
           "Queries.DuplicateProjectLock:QueryRow": 1,
-          "Queries.DuplicateSourceState:QueryRow": 1,
-          "Queries.DuplicateSources:Query": 1,
           "advanceDuplicateSource:SQL": 1,
-          "duplicateDocumentIdentity:SQL": 1,
-          "duplicateParentSource:SQL": 1,
-          "duplicateProjectLock:SQL": 1,
-          "duplicateSourceState:SQL": 1,
-          "duplicateSources:SQL": 1
+          "duplicateProjectLock:SQL": 1
         },
         "tables": [
-          "hub/collaboration_events",
-          "hub/issues",
-          "hub/native_comments",
           "hub/projects"
         ]
       }
@@ -15182,46 +15024,6 @@
         },
         "tables": [
           "hub/collaboration_events"
-        ]
-      }
-    },
-    "internal/hubserver/postgres/pgquery/search.sql.go": {
-      "disposition": "target-adapter",
-      "families": [
-        "core",
-        "search"
-      ],
-      "inventory": {
-        "operations": {
-          "Queries.SearchAdvance:Exec": 1,
-          "Queries.SearchCandidates:Query": 1,
-          "Queries.SearchDelete:Exec": 1,
-          "Queries.SearchPending:QueryRow": 1,
-          "Queries.SearchPreparePublicationPostings:QueryRow": 1,
-          "Queries.SearchPublicationVisibility:QueryRow": 1,
-          "Queries.SearchPublish:Exec": 1,
-          "Queries.SearchPublishLiterals:Exec": 1,
-          "Queries.SearchPut:Exec": 1,
-          "Queries.SearchRemovePlaceholder:Exec": 1,
-          "Queries.SearchSources:Query": 1,
-          "Queries.SearchUpdate:Exec": 1,
-          "searchAdvance:SQL": 1,
-          "searchCandidates:SQL": 1,
-          "searchDelete:SQL": 1,
-          "searchPending:SQL": 1,
-          "searchPreparePublicationPostings:SQL": 1,
-          "searchPublicationVisibility:SQL": 1,
-          "searchPublish:SQL": 1,
-          "searchPublishLiterals:SQL": 1,
-          "searchPut:SQL": 1,
-          "searchRemovePlaceholder:SQL": 1,
-          "searchSources:SQL": 1,
-          "searchUpdate:SQL": 1
-        },
-        "tables": [
-          "hub/issues",
-          "hub/native_comments",
-          "hub/projects"
         ]
       }
     },
@@ -16732,16 +16534,9 @@
         "operations": {
           "SQL": 1,
           "query:AdvanceDuplicateSource:execrows": 1,
-          "query:DuplicateDocumentIdentity:one": 1,
-          "query:DuplicateParentSource:one": 1,
-          "query:DuplicateProjectLock:one": 1,
-          "query:DuplicateSourceState:one": 1,
-          "query:DuplicateSources:many": 1
+          "query:DuplicateProjectLock:one": 1
         },
         "tables": [
-          "hub/collaboration_events",
-          "hub/issues",
-          "hub/native_comments",
           "hub/projects"
         ]
       }
@@ -17792,35 +17587,6 @@
         },
         "tables": [
           "hub/collaboration_events"
-        ]
-      }
-    },
-    "internal/hubserver/postgres/queries/search.sql": {
-      "disposition": "target-adapter",
-      "families": [
-        "core",
-        "search"
-      ],
-      "inventory": {
-        "operations": {
-          "SQL": 1,
-          "query:SearchAdvance:exec": 1,
-          "query:SearchCandidates:many": 1,
-          "query:SearchDelete:execrows": 1,
-          "query:SearchPending:one": 1,
-          "query:SearchPreparePublicationPostings:one": 1,
-          "query:SearchPublicationVisibility:one": 1,
-          "query:SearchPublish:execrows": 1,
-          "query:SearchPublishLiterals:exec": 1,
-          "query:SearchPut:execrows": 1,
-          "query:SearchRemovePlaceholder:exec": 1,
-          "query:SearchSources:many": 1,
-          "query:SearchUpdate:execrows": 1
-        },
-        "tables": [
-          "hub/issues",
-          "hub/native_comments",
-          "hub/projects"
         ]
       }
     },
@@ -19827,40 +19593,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/postgres/search.go": {
-      "disposition": "target-adapter",
-      "families": [
-        "search"
-      ],
-      "inventory": {
-        "operations": {
-          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
-          "session.PublishSearch:Exec": 4,
-          "session.SaveSearchProgress:Exec": 1,
-          "session.SaveSearchProgress:SQL": 1,
-          "session.Search:Query": 1,
-          "session.SearchProgress:QueryRow": 1,
-          "session.SearchProgress:SQL": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/postgres/search_backfill.go": {
-      "disposition": "target-adapter",
-      "families": [
-        "search"
-      ],
-      "inventory": {
-        "operations": {
-          "Repository.QueueSearchBackfill:generated:SearchBackfillPage": 1,
-          "Repository.QueueSearchBackfill:generated:SearchBackfillQueue": 1,
-          "Repository.QueueSearchBackfill:generated:SearchBackfillWrap": 1,
-          "Repository.QueueSearchBackfill:query-receiver": 3,
-          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/postgres/slack_contract.go": {
       "disposition": "target-adapter",
       "families": [
@@ -20298,9 +20030,9 @@
           "session.CommentPageRecords:SQL": 1,
           "session.NextWorkItemPageCandidate:QueryRow": 1,
           "session.NextWorkItemPageCandidate:SQL": 1,
-          "session.PublishWorkItemPage:Exec": 3,
+          "session.PublishWorkItemPage:Exec": 2,
           "session.PublishWorkItemPage:QueryRow": 1,
-          "session.PublishWorkItemPage:SQL": 4,
+          "session.PublishWorkItemPage:SQL": 3,
           "session.WorkItemDetailPage:QueryRow": 1,
           "session.WorkItemDetailPage:SQL": 1,
           "session.WorkItemPageProjectionRevision:QueryRow": 1,
@@ -20312,9 +20044,7 @@
           "session.advanceWorkItemPageProjectionRevision:Exec": 1,
           "session.advanceWorkItemPageProjectionRevision:SQL": 1
         },
-        "tables": [
-          "hub/projects"
-        ]
+        "tables": []
       }
     },
     "internal/hubserver/postgres/work_item_page_values.go": {
@@ -20566,18 +20296,6 @@
         ]
       }
     },
-    "internal/hubserver/release_association_tenant.go": {
-      "disposition": "serving",
-      "families": [
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.associateReleasePickTenant:Prepare": 1
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/release_delivery.go": {
       "disposition": "serving",
       "families": [
@@ -20667,26 +20385,6 @@
         ]
       }
     },
-    "internal/hubserver/runner_reported_dependencies.go": {
-      "atomic_groups": [
-        "completion",
-        "work-item-command"
-      ],
-      "disposition": "serving",
-      "families": [
-        "access",
-        "core",
-        "event",
-        "lease",
-        "search"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareRunnerDependencies:Prepare": 1
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/runner_routing.go": {
       "disposition": "serving",
       "families": [
@@ -20722,30 +20420,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/scheduled_attribution_prepare.go": {
-      "disposition": "serving",
-      "families": [
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareScheduledAttributionRecord:Prepare": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/searchstore/content.go": {
-      "disposition": "target-adapter",
-      "families": [
-        "search"
-      ],
-      "inventory": {
-        "operations": {
-          "Content.RefreshOne:Prepare": 2
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/usage_costs.go": {
       "disposition": "serving",
       "families": [
@@ -20758,18 +20432,6 @@
         "tables": [
           "hub/usage_cost_observations"
         ]
-      }
-    },
-    "internal/hubserver/work_item_duplicate_records.go": {
-      "disposition": "serving",
-      "families": [
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareWorkItemMachinePriority:Prepare": 1
-        },
-        "tables": []
       }
     },
     "internal/hubserver/work_item_read_seam.go": {
@@ -20800,7 +20462,7 @@
       ],
       "inventory": {
         "operations": {
-          "Service.runWorkItemRecordMutation:Prepare": 2
+          "Service.runWorkItemRecordMutation:Prepare": 1
         },
         "tables": []
       }
@@ -20813,30 +20475,6 @@
       "inventory": {
         "operations": {
           "Service.workViewPreferenceRecord:Query": 5
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/workspace_commands.go": {
-      "disposition": "serving",
-      "families": [
-        "workspace"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.commandCreateWorkspace:Prepare": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/workspace_dispatch.go": {
-      "disposition": "serving",
-      "families": [
-        "fleet"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.prepareWorkspaceIssueClose:Prepare": 1
         },
         "tables": []
       }
@@ -23029,26 +22667,6 @@
       "contract": "Retain the latest typed workspace capabilities and isolation report from each tenant runner.",
       "disposition": "target-only",
       "family": "fleet"
-    },
-    "public/search_documents": {
-      "contract": "Rebuild tenant-scoped approximate search from retained canonical sources with bounded indexing and deletion.",
-      "disposition": "target-only",
-      "family": "search"
-    },
-    "public/search_postings": {
-      "contract": "Rebuild tenant-scoped approximate search from retained canonical sources with bounded indexing and deletion.",
-      "disposition": "target-only",
-      "family": "search"
-    },
-    "public/search_scope_documents": {
-      "contract": "Rebuild tenant-scoped approximate search from retained canonical sources with bounded indexing and deletion.",
-      "disposition": "target-only",
-      "family": "search"
-    },
-    "public/search_scope_refresh": {
-      "contract": "Rebuild tenant-scoped approximate search from retained canonical sources with bounded indexing and deletion.",
-      "disposition": "target-only",
-      "family": "search"
     }
   }
 }

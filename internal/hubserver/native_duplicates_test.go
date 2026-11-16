@@ -26,7 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func refreshNativeDuplicateSearchFixture(t *testing.T, service *Service, organization tracker.OrganizationID) {
+func projectNativeItemPages(t *testing.T, service *Service, organization tracker.OrganizationID) {
 	t.Helper()
 	if service.config.Hosted == nil {
 		original := service.localOrganization
@@ -106,7 +106,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &first)
 			}
-			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			projectNativeItemPages(t, f.service, f.project.OrganizationID)
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body + issueContractTestSections, State: test.state}
 			searchTrace := installNativeBrowserPathFault(t, f.service)
 			searchTrace.observe.Store(true)
@@ -244,7 +244,7 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+credential.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": f.project.OrganizationID, "project_id": other.project.ID}), http.StatusNoContent)
 	setNativeDuplicateChallengeFixture(t, f, true)
-	refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+	projectNativeItemPages(t, f.service, f.project.OrganizationID)
 	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bound"}, Title: first.Title, Body: "Independent description" + issueContractTestSections, State: "Todo"}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 	requireNativeStatus(t, response, http.StatusConflict)
@@ -286,7 +286,7 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	request.IdempotencyKey = "reuse"
 	requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request), http.StatusGone, "idempotency_expired")
-	refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+	projectNativeItemPages(t, f.service, f.project.OrganizationID)
 	request.IdempotencyKey = "second-challenge"
 	request.ChallengeToken, request.NotDuplicateOf = "", nil
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
@@ -325,7 +325,7 @@ func TestNativeDuplicateChallengeLifetime(t *testing.T) {
 			f := newNativeFixture(t, service, "", "lifetime")
 			first := f.create(t, "Runner checkout deadlocks")
 			setNativeDuplicateChallengeFixture(t, f, true)
-			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			projectNativeItemPages(t, f.service, f.project.OrganizationID)
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "lifetime"}, Title: first.Title, Body: "Independent description" + issueContractTestSections, State: "Todo"}
 			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request)
 			var challenge duplicateChallenge
@@ -588,7 +588,7 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				f.create(t, "Runner checkout stalls "+strconv.Itoa(i))
 			}
 			setNativeDuplicateChallengeFixture(t, f, true)
-			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			projectNativeItemPages(t, f.service, f.project.OrganizationID)
 			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 			credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
 			if err != nil {
@@ -744,7 +744,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			first := f.create(t, "Runner checkout deadlocks")
 			setNativeDuplicateChallengeFixture(t, f, change != "challenge enabled")
-			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			projectNativeItemPages(t, f.service, f.project.OrganizationID)
 			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("fixture credential=%d %v", status, err)
@@ -775,7 +775,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 			case "challenge enabled", "challenge disabled":
 				setNativeDuplicateChallengeFixture(t, f, change == "challenge enabled")
 			}
-			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			projectNativeItemPages(t, f.service, f.project.OrganizationID)
 			err = f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, prepared.write)
 			if !errors.Is(err, corestore.ErrSerializationFailure) {
 				t.Fatalf("stale duplicate preparation was accepted: %v", err)
@@ -801,7 +801,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			first := f.create(t, "Runner checkout deadlocks")
 			setNativeDuplicateChallengeFixture(t, f, true)
-			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			projectNativeItemPages(t, f.service, f.project.OrganizationID)
 			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("fixture credential=%d %v", status, err)
@@ -826,7 +826,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 					t.Fatalf("archived candidate before its page was projected: raw=%s err=%v, want a retryable conflict", raw, err)
 				}
 				f.service.config.TenantRepository = repository.delegate
-				refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+				projectNativeItemPages(t, f.service, f.project.OrganizationID)
 				f.service.config.TenantRepository = repository
 				raw, err = f.service.createNativeIssueCommand(ctx, scope, request)
 			}
@@ -871,7 +871,7 @@ func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &first)
 			setNativeDuplicateChallengeFixture(t, f, true)
-			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			projectNativeItemPages(t, f.service, f.project.OrganizationID)
 			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("fixture credential=%d %v", status, err)

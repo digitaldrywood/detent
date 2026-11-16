@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -110,16 +111,13 @@ func (p SearchPlanNode) CTERows(name string) float64 {
 	return rows
 }
 
-func (p SearchPlanNode) DocumentWork() float64 {
+func (p SearchPlanNode) RelationWork(relations ...string) float64 {
 	work := float64(0)
-	if p.Relation == "search_documents" || p.Relation == "issues" || p.Relation == "search_postings" || p.Relation == "search_scope_refresh" || p.Relation == "search_scope_documents" || p.Relation == "projects" || p.Relation == "native_comments" {
+	if p.Relation != "" && slices.Contains(relations, p.Relation) {
 		work = p.examined()
 	}
-	if p.Relation == "" && (strings.HasPrefix(p.Index, "search_documents_") || strings.HasPrefix(p.Index, "search_postings_")) {
-		work += p.examined()
-	}
 	for _, child := range p.Plans {
-		work += child.DocumentWork()
+		work += child.RelationWork(relations...)
 	}
 	return work
 }

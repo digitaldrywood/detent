@@ -23,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -35,7 +34,6 @@ type changeWorkflowTransition struct {
 	fields       hubrecords.WorkItemRecordFields
 	version      eventstore.CollaborationVersion
 	event        eventstore.Event
-	search       searchstore.Document
 	policy       policystore.Revision
 	policyFound  bool
 	contract     *eventstore.Receipt
@@ -395,7 +393,6 @@ func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope
 	if err != nil {
 		return nil, err
 	}
-	p.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, ID: "issue:" + string(row.NativeID), SourceID: string(row.NativeID), Kind: "issue", Scope: "issue", Revision: row.Revision + 1, UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 	return p, err
 }
 
@@ -542,14 +539,6 @@ func (s *Service) applyChangeWorkflowTransition(ctx context.Context, w tenantsto
 			return conversationDispatchUnavailable()
 		}
 		if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.Project, string(p.plan.Current.NativeID), leasestore.Fence{}, s.config.Clock().UTC()); err != nil {
-			return err
-		}
-	}
-	if err := w.PutSearch(ctx, p.search, p.plan.Current.Revision); err != nil {
-		if !errors.Is(err, corestore.ErrNotFound) {
-			return err
-		}
-		if err := w.PutSearch(ctx, p.search, 0); err != nil {
 			return err
 		}
 	}

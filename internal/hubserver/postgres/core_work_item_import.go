@@ -12,14 +12,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type CoreWorkItemImport struct {
 	Item             corestore.WorkItem
-	Search           *searchstore.Document
 	Labels           []string
 	Facts            claimstore.WorkItemFacts
 	Queues           []claimstore.QueueEntry
@@ -52,11 +50,6 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 	item := record.Item
 	if item.ID < 1 || item.Revision < 1 || item.OrganizationID == "" || item.NativeID == "" || item.ProjectID == "" || record.Facts.OrganizationID != item.OrganizationID || record.Receipt.OrganizationID != item.OrganizationID || record.Facts.ProjectID != item.ProjectID || record.Facts.WorkItemID != item.NativeID || record.Receipt.ActorID == "" || record.Receipt.Operation == "" || record.Receipt.CommandKey == "" || record.Receipt.RequestHash == "" {
 		return corestore.ErrTenantMismatch
-	}
-	if d := record.Search; d != nil {
-		if d.OrganizationID != item.OrganizationID || d.ProjectID != item.ProjectID || d.WorkItemID != item.NativeID || d.ID != "issue:"+string(item.NativeID) || d.SourceID != string(item.NativeID) || d.Kind != "issue" || d.Scope != "issue" || d.Revision != item.Revision {
-			return corestore.ErrTenantMismatch
-		}
 	}
 	if len(record.Versions) == 0 {
 		return eventstore.ErrInvalidRecord
@@ -153,11 +146,6 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 		}
 		if _, err := s.createWorkItem(ctx, item, false); err != nil {
 			return err
-		}
-		if record.Search != nil {
-			if err := s.PutSearch(ctx, *record.Search, 0); err != nil {
-				return err
-			}
 		}
 		if err := s.SetWorkItemLabels(ctx, item.ProjectID, item.NativeID, record.Labels); err != nil {
 			return err

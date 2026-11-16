@@ -19,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -192,7 +191,6 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 		fields  hubrecords.WorkItemRecordFields
 		version eventstore.CollaborationVersion
 		event   eventstore.Event
-		search  searchstore.Document
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -246,10 +244,6 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 				return nil, err
 			}
 			prepared.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
-			if err != nil {
-				return nil, err
-			}
-			prepared.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + item.WorkItemID, SourceID: item.WorkItemID, Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 			if err != nil {
 				return nil, err
 			}
@@ -311,9 +305,6 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 					return err
 				}
 				if _, err := w.AppendEvent(ctx, item.event); err != nil {
-					return err
-				}
-				if err := w.PutSearch(ctx, item.search, item.plan.Current.Revision); err != nil {
 					return err
 				}
 			}

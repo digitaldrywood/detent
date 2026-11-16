@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -27,7 +26,6 @@ type preparedRunnerDependency struct {
 	fields  hubrecords.WorkItemRecordFields
 	version eventstore.CollaborationVersion
 	history eventstore.Event
-	search  searchstore.Document
 }
 
 type preparedRunnerDependencies struct {
@@ -161,10 +159,6 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 		if err != nil {
 			return nil, false, err
 		}
-		change.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: source.NativeID, ID: "issue:" + string(source.NativeID), SourceID: string(source.NativeID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
-		if err != nil {
-			return nil, false, err
-		}
 		raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: source.NativeID, Type: "dependency.changed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.Issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.Issue.Revision, RelatedWorkItemID: target.NativeID, Operation: "add"}})
 		if err != nil {
 			return nil, false, err
@@ -237,9 +231,6 @@ func applyRunnerDependencies(ctx context.Context, w tenantstore.Writer, dependen
 		}
 		if _, err := w.AppendEvent(ctx, change.history); err != nil {
 			return err
-		}
-		if err := w.PutSearch(ctx, change.search, change.plan.Current.Revision); err != nil {
-			return fmt.Errorf("write completion dependency search: %w", err)
 		}
 	}
 	return nil

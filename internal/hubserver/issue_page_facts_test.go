@@ -48,7 +48,7 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		decodeHubResponse(t, response, &issue)
 		drainTestNativeBoard(t, fixture.service)
-		refreshNativeDuplicateSearchFixture(t, fixture.service, fixture.project.OrganizationID)
+		projectNativeItemPages(t, fixture.service, fixture.project.OrganizationID)
 		if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			stored, err := r.WorkItem(t.Context(), fixture.project.ID, issue.WorkItemID)
 			if err != nil {

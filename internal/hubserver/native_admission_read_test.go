@@ -20,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -595,10 +594,6 @@ func writeAdmissionIssue(t *testing.T, f nativeFixture, issue tracker.NativeIssu
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		row.Title = issue.Title
 		row.BodyObjectKey = &fields.Body
@@ -624,7 +619,7 @@ func writeAdmissionIssue(t *testing.T, f nativeFixture, issue tracker.NativeIssu
 		if _, err := w.AppendEvent(t.Context(), event); err != nil {
 			return err
 		}
-		return w.PutSearch(t.Context(), document, int64(issue.Revision)-1)
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}

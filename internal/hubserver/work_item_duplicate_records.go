@@ -458,11 +458,10 @@ func lockWorkItemDuplicateSource(ctx context.Context, w tenantstore.Writer, proj
 }
 
 type workItemMachinePriority struct {
-	plan     hubrecords.WorkItemRecordPlan
-	fields   hubrecords.WorkItemRecordFields
-	version  eventstore.CollaborationVersion
-	event    eventstore.Event
-	document searchstore.Document
+	plan    hubrecords.WorkItemRecordPlan
+	fields  hubrecords.WorkItemRecordFields
+	version eventstore.CollaborationVersion
+	event   eventstore.Event
 }
 
 func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope hubscope.NativeScope, occurrence hubrecords.WorkItemRecordPlan, priority *int) (*workItemMachinePriority, error) {
@@ -495,12 +494,7 @@ func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope hubs
 	if err != nil {
 		return nil, err
 	}
-	document := searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + string(plan.Issue.WorkItemID), SourceID: string(plan.Issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}
-	document, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, document, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
-	if err != nil {
-		return nil, err
-	}
-	return &workItemMachinePriority{plan: plan, fields: fields, version: version, event: event, document: document}, nil
+	return &workItemMachinePriority{plan: plan, fields: fields, version: version, event: event}, nil
 }
 
 func (p *workItemMachinePriority) write(ctx context.Context, w tenantstore.Writer) error {
@@ -513,5 +507,5 @@ func (p *workItemMachinePriority) write(ctx context.Context, w tenantstore.Write
 	if _, err := w.AppendEvent(ctx, p.event); err != nil {
 		return err
 	}
-	return w.PutSearch(ctx, p.document, p.plan.Current.Revision)
+	return nil
 }

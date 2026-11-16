@@ -18,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -289,7 +288,6 @@ type historicalGitHubImportPlan struct {
 	version    eventstore.CollaborationVersion
 	event      eventstore.Event
 	comments   []hubrecords.LinkedIssueCommentPlan
-	search     searchstore.Document
 }
 
 func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope hubscope.NativeScope, project projectstore.Record, job GitHubImport, page GitHubImportPage) (historicalGitHubImportPlan, error) {
@@ -387,10 +385,6 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope hubsc
 			return plan, err
 		}
 		plan.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
-		if err != nil {
-			return plan, err
-		}
-		plan.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.item.NativeID, ID: "issue:" + string(plan.item.NativeID), SourceID: string(plan.item.NativeID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
 		if err != nil {
 			return plan, err
 		}
@@ -493,9 +487,6 @@ func applyHistoricalGitHubImport(ctx context.Context, w tenantstore.Writer, proj
 			return err
 		}
 		if err := w.PutWorkItemFacts(ctx, claimstore.WorkItemFacts{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, Author: issue.Provenance.AuthorID, Repository: project.Settings.Repository, Assignees: issue.Assignees}); err != nil {
-			return err
-		}
-		if err := w.PutSearch(ctx, plan.search, plan.item.Revision); err != nil {
 			return err
 		}
 		if _, err := w.CreateCollaborationVersion(ctx, plan.version); err != nil {

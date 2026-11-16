@@ -75,5 +75,5 @@ func (s *Service) publishEvidenceCompletion(ctx context.Context, w tenantstore.W
 	if _, err := w.AppendEvent(ctx, publication.Event); err != nil {
 		return err
 	}
-	return w.PutSearch(ctx, publication.Search, 0)
+	return nil
 }

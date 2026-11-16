@@ -23,7 +23,7 @@ func TestNativeIssuePickerProjection(t *testing.T) {
 	})
 	requireNativeStatus(t, response, http.StatusOK)
 	drainTestNativeBoard(t, f.service)
-	refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+	projectNativeItemPages(t, f.service, f.project.OrganizationID)
 
 	read := func(t *testing.T, query string) (int, nativeIssuePickerPage, []byte) {
 		t.Helper()

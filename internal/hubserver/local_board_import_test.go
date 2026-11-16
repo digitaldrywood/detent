@@ -410,7 +410,7 @@ func TestLocalBoardImportFixtures(t *testing.T) {
 func localBoardCounts(t *testing.T, f nativeFixture) []int {
 	t.Helper()
 	counts := []int{}
-	for _, query := range []string{"SELECT count(*) FROM issues", "SELECT count(*) FROM native_comments", "SELECT count(*) FROM local_board_imports", "SELECT count(*) FROM native_commands", "SELECT count(*) FROM issue_relationships", "SELECT (SELECT count(*) FROM collaboration_versions)+(SELECT count(*) FROM collaboration_events)+(SELECT count(*) FROM native_attempt_events)", "SELECT count(*) FROM collaboration_events", "SELECT count(*) FROM search_documents", "SELECT count(*) FROM archive_objects"} {
+	for _, query := range []string{"SELECT count(*) FROM issues", "SELECT count(*) FROM native_comments", "SELECT count(*) FROM local_board_imports", "SELECT count(*) FROM native_commands", "SELECT count(*) FROM issue_relationships", "SELECT (SELECT count(*) FROM collaboration_versions)+(SELECT count(*) FROM collaboration_events)+(SELECT count(*) FROM native_attempt_events)", "SELECT count(*) FROM collaboration_events", "SELECT count(*) FROM archive_objects"} {
 		var count int
 		if err := f.service.config.TenantRepository.(localBoardTestRepository).admin.QueryRowContext(t.Context(), query).Scan(&count); err != nil {
 			t.Fatal(err)

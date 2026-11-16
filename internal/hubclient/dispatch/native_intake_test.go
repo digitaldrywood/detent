@@ -19,7 +19,6 @@ import (
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issuefiling"
@@ -562,10 +561,6 @@ func newPendingLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIs
 	if err != nil {
 		t.Fatal(err)
 	}
-	search, err := h.search.Prepare(t.Context(), searchstore.Document{OrganizationID: h.organization, ProjectID: h.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(updated.Revision), UpdatedAt: updated.UpdatedAt}, searchstore.Text{Title: updated.Title, Body: updated.Body, Labels: updated.Labels})
-	if err != nil {
-		t.Fatal(err)
-	}
 	h.seed(func(w tenantstore.Writer) error {
 		record, err := w.WorkItem(t.Context(), h.project, issue.WorkItemID)
 		if err != nil {
@@ -577,9 +572,6 @@ func newPendingLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIs
 			return err
 		}
 		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
-			return err
-		}
-		if err := w.PutSearch(t.Context(), search, int64(issue.Revision)); err != nil {
 			return err
 		}
 		_, err = w.CreateLinkedSource(t.Context(), eventstore.LinkedSource{OrganizationID: h.organization, ProjectID: h.project, WorkItemID: issue.WorkItemID, URL: "https://github.com/acme/orders/issues/12"})

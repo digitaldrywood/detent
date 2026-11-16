@@ -18,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -314,7 +313,6 @@ func (s *Service) applyLinkedIssueRecordOnce(ctx context.Context, scope hubscope
 	var fields hubrecords.WorkItemRecordFields
 	var issueVersion eventstore.CollaborationVersion
 	var issueEvent eventstore.Event
-	var searchDocument searchstore.Document
 	if !stale {
 		issue.LinkedSource.Snapshot = &snapshot
 		issueRaw, err := json.Marshal(issue)
@@ -347,10 +345,6 @@ func (s *Service) applyLinkedIssueRecordOnce(ctx context.Context, scope hubscope
 		}
 	}
 	if !stale {
-		searchDocument, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemID, ID: "issue:" + string(itemID), SourceID: string(itemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-		if err != nil {
-			return nil, err
-		}
 	}
 	if stale {
 		issue = originalIssue
@@ -451,9 +445,6 @@ func (s *Service) applyLinkedIssueRecordOnce(ctx context.Context, scope hubscope
 		}
 		if !stale {
 			if err := hubrecords.WriteWorkItemRecord(ctx, w, issuePlan, fields); err != nil {
-				return err
-			}
-			if err := w.PutSearch(ctx, searchDocument, row.Revision); err != nil {
 				return err
 			}
 			if _, err := w.CreateCollaborationVersion(ctx, issueVersion); err != nil {

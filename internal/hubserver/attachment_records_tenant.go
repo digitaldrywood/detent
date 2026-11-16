@@ -26,7 +26,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -303,7 +302,6 @@ func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubsco
 		return result, err
 	}
 	result.Bytes = int64(len(comment.Body) + len(raw) + len(dataRaw) + len(actorRaw))
-	result.Search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, ID: "comment:" + comment.ID, SourceID: comment.ID, Kind: "comment", Scope: "issue", Revision: 1, UpdatedAt: at}, searchstore.Text{Body: comment.Body})
 	return result, err
 }
 func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
@@ -435,9 +433,6 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 					return err
 				}
 				if _, err := w.AppendEvent(ctx, publication.Event); err != nil {
-					return err
-				}
-				if err := w.PutSearch(ctx, publication.Search, 0); err != nil {
 					return err
 				}
 			}

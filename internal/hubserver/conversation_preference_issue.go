@@ -13,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -23,7 +22,6 @@ type conversationPreferenceIssue struct {
 	fields  hubrecords.WorkItemRecordFields
 	version eventstore.CollaborationVersion
 	event   eventstore.Event
-	search  searchstore.Document
 	changed bool
 }
 
@@ -73,7 +71,6 @@ func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope 
 	if err != nil {
 		return result, err
 	}
-	result.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + record.WorkItemID, SourceID: record.WorkItemID, Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 	return result, err
 }
 
@@ -125,12 +122,6 @@ func (p conversationPreferenceIssue) Write(ctx context.Context, writer tenantsto
 	}
 	if _, err := writer.AppendEvent(ctx, p.event); err != nil {
 		return err
-	}
-	if err := writer.PutSearch(ctx, p.search, p.plan.Current.Revision); err != nil {
-		if !errors.Is(err, corestore.ErrNotFound) {
-			return err
-		}
-		return writer.PutSearch(ctx, p.search, 0)
 	}
 	return nil
 }

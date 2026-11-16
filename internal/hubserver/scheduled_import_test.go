@@ -19,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -267,7 +266,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					issue = seedScheduledImportOccurrenceState(t, f, scope, issue, test.existingState)
 				}
 				if test.duplicate {
-					refreshNativeDuplicateSearchFixture(t, f.service, scope.Organization)
+					projectNativeItemPages(t, f.service, scope.Organization)
 					search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, tracker.CreateIssue{Body: snapshot.Body}, true)
 					if err != nil || !search.Available || len(search.Matches) != 1 || search.Matches[0].WorkItemID != issue.WorkItemID {
 						t.Fatalf("expected an indexed same-project owner, search=%+v error=%v", search, err)
@@ -297,7 +296,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict {
 						t.Fatalf("different create input reused the receipt: %v", err)
 					}
-					refreshNativeDuplicateSearchFixture(t, f.service, scope.Organization)
+					projectNativeItemPages(t, f.service, scope.Organization)
 					anotherKey := importReport(fmt.Sprintf("%d-third", number))
 					if !reflect.DeepEqual(sameKey, replay) || anotherKey.WorkItemID != issue.WorkItemID || anotherKey.Revision != issue.Revision {
 						t.Fatalf("repeat changed the verified occurrence owner: same=%+v new=%+v", sameKey, anotherKey)
@@ -360,13 +359,6 @@ func seedScheduledImportOccurrenceState(t *testing.T, f nativeFixture, scope hub
 	if err != nil {
 		t.Fatal(err)
 	}
-	search, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(ctx, searchstore.Document{
-		OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID),
-		SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt,
-	}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		current.WorkflowStateName = &issue.State
 		if _, err := w.UpdateWorkItem(ctx, current); err != nil {
@@ -375,7 +367,7 @@ func seedScheduledImportOccurrenceState(t *testing.T, f nativeFixture, scope hub
 		if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
 			return err
 		}
-		return w.PutSearch(ctx, search, current.Revision)
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}

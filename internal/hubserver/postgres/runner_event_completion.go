@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 )
 
 func (f *runnerEventSession) AdjustCollaborationBytes(_ context.Context, delta, limit int64) (billingstore.UsageResult, error) {
@@ -64,12 +63,4 @@ func (q runEventAffectedQueue) Exec(_ context.Context, sql string, args ...any) 
 		return nil
 	})
 	return pgconn.NewCommandTag("INSERT 0 1"), nil
-}
-
-func (f *runnerEventSession) PutSearch(ctx context.Context, document searchstore.Document, expected int64) error {
-	if document.OrganizationID != f.session.organization || document.ProjectID != f.command.Project || document.WorkItemID != f.command.WorkItem || document.Kind != "comment" || expected != 0 {
-		return corestore.ErrTenantMismatch
-	}
-	s := &session{organization: f.session.organization, queries: pgquery.New(runEventAffectedQueue{runEventQueue{f.pending}})}
-	return s.PutSearch(ctx, document, expected)
 }

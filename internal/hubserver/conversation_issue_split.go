@@ -22,7 +22,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -223,7 +222,6 @@ type coordinatorSplitRecord struct {
 	fields       hubrecords.WorkItemRecordFields
 	version      eventstore.CollaborationVersion
 	event        eventstore.Event
-	search       searchstore.Document
 	attachments  []string
 	policy       policystore.Revision
 	policyFound  bool
@@ -256,15 +254,12 @@ func (s *Service) prepareCoordinatorSplitRecord(ctx context.Context, scope hubsc
 	}
 	id, revision, at := string(plan.Issue.WorkItemID), int64(plan.Issue.Revision), plan.Issue.UpdatedAt
 	item := plan.Issue.WorkItemID
-	text := searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels}
-	kind := "issue"
 	data := tracker.CollaborationData{Revision: plan.Issue.Revision, Fields: plan.Fields}
 	if plan.Relationship != nil {
 		data.RelatedWorkItemID, data.Operation = plan.Related.NativeID, plan.RelationshipOperate
 	}
 	if plan.Comment.ID != "" {
 		id, revision, item, at = plan.Comment.ID, int64(plan.Comment.Revision), plan.Comment.WorkItemID, plan.Comment.UpdatedAt
-		kind, text = "comment", searchstore.Text{Body: plan.Comment.Body}
 		data.Revision, data.CommentID = plan.Comment.Revision, plan.Comment.ID
 	}
 	if plan.Comment.ID != "" && len(record.attachments) > 0 {
@@ -280,10 +275,6 @@ func (s *Service) prepareCoordinatorSplitRecord(ctx context.Context, scope hubsc
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	record.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, RecordID: id, Revision: revision}, raw)
-	if err != nil {
-		return record, err
-	}
-	record.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
 	if err != nil {
 		return record, err
 	}
@@ -547,13 +538,6 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope hubs
 				}
 			}
 			if err := hubrecords.WriteWorkItemRecord(ctx, w, plan, record.fields); err != nil {
-				return err
-			}
-			searchRevision := plan.Current.Revision
-			if plan.Comment.ID != "" {
-				searchRevision = plan.CommentRow.Revision
-			}
-			if err := w.PutSearch(ctx, record.search, searchRevision); err != nil {
 				return err
 			}
 			if _, err := w.CreateCollaborationVersion(ctx, record.version); err != nil {

@@ -83,7 +83,11 @@ func TestBoardSearchWindowBoundsCommonWords(t *testing.T) {
 		t.Fatal(err)
 	}
 	const text = "magazine count reason code"
-	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+	for _, run := range []struct {
+		org      tracker.OrganizationID
+		reporter bool
+	}{{"org_first", false}, {"org_second", false}, {"org_first", true}} {
+		org := run.org
 		var want int
 		if err := f.admin.QueryRowContext(ctx, `SELECT count(*) FROM native_work_item_pages WHERE organization_id=$1 AND project_id='prj_first' AND search_vector @@ to_tsquery('pg_catalog.english',$2)`, org, searchstore.WindowQuery(text)).Scan(&want); err != nil {
 			t.Fatal(err)
@@ -99,7 +103,7 @@ func TestBoardSearchWindowBoundsCommonWords(t *testing.T) {
 			if windows > issues {
 				t.Fatal("search cursor did not advance")
 			}
-			selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: text, SearchRanked: true, Limit: 51, After: after}
+			selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: text, SearchRanked: true, Limit: 51, After: after, Reporter: run.reporter, ReporterPrincipalID: "example"}
 			var page viewstore.BoardModelPage
 			started := time.Now()
 			bounded, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
@@ -115,7 +119,7 @@ func TestBoardSearchWindowBoundsCommonWords(t *testing.T) {
 				t.Fatalf("tenant %s window %d: %v", org, windows, err)
 			}
 			if windows == 1 {
-				t.Logf("tenant=%s first page=%s", org, time.Since(started))
+				t.Logf("tenant=%s reporter=%t first page=%s", org, run.reporter, time.Since(started))
 				inspectSearchPlan(t, f, org, probe)
 			}
 			records := page.Records
@@ -141,7 +145,7 @@ func TestBoardSearchWindowBoundsCommonWords(t *testing.T) {
 		if len(seen) != want {
 			t.Fatalf("tenant %s paged %d of %d matching issues", org, len(seen), want)
 		}
-		t.Logf("tenant=%s matches=%d requests=%d", org, want, windows)
+		t.Logf("tenant=%s reporter=%t matches=%d requests=%d", org, run.reporter, want, windows)
 	}
 }
 

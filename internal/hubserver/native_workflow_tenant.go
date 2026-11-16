@@ -27,7 +27,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -344,11 +343,6 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
-		searchDocument := searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}
-		searchDocument, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchDocument, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-		if err != nil {
-			return nil, err
-		}
 		plan := hubrecords.WorkItemRecordPlan{Project: project, Current: row, Issue: issue, EventType: "workflow.transitioned"}
 		fields := hubrecords.WorkItemRecordFields{Body: hubapi.StringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}
 		var contractPayload *eventstore.Receipt
@@ -598,14 +592,6 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 					return conversationDispatchUnavailable()
 				}
 				if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.Project, string(issue.WorkItemID), leasestore.Fence{}, currentTime); err != nil {
-					return err
-				}
-			}
-			if err := w.PutSearch(ctx, searchDocument, row.Revision); err != nil {
-				if !errors.Is(err, corestore.ErrNotFound) {
-					return err
-				}
-				if err := w.PutSearch(ctx, searchDocument, 0); err != nil {
 					return err
 				}
 			}

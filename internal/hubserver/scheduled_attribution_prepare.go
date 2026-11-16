@@ -8,7 +8,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -17,7 +16,6 @@ type scheduledAttributionRecord struct {
 	fields  hubrecords.WorkItemRecordFields
 	version eventstore.CollaborationVersion
 	event   eventstore.Event
-	search  searchstore.Document
 }
 
 func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan, data tracker.CollaborationData) (scheduledAttributionRecord, error) {
@@ -29,13 +27,10 @@ func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope h
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	id, revision, at := string(plan.Issue.WorkItemID), int64(plan.Issue.Revision), plan.Issue.UpdatedAt
-	kind := "issue"
 	value := any(plan.Issue)
-	text := searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels}
 	if plan.Comment.ID != "" {
-		id, revision, at, kind = plan.Comment.ID, int64(plan.Comment.Revision), plan.Comment.UpdatedAt, "comment"
+		id, revision, at = plan.Comment.ID, int64(plan.Comment.Revision), plan.Comment.UpdatedAt
 		value = plan.Comment
-		text = searchstore.Text{Body: plan.Comment.Body}
 		data.CommentID = plan.Comment.ID
 	}
 	data.Revision = tracker.Revision(revision)
@@ -55,6 +50,5 @@ func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope h
 	if err != nil {
 		return p, err
 	}
-	p.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Current.NativeID, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
 	return p, err
 }

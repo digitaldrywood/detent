@@ -33,7 +33,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -1321,15 +1320,10 @@ func payloadSeedRecoveryEdits(t *testing.T, f nativeFixture, issue tracker.Nativ
 		}
 		events = append(events, prepared)
 	}
-	searchRevision := int64(issue.Revision)
 	issue.Revision += tracker.Revision(count) + 1
 	issue.State = "Blocked"
 	issue.UpdatedAt = f.service.config.Clock()
 	raw, err := json.Marshal(issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1352,9 +1346,6 @@ func payloadSeedRecoveryEdits(t *testing.T, f nativeFixture, issue tracker.Nativ
 			if _, err := w.AppendEvent(t.Context(), event); err != nil {
 				return err
 			}
-		}
-		if err := w.PutSearch(t.Context(), document, searchRevision); err != nil {
-			return err
 		}
 		_, err := w.CreateCollaborationVersion(t.Context(), version)
 		return err

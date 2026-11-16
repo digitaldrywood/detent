@@ -12,7 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -67,19 +66,12 @@ func pgmcpcatSeed(t *testing.T, s *Service, org tracker.OrganizationID) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			document, err := searchstore.NewContent(s.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: tracker.ProjectID(project), WorkItemID: tracker.NativeWorkItemID(id), ID: "issue:" + id, SourceID: id, Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Title: string(org)})
-			if err != nil {
-				t.Fatal(err)
-			}
 			if err := s.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: tracker.ProjectID(project), NativeID: tracker.NativeWorkItemID(id), Number: int64(number + 1), Title: string(org), Revision: 1, WorkflowStateName: &state, ActorKind: new("human"), ActorPrincipalID: new(string(org) + "_owner"), NativeCreatedAt: now, NativeUpdatedAt: now})
 				if err != nil {
 					return err
 				}
 				if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
-					return err
-				}
-				if err := w.PutSearch(t.Context(), document, 0); err != nil {
 					return err
 				}
 				return w.PutWorkItemFacts(t.Context(), claimstore.WorkItemFacts{OrganizationID: org, ProjectID: tracker.ProjectID(project), WorkItemID: tracker.NativeWorkItemID(id), Author: string(org) + "_owner"})

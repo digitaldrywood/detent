@@ -130,18 +130,6 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope
 			if err := hubrecords.WriteWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
 				return err
 			}
-			expected := p.plan.Current.Revision
-			if p.plan.Comment.ID != "" {
-				expected = 0
-			}
-			if err := w.PutSearch(ctx, p.search, expected); err != nil {
-				if !errors.Is(err, corestore.ErrNotFound) {
-					return err
-				}
-				if err := w.PutSearch(ctx, p.search, 0); err != nil {
-					return err
-				}
-			}
 			if _, err := w.CreateCollaborationVersion(ctx, p.version); err != nil {
 				return err
 			}

@@ -17,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -50,7 +49,7 @@ func newBoardSearchFixture(t *testing.T) searchFixture {
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	objects := pgstoretest.NewHistoryObjects()
-	f := searchFixture{repository: repository, pool: pool, admin: admin, objects: objects, content: searchContent(objects)}
+	f := searchFixture{repository: repository, pool: pool, admin: admin, objects: objects}
 
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedTenantAccess(t, repository, org)
@@ -77,9 +76,6 @@ func seedBoardSearchProject(t *testing.T, f searchFixture, org tracker.Organizat
 		t.Fatal(err)
 	}
 	for index, id := range ids {
-		document := searchIssue(org, string(id))
-		document.ProjectID = project
-		f.put(t, document, searchstore.Text{Title: "Example", Body: "abcabcabcabcabc"}, 0)
 		ref, err := f.objects.StoreDetail(ctx, string(org), []byte(`{}`))
 		if err != nil {
 			t.Fatal(err)
@@ -98,7 +94,6 @@ func seedBoardSearchProject(t *testing.T, f searchFixture, org tracker.Organizat
 			t.Fatal(err)
 		}
 	}
-	f.drain(t, org)
 }
 
 func publishSearchBody(ctx context.Context, f searchFixture, w tenantstore.Writer, issue tracker.NativeIssue) error {

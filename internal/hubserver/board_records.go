@@ -231,7 +231,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		return page, nil, err
 	}
 	selection.SearchText = strings.TrimSpace(params.Get("q"))
-	selection.SearchRanked = !includeBoard && selection.SearchText != ""
+	selection.SearchRanked = !includeBoard && (selection.SearchText != "" || selection.Fingerprint != "")
 	if len(selection.SearchText) > searchstore.MaxQueryTextBytes {
 		return page, nil, hubapi.NativePublicInvalid("Search query is too long")
 	}
@@ -505,7 +505,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		}
 		cursor.Issues = boardRecordCursor(returned[len(returned)-1], selection.ClosedOrder, snapshot.Sequence)
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
-	} else if selection.SearchRanked && !selection.ClosedOrder && snapshot.SearchWindowEnd != nil {
+	} else if selection.SearchRanked && snapshot.SearchWindowEnd != nil {
 		cursor.Issues = &nativeIssuePageCursor{Sequence: &snapshot.Sequence, SearchNumber: *snapshot.SearchWindowEnd}
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 	}

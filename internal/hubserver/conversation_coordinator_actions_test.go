@@ -31,7 +31,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -1679,10 +1678,6 @@ func coordinatorActionWriteIssue(t *testing.T, s *Service, organization tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	search, err := searchstore.NewContent(s.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: organization, ProjectID: project, WorkItemID: id, ID: "issue:" + string(id), SourceID: string(id), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-	if err != nil {
-		t.Fatal(err)
-	}
 	coordinatorFixtureWrite(t, s, organization, func(w tenantstore.Writer) error {
 		row, err := w.WorkItem(t.Context(), project, id)
 		if err != nil {
@@ -1702,9 +1697,6 @@ func coordinatorActionWriteIssue(t *testing.T, s *Service, organization tracker.
 		row.UpdatedAt = issue.UpdatedAt
 		row.LastActivityAt = issue.LastActivityAt
 		if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
-			return err
-		}
-		if err := w.PutSearch(t.Context(), search, row.Revision); err != nil {
 			return err
 		}
 		_, err = w.CreateCollaborationVersion(t.Context(), version)

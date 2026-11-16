@@ -815,7 +815,7 @@
       "organization:appOrganizationID": 1
     },
     "internal/hubserver/native_work_search_index.go": {
-      "organization:accessOrganization": 2
+      "organization:accessOrganization": 1
     },
     "internal/hubserver/operator_administration.go": {
       "organization:Hosted.OrganizationID": 6,

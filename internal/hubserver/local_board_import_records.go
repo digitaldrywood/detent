@@ -21,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/localboard"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -43,7 +42,6 @@ type localBoardImportMutation struct {
 	fields     hubrecords.WorkItemRecordFields
 	version    eventstore.CollaborationVersion
 	event      eventstore.Event
-	search     searchstore.Document
 	bytes      int64
 	identities []postgres.DoctorProposalIdentity
 }
@@ -288,12 +286,8 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.Na
 func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope hubscope.NativeScope, m localBoardImportMutation, dry bool) (localBoardImportMutation, error) {
 	p := m.plan
 	id, item, revision, at := string(p.Issue.WorkItemID), p.Issue.WorkItemID, int64(p.Issue.Revision), p.Issue.UpdatedAt
-	text := searchstore.Text{Title: p.Issue.Title, Body: p.Issue.Body, Labels: p.Issue.Labels}
-	kind := "issue"
 	if p.Comment.ID != "" {
 		id, item, revision, at = p.Comment.ID, p.Comment.WorkItemID, int64(p.Comment.Revision), p.Comment.UpdatedAt
-		kind = "comment"
-		text = searchstore.Text{Body: p.Comment.Body}
 	}
 	raw, err := json.Marshal(p.Value())
 	if err != nil {
@@ -344,7 +338,6 @@ func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope hubscope.
 	if err != nil {
 		return m, err
 	}
-	m.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
 	return m, err
 }
 
@@ -451,13 +444,6 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.Nat
 					}
 				}
 				if err := hubrecords.WriteWorkItemRecord(ctx, w, p, m.fields); err != nil {
-					return err
-				}
-				previous := p.Current.Revision
-				if p.Comment.ID != "" {
-					previous = 0
-				}
-				if err := w.PutSearch(ctx, m.search, previous); err != nil {
 					return err
 				}
 				if _, err := w.CreateCollaborationVersion(ctx, m.version); err != nil {

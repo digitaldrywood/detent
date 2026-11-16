@@ -51,27 +51,12 @@ func NewRuntime(ctx context.Context, reader, writer *pgxpool.Pool) (*Runtime, er
 			)
 			AND NOT pg_has_role(session_user, 'detent_platform_v2', 'MEMBER')
 			AND NOT pg_has_role(session_user, 'detent_migration_v2', 'MEMBER')
-			AND EXISTS (
-				SELECT 1 FROM pg_proc p
-				WHERE p.oid = 'public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[])'::regprocedure
-				AND p.proowner = 'detent_platform_v2'::regrole AND p.prosecdef AND p.provolatile = 's'
-				AND p.proconfig = ARRAY['search_path=pg_catalog']
-				AND has_function_privilege(current_user, p.oid, 'EXECUTE')
-				AND NOT EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
-					WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')
-			)
 			AND NOT pg_has_role(session_user,'detent_search_reader_v2','MEMBER')
 			AND EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='detent_search_reader_v2'
 			 AND NOT (r.rolcanlogin OR r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls)
 			 AND NOT pg_has_role(r.oid,'detent_runtime_v2','MEMBER') AND NOT pg_has_role(r.oid,'detent_platform_v2','MEMBER')
 			 AND NOT pg_has_role(r.oid,'detent_migration_v2','MEMBER')
 			 AND NOT EXISTS(SELECT 1 FROM pg_roles member WHERE member.rolcanlogin AND NOT (member.rolsuper OR member.rolcreaterole) AND pg_has_role(member.oid,r.oid,'MEMBER')))
-			AND EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid='public.board_search_candidates(text,text[],boolean,text,boolean)'::regprocedure
-			 AND p.proowner='detent_search_reader_v2'::regrole AND p.prosecdef AND p.provolatile='s'
-			 AND p.proconfig=ARRAY['search_path=pg_catalog'] AND has_function_privilege(current_user,p.oid,'EXECUTE')
-			 AND NOT has_function_privilege('detent_platform_v2',p.oid,'EXECUTE')
-			 AND NOT has_function_privilege('detent_migration_v2',p.oid,'EXECUTE')
-			 AND NOT EXISTS(SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE'))
 			AND EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='detent_local_bootstrap_reader_v2'
 			 AND NOT (r.rolcanlogin OR r.rolinherit OR r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls)
 			 AND NOT EXISTS(SELECT 1 FROM pg_auth_members m WHERE r.oid IN (m.roleid,m.member) AND NOT (m.roleid=r.oid AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option
@@ -90,7 +75,6 @@ func NewRuntime(ctx context.Context, reader, writer *pgxpool.Pool) (*Runtime, er
 				'public.organizations'::regclass, 'public.hosted_tenant'::regclass, 'public.api_tokens'::regclass, 'public.token_grants'::regclass, 'public.hosted_members'::regclass, 'public.hosted_project_grants'::regclass, 'public.hosted_sessions'::regclass, 'public.hosted_transactions'::regclass, 'public.hosted_invitations'::regclass, 'public.hosted_invitation_grants'::regclass, 'public.hosted_member_reservations'::regclass, 'public.hosted_binding_migrations'::regclass, 'public.hosted_audit'::regclass, 'public.hosted_audit_times'::regclass, 'public.organization_secrets'::regclass, 'public.project_secrets'::regclass, 'public.organization_secret_audit'::regclass, 'public.project_secret_audit'::regclass,
  'public.projects'::regclass, 'public.project_settings'::regclass, 'public.project_workflow_states'::regclass, 'public.project_workflow_transitions'::regclass, 'public.project_slugs'::regclass, 'public.issues'::regclass,
 				'public.native_comments'::regclass,
-				'public.search_documents'::regclass,
 				'public.collaboration_events'::regclass,
 				'public.native_commands'::regclass,
 				'public.collaboration_versions'::regclass,

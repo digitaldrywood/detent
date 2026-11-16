@@ -1,14 +1,11 @@
 package searchstore
 
 import (
-	"encoding/hex"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const maxLexemeBytes = 2046
@@ -91,149 +88,14 @@ func Terms(query string) []string {
 	return terms
 }
 
-func Prefix(organization tracker.OrganizationID, project tracker.ProjectID) string {
-	return "s" + hex.EncodeToString([]byte(organization)) + "z" + hex.EncodeToString([]byte(project)) + "_"
-}
-
 var vectorQuote = strings.NewReplacer("\\", "\\\\", "'", "''")
 
 func quote(value string) string {
 	return "'" + vectorQuote.Replace(value) + "'"
 }
 
-func Expressions(organization tracker.OrganizationID, query Query) []string {
-	prefix := Prefix(organization, query.ProjectID)
-	terms := Terms(query.Text)
-	for i, term := range terms {
-		terms[i] = quote(prefix + "w" + term)
-		if !query.Exact {
-			terms[i] += ":*"
-		}
-	}
-	return terms
-}
-
-func grams(value string) []string {
-	runes := []rune(lowerASCII(value))
-	size := min(3, len(runes))
-	if size == 0 {
-		return nil
-	}
-	seen := make(map[string]bool)
-	var result []string
-	for i := 0; i+size <= len(runes); i++ {
-		term := hex.EncodeToString([]byte(string(runes[i : i+size])))
-		if !seen[term] {
-			result = append(result, term)
-			seen[term] = true
-		}
-	}
-	return result
-}
-
-func LiteralExpression(organization tracker.OrganizationID, query Query) string {
-	prefix := Prefix(organization, query.ProjectID)
-	terms := grams(query.Text)
-	for i, term := range terms {
-		terms[i] = quote(prefix + "g" + term)
-	}
-	return strings.Join(terms, " & ")
-}
-
-func Vector(document Document, text Text) string {
-	text = searchableText(document, text)
-	prefixes := []string{Prefix(document.OrganizationID, "")}
-	if document.ProjectID != "" {
-		prefixes = append(prefixes, Prefix(document.OrganizationID, document.ProjectID))
-	}
-
-	type entry struct {
-		term      string
-		positions []string
-		last      int
-	}
-	entries := make([]entry, 0)
-	offsets := make(map[string]int)
-	size := 4
-	complete := true
-	add := func(term string, position int, weight string) {
-		if len(term) > maxLexemeBytes {
-			complete = false
-			return
-		}
-		index, exists := offsets[term]
-		if !exists {
-			if size+len(term)+16 >= 1024*1024 {
-				complete = false
-				return
-			}
-			offsets[term] = len(entries)
-			index = len(entries)
-			entries = append(entries, entry{term: term})
-			size += len(term) + 12
-		}
-		value := &entries[index]
-		if position == 0 || len(value.positions) == 256 || position == value.last || size+4 >= 1024*1024 {
-			return
-		}
-		value.positions = append(value.positions, strconv.Itoa(position)+weight)
-		value.last = position
-		size += 2
-	}
-	add("~complete", 0, "")
-	for column, content := range []string{text.Title, text.Body} {
-		weight := "D"
-		if column == 0 {
-			weight = "A"
-		}
-		for _, prefix := range prefixes {
-			position := 0
-			for _, token := range tokenize(content) {
-				position++
-				add(prefix+"w"+indexedTerm(document, token.term), min(position, 16383), weight)
-			}
-		}
-	}
-	if document.Kind == "issue" || document.Kind == "comment" {
-		for _, prefix := range prefixes {
-			columns := []string{text.Title, text.Body}
-			if document.Kind == "issue" {
-				columns = append(columns, text.Labels...)
-			}
-			for _, column := range columns {
-				runes := []rune(column)
-				for size := 1; size <= 3; size++ {
-					for i := 0; i+size <= len(runes); i++ {
-						term := prefix + "g" + hex.EncodeToString([]byte(lowerASCII(string(runes[i:i+size]))))
-						add(term, 0, "")
-					}
-				}
-			}
-		}
-	}
-	if document.ProjectID != "" && (document.Kind == "issue" || document.Kind == "comment") {
-		prefix := Prefix(document.OrganizationID, document.ProjectID)
-		for _, key := range DuplicateFingerprintKeys(text.Body, document.Kind == "comment") {
-			add(fingerprintTerm(prefix, key), 0, "")
-		}
-	}
-	var vector strings.Builder
-	for _, entry := range entries {
-		if entry.term == "~complete" && !complete {
-			continue
-		}
-		vector.WriteString(quote(entry.term))
-		if len(entry.positions) > 0 {
-			vector.WriteByte(':')
-			vector.WriteString(strings.Join(entry.positions, ","))
-		}
-		vector.WriteByte(' ')
-	}
-	return vector.String()
-}
-
-func indexedTerm(document Document, term string) string {
-	budget := max(0, maxLexemeBytes-len(Prefix(document.OrganizationID, document.ProjectID))-1)
+func indexedTerm(term string) string {
+	budget := maxLexemeBytes - 1
 	if len(term) > budget {
 		return bytePrefix(term, max(0, budget-1)) + "~"
 	}
@@ -251,7 +113,7 @@ func Describe(document Document, text Text) Statistics {
 		}
 		for _, token := range tokenize(content) {
 			statistics.Tokens++
-			frequencies[indexedTerm(document, token.term)] += weight
+			frequencies[indexedTerm(token.term)] += weight
 		}
 	}
 	statistics.Terms = make([]string, 0, len(frequencies))
@@ -356,83 +218,40 @@ func snippet(text Text, query string, exact bool) string {
 	return out.String()
 }
 
-func CandidateTerms(organization tracker.OrganizationID, query Query) []string {
-	prefix := Prefix(organization, query.ProjectID)
-	terms := Terms(query.Text)
-	result := make([]string, 0, len(terms)+TermLimit)
-	for _, term := range terms {
-		if len(prefix)+1+len(term) < 2048 {
-			result = append(result, prefix+"w"+term)
-		}
+func bytePrefix(value string, budget int) string {
+	if len(value) <= budget {
+		return value
 	}
-	if query.Kind == "work" && !query.Exact {
-		literals := grams(query.Text)
-		for _, term := range literals[:min(len(literals), TermLimit)] {
-			result = append(result, prefix+"g"+term)
-		}
+	for budget > 0 && !utf8.RuneStart(value[budget]) {
+		budget--
 	}
-	return result
+	return value[:budget]
 }
 
-func LiteralPostings(document Document, text Text) []LiteralPosting {
-	if document.Kind != "issue" && document.Kind != "comment" {
-		return nil
-	}
-	text = boundedText(text)
-	prefixes := []string{Prefix(document.OrganizationID, "")}
-	if document.ProjectID != "" {
-		prefixes = append(prefixes, Prefix(document.OrganizationID, document.ProjectID))
-	}
-	positions := make(map[string][]int64)
-	columns := []string{text.Title, text.Body}
-	if document.Kind == "issue" {
-		columns = append(columns, text.Labels...)
-	}
-	for field, column := range columns {
-		runes := []rune(lowerASCII(column))
-		for size := 1; size <= 3; size++ {
-			for i := 0; i+size <= len(runes); i++ {
-				gram := hex.EncodeToString([]byte(string(runes[i : i+size])))
-				for prefixIndex, prefix := range prefixes {
-					term := prefix + "g" + gram
-					if len(term) >= 2048 {
-						continue
-					}
-					if size == 3 && document.ProjectID != "" && prefixIndex == len(prefixes)-1 {
-						positions[term] = append(positions[term], int64(field)<<32|int64(i))
-					} else if _, ok := positions[term]; !ok {
-						positions[term] = nil
-					}
-				}
-			}
+func boundedText(text Text) Text {
+	text.Title = bytePrefix(text.Title, 64*1024)
+	text.Body = bytePrefix(text.Body, 64*1024-len(text.Title))
+	budget := 64*1024 - len(text.Title) - len(text.Body)
+	labels := make([]string, 0, min(len(text.Labels), budget))
+	for _, label := range text.Labels[:min(len(text.Labels), budget)] {
+		if budget == 0 {
+			break
+		}
+		label = bytePrefix(label, budget)
+		budget -= len(label)
+		if label != "" {
+			labels = append(labels, label)
 		}
 	}
-	terms := make([]string, 0, len(positions))
-	for term := range positions {
-		terms = append(terms, term)
-	}
-	slices.Sort(terms)
-	postings := make([]LiteralPosting, len(terms))
-	for index, term := range terms {
-		postings[index] = LiteralPosting{Term: term, Positions: positions[term]}
-	}
-	return postings
+	text.Labels = labels
+	return text
 }
 
-func LiteralQueryTerms(organization tracker.OrganizationID, project tracker.ProjectID, query string) []string {
-	runes := []rune(lowerASCII(query))
-	size := min(3, len(runes))
-	if size == 0 {
-		return nil
-	}
-	prefix := Prefix(organization, project) + "g"
-	terms := make([]string, 0, len(runes)-size+1)
-	for index := 0; index+size <= len(runes); index++ {
-		terms = append(terms, prefix+hex.EncodeToString([]byte(string(runes[index:index+size]))))
-	}
-	return terms
-}
-
-func LiteralHex(value string) string {
-	return hex.EncodeToString([]byte(lowerASCII(value)))
+func lowerASCII(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, value)
 }

@@ -239,26 +239,6 @@
     "ownership": "organization-owned",
     "scope": "runner_workspace_reports.organization_id; workspace capability facts belong to a tenant runner"
   },
-  "public/search_documents": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "search_documents.organization_id; project and work item remain tenant scoped"
-  },
-  "public/search_postings": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "search_postings.organization_id; project and work item remain tenant scoped"
-  },
-  "public/search_scope_documents": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "search_scope_documents.organization_id; project and work item remain tenant scoped"
-  },
-  "public/search_scope_refresh": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "search_scope_refresh.organization_id; project and work item remain tenant scoped"
-  },
   "public/archive_object_owners": {
     "inline_payloads": [],
     "ownership": "organization-owned",

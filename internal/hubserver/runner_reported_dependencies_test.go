@@ -17,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -167,15 +166,11 @@ func TestRunnerCompletionRecordsDependencyEdgesAtomically(t *testing.T) {
 			t.Fatal(err)
 		}
 		plan.Issue.CreatedAt, plan.Issue.UpdatedAt = plan.Current.CreatedAt, plan.Current.UpdatedAt
-		document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, ID: "issue:" + string(lease.WorkItemID), SourceID: string(lease.WorkItemID), Kind: "issue", Scope: "issue", Revision: plan.Current.Revision, UpdatedAt: plan.Current.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			if err := hubrecords.WriteClaimFactsAndQueue(t.Context(), w, plan, nil); err != nil {
 				return err
 			}
-			return w.PutSearch(t.Context(), document, 0)
+			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}

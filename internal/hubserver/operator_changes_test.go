@@ -36,7 +36,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/logging"
@@ -111,10 +110,6 @@ func TestOperatorChangePublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, ID: "issue:" + string(f.issue.WorkItemID), SourceID: string(f.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(snapshot.Revision), UpdatedAt: f.service.config.Clock().UTC()}, searchstore.Text{Title: snapshot.Title, Body: snapshot.Body, Labels: snapshot.Labels})
-			if err != nil {
-				t.Fatal(err)
-			}
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 				item, err := w.WorkItem(t.Context(), f.project.ID, f.issue.WorkItemID)
 				if err != nil {
@@ -127,7 +122,7 @@ func TestOperatorChangePublication(t *testing.T) {
 				if _, err = w.CreateCollaborationVersion(t.Context(), revision); err != nil {
 					return err
 				}
-				return w.PutSearch(t.Context(), document, int64(snapshot.Revision)-1)
+				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}

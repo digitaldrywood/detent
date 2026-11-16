@@ -540,14 +540,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	targetSearch, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: firstOrganization.ID, ProjectID: firstProject.ID, WorkItemID: target.WorkItemID, ID: "issue:" + string(target.WorkItemID), SourceID: string(target.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(targetRead.Revision), UpdatedAt: targetRead.UpdatedAt}, searchstore.Text{Title: targetRead.Title, Body: targetRead.Body, Labels: targetRead.Labels})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := repository.WriteTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.PutSearch(t.Context(), targetSearch, targetRow.Revision); err != nil {
-			return err
-		}
 		current, err := w.LockWorkItem(t.Context(), firstProject.ID, target.WorkItemID)
 		if err != nil {
 			return err
@@ -881,10 +874,6 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					searchDocument, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: organization.ID, ProjectID: plan.Issue.ProjectID, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + string(plan.Issue.WorkItemID), SourceID: string(plan.Issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
-					if err != nil {
-						t.Fatal(err)
-					}
 					hash, err := hubapi.CommandHash(input)
 					if err != nil {
 						t.Fatal(err)
@@ -895,9 +884,6 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					}
 					if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 						if err := hubrecords.WriteWorkItemRecord(t.Context(), w, plan, fields); err != nil {
-							return err
-						}
-						if err := w.PutSearch(t.Context(), searchDocument, plan.Current.Revision); err != nil {
 							return err
 						}
 						if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
@@ -1316,14 +1302,7 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	searchDocument, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: organization.ID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.PutSearch(t.Context(), searchDocument, int64(issue.Revision)-1); err != nil {
-			return err
-		}
 		row, err := w.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
 		if err != nil {
 			return err
@@ -1629,15 +1608,6 @@ func TestWorkItemRecordRollback(t *testing.T) {
 					rejected := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, request)
 					requireNativeStatus(t, rejected, http.StatusInternalServerError)
 					if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
-						hits, err := r.Search(t.Context(), searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
-						if err != nil {
-							return err
-						}
-						for _, hit := range hits {
-							if hit.Document.ID != "" {
-								t.Errorf("search document survived rollback: %s", hit.Document.ID)
-							}
-						}
 						number, err := r.NextWorkItemNumber(t.Context(), project.ID)
 						if err != nil {
 							return err
@@ -1682,19 +1652,6 @@ func TestWorkItemRecordRollback(t *testing.T) {
 				t.Fatalf("committed number=%d", issue.Number)
 			}
 			service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org.ID)}
-
-			for _, indexed := range []bool{false, true} {
-				if indexed {
-					service.maintainNativeSearch(t.Context())
-				}
-				page, err := searchstore.NewContent(service.runDetailStore()).Find(t.Context(), tenantstore.SearchRepository{Repository: repository}, org.ID, searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(page.Items) != 1 || page.Items[0].Document.WorkItemID != issue.WorkItemID {
-					t.Fatalf("committed search result indexed=%t: %+v", indexed, page.Items)
-				}
-			}
 		})
 	}
 }

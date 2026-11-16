@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -141,10 +140,6 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 	if err != nil {
 		return err
 	}
-	search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, ID: "issue:" + string(candidate.WorkItemID), SourceID: string(candidate.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
-	if err != nil {
-		return err
-	}
 	return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
@@ -183,6 +178,6 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 		if _, err := w.AppendEvent(ctx, event); err != nil {
 			return err
 		}
-		return w.PutSearch(ctx, search, plan.Current.Revision)
+		return nil
 	})
 }

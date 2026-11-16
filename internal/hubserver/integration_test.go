@@ -574,7 +574,7 @@ func cutoverCredentialFixture(t *testing.T, f nativeFixture) (string, string) {
 func cutoverOwnedRows(t *testing.T, f nativeFixture) map[string][]string {
 	t.Helper()
 	result := map[string][]string{}
-	for _, table := range []string{"projects", "project_settings", "project_workflow_states", "project_workflow_transitions", "project_policies", "issues", "issue_claim_facts", "queue_entries", "issue_dependencies", "collaboration_versions", "collaboration_events", "search_documents", "github_cutovers", "github_outbound", "native_commands", "native_command_states", "native_board_sequences", "native_board_deltas", "native_board_dirty"} {
+	for _, table := range []string{"projects", "project_settings", "project_workflow_states", "project_workflow_transitions", "project_policies", "issues", "issue_claim_facts", "queue_entries", "issue_dependencies", "collaboration_versions", "collaboration_events", "github_cutovers", "github_outbound", "native_commands", "native_command_states", "native_board_sequences", "native_board_deltas", "native_board_dirty"} {
 		rows, err := hostedPostgresAdmin(t, f.service).QueryContext(t.Context(), "SELECT * FROM "+table+" WHERE organization_id=$1", f.project.OrganizationID)
 		if err != nil {
 			t.Fatal(err)

@@ -25,7 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -113,10 +112,6 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					document, err := searchstore.NewContent(details).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: scope.Project, WorkItemID: id, ID: "issue/" + string(id), SourceID: string(id), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: "Resume\nfingerprint: example-key\n"})
-					if err != nil {
-						t.Fatal(err)
-					}
 					if err := original.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
 						principal := "example"
 						if seeded == 1 {
@@ -126,27 +121,15 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						if err := w.PutSearch(t.Context(), document, 0); err != nil {
-							return err
-						}
 						row := viewstore.BoardRecord{OrganizationID: org, ProjectID: scope.Project, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%04d", scope.Project, seeded)}, CreatedAt: now, UpdatedAt: now, Payload: payload, ActorPrincipalID: "example", PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: seeded, Actor: issue.Actor}}
 						return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: scope.Project, WorkItemID: id, ExpectedRevision: item.Revision, Current: &row})
 					}); err != nil {
 						t.Fatal(err)
 					}
 				}
-				for {
-					more, err := searchstore.NewContent(details).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: original}, org)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !more {
-						break
-					}
-				}
 				scopes = append(scopes, scope)
 			}
-			if _, err := admin.ExecContext(t.Context(), `ANALYZE search_documents, search_postings, native_board_items, issues, projects`); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `ANALYZE native_board_items, native_work_item_pages, issues, projects`); err != nil {
 				t.Fatal(err)
 			}
 			service.config.TenantRepository, service.config.AccessRepository = measured, measured

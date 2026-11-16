@@ -3,7 +3,9 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -121,6 +123,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seedBoard []func()
+	var cards []tracker.NativeIssue
 	for index, id := range []tracker.NativeWorkItemID{"wi_readable_example", "wi_second_example"} {
 		searchTitle := "Readable example"
 		if index == 1 {
@@ -132,14 +135,8 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 			searchText.Body = "-tail"
 			searchText.Labels = []string{"東京語"}
 		}
-		document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: f.project, WorkItemID: id, ID: "issue:" + string(id), SourceID: string(id), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: now}, searchText)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, 0) }); err != nil {
-			t.Fatal(err)
-		}
 		card := tracker.NativeBoardCard{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: f.project, WorkItemID: id, Number: 42 + index, Revision: 1}, Title: searchText.Title, Body: searchText.Body, Labels: searchText.Labels, State: "Todo", Actor: tracker.Actor{PrincipalID: "owner"}}}
+		cards = append(cards, card.Issue)
 		seedBoard = append(seedBoard, func() {
 			ref, err := viewstore.NewContent(f.service.runDetailStore()).PrepareBoard(t.Context(), card)
 			if err != nil {
@@ -163,16 +160,13 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	boardURL := f.base + "/work-items?include=board&limit=1"
 	refreshSearch := func(t *testing.T) {
 		t.Helper()
-		for range 500 {
-			more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: repository}, org)
-			if err != nil {
+		for _, issue := range cards {
+			if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+				return publishTestItemPage(t.Context(), conversationTestAdmin(t, f.service), w, issue)
+			}); err != nil && !errors.Is(err, sql.ErrNoRows) {
 				t.Fatal(err)
 			}
-			if !more {
-				return
-			}
 		}
-		t.Fatal("search fixture refresh did not finish")
 	}
 	pendingSearch := f.request(t, other, http.MethodGet, boardURL+"&q=example", nil)
 	requireNativeStatus(t, pendingSearch, http.StatusOK)
@@ -450,14 +444,9 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		if future.Total != -1 || len(future.Items) != 0 || futureWorkspace.Total != -1 || len(futureWorkspace.Items) != 0 {
 			t.Fatalf("future created_after returned ordinary=%+v workspace=%+v", future, futureWorkspace)
 		}
-		document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: f.project, WorkItemID: "wi_readable_example", ID: "issue:wi_readable_example", SourceID: "wi_readable_example", Kind: "issue", Scope: "issue", Revision: 2, UpdatedAt: now}, searchstore.Text{Title: "Readable example", Body: "\nfingerprint: source-fingerprint-123\n", Labels: []string{"東京語"}})
-		if err != nil {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE native_work_item_pages SET body=$1 WHERE organization_id=$2 AND work_item_id='wi_readable_example'", "\nfingerprint: source-fingerprint-123\n", org); err != nil {
 			t.Fatal(err)
 		}
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, 1) }); err != nil {
-			t.Fatal(err)
-		}
-		refreshSearch(t)
 		fingerprint := read("fingerprint=source-fingerprint-123")
 		if fingerprint.Total != -1 || len(fingerprint.Items) != 1 || fingerprint.Items[0].WorkItemID != "wi_readable_example" {
 			t.Fatalf("fingerprint filter returned %+v", fingerprint)
@@ -551,15 +540,8 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: f.project, WorkItemID: id, ID: "issue:" + string(id), SourceID: string(id), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Title: issue.Title})
-			if err != nil {
-				t.Fatal(err)
-			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: f.project, NativeID: id, Number: int64(issue.Number), Title: issue.Title, ActorKind: new("human"), ActorPrincipalID: new("owner"), WorkflowStateName: new("Todo")}); err != nil {
-					return err
-				}
-				if err := w.PutSearch(t.Context(), document, 0); err != nil {
 					return err
 				}
 				project, err := w.Project(t.Context(), f.project)

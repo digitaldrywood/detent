@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,7 +24,6 @@ func TestReleaseRefreshLeavesLandingPostgres(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, f.f.request(t, f.owner, http.MethodGet, path, nil), &issue)
-	priorRevision := issue.Revision
 	issue.State = "Merging"
 	issue.Revision++
 	raw, err := json.Marshal(issue)
@@ -34,10 +32,6 @@ func TestReleaseRefreshLeavesLandingPostgres(t *testing.T) {
 	}
 	content := eventstore.NewContent(f.f.service.runDetailStore())
 	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: "org_security", ProjectID: f.f.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	search, err := searchstore.NewContent(f.f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: "org_security", ProjectID: f.f.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +55,7 @@ func TestReleaseRefreshLeavesLandingPostgres(t *testing.T) {
 		if _, err = w.CreateCollaborationVersion(t.Context(), version); err != nil {
 			return err
 		}
-		return w.PutSearch(t.Context(), search, int64(priorRevision))
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)

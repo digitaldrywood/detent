@@ -26,7 +26,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -315,39 +314,9 @@ func updateNativeWorkPageFixtureIssue(t *testing.T, f nativeFixture, id tracker.
 	return issue
 }
 
-func indexNativeWorkPageFixtureIssues(t *testing.T, f nativeFixture, issues []tracker.NativeIssue) {
+func indexNativeWorkPageFixtureIssues(t *testing.T, f nativeFixture, _ []tracker.NativeIssue) {
 	t.Helper()
-	content := searchstore.NewContent(f.service.runDetailStore())
-	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
-	for _, seeded := range issues {
-		row, version, err := f.service.readWorkItemRecord(t.Context(), scope, string(seeded.WorkItemID))
-		if err != nil {
-			t.Fatalf("index fixture issue %s: %v", seeded.WorkItemID, err)
-		}
-		issue, err := f.service.hydrateCanonicalWorkItemRecord(t.Context(), row, version)
-		if err != nil {
-			t.Fatalf("hydrate fixture issue %s: %v", seeded.WorkItemID, err)
-		}
-		if row.Revision == int64(seeded.Revision) {
-			continue
-		}
-		document, err := content.Prepare(t.Context(), searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: row.Revision, UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
-		if err != nil {
-			t.Fatalf("prepare fixture search %s: %v", seeded.WorkItemID, err)
-		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, int64(seeded.Revision)) }); err != nil {
-			t.Fatalf("write fixture search %s: %v", seeded.WorkItemID, err)
-		}
-	}
-	for {
-		more, err := content.RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: f.service.config.TenantRepository}, scope.Organization)
-		if err != nil {
-			t.Fatalf("refresh fixture search: %v", err)
-		}
-		if !more {
-			break
-		}
-	}
+	projectNativeItemPages(t, f.service, f.project.OrganizationID)
 }
 
 func TestNativeWorkPageOperationalScope(t *testing.T) {
