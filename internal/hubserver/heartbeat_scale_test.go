@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -917,62 +918,7 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			pending := map[string]bool{}
-			for i := range test.pending + test.history {
-				id := fmt.Sprintf("cleanup-%04d", i)
-				issue := seedAnalyticsTestWorkItem(t, f.service, org, project, "wi_"+id, 100000+i, "Example issue", "Todo", now.Add(-time.Hour))
-				var issueRow int64
-				if err := admin.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", org, project, issue.WorkItemID).Scan(&issueRow); err != nil {
-					t.Fatal(err)
-				}
-				required := i < test.pending || i%2 == 0
-				var acknowledged any
-				role := "implement"
-				switch {
-				case i < test.pending:
-					pending[id] = true
-				case i%4 == 2:
-					role = ""
-				case required:
-					acknowledged = now
-				}
-				if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id)VALUES($1,$2,$3)", org, "run_"+id, issueRow); err != nil {
-					t.Fatal(err)
-				}
-				var fence int64
-				if err := admin.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at)VALUES($1,$2,$3,$4,$2,1,$5,$6,$6)RETURNING fencing_token`, org, id, issueRow, r.binding.MachineID, now.Add(time.Hour), now.Add(-time.Hour)).Scan(&fence); err != nil {
-					t.Fatal(err)
-				}
-				data := tracker.NativeRunData{AttemptID: id, RunID: "run_" + id, LeaseID: tracker.LeaseID(id), FencingToken: tracker.FencingToken(fence), RunnerID: r.binding.RunnerID, MachineID: r.binding.MachineID, SessionID: id, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "test-model"}, Runtime: &tracker.NativeRuntimeObservation{Phase: "implementation"}}
-				if required {
-					data.Runtime.WorkerLaunch = &tracker.NativeWorkerLaunch{PID: 123, ProcessStart: now.Add(-time.Hour), ExecutionVersion: "example", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "example", Protocol: 1, SelectedAt: now.Add(-time.Hour)}
-				}
-				ref, err := content.PreparePayload(t.Context(), org, historyTestJSON(t, data))
-				if err != nil {
-					t.Fatal(err)
-				}
-				event, err := content.PrepareEvent(t.Context(), org, historyTestJSON(t, tracker.CollaborationEvent{ID: "event_" + id, OrganizationID: org, ProjectID: project, AggregateID: issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: r.binding.RunnerID}, RecordedAt: now, Data: tracker.CollaborationData{Run: &data}}))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,started_at,updated_at,cleanup_acknowledged_at)VALUES($1,$2,$3,$4,$3,$5,$6,1,'cancelled',1,1,$7,$8,$9,$10,$11)`, org, project, id, issueRow, fence, data.RunID, ref.Key, checkpoint.Key, now.Add(-time.Hour), now, acknowledged); err != nil {
-					t.Fatal(err)
-				}
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-					if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: now}); err != nil {
-						return err
-					}
-					if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: org, LeaseID: id, RunnerID: r.binding.RunnerID, AssignedAt: now.Add(-time.Hour)}); err != nil {
-						return err
-					}
-					_, err := w.AppendEvent(t.Context(), event)
-					return err
-				}); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := admin.ExecContext(t.Context(), "UPDATE leases SET released_at=$3 WHERE organization_id=$1 AND lease_id=$2", org, id, now); err != nil {
-					t.Fatal(err)
-				}
-			}
+			seedReleasedCleanupAttempts(t, f, admin, r, checkpoint, now, test.pending, test.history, pending)
 			after := ""
 			for range test.pending + test.history {
 				next, err := f.service.populateCheckpointSource(t.Context(), org, after)
@@ -1156,5 +1102,136 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func seedReleasedCleanupAttempts(t *testing.T, f nativeFixture, admin *sql.DB, r runnerFixture, checkpoint attachment.ArchiveReference, now time.Time, pendingCount, history int, pending map[string]bool) {
+	t.Helper()
+	const chunk = 100
+	org, project := f.project.OrganizationID, f.project.ID
+	total := pendingCount + history
+	ids := make([]string, total)
+	issues := make([]tracker.NativeIssue, total)
+	creates := make([]func(tenantstore.Writer) error, total)
+	created := make([]func(tenantstore.Writer) error, total)
+	for i := range total {
+		ids[i] = fmt.Sprintf("cleanup-%04d", i)
+		issues[i], creates[i], created[i] = prepareAnalyticsTestWorkItem(t, f.service, org, project, "wi_"+ids[i], 100000+i, "Example issue", "Todo", now.Add(-time.Hour))
+	}
+	writeChunks := func(writes []func(tenantstore.Writer) error) {
+		t.Helper()
+		for first := 0; first < len(writes); first += chunk {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, write := range writes[first:min(first+chunk, len(writes))] {
+					if err := write(w); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	writeChunks(creates)
+	nativeIDs := make([]string, total)
+	for i, issue := range issues {
+		nativeIDs[i] = string(issue.WorkItemID)
+	}
+	rows, err := admin.QueryContext(t.Context(), "SELECT native_id,id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=ANY($3::text[])", org, project, nativeIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issueRows := make(map[string]int64, total)
+	for rows.Next() {
+		var nativeID string
+		var row int64
+		if err := rows.Scan(&nativeID, &row); err != nil {
+			t.Fatal(err)
+		}
+		issueRows[nativeID] = row
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	runIDs, issueIDs := make([]string, total), make([]int64, total)
+	for i := range total {
+		row, ok := issueRows[nativeIDs[i]]
+		if !ok {
+			t.Fatalf("seeded issue %s has no row", nativeIDs[i])
+		}
+		runIDs[i], issueIDs[i] = "run_"+ids[i], row
+	}
+	if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) SELECT $1,u.run_id,u.issue_id FROM unnest($2::text[],$3::bigint[])u(run_id,issue_id)", org, runIDs, issueIDs); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = admin.QueryContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at) SELECT $1,u.lease_id,u.issue_id,$4,u.lease_id,1,$5,$6,$6 FROM unnest($2::text[],$3::bigint[])u(lease_id,issue_id) RETURNING lease_id,fencing_token`, org, ids, issueIDs, r.binding.MachineID, now.Add(time.Hour), now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fences := make(map[string]int64, total)
+	for rows.Next() {
+		var lease string
+		var fence int64
+		if err := rows.Scan(&lease, &fence); err != nil {
+			t.Fatal(err)
+		}
+		fences[lease] = fence
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	content := eventstore.NewContent(f.service.runDetailStore())
+	fenceValues, payloadKeys := make([]int64, total), make([]string, total)
+	acknowledged := make([]*time.Time, total)
+	attemptWrites := make([]func(tenantstore.Writer) error, total)
+	for i, id := range ids {
+		fence, ok := fences[id]
+		if !ok {
+			t.Fatalf("seeded lease %s has no fencing token", id)
+		}
+		required := i < pendingCount || i%2 == 0
+		role := "implement"
+		switch {
+		case i < pendingCount:
+			pending[id] = true
+		case i%4 == 2:
+			role = ""
+		case required:
+			acknowledged[i] = &now
+		}
+		data := tracker.NativeRunData{AttemptID: id, RunID: runIDs[i], LeaseID: tracker.LeaseID(id), FencingToken: tracker.FencingToken(fence), RunnerID: r.binding.RunnerID, MachineID: r.binding.MachineID, SessionID: id, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "test-model"}, Runtime: &tracker.NativeRuntimeObservation{Phase: "implementation"}}
+		if required {
+			data.Runtime.WorkerLaunch = &tracker.NativeWorkerLaunch{PID: 123, ProcessStart: now.Add(-time.Hour), ExecutionVersion: "example", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "example", Protocol: 1, SelectedAt: now.Add(-time.Hour)}
+		}
+		ref, err := content.PreparePayload(t.Context(), org, historyTestJSON(t, data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := content.PrepareEvent(t.Context(), org, historyTestJSON(t, tracker.CollaborationEvent{ID: "event_" + id, OrganizationID: org, ProjectID: project, AggregateID: issues[i].WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: r.binding.RunnerID}, RecordedAt: now, Data: tracker.CollaborationData{Run: &data}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fenceValues[i], payloadKeys[i] = fence, ref.Key
+		attemptWrites[i] = func(w tenantstore.Writer) error {
+			if err := created[i](w); err != nil {
+				return err
+			}
+			if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: org, LeaseID: id, RunnerID: r.binding.RunnerID, AssignedAt: now.Add(-time.Hour)}); err != nil {
+				return err
+			}
+			_, err := w.AppendEvent(t.Context(), event)
+			return err
+		}
+	}
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,started_at,updated_at,cleanup_acknowledged_at) SELECT $1,$2,u.id,u.issue_id,u.id,u.fence,u.run_id,1,'cancelled',1,1,u.payload_key,$8,$9,$10,u.acknowledged FROM unnest($3::text[],$4::bigint[],$5::bigint[],$6::text[],$7::text[],$11::timestamptz[])u(id,issue_id,fence,run_id,payload_key,acknowledged)`, org, project, ids, issueIDs, fenceValues, runIDs, payloadKeys, checkpoint.Key, now.Add(-time.Hour), now, acknowledged); err != nil {
+		t.Fatal(err)
+	}
+	writeChunks(attemptWrites)
+	if _, err := admin.ExecContext(t.Context(), "UPDATE leases SET released_at=$3 WHERE organization_id=$1 AND lease_id=ANY($2::text[])", org, ids, now); err != nil {
+		t.Fatal(err)
 	}
 }

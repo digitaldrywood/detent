@@ -1208,6 +1208,20 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 
 func seedAnalyticsTestWorkItem(t *testing.T, service *Service, organization tracker.OrganizationID, project tracker.ProjectID, id string, number int, title, state string, at time.Time) tracker.NativeIssue {
 	t.Helper()
+	issue, create, created := prepareAnalyticsTestWorkItem(t, service, organization, project, id, number, title, state, at)
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := create(w); err != nil {
+			return err
+		}
+		return created(w)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return issue
+}
+
+func prepareAnalyticsTestWorkItem(t *testing.T, service *Service, organization tracker.OrganizationID, project tracker.ProjectID, id string, number int, title, state string, at time.Time) (tracker.NativeIssue, func(tenantstore.Writer) error, func(tenantstore.Writer) error) {
+	t.Helper()
 	id = string(project) + "-" + id
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(id), Number: number, Revision: 1}, Title: title, Body: nativeContractTestBody, State: state, Type: "bug", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: at, UpdatedAt: at, LastActivityAt: at}
 	fields, err := service.prepareWorkItemFields(t.Context(), organization, hubrecords.WorkItemRecordPlan{Issue: issue, Create: true})
@@ -1223,19 +1237,16 @@ func seedAnalyticsTestWorkItem(t *testing.T, service *Service, organization trac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: issue.WorkItemID, Number: int64(number), Revision: 1, Title: title, IssueType: issue.Type, BodyObjectKey: &fields.Body, IssueContractObjectKey: fields.Contract, WorkflowStateName: &state, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, CreatedAt: at, UpdatedAt: at, NativeCreatedAt: at, NativeUpdatedAt: at, LastActivityAt: at}); err != nil {
+	return issue, func(w tenantstore.Writer) error {
+			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: issue.WorkItemID, Number: int64(number), Revision: 1, Title: title, IssueType: issue.Type, BodyObjectKey: &fields.Body, IssueContractObjectKey: fields.Contract, WorkflowStateName: &state, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, CreatedAt: at, UpdatedAt: at, NativeCreatedAt: at, NativeUpdatedAt: at, LastActivityAt: at}); err != nil {
+				return err
+			}
+			_, err := w.CreateCollaborationVersion(t.Context(), version)
+			return err
+		}, func(w tenantstore.Writer) error {
+			_, err := w.AppendEvent(t.Context(), event)
 			return err
 		}
-		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
-			return err
-		}
-		_, err := w.AppendEvent(t.Context(), event)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return issue
 }
 
 func analyticsTestScope(t *testing.T, f nativeFixture) hubscope.NativeScope {
