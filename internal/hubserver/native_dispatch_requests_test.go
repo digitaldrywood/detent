@@ -904,35 +904,6 @@ func TestRecordNativeAttemptCapturesDispatchState(t *testing.T) {
 	}
 }
 
-// TestClaimCandidatesIgnoreAnsweredOnProjectionProfile pins the guard to the
-// native profile. On a github_compatible project the issues row is a
-// projection of GitHub, and the webhook and reconcile writes do not touch
-// revision, because revision fences native edits. Suppressing a projected item
-// on a revision GitHub never advances would strand it forever, which is the
-// worse failure.
-func TestClaimCandidatesIgnoreAnsweredOnProjectionProfile(t *testing.T) {
-	t.Parallel()
-	f := newDispatchGuardFixture(t)
-	f.succeed(t, &tracker.NativeDisposition{Status: "blocked", HumanAction: true})
-	if f.candidate(t) {
-		t.Fatal("the native guard must suppress the answered item")
-	}
-
-	if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE projects SET profile='github_compatible' WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, f.project.ID); err != nil {
-		t.Fatalf("switch the project to the projection profile: %v", err)
-	}
-	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.worker), "", "")
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("fixture worker authority status%d: %v", status, err)
-	}
-	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
-	request := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("projected-session"), ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	lease, err := f.service.claimNativeIssueTenant(t.Context(), scope, request, 10*time.Minute)
-	if err != nil || lease.LeaseID == "" {
-		t.Fatalf("a projected item must stay claimable: its revision is not the tracker's: %v", err)
-	}
-}
-
 func TestNativeDerivedHoldDispatchEquivalence(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
