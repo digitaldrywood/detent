@@ -2,6 +2,7 @@ package boardview
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -96,6 +97,15 @@ func TestCompactKeepsEveryLaneWithinBudget(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCompactRefusesAPageWithNoRoomForACard(t *testing.T) {
+	view := compactTestView(map[string]int{"Todo": 1})
+	view.Cards[0].Issue.Title = strings.Repeat("t", 8<<10)
+	lanes := Lanes{Preset: viewstore.LanesOpen, Include: []string{"Todo"}, Exclude: []string{}}
+	if _, _, err := Compact("org_example", time.Time{}, view, nil, lanes, nil, 6<<10); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("a page that cannot hold its next card returned %v, want ErrTooLarge so a continuation never repeats", err)
 	}
 }
 

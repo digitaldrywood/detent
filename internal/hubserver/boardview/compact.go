@@ -260,6 +260,9 @@ func Compact(organization tracker.OrganizationID, now time.Time, view View, wind
 			progress = true
 		}
 	}
+	if len(board.Cards) == 0 && len(view.Cards) > 0 {
+		return board, nil, ErrTooLarge
+	}
 	build()
 	windowed := map[string]Cursor{}
 	for _, position := range windows {
