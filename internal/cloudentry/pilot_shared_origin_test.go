@@ -1163,9 +1163,9 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 
 	pilotStage(t, "runners enroll and execute within one organization", func() {
 		for _, o := range []pilotOrganization{alpha, beta} {
-			pilotStatus(t, "runner grant", o.owner.form("/organizations/"+o.id+"/organization/grants", url.Values{"user": {"user_" + map[string]string{alpha.id: "member", beta.id: "eve"}[o.id]}, "project": {o.project}, "write": {"true"}, "runner": {"true"}, "csrf": {o.ownerCSRF}}), http.StatusSeeOther)
+			pilotStatus(t, "owner self grant refused because the owner role already grants runner access", o.owner.form("/organizations/"+o.id+"/organization/grants", url.Values{"user": {"user_" + map[string]string{alpha.id: "member", beta.id: "eve"}[o.id]}, "project": {o.project}, "write": {"true"}, "runner": {"true"}, "csrf": {o.ownerCSRF}}), http.StatusConflict)
 		}
-		pilotStatus(t, "second project runner grant", alpha.owner.form("/organizations/"+alpha.id+"/organization/grants", url.Values{"user": {"user_member"}, "project": {alphaSecondProject}, "write": {"true"}, "runner": {"true"}, "csrf": {alpha.ownerCSRF}}), http.StatusSeeOther)
+		pilotStatus(t, "second project owner self grant refused", alpha.owner.form("/organizations/"+alpha.id+"/organization/grants", url.Values{"user": {"user_member"}, "project": {alphaSecondProject}, "write": {"true"}, "runner": {"true"}, "csrf": {alpha.ownerCSRF}}), http.StatusConflict)
 		pilotStatus(t, "foreign enrollment", beta.owner.json(http.MethodPost, alpha.api()+"/runner-enrollments", beta.ownerCSRF, runnerauth.EnrollmentRequest{Binding: runnerauth.NewBinding(), ProjectIDs: []tracker.ProjectID{tracker.ProjectID(alpha.project)}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}), http.StatusUnauthorized)
 		alphaRunner = p.enrollRunner(t, alpha, beta, "alpha-runner.example.test", "v0.172.12")
 		betaRunner = p.enrollRunner(t, beta, alpha, "beta-runner.example.test")
