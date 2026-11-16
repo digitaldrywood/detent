@@ -35,10 +35,11 @@ if name == "go" and args[:1] == ["list"]:
         ("integration", [], ["example.test/app"]),
         ("unrelated", [], []),
         ("removed", [], []),
+        (".", [], []),
     ):
         if not list(Path(directory).glob("*.go")):
             continue
-        print(json.dumps({"Dir": str(Path(directory).resolve()), "ImportPath": "example.test/" + directory, "Imports": imports, "TestImports": test_imports, "EmbedFiles": ["data.txt"] if directory == "lib" else []}))
+        print(json.dumps({"Dir": str(Path(directory).resolve()), "ImportPath": "example.test" if directory == "." else "example.test/" + directory, "Imports": imports, "TestImports": test_imports, "EmbedFiles": ["data.txt"] if directory == "lib" else []}))
     for directory in sorted(Path("many").glob("*/source.go")):
         print(json.dumps({"Dir": str(directory.parent.resolve()), "ImportPath": "example.test/" + directory.parent.as_posix()}))
 if name == "go" and args[:1] == ["test"]:
@@ -204,16 +205,27 @@ class ShortLandingGateTest(unittest.TestCase):
         self.assertFalse(any(arg.startswith("--new-from-rev") for arg in trace[-1]["args"]))
 
     def test_fixture_changes_select_tests_without_lint(self):
-        for path in ("lib/testdata/fixture.json", "lib/data.txt"):
+        (self.root / "root.go").write_text("package example\n")
+        self.commit()
+        self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
+        for path, expected in (
+            ("lib/testdata/fixture.json", ["./app", "./integration", "./lib"]),
+            ("lib/data.txt", ["./app", "./integration", "./lib"]),
+            ("lib/routing.json", ["./lib"]),
+            ("lib/mappings/v1.json", ["./lib"]),
+            ("docs/guide.md", ["."]),
+        ):
             with self.subTest(path=path):
+                (self.root / path).parent.mkdir(parents=True, exist_ok=True)
                 (self.root / path).write_text("changed\n")
                 self.commit()
                 result = self.run_gate()
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 trace = self.trace()
                 test = next(call for call in trace if call["args"][0] == "test")
-                self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(["./app", "./integration", "./lib"] + self.required_packages))
+                self.assertEqual([arg for arg in test["args"] if arg == "." or arg.startswith("./")], sorted(expected + self.required_packages))
                 self.assertFalse(any(call["tool"] == "golangci-lint" for call in trace))
+                self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
 
     def test_deleted_package_is_not_executed(self):
         (self.root / "removed/source.go").unlink()

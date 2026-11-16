@@ -76,9 +76,11 @@ wide = any(path in ("go.mod", "go.sum") for path in changed)
 direct = set()
 propagated = set()
 lint = set()
+prefixes = {}
 for name, package in packages.items():
     directory = Path(package["Dir"]).relative_to(root).as_posix()
     prefix = "" if directory == "." else directory + "/"
+    prefixes[name] = prefix
     for path in changed:
         if path and path.startswith(prefix):
             relative = path[len(prefix):]
@@ -90,6 +92,11 @@ for name, package in packages.items():
             if relative.startswith("testdata/") or relative in package.get("EmbedFiles", []) + package.get("TestEmbedFiles", []) + package.get("XTestEmbedFiles", []):
                 direct.add(name)
                 propagated.add(name)
+for path in changed:
+    if path and not path.endswith(".go"):
+        owner = max((name for name, prefix in prefixes.items() if path.startswith(prefix)), key=lambda name: len(prefixes[name]), default=None)
+        if owner:
+            direct.add(owner)
 while True:
     dependents = {
         name for name, package in packages.items()
