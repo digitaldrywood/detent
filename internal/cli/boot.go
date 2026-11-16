@@ -311,7 +311,6 @@ func globalProjectCandidatesWithDefault(projects []globalconfig.Project, default
 			ID:                       projectConfig.ID,
 			Rank:                     projectConfig.Priority,
 			Pool:                     projectConfig.Pool,
-			Paused:                   projectConfig.Paused,
 			ActiveHours:              activeHours,
 			ActiveHoursOverrideUntil: overrideUntil,
 		})
