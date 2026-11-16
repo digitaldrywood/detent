@@ -27,6 +27,8 @@ import (
 
 const BoardMaintenanceBytes = hubmaintenance.ByteLimit
 
+const boardMaintenanceBatch = 32
+
 type boardRefreshError struct {
 	item  tracker.NativeWorkItemID
 	step  string
@@ -77,22 +79,58 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
+func (s *Service) boardMaintenanceFeature() hubmaintenance.Feature {
+	var after tracker.NativeWorkItemID
+	return hubmaintenance.Feature{Name: "board", Bytes: BoardMaintenanceBytes, Step: func(ctx context.Context, selected hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+		if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
+			return hubmaintenance.Outcome{}, err
+		}
+		var failures []error
+		attempted := make([]tracker.NativeWorkItemID, 0, boardMaintenanceBatch)
+		for len(attempted) < min(budget.Items, boardMaintenanceBatch) {
+			next, processed, required, err := s.maintainBudgetedBoardRecord(ctx, tracker.OrganizationID(selected.Organization), after, attempted...)
+			after = next
+			if err != nil {
+				failures = append(failures, err)
+			}
+			if !processed {
+				break
+			}
+			attempted = append(attempted, next)
+			if !required || ctx.Err() != nil {
+				break
+			}
+		}
+		return hubmaintenance.Outcome{Progress: len(attempted) > 0, Items: len(attempted)}, errors.Join(failures...)
+	}}
+}
+
 func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
+	next, processed, _, err := s.maintainBudgetedBoardRecord(ctx, organization, after, attempted...)
+	return next, processed, err
+}
+
+func (s *Service) maintainBudgetedBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, bool, error) {
 	if err := hubmaintenance.RequireAllowance(ctx, string(organization), BoardMaintenanceBytes); err != nil {
-		return after, false, err
+		return after, false, false, err
 	}
 	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
-		return after, false, errors.New("maintenance requires byte-limited payload storage")
+		return after, false, false, errors.New("maintenance requires byte-limited payload storage")
 	}
 	ctx = detailbatch.Clear(ctx)
 	ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, nil)
 	ctx = context.WithValue(ctx, hubcontent.RunDetailContextKey{}, nil)
-	return s.maintainBoardRecord(ctx, organization, after, attempted...)
+	return s.refreshNextBoardRecord(ctx, organization, after, attempted...)
 }
 
 func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
+	next, processed, _, err := s.refreshNextBoardRecord(ctx, organization, after, attempted...)
+	return next, processed, err
+}
+
+func (s *Service) refreshNextBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, bool, error) {
 	if organization == "" || s.config.TenantRepository == nil {
-		return after, false, corestore.ErrTenantMismatch
+		return after, false, false, corestore.ErrTenantMismatch
 	}
 	var candidate viewstore.BoardCandidate
 	var settled bool
@@ -108,13 +146,13 @@ func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if err != nil {
-		return after, false, err
+		return after, false, false, err
 	}
 	if settled {
-		return candidate.WorkItemID, true, nil
+		return candidate.WorkItemID, true, false, nil
 	}
 	err = s.refreshBoardRecord(ctx, organization, candidate, s.config.Clock())
 	if errors.Is(err, corestore.ErrRevisionConflict) {
@@ -123,7 +161,7 @@ func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.
 	if err == nil {
 		err = s.backfillBoardPolicyFacts(ctx, organization, candidate)
 	}
-	return candidate.WorkItemID, true, err
+	return candidate.WorkItemID, true, candidate.Required, err
 }
 
 func boardRecordSettled(ctx context.Context, r tenantstore.Reader, candidate viewstore.BoardCandidate) (bool, error) {

@@ -675,7 +675,6 @@ func (s *Service) MaintenanceTenant() hubmaintenance.Tenant {
 }
 
 func (s *Service) ReadModelMaintenanceFeatures() []hubmaintenance.Feature {
-	var after tracker.NativeWorkItemID
 	return []hubmaintenance.Feature{
 		s.WorkItemPageMaintenanceFeature(),
 		s.IntegrationPageMaintenanceFeature(),
@@ -696,14 +695,7 @@ func (s *Service) ReadModelMaintenanceFeatures() []hubmaintenance.Feature {
 			}
 			return hubmaintenance.Outcome{Progress: true, Items: 1}, s.maintainGitHubWebhookRecords(ctx)
 		}},
-		{Name: "board", Bytes: BoardMaintenanceBytes, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
-			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-				return hubmaintenance.Outcome{}, err
-			}
-			next, processed, err := s.MaintainBoardRecord(ctx, tracker.OrganizationID(selected.Organization), after)
-			after = next
-			return hubmaintenance.Outcome{Progress: processed, Items: 1}, err
-		}},
+		s.boardMaintenanceFeature(),
 	}
 }
 
