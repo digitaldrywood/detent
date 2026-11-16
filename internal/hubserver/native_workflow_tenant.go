@@ -399,6 +399,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		var committed json.RawMessage
 		write := func(ctx context.Context, w tenantstore.Writer) error {
+			if err := lockRunnerCredential(ctx, w, scope); err != nil {
+				return err
+			}
 			if human {
 				if err := s.authorizeNativeWorkflowScope(ctx, w, scope); err != nil {
 					return err

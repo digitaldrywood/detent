@@ -370,6 +370,9 @@ func (s *Service) applyLinkedIssueRecordOnce(ctx context.Context, scope hubscope
 		return nil, err
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := lockRunnerCredential(ctx, w, scope); err != nil {
+			return err
+		}
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}

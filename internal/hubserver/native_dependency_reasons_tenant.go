@@ -88,6 +88,9 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 	}
 	var replay *eventstore.Receipt
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := lockRunnerCredential(ctx, w, scope); err != nil {
+			return err
+		}
 		if err := w.LockRelationshipGraph(ctx); err != nil {
 			return err
 		}
@@ -189,6 +192,13 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 	var lease leasestore.Lease
 	var assigned runnerstore.Identity
 	if command.LeaseID != "" {
+		current, err := w.Lease(ctx, string(command.LeaseID))
+		if err != nil {
+			return err
+		}
+		if current.RunnerID != nil && *current.RunnerID != identity.RunnerID {
+			return hubscope.RunnerUnauthorized()
+		}
 		assigned, err = w.RunnerForLease(ctx, string(command.LeaseID))
 		if err != nil {
 			return err

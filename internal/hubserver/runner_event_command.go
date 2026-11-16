@@ -63,6 +63,14 @@ func (s *Service) writeNativeRunCommand(ctx context.Context, scope hubscope.Nati
 	})
 }
 
+func lockRunnerCredential(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope) error {
+	if scope.Credential.Runner.RunnerID == "" {
+		return nil
+	}
+	_, err := w.RunnerIdentityByCredential(ctx, scope.Credential.ID)
+	return err
+}
+
 type runnerEventAuthorityKey struct{}
 
 func runnerEventCommandRoute(c echo.Context) bool {

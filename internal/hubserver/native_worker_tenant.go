@@ -219,6 +219,12 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 				landing = &nativeLandingRenewal{lease: current}
 			}
 			if landing != nil {
+				if current.RunnerID != nil && *current.RunnerID != scope.Credential.Runner.RunnerID {
+					return tracker.ErrMachineNotFound
+				}
+				if err := lockRunnerCredential(c.Request().Context(), w, scope); err != nil {
+					return err
+				}
 				if err := w.LockWorkItemProject(c.Request().Context(), scope.Project); err != nil {
 					return err
 				}

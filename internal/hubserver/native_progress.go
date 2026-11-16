@@ -477,6 +477,9 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 	}
 	receiptWritten := false
 	err = o.service.config.TenantRepository.WriteTenant(ctx, o.scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := lockRunnerCredential(ctx, writer, o.scope); err != nil {
+			return err
+		}
 		if err := o.service.authorizeAccessScope(ctx, writer, commentScope, true); err != nil {
 			return err
 		}
