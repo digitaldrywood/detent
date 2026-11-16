@@ -3,8 +3,12 @@
 package workspacerunner_test
 
 import (
+	"fmt"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -99,10 +103,21 @@ func TestSessionTerminalCloseEndsTheShell(t *testing.T) {
 	t.Parallel()
 	requireSessionPTY(t)
 
-	f := startSession(t, withTerminal)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell := filepath.Join(t.TempDir(), "shell")
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+	script := "#!/bin/sh\nGOCOVERDIR=" + quote(t.TempDir()) + " exec " + quote(executable) + " -test.run='^TestSessionTerminalHangupHelper$' -- detent-terminal-hangup-helper\n"
+	if err := os.WriteFile(shell, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := startSession(t, func(config *workspacerunner.Config) {
+		withTerminal(config)
+		config.Shell = shell
+	})
 	openTerminal(t, f, "conn:1")
-	f.send(t, terminalFrame(t, workspacesession.TypeTerminalInput, "conn:1",
-		workspacesession.TerminalInput{Data: "trap 'exit 129' HUP; printf 'terminal-%s\\n' ready\n"}))
 	awaitTerminalOutput(t, f, "terminal-ready")
 
 	// A close is what a person's own close carries and what the hub's sweep
@@ -116,8 +131,21 @@ func TestSessionTerminalCloseEndsTheShell(t *testing.T) {
 		t.Fatal("a closed terminal never gave its stream back")
 	}
 	if exit.Code != 129 || exit.Signal != "" {
-		t.Fatalf("exit = %+v, want the established shell hangup trap to exit 129", exit)
+		t.Fatalf("exit = %+v, want the shell's hangup handler to exit 129", exit)
 	}
+}
+
+func TestSessionTerminalHangupHelper(t *testing.T) {
+	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != "detent-terminal-hangup-helper" {
+		return
+	}
+	hangups := make(chan os.Signal, 1)
+	signal.Notify(hangups, syscall.SIGHUP)
+	if _, err := fmt.Fprintln(os.Stdout, "terminal-ready"); err != nil {
+		t.Fatal(err)
+	}
+	<-hangups
+	os.Exit(129)
 }
 
 func TestSessionTerminalRefusals(t *testing.T) {
