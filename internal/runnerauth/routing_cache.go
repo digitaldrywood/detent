@@ -48,6 +48,8 @@ func SaveRoutingCache(identityPath string, snapshot RoutingSnapshot) (resultErr 
 		return err
 	}
 	snapshot.Routing = snapshot.Routing.Normalized()
+	snapshot.ProjectConfiguration = nil
+	snapshot.ProjectConfigurationRequest = nil
 	if snapshot.RunnerID != identity.Identity.RunnerID || snapshot.Revision < 1 {
 		return errors.New("runner routing cache belongs to another runner or has no revision")
 	}
