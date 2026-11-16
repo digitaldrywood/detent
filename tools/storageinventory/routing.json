@@ -19914,7 +19914,7 @@
       "inventory": {
         "operations": {
           "boardWhere:Query": 1,
-          "boardWhere:SQL": 3,
+          "boardWhere:SQL": 4,
           "boardWorkOrderPendingSQL:SQL": 1,
           "session.BoardAccessRevisions:QueryRow": 1,
           "session.BoardAccessRevisions:SQL": 1,

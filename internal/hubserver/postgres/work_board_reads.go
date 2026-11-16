@@ -123,13 +123,11 @@ func boardWhere(org tracker.OrganizationID, f viewstore.BoardSelection) (string,
 			}
 			matches = append(matches, "SELECT w.work_item_id FROM "+window+" w WHERE "+match+" AND "+owned("w"))
 		}
-		if f.Fingerprint != "" {
-			fingerprint := "SELECT k.work_item_id FROM " + boardFingerprintScan(&args, f) + " k WHERE " + owned("k")
-			if len(matches) > 0 {
-				matches = []string{"(" + strings.Join(matches, " UNION ") + ") INTERSECT (" + fingerprint + ")"}
-			} else {
-				matches = []string{fingerprint}
-			}
+		if f.Fingerprint != "" && len(matches) > 0 {
+			args = append(args, searchstore.FingerprintDigest(f.Fingerprint))
+			matches = []string{fmt.Sprintf("SELECT m.work_item_id FROM (%s) m(work_item_id) WHERE EXISTS(SELECT 1 FROM native_work_item_fingerprints f WHERE f.organization_id=$1 AND f.project_id=$2 AND f.fingerprint_digest=$%d AND f.work_item_id=m.work_item_id)", strings.Join(matches, " UNION "), len(args))}
+		} else if f.Fingerprint != "" {
+			matches = []string{"SELECT k.work_item_id FROM " + boardFingerprintScan(&args, f) + " k WHERE " + owned("k")}
 		}
 		clauses = append(clauses, "b.work_item_id IN ("+strings.Join(matches, " UNION ")+")")
 	}

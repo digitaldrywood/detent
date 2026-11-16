@@ -92,7 +92,7 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 		}
 		return want
 	}
-	search := func(org tracker.OrganizationID, reporter bool, bound float64) (int, int) {
+	search := func(org tracker.OrganizationID, reporter bool, bound float64, fingerprint string) (int, int) {
 		t.Helper()
 		seen := map[tracker.NativeWorkItemID]bool{}
 		var after *viewstore.BoardPosition
@@ -102,7 +102,7 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 			if requests > 1000 {
 				t.Fatal("search cursor did not advance")
 			}
-			selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: text, SearchRanked: true, Limit: 51, After: after, Reporter: reporter, ReporterPrincipalID: "example"}
+			selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: text, Fingerprint: fingerprint, SearchRanked: true, Limit: 51, After: after, Reporter: reporter, ReporterPrincipalID: "example"}
 			var page viewstore.BoardModelPage
 			started := time.Now()
 			bounded, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
@@ -165,18 +165,25 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 		if matching(run.org) < 1000 {
 			t.Fatal("fixture must match more than a thousand issues with common words")
 		}
-		windows, requests := search(run.org, run.reporter, 4*project+102)
+		windows, requests := search(run.org, run.reporter, 4*project+102, "")
 		if windows != 1 {
 			t.Fatalf("tenant %s reporter=%t used %d windows for a %d-issue project; one request must cover the project", run.org, run.reporter, windows, project)
 		}
 		t.Logf("tenant=%s reporter=%t requests=%d", run.org, run.reporter, requests)
 	}
 	seed("org_second", project+1, searchstore.WindowRows, 12)
-	windows, requests := search("org_second", false, 4*searchstore.WindowRows+102)
+	windows, requests := search("org_second", false, 4*searchstore.WindowRows+102, "")
 	if windows < 2 {
 		t.Fatalf("a project above the ceiling used %d windows, want continuation past the ceiling", windows)
 	}
 	t.Logf("tenant=org_second above ceiling windows=%d requests=%d", windows, requests)
+	if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind)
+ SELECT organization_id,project_id,work_item_id,'item',work_item_id,$1,true,'worker' FROM native_work_item_pages WHERE organization_id='org_second' AND project_id='prj_first'`, searchstore.FingerprintDigest("example-shared")); err != nil {
+		t.Fatal(err)
+	}
+	if windows, _ := search("org_second", false, 5*searchstore.WindowRows+102, "example-shared"); windows < 2 {
+		t.Fatalf("text and fingerprint search above both caps used %d windows", windows)
+	}
 	if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind)
  SELECT org,'prj_first','wi_window_'||(1+n%$1::integer),'comment','cmt_unrelated_'||n,encode(sha256(convert_to('unrelated-'||n,'UTF8')),'hex'),true,'worker'
  FROM unnest(ARRAY['org_first','org_second']) org CROSS JOIN generate_series(1,3000) n`, project); err != nil {
