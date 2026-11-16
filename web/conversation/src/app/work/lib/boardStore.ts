@@ -198,8 +198,9 @@ export class BoardRead {
   private state: BoardData = EMPTY;
   private entries: readonly Loaded[] = [];
   private controller: AbortController | null = null;
-  private countController: AbortController | null = null;
+  private readonly countControllers = new Map<string, AbortController>();
   private readonly countsPending = new Set<string>();
+  private readonly failed = new Map<string, string>();
   private readonly frames = new Map<string, NativeBoardFrame[]>();
   private readonly views = new Map<string, { issue: NativeIssue; card: NativeBoardCard | undefined; item: WorkItemView }>();
   private generation = 0;
@@ -267,7 +268,7 @@ export class BoardRead {
             }
           },
           restart: () => {
-            const targets = new Set([...this.snapshotProjects, ...this.dirtyProjects, id]);
+            const targets = new Set([...this.snapshotProjects, ...this.dirtyProjects, ...this.countControllers.keys(), id]);
             this.dispose();
             metadata.delete(id);
             this.read(false, targets);
@@ -295,8 +296,8 @@ export class BoardRead {
   dispose(): void {
     this.generation++;
     this.controller?.abort();
-    this.countController?.abort();
-    this.countController = null;
+    for (const countController of this.countControllers.values()) countController.abort();
+    this.countControllers.clear();
     this.controller = null;
     this.pending = false;
   }
@@ -305,6 +306,7 @@ export class BoardRead {
     this.revoked = true;
     this.dispose();
     this.entries = [];
+    this.failed.clear();
     this.frames.clear();
     this.views.clear();
     this.state = { ...EMPTY, loading: false, error: "Access to the board is no longer available." };
@@ -312,7 +314,7 @@ export class BoardRead {
   }
 
   private persist(): void {
-    if (this.entries.length === 0 || this.state.asOf === null) return;
+    if (this.entries.length !== this.scope.length || this.failed.size > 0 || this.state.asOf === null) return;
     const current = epoch;
     void updateBoardDisk(this.owner, { key: this.key, account: this.owner, version: BOARD_CACHE_VERSION,
       asOf: this.state.asOf!, entries: this.entries }, () => epoch === current && !this.revoked);
@@ -480,9 +482,10 @@ export class BoardRead {
         backlogTotal: work?.lanes.find((lane) => lane.state.toLowerCase() === "backlog")?.total ?? entry.backlogTotal };
     });
     if (this.state.resolved) {
-      this.publish({ ...this.build(this.entries, Date.now()), refreshing: this.state.refreshing, backlogLoading: this.state.backlogLoading });
+      this.publish({ ...this.build(this.entries, this.stamp()), refreshing: this.state.refreshing, backlogLoading: this.state.backlogLoading });
       this.persist();
     }
+    if (!replay && (this.failed.has(projectId) || this.countsPending.has(projectId))) this.queries.get(projectId)?.refresh();
   };
 
   private matches(issue: NativeIssue, project: NativeProject): boolean {
@@ -543,9 +546,6 @@ export class BoardRead {
     this.publish({ ...this.state, loading: (!this.state.resolved || (continuing && this.view.view !== "board")),
       backlogLoading: continuing && this.view.view === "board", refreshing: true, error: null });
     if (!this.state.resolved) void this.restore(generation);
-    this.countController?.abort();
-    const countController = new AbortController();
-    this.countController = countController;
     const counts = new Map<string, readonly BoardCount[]>();
     let cardsReady = false;
     const withCounts = (entry: Loaded): Loaded => {
@@ -564,38 +564,52 @@ export class BoardRead {
     const supportsCounts = this.view.q.length === 0 && this.view.type.length === 0 && this.view.label.length === 0 &&
       this.view.assignee.length === 0 && this.view.priority.length === 0 && this.view.createdBy === undefined &&
       !this.view.completedFrom && !this.view.completedTo;
-    void (supportsCounts ? pooled(this.scope.filter((id) => targets === undefined || targets.has(id)), async (id) => {
+    const countControllers = new Map((supportsCounts ? this.scope.filter((id) => targets === undefined || targets.has(id)) : []).map((id) => {
+      this.countControllers.get(id)?.abort();
+      const countController = new AbortController();
+      this.countControllers.set(id, countController);
+      return [id, countController] as const;
+    }));
+    const countsRead = pooled([...countControllers], async ([id, countController]) => {
+      const current = () => this.countControllers.get(id) === countController && !this.revoked;
       try {
         const rows = await this.http.getBoardCounts({ projectId: id, archived: this.view.archived === true, signal: countController.signal });
-        if (signal.aborted || generation !== this.generation || this.revoked) return;
+        if (!current()) return;
         this.countsPending.delete(id);
         counts.set(id, rows);
         if (!cardsReady) return;
-        this.entries = this.entries.map(withCounts);
+        this.entries = this.entries.map((entry) => entry.project.project_id === id ? withCounts(entry) : entry);
         this.publish({ ...this.build(this.entries, this.state.asOf ?? Date.now()), refreshing: this.state.refreshing, backlogLoading: this.state.backlogLoading });
         this.persist();
       } catch (cause) {
         if (rejectUnauthorized(this.owner, cause)) return;
-        if (signal.aborted || generation !== this.generation || this.revoked) return;
+        if (!current()) return;
         if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "not_ready") {
           this.countsPending.add(id);
           this.entries = this.entries.map((entry) => entry.project.project_id === id ? { ...entry, work: undefined } : entry);
           if (cardsReady) this.publish(this.build(this.entries, this.state.asOf ?? Date.now()));
         }
+      } finally {
+        if (this.countControllers.get(id) === countController) this.countControllers.delete(id);
       }
-    }) : Promise.resolve()).finally(() => {
-      if (this.countController === countController) this.countController = null;
     });
     void (async () => {
       try {
-        const loaded = await pooled(this.scope, async (id) => {
+        const failures = new Map<string, { label: string; cause: unknown }>();
+        const succeeded = new Set<string>();
+        const loaded = await pooled(this.scope, async (id): Promise<Loaded | undefined> => {
           if (!continuing && prior.length === 0 && this.entries.length > 0) prior = this.entries;
           const previous = prior.find((entry) => entry.project.project_id === id);
-          if (targets !== undefined && !targets.has(id) && previous !== undefined) return previous;
-          const entry = await this.loadProject(id, signal, previous, continuing).catch((cause: unknown) => {
-            rejectUnauthorized(this.owner, cause);
-            throw cause;
-          });
+          if (targets !== undefined && !targets.has(id) && (previous !== undefined || this.failed.has(id))) return previous;
+          let entry: Loaded;
+          try {
+            entry = await this.loadProject(id, signal, previous, continuing);
+          } catch (cause) {
+            if (rejectUnauthorized(this.owner, cause) || signal.aborted) throw cause;
+            failures.set(id, { label: previous?.project.name ?? id, cause });
+            return previous;
+          }
+          succeeded.add(id);
           const issues = entry.issues;
           let changed = false;
           const previousItems = new Map(this.entries.flatMap((entry) => entry.issues).map((issue) => [issue.work_item_id, issue]));
@@ -619,16 +633,35 @@ export class BoardRead {
           return { ...entry, issues: current, work: changed ? undefined : entry.work };
         });
         if (signal.aborted || generation !== this.generation || [...snapshots.values()].some((snapshot) => !snapshot.current())) return;
-        this.entries = loaded.map(withCounts);
+        const entries = loaded.map((entry, index) => {
+          const id = this.scope[index]!;
+          return targets === undefined || targets.has(id) ? entry : this.entries.find((current) => current.project.project_id === id) ?? entry;
+        }).filter((entry) => entry !== undefined);
+        for (const id of succeeded) this.failed.delete(id);
+        for (const [id, { label, cause }] of failures) {
+          this.failed.set(id, `${this.scope.length > 1 ? `${label}: ` : ""}${cause instanceof Error ? cause.message : String(cause)}`);
+        }
+        if (entries.length === 0) throw [...failures.values()][0]!.cause;
+        if (succeeded.size === 0) {
+          for (const snapshot of snapshots.values()) snapshot.fail();
+          this.publish({ ...this.state, loading: false, backlogLoading: false, refreshing: false, error: this.errors(this.entries) });
+          return;
+        }
+        this.entries = entries.map(withCounts);
         cardsReady = true;
-        this.publish(this.build(this.entries, Date.now()));
+        this.publish(this.build(this.entries, this.stamp()));
         for (const [id, frames] of this.frames) {
           for (const frame of frames) this.applyFrame(id, frame, true);
         }
         this.frames.clear();
         this.persist();
         this.controller = null;
-        for (const [id, snapshot] of snapshots) snapshot.complete(this.sequence(id));
+        void countsRead.then(() => {
+          for (const [id, snapshot] of snapshots) {
+            if (failures.has(id) || this.countsPending.has(id)) snapshot.fail();
+            else snapshot.complete(this.sequence(id));
+          }
+        });
       } catch (cause) {
         if (signal.aborted || generation !== this.generation) return;
         for (const snapshot of snapshots.values()) snapshot.fail();
@@ -658,10 +691,11 @@ export class BoardRead {
       }
     }
     let totals: ScopedWorkStats | null = null;
-    if (this.countsPending.size === 0 && loaded.every((entry) => entry.work !== undefined)) {
+    const counted = loaded.filter((entry) => entry.work !== undefined && !this.countsPending.has(entry.project.project_id));
+    if (counted.length > 0) {
       const counts = Object.create(null) as Record<string, number>;
       let running = 0, waiting = 0, needAttention = 0, backlog = 0, closed = 0, total = 0;
-      for (const entry of loaded) {
+      for (const entry of counted) {
         for (const lane of entry.work!.lanes) {
           const state = entry.project.states.find((state) => state.name === lane.state);
           counts[lane.state] = (counts[lane.state] ?? 0) + lane.total;
@@ -677,7 +711,7 @@ export class BoardRead {
         }
       }
       if (this.view.view === "board") {
-        for (const entry of loaded) {
+        for (const entry of counted) {
           const backlogState = entry.project.states.find((state) => state.name.toLowerCase() === "backlog");
           if (backlogState === undefined || entry.work!.lanes.some((lane) => lane.state === backlogState.name)) continue;
           counts[backlogState.name] = (counts[backlogState.name] ?? 0) + entry.backlogTotal;
@@ -685,16 +719,16 @@ export class BoardRead {
           backlog += entry.backlogTotal;
         }
       }
-      const completed = loaded.every((entry) => entry.work!.completed !== undefined)
-        ? loaded.reduce((count, entry) => count + entry.work!.completed!, 0)
+      const completed = counted.every((entry) => entry.work!.completed !== undefined)
+        ? counted.reduce((count, entry) => count + entry.work!.completed!, 0)
         : null;
-      const cancelled = loaded.every((entry) => entry.work!.cancelled !== undefined)
-        ? loaded.reduce((count, entry) => count + entry.work!.cancelled!, 0)
+      const cancelled = counted.every((entry) => entry.work!.cancelled !== undefined)
+        ? counted.reduce((count, entry) => count + entry.work!.cancelled!, 0)
         : null;
       totals = { lanes: counts, running, waiting, needAttention, backlog, open: total - closed, completed, cancelled,
-        shippedWindows: shippedWindows(loaded.map((entry) => entry.work!.shipped_windows)), total,
-        asOf: loaded.map((entry) => entry.work!.as_of).toSorted()[0]!,
-        truncated: loaded.some((entry) => entry.work!.truncated) };
+        shippedWindows: shippedWindows(counted.map((entry) => entry.work!.shipped_windows)), total,
+        asOf: counted.map((entry) => entry.work!.as_of).toSorted()[0]!,
+        truncated: counted.some((entry) => entry.work!.truncated) };
     }
     const issues = [...new Map(loaded.flatMap((entry) => entry.issues).map((issue) => [issue.work_item_id, issue])).values()];
     const items = issues.map((issue) => {
@@ -715,13 +749,24 @@ export class BoardRead {
       priorities: [...new Set([...(previous?.priorities ?? []), ...current.priorities])].sort(),
     };
     facets.set(this.facetKey, choices);
-    return { resolved: true, refreshing: false, cached: false, loading: false, error: this.countsPending.size > 0 ? "Board counts projection is pending" : null,
+    return { resolved: true, refreshing: false, cached: false, loading: false, error: this.errors(loaded),
       totals, hasMore: this.view.view !== "board" && loaded.some((entry) => entry.nextCursor !== undefined),
       backlogHasMore: loaded.some((entry) => entry.backlogCursor !== undefined), backlogLoading: false,
       backlogTotal: loaded.reduce((total, entry) => total + entry.backlogTotal, 0),
       project: this.projectId === null ? null : { ...current, ...choices, lanes },
       workflows: loaded.map((entry) => entry.project), lanes, items, ...choices,
       truncated: loaded.some((entry) => entry.nextCursor !== undefined || entry.backlogCursor !== undefined), enriched: 0, asOf };
+  }
+
+  private stamp(): number {
+    return this.failed.size > 0 ? this.state.asOf ?? Date.now() : Date.now();
+  }
+
+  private errors(loaded: readonly Loaded[]): string | null {
+    const label = (id: string) => loaded.find((entry) => entry.project.project_id === id)?.project.name ?? id;
+    const counts = this.countsPending.size === 0 ? [] : [`Board counts projection is pending${this.scope.length > 1 ? `: ${[...this.countsPending].map(label).join(", ")}` : ""}`];
+    const errors = [...this.failed.values(), ...counts];
+    return errors.length > 0 ? errors.join("; ") : null;
   }
 
   confirm(issue: NativeIssue): void {

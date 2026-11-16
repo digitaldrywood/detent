@@ -5,6 +5,7 @@ import * as disk from "../src/app/work/lib/boardDisk.ts";
 import { clearBoardCache, getBoardRead } from "../src/app/work/lib/boardStore.ts";
 import { DEFAULT_VIEW_STATE } from "../src/app/work/lib/viewState.ts";
 import { makeWorkHttp } from "../src/app/work/lib/workHttp.ts";
+import { isLive } from "../src/app/work/lib/model.ts";
 import { workPaginationFixture } from "./workPaginationFixture.ts";
 
 class Source extends EventTarget {
@@ -110,6 +111,181 @@ it.each(["null arrays", "unavailable"])("bounds board snapshot requests after %s
     stop();
     clearBoardCache();
     for (const request of pending) request.resolve(Response.json(valid ?? {}));
+    await vi.advanceTimersByTimeAsync(0);
+  }
+});
+
+it("keeps fresh projects and their counters while one project's projection is pending, then retries it on its next event", async () => {
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
+  vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
+  const fixture = workPaginationFixture([{ id: "proj_alpha", name: "alpha" }, { id: "proj_beta", name: "beta" }, { id: "proj_gamma", name: "gamma" }]);
+  await fixture.control();
+  const facts: Record<string, { shipped: number; running: number }> = { proj_alpha: { shipped: 2, running: 1 }, proj_beta: { shipped: 5, running: 4 }, proj_gamma: { shipped: 3, running: 2 } };
+  let pending = true;
+  const reads: string[] = [];
+  const client = makeWorkHttp({ ...fixture.client.http, fetch: async (input, init) => {
+    const url = new URL(input, "http://fixture.test");
+    const project = url.pathname.match(/\/projects\/([^/]+)\//)?.[1] ?? "";
+    if (url.pathname.endsWith("/board/counts")) {
+      if (pending && project === "proj_beta") return Response.json({ projection_pending: true, rows: [] });
+      const { shipped, running } = facts[project]!;
+      const row = { total: 4, running, shipped_1h: 0, shipped_24h: shipped, shipped_7d: shipped, cancelled_1h: 0, cancelled_24h: 0, cancelled_7d: 0, projected_at: "2026-11-06T12:00:00Z", sequence: 1 };
+      return Response.json({ projection_pending: false, rows: [{ ...row, kind: "total", state: "" }, { ...row, kind: "lane", state: "In Progress" }] });
+    }
+    const response = await fixture.fetch(input, init);
+    if (!url.pathname.endsWith("/work-items")) return response;
+    reads.push(project);
+    if (!pending || project !== "proj_beta") return response;
+    return Response.json({ ...await response.json(), projection_pending: true });
+  } });
+  const read = getBoardRead(fixture.client, client, null, DEFAULT_VIEW_STATE);
+  const stop = read.subscribe(() => {});
+  stops.push(stop);
+  const projectsOf = () => new Set(read.snapshot().items.map((item) => item.projectId));
+  try {
+    read.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.snapshot().resolved).toBe(true);
+    expect(projectsOf()).toEqual(new Set(["proj_alpha", "proj_gamma"]));
+    expect(read.snapshot().items.some((item) => isLive(item))).toBe(true);
+    expect(read.snapshot().totals?.completed).toBe(5);
+    expect(read.snapshot().totals?.running).toBe(3);
+    expect(read.snapshot().error).toMatch(/beta/);
+    expect(read.snapshot().error).not.toMatch(/alpha|gamma/);
+    const stream = (id: string) => Source.instances.find((source) => source.url.includes(`/projects/${id}/`))!;
+    let before = reads.length;
+    stream("proj_alpha").emit("work_item", JSON.stringify({ entity_id: "wi_example", entity_revision: 1 }), "1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads.length).toBeGreaterThan(before);
+    expect(reads.slice(before).every((project) => project === "proj_alpha")).toBe(true);
+    expect(read.snapshot().error).toMatch(/beta/);
+
+    pending = false;
+    before = reads.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(reads).toHaveLength(before);
+    stream("proj_beta").emit("activity", JSON.stringify({ sequence: 1, gap: false, deltas: [] }), "1");
+    await vi.advanceTimersByTimeAsync(499);
+    expect(reads).toHaveLength(before);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reads.length).toBeGreaterThan(before);
+    expect(reads.slice(before).every((project) => project === "proj_beta")).toBe(true);
+    expect(read.snapshot().error).toBeNull();
+    expect(projectsOf()).toEqual(new Set(["proj_alpha", "proj_beta", "proj_gamma"]));
+    expect(read.snapshot().totals?.completed).toBe(10);
+    expect(read.snapshot().totals?.running).toBe(7);
+  } finally {
+    stop();
+    clearBoardCache();
+    await vi.advanceTimersByTimeAsync(0);
+  }
+});
+
+it("counts the other projects while one project's counts are pending and retries those counts on its next activity frame with backoff", async () => {
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
+  vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
+  const fixture = workPaginationFixture();
+  await fixture.control();
+  let pending = true;
+  const counted: string[] = [];
+  const client = makeWorkHttp({ ...fixture.client.http, fetch: async (input, init) => {
+    const url = new URL(input, "http://fixture.test");
+    if (!url.pathname.endsWith("/board/counts")) return fixture.fetch(input, init);
+    const project = url.pathname.match(/\/projects\/([^/]+)\//)?.[1] ?? "";
+    counted.push(project);
+    if (pending && project === "proj_beta") return Response.json({ projection_pending: true, rows: [] });
+    const shipped = project === "proj_beta" ? 5 : 2;
+    const row = { total: 4, running: 1, shipped_1h: 0, shipped_24h: shipped, shipped_7d: shipped, cancelled_1h: 0, cancelled_24h: 0, cancelled_7d: 0, projected_at: "2026-11-06T12:00:00Z", sequence: 1 };
+    return Response.json({ projection_pending: false, rows: [{ ...row, kind: "total", state: "" }, { ...row, kind: "lane", state: "In Progress" }] });
+  } });
+  const read = getBoardRead(fixture.client, client, null, DEFAULT_VIEW_STATE);
+  const stop = read.subscribe(() => {});
+  stops.push(stop);
+  try {
+    read.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(new Set(read.snapshot().items.map((item) => item.projectId))).toEqual(new Set(["proj_alpha", "proj_beta"]));
+    expect(read.snapshot().totals?.completed).toBe(2);
+    expect(read.snapshot().error).toMatch(/counts.*beta/);
+    pending = false;
+    const before = counted.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(counted).toHaveLength(before);
+    Source.instances.find((source) => source.url.includes("/projects/proj_beta/"))!.emit("activity", JSON.stringify({ sequence: 1, gap: false, deltas: [] }), "1");
+    await vi.advanceTimersByTimeAsync(499);
+    expect(counted).toHaveLength(before);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(counted.slice(before)).toEqual(["proj_beta"]);
+    expect(read.snapshot().totals?.completed).toBe(7);
+    expect(read.snapshot().error).toBeNull();
+  } finally {
+    stop();
+    clearBoardCache();
+    await vi.advanceTimersByTimeAsync(0);
+  }
+});
+
+it("keeps one project's in-flight counts when another project's event or reset refreshes the board", async () => {
+  vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
+  vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
+  const fixture = workPaginationFixture();
+  await fixture.control();
+  const shipped: Record<string, number> = { proj_alpha: 2, proj_beta: 5 };
+  const holds = new Map<string, { release: () => void }>();
+  const held = new Set<string>();
+  const wait = (key: string, signal?: AbortSignal | null) => new Promise<void>((resolve, reject) => {
+    holds.set(key, { release: resolve });
+    signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+  });
+  const client = makeWorkHttp({ ...fixture.client.http, fetch: async (input, init) => {
+    const url = new URL(input, "http://fixture.test");
+    const project = url.pathname.match(/\/projects\/([^/]+)\//)?.[1] ?? "";
+    const key = `${project}${url.pathname.endsWith("/board/counts") ? "/counts" : url.pathname.endsWith("/work-items") ? "/cards" : ""}`;
+    if (held.delete(key)) await wait(key, init?.signal);
+    if (!url.pathname.endsWith("/board/counts")) return fixture.fetch(input, init);
+    const row = { total: 4, running: 0, shipped_1h: 0, shipped_24h: shipped[project]!, shipped_7d: 0, cancelled_1h: 0, cancelled_24h: 0, cancelled_7d: 0, projected_at: "2026-11-06T12:00:00Z", sequence: 1 };
+    return Response.json({ projection_pending: false, rows: [{ ...row, kind: "total", state: "" }] });
+  } });
+  const read = getBoardRead(fixture.client, client, null, DEFAULT_VIEW_STATE);
+  const stop = read.subscribe(() => {});
+  stops.push(stop);
+  const stream = (id: string) => Source.instances.find((source) => source.url.includes(`/projects/${id}/`))!;
+  try {
+    read.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.snapshot().totals?.completed).toBe(7);
+
+    shipped.proj_alpha = 4;
+    held.add("proj_alpha/counts");
+    stream("proj_alpha").emit("work_item", JSON.stringify({ entity_id: "wi_alpha", entity_revision: 1 }), "1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(holds.has("proj_alpha/counts")).toBe(true);
+    held.add("proj_beta/cards");
+    stream("proj_beta").emit("work_item", JSON.stringify({ entity_id: "wi_beta", entity_revision: 1 }), "1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(holds.has("proj_beta/cards")).toBe(true);
+    holds.get("proj_alpha/counts")!.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.snapshot().totals?.completed).toBe(9);
+    holds.get("proj_beta/cards")!.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.snapshot().totals?.completed).toBe(9);
+
+    shipped.proj_alpha = 6;
+    holds.clear();
+    held.add("proj_alpha/counts");
+    stream("proj_alpha").emit("work_item", JSON.stringify({ entity_id: "wi_alpha", entity_revision: 2 }), "2");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(holds.has("proj_alpha/counts")).toBe(true);
+    stream("proj_beta").emit("reset", "{}", "3");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.snapshot().totals?.completed).toBe(11);
+  } finally {
+    for (const hold of holds.values()) hold.release();
+    stop();
+    clearBoardCache();
     await vi.advanceTimersByTimeAsync(0);
   }
 });

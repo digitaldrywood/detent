@@ -5,8 +5,7 @@ import fleet from "../src/contracts/fixtures/account-fleet-empty.json";
 import type { ConversationClient } from "../src/runtime/bootstrap.ts";
 import type { FetchLike } from "../src/app/work/lib/workHttp.ts";
 
-export function workPaginationFixture() {
-  const projects = [{ id: "proj_alpha", name: "alpha" }, { id: "proj_beta", name: "beta" }];
+export function workPaginationFixture(projects: readonly { id: string; name: string }[] = [{ id: "proj_alpha", name: "alpha" }, { id: "proj_beta", name: "beta" }]) {
   const apiBase = "/api/v2/organizations/org_mock";
   const work = createWorkMock({ apiBase, organizationId: "org_mock", projects });
   const requests: { url: URL; signal: AbortSignal | undefined }[] = [];
