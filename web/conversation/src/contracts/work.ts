@@ -47,7 +47,7 @@ export type SourceRecovery = typeof SourceRecovery.Type;
 
 // --- Shared members ---------------------------------------------------------
 
-export const NativeActorKind = Schema.Literals(["human", "runner", "integration"]);
+export const NativeActorKind = Schema.Literals(["human", "runner", "integration", "machine", "system"]);
 
 export const NativeActor = Schema.Struct({
   kind: NativeActorKind,

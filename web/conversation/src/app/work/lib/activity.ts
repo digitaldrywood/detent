@@ -106,7 +106,7 @@ function principalLabel(
   runnerName: string | null,
   runnerNames?: RunnerNames,
 ): string {
-  if (actor.kind === "integration" && actor.principal_id === "auto_archive") return "Detent";
+  if (actor.kind === "machine" || actor.kind === "system" || (actor.kind === "integration" && actor.principal_id === "auto_archive")) return "Detent";
   if (viewerPrincipalId !== null && actor.principal_id === viewerPrincipalId) return "You";
   if (actor.kind === "runner") {
     // A runner's principal is its runner id, so the fleet names it directly;
