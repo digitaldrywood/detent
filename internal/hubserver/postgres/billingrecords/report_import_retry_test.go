@@ -2,7 +2,9 @@ package billingrecords_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,6 +49,10 @@ func TestReportUsageImportRetriesDeadlockVictim(t *testing.T) {
 	if _, err := admin.ExecContext(ctx, "ALTER ROLE "+pgx.Identifier{login}.Sanitize()+" IN DATABASE "+pgx.Identifier{database}.Sanitize()+" SET deadlock_timeout='10ms'"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := admin.ExecContext(ctx, "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+fmt.Sprintf(" CONNECTION LIMIT %d", config.MaxConnections+2)); err != nil {
+		t.Fatal(err)
+	}
+	admin.SetMaxOpenConns(2)
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -81,48 +87,62 @@ func TestReportUsageImportRetriesDeadlockVictim(t *testing.T) {
 				t.Fatal(err)
 			}
 			victims := trace.victims.Load()
-			holder, err := admin.Conn(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = holder.Close() }()
-			tx, err := holder.BeginTx(ctx, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = tx.Rollback() }()
-			if _, err := tx.ExecContext(ctx, `SET LOCAL deadlock_timeout='1h'`); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(ctx, `SELECT 1 FROM native_attempts WHERE organization_id=$1 AND id='attempt_retry' FOR UPDATE`, org); err != nil {
-				t.Fatal(err)
-			}
+			sharers := [2]*attemptSharer{shareAttempt(t, admin, org), shareAttempt(t, admin, org)}
 			record := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_retry", Period: pgstoretest.HistoryAt().Truncate(time.Hour), Provider: "example", Model: "example-model", Input: 7, Output: 3, Cost: 1.5, Currency: "USD"}, UpdatedAt: pgstoretest.HistoryAt()}
 			importer := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error { return repository.ImportReportUsageFact(ctx, record) })
-			testenv.WaitUntil(t, ctx, func() error {
+			var first, second *attemptSharer
+			testenv.WaitUntil(t, t.Context(), func() error {
 				select {
 				case <-importer.Done:
 					t.Fatalf("import finished before the conflicting attempt lock: %v", importer.Err)
 				default:
 				}
+				var blocker int64
+				if err := pool.QueryRow(ctx, `SELECT coalesce((SELECT b.pid FROM pg_stat_activity w CROSS JOIN LATERAL unnest(pg_blocking_pids(w.pid)) b(pid) WHERE w.datname=current_database() AND w.usename=$1 AND w.wait_event_type='Lock' LIMIT 1),0)`, login).Scan(&blocker); err != nil {
+					return err
+				}
+				for i, sharer := range sharers {
+					if sharer.pid == blocker {
+						first, second = sharer, sharers[1-i]
+						return nil
+					}
+				}
+				return errors.New("import has not reached the attempt lock")
+			})
+			issueLocked := make(chan error, 1)
+			go func() {
+				_, err := second.tx.ExecContext(t.Context(), `SELECT 1 FROM issues WHERE organization_id=$1 AND project_id='prj_1' AND native_id='wi_1' FOR UPDATE`, org)
+				issueLocked <- err
+			}()
+			issueJoined := false
+			t.Cleanup(func() {
+				if !issueJoined {
+					<-issueLocked
+				}
+			})
+			testenv.WaitUntil(t, t.Context(), func() error {
+				select {
+				case err := <-issueLocked:
+					issueJoined = true
+					t.Fatalf("the second attempt sharer did not wait for the import's issue lock: %v", err)
+				default:
+				}
 				var waiting bool
-				if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock')`, login).Scan(&waiting); err != nil {
+				if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted)`, second.pid).Scan(&waiting); err != nil {
 					return err
 				}
 				if !waiting {
-					return errors.New("import has not reached the attempt lock")
+					return errors.New("the second attempt sharer has not reached the import's issue lock")
 				}
 				return nil
 			})
-			if _, err := tx.ExecContext(ctx, `SELECT 1 FROM issues WHERE organization_id=$1 AND project_id='prj_1' AND native_id='wi_1' FOR UPDATE`, org); err != nil {
+			first.finish(t)
+			err = <-issueLocked
+			issueJoined = true
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			if err := holder.Close(); err != nil {
-				t.Fatal(err)
-			}
+			second.finish(t)
 			if err := importer.Wait(t); err != nil {
 				t.Fatalf("deadlock victim import error: %v", err)
 			}
@@ -137,5 +157,47 @@ func TestReportUsageImportRetriesDeadlockVictim(t *testing.T) {
 				t.Fatalf("imported usage rows=%d, want 1", rows)
 			}
 		})
+	}
+}
+
+type attemptSharer struct {
+	conn *sql.Conn
+	tx   *sql.Tx
+	pid  int64
+}
+
+func shareAttempt(t *testing.T, admin *sql.DB, org tracker.OrganizationID) *attemptSharer {
+	t.Helper()
+	ctx := t.Context()
+	conn, err := admin.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	sharer := &attemptSharer{conn: conn, tx: tx}
+	if err := tx.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&sharer.pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `SET LOCAL deadlock_timeout='1h'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM native_attempts WHERE organization_id=$1 AND id='attempt_retry' FOR SHARE`, org); err != nil {
+		t.Fatal(err)
+	}
+	return sharer
+}
+
+func (sharer *attemptSharer) finish(t *testing.T) {
+	t.Helper()
+	if err := sharer.tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sharer.conn.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
