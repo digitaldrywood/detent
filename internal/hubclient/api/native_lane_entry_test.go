@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -195,6 +197,68 @@ func TestNativeConnectorCurrentLaneEntry(t *testing.T) {
 			defer mu.Unlock()
 			if reads != tt.wantReads {
 				t.Fatalf("history reads = %d, want %d", reads, tt.wantReads)
+			}
+		})
+	}
+}
+
+func TestNativeLaneWriteWithoutLeaseIsUnauthorized(t *testing.T) {
+	t.Parallel()
+	const item = tracker.NativeWorkItemID("wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	for _, test := range []struct {
+		name     string
+		lease    tracker.LeaseID
+		wantSent bool
+	}{
+		{name: "lease held", lease: "lease_example", wantSent: true},
+		{name: "lease gone"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var sent []tracker.Transition
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					_ = json.NewEncoder(w).Encode(tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: item, Profile: "native", Revision: 3}, State: "Rework"})
+					return
+				}
+				var request tracker.Transition
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode transition: %v", err)
+				}
+				mu.Lock()
+				sent = append(sent, request)
+				mu.Unlock()
+				_ = json.NewEncoder(w).Encode(tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: item, Profile: "native", Revision: 4}, State: "Todo"})
+			}))
+			t.Cleanup(server.Close)
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: &http.Transport{}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.lease != "" {
+				client.nativeLeases.Store(native.base()+"/"+string(item), tracker.NativeLease{ID: test.lease, WorkItemID: item, FencingToken: 7})
+			}
+			connector, err := NewNativeConnector(native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = connector.UpdateIssueState(t.Context(), string(item), "Todo")
+			mu.Lock()
+			defer mu.Unlock()
+			if test.wantSent {
+				if err != nil || len(sent) != 1 || sent[0].LeaseID != test.lease || sent[0].FencingToken != 7 {
+					t.Fatalf("UpdateIssueState() = %v with %+v, want one fenced transition", err, sent)
+				}
+				return
+			}
+			if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || len(sent) != 0 {
+				t.Fatalf("UpdateIssueState() = %v with %d transitions, want execution authority unavailable before any write", err, len(sent))
 			}
 		})
 	}
