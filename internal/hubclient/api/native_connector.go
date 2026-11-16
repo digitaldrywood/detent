@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -577,6 +578,10 @@ func (c *NativeConnector) UpdateIssueState(ctx context.Context, id, state string
 			request.BlockerAttemptID = attempt.AttemptID
 			request.LeaseID, request.FencingToken = attempt.LeaseID, attempt.FencingToken
 		}
+	}
+	request.Mutation = c.client.FencedMutation(ctx, issue.WorkItemID, request.Mutation)
+	if request.LeaseID == "" || request.FencingToken <= 0 {
+		return fmt.Errorf("write %s lane without a held lease: %w", state, runner.ErrExecutionAuthorityUnavailable)
 	}
 	_, err = c.client.Transition(ctx, issue.WorkItemID, request)
 	return err
