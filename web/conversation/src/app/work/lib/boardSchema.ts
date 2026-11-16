@@ -1,3 +1,4 @@
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import { NativeIssue, NativeProject, NativeWorkSummary, NativeBoardCard } from "../../../contracts/work.ts";
 
@@ -22,7 +23,7 @@ export const LiveEntrySchema = Schema.Struct({
   work: Schema.optional(NativeWorkSummary),
 });
 
-export const BoardViewSchema = Schema.Struct({
+export const BoardViewWire = Schema.Struct({
   projects: Schema.Array(Schema.Struct({
     project: NativeProject,
     sequence: Schema.Number,
@@ -30,8 +31,27 @@ export const BoardViewSchema = Schema.Struct({
     projection_oldest_pending_at: Schema.optional(Schema.String),
     work: Schema.optional(NativeWorkSummary),
   })),
-  cards: Schema.Array(NativeBoardCard),
+  cards: Schema.Array(Schema.Unknown),
   lanes: Schema.Array(Schema.Struct({ state: Schema.String, next_cursor: Schema.optional(Schema.String) })),
   grant_version: Schema.String,
 });
-export type BoardView = typeof BoardViewSchema.Type;
+
+export interface BoardView extends Omit<typeof BoardViewWire.Type, "cards"> {
+  readonly cards: readonly NativeBoardCard[];
+}
+
+const decodeCard = Schema.decodeUnknownExit(NativeBoardCard);
+
+export function decodeBoardView(wire: typeof BoardViewWire.Type): BoardView {
+  const cards: NativeBoardCard[] = [];
+  for (const raw of wire.cards) {
+    const card = decodeCard(raw);
+    if (Exit.isSuccess(card)) cards.push(card.value);
+    else {
+      const issue = typeof raw === "object" && raw !== null && "issue" in raw ? raw.issue : undefined;
+      const id = typeof issue === "object" && issue !== null && "work_item_id" in issue ? issue.work_item_id : undefined;
+      console.error("Dropped a board card that does not match the contract", { work_item_id: id, cause: card.cause });
+    }
+  }
+  return { ...wire, cards };
+}

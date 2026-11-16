@@ -293,4 +293,21 @@ describe("the live board", () => {
     for (const { stop } of stops) stop();
   });
 
+  it("drops one card that does not match the contract and renders the rest", async () => {
+    let dropped = "";
+    const { read } = await liveBoard((body) => {
+      const card = body.cards.find((candidate) => candidate.issue.project_id === "proj_beta")!;
+      dropped = card.issue.work_item_id;
+      card.issue.actor.kind = "unknown_kind";
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    read.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.snapshot().resolved).toBe(true);
+    expect(read.snapshot().error).toBeNull();
+    expect(read.snapshot().items.some((item) => item.id === dropped)).toBe(false);
+    expect(new Set(read.snapshot().items.map((item) => item.projectId))).toEqual(new Set(PROJECTS.map(({ id }) => id)));
+    expect(errors).toHaveBeenCalledOnce();
+    expect(errors.mock.calls[0]![1]).toMatchObject({ work_item_id: dropped });
+  });
 });

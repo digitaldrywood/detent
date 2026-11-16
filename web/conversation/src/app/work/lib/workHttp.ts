@@ -1,4 +1,4 @@
-import { BoardViewSchema, type BoardView } from "./boardSchema.ts";
+import { BoardViewWire, decodeBoardView, type BoardView } from "./boardSchema.ts";
 import type { WorkViewState } from "./viewState.ts";
 import { ArchiveUnavailable } from "../../../runtime/archiveDecode.ts";
 import { invalidateArchiveAccess, resolveArchivedResponse } from "../../../runtime/archive.ts";
@@ -697,8 +697,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
-    readBoard: (input) => send(BoardViewSchema, "GET", url(`${options.apiBase}/work-board`, { project: input.projectIds, item: input.items, lane: input.lane, cursor: input.cursor,
-      state: JSON.stringify({ ...input.state, priority: input.state.priority.map((name) => String(priorityValue(name) ?? name)) }) }), undefined, input.signal, false, input.projectIds),
+    readBoard: async (input) => decodeBoardView(await send(BoardViewWire, "GET", url(`${options.apiBase}/work-board`, { project: input.projectIds, item: input.items, lane: input.lane, cursor: input.cursor,
+      state: JSON.stringify({ ...input.state, priority: input.state.priority.map((name) => String(priorityValue(name) ?? name)) }) }), undefined, input.signal, false, input.projectIds)),
     listSavedViews: async (signal) => {
       const schema = Schema.Struct({ views: Schema.Array(SavedWorkView), next_cursor: Schema.optional(Schema.String) });
       const views: SavedView[] = [];
