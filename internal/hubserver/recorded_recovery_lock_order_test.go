@@ -265,3 +265,67 @@ func TestRecordedRecoveryDoesNotHoldGraphWhileWaitingForClaimRunner(t *testing.T
 		t.Fatalf("recovery source mismatch: state=%s revision=%d", recovered.State, recovered.Revision)
 	}
 }
+
+func TestLandingRenewLocksRunnerBeforeProject(t *testing.T) {
+	t.Parallel()
+	f := newRunnerPGFixture(t)
+	org := f.organization
+	base := "/api/v2/organizations/org_startup/projects/prj_runner"
+	lease := f.leases[0]
+	if _, err := f.admin.ExecContext(t.Context(), `UPDATE leases SET landing_capacity=1 WHERE organization_id=$1 AND lease_id=$2`, org, lease.ID); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
+	defer cancel()
+	holder, err := f.admin.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var holderPID int
+	if err := holder.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.ExecContext(ctx, `SELECT runner_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2 FOR UPDATE`, org, f.bindings[0].RunnerID); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	var workers sync.WaitGroup
+	t.Cleanup(func() { _ = holder.Rollback(); cancel(); workers.Wait() })
+	workers.Go(func() {
+		defer close(done)
+		f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, base+"/leases/"+string(lease.ID)+"/renew", f.tokens[0], tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 300}).WithContext(ctx))
+	})
+	var waiting string
+	testenv.WaitUntil(t, ctx, func() error {
+		select {
+		case <-done:
+			t.Fatalf("renew ended before waiting on its runner: %d %s", response.Code, response.Body)
+		default:
+		}
+		return f.admin.QueryRowContext(ctx, `SELECT query FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))`, holderPID).Scan(&waiting)
+	})
+	if !strings.Contains(waiting, "runner_identities") {
+		t.Fatalf("renew waits on %s", waiting)
+	}
+	probe, err := f.admin.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, probeErr := probe.ExecContext(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR SHARE NOWAIT`, org, "prj_runner")
+	if err := probe.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if probeErr != nil {
+		t.Errorf("landing renew holds its project while waiting on its runner (SQLSTATE=%s): %v", pgtransport.SQLState(probeErr), probeErr)
+	}
+	if err := holder.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	requireNativeStatus(t, response, http.StatusOK)
+}

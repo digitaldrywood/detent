@@ -184,6 +184,9 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope h
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := lockRunnerCredential(ctx, w, scope); err != nil {
+				return err
+			}
 			transitionReady, err := s.lockChangeWorkflowTransition(ctx, w, scope, transition)
 			if err != nil {
 				return err
