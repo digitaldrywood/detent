@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -1259,7 +1260,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		t.Fatalf("current token status=%d: %v", status, err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.AccessTokenGrant(t.Context(), credential.ID, f.project.ID); err != nil {
+		if _, err := w.AccessTokenGrant(t.Context(), credential.ID, f.project.ID, accessstore.NoRoleCeiling); err != nil {
 			return err
 		}
 		return w.DeleteAccessTokenGrant(t.Context(), credential.ID, f.project.ID)

@@ -49,7 +49,7 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 		if credential.EntryKey != nil && !credential.EntryKey.Allows(grant.ProjectID) {
 			return operatortool.ErrAccessDenied
 		}
-		projectGrant, err := r.AccessProjectGrant(ctx, credential.Hosted.Subject, tracker.ProjectID(grant.ProjectID))
+		projectGrant, err := r.AccessProjectGrant(ctx, credential.Hosted.Subject, tracker.ProjectID(grant.ProjectID), credential.HostedRole)
 		if err != nil {
 			return hubscope.OperatorAuthorizationError(err)
 		}
@@ -138,7 +138,7 @@ func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantsto
 	if credential.Scope == hubapi.APIScopeAdmin && !credential.NativeOnly {
 		return nil
 	}
-	grant, err := r.AccessProjectGrant(ctx, credential.Hosted.Subject, project)
+	grant, err := r.AccessProjectGrant(ctx, credential.Hosted.Subject, project, credential.HostedRole)
 	if err != nil {
 		return hubscope.OperatorAuthorizationError(err)
 	}
@@ -149,11 +149,11 @@ func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantsto
 	if credential.Hosted != nil && credential.HostedKeyScope != "" && credential.HostedProjectAccess == hubapi.HostedProjectsAll {
 		tokenID = credential.HostedPrincipal
 	}
-	if _, err := r.AccessTokenGrant(ctx, tokenID, project); err != nil {
+	if _, err := r.AccessTokenGrant(ctx, tokenID, project, credential.HostedRole); err != nil {
 		return hubscope.OperatorAuthorizationError(err)
 	}
 	if credential.Hosted != nil {
-		if _, err := r.AccessTokenGrant(ctx, credential.HostedPrincipal, project); err != nil {
+		if _, err := r.AccessTokenGrant(ctx, credential.HostedPrincipal, project, credential.HostedRole); err != nil {
 			return hubscope.OperatorAuthorizationError(err)
 		}
 	}

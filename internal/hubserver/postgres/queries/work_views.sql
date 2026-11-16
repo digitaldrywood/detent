@@ -22,17 +22,17 @@ SELECT v.*, EXISTS(SELECT 1 FROM hosted_work_view_favorites f WHERE f.organizati
  ARRAY(SELECT collapsed_filter.value FROM hosted_work_view_values collapsed_filter WHERE collapsed_filter.organization_id=v.organization_id AND collapsed_filter.view_id=v.id AND collapsed_filter.kind='collapsed' ORDER BY collapsed_filter.position)::text[] AS collapsed_values
 FROM hosted_work_views v
 WHERE v.organization_id=$1 AND v.id=$2 AND (v.owner_id=sqlc.arg(user_id) OR v.scope='organization')
-AND (NOT sqlc.arg(enforce_grants)::boolean OR (SELECT hosted_administrator_access($1,sqlc.arg(user_id),'')) OR NOT EXISTS (
+AND (NOT sqlc.arg(enforce_grants)::boolean OR (SELECT hosted_administrator_access($1,sqlc.arg(user_id),'',sqlc.arg(role)::text)) OR NOT EXISTS (
  SELECT 1 FROM hosted_work_view_projects p WHERE p.organization_id=v.organization_id AND p.view_id=v.id
- AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.project_id AND g.user_id=sqlc.arg(user_id))
+ AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.project_id AND g.user_id=sqlc.arg(user_id) AND (g.explicit OR NOT (SELECT hosted_administrator_access($1,sqlc.arg(user_id),''))))
 ));
 
 -- name: SavedWorkViewIDs :many
 SELECT v.id FROM hosted_work_views v
 WHERE v.organization_id=$1 AND v.id>sqlc.arg(cursor) AND (v.owner_id=sqlc.arg(user_id) OR v.scope='organization')
-AND (NOT sqlc.arg(enforce_grants)::boolean OR (SELECT hosted_administrator_access($1,sqlc.arg(user_id),'')) OR NOT EXISTS (
+AND (NOT sqlc.arg(enforce_grants)::boolean OR (SELECT hosted_administrator_access($1,sqlc.arg(user_id),'',sqlc.arg(role)::text)) OR NOT EXISTS (
  SELECT 1 FROM hosted_work_view_projects p WHERE p.organization_id=v.organization_id AND p.view_id=v.id
- AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.project_id AND g.user_id=sqlc.arg(user_id))
+ AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.project_id AND g.user_id=sqlc.arg(user_id) AND (g.explicit OR NOT (SELECT hosted_administrator_access($1,sqlc.arg(user_id),''))))
 )) ORDER BY v.id LIMIT sqlc.arg(page_limit);
 
 -- name: SavedWorkViewOwnerSlot :one

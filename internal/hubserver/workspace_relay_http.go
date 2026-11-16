@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -379,7 +380,7 @@ func (w *workspaceService) revalidatePersonLocally(ctx context.Context, record w
 		if errors.Is(err, corestore.ErrNotFound) || !member.Active {
 			return errors.New("the hosted session or membership is no longer active")
 		}
-		if _, err := r.AccessProjectGrant(ctx, connection.Subject, live.ProjectID); err != nil {
+		if _, err := r.AccessProjectGrant(ctx, connection.Subject, live.ProjectID, connection.HostedRole); err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
 				return errors.New("the project grant has been withdrawn")
 			}
@@ -486,10 +487,10 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		if err != nil {
 			return err
 		}
-		if !member.Active || member.Role == "viewer" {
+		if role := accessstore.LesserRole(member.Role, connection.HostedRole); !member.Active || role == "" || role == "viewer" {
 			return nil
 		}
-		grant, err := r.AccessProjectGrant(ctx, connection.Subject, record.ProjectID)
+		grant, err := r.AccessProjectGrant(ctx, connection.Subject, record.ProjectID, connection.HostedRole)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -583,10 +584,10 @@ func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspac
 		if err != nil {
 			return err
 		}
-		if !member.Active || member.Role == "viewer" {
+		if role := accessstore.LesserRole(member.Role, connection.HostedRole); !member.Active || role == "" || role == "viewer" {
 			return nil
 		}
-		grant, err := r.AccessProjectGrant(ctx, connection.Subject, record.ProjectID)
+		grant, err := r.AccessProjectGrant(ctx, connection.Subject, record.ProjectID, connection.HostedRole)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}

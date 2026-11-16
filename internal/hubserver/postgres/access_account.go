@@ -30,7 +30,7 @@ func (s *session) BindAccessTenantProvider(ctx context.Context, provider string)
 	return nil
 }
 
-func (s *session) AccessMissingUsageGrant(ctx context.Context, user string) (bool, error) {
-	missing, err := s.queries.AccessMissingUsageGrant(ctx, pgquery.AccessMissingUsageGrantParams{OrganizationID: s.organization, UserID: user})
+func (s *session) AccessMissingUsageGrant(ctx context.Context, user, role string) (bool, error) {
+	missing, err := s.queries.AccessMissingUsageGrant(ctx, pgquery.AccessMissingUsageGrantParams{OrganizationID: s.organization, UserID: user, Role: role})
 	return missing, mapError(ctx, err)
 }

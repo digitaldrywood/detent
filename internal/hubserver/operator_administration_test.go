@@ -151,7 +151,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 		if row.OrganizationID != f.project.OrganizationID || row.ID != token.ID || !row.NativeOnly || row.Scope != string(hubapi.APIScopeOperator) {
 			t.Fatalf("native grant did not persist credential scope: id=%s native=%v scope=%s", row.ID, row.NativeOnly, row.Scope)
 		}
-		grant, err := r.AccessTokenGrant(t.Context(), token.ID, f.project.ID)
+		grant, err := r.AccessTokenGrant(t.Context(), token.ID, f.project.ID, accessstore.NoRoleCeiling)
 		if err != nil {
 			return err
 		}

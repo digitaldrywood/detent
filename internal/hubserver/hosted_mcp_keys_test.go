@@ -301,7 +301,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								writeDenied = true
 							case "write grant removed":
 								writeAccess(func(w tenantstore.Writer) error {
-									grant, err := w.AccessProjectGrant(t.Context(), user.identity.Subject, f.project)
+									grant, err := w.AccessProjectGrant(t.Context(), user.identity.Subject, f.project, accessstore.NoRoleCeiling)
 									if err != nil {
 										return err
 									}

@@ -137,7 +137,7 @@ func (w *workspaceService) authorizeWorkspaceCreationRequires(ctx context.Contex
 	if scope.Credential.Hosted == nil {
 		return &hubapi.NativeError{Code: "forbidden", Message: "A terminal requires a hosted session", Status: http.StatusForbidden, PublicMessage: true}
 	}
-	grant, err := r.AccessProjectGrant(ctx, scope.Credential.Hosted.Subject, scope.Project)
+	grant, err := r.AccessProjectGrant(ctx, scope.Credential.Hosted.Subject, scope.Project, scope.Credential.HostedRole)
 	if errors.Is(err, corestore.ErrNotFound) || err == nil && !grant.ManageRunner {
 		return &hubapi.NativeError{Code: "forbidden", Message: "A terminal requires the project's runner grant", Status: http.StatusForbidden, PublicMessage: true}
 	}

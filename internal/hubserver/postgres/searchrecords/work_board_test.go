@@ -759,7 +759,7 @@ func TestConcurrentProjectGrantsDoNotDeadlockRevisionUpdates(t *testing.T) {
 	}
 	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 		for _, project := range []tracker.ProjectID{"prj_example", "prj_other"} {
-			if _, err := r.AccessProjectGrant(t.Context(), "first", project); err != nil {
+			if _, err := r.AccessProjectGrant(t.Context(), "first", project, accessstore.NoRoleCeiling); err != nil {
 				return err
 			}
 		}

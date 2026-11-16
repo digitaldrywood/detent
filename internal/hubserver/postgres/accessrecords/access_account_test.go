@@ -174,7 +174,7 @@ func TestAccessAccountReceiptsAndProviderBindings(t *testing.T) {
 			if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: "prj_example", Name: "Example", Profile: "native"}); err != nil {
 				return err
 			}
-			if missing, err := w.AccessMissingUsageGrant(t.Context(), "actor"); err != nil || !missing {
+			if missing, err := w.AccessMissingUsageGrant(t.Context(), "actor", accessstore.NoRoleCeiling); err != nil || !missing {
 				t.Fatalf("missing grant=%v error=%v", missing, err)
 			}
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "actor", Name: "Actor", Hash: "actor-hash", Scope: "operator", NativeOnly: true, CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), ProjectAccess: "selected", Kind: "personal"}); err != nil {
@@ -186,7 +186,7 @@ func TestAccessAccountReceiptsAndProviderBindings(t *testing.T) {
 			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: "actor", ProjectID: "prj_example"}); err != nil {
 				return err
 			}
-			if missing, err := w.AccessMissingUsageGrant(t.Context(), "actor"); err != nil || missing {
+			if missing, err := w.AccessMissingUsageGrant(t.Context(), "actor", accessstore.NoRoleCeiling); err != nil || missing {
 				t.Fatalf("granted access missing=%v error=%v", missing, err)
 			}
 			return nil

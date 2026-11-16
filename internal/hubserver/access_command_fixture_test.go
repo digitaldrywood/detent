@@ -78,11 +78,11 @@ func (w accessCommandFaultWriter) AccessInvitation(ctx context.Context, id strin
 func (w accessCommandFaultWriter) ProjectRecord(ctx context.Context, id tracker.ProjectID) (projectstore.Record, error) {
 	return w.reader.ProjectRecord(ctx, id)
 }
-func (w accessCommandFaultWriter) AccessProjectGrant(ctx context.Context, user string, id tracker.ProjectID) (accessstore.ProjectGrant, error) {
-	return w.reader.AccessProjectGrant(ctx, user, id)
+func (w accessCommandFaultWriter) AccessProjectGrant(ctx context.Context, user string, id tracker.ProjectID, role string) (accessstore.ProjectGrant, error) {
+	return w.reader.AccessProjectGrant(ctx, user, id, role)
 }
-func (w accessCommandFaultWriter) AccessTokenGrant(ctx context.Context, token string, id tracker.ProjectID) (accessstore.TokenGrant, error) {
-	return w.reader.AccessTokenGrant(ctx, token, id)
+func (w accessCommandFaultWriter) AccessTokenGrant(ctx context.Context, token string, id tracker.ProjectID, role string) (accessstore.TokenGrant, error) {
+	return w.reader.AccessTokenGrant(ctx, token, id, role)
 }
 func (w accessCommandFaultWriter) AccessMember(ctx context.Context, user string) (accessstore.Member, error) {
 	return w.reader.AccessMember(ctx, user)
@@ -114,18 +114,18 @@ func (r accessCommandFaultReader) ProjectRecord(ctx context.Context, id tracker.
 	return r.Reader.ProjectRecord(ctx, id)
 }
 
-func (r accessCommandFaultReader) AccessProjectGrant(ctx context.Context, user string, id tracker.ProjectID) (accessstore.ProjectGrant, error) {
+func (r accessCommandFaultReader) AccessProjectGrant(ctx context.Context, user string, id tracker.ProjectID, role string) (accessstore.ProjectGrant, error) {
 	if err := r.fault.lookup("project grant"); err != nil {
 		return accessstore.ProjectGrant{}, err
 	}
-	return r.Reader.AccessProjectGrant(ctx, user, id)
+	return r.Reader.AccessProjectGrant(ctx, user, id, role)
 }
 
-func (r accessCommandFaultReader) AccessTokenGrant(ctx context.Context, token string, id tracker.ProjectID) (accessstore.TokenGrant, error) {
+func (r accessCommandFaultReader) AccessTokenGrant(ctx context.Context, token string, id tracker.ProjectID, role string) (accessstore.TokenGrant, error) {
 	if err := r.fault.lookup("token grant"); err != nil {
 		return accessstore.TokenGrant{}, err
 	}
-	return r.Reader.AccessTokenGrant(ctx, token, id)
+	return r.Reader.AccessTokenGrant(ctx, token, id, role)
 }
 
 func (r accessCommandFaultReader) AccessMember(ctx context.Context, user string) (accessstore.Member, error) {

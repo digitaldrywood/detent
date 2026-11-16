@@ -394,7 +394,7 @@ func (s *Service) requireOperatorRunners(ctx context.Context, _ hubapi.NativeQue
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
 		}
-		grant, err := reader.AccessProjectGrant(ctx, scope.Credential.Hosted.Subject, scope.Project)
+		grant, err := reader.AccessProjectGrant(ctx, scope.Credential.Hosted.Subject, scope.Project, scope.Credential.HostedRole)
 		if err != nil {
 			return err
 		}

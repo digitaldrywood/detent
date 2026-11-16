@@ -6,6 +6,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
+const NoRoleCeiling = "owner"
+
 func RoleAllows(role string, scope apikey.Scope, action ...string) bool {
 	if !auth.ValidOrganizationRole(role) {
 		return false

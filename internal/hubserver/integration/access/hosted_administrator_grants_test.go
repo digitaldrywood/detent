@@ -134,7 +134,7 @@ func TestHostedAdministratorProjectGrants(t *testing.T) {
 			for _, user := range users {
 				var grants, write, runner, tokens int
 				if err := f.Repository.ReadTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(r tenantstore.Reader) error {
-					grant, err := r.AccessProjectGrant(t.Context(), "user_"+user.name, tracker.ProjectID(project))
+					grant, err := r.AccessProjectGrant(t.Context(), "user_"+user.name, tracker.ProjectID(project), accessstore.NoRoleCeiling)
 					if err == nil {
 						grants = 1
 						if grant.CanWrite {
@@ -146,7 +146,7 @@ func TestHostedAdministratorProjectGrants(t *testing.T) {
 					} else if !errors.Is(err, corestore.ErrNotFound) {
 						return err
 					}
-					_, err = r.AccessTokenGrant(t.Context(), principals[user.name], tracker.ProjectID(project))
+					_, err = r.AccessTokenGrant(t.Context(), principals[user.name], tracker.ProjectID(project), accessstore.NoRoleCeiling)
 					if err == nil {
 						tokens = 1
 					} else if !errors.Is(err, corestore.ErrNotFound) {

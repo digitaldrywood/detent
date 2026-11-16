@@ -26,12 +26,12 @@ func (s *session) SavedWorkViewIDs(ctx context.Context, selection viewstore.Sele
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	ids, err := s.queries.SavedWorkViewIDs(ctx, pgquery.SavedWorkViewIDsParams{OrganizationID: s.organization, UserID: selection.UserID, EnforceGrants: selection.EnforceProjectGrants, Cursor: cursor, PageLimit: int32(limit)})
+	ids, err := s.queries.SavedWorkViewIDs(ctx, pgquery.SavedWorkViewIDsParams{OrganizationID: s.organization, UserID: selection.UserID, Role: selection.Role, EnforceGrants: selection.EnforceProjectGrants, Cursor: cursor, PageLimit: int32(limit)})
 	return ids, mapError(ctx, err)
 }
 
 func (s *session) SavedWorkView(ctx context.Context, selection viewstore.Selection, id string) (viewstore.Record, error) {
-	row, err := s.queries.SavedWorkView(ctx, pgquery.SavedWorkViewParams{OrganizationID: s.organization, ID: id, UserID: selection.UserID, EnforceGrants: selection.EnforceProjectGrants})
+	row, err := s.queries.SavedWorkView(ctx, pgquery.SavedWorkViewParams{OrganizationID: s.organization, ID: id, UserID: selection.UserID, Role: selection.Role, EnforceGrants: selection.EnforceProjectGrants})
 	if err != nil {
 		return viewstore.Record{}, mapError(ctx, err)
 	}

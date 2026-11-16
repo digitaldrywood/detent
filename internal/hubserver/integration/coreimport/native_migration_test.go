@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport/coreimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -439,7 +440,7 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 					if err != nil || credential.ID != "legacy-key" || credential.ProjectAccess != "selected" {
 						return fmt.Errorf("legacy selected key=%+v error=%v", credential, err)
 					}
-					grant, err := reader.AccessTokenGrant(t.Context(), credential.ID, project)
+					grant, err := reader.AccessTokenGrant(t.Context(), credential.ID, project, accessstore.NoRoleCeiling)
 					if err != nil || grant.ProjectID != project {
 						return fmt.Errorf("legacy key grant=%+v error=%v", grant, err)
 					}

@@ -33,17 +33,18 @@ func (q *Queries) AccessAccountAuditID(ctx context.Context, arg AccessAccountAud
 const accessMissingUsageGrant = `-- name: AccessMissingUsageGrant :one
 SELECT (EXISTS (
  SELECT 1 FROM projects p WHERE p.organization_id=$1 AND p.deleted_at IS NULL
- AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=$2)
-) AND NOT hosted_administrator_access($1,$2,''))::boolean
+ AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=$2 AND (g.explicit OR NOT (SELECT hosted_administrator_access($1,$2,''))))
+) AND NOT hosted_administrator_access($1,$2,'',$3::text))::boolean
 `
 
 type AccessMissingUsageGrantParams struct {
 	OrganizationID tracker.OrganizationID
 	UserID         string
+	Role           string
 }
 
 func (q *Queries) AccessMissingUsageGrant(ctx context.Context, arg AccessMissingUsageGrantParams) (bool, error) {
-	row := q.db.QueryRow(ctx, accessMissingUsageGrant, arg.OrganizationID, arg.UserID)
+	row := q.db.QueryRow(ctx, accessMissingUsageGrant, arg.OrganizationID, arg.UserID, arg.Role)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err

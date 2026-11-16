@@ -85,7 +85,7 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 			return hubapi.NativeNotFoundAt("lease_runner_credential")
 		}
 		if identity.Scope != "organization" {
-			if _, err := reader.AccessTokenGrant(ctx, identity.TokenID, scope.Project); err != nil {
+			if _, err := reader.AccessTokenGrant(ctx, identity.TokenID, scope.Project, scope.Credential.HostedRole); err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
 					return hubapi.NativeNotFoundAt("lease_runner_credential")
 				}

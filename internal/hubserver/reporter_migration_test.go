@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -172,7 +173,7 @@ func TestReporterAndTriageMigration(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			grant, err := r.AccessProjectGrant(t.Context(), id, "prj_without")
+			grant, err := r.AccessProjectGrant(t.Context(), id, "prj_without", accessstore.NoRoleCeiling)
 			if err != nil {
 				return err
 			}

@@ -394,7 +394,7 @@ func testMaintenanceCurrentIssuer(t *testing.T, f *browserHostedFixture) {
 					t.Fatalf("refused create rows=%d error=%v", created, err)
 				}
 				if err := s.accessRead(t.Context(), s.accessOrganization(), func(r tenantstore.Reader) error {
-					_, err := r.AccessTokenGrant(t.Context(), target.ID, tracker.ProjectID(f.project))
+					_, err := r.AccessTokenGrant(t.Context(), target.ID, tracker.ProjectID(f.project), accessstore.NoRoleCeiling)
 					return err
 				}); !errors.Is(err, corestore.ErrNotFound) {
 					t.Fatalf("refused maintenance grant error=%v", err)
@@ -450,13 +450,13 @@ func testMaintenanceTenantIsolation(t *testing.T, f *browserHostedFixture) {
 		}
 		requireNativeStatus(t, performHubAPIRequest(t, current.s, http.MethodPost, path, current.secret, map[string]string{"organization_id": string(otherOrg), "project_id": otherProject}), http.StatusForbidden)
 		if err := current.s.accessRead(t.Context(), otherOrg, func(r tenantstore.Reader) error {
-			_, err := r.AccessTokenGrant(t.Context(), token.ID, tracker.ProjectID(otherProject))
+			_, err := r.AccessTokenGrant(t.Context(), token.ID, tracker.ProjectID(otherProject), accessstore.NoRoleCeiling)
 			return err
 		}); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("foreign grant error=%v", err)
 		}
 		if err := current.s.accessRead(t.Context(), current.s.accessOrganization(), func(r tenantstore.Reader) error {
-			_, err := r.AccessTokenGrant(t.Context(), token.ID, tracker.ProjectID(current.project))
+			_, err := r.AccessTokenGrant(t.Context(), token.ID, tracker.ProjectID(current.project), accessstore.NoRoleCeiling)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -492,7 +492,7 @@ func testMaintenanceSelfTarget(t *testing.T, f *browserHostedFixture) {
 		t.Fatalf("self-target completion audits=%d error=%v", audits, err)
 	}
 	if err := s.accessRead(t.Context(), s.accessOrganization(), func(r tenantstore.Reader) error {
-		_, err := r.AccessTokenGrant(t.Context(), row.ID, tracker.ProjectID(f.project))
+		_, err := r.AccessTokenGrant(t.Context(), row.ID, tracker.ProjectID(f.project), accessstore.NoRoleCeiling)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -977,7 +977,7 @@ func testMaintenanceLockOrder(t *testing.T) {
 					t.Fatalf("maintenance completion attribution count=%d error=%v", audits, err)
 				}
 				if err := normalOwner.ReadTenant(t.Context(), normal.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
-					_, err := r.AccessTokenGrant(t.Context(), principal, tracker.ProjectID(f.project))
+					_, err := r.AccessTokenGrant(t.Context(), principal, tracker.ProjectID(f.project), accessstore.NoRoleCeiling)
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -1255,14 +1255,14 @@ func testMaintenanceInvitationOrder(t *testing.T) {
 				if len(grants) != 1 || string(grants[0].ProjectID) != f.privateProject {
 					return errors.New("acceptance missed committed replacement grants")
 				}
-				grant, err := r.AccessProjectGrant(t.Context(), identity.Subject, tracker.ProjectID(f.privateProject))
+				grant, err := r.AccessProjectGrant(t.Context(), identity.Subject, tracker.ProjectID(f.privateProject), accessstore.NoRoleCeiling)
 				if err != nil {
 					return err
 				}
 				if !grant.CanWrite || grant.ManageRunner {
 					return errors.New("accepted grant permissions changed")
 				}
-				_, err = r.AccessProjectGrant(t.Context(), identity.Subject, tracker.ProjectID(f.project))
+				_, err = r.AccessProjectGrant(t.Context(), identity.Subject, tracker.ProjectID(f.project), accessstore.NoRoleCeiling)
 				if !errors.Is(err, corestore.ErrNotFound) {
 					return errors.New("acceptance retained replaced grant")
 				}

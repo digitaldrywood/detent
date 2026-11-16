@@ -41,8 +41,8 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 			if err != nil {
 				return err
 			}
-			if hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole) == "member" {
-				grant, err := reader.AccessProjectGrant(ctx, member.UserID, project)
+			if role := hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole); role == "member" {
+				grant, err := reader.AccessProjectGrant(ctx, member.UserID, project, role)
 				if err != nil || !grant.ManageRunner {
 					return accessstore.ErrDenied
 				}

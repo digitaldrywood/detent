@@ -582,7 +582,7 @@ func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.
 	}
 	promoteJoined = true
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		grant, err := r.AccessProjectGrant(t.Context(), user, projectID)
+		grant, err := r.AccessProjectGrant(t.Context(), user, projectID, accessstore.NoRoleCeiling)
 		if err != nil {
 			return err
 		}

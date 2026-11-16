@@ -122,7 +122,7 @@ func (f entryKeyFixture) assertOtherTenant(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		grant, err := r.AccessProjectGrant(t.Context(), member.UserID, f.project)
+		grant, err := r.AccessProjectGrant(t.Context(), member.UserID, f.project, accessstore.NoRoleCeiling)
 		if err != nil {
 			return err
 		}

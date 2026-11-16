@@ -25,6 +25,7 @@ func Identity(credential Credential, organization string) operatortool.Identity 
 func ProjectFilter(credential Credential, project tracker.ProjectID, after tracker.ProjectID, limit int) accessstore.ProjectAccessFilter {
 	filter := accessstore.ProjectAccessFilter{
 		UserID:        hostedSubject(credential),
+		Role:          credential.HostedRole,
 		PrincipalID:   credential.HostedPrincipal,
 		CredentialID:  credential.ID,
 		KeyKind:       credential.HostedKeyKind,

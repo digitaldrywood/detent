@@ -223,7 +223,7 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			if err != nil || credential.RevokedAt != nil {
 				return artifact.ErrDenied
 			}
-			if _, err := r.AccessTokenGrant(ctx, credential.ID, tracker.ProjectID(command.ProjectID)); err != nil {
+			if _, err := r.AccessTokenGrant(ctx, credential.ID, tracker.ProjectID(command.ProjectID), accessstore.NoRoleCeiling); err != nil {
 				return artifact.ErrDenied
 			}
 			binding, err := r.ArtifactService(ctx, tracker.ProjectID(command.ProjectID), command.ServiceID)

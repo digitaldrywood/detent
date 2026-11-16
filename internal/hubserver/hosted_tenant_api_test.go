@@ -363,7 +363,7 @@ func TestHostedProjectsAPI(t *testing.T) {
 	}
 	var manageRunner bool
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), created.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-		grant, err := r.AccessProjectGrant(t.Context(), "user_browser_owner", created.ID)
+		grant, err := r.AccessProjectGrant(t.Context(), "user_browser_owner", created.ID, accessstore.NoRoleCeiling)
 		manageRunner = grant.ManageRunner
 		return err
 	}); err != nil || !manageRunner {

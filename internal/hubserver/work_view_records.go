@@ -106,7 +106,7 @@ func (s *Service) savedWorkViewsRecord(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	user, id := appSubject(scope.Credential), c.Param("view")
-	selection := viewstore.Selection{UserID: user, EnforceProjectGrants: s.config.Hosted != nil}
+	selection := viewstore.Selection{UserID: user, Role: scope.Credential.HostedRole, EnforceProjectGrants: s.config.Hosted != nil}
 	if c.Request().Method == http.MethodGet {
 		return s.readSavedWorkViewsRecord(c, scope, selection, id)
 	}

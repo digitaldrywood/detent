@@ -118,7 +118,7 @@ func (s *Service) requireHostedUsageGrants(ctx context.Context, credential hubap
 	var missing bool
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		var err error
-		missing, err = r.AccessMissingUsageGrant(ctx, credential.Hosted.Subject)
+		missing, err = r.AccessMissingUsageGrant(ctx, credential.Hosted.Subject, credential.HostedRole)
 		return err
 	})
 	if err != nil {
@@ -184,7 +184,7 @@ func (s *Service) requireHostedRunnerProjects(ctx context.Context, credential hu
 				absent = true
 				return nil
 			}
-			grant, err := reader.AccessProjectGrant(ctx, credential.Hosted.Subject, project.ID)
+			grant, err := reader.AccessProjectGrant(ctx, credential.Hosted.Subject, project.ID, credential.HostedRole)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}

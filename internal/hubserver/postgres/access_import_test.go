@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/jackc/pgx/v5"
@@ -341,7 +342,7 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 					t.Fatalf("reopened member=%+v: %v", member, err)
 				}
 				project := tracker.ProjectID("prj_" + suffix)
-				grant, err := reader.AccessTokenGrant(t.Context(), credential.ID, project)
+				grant, err := reader.AccessTokenGrant(t.Context(), credential.ID, project, accessstore.NoRoleCeiling)
 				if err != nil || grant.OrganizationID != org || grant.ProjectID != project {
 					t.Fatalf("reopened token grant=%+v: %v", grant, err)
 				}

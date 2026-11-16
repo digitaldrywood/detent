@@ -495,6 +495,11 @@ func TestReporterAttachmentMCPRoundTrip(t *testing.T) {
 	f.provider.Member("user_alice", "porg_alpha", "reporter")
 	browser := newBrowser(t, f.service.Handler())
 	browser.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	for _, statement := range []string{`INSERT INTO public.hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner,explicit) SELECT organization_id,'user_alice',id,true,false,true FROM public.projects WHERE organization_id='org_alpha' AND deleted_at IS NULL`, `INSERT INTO public.token_grants(organization_id,token_id,project_id) SELECT p.organization_id,m.principal_id,p.id FROM public.projects p JOIN public.hosted_members m ON m.organization_id=p.organization_id AND m.user_id='user_alice' WHERE p.organization_id='org_alpha' AND p.deleted_at IS NULL ON CONFLICT DO NOTHING`} {
+		if _, err := f.fixtures["org_alpha"].Database.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
 	project := attachmentProject(t, browser, "org_alpha")
 	key := createTestAccessKey(t, browser, "project", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}, "")
 	anonymous := newBrowser(t, f.service.Handler())

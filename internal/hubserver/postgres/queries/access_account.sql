@@ -10,5 +10,5 @@ WHERE organization_id=$1 AND (provider_id='' OR provider_id=$2);
 -- name: AccessMissingUsageGrant :one
 SELECT (EXISTS (
  SELECT 1 FROM projects p WHERE p.organization_id=$1 AND p.deleted_at IS NULL
- AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=$2)
-) AND NOT hosted_administrator_access($1,$2,''))::boolean;
+ AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=$2 AND (g.explicit OR NOT (SELECT hosted_administrator_access($1,$2,''))))
+) AND NOT hosted_administrator_access($1,$2,'',sqlc.arg(role)::text))::boolean;

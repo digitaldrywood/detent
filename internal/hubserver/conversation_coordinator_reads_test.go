@@ -310,7 +310,7 @@ func TestCoordinatorReadAudience(t *testing.T) {
 		})
 	}
 	coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
-		grant, err := w.AccessProjectGrant(t.Context(), owner.identity.Subject, f.project)
+		grant, err := w.AccessProjectGrant(t.Context(), owner.identity.Subject, f.project, accessstore.NoRoleCeiling)
 		if err != nil {
 			return err
 		}

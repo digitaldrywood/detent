@@ -298,7 +298,7 @@ func TestProjectAccessPageFiltersSelectedAndBlockedProjectsBeforeLimit(t *testin
 		}
 	}
 
-	selected := accessstore.ProjectAccessFilter{UserID: "first", PrincipalID: "first", CredentialID: "selected_key", ProjectAccess: "selected", RequireCredentialGrant: true, Limit: 1}
+	selected := accessstore.ProjectAccessFilter{UserID: "first", Role: "admin", PrincipalID: "first", CredentialID: "selected_key", ProjectAccess: "selected", RequireCredentialGrant: true, Limit: 1}
 	var selectedFirst, selectedNext []accessstore.ProjectAccess
 	if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(accessstore.ProjectAccessPageReader)
@@ -319,7 +319,7 @@ func TestProjectAccessPageFiltersSelectedAndBlockedProjectsBeforeLimit(t *testin
 	if len(selectedFirst) != 2 || selectedFirst[0].ProjectID != "project_b" || len(selectedNext) != 1 || selectedNext[0].ProjectID != "project_c" {
 		t.Fatalf("selected pages = %+v then %+v", selectedFirst, selectedNext)
 	}
-	blocked := accessstore.ProjectAccessFilter{UserID: "first", PrincipalID: "first", KeyKind: "personal", ProjectAccess: "selected", Projects: ids, BlockedProjects: []tracker.ProjectID{"project_b"}, Limit: 1}
+	blocked := accessstore.ProjectAccessFilter{UserID: "first", Role: "admin", PrincipalID: "first", KeyKind: "personal", ProjectAccess: "selected", Projects: ids, BlockedProjects: []tracker.ProjectID{"project_b"}, Limit: 1}
 	var blockedFirst, blockedNext []accessstore.ProjectAccess
 	if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 		reader := r.(accessstore.ProjectAccessPageReader)

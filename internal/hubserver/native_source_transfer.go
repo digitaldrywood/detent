@@ -369,10 +369,10 @@ func (s *Service) authorizeSourceTransferTenant(ctx context.Context, r tenantsto
 		if err != nil {
 			return err
 		}
-		switch hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole) {
+		switch role := hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole); role {
 		case "owner", "admin":
 		case "member":
-			grant, err := r.AccessProjectGrant(ctx, member.UserID, scope.Project)
+			grant, err := r.AccessProjectGrant(ctx, member.UserID, scope.Project, role)
 			if err != nil || !grant.ManageRunner {
 				return accessstore.ErrDenied
 			}

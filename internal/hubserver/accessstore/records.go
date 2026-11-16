@@ -214,8 +214,16 @@ type Authority struct {
 	Admin        bool
 }
 
+func (a Authority) MemberRole(stored string) string {
+	if a.Role == "" {
+		return stored
+	}
+	return LesserRole(stored, a.Role)
+}
+
 type ProjectAccessFilter struct {
 	UserID                 string
+	Role                   string
 	PrincipalID            string
 	CredentialID           string
 	KeyKind                string
@@ -259,7 +267,7 @@ type Reader interface {
 	AccessMemberCredentials(context.Context, string, string, int) ([]Credential, error)
 	AccessAudit(context.Context, int64) (Audit, error)
 	AccessAccountAudit(context.Context, string, string) (Audit, error)
-	AccessMissingUsageGrant(context.Context, string) (bool, error)
+	AccessMissingUsageGrant(context.Context, string, string) (bool, error)
 	AccessMembers(context.Context, string, int) ([]Member, error)
 	AccessMembersByEmail(context.Context, string, string, int) ([]Member, error)
 	AccessCredentials(context.Context, string, int) ([]Credential, error)
@@ -273,8 +281,8 @@ type Reader interface {
 	AccessTenant(context.Context) (Tenant, error)
 	AccessCredential(context.Context, string) (Credential, error)
 	AccessMember(context.Context, string) (Member, error)
-	AccessProjectGrant(context.Context, string, tracker.ProjectID) (ProjectGrant, error)
-	AccessTokenGrant(context.Context, string, tracker.ProjectID) (TokenGrant, error)
+	AccessProjectGrant(context.Context, string, tracker.ProjectID, string) (ProjectGrant, error)
+	AccessTokenGrant(context.Context, string, tracker.ProjectID, string) (TokenGrant, error)
 	AccessSession(context.Context, string) (Session, error)
 	AccessLoginTransaction(context.Context, string) (LoginTransaction, error)
 	AccessInvitation(context.Context, string) (Invitation, error)

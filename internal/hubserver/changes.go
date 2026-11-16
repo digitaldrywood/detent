@@ -77,7 +77,7 @@ func (s *Service) recheckHostedChangeCheckPrincipal(ctx context.Context, r tenan
 	if token.Scope != string(hubapi.APIScopeOperator) || !token.Valid(credential.Hash, s.config.Clock()) {
 		return hubapi.NativeNotFound()
 	}
-	if _, err := r.AccessTokenGrant(ctx, credential.ID, scope.Project); err != nil {
+	if _, err := r.AccessTokenGrant(ctx, credential.ID, scope.Project, credential.HostedRole); err != nil {
 		return err
 	}
 	if _, err := r.RunnerIdentityByCredential(ctx, credential.ID); !errors.Is(err, corestore.ErrNotFound) {

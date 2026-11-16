@@ -61,7 +61,7 @@ type hostedUsageFaultReader struct {
 	err error
 }
 
-func (r hostedUsageFaultReader) AccessMissingUsageGrant(context.Context, string) (bool, error) {
+func (r hostedUsageFaultReader) AccessMissingUsageGrant(context.Context, string, string) (bool, error) {
 	return false, r.err
 }
 

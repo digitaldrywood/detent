@@ -24,20 +24,20 @@ func (s *session) ProjectAccessPage(ctx context.Context, filter accessstore.Proj
 	for i, project := range filter.BlockedProjects {
 		blocked[i] = string(project)
 	}
-	rows, err := s.db.Query(ctx, `WITH administrator AS (SELECT $4<>'service' AND hosted_administrator_access($1,$2,$3) AS granted)
+	rows, err := s.db.Query(ctx, `WITH administrator AS (SELECT $4<>'service' AND hosted_administrator_access($1,$2,$3,$13) AS granted, hosted_administrator_access($1,$2,'') AS stored)
 SELECT p.id,
 CASE WHEN $4='service' OR a.granted THEN true ELSE COALESCE(g.can_write,false) END,
 CASE WHEN $4='service' OR a.granted THEN true ELSE COALESCE(g.manage_runner,false) END
 FROM projects p
 CROSS JOIN administrator a
-LEFT JOIN hosted_project_grants g ON g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=$2
+LEFT JOIN hosted_project_grants g ON g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=$2 AND (g.explicit OR NOT a.stored)
 WHERE p.organization_id=$1 AND p.deleted_at IS NULL AND p.id>$8
 AND ($11='' OR p.id=$11)
 AND ($4='service' OR a.granted OR (EXISTS (
     SELECT 1 FROM hosted_project_grants allowed
     JOIN hosted_members m ON m.organization_id=allowed.organization_id AND m.user_id=allowed.user_id
     JOIN api_tokens t ON t.organization_id=m.organization_id AND t.id=m.principal_id
-    WHERE allowed.organization_id=p.organization_id AND allowed.project_id=p.id AND m.user_id=$2
+    WHERE allowed.organization_id=p.organization_id AND allowed.project_id=p.id AND m.user_id=$2 AND (allowed.explicit OR NOT a.stored)
       AND m.active AND t.revoked_at IS NULL AND ($3='' OR t.id=$3)
 ) AND ($3='' OR EXISTS (
     SELECT 1 FROM token_grants principal_grant
@@ -49,7 +49,7 @@ AND (NOT $12 OR EXISTS (
     SELECT 1 FROM token_grants credential_grant
     WHERE credential_grant.organization_id=p.organization_id AND credential_grant.project_id=p.id AND credential_grant.token_id=$10
 ))
-ORDER BY p.id LIMIT $9`, s.organization, filter.UserID, filter.PrincipalID, filter.KeyKind, filter.ProjectAccess, projects, blocked, filter.After, filter.Limit+1, filter.CredentialID, filter.Only, filter.RequireCredentialGrant)
+ORDER BY p.id LIMIT $9`, s.organization, filter.UserID, filter.PrincipalID, filter.KeyKind, filter.ProjectAccess, projects, blocked, filter.After, filter.Limit+1, filter.CredentialID, filter.Only, filter.RequireCredentialGrant, filter.Role)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

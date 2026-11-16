@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -40,7 +41,7 @@ func (s *Service) artifactReadGrantTenant(ctx context.Context, scope hubscope.Na
 		if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
 			return err
 		}
-		if _, err := w.AccessTokenGrant(ctx, scope.Credential.ID, scope.Project); err != nil {
+		if _, err := w.AccessTokenGrant(ctx, scope.Credential.ID, scope.Project, scope.Credential.HostedRole); err != nil {
 			return err
 		}
 		workItem, err := w.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
@@ -91,7 +92,7 @@ func (s *Service) readArtifactGrantTenant(ctx context.Context, scope hubscope.Na
 		if !credential.Valid(credential.Hash, s.config.Clock()) {
 			return corestore.ErrNotFound
 		}
-		if _, err := r.AccessTokenGrant(ctx, grant.PrincipalID, scope.Project); err != nil {
+		if _, err := r.AccessTokenGrant(ctx, grant.PrincipalID, scope.Project, accessstore.NoRoleCeiling); err != nil {
 			return err
 		}
 		item, err := r.WorkItem(ctx, scope.Project, grant.WorkItemID)

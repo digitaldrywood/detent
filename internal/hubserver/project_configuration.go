@@ -469,7 +469,7 @@ func (s *Service) configurationRequestAuthority(ctx context.Context, r tenantsto
 		return err
 	}
 	if operation == "resume_local_project" && scope.Credential.Hosted != nil {
-		grant, err := r.AccessProjectGrant(ctx, scope.Credential.Hosted.Subject, scope.Project)
+		grant, err := r.AccessProjectGrant(ctx, scope.Credential.Hosted.Subject, scope.Project, scope.Credential.HostedRole)
 		if err != nil {
 			return err
 		}

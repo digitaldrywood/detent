@@ -354,7 +354,7 @@ func testHostedCheckRevocation(t *testing.T, f *browserHostedFixture, base, path
 		if err != nil {
 			return err
 		}
-		grant, err = r.AccessTokenGrant(ctx, principal, project)
+		grant, err = r.AccessTokenGrant(ctx, principal, project, accessstore.NoRoleCeiling)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -451,7 +451,7 @@ func testHostedCheckRevocation(t *testing.T, f *browserHostedFixture, base, path
 						if !reflect.DeepEqual(actual, credential) {
 							return errors.New("credential fixture identity or fields were not restored")
 						}
-						actualGrant, err := r.AccessTokenGrant(cleanup, principal, project)
+						actualGrant, err := r.AccessTokenGrant(cleanup, principal, project, accessstore.NoRoleCeiling)
 						if err != nil {
 							return err
 						}

@@ -50,7 +50,7 @@ func (s *Service) catalogPublisherScope(ctx context.Context, r postgres.Artifact
 	if err != nil || !current.Valid(credential.Hash, s.config.Clock()) || current.Scope != string(hubapi.APIScopeWorker) || !current.NativeOnly {
 		return scope, artifact.Binding{}, artifact.ErrDenied
 	}
-	if _, err := tenant.AccessTokenGrant(ctx, current.ID, project); err != nil {
+	if _, err := tenant.AccessTokenGrant(ctx, current.ID, project, credential.HostedRole); err != nil {
 		return scope, artifact.Binding{}, artifact.ErrDenied
 	}
 	binding, err := tenant.ArtifactService(ctx, project, command.ServiceID)

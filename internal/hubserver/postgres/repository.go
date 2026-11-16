@@ -231,6 +231,7 @@ func (r *Repository) acquire(ctx context.Context, workload corestore.Workload) (
 type projectAccessKey struct {
 	principal string
 	project   tracker.ProjectID
+	role      string
 }
 
 type session struct {

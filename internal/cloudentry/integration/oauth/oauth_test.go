@@ -777,6 +777,11 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			proxy.Transport = transport
 			owner := harness.NewBrowser(t, proxy)
 			owner.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			for _, statement := range []string{`INSERT INTO public.hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner,explicit) SELECT organization_id,'user_alice',id,true,false,true FROM public.projects WHERE organization_id='org_alpha' AND deleted_at IS NULL`, `INSERT INTO public.token_grants(organization_id,token_id,project_id) SELECT p.organization_id,m.principal_id,p.id FROM public.projects p JOIN public.hosted_members m ON m.organization_id=p.organization_id AND m.user_id='user_alice' WHERE p.organization_id='org_alpha' AND p.deleted_at IS NULL ON CONFLICT DO NOTHING`} {
+				if _, err := f.Fixtures["org_alpha"].Database.ExecContext(t.Context(), statement); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var personal struct {
 				Token string `json:"token"`
 			}

@@ -228,18 +228,18 @@ func (s *session) CreateAccessMember(ctx context.Context, row accessstore.Member
 	return mapError(ctx, err)
 }
 
-func (s *session) AccessProjectGrant(ctx context.Context, user_id string, project_id tracker.ProjectID) (accessstore.ProjectGrant, error) {
+func (s *session) AccessProjectGrant(ctx context.Context, user_id string, project_id tracker.ProjectID, role string) (accessstore.ProjectGrant, error) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
-	key := projectAccessKey{principal: user_id, project: project_id}
+	key := projectAccessKey{principal: user_id, project: project_id, role: role}
 	if row, ok := s.projectGrants[key]; ok {
 		return row, nil
 	}
 	var row accessstore.ProjectGrant
-	err := s.db.QueryRow(ctx, `SELECT organization_id,user_id,project_id,can_write,manage_runner FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3`+s.accessLock(), s.organization, user_id, project_id).Scan(&row.OrganizationID, &row.UserID, &row.ProjectID, &row.CanWrite, &row.ManageRunner)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && (!row.CanWrite || !row.ManageRunner) {
+	err := s.db.QueryRow(ctx, `SELECT organization_id,user_id,project_id,can_write,manage_runner FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3 AND (explicit OR NOT hosted_administrator_access(organization_id,user_id,''))`+s.accessLock(), s.organization, user_id, project_id).Scan(&row.OrganizationID, &row.UserID, &row.ProjectID, &row.CanWrite, &row.ManageRunner)
+	if accessstore.RoleGrantsProjectAccess(role) && (errors.Is(err, pgx.ErrNoRows) || err == nil && (!row.CanWrite || !row.ManageRunner)) {
 		var administrator bool
-		roleErr := s.db.QueryRow(ctx, `SELECT hosted_administrator_access(m.organization_id,m.user_id,'') FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.id=$3 AND p.deleted_at IS NULL WHERE m.organization_id=$1 AND m.user_id=$2`+s.accessLockOf("m"), s.organization, user_id, project_id).Scan(&administrator)
+		roleErr := s.db.QueryRow(ctx, `SELECT hosted_administrator_access(m.organization_id,m.user_id,'',$4) FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.id=$3 AND p.deleted_at IS NULL WHERE m.organization_id=$1 AND m.user_id=$2`+s.accessLockOf("m"), s.organization, user_id, project_id, role).Scan(&administrator)
 		switch {
 		case roleErr == nil && administrator:
 			row, err = accessstore.ProjectGrant{OrganizationID: s.organization, UserID: user_id, ProjectID: project_id, CanWrite: true, ManageRunner: true}, nil
@@ -261,18 +261,18 @@ func (s *session) CreateAccessProjectGrant(ctx context.Context, row accessstore.
 	return mapError(ctx, err)
 }
 
-func (s *session) AccessTokenGrant(ctx context.Context, token_id string, project_id tracker.ProjectID) (accessstore.TokenGrant, error) {
+func (s *session) AccessTokenGrant(ctx context.Context, token_id string, project_id tracker.ProjectID, role string) (accessstore.TokenGrant, error) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
-	key := projectAccessKey{principal: token_id, project: project_id}
+	key := projectAccessKey{principal: token_id, project: project_id, role: role}
 	if row, ok := s.tokenGrants[key]; ok {
 		return row, nil
 	}
 	var row accessstore.TokenGrant
 	err := s.db.QueryRow(ctx, `SELECT organization_id,token_id,project_id FROM token_grants WHERE organization_id=$1 AND token_id=$2 AND project_id=$3`+s.accessLock(), s.organization, token_id, project_id).Scan(&row.OrganizationID, &row.TokenID, &row.ProjectID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) && accessstore.RoleGrantsProjectAccess(role) {
 		var administrator bool
-		roleErr := s.db.QueryRow(ctx, `SELECT hosted_administrator_access(m.organization_id,m.user_id,m.principal_id) FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.id=$3 AND p.deleted_at IS NULL WHERE m.organization_id=$1 AND m.principal_id=$2`+s.accessLockOf("m"), s.organization, token_id, project_id).Scan(&administrator)
+		roleErr := s.db.QueryRow(ctx, `SELECT hosted_administrator_access(m.organization_id,m.user_id,m.principal_id,$4) FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.id=$3 AND p.deleted_at IS NULL WHERE m.organization_id=$1 AND m.principal_id=$2`+s.accessLockOf("m"), s.organization, token_id, project_id, role).Scan(&administrator)
 		switch {
 		case roleErr == nil && administrator:
 			row, err = accessstore.TokenGrant{OrganizationID: s.organization, TokenID: token_id, ProjectID: project_id}, nil
@@ -625,6 +625,7 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 		return accessstore.Member{}, accessstore.ErrDenied
 	}
 	var member accessstore.Member
+	var role string
 	if authority.UserID != "" {
 		member, err = s.AccessMember(ctx, authority.UserID)
 		if err != nil {
@@ -643,10 +644,7 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 		if credential.ID != member.PrincipalID && (credential.UserID != member.UserID || credential.MembershipID != member.MembershipID) {
 			return member, accessstore.ErrDenied
 		}
-		role := member.Role
-		if authority.Role != "" {
-			role = accessstore.LesserRole(role, authority.Role)
-		}
+		role = authority.MemberRole(member.Role)
 		if authority.Admin && !accessstore.RoleAllows(role, apikey.ScopeAdmin) {
 			return member, accessstore.ErrDenied
 		}
@@ -665,19 +663,19 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 	}
 	if authority.ProjectID != "" && (credential.NativeOnly || credential.Scope != "admin") {
 		if member.UserID != "" {
-			grant, err := s.AccessProjectGrant(ctx, member.UserID, authority.ProjectID)
+			grant, err := s.AccessProjectGrant(ctx, member.UserID, authority.ProjectID, role)
 			if err != nil {
 				return member, accessAuthorizationError(err)
 			}
 			if authority.Write && !grant.CanWrite {
 				return member, accessstore.ErrDenied
 			}
-			if _, err := s.AccessTokenGrant(ctx, member.PrincipalID, authority.ProjectID); err != nil {
+			if _, err := s.AccessTokenGrant(ctx, member.PrincipalID, authority.ProjectID, role); err != nil {
 				return member, accessAuthorizationError(err)
 			}
 		}
 		if credential.ProjectAccess != "all" {
-			if _, err := s.AccessTokenGrant(ctx, credential.ID, authority.ProjectID); err != nil {
+			if _, err := s.AccessTokenGrant(ctx, credential.ID, authority.ProjectID, role); err != nil {
 				if !errors.Is(err, corestore.ErrNotFound) || errors.Is(err, tenantauth.ErrUnavailable) || member.UserID != "" || credential.Scope != "worker" || credential.Kind != "service" {
 					return member, accessAuthorizationError(err)
 				}

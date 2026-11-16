@@ -45,6 +45,7 @@ type Record struct {
 
 type Selection struct {
 	UserID               string
+	Role                 string
 	EnforceProjectGrants bool
 }
 

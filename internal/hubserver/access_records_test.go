@@ -296,7 +296,7 @@ func TestAccessInvitationLifecycleIsTenantScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := services["org_first"].accessRead(t.Context(), "org_first", func(r tenantstore.Reader) error {
-		grant, err := r.AccessProjectGrant(t.Context(), accepted.Subject, "project_second")
+		grant, err := r.AccessProjectGrant(t.Context(), accepted.Subject, "project_second", accessstore.NoRoleCeiling)
 		if err != nil || !grant.ManageRunner {
 			t.Fatalf("accepted project grant=%+v error=%v", grant, err)
 		}

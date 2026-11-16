@@ -976,7 +976,7 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 			}
 			var manageRunner bool
 			err = f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
-				grant, err := r.AccessProjectGrant(t.Context(), user.identity.Subject, tracker.ProjectID(project))
+				grant, err := r.AccessProjectGrant(t.Context(), user.identity.Subject, tracker.ProjectID(project), accessstore.NoRoleCeiling)
 				manageRunner = grant.ManageRunner
 				return err
 			})
@@ -990,14 +990,14 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					grant, err := r.AccessProjectGrant(t.Context(), member.UserID, tracker.ProjectID(project))
+					grant, err := r.AccessProjectGrant(t.Context(), member.UserID, tracker.ProjectID(project), accessstore.NoRoleCeiling)
 					if errors.Is(err, corestore.ErrNotFound) {
 						return nil
 					}
 					if err != nil {
 						return err
 					}
-					_, err = r.AccessTokenGrant(t.Context(), member.PrincipalID, tracker.ProjectID(project))
+					_, err = r.AccessTokenGrant(t.Context(), member.PrincipalID, tracker.ProjectID(project), accessstore.NoRoleCeiling)
 					if errors.Is(err, corestore.ErrNotFound) {
 						return nil
 					}
@@ -1018,7 +1018,7 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 			}
 			var inactiveGrants, audits int
 			err = f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
-				_, err := r.AccessProjectGrant(t.Context(), inactive.identity.Subject, tracker.ProjectID(project))
+				_, err := r.AccessProjectGrant(t.Context(), inactive.identity.Subject, tracker.ProjectID(project), accessstore.NoRoleCeiling)
 				if errors.Is(err, corestore.ErrNotFound) {
 					return nil
 				}

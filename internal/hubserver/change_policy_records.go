@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -219,7 +220,7 @@ func (s *Service) validateReviewPolicyPrincipalsIn(ctx context.Context, r tenant
 		if check.Source == "independent" && credential.Scope == string(hubapi.APIScopeWorker) {
 			return hubapi.NativePublicInvalid("Independent validation requires an operator credential")
 		}
-		if _, err := r.AccessTokenGrant(ctx, check.PrincipalID, scope.Project); err != nil {
+		if _, err := r.AccessTokenGrant(ctx, check.PrincipalID, scope.Project, accessstore.NoRoleCeiling); err != nil {
 			return hubapi.NativePublicInvalid("Expected CI principals must have an active project grant")
 		}
 	}

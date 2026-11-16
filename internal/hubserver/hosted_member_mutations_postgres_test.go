@@ -213,7 +213,7 @@ func TestPostgresMemberMutationRoutesPreserveCurrentAuthority(t *testing.T) {
 		}
 		service.config.AccessRepository = repository
 		if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
-			grant, err := r.AccessProjectGrant(t.Context(), user.identity.Subject, "prj_first")
+			grant, err := r.AccessProjectGrant(t.Context(), user.identity.Subject, "prj_first", accessstore.NoRoleCeiling)
 			if err == nil && (!grant.CanWrite || !grant.ManageRunner) {
 				t.Error("role change replaced project grants")
 			}
