@@ -215,3 +215,18 @@ func TestNumberQualifierPostgresCannotStore(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowQueryQuotesTerms(t *testing.T) {
+	for _, test := range []struct{ text, want string }{
+		{"magazine count reason code", "'magazine':* | 'count':* | 'reason':* | 'code':*"},
+		{"Count COUNT count", "'count':*"},
+		{`o'brien back\slash`, `'o':* | 'brien':* | 'back':* | 'slash':*`},
+		{"Café ÉCOLE", "'café':* | 'école':*"},
+		{"!!! :* & | ( )", ""},
+		{"", ""},
+	} {
+		if got := WindowQuery(test.text); got != test.want {
+			t.Errorf("WindowQuery(%q)=%q want %q", test.text, got, test.want)
+		}
+	}
+}

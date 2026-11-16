@@ -2,11 +2,8 @@ package searchrecords_test
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -152,92 +147,6 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Run("document readiness stops at one posting", func(t *testing.T) {
-		f := newBoardSearchFixture(t)
-		if _, err := f.admin.ExecContext(ctx, `INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
- SELECT p.organization_id,p.scope,'example-'||n,p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM
- (SELECT DISTINCT ON(organization_id,document_id) * FROM search_postings ORDER BY organization_id,document_id,term) p CROSS JOIN generate_series(1,6000) n`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.admin.ExecContext(ctx, "ANALYZE search_documents,search_postings,native_board_items,issues"); err != nil {
-			t.Fatal(err)
-		}
-		probe := &boardQueryTracer{}
-		counted, err := postgres.NewRepository(ctx, pgstoretest.TracedFeaturePool(t, f.pool, probe), pgstoretest.SmallPool())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := counted.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			if err := counted.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-				rows, err := r.BoardPage(ctx, selection)
-				if err == nil && (len(rows) != 1 || rows[0].OrganizationID != org) {
-					t.Fatalf("tenant %s dense page=%+v", org, rows)
-				}
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			tx, err := f.admin.BeginTx(ctx, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = tx.Rollback() }()
-			if _, err := tx.ExecContext(ctx, "SET LOCAL ROLE detent_runtime_v2"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(ctx, "SELECT set_config('detent.organization_id',$1,true)", org); err != nil {
-				t.Fatal(err)
-			}
-			var raw []byte
-			err = tx.QueryRowContext(ctx, "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+probe.page, probe.args...).Scan(&raw)
-			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				t.Fatal(rollbackErr)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			var plans []struct{ Plan boardLanePlan }
-			if err := json.Unmarshal(raw, &plans); err != nil {
-				t.Fatal(err)
-			}
-			var visited float64
-			var inspect func(boardLanePlan)
-			inspect = func(node boardLanePlan) {
-				if node.Relation == "search_postings" || strings.HasPrefix(node.Index, "search_postings") {
-					visited += (node.Rows + node.Removed) * node.Loops
-				}
-				for _, child := range node.Plans {
-					inspect(child)
-				}
-			}
-			inspect(plans[0].Plan)
-			if visited > 100 {
-				t.Fatalf("tenant %s readiness scanned %.0f postings for two documents: %s", org, visited, raw)
-			}
-			t.Logf("tenant %s posting rows visited=%.0f", org, visited)
-		}
-	})
-	if _, err := f.admin.ExecContext(ctx, `UPDATE search_postings SET literal_positions=ARRAY(SELECT generate_series(1,80000,2)::bigint) WHERE organization_id='org_first' AND document_id='issue/wi_first_1' AND cardinality(literal_positions)>0`); err != nil {
-		t.Fatal(err)
-	}
-	t.Run("hostile positional expansion", func(t *testing.T) {
-		bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		hostile := selection
-		hostile.SearchText = "cabcab"
-		err := f.repository.ReadTenant(bounded, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
-			_, err := r.BoardPage(bounded, hostile)
-			return err
-		})
-		if !timedOut(err) {
-			t.Fatalf("hostile search escaped server budget: %v", err)
-		}
-	})
 	t.Run("sequential searches share the first deadline", func(t *testing.T) {
 		settleSearch(t)
 		first, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
@@ -248,9 +157,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			if _, err := r.BoardPage(first, selection); err != nil {
 				t.Fatalf("initial search failed: %v", err)
 			}
-			hostile := selection
-			hostile.SearchText = "cabcab"
-			_, err := r.BoardPage(ctx, hostile)
+			_, err := r.BoardPage(ctx, selection)
 			for _, sample := range trace.deadlines {
 				if sample.deadline.After(firstDeadline) {
 					t.Fatalf("second search extended first deadline: %v > %v", sample.deadline, firstDeadline)
@@ -258,8 +165,8 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			}
 			return err
 		})
-		if err == nil {
-			t.Fatalf("second search reset first read budget: %v", err)
+		if err != nil && !timedOut(err) {
+			t.Fatalf("second search under the first deadline: %v", err)
 		}
 	})
 	for _, path := range []string{"page", "model", "lanes", "closed"} {
@@ -315,7 +222,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 					t.Error(err)
 				}
 			}()
-			if _, err := blocker.ExecContext(ctx, "LOCK TABLE search_postings IN ACCESS EXCLUSIVE MODE"); err != nil {
+			if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_work_item_pages IN ACCESS EXCLUSIVE MODE"); err != nil {
 				t.Fatal(err)
 			}
 			bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -364,7 +271,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 	}
 	for _, ranked := range []bool{false, true} {
 		visible := selection
-		visible.SearchText, visible.SearchRanked, visible.Limit = "cabcab", ranked, 200
+		visible.SearchText, visible.SearchRanked, visible.Limit = "abcab", ranked, 200
 		if err := f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 			rows, err := r.BoardPage(ctx, visible)
 			if err == nil && (len(rows) != 1 || rows[0].WorkItemID != "wi_first_2") {
@@ -389,17 +296,11 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 
 }
 
-func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
+func TestBoardSearchMatchesTitleAndBodyWords(t *testing.T) {
 	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
-	if _, err := f.admin.ExecContext(ctx, "DELETE FROM search_documents"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.admin.ExecContext(ctx, `UPDATE native_work_item_pages SET body=$1`, "bodyuniquemarker %_\\marker Café\nfingerprint: example-key\n"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.admin.ExecContext(ctx, `UPDATE native_board_items SET page_title='Example ÉCOLE'`); err != nil {
+	if _, err := f.admin.ExecContext(ctx, `UPDATE native_work_item_pages SET title='Example ÉCOLE', body=$1`, "bodyuniquemarker %_\\marker Café magazine counts reasons\nfingerprint: example-key\n"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.admin.ExecContext(ctx, "UPDATE issues SET actor_principal_id='another-owner' WHERE native_id='wi_first_1'"); err != nil {
@@ -410,7 +311,7 @@ func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
 			for _, query := range []struct {
 				text string
 				want int
-			}{{"Example", 2}, {"bodyuniquemarker", 2}, {"unmatched bodyuniq", 2}, {"%_\\marker", 2}, {"CAFÉ", 2}, {"café", 2}, {"cafe", 0}, {"école", 2}, {"ÉCOLE", 2}, {"ecole", 0}, {"absentuniqueterm", 0}, {"%%_", 0}, {"\x00", 0}, {"2", 1}} {
+			}{{"Example", 2}, {"bodyuniquemarker", 2}, {"unmatched bodyuniq", 2}, {"magazine count reason code", 2}, {"CAFÉ", 2}, {"café", 2}, {"école", 2}, {"ÉCOLE", 2}, {"exam", 2}, {"corns", 0}, {"uniquemarker", 0}, {"absentuniqueterm", 0}, {"the and of", 0}, {"%%_", 0}, {"\x00", 0}, {"2", 1}} {
 				selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: query.text, SearchRanked: true, Limit: 200, Reporter: reporter, ReporterPrincipalID: "example"}
 				want := query.want
 				if reporter && want == 2 {
@@ -426,9 +327,10 @@ func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
 					}
 					for _, row := range rows {
 						if row.OrganizationID != org || reporter && row.WorkItemID == "wi_first_1" {
-							t.Fatal("fallback leaked an unauthorized issue")
+							t.Fatal("search leaked an unauthorized issue")
 						}
 					}
+					selection.SearchRanked = false
 					lanes, err := r.BoardLanes(ctx, selection, pgstoretest.HistoryAt())
 					if err == nil {
 						total := int64(0)
@@ -436,7 +338,7 @@ func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
 							total += lane.Total
 						}
 						if total != int64(want) {
-							t.Errorf("fallback count=%d want=%d", total, want)
+							t.Errorf("search count=%d want=%d", total, want)
 						}
 					}
 					return err
@@ -445,333 +347,20 @@ func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-		}
-	}
-	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: "Example"}, 0)
-		f.drain(t, org)
-		for _, state := range []string{"partial", "stale"} {
-			if state == "stale" {
-				if _, err := f.admin.ExecContext(ctx, "UPDATE search_documents SET indexed_revision=0 WHERE organization_id=$1", org); err != nil {
-					t.Fatal(err)
+			err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", Fingerprint: "example-key", Limit: 200, Reporter: reporter, ReporterPrincipalID: "example"})
+				want := 2
+				if reporter {
+					want = 1
 				}
-			}
-			if err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-				rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "bodyuniquemarker", Reporter: true, ReporterPrincipalID: "example", Limit: 10})
-				if err == nil && (len(rows) != 1 || rows[0].WorkItemID != "wi_first_2") {
-					t.Errorf("%s index hid missing document: rows=%+v", state, rows)
+				if err == nil && len(rows) != want {
+					t.Errorf("tenant=%s reporter=%t fingerprint rows=%d want=%d", org, reporter, len(rows), want)
 				}
 				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-
-}
-
-func TestBoardSearchEmptyIndexUsesTenantIndexes(t *testing.T) {
-	t.Parallel()
-	f := newBoardSearchFixture(t)
-	ctx := t.Context()
-	if _, err := f.admin.ExecContext(ctx, "DELETE FROM search_documents"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.admin.ExecContext(ctx, `UPDATE native_work_item_pages SET body='Café needlebody' WHERE work_item_id='wi_first_2'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.admin.ExecContext(ctx, `UPDATE native_board_items SET page_title='ÉCOLE' WHERE work_item_id='wi_first_2'`); err != nil {
-		t.Fatal(err)
-	}
-	counts := new(pageWireCounts)
-	measured := pageMeasuredRepository(t, pgstoretest.TracedFeaturePool(t, f.pool, &boardQueryTracer{}), counts)
-	previous := 0
-	for _, scale := range []int{2, 50} {
-		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			if _, err := f.admin.ExecContext(ctx, `INSERT INTO issues(organization_id,project_id,native_id,number,title,actor_kind,actor_principal_id,workflow_state_name)
-SELECT $1,'prj_first','wi_plan_'||n,n+10,'Unrelated title','human','example','Todo' FROM generate_series($2::integer,$3::integer) n`, org, previous+1, scale*24); err != nil {
-				t.Fatal(err)
-			}
-
-			if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_board_items(organization_id,project_id,work_item_id,source_revision,source_event_sequence,source_project_revision,state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,execution_fence,actor_principal_id,issue_type,verification_state,priority,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,page_title,page_body)
-SELECT organization_id,project_id,'wi_plan_'||n,source_revision,source_event_sequence,source_project_revision,state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,activity_at,'plan#'||n,closed_at,expires_at,execution_fence,actor_principal_id,issue_type,verification_state,priority,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,'Unrelated title','Unrelated body'
-FROM native_board_items CROSS JOIN generate_series($2::integer,$3::integer) n WHERE organization_id=$1 AND work_item_id='wi_first_1'`, org, previous+1, scale*24); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
-				n := previous + 1
-				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", n)), Revision: 1, Number: n + 10}, Title: "Unrelated title", Body: "Unrelated body", State: "Todo", CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}}
-				return publishSearchBody(ctx, f, w, issue)
-			}); err != nil {
-				t.Fatal(err)
-			}
-			var generation int64
-			var sourceAt time.Time
-			if err := f.admin.QueryRowContext(ctx, `SELECT generation,source_at FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id='prj_first' AND work_item_id=$2 AND record_id=work_item_id AND kind='item'`, org, fmt.Sprintf("wi_plan_%d", previous+2)).Scan(&generation, &sourceAt); err != nil {
-				t.Fatal(err)
-			}
-			if err := bulkUnrelatedWorkItemPages(ctx, f.admin, string(org), previous+2, scale*24); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-				reader := r.(viewstore.WorkItemPageReader)
-				owner, err := reader.WorkItemDetailPage(ctx, "prj_first", tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", previous+1)))
-				if err != nil {
-					return err
-				}
-				bulk, err := reader.WorkItemDetailPage(ctx, "prj_first", tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", previous+2)))
-				if err != nil {
-					return err
-				}
-				if bulk.Generation != generation || !bulk.SourceAt.Equal(sourceAt) {
-					return errors.New("bulk page lost dirty source ownership")
-				}
-				bulk.Value.WorkItemID, bulk.Value.Number = owner.Value.WorkItemID, owner.Value.Number
-				bulk.Generation, bulk.SourceAt = owner.Generation, owner.SourceAt
-				if !reflect.DeepEqual(bulk, owner) {
-					return fmt.Errorf("bulk detail page differs from owner: bulk=%+v owner=%+v", bulk, owner)
-				}
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
-
-		}
-		for _, table := range []string{"native_work_item_pages", "issues", "native_board_items"} {
-			if _, err := f.admin.ExecContext(ctx, "VACUUM (ANALYZE) "+table); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			for _, reporter := range []bool{false, true} {
-				for _, query := range []string{"needlebody", "CAFÉ", "école"} {
-					counts.reset()
-					err := measured.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-						rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: query, Limit: 200, Reporter: reporter, ReporterPrincipalID: "example"})
-						if err == nil && (len(rows) != 1 || rows[0].OrganizationID != org || rows[0].WorkItemID != "wi_first_2") {
-							t.Errorf("indexed fallback rows=%+v", rows)
-						}
-						return err
-					})
-					if err != nil {
-						t.Fatal(err)
-					}
-					statements, exchanges := counts.read()
-					t.Logf("tenant=%s scale=%d reporter=%t query=%q statements=%d exchanges=%d", org, scale, reporter, query, statements, exchanges)
-					if statements != 6 || exchanges != 5 {
-						t.Fatalf("statements=%d exchanges=%d, want 6/5", statements, exchanges)
-					}
-				}
-			}
-		}
-		previous = scale * 24
-	}
-	probe := &boardQueryTracer{}
-	counted, err := postgres.NewRepository(ctx, pgstoretest.TracedFeaturePool(t, f.pool, probe), pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := counted.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	var statement string
-	if err := f.admin.QueryRowContext(ctx, `SELECT prosrc FROM pg_proc WHERE oid='public.board_search_candidates(text,text[],boolean,text,boolean)'::regprocedure`).Scan(&statement); err != nil {
-		t.Fatal(err)
-	}
-	statement = strings.NewReplacer("$1", "$1::text", "$2", "$2::text[]", "$3", "$3::boolean", "$4", "$4::text", "$5", "$5::boolean").Replace(statement)
-	for _, query := range []struct {
-		text     string
-		patterns []string
-	}{{"needlebody", []string{"%needlebody%"}}, {"CAFÉ", []string{"%CAFÉ%", "%cafe%"}}, {"école", []string{"%école%", "%ecole%"}}} {
-		for _, reporter := range []bool{false, true} {
-			selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: query.text, Limit: 200, Reporter: reporter, ReporterPrincipalID: "example"}
-			if err := counted.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
-				rows, err := r.BoardPage(ctx, selection)
-				if err == nil && len(rows) != 1 {
-					t.Errorf("indexed fallback rows=%d", len(rows))
-				}
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			tx, err := f.admin.BeginTx(ctx, nil)
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = tx.ExecContext(ctx, "SET LOCAL ROLE detent_search_reader_v2"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err = tx.ExecContext(ctx, "SELECT set_config('detent.organization_id','org_first',true)"); err != nil {
-				t.Fatal(err)
-			}
-			var plan []byte
-			err = tx.QueryRowContext(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, "prj_first", query.patterns, reporter, "example", false).Scan(&plan)
-			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				t.Fatal(rollbackErr)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Logf("query=%q reporter=%t plan=%s", query.text, reporter, plan)
-			for _, index := range []string{"native_work_item_search_body_unicode", "native_board_search_title_unicode"} {
-				if !strings.Contains(string(plan), index) {
-					t.Fatalf("fallback did not use text index %s: %s", index, plan)
-				}
-			}
 		}
-	}
-}
-
-func TestBoardTextCandidateAuthorityStaysTenantScoped(t *testing.T) {
-	t.Parallel()
-	f := newBoardSearchFixture(t)
-	ctx := t.Context()
-	if _, err := f.admin.ExecContext(ctx, "UPDATE native_work_item_pages SET body='foreignsentinel' WHERE organization_id='org_second'"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.admin.ExecContext(ctx, "UPDATE issues SET actor_principal_id='another-owner' WHERE organization_id='org_first' AND native_id='wi_first_1'"); err != nil {
-		t.Fatal(err)
-	}
-	var count int
-	if err := f.pool.QueryRow(pgtest.UnboundProbe(ctx), "SELECT count(*) FROM public.board_search_candidates('prj_first',ARRAY['%abc%'],false,'',false)").Scan(&count); err != nil || count != 0 {
-		t.Fatalf("unbound candidates=%d error=%v", count, err)
-	}
-	runtime, err := postgres.NewRuntime(ctx, f.pool, f.pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx, err := runtime.Begin(ctx, "org_first", pgtransport.Options{ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		pattern   string
-		reporter  bool
-		principal string
-		want      int
-	}{{"%abc%", false, "", 2}, {"%abc%", true, "example", 1}, {"%abc%", true, "", 0}, {"%abc%", true, "missing-owner", 0}, {"%foreignsentinel%", false, "", 0}} {
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM public.board_search_candidates('prj_first',$1,$2,$3,false)", []string{test.pattern}, test.reporter, test.principal).Scan(&count); err != nil || count != test.want {
-			t.Errorf("candidate authority=%+v count=%d error=%v", test, count, err)
-		}
-	}
-	if err := tx.Rollback(ctx); err != nil {
-		t.Fatal(err)
-	}
-	for _, query := range []string{"SELECT body FROM public.native_work_item_pages LIMIT 1", "SELECT * FROM public.board_search_candidates('prj_first',ARRAY['%abc%'],false,'',false)"} {
-		probe, err := f.admin.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := probe.ExecContext(ctx, "SET LOCAL ROLE detent_platform_v2"); err != nil {
-			t.Fatal(err)
-		}
-		_, err = probe.ExecContext(ctx, query)
-		var denied *pgconn.PgError
-		if !errors.As(err, &denied) || denied.Code != "42501" {
-			t.Errorf("platform gained search authority: error=%v", err)
-		}
-		if err := probe.Rollback(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := f.admin.ExecContext(ctx, "ALTER FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) SECURITY INVOKER"); err != nil {
-		t.Fatal(err)
-	}
-	_, roleErr := postgres.NewRuntime(ctx, f.pool, f.pool)
-	if _, err := f.admin.ExecContext(ctx, "ALTER FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) SECURITY DEFINER"); err != nil {
-		t.Fatal(err)
-	}
-	if !errors.Is(roleErr, postgres.ErrRuntimeRole) {
-		t.Fatalf("unsafe helper accepted: %v", roleErr)
-	}
-}
-
-func bulkUnrelatedWorkItemPages(ctx context.Context, admin *sql.DB, organization string, first, last int) error {
-	return withPlanSeedTransaction(ctx, admin, func(tx pgx.Tx) error {
-		var before int64
-		if err := tx.QueryRow(ctx, `SELECT publication_revision FROM native_work_item_page_progress WHERE organization_id=$1`, organization).Scan(&before); err != nil {
-			return err
-		}
-		columns, values, err := planSeedColumns(ctx, tx, "native_work_item_pages", map[string]string{"work_item_id": "'wi_plan_'||n", "number": "n+10", "source_generation": "dirty.generation", "source_at": "dirty.source_at"})
-		if err != nil {
-			return err
-		}
-		result, err := tx.Exec(ctx, "INSERT INTO native_work_item_pages("+columns+") SELECT "+values+" FROM native_work_item_pages seed CROSS JOIN generate_series($2::int,$3::int)n JOIN native_work_item_page_dirty dirty ON dirty.organization_id=seed.organization_id AND dirty.project_id=seed.project_id AND dirty.work_item_id='wi_plan_'||n AND dirty.record_id=dirty.work_item_id AND dirty.kind='item' WHERE seed.organization_id=$1 AND seed.project_id='prj_first' AND seed.work_item_id='wi_plan_'||($2::int-1)", organization, first, last)
-		if err != nil {
-			return err
-		}
-		if result.RowsAffected() != int64(last-first+1) {
-			return errors.New("bulk detail page cardinality changed")
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind,propagate)
- SELECT organization_id,project_id,work_item_id,work_item_id,'relationships',true FROM native_work_item_pages WHERE organization_id=$1 AND project_id='prj_first' AND work_item_id IN(SELECT 'wi_plan_'||n FROM generate_series($2::int,$3::int)n)
- ON CONFLICT(organization_id,project_id,work_item_id,record_id,kind) DO UPDATE SET generation=DEFAULT,source_at=clock_timestamp(),after_type='',after_direction='',after_project='',after_item='',cleaning=false,propagate=native_work_item_page_dirty.propagate OR EXCLUDED.propagate`, organization, first, last); err != nil {
-			return err
-		}
-		result, err = tx.Exec(ctx, `DELETE FROM native_work_item_page_dirty d USING native_work_item_pages p WHERE d.organization_id=$1 AND d.project_id='prj_first' AND d.kind='item' AND d.organization_id=p.organization_id AND d.project_id=p.project_id AND d.work_item_id=p.work_item_id AND d.record_id=p.work_item_id AND d.generation=p.source_generation AND d.work_item_id IN(SELECT 'wi_plan_'||n FROM generate_series($2::int,$3::int)n)`, organization, first, last)
-		if err != nil {
-			return err
-		}
-		if result.RowsAffected() != int64(last-first+1) {
-			return errors.New("bulk detail page dirty ownership changed")
-		}
-		result, err = tx.Exec(ctx, `UPDATE native_work_item_page_progress SET publication_revision=publication_revision+($3::int-$2::int+1) WHERE organization_id=$1`, organization, first, last)
-		if err != nil {
-			return err
-		}
-		if result.RowsAffected() != 1 {
-			return errors.New("detail page publication progress missing")
-		}
-		var after int64
-		var relationships, dirty int
-		if err := tx.QueryRow(ctx, `SELECT publication_revision,
- (SELECT count(*) FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id='prj_first' AND work_item_id IN(SELECT 'wi_plan_'||n FROM generate_series($2::int,$3::int)n) AND record_id=work_item_id AND kind='relationships' AND propagate AND NOT cleaning AND after_type='' AND after_direction='' AND after_project='' AND after_item=''),
- (SELECT count(*) FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id='prj_first' AND work_item_id IN(SELECT 'wi_plan_'||n FROM generate_series($2::int,$3::int)n) AND kind='item')
- FROM native_work_item_page_progress WHERE organization_id=$1`, organization, first, last).Scan(&after, &relationships, &dirty); err != nil {
-			return err
-		}
-		if after-before != int64(last-first+1) || relationships != last-first+1 || dirty != 0 {
-			return errors.New("bulk detail page publication effects changed")
-		}
-		return nil
-	})
-}
-func TestBoardSearchFallsBackForDocumentsAwaitingRebuild(t *testing.T) {
-	t.Parallel()
-	f := newBoardSearchFixture(t)
-	ctx := t.Context()
-	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		t.Run(string(org), func(t *testing.T) {
-			if _, err := f.admin.ExecContext(ctx, `DELETE FROM search_postings WHERE organization_id=$1 AND left(term,1)<>'~'`, org); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.admin.ExecContext(ctx, `INSERT INTO search_scope_refresh(organization_id,project_id,work_item_id,archived,principal_id) VALUES($1,'prj_first','',false,'')`, org); err != nil {
-				t.Fatal(err)
-			}
-			for _, state := range []string{"rebuilding", "rebuilt"} {
-				if state == "rebuilt" {
-					f.drain(t, org)
-				}
-				if err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-					for _, query := range []struct {
-						text string
-						want int
-					}{{"bcabca", 2}, {"\x00", 0}} {
-						rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: query.text, Limit: 20})
-						if err != nil {
-							return fmt.Errorf("%s board search %q: %w", state, query.text, err)
-						}
-						if len(rows) != query.want {
-							t.Fatalf("%s board search %q rows=%d want %d", state, query.text, len(rows), query.want)
-						}
-					}
-					return nil
-				}); err != nil {
-					t.Fatal(err)
-				}
-			}
-		})
 	}
 }

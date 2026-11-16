@@ -17,19 +17,14 @@ type DuplicateMatch struct {
 	Fingerprint bool
 }
 
-func MatchDuplicateSource(source DuplicateSource, text Text, parent Text, request Text) (DuplicateMatch, bool) {
+func MatchDuplicateSource(source DuplicateSource, request Text) (DuplicateMatch, bool) {
+	text := source.Text
 	source.Statistics = Describe(source.Document, text)
 	match := DuplicateMatch{Source: source}
 	if source.Statistics.Validate() != nil {
 		return match, false
 	}
 	previous := text.Body
-	if source.Document.Payload != source.Parent.Payload {
-		previous = parent.Body
-	}
-	if source.Document.Kind == "comment" {
-		previous = parent.Body + "\n" + text.Body
-	}
 	if _, stamped := issueorigin.Parse(request.Body); stamped {
 		same := issueorigin.SameDefect(previous, request.Body)
 		if string(source.Document.ProjectID) == issueorigin.DetentCloudProjectID {
@@ -180,6 +175,17 @@ func DuplicateQueryExpressions(organization tracker.OrganizationID, project trac
 	prefix := Prefix(organization, project)
 	for i, term := range terms {
 		terms[i] = quote(prefix+"w"+term) + ":*"
+	}
+	return terms
+}
+
+func DuplicateWindowTerms(content string) []string {
+	terms := duplicateTerms(content)
+	if len(terms) > TermLimit {
+		terms = terms[:TermLimit]
+	}
+	for i, term := range terms {
+		terms[i] = quote(term) + ":*"
 	}
 	return terms
 }

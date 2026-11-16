@@ -2,10 +2,7 @@ package postgres
 
 import (
 	"context"
-	"errors"
-	"strings"
 
-	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -14,8 +11,13 @@ import (
 )
 
 func (s *session) DuplicateSourceState(ctx context.Context, project tracker.ProjectID) (searchstore.DuplicateSourceState, error) {
-	row, err := s.queries.DuplicateSourceState(ctx, pgquery.DuplicateSourceStateParams{OrganizationID: s.organization, ProjectID: project})
-	return searchstore.DuplicateSourceState{Sequence: row.SourceSequence, Ready: row.Ready}, mapError(ctx, err)
+	var state searchstore.DuplicateSourceState
+	err := s.db.QueryRow(ctx, `SELECT (p.duplicate_source_sequence+p.content_settings_revision+coalesce(s.revision,0))::bigint,
+ EXISTS(SELECT 1 FROM native_work_item_page_progress g WHERE g.organization_id=p.organization_id AND g.backfill_phase>=1)
+ AND NOT EXISTS(SELECT 1 FROM native_work_item_page_dirty d WHERE d.organization_id=p.organization_id AND d.project_id=p.id AND d.kind='item')
+FROM projects p LEFT JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
+WHERE p.organization_id=$1 AND p.id=$2 AND p.deleted_at IS NULL`, s.organization, project).Scan(&state.Sequence, &state.Ready)
+	return state, mapError(ctx, err)
 }
 
 func (s *session) LockDuplicateSource(ctx context.Context, project tracker.ProjectID, expected int64) error {
@@ -58,72 +60,55 @@ func (s *session) DuplicateSources(ctx context.Context, query searchstore.Duplic
 	if query.Reporter != nil {
 		principal = *query.Reporter
 	}
-	expression := ""
-	searchQuery := searchstore.Query{ProjectID: query.ProjectID, Text: query.Text, Exact: query.Exact}
-	if query.Exact {
-		expression = searchstore.LiteralExpression(s.organization, searchQuery)
-	} else {
-		words := searchstore.Expressions(s.organization, searchQuery)
-		if len(words) > 0 {
-			expression = "(" + strings.Join(words, " | ") + ")"
-		}
-		if literal := searchstore.LiteralExpression(s.organization, searchQuery); literal != "" {
-			if expression != "" {
-				expression += " | "
-			}
-			expression += "(" + literal + ")"
-		}
-	}
-	if expression == "" {
-		return page, searchstore.ErrInvalid
-	}
 	request := searchstore.Text{Title: query.Text}
 	if query.Request != nil {
 		request = *query.Request
 	}
-	titleExpressions, titleMinimum := duplicateThreshold(s.organization, query.ProjectID, request.Title, true)
-	bodyExpressions, bodyMinimum := duplicateThreshold(s.organization, query.ProjectID, request.Body, false)
-	if !query.Exact {
-		for _, terms := range [][]string{titleExpressions, bodyExpressions} {
-			if len(terms) > 0 {
-				expression = "(" + expression + ") | (" + strings.Join(terms, " | ") + ")"
-			}
-		}
+	titleTerms, titleMinimum := duplicateThreshold(request.Title, true)
+	bodyTerms, bodyMinimum := duplicateThreshold(request.Body, false)
+	keys := searchstore.DuplicateFingerprintKeys(request.Body, false)
+	if keys == nil {
+		keys = []string{}
 	}
-	literal := searchstore.LiteralExpression(s.organization, searchQuery)
-	fingerprint := searchstore.DuplicateFingerprintExpression(s.organization, query.ProjectID, request.Body)
-	if fingerprint != "" {
-		expression = "(" + expression + ") | (" + fingerprint + ")"
-	}
-	rows, err := s.queries.DuplicateSources(ctx, pgquery.DuplicateSourcesParams{Exact: query.Exact, Machine: query.Machine, LiteralExpression: literal, FingerprintExpression: fingerprint, TitleExpressions: titleExpressions, TitleMinimum: titleMinimum, BodyExpressions: bodyExpressions, BodyMinimum: bodyMinimum, Expression: expression, OrganizationID: s.organization, ProjectID: new(query.ProjectID), Reporter: query.Reporter != nil, PrincipalID: principal, TerminalAfter: query.Now.AddDate(0, 0, -30)})
+	rows, err := s.db.Query(ctx, `WITH window_items AS MATERIALIZED (
+ SELECT work_item_id,number,revision,title,left(body,$9) AS body,search_vector,terminal,archived,closed_at,created_at
+ FROM native_work_item_pages WHERE organization_id=$1 AND project_id=$2 ORDER BY number DESC,work_item_id LIMIT $10
+), matched AS MATERIALIZED (
+ SELECT w.*,EXISTS(SELECT 1 FROM unnest($3::text[]) k WHERE position(k IN w.body)>0) AS fingerprint_hit,
+ (SELECT count(*) FROM unnest($4::text[]) term WHERE w.search_vector @@ to_tsquery('pg_catalog.english',term)) AS title_hits,
+ (SELECT count(*) FROM unnest($6::text[]) term WHERE w.search_vector @@ to_tsquery('pg_catalog.english',term)) AS body_hits
+ FROM window_items w WHERE NOT w.archived AND ($11::boolean OR NOT w.terminal OR coalesce(w.closed_at,w.created_at)>=$12)
+)
+SELECT m.work_item_id,m.number,m.revision,m.title,m.body,m.terminal,i.workflow_state_name,m.fingerprint_hit
+FROM matched m JOIN issues i ON i.organization_id=$1 AND i.project_id=$2 AND i.native_id=m.work_item_id AND i.revision=m.revision AND NOT i.archived
+WHERE (m.fingerprint_hit OR (cardinality($4::text[])>0 AND m.title_hits>=$5) OR (cardinality($6::text[])>0 AND m.body_hits>=$7))
+ AND (NOT $8::boolean OR i.actor_principal_id=$13)
+ORDER BY m.fingerprint_hit DESC,greatest(m.title_hits,m.body_hits) DESC,m.number DESC,m.work_item_id
+LIMIT $14`, s.organization, query.ProjectID, keys, titleTerms, titleMinimum, bodyTerms, bodyMinimum, query.Reporter != nil, searchstore.WindowBodyChars, searchstore.WindowRows, query.Machine, query.Now.AddDate(0, 0, -30), principal, searchstore.DuplicateCandidates)
 	if err != nil {
 		return page, mapError(ctx, err)
 	}
-	page.Exhausted = true
-	parents := make(map[tracker.NativeWorkItemID]searchstore.Document)
-	for _, row := range rows {
-		document := searchDocument(row.SearchDocument)
-		parent := document
-		if document.Kind == "comment" {
-			var found bool
-			parent, found = parents[document.WorkItemID]
-			if !found {
-				record, err := s.queries.DuplicateParentSource(ctx, pgquery.DuplicateParentSourceParams{OrganizationID: s.organization, ProjectID: new(query.ProjectID), SourceID: string(document.WorkItemID)})
-				if errors.Is(err, pgx.ErrNoRows) {
-					return searchstore.DuplicateSourcePage{State: searchstore.DuplicateSourceState{Sequence: state.Sequence}}, searchstore.ErrIndexPending
-				}
-				if err != nil {
-					return searchstore.DuplicateSourcePage{}, mapError(ctx, err)
-				}
-				if record.Revision != row.IssueRevision {
-					return searchstore.DuplicateSourcePage{State: searchstore.DuplicateSourceState{Sequence: state.Sequence}}, searchstore.ErrIndexPending
-				}
-				parent = searchDocument(record)
-				parents[document.WorkItemID] = parent
-			}
+	defer rows.Close()
+	for rows.Next() {
+		var source searchstore.DuplicateSource
+		var item string
+		var revision int64
+		var state *string
+		var fingerprint bool
+		if err := rows.Scan(&item, &source.Number, &revision, &source.Text.Title, &source.Text.Body, &source.Terminal, &state, &fingerprint); err != nil {
+			return page, mapError(ctx, err)
 		}
-		page.Sources = append(page.Sources, searchstore.DuplicateSource{Parent: parent, Document: duplicateCandidateDocument(row.SearchDocument, query.Machine), Statistics: searchstore.Statistics{Tokens: row.SourceTokens, Terms: row.SourceTerms, Frequencies: row.SourceFrequencies}, Revision: tracker.Revision(row.IssueRevision), Number: row.IssueNumber, State: row.IssueState, Terminal: row.Terminal})
+		if state != nil {
+			source.State = *state
+		}
+		source.Revision = tracker.Revision(revision)
+		source.Document = searchstore.Document{OrganizationID: s.organization, ProjectID: query.ProjectID, WorkItemID: tracker.NativeWorkItemID(item), ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: revision}
+		page.Sources = append(page.Sources, source)
 	}
+	if err := rows.Err(); err != nil {
+		return page, mapError(ctx, err)
+	}
+	page.Exhausted = true
 	current, err := s.DuplicateSourceState(ctx, query.ProjectID)
 	if err != nil {
 		return page, err
@@ -153,24 +138,13 @@ func (s *session) lockDuplicateSourceDocument(ctx context.Context, id string) er
 	return s.lockDuplicateSourceProject(ctx, *identity.ProjectID, identity.Kind)
 }
 
-func duplicateThreshold(organization tracker.OrganizationID, project tracker.ProjectID, content string, title bool) ([]string, int64) {
-	terms := searchstore.DuplicateQueryExpressions(organization, project, content)
+func duplicateThreshold(content string, title bool) ([]string, int64) {
+	terms := searchstore.DuplicateWindowTerms(content)
 	minimum := max(2, (len(terms)*3+4)/5)
 	if title && len(terms) == 1 {
 		minimum = 1
 	}
 	return terms, int64(minimum)
-}
-
-func duplicateCandidateDocument(row pgquery.SearchDocument, machine bool) searchstore.Document {
-	document := searchDocument(row)
-	if !machine && row.Kind == "issue" && row.AggregateObjectKey != nil && row.AggregateSha256 != nil && row.AggregateBytes.Valid && row.AggregateContentBytes.Valid {
-		document.Payload.Key = *row.AggregateObjectKey
-		document.Payload.SHA256 = *row.AggregateSha256
-		document.Payload.CompressedSize = row.AggregateBytes.Int64
-		document.Payload.UncompressedSize = row.AggregateContentBytes.Int64
-	}
-	return document
 }
 
 func (s *session) advanceDuplicateSource(ctx context.Context, project tracker.ProjectID) error {

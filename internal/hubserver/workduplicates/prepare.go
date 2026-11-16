@@ -64,25 +64,12 @@ func Prepare(ctx context.Context, deps Deps, scope hubscope.NativeScope, request
 	if err != nil {
 		return nil, err
 	}
-	if len(page.Sources) > 5 {
+	if len(page.Sources) > searchstore.DuplicateCandidates {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	content := searchstore.NewContent(deps.Details)
 	var matches []searchstore.DuplicateMatch
 	for _, source := range page.Sources {
-		text, err := content.Read(ctx, source.Document)
-		if err != nil {
-			return nil, err
-		}
-		source.Statistics = searchstore.Describe(source.Document, text)
-		parent := text
-		if source.Document.Kind == "comment" || source.Document.Payload != source.Parent.Payload {
-			parent, err = content.Read(ctx, source.Parent)
-			if err != nil {
-				return nil, err
-			}
-		}
-		match, matched := searchstore.MatchDuplicateSource(source, text, parent, searchstore.Text{Title: request.Title, Body: request.Body})
+		match, matched := searchstore.MatchDuplicateSource(source, searchstore.Text{Title: request.Title, Body: request.Body})
 		if matched && (!machine || match.Fingerprint) {
 			matches = searchstore.MergeDuplicateMatches(matches, []searchstore.DuplicateMatch{match})
 		}

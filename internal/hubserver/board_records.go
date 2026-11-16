@@ -505,6 +505,9 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		}
 		cursor.Issues = boardRecordCursor(returned[len(returned)-1], selection.ClosedOrder, snapshot.Sequence)
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
+	} else if selection.SearchRanked && !selection.ClosedOrder && snapshot.SearchWindowEnd != nil {
+		cursor.Issues = &nativeIssuePageCursor{Sequence: &snapshot.Sequence, SearchNumber: *snapshot.SearchWindowEnd}
+		page.NextCursor, err = encodeNativeCursor(cursor, key)
 	}
 	return page, cursors, err
 }

@@ -34,8 +34,8 @@ func TestDuplicateCommentsPreserveReleaseIdentity(t *testing.T) {
 		{"other project retains defect matching", "prj_example", "", "release/v1.2", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			source := DuplicateSource{Document: Document{OrganizationID: "org_example", ProjectID: test.project, WorkItemID: "wi_example", Kind: "comment"}}
-			match, found := MatchDuplicateSource(source, Text{Body: "Another occurrence of the reported failure"}, report(test.previous), report(test.incoming))
+			source := DuplicateSource{Document: Document{OrganizationID: "org_example", ProjectID: test.project, WorkItemID: "wi_example", Kind: "issue"}, Text: report(test.previous)}
+			match, found := MatchDuplicateSource(source, report(test.incoming))
 			if match.Fingerprint != test.want || test.want && !found {
 				t.Fatalf("comment fingerprint=%t found=%t, want fingerprint=%t", match.Fingerprint, found, test.want)
 			}

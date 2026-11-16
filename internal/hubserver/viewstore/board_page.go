@@ -14,6 +14,7 @@ type BoardModelPage struct {
 	Records         []BoardRecord
 	WorkRecords     []BoardRecord
 	Sequence        int64
+	SearchWindowEnd *int64
 }
 
 type BoardSummaryRecord struct {

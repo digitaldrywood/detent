@@ -4303,20 +4303,6 @@
         ]
       }
     },
-    "internal/hubserver/postgres/board_card_columns.go": {
-      "disposition": "target-adapter",
-      "families": [
-        "board"
-      ],
-      "inventory": {
-        "operations": {
-          "boardCardUpsertSQL:SQL": 1
-        },
-        "tables": [
-          "hub/native_board_items"
-        ]
-      }
-    },
     "internal/hubserver/postgres/board_change_rows.go": {
       "disposition": "target-adapter",
       "families": [
@@ -4370,7 +4356,8 @@
           "session.beginBoardSearch:QueryRow": 2,
           "session.beginBoardSearch:SQL": 1,
           "session.boardModelQuery:SQL": 1,
-          "session.boardSearchModelPages:QueryRow": 3
+          "session.boardSearchModelPages:QueryRow": 3,
+          "session.boardSearchModelPages:SQL": 1
         },
         "tables": [
           "hub/native_board_items",
@@ -4448,7 +4435,21 @@
         "tables": []
       }
     },
-    "internal/hubserver/postgres/board_view_reads.go": {
+    "internal/hubserver/postgres/boardviewsql/cards.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "board"
+      ],
+      "inventory": {
+        "operations": {
+          "CardUpsertSQL:SQL": 1
+        },
+        "tables": [
+          "hub/native_board_items"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/boardviewsql/statement.go": {
       "disposition": "target-adapter",
       "families": [
         "board"
@@ -4456,8 +4457,7 @@
       "inventory": {
         "operations": {
           "boardViewRow:SQL": 1,
-          "boardViewSQL:SQL": 1,
-          "session.BoardView:Query": 1
+          "boardViewSQL:SQL": 1
         },
         "tables": [
           "hub/projects"
@@ -5512,12 +5512,10 @@
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
-          "session.DuplicateSourceState:generated:DuplicateSourceState": 1,
-          "session.DuplicateSourceState:query-receiver": 1,
+          "session.DuplicateSourceState:QueryRow": 1,
+          "session.DuplicateSourceState:SQL": 1,
           "session.DuplicateSources:Query": 1,
-          "session.DuplicateSources:generated:DuplicateParentSource": 1,
-          "session.DuplicateSources:generated:DuplicateSources": 1,
-          "session.DuplicateSources:query-receiver": 2,
+          "session.DuplicateSources:SQL": 1,
           "session.LockDuplicateSource:generated:LockActiveProject": 1,
           "session.LockDuplicateSource:query-receiver": 1,
           "session.advanceDuplicateSource:generated:AdvanceDuplicateSource": 1,
@@ -5527,7 +5525,10 @@
           "session.lockDuplicateSourceProject:generated:DuplicateProjectLock": 1,
           "session.lockDuplicateSourceProject:query-receiver": 1
         },
-        "tables": []
+        "tables": [
+          "hub/issues",
+          "hub/projects"
+        ]
       }
     },
     "internal/hubserver/postgres/event_records.go": {
@@ -12470,6 +12471,18 @@
         "tables": [
           "hub/native_board_items"
         ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261116222600_work_item_search_window.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "search"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
       }
     },
     "internal/hubserver/postgres/monthly_costs.go": {
@@ -20157,8 +20170,8 @@
       ],
       "inventory": {
         "operations": {
-          "boardSearchFallbackSQL:SQL": 1,
-          "boardWhere:Query": 2,
+          "boardWhere:Query": 1,
+          "boardWhere:SQL": 3,
           "boardWorkOrderPendingSQL:SQL": 1,
           "session.BoardAccessRevisions:QueryRow": 1,
           "session.BoardAccessRevisions:SQL": 1,
@@ -20177,12 +20190,12 @@
           "session.BoardLanes:SQL": 3,
           "session.BoardSequence:QueryRow": 1,
           "session.BoardSequence:SQL": 1,
+          "session.BoardView:Query": 1,
           "session.NextBoardCandidate:QueryRow": 1,
           "session.NextBoardCandidate:SQL": 1,
-          "session.boardPage:Query": 2,
+          "session.boardPage:Query": 1,
           "session.boardPage:QueryRow": 1,
-          "session.boardPage:SQL": 2,
-          "session.boardSelectionWhere:QueryRow": 1
+          "session.boardPage:SQL": 2
         },
         "tables": [
           "hub/api_tokens",
@@ -20285,9 +20298,9 @@
           "session.CommentPageRecords:SQL": 1,
           "session.NextWorkItemPageCandidate:QueryRow": 1,
           "session.NextWorkItemPageCandidate:SQL": 1,
-          "session.PublishWorkItemPage:Exec": 2,
+          "session.PublishWorkItemPage:Exec": 3,
           "session.PublishWorkItemPage:QueryRow": 1,
-          "session.PublishWorkItemPage:SQL": 3,
+          "session.PublishWorkItemPage:SQL": 4,
           "session.WorkItemDetailPage:QueryRow": 1,
           "session.WorkItemDetailPage:SQL": 1,
           "session.WorkItemPageProjectionRevision:QueryRow": 1,
@@ -20299,7 +20312,9 @@
           "session.advanceWorkItemPageProjectionRevision:Exec": 1,
           "session.advanceWorkItemPageProjectionRevision:SQL": 1
         },
-        "tables": []
+        "tables": [
+          "hub/projects"
+        ]
       }
     },
     "internal/hubserver/postgres/work_item_page_values.go": {

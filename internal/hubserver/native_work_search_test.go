@@ -61,59 +61,32 @@ func TestNativeWorkSearch(t *testing.T) {
 	at := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
 	first := seedPostgresSearchIssue(t, f, 1, "Repository association deadlocks", "Unicorns decorate mock fixture data", at)
 	second := seedPostgresSearchIssue(t, f, 2, "Repository association", "Other content", at)
-	for _, mode := range []string{"pending", "indexed"} {
-		if mode == "indexed" {
-			for {
-				more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: f.repository}, "org_security")
-				if err != nil {
-					t.Fatal(err)
+	for _, test := range []struct {
+		name, query, include string
+		want                 tracker.NativeWorkItemID
+	}{
+		{"title word", "deadlocks", "summary", first},
+		{"body word prefix", "unicorn decor", "summary", first},
+		{"newest first", "repository association", "summary", second},
+		{"number", "#2", "summary", second},
+		{"work projection", "unicorn", "work", first},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := f.request(t, user, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {test.query}, "include": {test.include}, "limit": {"1"}}.Encode(), nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.NativeIssuePage
+			decodeHubResponse(t, response, &page)
+			items := page.Items
+			if test.include == "work" {
+				if page.Work == nil {
+					t.Fatal("work projection missing")
 				}
-				if !more {
-					break
-				}
+				items = page.Work.Items
 			}
-		}
-		for _, test := range []struct {
-			name, query, include string
-			want                 tracker.NativeWorkItemID
-		}{
-			{"title rank", "repository association deadlocks", "summary", first},
-			{"body substring", "corns decor", "summary", first},
-			{"number", "#2", "summary", second},
-			{"work projection", "unicorn", "work", first},
-		} {
-			t.Run(mode+"/"+test.name, func(t *testing.T) {
-				response := f.request(t, user, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {test.query}, "include": {test.include}, "limit": {"1"}}.Encode(), nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				var page tracker.NativeIssuePage
-				decodeHubResponse(t, response, &page)
-				items := page.Items
-				if test.include == "work" {
-					if page.Work == nil {
-						t.Fatal("work projection missing")
-					}
-					items = page.Work.Items
-				}
-				if mode == "pending" {
-					if page.ProjectionPending || page.Total != -1 {
-						t.Fatalf("ready board fallback page=%+v", page)
-					}
-					if test.name == "body substring" || test.name == "work projection" {
-						if len(items) != 0 {
-							t.Fatalf("unindexed body matched title fallback: %+v", items)
-						}
-						return
-					}
-					if len(items) != 1 || items[0].WorkItemID != second || items[0].Snippet == "" {
-						t.Fatalf("title fallback results=%+v", items)
-					}
-					return
-				}
-				if len(items) != 1 || items[0].WorkItemID != test.want || items[0].Snippet == "" {
-					t.Fatalf("search results=%+v", items)
-				}
-			})
-		}
+			if len(items) != 1 || items[0].WorkItemID != test.want || items[0].Snippet == "" {
+				t.Fatalf("search results=%+v", items)
+			}
+		})
 	}
 	request := httptest.NewRequest(http.MethodGet, f.base+"/work-items", nil)
 	request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
@@ -243,10 +216,6 @@ func seedPostgresSearchIssue(t *testing.T, f postgresWorkViewFixture, number int
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: "org_security", ProjectID: f.project, WorkItemID: id, ID: "issue/" + string(id), SourceID: string(id), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: at}, searchstore.Text{Title: title, Body: body})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project)
 		if err != nil {
@@ -255,18 +224,28 @@ func seedPostgresSearchIssue(t *testing.T, f postgresWorkViewFixture, number int
 		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: "org_security", ProjectID: f.project, NativeID: id, Number: int64(number), Revision: 1, Title: title, ActorKind: new("human"), ActorPrincipalID: new("example"), WorkflowStateName: new("Todo"), CreatedAt: at, UpdatedAt: at, NativeCreatedAt: at, NativeUpdatedAt: at}); err != nil {
 			return err
 		}
-		if err := w.PutSearch(t.Context(), document, 0); err != nil {
-			return err
-		}
 		record := viewstore.BoardRecord{OrganizationID: "org_security", ProjectID: f.project, WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{Lane: 1, State: "Todo", Activity: &at, Identifier: fmt.Sprintf("%s#%d", f.project, number)}, ActorPrincipalID: "example", CreatedAt: at, UpdatedAt: at, Payload: payload, PageIssue: &issue, ListIssue: &issue, ReporterRelations: &viewstore.BoardReporterRelations{}, ListBytes: 2048, ProjectedAt: at}
 		return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: f.project, WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &record})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Background, func(w tenantstore.Writer) error {
+		return publishTestItemPage(t.Context(), f.admin, w, issue)
 	}); err != nil {
 		t.Fatal(err)
 	}
 	return id
 }
 
-func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
+func publishTestItemPage(ctx context.Context, admin *sql.DB, w tenantstore.Writer, issue tracker.NativeIssue) error {
+	candidate := viewstore.PageCandidate{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, Kind: "item"}
+	if err := admin.QueryRowContext(ctx, "SELECT record_id,generation,source_at FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND kind='item'", issue.OrganizationID, issue.ProjectID, issue.WorkItemID).Scan(&candidate.RecordID, &candidate.Generation, &candidate.SourceAt); err != nil {
+		return err
+	}
+	return w.(viewstore.WorkItemPageWriter).PublishWorkItemPage(ctx, candidate, &viewstore.ItemPageRecord{Value: issue, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: issue.UpdatedAt}, nil)
+}
+
+func TestBoardSearchReturnsHTTPAndMCPMatches(t *testing.T) {
 	t.Parallel()
 	details := &memoryRunDetails{}
 	service := newPostgresNativeService(t, Config{RunDetails: details})
@@ -296,15 +275,6 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: f.project.ID, WorkItemID: first.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
 			}); err != nil {
 				t.Fatal(err)
-			}
-			for {
-				more, err := searchstore.NewContent(service.runDetailStore()).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: service.config.TenantRepository}, org)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !more {
-					break
-				}
 			}
 			originalOrganization := service.localOrganization
 			service.localOrganization = string(org)
@@ -343,7 +313,7 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 				name, query, fingerprint string
 				want                     []tracker.NativeWorkItemID
 			}{
-				{"matching query", "release audit resume credential", "", []tracker.NativeWorkItemID{first.WorkItemID, second.WorkItemID}},
+				{"matching query newest first", "release audit resume credential", "", []tracker.NativeWorkItemID{second.WorkItemID, first.WorkItemID}},
 				{"empty query", "absentuniqueterm", "", nil},
 				{"body query", "bodyuniquemarker", "", []tracker.NativeWorkItemID{first.WorkItemID}},
 				{"matching fingerprint", "", "example-key", []tracker.NativeWorkItemID{first.WorkItemID}},
@@ -405,38 +375,6 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 							}
 						}
 					})
-				})
-			}
-			for _, state := range []string{"partial search documents", "empty search documents"} {
-				t.Run(state, func(t *testing.T) {
-					value, ok := projectRecordDatabases.Load(service.database.postgres)
-					if !ok {
-						t.Fatal("missing fixture administrator")
-					}
-					if _, err := value.(*sql.DB).ExecContext(t.Context(), "DELETE FROM search_documents WHERE organization_id=$1 AND ($2 OR work_item_id=$3)", org, state == "empty search documents", first.WorkItemID); err != nil {
-						t.Fatal(err)
-					}
-					for _, query := range []string{"release", "release audit resume credential", "bodyuniquemarker"} {
-						response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {query}, "include": {"summary"}, "limit": {"5"}}.Encode(), f.token, nil)
-						requireNativeStatus(t, response, http.StatusOK)
-						var page tracker.NativeIssuePage
-						decodeHubResponse(t, response, &page)
-						want := 2
-						if query == "bodyuniquemarker" {
-							want = 1
-						}
-						if len(page.Items) != want {
-							t.Errorf("empty-index query %q returned %d items, want %d", query, len(page.Items), want)
-						}
-						raw := hostedContextData(t, send("tools/call", operatortool.WorkList, map[string]any{"project_id": f.project.ID, "query": query, "include": []string{"summary"}, "limit": 5}), false)
-						var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
-						if err := json.Unmarshal(raw, &result); err != nil {
-							t.Fatal(err)
-						}
-						if len(result.Data.Items) != want {
-							t.Errorf("empty-index MCP query %q returned %d items, want %d", query, len(result.Data.Items), want)
-						}
-					}
 				})
 			}
 

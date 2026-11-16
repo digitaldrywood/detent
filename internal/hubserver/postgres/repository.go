@@ -248,7 +248,6 @@ type session struct {
 	searchBudget       time.Duration
 	searchDeadline     time.Time
 	searchAdmitted     bool
-	searchFallback     map[tracker.ProjectID]bool
 	cacheMu            sync.Mutex
 	projectGrants      map[projectAccessKey]accessstore.ProjectGrant
 	tokenGrants        map[projectAccessKey]accessstore.TokenGrant

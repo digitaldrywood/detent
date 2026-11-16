@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -82,64 +81,48 @@ func (s *session) BoardItem(ctx context.Context, project tracker.ProjectID, item
 }
 
 func (s *session) boardSelectionWhere(ctx context.Context, selection viewstore.BoardSelection) (string, []any, error) {
-	ctx, cancel, budgetErr := s.beginBoardSearch(ctx, selection)
+	_, cancel, budgetErr := s.beginBoardSearch(ctx, selection)
 	defer cancel()
 	if budgetErr != nil {
 		return "", nil, budgetErr
 	}
-
-	if _, _, err := boardWhere(s.organization, selection); err != nil {
-		return "", nil, err
-	}
-	if selection.SearchText == "" && selection.Fingerprint == "" {
-		return boardWhere(s.organization, selection)
-	}
-	if s.searchFallback == nil {
-		s.searchFallback = make(map[tracker.ProjectID]bool)
-	}
-	fallback, known := s.searchFallback[selection.ProjectID]
-	if !known {
-		if err := s.db.QueryRow(ctx, boardSearchFallbackSQL, s.organization, selection.ProjectID).Scan(&fallback); err != nil {
-			return "", nil, mapError(ctx, err)
-		}
-		s.searchFallback[selection.ProjectID] = fallback
-	}
-	return boardWhere(s.organization, selection, fallback)
+	return boardWhere(s.organization, selection)
 }
 
-func boardWhere(org tracker.OrganizationID, f viewstore.BoardSelection, titleBody ...bool) (string, []any, error) {
+func boardWhere(org tracker.OrganizationID, f viewstore.BoardSelection) (string, []any, error) {
 	if f.ProjectID == "" {
 		return "", nil, corestore.ErrNotFound
-	}
-	fallbackText, fallbackFingerprint := f.SearchText, f.Fingerprint
-	emptyIndex := len(titleBody) > 0 && titleBody[0]
-	if emptyIndex {
-		if f.SearchText != "" {
-			if err := (searchstore.Query{Kind: "work", ProjectID: f.ProjectID, Text: f.SearchText, Limit: 1}).Validate(); err != nil {
-				return "", nil, err
-			}
-		}
-		f.SearchText, f.Fingerprint = "", ""
 	}
 	args := []any{org, f.ProjectID}
 	clauses := []string{"b.organization_id=$1", "b.project_id=$2"}
 	var searchClauses []int
 	var reporterPredicate string
-	if f.SearchText != "" {
-		query := searchstore.Query{Kind: "work", ProjectID: f.ProjectID, Text: f.SearchText, Limit: 1}
-		if err := query.Validate(); err != nil {
-			return "", nil, err
+	if f.SearchText != "" || f.Fingerprint != "" {
+		window := boardSearchWindow(&args, f, fmt.Sprintf("work_item_id,search_vector,left(body,%d) AS body", searchstore.WindowBodyChars))
+		var matches []string
+		if f.SearchText != "" {
+			if err := (searchstore.Query{Kind: "work", ProjectID: f.ProjectID, Text: f.SearchText, Limit: 1}).Validate(); err != nil {
+				return "", nil, err
+			}
+			args = append(args, searchstore.WindowQuery(f.SearchText))
+			match := fmt.Sprintf("w.search_vector @@ to_tsquery('pg_catalog.english',$%d)", len(args))
+			if number, name := searchstore.Number(f.SearchText); number > 0 {
+				args = append(args, number, name)
+				matches = append(matches, fmt.Sprintf("SELECT i.native_id FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.number=$%d AND ($%d='' OR lower(i.project_id)=lower($%d) OR lower(p.name)=lower($%d))", len(args)-1, len(args), len(args), len(args)))
+			}
+			matches = append(matches, "SELECT w.work_item_id FROM "+window+" w WHERE "+match)
 		}
-		number, name := searchstore.Number(f.SearchText)
-		queryTerms := searchstore.LiteralQueryTerms(org, f.ProjectID, f.SearchText)
-		args = append(args, strings.Join(searchstore.Expressions(org, query), " | "), searchstore.LiteralHex(f.SearchText), number, searchstore.LiteralHex(name), queryTerms, len([]rune(f.SearchText)) <= 2)
+		if f.Fingerprint != "" {
+			args = append(args, "\nfingerprint: "+f.Fingerprint+"\n")
+			fingerprint := fmt.Sprintf("SELECT w.work_item_id FROM %s w WHERE position($%d IN w.body)>0", window, len(args))
+			if len(matches) > 0 {
+				matches = []string{"(" + strings.Join(matches, " UNION ") + ") INTERSECT (" + fingerprint + ")"}
+			} else {
+				matches = []string{fingerprint}
+			}
+		}
 		searchClauses = append(searchClauses, len(clauses))
-		clauses = append(clauses, `EXISTS(SELECT 1 FROM search_documents d JOIN issues i ON i.organization_id=d.organization_id AND i.project_id=d.project_id AND i.native_id=d.work_item_id JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND (
-d.vector @@ $3::tsquery
-OR ($5::bigint>0 AND i.number=$5 AND ($6='' OR $6 IN (encode(convert_to(translate(p.id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'),'hex'),encode(convert_to(translate(p.name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'),'hex'))))
-OR `+literalPostingMatch("d", "$7", "$8")+`
-OR position(decode($4,'hex') IN convert_to(translate(p.id||'#'||i.number::text,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'))>0
-OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'))>0) OFFSET 0)`)
+		clauses = append(clauses, "b.work_item_id IN ("+strings.Join(matches, " UNION ")+")")
 	}
 	add := func(column, operator string, value any) {
 		args = append(args, value)
@@ -186,13 +169,6 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 			clauses = append(clauses, fmt.Sprintf("EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND %s %s $%d)", filter.column, filter.operator, len(args)))
 		}
 	}
-	if f.Fingerprint != "" {
-		marker := "\nfingerprint: " + f.Fingerprint + "\n"
-		args = append(args, searchstore.LiteralQueryTerms(org, f.ProjectID, marker))
-		terms := fmt.Sprintf("$%d", len(args))
-		searchClauses = append(searchClauses, len(clauses))
-		clauses = append(clauses, `EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND `+literalPostingMatch("d", terms, "false")+` OFFSET 0)`)
-	}
 	if f.Terminal != nil {
 		add("b.terminal", "=", *f.Terminal)
 	}
@@ -237,55 +213,12 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 			add(field.column, field.operator, *field.at)
 		}
 	}
-	if fallbackText != "" {
-		patterns := boardSearchPatterns(fallbackText)
-		args = append(args, patterns, f.Reporter, f.ReporterPrincipalID)
-		match := fmt.Sprintf("b.work_item_id IN (SELECT work_item_id FROM public.board_search_candidates($2,$%d::text[],$%d::boolean,$%d::text,false))", len(args)-2, len(args)-1, len(args))
-		if number, name := searchstore.Number(fallbackText); number > 0 {
-			args = append(args, number, name)
-			match = fmt.Sprintf("(%s OR EXISTS(SELECT 1 FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND i.number=$%d AND ($%d='' OR lower(i.project_id)=lower($%d) OR lower(p.name)=lower($%d))))", match, len(args)-1, len(args), len(args), len(args))
-		}
-		if emptyIndex {
-			searchClauses = append(searchClauses, len(clauses))
-			clauses = append(clauses, match)
-		} else {
-			index := searchClauses[0]
-			clauses[index] = "CASE WHEN " + boardCurrentSearchSQL + " THEN " + clauses[index] + " ELSE " + match + " END"
-		}
-	}
-	if fallbackFingerprint != "" {
-		args = append(args, []string{"%" + boardSearchLiteral("\nfingerprint: "+fallbackFingerprint+"\n") + "%"}, f.Reporter, f.ReporterPrincipalID)
-		match := fmt.Sprintf("b.work_item_id IN (SELECT work_item_id FROM public.board_search_candidates($2,$%d::text[],$%d::boolean,$%d::text,true))", len(args)-2, len(args)-1, len(args))
-		if emptyIndex {
-			searchClauses = append(searchClauses, len(clauses))
-			clauses = append(clauses, match)
-		} else {
-			index := searchClauses[len(searchClauses)-1]
-			clauses[index] = "CASE WHEN " + boardCurrentSearchSQL + " THEN " + clauses[index] + " ELSE " + match + " END"
-		}
-	}
 	if f.Reporter {
 		for _, index := range searchClauses {
 			clauses[index] = "CASE WHEN " + reporterPredicate + " THEN " + clauses[index] + " ELSE false END"
 		}
 	}
 	return strings.Join(clauses, " AND "), args, nil
-}
-
-func literalPostingMatch(document, terms, short string) string {
-	return `(CASE WHEN ` + short + `::boolean THEN EXISTS(SELECT 1 FROM search_postings lp WHERE lp.organization_id=` + document + `.organization_id AND lp.document_id=` + document + `.id AND lp.term=ANY(` + terms + `::text[])) WHEN EXISTS(
-SELECT 1 FROM unnest(` + terms + `::text[]) q(term) WHERE NOT EXISTS(
- SELECT 1 FROM search_postings p WHERE p.organization_id=` + document + `.organization_id AND p.document_id=` + document + `.id AND p.term=q.term
-)) THEN false ELSE EXISTS(
-SELECT 1 FROM (
- SELECT p.literal_positions,q.ordinality AS query_position FROM unnest(` + terms + `::text[]) WITH ORDINALITY q(term,ordinality)
- JOIN search_postings p ON p.organization_id=` + document + `.organization_id AND p.document_id=` + document + `.id AND p.term=q.term
- ORDER BY cardinality(p.literal_positions),q.ordinality LIMIT 1
-) anchor CROSS JOIN LATERAL unnest(anchor.literal_positions) anchor_position(position)
-WHERE NOT EXISTS(SELECT 1 FROM unnest(` + terms + `::text[]) WITH ORDINALITY q(term,ordinality)
- WHERE NOT EXISTS(SELECT 1 FROM search_postings p WHERE p.organization_id=` + document + `.organization_id AND p.document_id=` + document + `.id AND p.term=q.term
- AND p.literal_positions @> ARRAY[anchor_position.position+q.ordinality-anchor.query_position]::bigint[]))
-) END)`
 }
 
 func (s *session) BoardPage(ctx context.Context, f viewstore.BoardSelection) ([]viewstore.BoardRecord, error) {
@@ -306,7 +239,7 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 	} else if err := checkPage(f.Limit); err != nil {
 		return nil, err
 	}
-	where, args, err := boardWhere(s.organization, f, s.searchFallback[f.ProjectID])
+	where, args, err := boardWhere(s.organization, f)
 	if !typed {
 		where, args, err = s.boardSelectionWhere(ctx, f)
 	}
@@ -331,26 +264,12 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 	searchRanked := f.SearchText != "" && f.SearchRanked
 	var exactProjection, rankProjection string
 	if searchRanked {
-		query := searchstore.Query{Kind: "work", ProjectID: f.ProjectID, Text: f.SearchText, Limit: 1}
-		expression := strings.Join(searchstore.Expressions(s.organization, query), " | ")
-		if !s.searchFallback[f.ProjectID] {
-			args = append(args, expression)
-		}
-		expressionArg := len(args)
 		number, name := searchstore.Number(f.SearchText)
 		args = append(args, number, name)
 		numberArg, nameArg := len(args)-1, len(args)
 		exactProjection = fmt.Sprintf("CASE WHEN $%d>0 AND i.number=$%d AND ($%d='' OR lower($%d)=lower(i.project_id) OR lower($%d)=lower(p.name)) THEN true ELSE false END", numberArg, numberArg, nameArg, nameArg, nameArg)
 		rankProjection = "0::double precision"
-		if !s.searchFallback[f.ProjectID] {
-			rankProjection = fmt.Sprintf("coalesce((SELECT max(ts_rank_cd(d.vector,$%d::tsquery,32)) FROM search_documents d WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND d.vector @@ $%d::tsquery),0)::double precision", expressionArg, expressionArg)
-		}
-
-		if f.Reporter {
-			args = append(args, f.ReporterPrincipalID)
-			rankProjection = fmt.Sprintf("CASE WHEN i.actor_principal_id=$%d THEN (%s) ELSE 0::double precision END", len(args), rankProjection)
-		}
-		order = "issue_search_exact DESC,issue_search_rank DESC"
+		order = "issue_search_exact DESC"
 		if f.WorkOrder {
 			order += ",b.running DESC,b.dispatchable DESC,i.number DESC"
 		} else if f.ClosedOrder {
@@ -385,15 +304,16 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 	if p := f.After; p != nil {
 		base := len(args)
 		if searchRanked {
-			args = append(args, p.SearchExact, p.SearchRank, p.SearchNumber, p.Identifier)
-			exactArg, rankArg, numberArg, idArg := base+1, base+2, base+3, base+4
-			exactExpr, rankExpr := "("+exactProjection+")", "("+rankProjection+")"
+			exactExpr := "(" + exactProjection + ")"
 			if f.ClosedOrder {
-				args = append(args, p.Activity)
-				atArg := len(args)
-				where += fmt.Sprintf(" AND (%s<$%d OR (%s=$%d AND (%s<$%d OR (%s=$%d AND (coalesce(b.closed_at,'-infinity'::timestamptz)<coalesce($%d::timestamptz,'-infinity'::timestamptz) OR (coalesce(b.closed_at,'-infinity'::timestamptz)=coalesce($%d::timestamptz,'-infinity'::timestamptz) AND b.identifier>$%d))))))", exactExpr, exactArg, exactExpr, exactArg, rankExpr, rankArg, rankExpr, rankArg, atArg, atArg, idArg)
+				args = append(args, p.SearchExact, p.Activity, p.Identifier)
+				exactArg, atArg, idArg := base+1, base+2, base+3
+				where += fmt.Sprintf(" AND (%s<$%d OR (%s=$%d AND (coalesce(b.closed_at,'-infinity'::timestamptz)<coalesce($%d::timestamptz,'-infinity'::timestamptz) OR (coalesce(b.closed_at,'-infinity'::timestamptz)=coalesce($%d::timestamptz,'-infinity'::timestamptz) AND b.identifier>$%d))))", exactExpr, exactArg, exactExpr, exactArg, atArg, atArg, idArg)
+			} else if p.SearchExact {
+				where += " AND NOT " + exactExpr
 			} else {
-				where += fmt.Sprintf(" AND (%s<$%d OR (%s=$%d AND (%s<$%d OR (%s=$%d AND (i.number<$%d OR (i.number=$%d AND b.identifier>$%d))))))", exactExpr, exactArg, exactExpr, exactArg, rankExpr, rankArg, rankExpr, rankArg, numberArg, numberArg, idArg)
+				args = append(args, p.SearchNumber)
+				where += fmt.Sprintf(" AND NOT %s AND i.number<$%d", exactExpr, base+1)
 			}
 		} else if f.ClosedOrder {
 			args = append(args, p.Activity, p.Identifier)
@@ -694,25 +614,16 @@ func (s *session) BoardAttemptCount(ctx context.Context, issueID int64) (int64, 
 	return count, mapError(ctx, err)
 }
 
-const boardCurrentSearchSQL = `EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND EXISTS(SELECT 1 FROM search_postings p WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term<'~' ORDER BY p.term,p.scope LIMIT 1 OFFSET 0) OFFSET 0)`
-
-const boardSearchFallbackSQL = `SELECT NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=$1 AND d.project_id=$2 AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND EXISTS(SELECT 1 FROM search_postings p WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term<'~' ORDER BY p.term,p.scope LIMIT 1 OFFSET 0) LIMIT 1)`
-
 const boardWorkOrderPendingSQL = `SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND issue_number IS NULL)`
 
-func boardSearchLiteral(value string) string {
-	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(value)
-}
 
-func boardSearchPatterns(text string) []string {
-	patterns := []string{}
-	for _, value := range append([]string{text}, searchstore.Terms(text)...) {
-		pattern := "%" + boardSearchLiteral(value) + "%"
-		if !strings.ContainsRune(value, 0) && !slices.Contains(patterns, pattern) {
-			patterns = append(patterns, pattern)
-		}
+func boardSearchWindow(args *[]any, f viewstore.BoardSelection, columns string) string {
+	bound := ""
+	if p := f.After; p != nil && f.SearchRanked && !p.SearchExact && !f.ClosedOrder && !f.WorkOrder {
+		*args = append(*args, p.SearchNumber)
+		bound = fmt.Sprintf(" AND number<$%d", len(*args))
 	}
-	return patterns
+	return fmt.Sprintf("(SELECT %s FROM native_work_item_pages WHERE organization_id=$1 AND project_id=$2%s ORDER BY number DESC,work_item_id LIMIT %d)", columns, bound, searchstore.WindowRows)
 }
 
 func (s *session) BoardView(ctx context.Context, selection viewstore.BoardViewSelection) (viewstore.BoardViewRows, error) {

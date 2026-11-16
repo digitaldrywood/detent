@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
@@ -27,16 +28,34 @@ import (
 
 func refreshNativeDuplicateSearchFixture(t *testing.T, service *Service, organization tracker.OrganizationID) {
 	t.Helper()
-	for range 20000 {
-		more, err := searchstore.NewContent(service.runDetailStore()).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: service.config.TenantRepository}, organization)
+	if service.config.Hosted == nil {
+		original := service.localOrganization
+		service.localOrganization = string(organization)
+		defer func() { service.localOrganization = original }()
+	}
+	repository := service.config.TenantRepository
+	if wrapped, ok := repository.(*nativeBrowserPathRepository); ok {
+		repository = wrapped.delegate
+	}
+	for range 512 {
+		service.maintainNativeBoard(t.Context())
+		var progressed bool
+		err := repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
+			_, err := r.(viewstore.WorkItemPageReader).NextWorkItemPageCandidate(t.Context())
+			if errors.Is(err, corestore.ErrNotFound) {
+				progressed = true
+				return nil
+			}
+			return err
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !more {
+		if progressed {
 			return
 		}
 	}
-	t.Fatal("search fixture did not finish its bounded source population")
+	t.Fatal("page projection fixture did not finish")
 }
 
 func TestNativeDuplicateFiling(t *testing.T) {
@@ -459,7 +478,7 @@ func (r *nativeBrowserPathReader) Project(ctx context.Context, project tracker.P
 
 func (f *nativeBrowserPathFault) queryContext(ctx context.Context, writer bool) context.Context {
 	return postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, statement string) {
-		if f.observe.Load() && strings.Contains(statement, "search_documents") {
+		if f.observe.Load() && strings.Contains(statement, "native_work_item_pages") {
 			if writer {
 				f.writerSearches.Add(1)
 			} else {
@@ -543,10 +562,7 @@ func setNativeDuplicateChallengeFixture(t *testing.T, f nativeFixture, enabled b
 func markNativeDuplicateSearchRebuildFixture(t *testing.T, f nativeFixture) {
 	t.Helper()
 	admin := conversationTestAdmin(t, f.service)
-	if _, err := admin.ExecContext(t.Context(), "DELETE FROM search_postings p USING search_documents d WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND d.organization_id=$1 AND d.project_id=$2", f.project.OrganizationID, f.project.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.ExecContext(t.Context(), "INSERT INTO search_scope_refresh(organization_id,project_id,work_item_id,archived,principal_id) VALUES($1,$2,'',false,'') ON CONFLICT(organization_id,project_id,work_item_id) DO UPDATE SET after_id=''", f.project.OrganizationID, f.project.ID); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind) SELECT organization_id,project_id,native_id,native_id,'item' FROM issues WHERE organization_id=$1 AND project_id=$2 ON CONFLICT DO NOTHING", f.project.OrganizationID, f.project.ID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -801,10 +817,19 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 				} else {
 					setNativeDuplicateChallengeFixture(t, f, false)
 				}
-				refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
 			}
 			ctx := context.WithValue(t.Context(), nativeDuplicateRecheckKey{}, true)
 			raw, err := f.service.createNativeIssueCommand(ctx, scope, request)
+			if change == "archived candidate" {
+				var conflict *hubapi.NativeError
+				if !errors.As(err, &conflict) || conflict.Code != "revision_conflict" {
+					t.Fatalf("archived candidate before its page was projected: raw=%s err=%v, want a retryable conflict", raw, err)
+				}
+				f.service.config.TenantRepository = repository.delegate
+				refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+				f.service.config.TenantRepository = repository
+				raw, err = f.service.createNativeIssueCommand(ctx, scope, request)
+			}
 			var challenge duplicateChallenge
 			if err != nil || json.Unmarshal(raw, &challenge) != nil || challenge.ChallengeToken != "" || len(challenge.PossibleDuplicates) != 0 {
 				t.Fatalf("one-call challenge=%+v err=%v", challenge, err)

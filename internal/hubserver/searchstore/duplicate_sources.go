@@ -25,9 +25,11 @@ type DuplicateSourceQuery struct {
 	Now       time.Time
 }
 
+const DuplicateCandidates = 50
+
 type DuplicateSource struct {
-	Parent     Document
 	Document   Document
+	Text       Text
 	Statistics Statistics
 	Revision   tracker.Revision
 	Number     int64

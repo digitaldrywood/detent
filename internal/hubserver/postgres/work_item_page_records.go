@@ -123,6 +123,11 @@ func (s *session) PublishWorkItemPage(ctx context.Context, candidate viewstore.P
 	if err != nil {
 		return mapError(ctx, err)
 	}
+	if candidate.Kind == "item" {
+		if _, err := s.db.Exec(ctx, `UPDATE projects SET duplicate_source_sequence=duplicate_source_sequence+1 WHERE organization_id=$1 AND id=$2`, s.organization, candidate.ProjectID); err != nil {
+			return mapError(ctx, err)
+		}
+	}
 	return s.advanceWorkItemPageProjectionRevision(ctx)
 }
 
