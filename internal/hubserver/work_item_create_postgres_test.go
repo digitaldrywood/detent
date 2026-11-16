@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -170,7 +171,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			membership := auth.Membership{ID: "membership-" + string(org), UserID: user, OrganizationID: "provider_" + string(org), Status: "active"}
 			membership.Role.Slug = "owner"
 			provider.members[membership.ID] = membership
-			service := &Service{echo: echo.New(), notifications: newNotificationBroker(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: org, now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "http://example.test", Plans: &plans}, Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, Clock: func() time.Time { return now }}}
+			service := &Service{echo: echo.New(), notifications: newNotificationBroker(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: org, now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "http://example.test", Plans: &plans}, Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: hubmaintenance.LimitDetails(details), Clock: func() time.Time { return now }}}
 			service.ready.Store(true)
 			service.registerNativeRoutes(service.echo)
 			service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock))

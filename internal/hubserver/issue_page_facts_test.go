@@ -65,7 +65,7 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 			name, value string
 			want        int
 		}{
-			{"created_by", issue.Actor.PrincipalID, 1}, {"type", "bug", 1}, {"verification", "pending", 1}, {"q", "example-label", 1},
+			{"created_by", issue.Actor.PrincipalID, 1}, {"type", "bug", 1}, {"verification", "pending", 1}, {"q", "filterable", 1},
 			{"label", "Example-Label", 1}, {"label", "EXAMPLE-LABEL", 1}, {"assignee", "Example-Assignee", 1}, {"assignee", "EXAMPLE-ASSIGNEE", 1}, {"priority", "2", 1},
 			{"label", "example-label", 0}, {"assignee", "example-assignee", 0}, {"label", " Example-Label ", 0}, {"assignee", " Example-Assignee ", 0},
 		} {

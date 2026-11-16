@@ -220,6 +220,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if issues != 1 || comments != 1 {
 				t.Fatalf("issues=%d comments=%d, want one issue and one occurrence", issues, comments)
 			}
+			projectNativeItemPages(t, f.service, scope.Organization)
 			fingerprint := issueorigin.DefectFingerprint(test.first)
 			response := performHubAPIRequest(t, f.service, http.MethodGet, base+"/work-items?open=true&fingerprint="+fingerprint, testHubAdminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)

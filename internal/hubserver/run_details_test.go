@@ -288,8 +288,8 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	if input != 100 || cached != 20 || output != 10 || cost != 1.5 {
 		t.Fatalf("usage summary reset or double counted: %d/%d/%d cost=%g", input, cached, output, cost)
 	}
-	if uploads := store.uploads - fixtureUploads; uploads != 24 {
-		t.Fatalf("uploaded %d objects after the fixture's plan and policy objects, want eight issue and review policy objects plus sixteen attempt, checkpoint, receipt and history payloads", uploads)
+	if uploads := store.uploads - fixtureUploads; uploads != 23 {
+		t.Fatalf("uploaded %d objects after the fixture's plan and policy objects, want seven issue and review policy objects plus sixteen attempt, checkpoint, receipt and history payloads", uploads)
 	}
 	for _, table := range []string{"native_attempts", "collaboration_events"} {
 		var largest int

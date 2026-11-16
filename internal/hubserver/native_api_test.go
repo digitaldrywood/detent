@@ -112,7 +112,8 @@ func newNativeFixture(t *testing.T, service *Service, organization tracker.Organ
 
 func newPostgresNativeService(t *testing.T, cfg Config) *Service {
 	t.Helper()
-	repository, _ := projectRecordPostgresWithAdmin(t, 4)
+	repository, admin := projectRecordPostgresWithAdmin(t, 4)
+	projectRecordDatabases.Store(repository, admin)
 	if cfg.SecretKeys == nil {
 		cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	}

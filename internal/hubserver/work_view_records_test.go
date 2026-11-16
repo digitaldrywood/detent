@@ -27,7 +27,7 @@ import (
 
 func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
+	repository, searchAdmin := projectRecordPostgresWithAdmin(t, 3)
 	org := tracker.OrganizationID("org_security")
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: "example-org", CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}); err != nil {
@@ -132,7 +132,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		searchText := searchstore.Text{Title: searchTitle}
 		if index == 0 {
 			searchText.Title += ":"
-			searchText.Body = "-tail"
+			searchText.Body = "-tail 東京語"
 			searchText.Labels = []string{"東京語"}
 		}
 		card := tracker.NativeBoardCard{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: f.project, WorkItemID: id, Number: 42 + index, Revision: 1}, Title: searchText.Title, Body: searchText.Body, Labels: searchText.Labels, State: "Todo", Actor: tracker.Actor{PrincipalID: "owner"}}}
@@ -162,7 +162,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		t.Helper()
 		for _, issue := range cards {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
-				return publishTestItemPage(t.Context(), conversationTestAdmin(t, f.service), w, issue)
+				return publishTestItemPage(t.Context(), searchAdmin, w, issue)
 			}); err != nil && !errors.Is(err, sql.ErrNoRows) {
 				t.Fatal(err)
 			}
@@ -192,10 +192,11 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		want  []tracker.NativeWorkItemID
 	}{
 		{"readable", []tracker.NativeWorkItemID{"wi_readable_example"}},
-		{"ead", []tracker.NativeWorkItemID{"wi_readable_example"}},
+		{"rea", []tracker.NativeWorkItemID{"wi_readable_example"}},
+		{"ead", nil},
 		{"東", []tracker.NativeWorkItemID{"wi_readable_example"}},
 		{"東京語", []tracker.NativeWorkItemID{"wi_readable_example"}},
-		{":", []tracker.NativeWorkItemID{"wi_readable_example"}},
+		{":", nil},
 		{":-", nil},
 		{":-~", nil},
 		{"\x00", nil},
@@ -444,7 +445,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		if future.Total != -1 || len(future.Items) != 0 || futureWorkspace.Total != -1 || len(futureWorkspace.Items) != 0 {
 			t.Fatalf("future created_after returned ordinary=%+v workspace=%+v", future, futureWorkspace)
 		}
-		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE native_work_item_pages SET body=$1 WHERE organization_id=$2 AND work_item_id='wi_readable_example'", "\nfingerprint: source-fingerprint-123\n", org); err != nil {
+		if _, err := searchAdmin.ExecContext(t.Context(), "INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind) VALUES($1,$2,'wi_readable_example','item','wi_readable_example',$3,true,'worker')", org, f.project, searchstore.FingerprintDigest("source-fingerprint-123")); err != nil {
 			t.Fatal(err)
 		}
 		fingerprint := read("fingerprint=source-fingerprint-123")
@@ -553,6 +554,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			cards = append(cards, issue)
 		}
 		refreshSearch(t)
 		response := f.request(t, owner, http.MethodGet, boardURL+"&q=windowmatch", nil)

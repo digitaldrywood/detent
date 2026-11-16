@@ -105,6 +105,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 	}
 
 	drainTestNativeBoard(t, f.service)
+	projectNativeItemPages(t, f.service, scope.Organization)
 	call := hostedContextProtocol(t, f.service, changeOperatorContext(t, f.service, f.token, string(scope.Organization)), "http")
 	for _, test := range []struct {
 		name, creator, state, archived, query, label string

@@ -291,6 +291,9 @@ func TestBoardSearchReturnsHTTPAndMCPMatches(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := hostedPostgresAdmin(t, service).ExecContext(t.Context(), `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind) VALUES($1,$2,$3,'item',$3,$4,true,'worker')`, org, f.project.ID, first.WorkItemID, searchstore.FingerprintDigest("example-key")); err != nil {
+				t.Fatal(err)
+			}
 			credential, _, err := service.authenticateTenantAPIHash(t.Context(), org, apikey.HashToken(f.token), "", "")
 			if err != nil {
 				t.Fatal(err)
@@ -313,7 +316,8 @@ func TestBoardSearchReturnsHTTPAndMCPMatches(t *testing.T) {
 				name, query, fingerprint string
 				want                     []tracker.NativeWorkItemID
 			}{
-				{"matching query newest first", "release audit resume credential", "", []tracker.NativeWorkItemID{second.WorkItemID, first.WorkItemID}},
+				{"matching query by relevance", "release audit resume credential", "", []tracker.NativeWorkItemID{first.WorkItemID, second.WorkItemID}},
+				{"equal relevance newest first", "release audit", "", []tracker.NativeWorkItemID{second.WorkItemID, first.WorkItemID}},
 				{"empty query", "absentuniqueterm", "", nil},
 				{"body query", "bodyuniquemarker", "", []tracker.NativeWorkItemID{first.WorkItemID}},
 				{"matching fingerprint", "", "example-key", []tracker.NativeWorkItemID{first.WorkItemID}},

@@ -811,6 +811,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	projectNativeItemPages(t, f.service, f.project.OrganizationID)
 	raw, failed = call(t, operatortool.WorkList, "", map[string]any{"query": "Edited"})
 	var listed struct {
 		Items []map[string]json.RawMessage `json:"items"`

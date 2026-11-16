@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -123,6 +124,16 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 						}
 						row := viewstore.BoardRecord{OrganizationID: org, ProjectID: scope.Project, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%04d", scope.Project, seeded)}, CreatedAt: now, UpdatedAt: now, Payload: payload, ActorPrincipalID: "example", PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: seeded, Actor: issue.Actor}}
 						return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: scope.Project, WorkItemID: id, ExpectedRevision: item.Revision, Current: &row})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					searchable := issue
+					searchable.Body = issueorigin.Stamp("Resume", issueorigin.Origin{Kind: "worker", Fingerprint: "example-key"})
+					if seeded == 1 {
+						searchable.Actor.PrincipalID = "another-owner"
+					}
+					if err := original.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+						return publishTestItemPage(t.Context(), admin, w, searchable)
 					}); err != nil {
 						t.Fatal(err)
 					}

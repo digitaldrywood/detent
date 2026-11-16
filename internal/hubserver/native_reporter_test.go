@@ -54,6 +54,7 @@ func TestReporterReadIsolation(t *testing.T) {
 		v.grant(t, v.users[role], true, false)
 	}
 	drainTestNativeBoard(t, v.service)
+	projectNativeItemPages(t, v.service, tracker.OrganizationID(v.service.appOrganizationID()))
 	for _, user := range []string{"reporter", "tester", "member", "owner", "admin", "viewer"} {
 		for _, suffix := range []string{"", "?include=work", "?include=summary", "?include=board", "?fields=picker", "?q=Shared", "?include=board&q=Shared", "?created_by=me"} {
 			t.Run(user+suffix, func(t *testing.T) {
