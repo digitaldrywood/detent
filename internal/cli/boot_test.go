@@ -494,6 +494,32 @@ func TestSyncGlobalDispatchProjectsMarksUnstartedProjectsIdle(t *testing.T) {
 	}
 }
 
+func TestRunnerDispatchGateDoesNotKeepBootPause(t *testing.T) {
+	t.Parallel()
+
+	booted := globalconfig.Project{ID: "prj_example", Weight: 1, Paused: true}
+	gate, err := buildGlobalDispatchPools(globalconfig.Config{
+		Global:   globalconfig.Settings{MaxConcurrentAgents: 1, Scheduling: globalconfig.SchedulingStrict},
+		Projects: []globalconfig.Project{booted},
+	})
+	if err != nil {
+		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
+	}
+	resumed := scheduler.ProjectCandidate{ID: booted.ID}
+	gate.BeginProjectCycle(resumed)
+	slot, ok, decision, err := gate.TryAcquireWithDecision(t.Context(), resumed, scheduler.SlotRequest{State: "Todo"}, time.Date(2026, 7, 10, 15, 0, 0, 0, time.Local))
+	gate.EndProjectCycle(resumed.ID)
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok || decision.Reason != scheduler.DispatchGateReasonGranted {
+		t.Fatalf("resumed project dispatch ok = %t decision = %#v, want granted", ok, decision)
+	}
+	if err := gate.Release(slot); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+}
+
 func TestGlobalProjectCandidatesApplyHostActiveHours(t *testing.T) {
 	t.Parallel()
 	globalDefault := activehours.Config{Timezone: "America/Chicago", Windows: []string{"Mon-Sun 22:00-06:00"}}
