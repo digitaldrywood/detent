@@ -2,34 +2,102 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/boardview"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type workBoardProject struct {
-	Project          tracker.NativeProject      `json:"project"`
-	Issues           []tracker.NativeIssue      `json:"issues"`
-	Cards            []tracker.NativeBoardCard  `json:"cards"`
-	Sequence         int64                      `json:"sequence"`
-	GrantVersion     string                     `json:"grantVersion"`
-	Work             *tracker.NativeWorkSummary `json:"work,omitempty"`
-	NextCursor       string                     `json:"nextCursor,omitempty"`
-	PageCount        int                        `json:"pageCount"`
-	BacklogCursor    string                     `json:"backlogCursor,omitempty"`
-	BacklogPageCount int                        `json:"backlogPageCount"`
-	BacklogTotal     int                        `json:"backlogTotal"`
+const workBoardClosedPage = 20
+
+type workBoardLane struct {
+	State      string `json:"state"`
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
+type workBoardView struct {
+	Projects     []boardview.Project       `json:"projects"`
+	Cards        []tracker.NativeBoardCard `json:"cards"`
+	Lanes        []workBoardLane           `json:"lanes"`
+	GrantVersion string                    `json:"grant_version"`
+}
+
+type workBoardRequest struct {
+	state    savedWorkState
+	projects []tracker.ProjectID
+	items    []tracker.NativeWorkItemID
+	lane     string
+	cursor   string
+	params   url.Values
+}
+
+func parseWorkBoardRequest(params url.Values) (workBoardRequest, error) {
+	request := workBoardRequest{params: params}
+	invalid := hubapi.NativePublicInvalid("Invalid board view")
+	for key, values := range params {
+		switch key {
+		case "project", "item":
+		case "state", "lane", "cursor":
+			if len(values) != 1 {
+				return request, invalid
+			}
+		default:
+			return request, invalid
+		}
+	}
+	if len(params["state"]) != 1 || len(params.Get("state")) > maxSavedWorkViewBytes {
+		return request, invalid
+	}
+	decoder := json.NewDecoder(strings.NewReader(params.Get("state")))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request.state); err != nil {
+		return request, invalid
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return request, invalid
+	}
+	ids := params["project"]
+	if len(ids) == 0 || len(ids) > viewstore.BoardViewMaxProjects || len(params["item"]) > viewstore.BoardViewMaxItems {
+		return request, invalid
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" || len(id) > 512 || seen[id] {
+			return request, invalid
+		}
+		seen[id] = true
+		request.projects = append(request.projects, tracker.ProjectID(id))
+	}
+	if !validSavedWorkView(savedWorkView{Name: "Work", Scope: "personal", ProjectIDs: ids[:1], State: request.state}) || request.state.View != "board" || strings.TrimSpace(request.state.Q) != "" || request.state.CompletedFrom != "" || request.state.CompletedTo != "" {
+		return request, invalid
+	}
+	for _, id := range params["item"] {
+		if id == "" || len(id) > 512 {
+			return request, invalid
+		}
+		request.items = append(request.items, tracker.NativeWorkItemID(id))
+	}
+	request.lane, request.cursor = params.Get("lane"), params.Get("cursor")
+	if request.cursor != "" && request.lane == "" || request.lane != "" && len(request.items) > 0 {
+		return request, invalid
+	}
+	return request, nil
 }
 
 func (s *Service) workBoard(c echo.Context) error {
@@ -40,143 +108,147 @@ func (s *Service) workBoard(c echo.Context) error {
 		return s.hostedAPIError(c, err)
 	}
 	org := s.appOrganizationID()
-	if c.Param("organization") != org {
+	if c.Param("organization") != org || credential.Scope == hubapi.APIScopeWorker {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	params, err := nativeReadQuery(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if len(params) != 2 || len(params["state"]) != 1 || len(params.Get("state")) > maxSavedWorkViewBytes {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid working set"))
+	request, err := parseWorkBoardRequest(params)
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
-	input := savedWorkView{Name: "Work", Scope: "personal", ProjectIDs: params["project"]}
-	decoder := json.NewDecoder(strings.NewReader(params.Get("state")))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input.State); err != nil {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid display state"))
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid display state"))
-	}
-	if len(input.ProjectIDs) == 0 || !validSavedWorkView(input) {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid working set or display state"))
-	}
-	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+	if s.config.TenantRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
-	scopes := make([]hubscope.NativeScope, len(input.ProjectIDs))
-	for i, id := range input.ProjectIDs {
-		scopes[i] = hubscope.NativeScope{Organization: tracker.OrganizationID(org), Project: tracker.ProjectID(id), Credential: credential}
-		if err := s.accessRead(ctx, scopes[i].Organization, func(r tenantstore.Reader) error {
-			return s.authorizeAccessScope(ctx, r, scopes[i], false)
-		}); err != nil {
-			return s.nativeAPIError(c, err)
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(org), Credential: credential}
+	for _, id := range request.projects {
+		if key := credential.EntryKey; key != nil && !key.Allows(string(id)) {
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 	}
-	projects := make([]workBoardProject, 0, len(scopes))
-	for _, scope := range scopes {
-		project, err := s.readWorkBoardProject(ctx, scope, input.State)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		projects = append(projects, project)
+	view, err := s.readWorkBoard(ctx, scope, request)
+	if err != nil {
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
-	return c.JSON(http.StatusOK, projects)
+	return c.JSON(http.StatusOK, view)
 }
 
-func (s *Service) readWorkBoardProject(ctx context.Context, scope hubscope.NativeScope, state savedWorkState) (workBoardProject, error) {
-	record, err := s.readProjectRecord(ctx, scope)
+func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope, request workBoardRequest) (workBoardView, error) {
+	window, err := nativeShippedWindow(request.state.CompletedWindow)
 	if err != nil {
-		return workBoardProject{}, fmt.Errorf("read project: %w", err)
+		return workBoardView{}, err
 	}
-	if record.Core.DeletedAt != nil {
-		return workBoardProject{}, hubapi.NativeNotFound()
+	selection := viewstore.BoardViewSelection{Items: request.items, Archived: request.state.Archived, CredentialID: scope.Credential.ID, PrincipalID: scope.Credential.HostedPrincipal,
+		ClosedPage: workBoardClosedPage, ClosedLane: request.lane}
+	if scope.Credential.Hosted != nil {
+		selection.UserID = scope.Credential.Hosted.Subject
 	}
-	project, err := s.projectRecordNative(ctx, record)
+	if scope.Credential.HostedRole == "reporter" {
+		if selection.Reporter = scope.Actor().PrincipalID; selection.Reporter == "" {
+			return workBoardView{}, hubapi.NativeNotFound()
+		}
+	}
+	cursorParams := url.Values{"project": request.params["project"], "state": request.params["state"]}
+	if request.cursor != "" {
+		cursorParams.Set("cursor", request.cursor)
+	}
+	_, cursor, key, err := s.readNativePageLimit(ctx, scope, "/work-board", cursorParams, viewstore.BoardViewMaxPage, workBoardClosedPage)
 	if err != nil {
-		return workBoardProject{}, fmt.Errorf("read project content: %w", err)
+		return workBoardView{}, err
 	}
-	result := workBoardProject{Project: project, Issues: []tracker.NativeIssue{}, Cards: []tracker.NativeBoardCard{}, PageCount: 1}
-	params := url.Values{"include": {"board"}, "limit": {"100"}, "completed_window": {state.CompletedWindow}, "type": state.Type, "label": state.Label, "assignee": state.Assignee, "priority": state.Priority}
-	if state.CompletedFrom != "" {
-		params.Set("completed_from", state.CompletedFrom)
-	}
-	if state.CompletedTo != "" {
-		params.Set("completed_to", state.CompletedTo)
-	}
-	if strings.TrimSpace(state.Q) != "" {
-		params.Set("q", strings.TrimSpace(state.Q))
-	}
-	if state.CreatedBy != "" {
-		params.Set("created_by", state.CreatedBy)
-	}
-	if state.Archived {
-		params.Set("archived", "true")
-	}
-	var lanes []string
-	if state.View == "board" {
-		for _, lane := range project.States {
-			if !lane.Terminal && (state.Lanes == nil || slices.Contains(state.Lanes, lane.Name)) && (len(state.State) == 0 || slices.Contains(state.State, lane.Name)) {
-				lanes = append(lanes, lane.Name)
-			}
+	if position := cursor.Issues; position != nil {
+		if position.State != request.lane {
+			return workBoardView{}, corestore.ErrInvalidCursor
 		}
-		params.Set("open", "true")
-	} else {
-		switch state.Tab {
-		case "active", "backlog":
-			for _, lane := range project.States {
-				if state.Tab == "active" && !lane.Terminal && !strings.EqualFold(lane.Name, "Backlog") || state.Tab == "backlog" && strings.EqualFold(lane.Name, "Backlog") {
-					params.Add("state", lane.Name)
-				}
+		after := &viewstore.BoardClosedPosition{Identifier: position.Identifier}
+		if position.Activity != "" {
+			at, err := time.Parse(time.RFC3339Nano, position.Activity)
+			if err != nil {
+				return workBoardView{}, corestore.ErrInvalidCursor
 			}
-			if state.Tab == "active" {
-				params.Set("open", "true")
-			}
-		case "closed":
-			params.Set("open", "false")
-			if state.CompletedFrom != "" || state.CompletedTo != "" {
-				params["state"] = state.State
-			}
+			after.ClosedAt = &at
 		}
-		if state.Sort == "closed" || state.Tab == "closed" && state.Sort == "default" {
-			params.Set("sort", "closed")
-		}
+		selection.ClosedAfter = after
 	}
-	if len(lanes) == 0 {
-		lanes = []string{""}
-	}
-	for i, lane := range lanes {
-		if state.View == "board" {
-			params.Set("state", lane)
-			params.Set("limit", "2000")
-			if lane == "" {
-				params.Set("limit", "1")
-			}
-			if strings.EqualFold(lane, "Backlog") {
-				params.Set("limit", "200")
-			}
+	var rows viewstore.BoardViewRows
+	var entry boardAccessEntry
+	for attempt := range 2 {
+		if entry, err = s.boardAllowedProjects(ctx, scope, request.projects); err != nil {
+			return workBoardView{}, err
 		}
-		page, err := s.readBoardRecordsFor(ctx, scope, params, true)
+		selection.Allowed, selection.Projects = entry.allowed, nil
+		for _, id := range request.projects {
+			if !slices.Contains(entry.allowed, id) {
+				return workBoardView{}, hubapi.NativeNotFound()
+			}
+			selection.Projects = append(selection.Projects, id)
+		}
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			model, ok := reader.(interface {
+				BoardView(context.Context, viewstore.BoardViewSelection) (viewstore.BoardViewRows, error)
+			})
+			if !ok {
+				return hubapi.NativeWorkItemStorageUnavailable()
+			}
+			rows, err = model.BoardView(ctx, selection)
+			return err
+		})
 		if err != nil {
-			return result, fmt.Errorf("read board page: %w", err)
+			return workBoardView{}, err
 		}
-		if i == 0 || page.ChangeSequence < result.Sequence {
-			result.Sequence = page.ChangeSequence
+		if boardViewRevisions(rows) == entry.revisions {
+			break
 		}
-		result.GrantVersion = page.GrantVersion
-		result.Work = page.Work
-		if state.View != "board" || lane != "" {
-			result.Issues = append(result.Issues, page.Items...)
-			result.Cards = append(result.Cards, page.Cards...)
-		}
-		if state.View == "list" {
-			result.NextCursor = page.NextCursor
-		} else if strings.EqualFold(lane, "Backlog") {
-			result.BacklogCursor = page.NextCursor
-			result.BacklogPageCount = 1
-			result.BacklogTotal = page.Total
+		s.boardAccess.drop(boardAccessKey(scope, request.projects))
+		if attempt == 1 {
+			return workBoardView{}, hubapi.NativeWorkItemStorageUnavailable()
 		}
 	}
-	return result, nil
+	assembled, positions, err := boardview.Assemble(scope, len(request.items) > 0, rows, window, s.config.Clock(), workBoardClosedPage)
+	if err != nil {
+		return workBoardView{}, err
+	}
+	view := workBoardView{Projects: assembled.Projects, Cards: assembled.Cards, Lanes: []workBoardLane{}}
+	for i := range view.Cards {
+		view.Cards[i].Issue = boardIssueCollections(view.Cards[i].Issue)
+		view.Cards[i].StatusLine = nativeBoardStatusLine(view.Cards[i])
+	}
+	raw, err := json.Marshal([]any{scope.Organization, scope.Credential.ID, selection.UserID, scope.Credential.HostedRole, entry.revisions, scope.Credential.EntryKey})
+	if err != nil {
+		return workBoardView{}, err
+	}
+	digest := sha256.Sum256(raw)
+	view.GrantVersion = hex.EncodeToString(digest[:])
+	for _, position := range positions {
+		lane := workBoardLane{State: position.State}
+		if position.More {
+			next := cursor
+			next.Issues = &nativeIssuePageCursor{State: position.State, Identifier: position.Identifier}
+			if position.ClosedAt != nil {
+				next.Issues.Activity = position.ClosedAt.UTC().Format(time.RFC3339Nano)
+			}
+			if lane.NextCursor, err = encodeNativeCursor(next, key); err != nil {
+				return workBoardView{}, err
+			}
+		}
+		view.Lanes = append(view.Lanes, lane)
+	}
+	return view, nil
+}
+
+func boardViewRevisions(rows viewstore.BoardViewRows) [4]int64 {
+	var revisions [4]int64
+	for _, row := range rows.Rows {
+		if row.Kind != "access" {
+			continue
+		}
+		for i := range revisions {
+			if row.Int[i] != nil {
+				revisions[i] = *row.Int[i]
+			}
+		}
+	}
+	return revisions
 }

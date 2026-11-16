@@ -160,6 +160,7 @@
     "native_attempts": {"class": "immutable_payload"},
     "native_board_counts": {"class": "derived_with_retention", "retention": "native board expiry and source project lifetime"},
     "native_board_deltas": {"class": "derived_with_retention", "retention": "trimDashboardChanges; inclusive sequence floor"},
+    "native_board_cards": {"class": "derived_with_retention", "retention": "native board item lifetime"},
     "native_board_dirty": {"class": "hot_state"},
     "native_board_filter_values": {"class": "index"},
     "native_board_items": {"class": "derived_with_retention", "retention": "native board expiry and source issue lifetime"},

@@ -595,10 +595,15 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 		params := url.Values{"project": {"project_first", "project_second"}, "state": {`{"view":"board","tab":"active","q":"","sort":"default","completedWindow":"24h"}`}}
 		response := browserRead(base + "/work-board?" + params.Encode())
 		requireNativeStatus(t, response, http.StatusOK)
-		var boards []workBoardProject
-		decodeHubResponse(t, response, &boards)
-		if len(boards) != 2 || boards[0].Project.ID != "project_first" || boards[1].Project.ID != "project_second" {
-			t.Fatalf("browser board projects = %+v", boards)
+		var board workBoardView
+		decodeHubResponse(t, response, &board)
+		if len(board.Projects) != 2 || board.Projects[0].Project.ID != "project_first" || board.Projects[1].Project.ID != "project_second" || len(board.Cards) != 3 {
+			t.Fatalf("browser board = %+v", board)
+		}
+		for _, card := range board.Cards {
+			if card.Issue.OrganizationID != "org_startup" || card.Issue.Terminal {
+				t.Fatalf("browser board card = %+v", card.Issue)
+			}
 		}
 		requireNativeStatus(t, browserRead(base+"/readable/missing-project"), http.StatusNotFound)
 		requireNativeStatus(t, browserRead("/api/v2/organizations/org_other/readable/project-first"), http.StatusNotFound)

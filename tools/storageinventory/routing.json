@@ -4303,6 +4303,20 @@
         ]
       }
     },
+    "internal/hubserver/postgres/board_card_columns.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "board"
+      ],
+      "inventory": {
+        "operations": {
+          "boardCardUpsertSQL:SQL": 1
+        },
+        "tables": [
+          "hub/native_board_items"
+        ]
+      }
+    },
     "internal/hubserver/postgres/board_change_rows.go": {
       "disposition": "target-adapter",
       "families": [
@@ -4359,7 +4373,6 @@
           "session.boardSearchModelPages:QueryRow": 3
         },
         "tables": [
-          "hub/native_board_dirty",
           "hub/native_board_items",
           "hub/native_board_sequences"
         ]
@@ -4432,10 +4445,22 @@
           "session.replaceBoardSummary:Exec": 2,
           "session.replaceBoardSummary:SQL": 3
         },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/board_view_reads.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "board"
+      ],
+      "inventory": {
+        "operations": {
+          "boardViewRow:SQL": 1,
+          "boardViewSQL:SQL": 1,
+          "session.BoardView:Query": 1
+        },
         "tables": [
-          "hub/native_board_dirty",
-          "hub/native_board_items",
-          "hub/native_board_sequences"
+          "hub/projects"
         ]
       }
     },
@@ -12433,6 +12458,20 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261116203041_board_cards.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "board"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_board_items"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -20170,9 +20209,9 @@
           "appendBoardDeltaSQL:SQL": 1,
           "boardSequenceHeadSQL:SQL": 1,
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
-          "session.ReplaceBoardItem:Exec": 4,
+          "session.ReplaceBoardItem:Exec": 5,
           "session.ReplaceBoardItem:QueryRow": 2,
-          "session.ReplaceBoardItem:SQL": 6,
+          "session.ReplaceBoardItem:SQL": 7,
           "session.ReplaceBoardItem:generated:LockWorkItem": 1,
           "session.ReplaceBoardItem:query-receiver": 1,
           "session.TrimBoardDeltas:QueryRow": 2,
@@ -20182,7 +20221,7 @@
           "session.flushBoardDeltas:Exec": 1,
           "session.flushBoardDeltas:QueryRow": 2,
           "session.flushBoardDeltas:SQL": 2,
-          "session.putBoardItem:Exec": 4,
+          "session.putBoardItem:Exec": 5,
           "session.putBoardItem:SQL": 4,
           "session.queueBoardDeltas:QueryRow": 1,
           "session.trimBoardDeltas:Exec": 1,

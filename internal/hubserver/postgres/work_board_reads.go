@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -711,4 +713,34 @@ func boardSearchPatterns(text string) []string {
 		}
 	}
 	return patterns
+}
+
+func (s *session) BoardView(ctx context.Context, selection viewstore.BoardViewSelection) (viewstore.BoardViewRows, error) {
+	var result viewstore.BoardViewRows
+	if len(selection.Projects) == 0 || len(selection.Projects) > viewstore.BoardViewMaxProjects || len(selection.Items) > viewstore.BoardViewMaxItems || selection.ClosedPage < 1 || selection.ClosedPage > viewstore.BoardViewMaxPage {
+		return result, corestore.ErrInvalidPage
+	}
+	var after *time.Time
+	identifier := ""
+	if selection.ClosedAfter != nil {
+		after, identifier = selection.ClosedAfter.ClosedAt, selection.ClosedAfter.Identifier
+	}
+	rows, err := s.db.Query(ctx, boardviewsql.Statement, s.organization, selection.ProjectStrings(), selection.AllowedStrings(), selection.Reporter, selection.Archived,
+		selection.CredentialID, selection.PrincipalID, selection.UserID, selection.ClosedPage+1, selection.ItemStrings(), len(selection.Items) > 0,
+		selection.ClosedLane, after, identifier, selection.ClosedAfter != nil)
+	if err != nil {
+		return result, mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var row viewstore.BoardViewRow
+		if err := rows.Scan(row.Targets()...); err != nil {
+			return viewstore.BoardViewRows{}, mapError(ctx, err)
+		}
+		result.Rows = append(result.Rows, row)
+	}
+	if err := rows.Err(); err != nil {
+		return viewstore.BoardViewRows{}, mapError(ctx, err)
+	}
+	return result, nil
 }

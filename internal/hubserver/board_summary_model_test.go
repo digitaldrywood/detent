@@ -126,7 +126,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 		}
 		all, done, cancelled := rows["*"], rows["Done"], rows["Cancelled"]
 		scope := hubscope.NativeScope{Organization: org, Project: projects[org], Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
-		legacy, err := service.readWorkBoardProject(t.Context(), scope, savedWorkState{View: "board", Lanes: []string{"Todo"}, CompletedWindow: "24h"})
+		legacy, err := service.readBoardRecordsFor(t.Context(), scope, url.Values{"include": {"board"}, "open": {"true"}, "state": {"Todo"}, "limit": {"200"}, "completed_window": {"24h"}}, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -168,24 +168,9 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 					params.Set("completed_from", state.CompletedFrom)
 					params.Set("completed_to", state.CompletedTo)
 				}
-				result, err := service.readWorkBoardProject(t.Context(), scope, state)
-				if err != nil {
-					t.Fatal(err)
-				}
 				wantCount := 0
 				if test.want != "" {
 					wantCount = 1
-				}
-				if len(result.Cards) != wantCount || len(result.Issues) != wantCount {
-					t.Fatalf("cards=%d issues=%d want=%d", len(result.Cards), len(result.Issues), wantCount)
-				}
-				for _, card := range result.Cards {
-					if card.Issue.WorkItemID != test.want || card.Issue.OrganizationID != org || card.Issue.ProjectID != scope.Project {
-						t.Errorf("unexpected filtered card: %+v", card.Issue.NativeReference)
-					}
-				}
-				if result.Work != nil || state.View == "board" && result.BacklogTotal != -1 {
-					t.Errorf("unsupported filtered counts: work=%+v backlog=%d", result.Work, result.BacklogTotal)
 				}
 				page, err := service.readBoardRecordsFor(t.Context(), scope, params, true)
 				if err != nil {

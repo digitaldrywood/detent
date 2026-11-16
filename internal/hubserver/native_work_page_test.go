@@ -228,12 +228,9 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				board, err := fixture.service.readWorkBoardProject(t.Context(), scope, savedWorkState{View: "board", CompletedWindow: "24h"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if board.Work == nil || board.Work.Completed != 2 || board.Work.Cancelled != 0 {
-					t.Fatalf("board summary=%+v", board.Work)
+				board := testBoardWork(readTestWorkBoard(t, t.Context(), fixture.service, scope, savedWorkState{View: "board", CompletedWindow: "24h"}))
+				if board == nil || board.Completed != 2 || board.Cancelled != 0 {
+					t.Fatalf("board summary=%+v", board)
 				}
 				ctx := changeOperatorContext(t, f.service, f.token, string(fixture.project.OrganizationID))
 				call := hostedContextProtocol(t, f.service, ctx, "http")

@@ -43,66 +43,43 @@ func TestWorkBoardWorkingSet(t *testing.T) {
 	}
 	ids := []string{string(second.ID), string(f.project)}
 	state := savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}
+	t.Run("board", func(t *testing.T) {
+		response := read(viewer, base, ids, state)
+		requireNativeStatus(t, response, http.StatusOK)
+		var view workBoardView
+		decodeHubResponse(t, response, &view)
+		if len(view.Projects) != 2 || len(view.Cards) != 2 || view.GrantVersion == "" {
+			t.Fatalf("view=%+v", view)
+		}
+		seen := map[tracker.ProjectID]int{}
+		for _, project := range view.Projects {
+			if !slices.Contains(ids, string(project.Project.ID)) || project.Work == nil || project.Sequence == 0 || len(project.Project.States) == 0 {
+				t.Fatalf("project=%+v", project)
+			}
+		}
+		for _, card := range view.Cards {
+			seen[card.Issue.ProjectID]++
+			if card.Issue.OrganizationID != "org_security" || card.Issue.Terminal {
+				t.Fatalf("card=%+v", card.Issue.NativeReference)
+			}
+		}
+		if seen[second.ID] != 1 || seen[f.project] != 1 {
+			t.Fatalf("cards by project=%v", seen)
+		}
+	})
 	for _, test := range []struct {
-		name     string
-		change   func(*savedWorkState)
-		count    int
-		filtered bool
+		name   string
+		change func(*savedWorkState)
 	}{
-		{"board", func(*savedWorkState) {}, 1, false},
-		{"selected lane", func(s *savedWorkState) { s.Lanes = []string{"Todo"} }, 1, false},
-		{"hidden lanes", func(s *savedWorkState) { s.Lanes = []string{} }, 0, false},
-		{"state filter", func(s *savedWorkState) { s.State = []string{"Backlog"} }, 0, false},
-		{"search", func(s *savedWorkState) { s.Q = "no matching title" }, 0, true},
-		{"list", func(s *savedWorkState) { s.View, s.Tab = "list", "all" }, 1, false},
-		{"completed from", func(s *savedWorkState) { s.View, s.Tab, s.CompletedFrom = "list", "all", "2026-10-26T00:00:00Z" }, 0, true},
-		{"completed to", func(s *savedWorkState) { s.View, s.Tab, s.CompletedTo = "list", "all", "2026-10-27T00:00:00Z" }, 0, true},
-		{"closed list", func(s *savedWorkState) { s.View, s.Tab = "list", "closed" }, 0, false},
+		{"search", func(s *savedWorkState) { s.Q = "no matching title" }},
+		{"list", func(s *savedWorkState) { s.View, s.Tab = "list", "all" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			selected := state
 			test.change(&selected)
-			response := read(viewer, base, ids, selected)
-			requireNativeStatus(t, response, http.StatusOK)
-			var projects []workBoardProject
-			decodeHubResponse(t, response, &projects)
-			if len(projects) != 2 {
-				t.Fatalf("projects=%d, want 2", len(projects))
-			}
-			for i, project := range projects {
-				if string(project.Project.ID) != ids[i] || len(project.Issues) != test.count || len(project.Cards) != test.count || (project.Work == nil) != test.filtered || project.Sequence == 0 || project.GrantVersion == "" {
-					t.Fatalf("project %d=%+v", i, project)
-				}
-				for _, issue := range project.Issues {
-					if issue.ProjectID != project.Project.ID {
-						t.Fatalf("project contains another project's issue: %+v", issue.NativeReference)
-					}
-				}
-			}
+			requireNativeStatus(t, read(viewer, base, ids, selected), http.StatusUnprocessableEntity)
 		})
 	}
-	t.Run("list cursor continues through project API", func(t *testing.T) {
-		for number := 2; number <= 101; number++ {
-			f.seedIssue(t, number)
-		}
-		drainTestNativeBoard(t, f.service)
-		selected := state
-		selected.View, selected.Tab = "list", "all"
-		response := read(viewer, base, []string{string(f.project)}, selected)
-		requireNativeStatus(t, response, http.StatusOK)
-		var projects []workBoardProject
-		decodeHubResponse(t, response, &projects)
-		if len(projects) != 1 || len(projects[0].Issues) != 100 || projects[0].NextCursor == "" {
-			t.Fatalf("first page=%+v", projects)
-		}
-		response = f.request(t, viewer, http.MethodGet, f.base+"/work-items?include=board&completed_window=24h&limit=100&cursor="+url.QueryEscape(projects[0].NextCursor), nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		var next tracker.NativeIssuePage
-		decodeHubResponse(t, response, &next)
-		if len(next.Items) != 1 || next.NextCursor != "" {
-			t.Fatalf("continuation=%+v", next)
-		}
-	})
 	for _, test := range []struct {
 		name string
 		ids  []string

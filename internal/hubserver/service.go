@@ -52,6 +52,7 @@ type Service struct {
 	dashboard               *dashboardDelivery
 	releaseNotes            []releasenotes.Build
 	issuePages              nativeIssuePageCache
+	boardAccess             boardAccessCache
 	writerStatsAt           atomic.Int64
 	writerWaits             atomic.Int64
 	writerWaited            atomic.Int64

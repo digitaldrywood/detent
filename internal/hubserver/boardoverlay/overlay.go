@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -119,4 +120,24 @@ func (o Overlay) Status(row viewstore.BoardRecord) string {
 		return "stale_policy"
 	}
 	return p.BaseStatus
+}
+
+func FromFacts(organization tracker.OrganizationID, project tracker.ProjectID, facts policystore.ProjectOverlayFacts) (Overlay, error) {
+	overlay := Overlay{policies: facts.Policies, reviews: facts.Reviews}
+	if facts.PolicyID == "" {
+		overlay.currentMissing = true
+		return overlay, nil
+	}
+	if facts.ApprovedBy == "" || facts.ApprovedAt.IsZero() {
+		return Overlay{}, corestore.ErrTenantMismatch
+	}
+	overlay.current.Project = policystore.Revision{OrganizationID: organization, ProjectID: project, PolicyID: facts.PolicyID, ApprovedBy: facts.ApprovedBy, ApprovedAt: facts.ApprovedAt}
+	if facts.ReviewPolicyID != "" {
+		if facts.ReviewPolicy == "" || facts.ReviewRevision < 1 || facts.ReviewBy == "" || facts.ReviewAt.IsZero() {
+			return Overlay{}, corestore.ErrTenantMismatch
+		}
+		overlay.current.HasReview = true
+		overlay.current.Review.ReviewPolicyID, overlay.current.Review.PolicyRevisionID = facts.ReviewPolicyID, facts.ReviewPolicy
+	}
+	return overlay, nil
 }

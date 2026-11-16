@@ -123,15 +123,12 @@ func TestReportsShippedPopulation(t *testing.T) {
 							t.Fatalf("24h report completed=%d cancelled=%d, want 6 and 2", report.Completion.Done, report.Completion.Cancelled)
 						}
 						scope := hubscope.NativeScope{Organization: org, Project: project, Credential: credential}
-						board, err := service.readWorkBoardProject(ctx, scope, savedWorkState{View: "board", Lanes: []string{"Todo"}, CompletedWindow: "24h"})
-						if err != nil {
-							t.Fatal(err)
-						}
+						board := readTestWorkBoard(t, ctx, service, scope, savedWorkState{View: "board", Lanes: []string{"Todo"}, CompletedWindow: "24h"})
 						work, err := service.readBoardRecordsFor(ctx, scope, url.Values{"include": {"work"}, "completed_window": {"24h"}}, true)
 						if err != nil {
 							t.Fatal(err)
 						}
-						for name, summary := range map[string]*tracker.NativeWorkSummary{"board": board.Work, "work": work.Work} {
+						for name, summary := range map[string]*tracker.NativeWorkSummary{"board": testBoardWork(board), "work": work.Work} {
 							if summary == nil || summary.Completed != report.Completion.Done || summary.Cancelled != report.Completion.Cancelled {
 								t.Errorf("%s summary=%+v, reports shipped=%d cancelled=%d", name, summary, report.Completion.Done, report.Completion.Cancelled)
 							}
@@ -374,15 +371,12 @@ func TestReportsShippedPopulation(t *testing.T) {
 					}
 					cursor, refreshed = next, append(refreshed, next)
 				}
-				board, err := service.readWorkBoardProject(ctx, scope, savedWorkState{View: "board", Lanes: []string{"Todo"}, CompletedWindow: "24h"})
-				if err != nil {
-					t.Fatal(err)
-				}
+				board := readTestWorkBoard(t, ctx, service, scope, savedWorkState{View: "board", Lanes: []string{"Todo"}, CompletedWindow: "24h"})
 				work, err := service.readBoardRecordsFor(ctx, scope, url.Values{"include": {"work"}, "completed_window": {"24h"}}, true)
 				if err != nil {
 					t.Fatal(err)
 				}
-				for name, summary := range map[string]*tracker.NativeWorkSummary{"board": board.Work, "work": work.Work} {
+				for name, summary := range map[string]*tracker.NativeWorkSummary{"board": testBoardWork(board), "work": work.Work} {
 					if summary == nil || summary.Completed != dayReport.Completion.Done || summary.Cancelled != dayReport.Completion.Cancelled {
 						t.Fatalf("%s summary=%+v reports=%+v", name, summary, dayReport.Completion)
 					}

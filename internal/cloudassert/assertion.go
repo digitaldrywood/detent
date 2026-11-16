@@ -248,7 +248,7 @@ func CanonicalPath(u *url.URL) bool {
 	}
 	workBoard := len(parts) == 5 && parts[0] == "api" && parts[1] == "v2" && parts[2] == "organizations" && parts[4] == "work-board"
 	for key, values := range query {
-		if len(values) > 1 && !repeatableQueryKeys[key] && !(workBoard && key == "project") {
+		if len(values) > 1 && !repeatableQueryKeys[key] && (!workBoard || key != "project" && key != "item") {
 			return false
 		}
 	}

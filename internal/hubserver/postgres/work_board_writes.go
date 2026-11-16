@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -108,6 +110,9 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 		}
 	}
 	if next == nil {
+		if _, err := s.db.Exec(ctx, "DELETE FROM native_board_cards WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, u.ProjectID, u.WorkItemID); err != nil {
+			return mapError(ctx, err)
+		}
 		if _, err := s.db.Exec(ctx, "DELETE FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, u.ProjectID, u.WorkItemID); err != nil {
 			return mapError(ctx, err)
 		}
@@ -325,6 +330,9 @@ func (s *session) putBoardItem(ctx context.Context, b viewstore.BoardRecord, num
 	}
 	if err := s.putBoardDisplay(ctx, b); err != nil {
 		return err
+	}
+	if _, err := s.db.Exec(ctx, boardviewsql.CardUpsertSQL, s.organization, b.ProjectID, b.WorkItemID); err != nil {
+		return mapError(ctx, err)
 	}
 	if _, err := s.db.Exec(ctx, "DELETE FROM native_board_filter_values WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, b.ProjectID, b.WorkItemID); err != nil {
 		return mapError(ctx, err)

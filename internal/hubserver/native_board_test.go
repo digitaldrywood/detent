@@ -251,11 +251,7 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 				if err != nil || status != http.StatusOK {
 					t.Fatalf("fixture credential=%d %v", status, err)
 				}
-				page, err := service.readWorkBoardProject(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, savedWorkState{View: "board", CompletedWindow: "all"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				summary := page.Work
+				summary := testBoardWork(readTestWorkBoard(t, t.Context(), service, hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, savedWorkState{View: "board", CompletedWindow: "24h"}))
 				if summary == nil {
 					t.Fatal("board omitted running summary")
 				}

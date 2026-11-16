@@ -111,3 +111,16 @@ type Writer interface {
 	CreateProjectWorkflowApply(context.Context, WorkflowApply) (WorkflowApply, error)
 	BackfillPolicyCompatibility(context.Context, Revision) error
 }
+
+type ProjectOverlayFacts struct {
+	PolicyID       string
+	ApprovedBy     string
+	ApprovedAt     time.Time
+	ReviewPolicyID string
+	ReviewPolicy   string
+	ReviewRevision int64
+	ReviewBy       string
+	ReviewAt       time.Time
+	Policies       map[string]Compatibility
+	Reviews        map[string]ReviewCompatibility
+}

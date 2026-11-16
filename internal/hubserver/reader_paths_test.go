@@ -343,7 +343,13 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 			{"revoked session", "revoked", board(f.project, active), http.StatusUnauthorized},
 		}
 		t.Run("/work-board pending", func(t *testing.T) {
-			requireNativeCode(t, f.page(t, "owner", board(f.project, active)), http.StatusServiceUnavailable, "not_ready")
+			response := f.page(t, "owner", board(f.project, active))
+			requireNativeStatus(t, response, http.StatusOK)
+			var view workBoardView
+			decodeHubResponse(t, response, &view)
+			if len(view.Projects) != 1 || !view.Projects[0].ProjectionPending || view.Projects[0].Work != nil || len(view.Cards) != 0 {
+				t.Fatalf("pending work board=%s", response.Body.String())
+			}
 			for _, refusal := range refusals {
 				requireNativeStatus(t, f.page(t, refusal.account, refusal.path), refusal.status)
 			}
@@ -352,9 +358,9 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 		t.Run("/work-board ready", func(t *testing.T) {
 			response := f.page(t, "owner", board(f.project, active))
 			requireNativeStatus(t, response, http.StatusOK)
-			var projects []workBoardProject
-			decodeHubResponse(t, response, &projects)
-			if len(projects) != 1 || string(projects[0].Project.ID) != f.project || len(projects[0].Issues) != 1 || projects[0].Issues[0].Title != "Review the invitation flow" {
+			var view workBoardView
+			decodeHubResponse(t, response, &view)
+			if len(view.Projects) != 1 || string(view.Projects[0].Project.ID) != f.project || view.Projects[0].ProjectionPending || len(view.Cards) != 1 || view.Cards[0].Issue.Title != "Review the invitation flow" {
 				t.Fatalf("ready work board did not return the visible issue: %s", response.Body.String())
 			}
 			for _, refusal := range refusals {

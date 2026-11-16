@@ -164,9 +164,9 @@ func TestLocalAppAuthentication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var board []workBoardProject
+			var board workBoardView
 			decodeHubResponse(t, request(token, http.MethodGet, base+"/work-board?project="+url.QueryEscape(string(f.project.ID))+"&state="+url.QueryEscape(string(setup)), ""), &board)
-			if len(board) != 1 || board[0].Project.ID != f.project.ID {
+			if len(board.Projects) != 1 || board.Projects[0].Project.ID != f.project.ID {
 				t.Fatalf("board=%+v", board)
 			}
 		}
