@@ -1,8 +1,11 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -38,8 +41,8 @@ func TestSearchMaintenanceRefreshesSearchAfterIdentityBudgetExpires(t *testing.T
 	var budgetsMu sync.Mutex
 	var budgets []context.CancelFunc
 	service := newPostgresNativeService(t, Config{RunDetails: objects, deps: hubdeps.Deps{SearchRefreshTimeout: func(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
-		if budget != searchstore.RefreshTickDuration {
-			t.Errorf("tick budget=%s want %s", budget, searchstore.RefreshTickDuration)
+		if budget != searchstore.RefreshTickDuration && budget != searchstore.RefreshStepDuration {
+			t.Errorf("refresh budget=%s want %s or %s", budget, searchstore.RefreshTickDuration, searchstore.RefreshStepDuration)
 		}
 		ctx, cancel := context.WithCancel(parent)
 		budgetsMu.Lock()
@@ -135,4 +138,121 @@ func TestSearchMaintenanceRefreshesSearchAfterIdentityBudgetExpires(t *testing.T
 			t.Fatalf("%s identity refresh after expired budget more=%v err=%v", org, more, err)
 		}
 	}
+}
+
+type expiringBudget struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func (b *expiringBudget) expire() { b.once.Do(func() { close(b.done) }) }
+
+func (b *expiringBudget) Done() <-chan struct{} { return b.done }
+
+func (b *expiringBudget) Err() error {
+	select {
+	case <-b.done:
+		if err := b.Context.Err(); err != nil {
+			return err
+		}
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func TestSearchMaintenanceLogsExpiredRefreshStepOnce(t *testing.T) {
+	t.Parallel()
+	objects := &memoryRunDetails{}
+	var logs bytes.Buffer
+	var logsMu sync.Mutex
+	var budgetsMu sync.Mutex
+	var budgets []*expiringBudget
+	service := newPostgresNativeService(t, Config{RunDetails: objects, Logger: slog.New(slog.NewJSONHandler(lockedWriter{&logs, &logsMu}, nil)), deps: hubdeps.Deps{SearchRefreshTimeout: func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		budget := &expiringBudget{Context: parent, done: make(chan struct{})}
+		stop := context.AfterFunc(parent, budget.expire)
+		budgetsMu.Lock()
+		budgets = append(budgets, budget)
+		budgetsMu.Unlock()
+		return budget, func() {
+			stop()
+			budget.expire()
+		}
+	}}})
+	const title = "customer sentinel title"
+	organizations := []tracker.OrganizationID{"org_first", "org_first_second"}
+	var admin *sql.DB
+	for _, org := range organizations {
+		f := newNativeFixture(t, service, org, "Example project")
+		f.create(t, title)
+		admin = nativeAttemptTestDatabase(t, f)
+		if _, err := admin.ExecContext(t.Context(), "UPDATE search_documents SET indexed_revision=0 WHERE organization_id=$1 AND kind='issue'", org); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := func(org tracker.OrganizationID) int {
+		t.Helper()
+		var count int
+		if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM search_documents WHERE organization_id=$1 AND kind='issue' AND indexed_revision<>revision", org).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	for _, org := range organizations {
+		if stale(org) == 0 {
+			t.Fatalf("%s fixture has no stale search document", org)
+		}
+	}
+	original := service.localOrganization
+	t.Cleanup(func() { service.localOrganization = original })
+	for index, org := range organizations {
+		before := stale(org)
+		logsMu.Lock()
+		logs.Reset()
+		logsMu.Unlock()
+		objects.beforeRead = func(ctx context.Context) error {
+			budgetsMu.Lock()
+			for _, budget := range budgets {
+				budget.expire()
+			}
+			budgetsMu.Unlock()
+			return ctx.Err()
+		}
+		service.localOrganization = string(org)
+		service.maintainNativeSearch(t.Context())
+		objects.beforeRead = nil
+		logsMu.Lock()
+		output := logs.String()
+		logsMu.Unlock()
+		if got := strings.Count(output, "rebuild scoped search index"); got != 1 || !strings.Contains(output, "deadline exceeded") {
+			t.Fatalf("%s expired refresh step logged %d times, want once with its deadline: %s", org, got, output)
+		}
+		if strings.Contains(output, title) {
+			t.Fatalf("%s refresh log contains customer content: %s", org, output)
+		}
+		if got := stale(org); got != before {
+			t.Fatalf("%s stale documents=%d after expired step, want %d", org, got, before)
+		}
+		for _, later := range organizations[index+1:] {
+			if got := stale(later); got == 0 {
+				t.Fatalf("%s maintenance refreshed %s", org, later)
+			}
+		}
+		service.maintainNativeSearch(t.Context())
+		if got := stale(org); got != 0 {
+			t.Fatalf("%s stale documents=%d after the next tick, want 0", org, got)
+		}
+	}
+}
+
+type lockedWriter struct {
+	buffer *bytes.Buffer
+	mu     *sync.Mutex
+}
+
+func (w lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buffer.Write(p)
 }
