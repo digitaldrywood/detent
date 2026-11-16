@@ -105,8 +105,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				} else {
 					f = newHostedSecurityFixture(t, configure)
 				}
+				adminOnly := tool == "update_project_integration" || coordinatorSpriteMutation(tool)
 				role := "owner"
-				if outcome == "wrong role" {
+				if outcome == "wrong role" || !adminOnly && (outcome == "no write grant" || outcome == "revoked") {
 					role = "member"
 				}
 				u := f.user(t, "luna-owner", role, "luna@example.test", "write", "")
@@ -575,7 +576,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
 				}
-				if outcome == "running" || outcome == "merging" || outcome == "already archived" || outcome == "duplicate" || outcome == "empty" || outcome == "outside project" || outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "invalid state" || outcome == "cycle" || outcome == "no write grant" || outcome == "no active attempt" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
+				if outcome == "running" || outcome == "merging" || outcome == "already archived" || outcome == "duplicate" || outcome == "empty" || outcome == "outside project" || outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "invalid state" || outcome == "cycle" || outcome == "no write grant" && !adminOnly || outcome == "no active attempt" || outcome == "wrong role" && adminOnly {
 					if result.Success || !strings.Contains(result.Content, "error") {
 						t.Fatalf("unauthorized result: %+v", result)
 					}
@@ -779,7 +780,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if faultPhase != "" && !injected.Load() {
 					t.Fatalf("%s fixture did not reach its write failure", faultPhase)
 				}
-				changed := outcome == "human answer" || outcome == "dependency park" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
+				changed := outcome == "human answer" || outcome == "dependency park" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "no write grant" && adminOnly || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
 					requireNativeStatus(t, response, http.StatusOK)
 				} else if outcome == "runner grant revoked" {
@@ -1156,7 +1157,7 @@ func runCoordinatorIssueSplitPostgresCases(t *testing.T) {
 					f := hostedSecurityFixture{service: service, provider: provider, project: native.project.ID, base: native.base}
 					now := service.config.Clock()
 					role := "owner"
-					if outcome == "wrong role" {
+					if outcome == "wrong role" || outcome == "no write grant" || outcome == "revoked" {
 						role = "member"
 					}
 					identity := auth.Identity{Subject: "user_" + string(organization) + "_split", Email: "split@example.test", EmailVerified: true,

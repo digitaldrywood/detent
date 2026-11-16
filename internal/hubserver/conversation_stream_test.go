@@ -611,7 +611,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 			},
 		},
 		{
-			name: "project grant removed", account: "owner", want: conversationClosedAccessRevoked,
+			name: "project grant removed", account: "viewer", want: conversationClosedAccessRevoked,
 			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
 				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3", scope.Organization, scope.Credential.Hosted.Subject, scope.Project); err != nil {
 					t.Fatal(err)

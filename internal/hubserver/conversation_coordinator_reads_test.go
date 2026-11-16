@@ -219,16 +219,34 @@ func TestCoordinatorScreenReadBoundaries(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, owner, record := coordinatorReadFixture(t)
-			tools, _ := coordinatorViewerTools(t, f, record, owner)
+			viewer := owner
 			if test.revoke {
-				coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
-					return w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, f.project)
+				viewer = f.user(t, "screen-member", "member", "member@example.test", "read", "")
+			}
+			tools, _ := coordinatorViewerTools(t, f, record, viewer)
+			revoke := func(fixture hostedSecurityFixture, user hostedSecurityUser) {
+				coordinatorFixtureWrite(t, fixture.service, "org_security", func(w tenantstore.Writer) error {
+					return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, fixture.project)
 				})
+			}
+			if test.revoke {
+				if result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "get_native_project", Arguments: json.RawMessage(`{}`)}); err != nil || !result.Success {
+					t.Fatalf("granted member read before revocation: %#v, %v", result, err)
+				}
+				revoke(f, viewer)
 			}
 			for _, tool := range coordinatorScreenTools() {
 				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool.Name, Arguments: json.RawMessage(test.args)})
 				if err != nil || result.Success {
 					t.Fatalf("%s crossed boundary: %#v, %v", tool.Name, result, err)
+				}
+			}
+			if test.revoke {
+				fresh, freshOwner, freshRecord := coordinatorReadFixture(t)
+				ownerTools, _ := coordinatorViewerTools(t, fresh, freshRecord, freshOwner)
+				revoke(fresh, freshOwner)
+				if result, err := ownerTools.handle(t.Context(), runner.AgentToolCall{Name: "get_native_project", Arguments: json.RawMessage(`{}`)}); err != nil || !result.Success {
+					t.Fatalf("owner role access without a grant row: %#v, %v", result, err)
 				}
 			}
 		})
