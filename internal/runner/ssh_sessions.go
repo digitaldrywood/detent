@@ -93,7 +93,7 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 		if id, ok := result.(int64); ok && id > 0 {
 			c.active[id] = UsageUpdate{DetentSessionID: id}
 		}
-	case "store.FinishSession":
+	case "store.FinishSession", "store.ReconcileSessionFinalization":
 		if len(args) > 0 {
 			var id int64
 			if json.Unmarshal(args[0], &id) == nil {
