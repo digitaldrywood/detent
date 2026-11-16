@@ -1001,7 +1001,11 @@ func TestNativeRejectedCompletionReleasesClaim(t *testing.T) {
 			if test.fault == "replacement" || test.fault == "transport" || test.fault == "rate_limit" {
 				wantEvents = 3
 			}
-			if len(events) != wantEvents || events[0].IdempotencyKey == events[1].IdempotencyKey || events[1].Data.Sequence != events[0].Data.Sequence || events[1].Data.Outcome != "failed" || events[1].Data.CompletionBody != "" {
+			wantBody := ""
+			if category == "usage_validation" {
+				wantBody = "private completion text"
+			}
+			if len(events) != wantEvents || events[0].IdempotencyKey == events[1].IdempotencyKey || events[1].Data.Sequence != events[0].Data.Sequence || events[1].Data.Outcome != "failed" || events[1].Data.CompletionBody != wantBody {
 				t.Fatalf("refused completion was not replaced: %+v", events)
 			}
 			if wantEvents == 3 && events[1].IdempotencyKey != events[2].IdempotencyKey {
