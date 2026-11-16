@@ -204,7 +204,7 @@ export interface WorkHttp {
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
   /** The compact issue-picker projection, searched and paged by the hub. */
   readonly listIssuePicker: (input: { readonly projectId: string; readonly q?: string; readonly cursor?: string; readonly limit?: number; readonly signal?: AbortSignal }) => Promise<IssuePickerPage>;
-  readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
+  readonly getWorkItem: (projectId: string, itemId: string, signal?: AbortSignal) => Promise<NativeIssue>;
   readonly getWorkItemById: (itemId: string, signal?: AbortSignal) => Promise<NativeIssue>;
   readonly getWorkItemConversation: (projectId: string, itemId: string, metadata?: boolean) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
@@ -762,8 +762,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       send(IssuePickerPage, "GET", url(`${projectBase(input.projectId)}/work-items`, {
         fields: "picker", q: input.q?.trim() || undefined, cursor: input.cursor, limit: input.limit,
       }), undefined, input.signal),
-    getWorkItem: (projectId, itemId) =>
-      send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
+    getWorkItem: (projectId, itemId, signal) =>
+      send(NativeIssue, "GET", url(itemBase(projectId, itemId)), undefined, signal),
     getWorkItemById: (itemId, signal) =>
       send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`), undefined, signal),
     getWorkItemConversation: (projectId, itemId, metadata) =>
