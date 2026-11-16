@@ -598,6 +598,8 @@ type configurationHeartbeat struct {
 	deliver          bool
 	settle           bool
 	initialize       bool
+	retarget         bool
+	approved         policystore.Revision
 	identityRevision int64
 	reported         *runnerauth.ProjectConfiguration
 	policy           *policystore.Observation
@@ -644,6 +646,13 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 			return err
 		}
 		p.command, err = owner.ConfigurationCommand(ctx, identity.RunnerID, projectID)
+		if err != nil {
+			return err
+		}
+		p.approved, err = r.ProjectPolicy(ctx, projectID)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
 		return err
 	})
 	if err != nil {
@@ -673,6 +682,11 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 	} else {
 		if err := s.readConfigurationPayload(ctx, org, eventstore.Reference(p.record.PayloadObjectKey, p.record.PayloadSHA256, p.record.PayloadBytes, p.record.PayloadContentBytes), &p.view); err != nil {
 			return nil, err
+		}
+		if p.command.Status != "pending" && p.approved.PolicyID != "" && p.approved.PolicyID != p.record.PolicyID && !bindingCounterpart(p.approved.PolicyID, p.view.AllowLocalBinding, &p.view, reported) {
+			if err := s.retargetConfigurationPolicy(ctx, org, projectID, p); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if reported != nil {
@@ -800,6 +814,43 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 	return p, err
 }
 
+func (s *Service) retargetConfigurationPolicy(ctx context.Context, organization tracker.OrganizationID, projectID tracker.ProjectID, p *configurationHeartbeat) error {
+	approval, err := s.decodeTenantProjectPolicy(ctx, organization, projectID, p.approved)
+	if err != nil {
+		return err
+	}
+	p.view.EffectivePolicy = &approval.Policy
+	p.view.SelectedPolicy = &approval.Policy
+	p.view.Pending, p.view.Applied, p.view.Saved, p.view.Constraint = false, false, false, ""
+	p.view.ObservedAt = s.config.Clock().UTC()
+	p.view.ConfigRevision, err = projectConfigurationDigest(p.view)
+	if err != nil {
+		return err
+	}
+	p.payload, err = s.prepareConfigurationPayload(ctx, organization, p.view)
+	if err != nil {
+		return err
+	}
+	p.retarget = true
+	return nil
+}
+
+func bindingCounterpart(policyID string, allowLocalBinding bool, views ...*runnerauth.ProjectConfiguration) bool {
+	for _, view := range views {
+		if view == nil {
+			continue
+		}
+		candidate := view.LocalBindingPolicy
+		if allowLocalBinding {
+			candidate = view.RestrictedBindingPolicy
+		}
+		if candidate != nil && candidate.ID == policyID {
+			return true
+		}
+	}
+	return false
+}
+
 func configurationRuntimeMatches(actual, desired runnerauth.ProjectConfiguration) bool {
 	return actual.ConfigRevision == desired.ConfigRevision && actual.Registered == desired.Registered && actual.RuntimeRegistered == desired.Registered && actual.Paused == desired.Paused && actual.Draining == desired.Draining && actual.AllowLocalBinding == desired.AllowLocalBinding && actual.EffectivePolicy != nil && desired.EffectivePolicy != nil && actual.EffectivePolicy.ID == desired.EffectivePolicy.ID
 }
@@ -863,8 +914,17 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 		if err := owner.RestoreConfiguration(ctx, configurationProjectRow(identity.OrganizationID, identity.RunnerID, p.view, p.payload, now), p.command, authority, row.Revision); err != nil {
 			return err
 		}
-	} else if p.initialize || p.settle {
+	} else if p.initialize || p.settle || p.retarget {
 		current = false
+		if p.retarget {
+			approved, err := w.ProjectPolicy(ctx, projectID)
+			if err != nil {
+				return err
+			}
+			if approved.PolicyID != p.approved.PolicyID {
+				return corestore.ErrRevisionConflict
+			}
+		}
 		header, err := owner.ConfigurationHeader(ctx, identity.RunnerID)
 		if err != nil {
 			return err
