@@ -247,7 +247,9 @@ func (s *session) readBoardModelBatch(ctx context.Context, batch *pgx.Batch) err
 	return mapError(ctx, err)
 }
 
-const boardModelMetadataSQL = `SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready),(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`
+const boardProjectionPendingSQL = `(EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 OFFSET 256) OR EXISTS(SELECT 1 FROM (SELECT work_item_id FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 LIMIT 256) d LEFT JOIN native_board_items b ON b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=d.work_item_id LEFT JOIN issues i ON i.organization_id=$1 AND i.project_id=$2 AND i.native_id=d.work_item_id WHERE b.work_item_id IS NULL OR i.id IS NULL OR b.actor_principal_id<>coalesce(i.actor_principal_id,'')) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready))`
+
+const boardModelMetadataSQL = `SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),` + boardProjectionPendingSQL + `,(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`
 
 func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore.BoardSelection, work *viewstore.BoardSelection) (viewstore.BoardModelPage, error) {
 	var result viewstore.BoardModelPage

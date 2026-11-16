@@ -72,7 +72,7 @@ func TestBoardReadinessBeforeAndDuringBackfill(t *testing.T) {
 			}
 			check := func(pending bool) {
 				t.Helper()
-				for _, include := range []string{"board", "work"} {
+				for _, include := range []string{"board", "work", "summary"} {
 					page, err := service.readBoardRecords(t.Context(), scope, url.Values{"include": {include}})
 					if err != nil {
 						t.Fatal(err)
@@ -111,6 +111,9 @@ func TestBoardReadinessBeforeAndDuringBackfill(t *testing.T) {
 				if pending && (recorder.Code != http.StatusOK || !envelope.Pending || envelope.Rows == nil || len(envelope.Rows) != 0) {
 					t.Errorf("pending HTTP=%d %s", recorder.Code, recorder.Body.String())
 				}
+				if !pending && (recorder.Code != http.StatusOK || envelope.Pending) {
+					t.Errorf("ready HTTP=%d %s", recorder.Code, recorder.Body.String())
+				}
 			}
 			check(true)
 			publish(0, true, true)
@@ -121,6 +124,24 @@ func TestBoardReadinessBeforeAndDuringBackfill(t *testing.T) {
 			check(true)
 			publish(1, true, true)
 			check(false)
+			if _, err := usagePostgresAdmin(t, service).ExecContext(t.Context(), "UPDATE issues SET event_sequence=event_sequence+1,last_activity_at=greatest(last_activity_at,$3::timestamptz) WHERE organization_id=$1 AND project_id=$2 AND native_id=$4", org, scope.Project, now.Add(time.Minute), records[0].WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			check(false)
+			page, err := service.readBoardRecords(t.Context(), scope, url.Values{"include": {"board"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if page.ProjectionOldestPendingAt == nil {
+				t.Error("re-queued projected card does not report projection lag")
+			}
+			if err := repo.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: scope.Project, NativeID: "wi_pending_3", Number: 3, Title: "Example", WorkflowStateName: new("Todo"), ActorPrincipalID: new("owner")})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			check(true)
 		})
 	}
 }
