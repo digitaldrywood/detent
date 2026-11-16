@@ -335,6 +335,11 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		}
 		if present {
 			cleanupPredecessor = previous
+			if (lease.ReleasedAt != nil || !lease.ExpiresAt.After(s.config.Clock().UTC())) && request.Type == "run.finished" && request.Data.Outcome == "cancelled" && len(request.PriorEvents) == 0 {
+				if err := readTenantRunCleanupPayload(ctx, r, cleanupPredecessor); err != nil {
+					return err
+				}
+			}
 		}
 		if err := admitNativeRunEventBatch(ctx, r, scope.Project, workItem.NativeID, lease, events, s.config.Clock().UTC()); err != nil {
 			return err
@@ -427,7 +432,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		}
 		legacySelectorChecked = true
 	}
-	cleanupData, committedCleanupData, err := readTenantRunCleanupData(ctx, content, cleanupPredecessor)
+	var cleanupData *tracker.NativeRunData
+	var committedCleanupData map[int64]*tracker.NativeRunData
+	if termination && cleanupPredecessor != nil {
+		cleanupData, err = s.readTenantTerminationCleanupData(ctx, *cleanupPredecessor)
+	} else if !termination {
+		cleanupData, committedCleanupData, err = readTenantRunCleanupData(ctx, content, cleanupPredecessor)
+	}
 	if err != nil {
 		return nil, err
 	}

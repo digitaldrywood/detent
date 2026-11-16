@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -17,10 +18,12 @@ import (
 )
 
 type tenantRunCleanupPredecessor struct {
-	attempt   leasestore.Attempt
-	lease     leasestore.Lease
-	event     eventstore.Event
-	committed map[int64]eventstore.Event
+	attempt        leasestore.Attempt
+	lease          leasestore.Lease
+	event          eventstore.Event
+	committed      map[int64]eventstore.Event
+	payload        *attachment.ArchiveReference
+	recoverPayload bool
 }
 
 func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request tracker.NativeRunEvent) (*tenantRunCleanupPredecessor, bool, error) {
@@ -105,6 +108,28 @@ func readTenantRunCleanupData(ctx context.Context, content *eventstore.Content, 
 		committed[sequence] = runs[sequence]
 	}
 	return runs[previous.attempt.Sequence], committed, nil
+}
+
+func readTenantRunCleanupPayload(ctx context.Context, r tenantstore.Reader, previous *tenantRunCleanupPredecessor) error {
+	snapshot := hubrecords.TenantAttemptSnapshot{Attempt: previous.attempt, Lease: previous.lease, Event: previous.event}
+	if err := hubrecords.ReadTenantAttemptRunPayload(ctx, r, &snapshot); err != nil {
+		return err
+	}
+	previous.payload, previous.recoverPayload = snapshot.Payload, snapshot.RecoverPayload
+	return nil
+}
+
+func (s *Service) readTenantTerminationCleanupData(ctx context.Context, previous tenantRunCleanupPredecessor) (*tracker.NativeRunData, error) {
+	snapshot := hubrecords.TenantAttemptSnapshot{Attempt: previous.attempt, Lease: previous.lease, Event: previous.event, Payload: previous.payload, RecoverPayload: previous.recoverPayload}
+	run, err := s.readNativeAttemptRunTenant(ctx, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	if run.AttemptID != previous.attempt.ID || run.RunID != previous.attempt.RunID || run.LeaseID != tracker.LeaseID(previous.attempt.LeaseID) || run.FencingToken != tracker.FencingToken(previous.attempt.FencingToken) || !nativeAttemptRunMatches(snapshot, run) {
+		return nil, artifact.ErrIntegrity
+	}
+	run.Sequence = previous.attempt.Sequence
+	return &run, nil
 }
 
 func preserveTenantRunCleanup(previous *tracker.NativeRunData, current *tracker.NativeRunData) error {

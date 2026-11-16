@@ -56,7 +56,7 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	if item.ID != authority.WorkItem.ID || item.ProjectID != authority.ProjectID || item.Archived {
+	if item.ID != authority.WorkItem.ID || item.ProjectID != authority.ProjectID || item.Archived && !authority.Termination {
 		return corestore.ErrRevisionConflict
 	}
 	lease, err := reader.Lease(ctx, authority.Lease.LeaseID)
