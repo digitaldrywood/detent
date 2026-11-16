@@ -24,6 +24,7 @@ import type { Resource } from "../../src/app/account/useResource.ts";
 import { subscribeProjectEvents } from "../../src/app/work/lib/projectEvents.ts";
 import { HealthFindingsProvider, useHealthFindings } from "../../src/app/diagnostics/healthFindings.tsx";
 import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
+import { WorkApiError } from "../../src/app/work/lib/workHttp.ts";
 import { resetUpdateCheckState } from "../../src/app/adapters/detentUpdates.ts";
 import * as settings from "../../src/hooks/useSettings.ts";
 import { setReleaseNotesUnread } from "../../src/app/account/releaseNotes.ts";
@@ -708,6 +709,66 @@ it("discards an older response after a live refresh", async () => {
   expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2);
   await act(async () => finish({ items: [{ id: "stale", class: "flow", summary: "Flow attention", next_action: "Check flow", subject: { kind: "project", id: "p1" }, opened_at: "2026-10-06T00:00:00Z", severity: "attention", resolved_at: null }], last_tick_at: null }));
   expect(result.current).toEqual([]);
+});
+
+it("reads each finding's work item label once across findings updates and aborts the read on unmount", async () => {
+  vi.stubGlobal("EventSource", Source);
+  const finding = (id: string, item: string) => ({ id, class: "flow", summary: "Flow attention", next_action: "Check flow", subject: { kind: "work_item", id: item, project_id: "p1" }, opened_at: "2026-10-06T10:00:00Z", severity: "attention", resolved_at: null });
+  let items = [finding("hf_1", "wi_1"), finding("hf_2", "wi_2"), finding("hf_3", "wi_2")];
+  let tick = 0;
+  mocks.listHealthFindings.mockImplementation(async () => ({ items, last_tick_at: `2026-10-06T10:${String(tick).padStart(2, "0")}:00Z` }));
+  const signals: AbortSignal[] = [];
+  mocks.getWorkItem.mockImplementation((_project: string, id: string, signal: AbortSignal) => {
+    signals.push(signal);
+    if (id === "wi_5") return Promise.reject(new WorkApiError({ status: 503, code: "unavailable", message: "Unavailable" }));
+    return id === "wi_4" ? new Promise(() => {}) : Promise.resolve({ number: Number(id.slice(3)), title: `Item ${id}` });
+  });
+  const projects = [{ id: "p1", name: "Example project", can_write: true }];
+  const { result, unmount } = renderHook(() => useSidebarFindings(projects), { wrapper: ({ children }) => <HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider> });
+  await waitFor(() => expect(result.current.map((f) => f.label)).toEqual(["#1 Item wi_1", "#2 Item wi_2", "#2 Item wi_2"]));
+  expect(mocks.getWorkItem).toHaveBeenCalledTimes(2);
+  for (let update = 0; update < 3; update++) {
+    tick++;
+    const reads = mocks.listHealthFindings.mock.calls.length;
+    await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "new-tick" })));
+    await waitFor(() => expect(mocks.listHealthFindings.mock.calls.length).toBeGreaterThan(reads));
+    await act(async () => {});
+  }
+  expect(mocks.getWorkItem).toHaveBeenCalledTimes(2);
+  items = [...items, finding("hf_4", "wi_3")];
+  tick++;
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "new-tick" })));
+  await waitFor(() => expect(result.current.map((f) => f.label)).toContain("#3 Item wi_3"));
+  expect(mocks.getWorkItem).toHaveBeenCalledTimes(3);
+  expect(mocks.getWorkItem).toHaveBeenLastCalledWith("p1", "wi_3", expect.any(AbortSignal));
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  let now = Date.parse("2026-10-06T11:00:00Z");
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const publishUpdate = async () => {
+    tick++;
+    const reads = mocks.listHealthFindings.mock.calls.length;
+    await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "new-tick" })));
+    await waitFor(() => expect(mocks.listHealthFindings.mock.calls.length).toBeGreaterThan(reads));
+    await act(async () => {});
+  };
+  items = [...items, finding("hf_6", "wi_5")];
+  await publishUpdate();
+  await waitFor(() => expect(result.current.map((f) => f.label)).toContain("wi_5"));
+  expect(mocks.getWorkItem).toHaveBeenCalledTimes(4);
+  await publishUpdate();
+  await publishUpdate();
+  expect(mocks.getWorkItem).toHaveBeenCalledTimes(4);
+  now += 500;
+  await publishUpdate();
+  expect(mocks.getWorkItem).toHaveBeenCalledTimes(5);
+  expect(mocks.getWorkItem).toHaveBeenLastCalledWith("p1", "wi_5", expect.any(AbortSignal));
+  items = [...items, finding("hf_5", "wi_4")];
+  tick++;
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "new-tick" })));
+  await waitFor(() => expect(mocks.getWorkItem).toHaveBeenCalledTimes(6));
+  expect(signals.at(-1)!.aborted).toBe(false);
+  unmount();
+  expect(signals.at(-1)!.aborted).toBe(true);
 });
 
 
