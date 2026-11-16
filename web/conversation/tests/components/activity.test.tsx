@@ -192,6 +192,10 @@ describe("the activity merge", () => {
   it("names a runner by its own id and a stranger by a shortened principal", () => {
     expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, "rnr_mac")).toBe("rnr_mac");
     expect(actorLabel({ kind: "integration", principal_id: "auto_archive" }, null, null)).toBe("Detent");
+    expect(
+      actorLabel({ kind: "machine", principal_id: "runner_example", display_name: "runner_example", agent: "progress-check" }, null, "rnr_mac", new Map([["runner_example", { display: "Example runner", host: "example-host" }]])),
+    ).toBe("Detent via progress-check");
+    expect(actorLabel({ kind: "system", principal_id: "workspace_service" }, null, null)).toBe("Detent");
     expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, null)).toBe("tok_r");
     expect(
       actorLabel({ kind: "runner", principal_id: "runner_be4aaeec1c424bb6afbe94aea6d605d6" }, null, null),

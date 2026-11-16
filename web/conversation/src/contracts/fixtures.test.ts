@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { FIXTURE_SCHEMAS } from "./fixtures.ts";
 import { OrganizationReports } from "./reports.ts";
-import { WorkItemPage } from "./work.ts";
+import { HistoryPage, WorkItemPage } from "./work.ts";
 
 const directory = fileURLToPath(new URL("./fixtures", import.meta.url));
 const files = readdirSync(directory)
@@ -65,20 +65,37 @@ describe("contract fixtures", () => {
       const decoded = Schema.decodeUnknownSync(OrganizationReports)(partial);
       expect(decoded.current.worked).toBeNull();
       expect(decoded.current.reworked).toBeNull();
-      expect(decoded.projects[0].current.worked).toBeNull();
-      expect(decoded.projects[0].current.reworked).toBeNull();
-      expect(decoded.projects[1].current.worked).toBe(40);
-      expect(decoded.projects[1].current.reworked).toBe(3);
+      expect(decoded.projects[0]!.current.worked).toBeNull();
+      expect(decoded.projects[0]!.current.reworked).toBeNull();
+      expect(decoded.projects[1]!.current.worked).toBe(40);
+      expect(decoded.projects[1]!.current.reworked).toBe(3);
       expect(decoded.previous.worked).toBe(0);
     }
   });
 
-  it("rejects the legacy health detector actor kind", () => {
+  it("rejects an actor kind the hub never writes", () => {
     expect(() =>
       Schema.decodeUnknownSync(FIXTURE_SCHEMAS["native-actors.json"]!)([
-        { kind: "system", principal_id: "health_detector" },
+        { kind: "robot", principal_id: "example" },
       ]),
     ).toThrow();
+  });
+
+  it("decodes a work item and a work list filed by the progress-check machine actor", () => {
+    const actor = { kind: "machine", principal_id: "runner_example", display_name: "runner_example", agent: "progress-check" };
+    const item = JSON.parse(readFileSync(join(directory, "work-item.json"), "utf8"));
+    item.actor = actor;
+    expect(Schema.decodeUnknownSync(FIXTURE_SCHEMAS["work-item.json"]!)(item)).toMatchObject({ actor });
+    const list = JSON.parse(readFileSync(join(directory, "work-item-list.json"), "utf8"));
+    list.items[1].actor = actor;
+    expect(Schema.decodeUnknownSync(WorkItemPage)(list).items[1]).toMatchObject({ actor });
+  });
+
+  it("decodes history closed by the workspace service system actor", () => {
+    const actor = { kind: "system", principal_id: "workspace_service" };
+    const history = JSON.parse(readFileSync(join(directory, "work-history.json"), "utf8"));
+    history.items[0].actor = actor;
+    expect(Schema.decodeUnknownSync(HistoryPage)(history).items[0]).toMatchObject({ actor });
   });
 
   it("decodes a Change review with observed attachment evidence", () => {
