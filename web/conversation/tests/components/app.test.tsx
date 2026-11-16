@@ -164,7 +164,7 @@ describe("the conversation shell", () => {
       if (url.pathname === "/api/v2/organizations/org_mock/readable/alpha") {
         return Promise.resolve(Response.json({ project_id: "proj_alpha", work_item_id: "" }));
       }
-      const board = url.pathname.endsWith("/work-items") && url.searchParams.get("include") === "board";
+      const board = url.pathname.endsWith("/work-board");
       if (board) pendingBoardRequests++;
       try {
         const response = await sameRealmFetch(input, init);
@@ -207,10 +207,10 @@ describe("the conversation shell", () => {
     expect(screen.getAllByTestId("issue-card").length).toBeGreaterThan(0);
     const heading = () => screen.getByRole("heading", { level: 1 });
     expect(heading().textContent).toBe(path === "/work" ? "2 projects" : "alpha");
-    const boardRequests = () => requests.filter((url) => url.pathname.endsWith("/work-items") && url.searchParams.get("include") === "board").length;
+    const boardRequests = () => requests.filter((url) => url.pathname.endsWith("/work-board")).length;
     const initial = boardRequests();
     const boardControl = screen.getByTestId("board-new-issue");
-    expect(initial).toBeGreaterThan(0);
+    expect(initial).toBe(1);
     fireEvent.click(rows().getByRole("button", { name: "All" }));
     await waitFor(() => expect(heading().textContent).toBe("2 projects"));
     expect(router.state.location.pathname).toBe(path);
@@ -257,8 +257,8 @@ describe("the conversation shell", () => {
     fireEvent.click(await screen.findByRole("radio", { name: "Board" }));
     await waitFor(() => expect(screen.getAllByTestId("issue-card").length).toBeGreaterThan(0));
     await waitFor(() => expect(heading().textContent).toBe("beta"));
-    await waitFor(() => expect(boardRequests()).toBeGreaterThan(listRequests));
-    await waitFor(() => expect(pendingBoardRequests).toBe(0));
+    expect(boardRequests()).toBe(listRequests);
+    expect(pendingBoardRequests).toBe(0);
     const returnedRequests = boardRequests();
     const returnedControl = screen.getByTestId("board-new-issue");
     for (const name of ["All", "alpha", "beta"]) {
@@ -297,21 +297,21 @@ describe("the conversation shell", () => {
     const boardRequests = () => requests.filter((url) => url.pathname.endsWith("/work-items") && url.searchParams.get("include") === "board").length;
     const loaded = requests.filter((url) => url.pathname.endsWith("/work-board")).length;
     expect(loaded).toBe(1);
-    expect(boardRequests()).toBe(0);
+    const listReads = boardRequests();
+    expect(listReads).toBe(2);
     const betaRows = within(screen.getByRole("table")).getAllByRole("row").length;
     for (const name of ["All", "alpha", "beta"]) {
       fireEvent.click(rows().getByRole("button", { name }));
       await waitFor(() => expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(name === "All" ? "2 projects" : name));
       expect(router.state.location.pathname).toBe("/work/views/view_1");
-      expect(boardRequests()).toBe(0);
+      expect(boardRequests()).toBe(listReads);
       expect(requests.filter((url) => url.pathname.endsWith("/work-board")).length).toBe(loaded);
       if (name === "All") expect(within(screen.getByRole("table")).getAllByRole("row").length).toBeGreaterThan(betaRows);
     }
     await act(async () => { await router.navigate({ to: "/chat" }); });
     await act(async () => { await router.navigate({ to: "/work/views/view_1" }); });
     expect(await screen.findByRole("table")).toBeTruthy();
-    await waitFor(() => expect(requests.filter((url) => url.pathname.endsWith("/work-board")).length).toBe(loaded + 1));
-    expect(boardRequests()).toBe(0);
+    expect(requests.filter((url) => url.pathname.endsWith("/work-board")).length).toBe(loaded);
     fireEvent.click(within(screen.getByRole("region", { name: "Favorites" })).getByRole("button", { name: "Actions for Team setup" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Duplicate" }));
     expect(screen.getByText("Opens on").nextElementSibling?.textContent).toBe("beta");

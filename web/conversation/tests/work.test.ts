@@ -131,23 +131,20 @@ describe("listing work items", () => {
 });
 
 describe("working-set board reads", () => {
-  it("reads both projects in one request and preserves named priority filters", async () => {
+  it("reads every open card of both projects in one request", async () => {
     const ids = ["proj_beta", "proj_alpha"];
-    const expected = await Promise.all(ids.map((projectId) => http.listWorkItems({ projectId, includeBoard: true, priority: ["1"], limit: 100 })));
+    const expected = await Promise.all(ids.map((projectId) => http.listWorkItems({ projectId, includeBoard: true, open: true, limit: 2000 })));
     const requests: URL[] = [];
     const client = makeWorkHttp({ origin: hub.url, apiBase: "/api/v2/organizations/org_mock", csrfToken: "csrf", fetch: (target, init) => {
       requests.push(new URL(target));
       return fetch(target, init);
     } });
-    const result = await client.readBoard(ids, { ...DEFAULT_VIEW_STATE, view: "list", tab: "all", priority: ["High"] });
+    const result = await client.readBoard({ projectIds: ids, state: { ...DEFAULT_VIEW_STATE, view: "board", priority: ["High"] } });
     expect(requests).toHaveLength(1);
     expect(requests[0]!.pathname).toBe("/api/v2/organizations/org_mock/work-board");
     expect(requests[0]!.searchParams.getAll("project")).toEqual(ids);
-    expect(result.map((entry) => entry.project.project_id)).toEqual(ids);
-    expect(result.flatMap((entry) => entry.issues).length).toBeGreaterThan(0);
-    for (const [index, entry] of result.entries()) {
-      expect(entry.issues.map((issue) => issue.work_item_id)).toEqual(expected[index]!.items.map((issue) => issue.work_item_id));
-    }
+    expect(result.projects.map((entry) => entry.project.project_id)).toEqual(ids);
+    expect(result.cards.map((card) => card.issue.work_item_id).toSorted()).toEqual(expected.flatMap((page) => page.items.map((issue) => issue.work_item_id)).toSorted());
   });
 });
 

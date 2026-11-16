@@ -4,7 +4,7 @@ import { subscribeProjectEvents } from "./projectEvents.ts";
 import { useClient } from "../../client.ts";
 import { useRunnerNames, shortRunnerId } from "./runnerNames.ts";
 import { toWorkItemView } from "./fromWire.ts";
-import { boardAccountKey, confirmWorkItem, getBoardRead, rejectBoardCache, type BoardData } from "./boardStore.ts";
+import { boardAccountKey, confirmWorkItem, getBoardRead, rejectBoardCache, retainLiveBoard, type BoardData } from "./boardStore.ts";
 import type { WorkItemView } from "./model.ts";
 import { makeWorkHttp, newWorkKey, type WorkHttp, WorkApiError } from "./workHttp.ts";
 import type { WorkViewState } from "./viewState.ts";
@@ -27,6 +27,13 @@ export function workHttpFor(client: ReturnType<typeof useClient>): WorkHttp {
   return http;
 }
 
+export function useLiveBoardScope(projectIds: readonly string[]): void {
+  const client = useClient();
+  const http = useWorkHttp();
+  const key = JSON.stringify(projectIds);
+  React.useEffect(() => retainLiveBoard(client, http, JSON.parse(key) as string[]), [client, http, key]);
+}
+
 export interface BoardState extends BoardData {
   readonly projectCounts?: Readonly<Record<string, { running: number; blocked: number }>>;
   readonly sequence: number | null;
@@ -36,7 +43,6 @@ export interface BoardState extends BoardData {
 export function useBoard(projectId: string | null, view: WorkViewState, projectIds?: readonly string[], aggregate = false): BoardState & {
   readonly reload: () => void;
   readonly loadMore: () => void;
-  readonly loadBacklog: () => void;
   readonly applyItem: (item: WorkItemView) => void;
 } {
   const client = useClient();
@@ -84,7 +90,7 @@ export function useBoard(projectId: string | null, view: WorkViewState, projectI
 
   return { ...data, projectCounts, live: data.resolved && state.key === streamKey && state.live,
     sequence: state.key === streamKey ? state.sequence : null,
-    items, reload, loadMore: store.loadMore, loadBacklog: store.loadBacklog, applyItem: store.applyItem };
+    items, reload, loadMore: store.loadMore, applyItem: store.applyItem };
 }
 
 export type TransitionOutcome =

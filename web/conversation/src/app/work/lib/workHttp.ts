@@ -1,4 +1,4 @@
-import { LoadedSchema, type Loaded } from "./boardSchema.ts";
+import { BoardViewSchema, type BoardView } from "./boardSchema.ts";
 import type { WorkViewState } from "./viewState.ts";
 import { ArchiveUnavailable } from "../../../runtime/archiveDecode.ts";
 import { invalidateArchiveAccess, resolveArchivedResponse } from "../../../runtime/archive.ts";
@@ -182,7 +182,7 @@ export type BoardCount = typeof BoardCountSchema.Type;
 
 export interface WorkHttp {
   readonly getBoardCounts: (input: Pick<ListWorkItemsInput, "projectId" | "archived" | "includeCoordinator" | "signal">) => Promise<readonly BoardCount[]>;
-  readonly readBoard: (projectIds: readonly string[], state: WorkViewState, signal?: AbortSignal) => Promise<readonly Loaded[]>;
+  readonly readBoard: (input: { readonly projectIds: readonly string[]; readonly state: WorkViewState; readonly items?: readonly string[]; readonly lane?: string; readonly cursor?: string; readonly signal?: AbortSignal }) => Promise<BoardView>;
   readonly getSourceRecovery: (projectId: string, itemId: string) => Promise<SourceRecovery>;
   readonly transferSource: (input: { projectId: string; itemId: string; key: string; expectedRevision: string; versionId: string; destinationRunnerId: string }) => Promise<SourceRecovery>;
   readonly listSavedViews: (signal?: AbortSignal) => Promise<{ readonly views: readonly SavedView[] }>;
@@ -697,7 +697,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
-    readBoard: (projectIds, state, signal) => send(Schema.Array(LoadedSchema), "GET", url(`${options.apiBase}/work-board`, { project: projectIds, state: JSON.stringify({ ...state, priority: state.priority.map((name) => String(priorityValue(name) ?? name)) }) }), undefined, signal, false, projectIds),
+    readBoard: (input) => send(BoardViewSchema, "GET", url(`${options.apiBase}/work-board`, { project: input.projectIds, item: input.items, lane: input.lane, cursor: input.cursor,
+      state: JSON.stringify({ ...input.state, priority: input.state.priority.map((name) => String(priorityValue(name) ?? name)) }) }), undefined, input.signal, false, input.projectIds),
     listSavedViews: async (signal) => {
       const schema = Schema.Struct({ views: Schema.Array(SavedWorkView), next_cursor: Schema.optional(Schema.String) });
       const views: SavedView[] = [];

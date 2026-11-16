@@ -1,4 +1,5 @@
 import { SavedViewsProvider, useSavedViews } from "./work/lib/savedViews.tsx";
+import { useLiveBoardScope } from "./work/lib/useWork.ts";
 import { conversationBus } from "../runtime/state/conversationList.ts";
 // Application shell.
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -191,6 +192,10 @@ function ShellBody(): React.ReactElement {
     useUiStateStore.setState((state) => activateSidebarProjectScope(state, scopeAccount));
   }, [scopeAccount]);
   const focusedProjectId = projects.find((project) => sidebarProjectScopeKey(project) === focusKey)?.id ?? "";
+  const workingSetKeys = useUiStateStore((state) => state.sidebarProjectWorkingSetKeys);
+  const liveBoardProjects = React.useMemo(() => projects.filter((project) => workingSetKeys.includes(sidebarProjectScopeKey(project))).map((project) => project.id),
+    [projects, workingSetKeys]);
+  useLiveBoardScope(liveBoardProjects);
   const isWorkBoard = activePath === "/work" || activePath.startsWith("/work/p/") || savedView !== undefined;
   const [projectScopePath, setProjectScopePath] = React.useState<string | null>(null);
   const enteringWorkBoard = isWorkBoard && projectScopePath !== routePath;

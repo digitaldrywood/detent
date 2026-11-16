@@ -1083,51 +1083,40 @@ export function createWorkMock(options: {
           json(response, 422, { code: "invalid_request", message: "Invalid working set" });
           return true;
         }
+        if (state.view !== "board" || state.q || state.completedFrom || state.completedTo) {
+          json(response, 422, { code: "invalid_request", message: "Invalid board view" });
+          return true;
+        }
+        let refused: { status: number; payload: unknown } | undefined;
         const readPage = async (target: URL): Promise<WorkItemPage> => {
           let payload: unknown;
-          const capture = { writeHead() { return capture; }, end(body: string) { payload = JSON.parse(body); } };
+          let status = 200;
+          const capture = { writeHead(value: number) { status = value; return capture; }, end(body: string) { payload = JSON.parse(body); } };
           await this.handle({ response: capture as unknown as ServerResponse, url: target, method: "GET", readBody });
+          if (status !== 200) refused ??= { status, payload };
           return payload as WorkItemPage;
         };
-        const entries = [];
+        const items = new Set(url.searchParams.getAll("item"));
+        const projects = [];
+        const cards = [];
         for (const id of ids) {
-          const found = project(id)!;
-          const lanes = state.view === "board" ? found.states.filter((lane) => !lane.terminal &&
-            (state.lanes === null || state.lanes.includes(lane.name)) && (state.state.length === 0 || state.state.includes(lane.name))).map((lane) => lane.name) : [""];
-          const pages = [];
-          for (const lane of lanes.length === 0 ? [""] : lanes) {
-            const target = new URL(`${base}/${id}/work-items`, url);
-            for (const [key, values] of Object.entries({ type: state.type, label: state.label, assignee: state.assignee, priority: state.priority })) {
-              for (const value of values) target.searchParams.append(key, value);
-            }
-            target.searchParams.set("include", "board");
-            target.searchParams.set("completed_window", state.completedWindow);
-            if (state.completedFrom) target.searchParams.set("completed_from", state.completedFrom);
-            if (state.completedTo) target.searchParams.set("completed_to", state.completedTo);
-            if (state.q) target.searchParams.set("q", state.q);
-            if (state.createdBy) target.searchParams.set("created_by", state.createdBy);
-            if (state.archived) target.searchParams.set("archived", "true");
-            target.searchParams.set("limit", state.view === "board" ? lane.toLowerCase() === "backlog" ? "200" : "2000" : "100");
-            if (state.view === "board") { target.searchParams.set("open", "true"); target.searchParams.set("state", lane); }
-            else {
-              if (state.tab === "active" || state.tab === "backlog") {
-                for (const entry of found.states.filter((entry) => !entry.terminal && (state.tab === "backlog" ? entry.name.toLowerCase() === "backlog" : entry.name.toLowerCase() !== "backlog"))) target.searchParams.append("state", entry.name);
-                if (state.tab === "active") target.searchParams.set("open", "true");
-              } else if (state.tab === "closed") {
-                target.searchParams.set("open", "false");
-                if (state.completedFrom || state.completedTo) for (const lane of state.state) target.searchParams.append("state", lane);
-              }
-              if (state.sort === "closed" || state.tab === "closed" && state.sort === "default") target.searchParams.set("sort", "closed");
-            }
-            pages.push({ lane, page: await readPage(target) });
-          }
-          const back = pages.find(({ lane }) => lane.toLowerCase() === "backlog")?.page;
-          entries.push({ project: found, issues: lanes.length === 0 ? [] : pages.flatMap(({ page }) => page.items),
-            cards: lanes.length === 0 ? [] : pages.flatMap(({ page }) => page.cards ?? []), sequence: 0, grantVersion: "",
-            work: pages[0]?.page.work, nextCursor: state.view === "list" ? pages[0]?.page.next_cursor : undefined,
-            pageCount: 1, backlogCursor: back?.next_cursor, backlogPageCount: back ? 1 : 0, backlogTotal: back?.total ?? 0 });
+          const target = new URL(`${base}/${id}/work-items`, url);
+          target.searchParams.set("include", "board");
+          target.searchParams.set("limit", "2000");
+          if (items.size === 0) target.searchParams.set("open", "true");
+          if (state.archived) target.searchParams.set("archived", "true");
+          const page = await readPage(target);
+          if (refused !== undefined) break;
+          projects.push({ project: project(id)!, sequence: page.change_sequence ?? page.sequence ?? 0, projection_pending: page.projection_pending === true,
+            ...(page.work === undefined || page.projection_pending === true ? {} : { work: { ...page.work, items: [] } }) });
+          const pageCards = page.cards ?? page.items.map((issue) => ({ issue, attempt: null, change: null }));
+          cards.push(...pageCards.filter((card) => items.size === 0 || items.has(card.issue.work_item_id)));
         }
-        json(response, 200, entries);
+        if (refused !== undefined) {
+          json(response, refused.status, refused.payload);
+          return true;
+        }
+        json(response, 200, { projects, cards, lanes: [], grant_version: "mock" });
         return true;
       }
       const viewsBase = `${options.apiBase}/work-views`;

@@ -59,7 +59,8 @@ it("mounts board, IssuePage, workspaces, ActivityPage, sidebarHumanActions, heal
     created_at: "2026-10-27T10:00:00Z", updated_at: "2026-10-27T10:00:00Z" } as ActionRun;
   const reads = {
     project: vi.spyOn(http, "getProject").mockResolvedValue(project),
-    board: vi.spyOn(http, "listWorkItems").mockResolvedValue({ items: [issue], sequence: 10, change_sequence: 10 }),
+    board: vi.spyOn(http, "readBoard").mockResolvedValue({ projects: [{ project, sequence: 10, projection_pending: false,
+      work: { items: [], lanes: [], truncated: false, as_of: "2026-10-27T10:00:00Z" } }], cards: [{ issue, attempt: null, change: null }], lanes: [], grant_version: "grant" }),
     issue: vi.spyOn(http, "getWorkItemById").mockResolvedValue(issue),
     head: vi.spyOn(http, "getWorkItem").mockResolvedValue(issue),
     workspace: vi.spyOn(http, "listWorkspaces").mockResolvedValue({ workspaces: [workspace], change_sequence: 10 }),
@@ -126,12 +127,16 @@ it("mounts board, IssuePage, workspaces, ActivityPage, sidebarHumanActions, heal
   expect(reads.health).toHaveBeenCalledTimes(before[5]! + 1);
   expect(reads.issue).toHaveBeenCalledTimes(before[2]!);
   expect(reads.board).toHaveBeenCalledTimes(before[1]!);
+  const boardsBeforeBoard = reads.board.mock.calls.length;
   await act(async () => Source.instances[1]!.emit("board", { entity_id: "wi_other", entity_revision: 112 }, 112));
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(reads.board.mock.calls.length).toBe(boardsBeforeBoard + 1);
   expect(reads.issue).toHaveBeenCalledTimes(before[2]!);
   expect(reads.head).toHaveBeenCalledTimes(before[3]!);
-  const projectsBeforeLane = reads.project.mock.calls.length;
+  const boardsBeforeLane = reads.board.mock.calls.length;
   await act(async () => Source.instances[1]!.emit("lane", { entity_id: "Todo", entity_revision: 113 }, 113));
-  expect(reads.project.mock.calls.length).toBeGreaterThan(projectsBeforeLane);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(reads.board.mock.calls.length).toBe(boardsBeforeLane + 1);
   const beforeReset = counts();
   const activityReads = mocks.api.activity.mock.calls.length;
   await act(async () => {
@@ -145,6 +150,7 @@ it("mounts board, IssuePage, workspaces, ActivityPage, sidebarHumanActions, heal
   expect(reads.runs).toHaveBeenCalledTimes(beforeReset[6]! + 1);
   expect(mocks.api.activity).toHaveBeenCalledTimes(activityReads + 1);
   view.unmount();
+  clearBoardCache();
   expect(Source.instances[1]!.close).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);
 });

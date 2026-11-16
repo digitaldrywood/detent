@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { subscribeProjectEvents } from "../src/app/work/lib/projectEvents.ts";
 import * as disk from "../src/app/work/lib/boardDisk.ts";
 import { clearBoardCache, getBoardRead } from "../src/app/work/lib/boardStore.ts";
+import { LIVE_DELTA_WINDOW_MS } from "../src/app/work/lib/liveBoard.ts";
 import { DEFAULT_VIEW_STATE } from "../src/app/work/lib/viewState.ts";
 import { makeWorkHttp } from "../src/app/work/lib/workHttp.ts";
 import { isLive } from "../src/app/work/lib/model.ts";
@@ -22,6 +23,8 @@ beforeEach(() => { vi.useFakeTimers(); Source.instances = []; vi.stubGlobal("Eve
 afterEach(() => { stops.splice(0).forEach((stop) => stop()); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const http = () => ({ eventsUrl: (id: string) => `/projects/${id}/events` });
 
+const boardRequest = (input: string) => new URL(input, "http://fixture.test").pathname.endsWith("/work-board");
+
 it.each(["null arrays", "unavailable"])("bounds board snapshot requests after %s and buffered event batches", async (failure) => {
   vi.spyOn(Math, "random").mockReturnValue(0);
   vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
@@ -30,7 +33,7 @@ it.each(["null arrays", "unavailable"])("bounds board snapshot requests after %s
   await fixture.control();
   const pending: { resolve: (response: Response) => void; url: string }[] = [];
   const client = makeWorkHttp({ ...fixture.client.http, fetch: (input, init) => {
-    if (!new URL(input, "http://fixture.test").pathname.endsWith("/work-items")) return fixture.fetch(input, init);
+    if (!boardRequest(input)) return fixture.fetch(input, init);
     return new Promise<Response>((resolve) => pending.push({ resolve, url: input }));
   } });
   const counts = vi.spyOn(client, "getBoardCounts");
@@ -50,12 +53,13 @@ it.each(["null arrays", "unavailable"])("bounds board snapshot requests after %s
   let valid: Record<string, unknown> = {};
   try {
     read.start();
+    Source.instances[0]!.emit("open");
     await vi.advanceTimersByTimeAsync(0);
     expect(pending).toHaveLength(1);
-    valid = { ...await (await fixture.fetch(pending[0]!.url)).json(), change_sequence: 1000, sequence: 1000 };
-    delete valid.next_cursor;
+    valid = await (await fixture.fetch(pending[0]!.url)).json();
+    for (const entry of valid.projects as { sequence: number }[]) entry.sequence = 1000;
     const invalid = structuredClone(valid);
-    (invalid.items as { external_references: unknown }[])[0]!.external_references = null;
+    (invalid.projects as { project: { states: unknown } }[])[0]!.project.states = null;
     const failedResponse = () => failure === "null arrays"
       ? Response.json(invalid)
       : Response.json({ code: "service_unavailable", message: "Temporary fixture failure" }, { status: 503 });
@@ -76,8 +80,6 @@ it.each(["null arrays", "unavailable"])("bounds board snapshot requests after %s
     await vi.advanceTimersByTimeAsync(2500);
     expect(pending).toHaveLength(6);
     expect(read.snapshot().error).not.toBeNull();
-    expect(counts).toHaveBeenCalledTimes(6);
-    expect(projects).toHaveBeenCalledTimes(6);
     await vi.advanceTimersByTimeAsync(12_499);
     expect(pending).toHaveLength(6);
     await vi.advanceTimersByTimeAsync(1);
@@ -90,20 +92,25 @@ it.each(["null arrays", "unavailable"])("bounds board snapshot requests after %s
     expect(read.snapshot().items.length).toBeGreaterThan(0);
     await vi.advanceTimersByTimeAsync(18_000);
     expect(pending).toHaveLength(7);
-    expect(counts).toHaveBeenCalledTimes(7);
-    expect(projects).toHaveBeenCalledTimes(7);
+    expect(counts).not.toHaveBeenCalled();
+    expect(projects).not.toHaveBeenCalled();
     sequence = 1000;
     batch();
     await vi.advanceTimersByTimeAsync(0);
     expect(pending).toHaveLength(8);
+    expect(new URL(pending[7]!.url, "http://fixture.test").searchParams.has("item")).toBe(false);
     pending[7]!.resolve(failedResponse());
     await vi.advanceTimersByTimeAsync(0);
     batch();
     await vi.advanceTimersByTimeAsync(499);
     expect(pending).toHaveLength(8);
     stop();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pending).toHaveLength(9);
+    expect(Source.instances[0]!.close).not.toHaveBeenCalled();
+    clearBoardCache();
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(pending).toHaveLength(8);
+    expect(pending).toHaveLength(9);
     expect(Source.instances).toHaveLength(1);
     expect(Source.instances[0]!.close).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
@@ -115,6 +122,13 @@ it.each(["null arrays", "unavailable"])("bounds board snapshot requests after %s
   }
 });
 
+type BoardBody = { projects: { project: { project_id: string }; projection_pending: boolean; work?: Record<string, unknown> }[]; cards: unknown[] };
+
+function boardWork(shipped: number, running: number) {
+  return { items: [], lanes: [{ state: "In Progress", total: 4, running }], truncated: false, as_of: "2026-11-06T12:00:00Z", completed: shipped, cancelled: 0,
+    shipped_windows: [{ window: "1h", shipped: 0, cancelled: 0 }, { window: "24h", shipped, cancelled: 0 }, { window: "7d", shipped, cancelled: 0 }] };
+}
+
 it("keeps fresh projects and their counters while one project's projection is pending, then retries it on its next event", async () => {
   vi.spyOn(Math, "random").mockReturnValue(0);
   vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
@@ -123,29 +137,33 @@ it("keeps fresh projects and their counters while one project's projection is pe
   await fixture.control();
   const facts: Record<string, { shipped: number; running: number }> = { proj_alpha: { shipped: 2, running: 1 }, proj_beta: { shipped: 5, running: 4 }, proj_gamma: { shipped: 3, running: 2 } };
   let pending = true;
-  const reads: string[] = [];
+  const reads: URL[] = [];
   const client = makeWorkHttp({ ...fixture.client.http, fetch: async (input, init) => {
-    const url = new URL(input, "http://fixture.test");
-    const project = url.pathname.match(/\/projects\/([^/]+)\//)?.[1] ?? "";
-    if (url.pathname.endsWith("/board/counts")) {
-      if (pending && project === "proj_beta") return Response.json({ projection_pending: true, rows: [] });
-      const { shipped, running } = facts[project]!;
-      const row = { total: 4, running, shipped_1h: 0, shipped_24h: shipped, shipped_7d: shipped, cancelled_1h: 0, cancelled_24h: 0, cancelled_7d: 0, projected_at: "2026-11-06T12:00:00Z", sequence: 1 };
-      return Response.json({ projection_pending: false, rows: [{ ...row, kind: "total", state: "" }, { ...row, kind: "lane", state: "In Progress" }] });
-    }
     const response = await fixture.fetch(input, init);
-    if (!url.pathname.endsWith("/work-items")) return response;
-    reads.push(project);
-    if (!pending || project !== "proj_beta") return response;
-    return Response.json({ ...await response.json(), projection_pending: true });
+    if (!boardRequest(input)) return response;
+    reads.push(new URL(input, "http://fixture.test"));
+    const body = await response.json() as BoardBody;
+    for (const entry of body.projects) {
+      const { shipped, running } = facts[entry.project.project_id]!;
+      entry.work = boardWork(shipped, running);
+      if (pending && entry.project.project_id === "proj_beta") {
+        entry.projection_pending = true;
+        delete entry.work;
+      }
+    }
+    return Response.json(body);
   } });
   const read = getBoardRead(fixture.client, client, null, DEFAULT_VIEW_STATE);
   const stop = read.subscribe(() => {});
   stops.push(stop);
   const projectsOf = () => new Set(read.snapshot().items.map((item) => item.projectId));
+  const stream = (id: string) => Source.instances.find((source) => source.url.includes(`/projects/${id}/`))!;
   try {
     read.start();
+    for (const source of Source.instances) source.emit("open");
     await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toHaveLength(1);
+    expect(reads[0]!.searchParams.getAll("project")).toEqual(["proj_alpha", "proj_beta", "proj_gamma"]);
     expect(read.snapshot().resolved).toBe(true);
     expect(projectsOf()).toEqual(new Set(["proj_alpha", "proj_gamma"]));
     expect(read.snapshot().items.some((item) => isLive(item))).toBe(true);
@@ -153,24 +171,23 @@ it("keeps fresh projects and their counters while one project's projection is pe
     expect(read.snapshot().totals?.running).toBe(3);
     expect(read.snapshot().error).toMatch(/beta/);
     expect(read.snapshot().error).not.toMatch(/alpha|gamma/);
-    const stream = (id: string) => Source.instances.find((source) => source.url.includes(`/projects/${id}/`))!;
-    let before = reads.length;
     stream("proj_alpha").emit("work_item", JSON.stringify({ entity_id: "wi_example", entity_revision: 1 }), "1");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(reads.length).toBeGreaterThan(before);
-    expect(reads.slice(before).every((project) => project === "proj_alpha")).toBe(true);
+    await vi.advanceTimersByTimeAsync(LIVE_DELTA_WINDOW_MS);
+    expect(reads).toHaveLength(2);
+    expect(reads[1]!.searchParams.getAll("project")).toEqual(["proj_alpha"]);
+    expect(reads[1]!.searchParams.getAll("item")).toEqual(["wi_example"]);
     expect(read.snapshot().error).toMatch(/beta/);
+    expect(projectsOf()).toEqual(new Set(["proj_alpha", "proj_gamma"]));
 
     pending = false;
-    before = reads.length;
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(reads).toHaveLength(before);
+    expect(reads).toHaveLength(2);
     stream("proj_beta").emit("activity", JSON.stringify({ sequence: 1, gap: false, deltas: [] }), "1");
     await vi.advanceTimersByTimeAsync(499);
-    expect(reads).toHaveLength(before);
+    expect(reads).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(1);
-    expect(reads.length).toBeGreaterThan(before);
-    expect(reads.slice(before).every((project) => project === "proj_beta")).toBe(true);
+    expect(reads).toHaveLength(3);
+    expect(reads[2]!.searchParams.has("item")).toBe(false);
     expect(read.snapshot().error).toBeNull();
     expect(projectsOf()).toEqual(new Set(["proj_alpha", "proj_beta", "proj_gamma"]));
     expect(read.snapshot().totals?.completed).toBe(10);
@@ -189,35 +206,36 @@ it("counts the other projects while one project's counts are pending and retries
   const fixture = workPaginationFixture();
   await fixture.control();
   let pending = true;
-  const counted: string[] = [];
+  const reads: URL[] = [];
   const client = makeWorkHttp({ ...fixture.client.http, fetch: async (input, init) => {
-    const url = new URL(input, "http://fixture.test");
-    if (!url.pathname.endsWith("/board/counts")) return fixture.fetch(input, init);
-    const project = url.pathname.match(/\/projects\/([^/]+)\//)?.[1] ?? "";
-    counted.push(project);
-    if (pending && project === "proj_beta") return Response.json({ projection_pending: true, rows: [] });
-    const shipped = project === "proj_beta" ? 5 : 2;
-    const row = { total: 4, running: 1, shipped_1h: 0, shipped_24h: shipped, shipped_7d: shipped, cancelled_1h: 0, cancelled_24h: 0, cancelled_7d: 0, projected_at: "2026-11-06T12:00:00Z", sequence: 1 };
-    return Response.json({ projection_pending: false, rows: [{ ...row, kind: "total", state: "" }, { ...row, kind: "lane", state: "In Progress" }] });
+    const response = await fixture.fetch(input, init);
+    if (!boardRequest(input)) return response;
+    reads.push(new URL(input, "http://fixture.test"));
+    const body = await response.json() as BoardBody;
+    for (const entry of body.projects) {
+      entry.work = boardWork(entry.project.project_id === "proj_beta" ? 5 : 2, 1);
+      if (pending && entry.project.project_id === "proj_beta") delete entry.work;
+    }
+    return Response.json(body);
   } });
   const read = getBoardRead(fixture.client, client, null, DEFAULT_VIEW_STATE);
   const stop = read.subscribe(() => {});
   stops.push(stop);
   try {
     read.start();
+    for (const source of Source.instances) source.emit("open");
     await vi.advanceTimersByTimeAsync(0);
     expect(new Set(read.snapshot().items.map((item) => item.projectId))).toEqual(new Set(["proj_alpha", "proj_beta"]));
     expect(read.snapshot().totals?.completed).toBe(2);
     expect(read.snapshot().error).toMatch(/counts.*beta/);
     pending = false;
-    const before = counted.length;
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(counted).toHaveLength(before);
+    expect(reads).toHaveLength(1);
     Source.instances.find((source) => source.url.includes("/projects/proj_beta/"))!.emit("activity", JSON.stringify({ sequence: 1, gap: false, deltas: [] }), "1");
     await vi.advanceTimersByTimeAsync(499);
-    expect(counted).toHaveLength(before);
+    expect(reads).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
-    expect(counted.slice(before)).toEqual(["proj_beta"]);
+    expect(reads).toHaveLength(2);
     expect(read.snapshot().totals?.completed).toBe(7);
     expect(read.snapshot().error).toBeNull();
   } finally {
@@ -227,26 +245,24 @@ it("counts the other projects while one project's counts are pending and retries
   }
 });
 
-it("keeps one project's in-flight counts when another project's event or reset refreshes the board", async () => {
+it("drops an in-flight item delta that a reset's full board read supersedes", async () => {
   vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
   vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
   const fixture = workPaginationFixture();
   await fixture.control();
   const shipped: Record<string, number> = { proj_alpha: 2, proj_beta: 5 };
-  const holds = new Map<string, { release: () => void }>();
-  const held = new Set<string>();
-  const wait = (key: string, signal?: AbortSignal | null) => new Promise<void>((resolve, reject) => {
-    holds.set(key, { release: resolve });
-    signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
-  });
+  let hold: (() => void) | undefined;
+  let holdNext = false;
   const client = makeWorkHttp({ ...fixture.client.http, fetch: async (input, init) => {
-    const url = new URL(input, "http://fixture.test");
-    const project = url.pathname.match(/\/projects\/([^/]+)\//)?.[1] ?? "";
-    const key = `${project}${url.pathname.endsWith("/board/counts") ? "/counts" : url.pathname.endsWith("/work-items") ? "/cards" : ""}`;
-    if (held.delete(key)) await wait(key, init?.signal);
-    if (!url.pathname.endsWith("/board/counts")) return fixture.fetch(input, init);
-    const row = { total: 4, running: 0, shipped_1h: 0, shipped_24h: shipped[project]!, shipped_7d: 0, cancelled_1h: 0, cancelled_24h: 0, cancelled_7d: 0, projected_at: "2026-11-06T12:00:00Z", sequence: 1 };
-    return Response.json({ projection_pending: false, rows: [{ ...row, kind: "total", state: "" }] });
+    if (!boardRequest(input)) return fixture.fetch(input, init);
+    const counted = { ...shipped };
+    if (holdNext) {
+      holdNext = false;
+      await new Promise<void>((resolve) => { hold = resolve; });
+    }
+    const body = await (await fixture.fetch(input, init)).json() as BoardBody;
+    for (const entry of body.projects) entry.work = boardWork(counted[entry.project.project_id]!, 0);
+    return Response.json(body);
   } });
   const read = getBoardRead(fixture.client, client, null, DEFAULT_VIEW_STATE);
   const stop = read.subscribe(() => {});
@@ -254,36 +270,24 @@ it("keeps one project's in-flight counts when another project's event or reset r
   const stream = (id: string) => Source.instances.find((source) => source.url.includes(`/projects/${id}/`))!;
   try {
     read.start();
+    for (const source of Source.instances) source.emit("open");
     await vi.advanceTimersByTimeAsync(0);
     expect(read.snapshot().totals?.completed).toBe(7);
 
     shipped.proj_alpha = 4;
-    held.add("proj_alpha/counts");
+    holdNext = true;
     stream("proj_alpha").emit("work_item", JSON.stringify({ entity_id: "wi_alpha", entity_revision: 1 }), "1");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(holds.has("proj_alpha/counts")).toBe(true);
-    held.add("proj_beta/cards");
-    stream("proj_beta").emit("work_item", JSON.stringify({ entity_id: "wi_beta", entity_revision: 1 }), "1");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(holds.has("proj_beta/cards")).toBe(true);
-    holds.get("proj_alpha/counts")!.release();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(read.snapshot().totals?.completed).toBe(9);
-    holds.get("proj_beta/cards")!.release();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(read.snapshot().totals?.completed).toBe(9);
-
+    await vi.advanceTimersByTimeAsync(LIVE_DELTA_WINDOW_MS);
+    expect(hold).toBeDefined();
     shipped.proj_alpha = 6;
-    holds.clear();
-    held.add("proj_alpha/counts");
-    stream("proj_alpha").emit("work_item", JSON.stringify({ entity_id: "wi_alpha", entity_revision: 2 }), "2");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(holds.has("proj_alpha/counts")).toBe(true);
     stream("proj_beta").emit("reset", "{}", "3");
     await vi.advanceTimersByTimeAsync(0);
     expect(read.snapshot().totals?.completed).toBe(11);
+    hold!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.snapshot().totals?.completed).toBe(11);
   } finally {
-    for (const hold of holds.values()) hold.release();
+    hold?.();
     stop();
     clearBoardCache();
     await vi.advanceTimersByTimeAsync(0);

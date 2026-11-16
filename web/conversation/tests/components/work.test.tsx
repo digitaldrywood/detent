@@ -48,6 +48,7 @@ import { useBoard, useNow } from "../../src/app/work/lib/useWork.ts";
 import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
 import { plainSearchOptions } from "../../src/app/lib/searchParams.ts";
+import { makeWorkHttp } from "../../src/app/work/lib/workHttp.ts";
 
 const clockRenders = vi.hoisted(() => ({ card: 0, toolbar: 0, list: 0 }));
 
@@ -725,16 +726,16 @@ describe("completed counts", () => {
     vi.stubGlobal("fetch", async (...args: Parameters<typeof fixture.fetch>) => {
       const response = await fixture.fetch(...args);
       const url = new URL(args[0], "http://fixture.test");
-      if (url.pathname.endsWith("/projects/proj_alpha")) {
-        return Response.json({ ...await response.json(), states });
-      }
-      if (url.pathname.endsWith("/work-items")) {
-        return Response.json({ ...await response.json(), work: {
+      if (!url.pathname.endsWith("/work-board")) return response;
+      const body = await response.json();
+      for (const entry of body.projects) {
+        entry.project = { ...entry.project, states };
+        entry.work = {
           lanes, completed: 9, cancelled: 2, total: 43, as_of: "2026-10-07T12:00:00Z", truncated: false, items: [],
           shipped_windows: [{ window: "1h", shipped: 1, cancelled: 0 }, { window: "24h", shipped: 9, cancelled: 2 }, { window: "7d", shipped: 30, cancelled: 5 }],
-        } });
+        };
       }
-      return response;
+      return Response.json(body);
     });
     let current!: ReturnType<typeof useBoard>;
     function Probe() { current = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "24h" }); return <div />; }
@@ -1237,16 +1238,15 @@ describe("the cached Work read", () => {
     let perCardReads = 0;
     let revision = "1";
     const fixture = await pagedWork("/work", (fetch) => async (input, init) => {
-      if (String(input).includes("/work-items?") || /\/projects\/[^/]+$/.test(String(input))) await base;
+      if (String(input).includes("/work-board?")) await base;
       if (/\/(attempts|changes)(\?|$)/.test(String(input))) {
         perCardReads++;
         throw new Error("Unexpected per-card read");
       }
       const response = await fetch(input, init);
-      if (!String(input).includes("/work-items?")) return response;
+      if (!String(input).includes("/work-board?")) return response;
       const body = await response.json();
-      body.items = body.items.map((issue: NativeIssue) => ({ ...issue, revision }));
-      if (body.work) body.work.items = body.work.items.map((issue: NativeIssue) => ({ ...issue, revision }));
+      body.cards = body.cards.map((card: { issue: NativeIssue }) => ({ ...card, issue: { ...card.issue, revision } }));
       return Response.json(body);
     });
     const spinner = await screen.findByText("Loading work…");
@@ -1275,6 +1275,7 @@ describe("the cached Work read", () => {
     expect(perCardReads).toBe(0);
     expect(within(screen.getByRole("region", { name: "In Progress" })).getByText("1 live")).not.toBeNull();
     expect(screen.getAllByText("Running")).toHaveLength(1);
+    const boardReads = fixture.requests.filter((request) => request.url.pathname.endsWith("/work-board")).length;
     for (const [query, count] of [["state=Todo", 0], ["state=In+Progress", 1], ["lanes=Todo", 0]] as const) {
       await act(async () => { await fixture.router.navigate({ to: `/work?${query}` }); });
       await settledWork();
@@ -1283,9 +1284,10 @@ describe("the cached Work read", () => {
       expect(screen.queryAllByText("1 live")).toHaveLength(count);
       expect(perCardReads).toBe(0);
     }
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-board"))).toHaveLength(boardReads);
   });
 
-  it.each([false, true])("shares base reads and refreshes memory cards on return (working set: %s)", async (workingSet) => {
+  it.each([false, true])("shares one board read and renders memory cards on return without a request (working set: %s)", async (workingSet) => {
     const fixture = workPaginationFixture();
     await fixture.control();
     let hold = false;
@@ -1304,22 +1306,24 @@ describe("the cached Work read", () => {
     }
     const mounted = render(<ClientContext.Provider value={fixture.client}><Probe /><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(snapshots.at(-1)!.resolved).toBe(true));
-    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toHaveLength(6);
-    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha"))).toHaveLength(1);
+    const boards = fixture.requests.filter((request) => request.url.pathname.endsWith("/work-board"));
+    expect(boards).toHaveLength(1);
+    expect(boards[0]!.url.searchParams.getAll("project")).toEqual(["proj_alpha", "proj_beta"]);
+    expect(fixture.requests.filter((request) => /\/projects\/[^/]+(\/work-items|\/board\/counts)?$/.test(request.url.pathname))).toHaveLength(0);
     mounted.unmount();
     hold = true;
     const requestCount = fixture.requests.length;
     const before = snapshots.length;
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     expect(snapshots[before]!.items.length).toBeGreaterThan(0);
+    expect(snapshots[before]!.items).toEqual(snapshots[before - 1]!.items);
     expect(snapshots[before]!.loading).toBe(false);
-    expect(snapshots[before]!.live).toBe(false);
-    expect(snapshots.at(-1)!.items.length).toBeGreaterThan(0);
-    await act(async () => { release(); });
-    await waitFor(() => expect(fixture.requests.length).toBeGreaterThan(requestCount));
+    expect(snapshots[before]!.refreshing).toBe(false);
+    await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(fixture.requests).toHaveLength(requestCount);
   });
 
-  it("patches pushed cards across working-set focus without new requests or streams", async () => {
+  it("patches a pushed card across working-set focus with one item request and no new streams", async () => {
     const sources: EventTarget[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
       readyState = 1;
@@ -1329,6 +1333,7 @@ describe("the cached Work read", () => {
     const fixture = workPaginationFixture();
     await fixture.control();
     vi.stubGlobal("fetch", fixture.fetch);
+    const direct = makeWorkHttp({ ...fixture.client.http, fetch: fixture.fetch });
     let current!: ReturnType<typeof useBoard>;
     let focus!: (project: string | null) => void;
     function Probe() {
@@ -1339,10 +1344,8 @@ describe("the cached Work read", () => {
     }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.resolved).toBe(true));
-    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?include=board&state=Todo");
-    const page = await response.json();
-    const card = page.cards[0];
-    const unchanged = current.items.find((item) => item.id !== card.issue.work_item_id)!;
+    const target = current.items.find((item) => item.projectId === "proj_alpha" && item.state === "Todo")!;
+    const unchanged = current.items.find((item) => item.id !== target.id)!;
     const before = fixture.requests.length;
     expect(sources).toHaveLength(2);
     act(() => focus("proj_alpha"));
@@ -1350,54 +1353,80 @@ describe("the cached Work read", () => {
     act(() => focus("proj_beta"));
     expect(current.items.every((item) => item.projectId === "proj_beta")).toBe(true);
     expect(fixture.requests).toHaveLength(before);
-    expect(sources).toHaveLength(2);
-    const emit = (data: unknown) => act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify(data) })));
-    emit({ sequence: 0, gap: false, deltas: [] });
-    expect(fixture.requests).toHaveLength(before);
-    emit({ sequence: 1, gap: false, deltas: [{ sequence: 1, previous: card,
-      current: { ...card, attempt: { ...ATTEMPTS[0]!, count: 4 }, issue: { ...card.issue, title: "Pushed title", revision: "900" } } }], work: page.work });
-    expect(current.items.some((item) => item.id === card.issue.work_item_id)).toBe(false);
+    const issue = await direct.getWorkItem("proj_alpha", target.id);
+    await direct.transition({ projectId: "proj_alpha", itemId: target.id, key: "pushed-move", expectedRevision: issue.revision!, state: "In Progress", reason: "user_requested" });
+    const pushed = fixture.requests.length;
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("work_item", { data: JSON.stringify({ entity_id: target.id, kind: "upsert" }), lastEventId: "1" })));
+    await waitFor(() => expect(fixture.requests.length).toBe(pushed + 1));
+    expect(fixture.requests.at(-1)!.url.searchParams.getAll("item")).toEqual([target.id]);
     act(() => focus(null));
-    expect(current.items.find((item) => item.id === card.issue.work_item_id)?.title).toBe("Pushed title");
+    await waitFor(() => expect(current.items.find((item) => item.id === target.id)?.state).toBe("In Progress"));
     expect(sources).toHaveLength(2);
-    expect(current.items.find((item) => item.id === card.issue.work_item_id)?.attempt?.attemptNumber).toBe(4);
     expect(current.items.find((item) => item.id === unchanged.id)).toBe(unchanged);
     expect(current.refreshing).toBe(false);
-    expect(fixture.requests).toHaveLength(before);
+    expect(fixture.requests).toHaveLength(pushed + 1);
   });
 
 });
 
 describe("the live Work continuation intent", () => {
-  it.each(["board", "list"] as const)("cancels a %s continuation when the actual filter selection changes", async (mode) => {
+  it("cancels a list continuation when the actual filter selection changes", async () => {
     const fixture = workPaginationFixture();
-    await fixture.control(mode === "board" ? { backlogOverflow: true } : {});
+    await fixture.control();
     vi.stubGlobal("fetch", fixture.fetch);
     let current!: ReturnType<typeof useBoard>;
     let changeView!: React.Dispatch<React.SetStateAction<typeof DEFAULT_VIEW_STATE>>;
     function Probe() {
-      const [view, setView] = React.useState<typeof DEFAULT_VIEW_STATE>({ ...DEFAULT_VIEW_STATE, view: mode, tab: "all" });
+      const [view, setView] = React.useState<typeof DEFAULT_VIEW_STATE>({ ...DEFAULT_VIEW_STATE, view: "list", tab: "all" });
       changeView = setView;
       current = useBoard(null, view);
       return <div>{current.items.length}</div>;
     }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.loading).toBe(false));
-    expect(current.totals).toMatchObject(mode === "board"
-      ? { running: 1, waiting: 8, needAttention: 1, backlog: 405, open: 415, completed: 131, total: 546 }
-      : { running: 1, waiting: 8, needAttention: 1, backlog: 0, open: 10, completed: 131, total: 141 });
+    expect(current.totals).toMatchObject({ running: 1, waiting: 8, needAttention: 1, backlog: 0, open: 10, completed: 131, total: 141 });
     const deferred = fixture.deferPage();
-    act(() => mode === "board" ? current.loadBacklog() : current.loadMore());
+    act(() => current.loadMore());
     await deferred.waiting;
     const continuation = fixture.requests.findLast((request) => request.url.searchParams.has("cursor"))!;
-    const label = mode === "board" ? "overflow" : "older-label";
-    const count = mode === "board" ? 200 : 2;
-    act(() => changeView({ ...DEFAULT_VIEW_STATE, view: mode, tab: "all", q: label }));
-    await waitFor(() => expect(current.items).toHaveLength(count));
+    act(() => changeView({ ...DEFAULT_VIEW_STATE, view: "list", tab: "all", q: "older-label" }));
+    await waitFor(() => expect(current.items).toHaveLength(2));
     expect(continuation.signal?.aborted).toBe(true);
-    expect(current.items.every((item) => item.labels.includes(label))).toBe(true);
+    expect(current.items.every((item) => item.labels.includes("older-label"))).toBe(true);
     await act(async () => { deferred.release(); });
-    expect(current.items).toHaveLength(count);
+    expect(current.items).toHaveLength(2);
+  });
+
+  it("serves every open card of an overflowing board, then searches every page of it per project", async () => {
+    const fixture = workPaginationFixture();
+    await fixture.control({ backlogOverflow: true });
+    vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
+      const url = new URL(input, "http://fixture.test");
+      if (url.pathname.endsWith("/work-items")) url.searchParams.set("limit", "100");
+      return fixture.fetch(url.pathname + url.search, init);
+    });
+    let current!: ReturnType<typeof useBoard>;
+    let changeView!: React.Dispatch<React.SetStateAction<typeof DEFAULT_VIEW_STATE>>;
+    function Probe() {
+      const [view, setView] = React.useState<typeof DEFAULT_VIEW_STATE>(DEFAULT_VIEW_STATE);
+      changeView = setView;
+      current = useBoard(null, view);
+      return <div>{current.items.length}</div>;
+    }
+    render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
+    await waitFor(() => expect(current.loading).toBe(false));
+    expect(current.totals).toMatchObject({ running: 1, waiting: 8, needAttention: 1, backlog: 405, open: 415, completed: 131, total: 546 });
+    expect(current.items.filter((item) => item.state === "Backlog")).toHaveLength(405);
+    const matching = current.items.filter((item) => item.labels.includes("overflow")).map((item) => item.id).toSorted();
+    expect(matching.length).toBeGreaterThan(100);
+    const before = fixture.requests.length;
+    act(() => changeView({ ...DEFAULT_VIEW_STATE, q: "overflow" }));
+    await waitFor(() => expect(current.items.length).toBeGreaterThan(0));
+    await waitFor(() => expect(current.refreshing).toBe(false));
+    expect(current.items.map((item) => item.id).toSorted()).toEqual(matching);
+    const searches = fixture.requests.slice(before).filter((request) => request.url.pathname.endsWith("/work-items"));
+    expect(searches.map((request) => request.url.searchParams.get("q"))).toEqual(searches.map(() => "overflow"));
+    expect(searches.every((request) => request.url.searchParams.get("open") === "true" && !request.url.searchParams.has("state"))).toBe(true);
   });
 
 
@@ -1648,7 +1677,7 @@ describe("the filter-first Work surface", () => {
       await waitFor(() => expect((search as HTMLInputElement).value).toBe(value));
       await settledWork();
       expect(new URLSearchParams(fixture.router.state.location.searchStr).get("q") ?? "").toBe(value);
-      expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q") ?? "").toBe(value);
+      if (value !== "") expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(value);
     }
   });
 
@@ -1695,11 +1724,12 @@ describe("the filter-first Work surface", () => {
     expect(within(screen.getByTestId("work-toolbar")).queryByText(/Completed/)).toBeNull();
     expect(screen.getByTestId("stat-completed").tagName).toBe("BUTTON");
     fireEvent.click(screen.getByTestId("stat-completed"));
+    const before = requests.length;
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /^7 days/ }));
     await settledWork();
     expect(parseViewState(router.state.location.searchStr).completedWindow).toBe("7d");
-    expect(requests.filter((request) => request.url.pathname.endsWith("/work-items")).some((request) => request.url.searchParams.get("completed_window") === "7d")).toBe(true);
     expect(screen.getByTestId("stat-completed").textContent).toContain("shipped · 7d");
+    expect(requests.slice(before).filter((request) => /\/(work-board|work-items|board\/counts)$/.test(request.url.pathname))).toHaveLength(0);
   });
 
   it.each(["Todo", ""])("ignores the %s board lane scope in the Active list", async (lanes) => {
@@ -1984,7 +2014,7 @@ describe("the filter-first Work surface", () => {
     await fixture.control();
     let accessStatus = 200;
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith("/projects/proj_alpha") && accessStatus !== 200) {
+      if ((String(input).endsWith("/projects/proj_alpha") || String(input).includes("/work-board?")) && accessStatus !== 200) {
         return Response.json({ code: "unauthorized", message: "Project access ended" }, { status: accessStatus });
       }
       return fixture.fetch(String(input), init);

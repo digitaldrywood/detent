@@ -94,7 +94,7 @@ describe("the Work snapshot ordering", () => {
   it.each([
     { mode: "omitted", canceled: false }, { mode: "project-403", canceled: false },
     { mode: "omitted", canceled: true }, { mode: "project-403", canceled: true },
-    { mode: "counts-403", canceled: false }, { mode: "counts-without-callback", canceled: false },
+    { mode: "board-403", canceled: false }, { mode: "board-without-callback", canceled: false },
   ])("evicts only the denied project after bootstrap success ($mode, canceled $canceled)", async ({ mode, canceled }) => {
     const source = workPaginationFixture();
     await source.control();
@@ -108,12 +108,13 @@ describe("the Work snapshot ordering", () => {
     let refuse = false;
     const fetch: FetchLike = async (input, init) => {
       if (input.endsWith("/app/bootstrap")) { probes++; return probe.promise; }
-      if (refuse && input.includes("/projects/proj_alpha") &&
-        (!mode.startsWith("counts-") || !input.includes("/work-items"))) return Response.json({ code: "access_denied" }, { status: 403 });
+      const url = new URL(input, "http://fixture.test");
+      const board = mode.startsWith("board-") && url.pathname.endsWith("/work-board") && url.searchParams.getAll("project").includes("proj_alpha");
+      if (refuse && (input.includes("/projects/proj_alpha") || board)) return Response.json({ code: "access_denied" }, { status: 403 });
       return source.fetch(input, init);
     };
     const http = makeWorkHttp({ ...source.client.http, fetch,
-      ...(mode === "counts-without-callback" ? {} : { onAuthorizationRejected: rejected }) });
+      ...(mode === "board-without-callback" ? {} : { onAuthorizationRejected: rejected }) });
     const reads = ["proj_alpha", "proj_beta"].map((id) => getBoardRead(source.client, http, id, DEFAULT_VIEW_STATE));
     let pending = Promise.allSettled<unknown>([]);
     try {
@@ -131,7 +132,7 @@ describe("the Work snapshot ordering", () => {
         projects: source.client.bootstrap.projects.filter((project) => mode !== "omitted" || project.id !== "proj_alpha") }));
       await pending;
       await expect.poll(() => reads[0]!.snapshot().refreshing).toBe(false);
-      if (mode === "counts-without-callback") expect(rejected).not.toHaveBeenCalled();
+      if (mode === "board-without-callback") expect(rejected).not.toHaveBeenCalled();
       else {
         expect(rejected).toHaveBeenCalledTimes(1);
         expect(rejected).toHaveBeenCalledWith("proj_alpha");
@@ -217,7 +218,7 @@ describe("the Work snapshot ordering", () => {
       const writeCount = writes.mock.calls.length;
       refuse = true;
       aggregate.reload();
-      pending = Promise.allSettled([http.readBoard(projects, DEFAULT_VIEW_STATE)]);
+      pending = Promise.allSettled([http.readBoard({ projectIds: projects, state: DEFAULT_VIEW_STATE })]);
       await expect.poll(() => probes).toBe(1);
       probe.resolve(Response.json({}));
       expect((await pending)[0]?.status).toBe("rejected");
@@ -258,7 +259,7 @@ describe("the Work snapshot ordering", () => {
     let probes = 0;
     const fetch: FetchLike = async (input, init) => {
       if (input.endsWith("/app/bootstrap")) { probes++; return probe.promise; }
-      if (refuse && input.includes("/work-items")) {
+      if (refuse && input.includes("/work-board")) {
         refuse = false;
         return Response.json({ code: "access_denied", message: "Access is no longer available" }, { status: 403 });
       }
@@ -474,70 +475,36 @@ describe("the Work snapshot ordering", () => {
     expect(events.searchParams.get("completed_to")).toBe(window.completedTo);
   });
 
-  it.each([false, true])("preserves lane cards and continues Backlog with capped pages=%s", async (capped) => {
+  it("loads every open card of an overflowing board, Backlog included, in one board request", async () => {
     const source = workPaginationFixture();
     await source.control({ activeOverflow: true, backlogOverflow: true });
-    const http = makeWorkHttp({ ...source.client.http, fetch: (input, init) => {
-      const url = new URL(input, "http://fixture.test");
-      if (capped && url.pathname.endsWith("/work-items")) url.searchParams.set("limit", "200");
-      return source.fetch(url.toString(), init);
-    } });
+    const http = makeWorkHttp({ ...source.client.http, fetch: source.fetch });
     const read = getBoardRead(source.client, http, "proj_alpha", DEFAULT_VIEW_STATE);
+    const before = source.requests.length;
     read.start();
     await expect.poll(() => read.snapshot().resolved).toBe(true);
     expect(read.snapshot().hasMore).toBe(false);
     expect(read.snapshot().items.filter((item) => item.state !== "Backlog")).toHaveLength(217);
-    expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(200);
-    expect(read.snapshot().backlogHasMore).toBe(true);
+    expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(405);
     expect(read.snapshot().backlogTotal).toBe(405);
     expect(read.snapshot().totals?.lanes.Backlog).toBe(405);
-    const initial = source.requests.filter(({ url }) => url.pathname.endsWith("/work-items"));
-    expect(initial).toHaveLength(capped ? 7 : 6);
-    expect(initial.every(({ url }) => url.searchParams.get("include") === "board" && url.searchParams.getAll("state").length === 1)).toBe(true);
-    expect(source.requests.filter(({ url }) => /\/(attempts|changes)(\?|$)/.test(url.pathname))).toHaveLength(0);
-    const before = source.requests.length;
-    read.loadBacklog();
-    await expect.poll(() => read.snapshot().backlogLoading).toBe(false);
-    expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(400);
-    expect(read.snapshot().hasMore).toBe(false);
-    const pages = source.requests.slice(before).filter(({ url }) => url.pathname.endsWith("/work-items"));
-    expect(pages).toHaveLength(1);
-    expect(pages[0]!.url.searchParams.getAll("state")).toEqual(["Backlog"]);
-    expect(pages[0]!.url.searchParams.get("include")).toBe("board");
-    read.reload();
-    await expect.poll(() => read.snapshot().refreshing).toBe(false);
-    expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(400);
-    read.loadBacklog();
-    await expect.poll(() => read.snapshot().backlogHasMore).toBe(false);
-    expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(405);
+    const requests = source.requests.slice(before);
+    expect(requests.map(({ url }) => url.pathname)).toEqual(["/api/v2/organizations/org_mock/work-board"]);
+    expect(requests[0]!.url.searchParams.getAll("project")).toEqual(["proj_alpha"]);
+    expect(requests[0]!.url.searchParams.has("item")).toBe(false);
   });
 
-  it.each([
-    { name: "reads lanes beside the project when the bootstrap carries the workflow", known: true },
-    { name: "reads lanes after the project when the workflow is unknown", known: false },
-  ])("$name", async ({ known }) => {
+  it("takes the workflow from the board response without a project read", async () => {
     const source = workPaginationFixture();
     await source.control();
     const project = await makeWorkHttp({ ...source.client.http, fetch: source.fetch }).getProject("proj_alpha");
-    const gate = deferred<void>();
-    const fetch: FetchLike = async (input, init) => {
-      if (new URL(input, "http://fixture.test").pathname.endsWith("/projects/proj_alpha")) await gate.promise;
-      return source.fetch(input, init);
-    };
-    const bootstrap = source.client.bootstrap;
-    const client = known
-      ? { ...source.client, bootstrap: { ...bootstrap, projects: bootstrap.projects.map((entry) => ({ ...entry, states: project.states })) } }
-      : source.client;
-    const read = getBoardRead(client, makeWorkHttp({ ...source.client.http, fetch }), "proj_alpha", DEFAULT_VIEW_STATE);
-    const lanes = () => source.requests.filter(({ url }) => url.pathname.endsWith("/work-items")).length;
-    const before = lanes();
+    const read = getBoardRead(source.client, makeWorkHttp({ ...source.client.http, fetch: source.fetch }), "proj_alpha", DEFAULT_VIEW_STATE);
+    const before = source.requests.length;
     read.start();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(lanes() > before).toBe(known);
-    gate.resolve();
     await expect.poll(() => read.snapshot().resolved).toBe(true);
     expect(read.snapshot().items.length).toBeGreaterThan(0);
     expect(read.snapshot().lanes.map((lane) => lane.name)).toEqual(project.states.map((state) => state.name));
+    expect(source.requests.slice(before).filter(({ url }) => url.pathname.endsWith("/projects/proj_alpha"))).toHaveLength(0);
   });
 
   it.each(["disk-first", "network-first"])("keeps fresh revisions with %s completion", async (order) => {
@@ -660,9 +627,18 @@ describe("the Work snapshot ordering", () => {
     let moved = false;
     const http = makeWorkHttp({ ...source.client.http, fetch: async (...args) => {
       const response = await source.fetch(...args);
-      if (!moved || !String(args[0]).includes("/work-items?")) return response;
+      if (!moved) return response;
+      if (String(args[0]).includes("/work-items?")) {
+        const body = await response.json();
+        if (body.work) body.work.completed = 131;
+        return Response.json(body);
+      }
+      if (!String(args[0]).includes("/work-board?")) return response;
       const body = await response.json();
-      if (body.work) body.work.completed = 131;
+      for (const entry of body.projects) {
+        entry.work.completed = 131;
+        entry.work.shipped_windows = entry.work.shipped_windows.map((window: { window: string }) => window.window === "24h" ? { ...window, shipped: 131 } : window);
+      }
       return Response.json(body);
     } });
     const read = getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, view, tab: "active" });
@@ -700,10 +676,9 @@ describe("the Work snapshot ordering", () => {
         throw new Error("Unexpected per-card read");
       }
       const response = await source.fetch(...args);
-      if (!String(args[0]).includes("/work-items?")) return response;
+      if (!String(args[0]).includes("/work-board?")) return response;
       const body = await response.json();
-      body.items = body.items.map((issue: NativeIssue) => ({ ...issue, revision }));
-      if (body.work) body.work.items = body.work.items.map((issue: NativeIssue) => ({ ...issue, revision }));
+      body.cards = body.cards.map((card: { issue: NativeIssue }) => ({ ...card, issue: { ...card.issue, revision } }));
       return Response.json(body);
     } });
     const read = getBoardRead(source.client, http, null, DEFAULT_VIEW_STATE);
