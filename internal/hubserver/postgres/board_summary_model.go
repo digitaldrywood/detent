@@ -85,7 +85,7 @@ func (s *session) boardSummaryQuery(selection viewstore.BoardSelection) (string,
 			return "", nil, corestore.ErrNotFound
 		}
 	}
-	return `WITH readiness AS MATERIALIZED (SELECT EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready) AS pending),
+	return `WITH readiness AS MATERIALIZED (SELECT ` + boardProjectionPendingSQL + ` AS pending),
 counts AS MATERIALIZED (
  SELECT c.kind,c.state,c.total,c.running,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at
  FROM native_board_page_summaries c
