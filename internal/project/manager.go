@@ -138,7 +138,11 @@ func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 			projects[index].GlobalAgents.ModelSelection = *projects[index].ModelSelection
 		}
 		projects[index].GlobalBudget = cfg.Global.Budget
+		binding := projects[index].GlobalWorker.AllowLocalBinding
 		projects[index].GlobalWorker = cfg.Global.Worker
+		if binding != nil {
+			projects[index].GlobalWorker.AllowLocalBinding = binding
+		}
 		projects[index].GlobalKnowledge = cfg.Global.Knowledge
 		projects[index].GlobalRateWindowPacing = cfg.Global.RateWindowPacing
 		projects[index].GlobalMemory = cfg.Global.Memory
