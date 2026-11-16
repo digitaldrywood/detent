@@ -41,17 +41,17 @@ func TestWorkBoardHostedKeysAndMCPParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	expiry := time.Now().Add(time.Hour)
-	key := func(scope hubapi.APIScope, permission apikey.Scope, access hubapi.HostedProjectAccess, projects []string, issuer *hubapi.APICredential) string {
+	key := func(name string, scope hubapi.APIScope, permission apikey.Scope, access hubapi.HostedProjectAccess, projects []string, issuer *hubapi.APICredential) string {
 		t.Helper()
-		created, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "example-agent", Scope: scope, Issuer: issuer, KeyScope: permission, ExpiresAt: &expiry, ProjectIDs: projects, ProjectAccess: access})
+		created, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: name, Scope: scope, Issuer: issuer, KeyScope: permission, ExpiresAt: &expiry, ProjectIDs: projects, ProjectAccess: access})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return created.Token
 	}
-	readAll := key(hubapi.APIScopeOperator, apikey.ScopeRead, hubapi.HostedProjectsAll, nil, &issuer)
-	selected := key(hubapi.APIScopeOperator, apikey.ScopeWrite, hubapi.HostedProjectsSelected, []string{string(f.project)}, &issuer)
-	worker := key(hubapi.APIScopeWorker, "", "", nil, nil)
+	readAll := key("example-reader", hubapi.APIScopeOperator, apikey.ScopeRead, hubapi.HostedProjectsAll, nil, &issuer)
+	selected := key("example-selected", hubapi.APIScopeOperator, apikey.ScopeWrite, hubapi.HostedProjectsSelected, []string{string(f.project)}, &issuer)
+	worker := key("example-worker", hubapi.APIScopeWorker, apikey.ScopeWrite, "", nil, nil)
 	base := "/api/v2/organizations/org_security/work-board"
 	bearer := func(token, method, path, body string) *httptest.ResponseRecorder {
 		t.Helper()

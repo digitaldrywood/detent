@@ -644,7 +644,7 @@ func boardSearchWindow(args *[]any, f viewstore.BoardSelection, columns string) 
 
 func (s *session) BoardView(ctx context.Context, selection viewstore.BoardViewSelection) (viewstore.BoardViewRows, error) {
 	var result viewstore.BoardViewRows
-	if len(selection.Projects) == 0 || len(selection.Projects) > viewstore.BoardViewMaxProjects || len(selection.Items) > viewstore.BoardViewMaxItems || selection.ClosedPage < 1 || selection.ClosedPage > viewstore.BoardViewMaxPage || !viewstore.ValidLanePreset(selection.LanePreset) {
+	if len(selection.Projects) > viewstore.BoardViewMaxProjects || len(selection.Items) > viewstore.BoardViewMaxItems || selection.ClosedPage < 1 || selection.ClosedPage > viewstore.BoardViewMaxPage || !viewstore.ValidLanePreset(selection.LanePreset) {
 		return result, corestore.ErrInvalidPage
 	}
 	var after *time.Time

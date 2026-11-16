@@ -100,8 +100,17 @@ func TestBoardViewReadsOpenCardsPerTenant(t *testing.T) {
 		})
 		t.Run(string(org)+"/reporter", func(t *testing.T) {
 			reporter := admin
-			reporter.Credential.HostedRole, reporter.Credential.HostedPrincipal = "reporter", "example"
-			view := readTestWorkBoard(t, t.Context(), service, reporter, state)
+			reporter.Credential.HostedRole, reporter.Credential.HostedPrincipal, reporter.Project = "reporter", "example", ""
+			params := boardViewParams(t, state, []tracker.ProjectID{project})
+			params.Set("lanes", "all")
+			request, err := parseWorkBoardRequest(params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			view, err := service.readWorkBoard(t.Context(), reporter, request)
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, card := range view.Cards {
 				if card.Issue.Actor.PrincipalID != "example" {
 					t.Fatalf("reporter saw another principal's card: %+v", card.Issue.NativeReference)

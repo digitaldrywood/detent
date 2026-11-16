@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -250,9 +251,6 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 				unavailable = append(unavailable, id)
 			}
 		}
-		if len(selection.Projects) == 0 {
-			return workBoardView{}, hubapi.NativeNotFound()
-		}
 		if len(selection.Projects) > viewstore.BoardViewMaxProjects {
 			return workBoardView{}, hubapi.NativePublicInvalid("Name at most 500 projects")
 		}
@@ -270,6 +268,9 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 			return workBoardView{}, err
 		}
 		if boardViewRevisions(rows) == entry.revisions {
+			if len(selection.Projects) == 0 {
+				return workBoardView{}, hubapi.NativeNotFound()
+			}
 			break
 		}
 		s.boardAccess.drop(boardAccessKey(scope))
@@ -297,14 +298,42 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 	}
 	digest := sha256.Sum256(raw)
 	view.GrantVersion = hex.EncodeToString(digest[:])
-	if request.budget > 0 {
-		compact, cut, err := boardview.Compact(scope.Organization, s.config.Clock(), assembled, positions, request.lanes, unavailable, request.budget)
+	if request.budget == 0 {
+		view.Lanes, err = workBoardCursors(positions, cursor, key)
+		return view, err
+	}
+	for budget := request.budget; ; {
+		compact, cut, err := boardview.Compact(scope.Organization, s.config.Clock(), assembled, positions, request.lanes, unavailable, budget)
+		if errors.Is(err, boardview.ErrTooLarge) {
+			return workBoardView{}, hubapi.NativePublicInvalid("This board exceeds the result limit; name fewer projects or lanes")
+		}
 		if err != nil {
 			return workBoardView{}, err
 		}
-		positions = cut
-		view.compact = &compact
+		if view.Lanes, err = workBoardCursors(cut, cursor, key); err != nil {
+			return workBoardView{}, err
+		}
+		for i, continuation := range compact.Continuations {
+			for _, lane := range view.Lanes {
+				if lane.State == continuation.State {
+					compact.Continuations[i].NextCursor = lane.NextCursor
+				}
+			}
+		}
+		raw, err := json.Marshal(compact)
+		if err != nil {
+			return workBoardView{}, err
+		}
+		if len(raw) <= request.budget {
+			view.compact = &compact
+			return view, nil
+		}
+		budget -= len(raw) - request.budget + 512
 	}
+}
+
+func workBoardCursors(positions []boardview.Cursor, cursor nativeCursor, key []byte) ([]workBoardLane, error) {
+	lanes := []workBoardLane{}
 	for _, position := range positions {
 		lane := workBoardLane{State: position.State}
 		if position.More {
@@ -313,22 +342,14 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 			if position.ClosedAt != nil {
 				next.Issues.Activity = position.ClosedAt.UTC().Format(time.RFC3339Nano)
 			}
+			var err error
 			if lane.NextCursor, err = encodeNativeCursor(next, key); err != nil {
-				return workBoardView{}, err
+				return nil, err
 			}
 		}
-		view.Lanes = append(view.Lanes, lane)
+		lanes = append(lanes, lane)
 	}
-	if view.compact != nil {
-		for i, continuation := range view.compact.Continuations {
-			for _, lane := range view.Lanes {
-				if lane.State == continuation.State {
-					view.compact.Continuations[i].NextCursor = lane.NextCursor
-				}
-			}
-		}
-	}
-	return view, nil
+	return lanes, nil
 }
 
 func boardViewRevisions(rows viewstore.BoardViewRows) [4]int64 {

@@ -3,6 +3,7 @@ package boardview
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strconv"
 	"time"
@@ -10,6 +11,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+var ErrTooLarge = errors.New("board metadata exceeds the result budget")
+
+var laneStart = time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
 
 type Lanes struct {
 	Preset  string   `json:"preset"`
@@ -227,6 +232,9 @@ func Compact(organization tracker.OrganizationID, now time.Time, view View, wind
 		return board, nil, err
 	}
 	used := len(envelope) + len(names)*96
+	if used > budget {
+		return board, nil, ErrTooLarge
+	}
 	taken := map[string]int{}
 	for progress := true; progress; {
 		progress = false
@@ -238,7 +246,7 @@ func Compact(organization tracker.OrganizationID, now time.Time, view View, wind
 			if err != nil {
 				return board, nil, err
 			}
-			if used+len(raw)+1 > budget && taken[name] > 0 {
+			if used+len(raw)+1 > budget {
 				continue
 			}
 			used += len(raw) + 1
@@ -263,6 +271,9 @@ func Compact(organization tracker.OrganizationID, now time.Time, view View, wind
 		continuation := CompactContinuation{State: name, Returned: taken[name]}
 		position, more := windowed[name]
 		switch {
+		case taken[name] == 0:
+			position, more = Cursor{State: name, More: true, ClosedAt: &laneStart}, true
+			board.Truncated = true
 		case taken[name] < len(list):
 			last := list[taken[name]-1]
 			position, more = Cursor{State: name, More: true, ClosedAt: last.ClosedAt, Identifier: last.Identifier}, true

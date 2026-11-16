@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/boardview"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -215,6 +217,17 @@ func TestWorkBoardFollowsKeyReach(t *testing.T) {
 			}
 		})
 	}
+	t.Run("compact board larger than any budget is refused", func(t *testing.T) {
+		request, err := parseWorkBoardRequest(url.Values{"format": {"compact"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.budget = 64
+		var native *hubapi.NativeError
+		if _, err := service.readWorkBoardFor(t.Context(), partial, string(org), request); !errors.As(err, &native) || native.Status != 422 {
+			t.Fatalf("oversized metadata=%v, want 422", err)
+		}
+	})
 	t.Run("unknown lane", func(t *testing.T) {
 		_, err := readKeyBoard(t, service, partial, url.Values{"exclude_lane": {"Nonexistent"}})
 		var native *hubapi.NativeError
@@ -222,52 +235,91 @@ func TestWorkBoardFollowsKeyReach(t *testing.T) {
 			t.Fatalf("unknown lane=%v, want 422", err)
 		}
 	})
-	t.Run("compact continuation returns each card once", func(t *testing.T) {
-		params := url.Values{"project": {string(source.project.ID)}, "format": {"compact"}}
-		request, err := parseWorkBoardRequest(params)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request.budget = 1
-		view, err := service.readWorkBoardFor(t.Context(), partial, string(org), request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		seen := map[string][]tracker.NativeWorkItemID{}
-		next := map[string]string{}
-		for _, card := range view.compact.Cards {
-			seen[card.State] = append(seen[card.State], card.ID)
-		}
-		for _, continuation := range view.compact.Continuations {
-			next[continuation.State] = continuation.NextCursor
-		}
-		if len(seen["Todo"]) != 1 || len(seen["In Progress"]) != 1 || len(seen["Backlog"]) != 1 || next["Todo"] == "" || next["In Progress"] != "" || !view.compact.Truncated {
-			t.Fatalf("first page=%v continuations=%+v", seen, view.compact.Continuations)
-		}
-		for cursor := next["Todo"]; cursor != ""; {
-			request, err := parseWorkBoardRequest(url.Values{"project": {string(source.project.ID)}, "format": {"compact"}, "lane": {"Todo"}, "cursor": {cursor}})
+	t.Run("compact continuations return each open card once", func(t *testing.T) {
+		read := func(t *testing.T, params url.Values, budget int) (boardview.CompactBoard, int, error) {
+			t.Helper()
+			request, err := parseWorkBoardRequest(params)
 			if err != nil {
 				t.Fatal(err)
 			}
-			request.budget = 1
-			page, err := service.readWorkBoardFor(t.Context(), partial, string(org), request)
+			if budget > 0 {
+				request.budget = budget
+			}
+			view, err := service.readWorkBoardFor(t.Context(), partial, string(org), request)
+			if err != nil {
+				return boardview.CompactBoard{}, 0, err
+			}
+			raw, err := json.Marshal(view.compact)
 			if err != nil {
 				t.Fatal(err)
 			}
-			cursor = ""
-			for _, card := range page.compact.Cards {
-				if card.State != "Todo" {
-					t.Fatalf("continuation of Todo returned %s", card.State)
+			if budget > 0 && len(raw) > budget {
+				t.Fatalf("compact page is %d bytes over a %d byte budget", len(raw), budget)
+			}
+			return *view.compact, len(raw), nil
+		}
+		project := url.Values{"project": {string(source.project.ID)}, "format": {"compact"}}
+		_, whole, err := read(t, project, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		emptied := false
+		for budget := whole - 1; ; budget -= 128 {
+			first, _, err := read(t, project, budget)
+			var native *hubapi.NativeError
+			if errors.As(err, &native) && native.Status == 422 {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !first.Truncated {
+				t.Fatalf("budget %d of %d did not truncate", budget, whole)
+			}
+			var seen []tracker.NativeWorkItemID
+			for _, card := range first.Cards {
+				seen = append(seen, card.ID)
+			}
+			for _, continuation := range first.Continuations {
+				emptied = emptied || continuation.Returned == 0
+				for cursor := continuation.NextCursor; cursor != ""; {
+					page, _, err := read(t, url.Values{"project": project["project"], "format": {"compact"}, "lane": {continuation.State}, "cursor": {cursor}}, budget)
+					if err != nil {
+						t.Fatal(err)
+					}
+					cursor = ""
+					for _, card := range page.Cards {
+						if card.State != continuation.State {
+							t.Fatalf("continuation of %s returned %s", continuation.State, card.State)
+						}
+						seen = append(seen, card.ID)
+					}
+					for _, next := range page.Continuations {
+						cursor = next.NextCursor
+					}
 				}
-				seen["Todo"] = append(seen["Todo"], card.ID)
 			}
-			for _, continuation := range page.compact.Continuations {
-				cursor = continuation.NextCursor
+			slices.Sort(seen)
+			if want := []tracker.NativeWorkItemID{"wi_blocked", "wi_later", "wi_second", "wi_third", "wi_working"}; !slices.Equal(seen, want) {
+				t.Fatalf("budget %d: cards across pages=%v want %v", budget, seen, want)
 			}
 		}
-		slices.Sort(seen["Todo"])
-		if !slices.Equal(seen["Todo"], []tracker.NativeWorkItemID{"wi_blocked", "wi_second", "wi_third"}) {
-			t.Fatalf("Todo across pages=%v", seen["Todo"])
+		if !emptied {
+			t.Fatal("no budget left a lane without cards, so the lane start continuation was not exercised")
+		}
+	})
+	t.Run("grant after a cached read reaches a newly granted project", func(t *testing.T) {
+		if _, err := readKeyBoard(t, service, partial, url.Values{"project": {string(source.project.ID)}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: partial.ID, ProjectID: target.project.ID})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		view, err := readKeyBoard(t, service, partial, url.Values{"project": {string(target.project.ID)}})
+		if err != nil || len(view.Projects) != 1 || view.Projects[0].Project.ID != target.project.ID {
+			t.Fatalf("newly granted project=%+v err=%v", view.Projects, err)
 		}
 	})
 }
