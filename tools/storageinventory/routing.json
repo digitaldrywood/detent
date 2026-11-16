@@ -4796,7 +4796,7 @@
           "backfillConversationContinuation:QueryContext": 1,
           "backfillConversationContinuation:QueryRowContext": 3,
           "backfillConversationContinuation:SQL": 5,
-          "migrateConversationContinuation:QueryContext": 1,
+          "migrateConversationContinuation:QueryRowContext": 1,
           "migrateConversationContinuation:SQL": 1
         },
         "tables": [
