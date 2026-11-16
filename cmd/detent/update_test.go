@@ -71,15 +71,15 @@ func TestUpdateCommandYesAppliesWithoutPrompt(t *testing.T) {
 			Message:         "Updated Detent from 1.2.3 to 1.2.4.",
 		},
 	}
-	cmd := newUpdateCommand(context.Background(), func(context.Context) (updateRunner, error) {
+	root, cmd := updateCommandWithConfig(t, filepath.Join(t.TempDir(), "global.yaml"), func(context.Context) (updateRunner, error) {
 		return fake, nil
 	})
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--yes"})
+	root.SetArgs([]string{"update", "--yes"})
 
-	if err := cmd.ExecuteContext(context.Background()); err != nil {
+	if err := root.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("ExecuteContext() error = %v", err)
 	}
 	if !fake.applyCalled {
@@ -147,15 +147,15 @@ func TestUpdateCommandFromReleasePassesOptionWithoutPrompt(t *testing.T) {
 			Message:         "Updated Detent from 1.2.3 to 1.2.4.",
 		},
 	}
-	cmd := newUpdateCommand(context.Background(), func(context.Context) (updateRunner, error) {
+	root, cmd := updateCommandWithConfig(t, filepath.Join(t.TempDir(), "global.yaml"), func(context.Context) (updateRunner, error) {
 		return fake, nil
 	})
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--from-release"})
+	root.SetArgs([]string{"update", "--from-release"})
 
-	if err := cmd.ExecuteContext(context.Background()); err != nil {
+	if err := root.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("ExecuteContext() error = %v", err)
 	}
 	if !fake.applyCalled {
@@ -261,15 +261,15 @@ func TestUpdateCommandJSONWritesRefusalStatus(t *testing.T) {
 		},
 		applyErr: update.ErrRefused,
 	}
-	cmd := newUpdateCommand(context.Background(), func(context.Context) (updateRunner, error) {
+	root, cmd := updateCommandWithConfig(t, filepath.Join(t.TempDir(), "global.yaml"), func(context.Context) (updateRunner, error) {
 		return fake, nil
 	})
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--json"})
+	root.SetArgs([]string{"update", "--json"})
 
-	err := cmd.ExecuteContext(context.Background())
+	err := root.ExecuteContext(t.Context())
 	if !errors.Is(err, update.ErrRefused) {
 		t.Fatalf("ExecuteContext() error = %v, want %v", err, update.ErrRefused)
 	}
@@ -311,14 +311,14 @@ func TestUpdateCommandPreservesVersionOnError(t *testing.T) {
 	for _, tt := range []struct{ name, version string }{{"empty coordination status", ""}, {"server version", "v0.114.15"}} {
 		t.Run(tt.name, func(t *testing.T) {
 			failure := errors.New("dashboard API is unreachable")
-			cmd := newUpdateCommand(t.Context(), func(context.Context) (updateRunner, error) {
+			root, cmd := updateCommandWithConfig(t, filepath.Join(t.TempDir(), "global.yaml"), func(context.Context) (updateRunner, error) {
 				return &fakeUpdater{applyStatus: update.Status{CurrentVersion: tt.version}, applyErr: failure}, nil
 			})
 			var stdout bytes.Buffer
 			cmd.SetOut(&stdout)
 			cmd.SetErr(&bytes.Buffer{})
-			cmd.SetArgs([]string{"--yes", "--json"})
-			if err := cmd.ExecuteContext(t.Context()); !errors.Is(err, failure) {
+			root.SetArgs([]string{"update", "--yes", "--json"})
+			if err := root.ExecuteContext(t.Context()); !errors.Is(err, failure) {
 				t.Fatalf("error=%v", err)
 			}
 			var status update.Status
@@ -357,11 +357,8 @@ func TestUpdateSafetyRefusesRunningInstance(t *testing.T) {
 					}
 				}
 			}
-			root := &cobra.Command{Use: "detent"}
-			root.PersistentFlags().String("config", configPath, "")
 			fake := &fakeUpdater{}
-			cmd := newUpdateCommand(t.Context(), func(context.Context) (updateRunner, error) { return fake, nil })
-			root.AddCommand(cmd)
+			root, _ := updateCommandWithConfig(t, configPath, func(context.Context) (updateRunner, error) { return fake, nil })
 			root.SetOut(&bytes.Buffer{})
 			root.SetErr(&bytes.Buffer{})
 			root.SetArgs([]string{"update", "--yes"})
@@ -383,4 +380,13 @@ func TestUpdateSafetyRefusesRunningInstance(t *testing.T) {
 			}
 		})
 	}
+}
+
+func updateCommandWithConfig(t *testing.T, configPath string, factory func(context.Context) (updateRunner, error)) (*cobra.Command, *cobra.Command) {
+	t.Helper()
+	root := &cobra.Command{Use: "detent"}
+	root.PersistentFlags().String("config", configPath, "")
+	cmd := newUpdateCommand(t.Context(), factory)
+	root.AddCommand(cmd)
+	return root, cmd
 }
