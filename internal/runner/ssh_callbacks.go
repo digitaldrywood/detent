@@ -129,7 +129,7 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 		if strings.HasPrefix(method, "store.") {
 			name := strings.TrimPrefix(method, "store.")
 			switch name {
-			case "StartSession", "FinishSession", "RecordUsageEvent", "UpdateSessionIdentity", "UpdateSessionProviderIdentity", "UpdateSessionResumeState", "RecordWorkflowPhaseEvent", "SaveWorkflowActivityProfile", "SessionProgress", "SaveSessionProgress", "SessionPolicy", "LatestAgentResumeState", "LatestIssueAgentResumeState", "ListSecurityAuditDispositions":
+			case "StartSession", "FinishSession", "ReconcileSessionFinalization", "RecordUsageEvent", "UpdateSessionIdentity", "UpdateSessionProviderIdentity", "UpdateSessionResumeState", "RecordWorkflowPhaseEvent", "SaveWorkflowActivityProfile", "SessionProgress", "SaveSessionProgress", "SessionPolicy", "LatestAgentResumeState", "LatestIssueAgentResumeState", "ListSecurityAuditDispositions":
 				return invokeSSHMethod(ctx, sessions, name, arguments)
 			default:
 				return nil, errors.New("unsupported SSH store method")

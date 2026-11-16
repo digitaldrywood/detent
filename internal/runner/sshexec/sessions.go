@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/policy"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -19,6 +20,9 @@ func (s SessionStore) StartSession(ctx context.Context, input store.SessionStart
 }
 func (s SessionStore) FinishSession(ctx context.Context, id int64, input store.SessionFinish) error {
 	return s.Peer.Call(ctx, "store.FinishSession", nil, id, input)
+}
+func (s SessionStore) ReconcileSessionFinalization(ctx context.Context, id int64, input *sessionmodel.Finalization) error {
+	return s.Peer.Call(ctx, "store.ReconcileSessionFinalization", nil, id, input)
 }
 func (s SessionStore) RecordUsageEvent(ctx context.Context, input store.UsageEvent) (int64, error) {
 	var result int64

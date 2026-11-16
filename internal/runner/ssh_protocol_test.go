@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -441,6 +442,65 @@ func TestSSHCallbackDoesNotPublishRemotePID(t *testing.T) {
 	}
 	if _, ok := any(SSHSessionStore{}).(sessionWorkerProcessReaper); ok {
 		t.Fatal("remote store exposes the local process registry")
+	}
+}
+
+func TestSSHWorkerSessionFinalizationReachesOwner(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		callbacks func(*Runner) *SSHCallbacks
+		worker    func(*SSHPeer) SessionStore
+	}{
+		{
+			name:      "remote",
+			callbacks: func(run *Runner) *SSHCallbacks { return run.SSHRunCallbacks(RunRequest{}) },
+			worker:    func(peer *SSHPeer) SessionStore { return SSHSessionStore{Peer: peer} },
+		},
+		{
+			name:      "local",
+			callbacks: func(run *Runner) *SSHCallbacks { return run.LocalRunCallbacks(RunRequest{}) },
+			worker: func(peer *SSHPeer) SessionStore {
+				return LocalSessionStore{SSHSessionStore: SSHSessionStore{Peer: peer}}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			sessions := &fakeSessionStore{sessionID: 41}
+			callbacks := test.callbacks(&Runner{store: sessions})
+			left, right := net.Pipe()
+			central := NewSSHPeer(t.Context(), left, left, callbacks.Handle)
+			remote := NewSSHPeer(t.Context(), right, right, nil)
+			t.Cleanup(func() {
+				central.Close()
+				remote.Close()
+				left.Close()
+				right.Close()
+			})
+			worker := &Runner{store: test.worker(remote), projectID: "project"}
+			id, err := worker.store.StartSession(t.Context(), store.SessionStart{AgentRole: string(RoleValidator)})
+			if err != nil || id != 41 {
+				t.Fatalf("start validator session = %d, %v", id, err)
+			}
+			finishedAt := time.Unix(200, 0).UTC()
+			finalization := worker.sessionFinalization(id, connector.Issue{ID: "issue", Identifier: "owner/repository#1"}, time.Unix(100, 0).UTC(), finishedAt, RunResult{Tokens: TokenTotals{TotalTokens: 73}}, "example-model", "codex", 1, AgentTurnResult{ThreadID: "thread"}, 0)
+			if finalization.Phase == nil {
+				t.Fatal("worker session store dropped the agent phase owner")
+			}
+			if err := worker.reconcileSessionFinalization(t.Context(), nil, id, finalization); err != nil {
+				t.Fatalf("worker validator finalization did not reach the owner: %v", err)
+			}
+			if sessions.finishCalls != 1 || sessions.usageCalls != 1 || sessions.finished.TotalTokens != 73 || !sessions.finished.CompletedAt.Equal(finishedAt) || sessions.usage.SessionID != id || sessions.phase.PhaseName != "agent_active" {
+				t.Fatalf("owner finalization = finish %d %+v, usage %d %+v, phase %+v", sessions.finishCalls, sessions.finished, sessions.usageCalls, sessions.usage, sessions.phase)
+			}
+			if err := callbacks.Finish(t.Context(), time.Unix(300, 0).UTC()); err != nil {
+				t.Fatal(err)
+			}
+			if sessions.finishCalls != 1 || sessions.finished.FinalState != FinalStateCompleted {
+				t.Fatalf("channel close overwrote finalized session: %d %+v", sessions.finishCalls, sessions.finished)
+			}
+		})
 	}
 }
 
