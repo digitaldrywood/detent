@@ -21,6 +21,7 @@ board explain_item
 board github_scope_timings
 board health_findings
 board work_attempt_receipt
+board work_board
 board work_bulk_export
 board work_comments
 board work_config

@@ -32,7 +32,7 @@ type ToolMetadata struct {
 func toolset(name string) ToolMetadata {
 	group := "actions"
 	switch name {
-	case BoardState, ExplainItem:
+	case BoardState, ExplainItem, WorkBoard:
 		group = "board"
 	case FleetHealth:
 		group = "fleet"
@@ -97,7 +97,7 @@ func LocalProjectCatalog() []Definition {
 // Registry is the canonical protocol registry; deployments filter by application availability.
 func Registry() []Definition {
 	definitions := append(Catalog(), WorkReadCatalog()...)
-	for _, catalog := range [][]Definition{ThreadCatalog(), CommandCatalog(), AttachmentCatalog(), ProjectCatalog(), LocalProjectCatalog(), WorkspaceCatalog(), OperatorChatCatalog(), ChangeCatalog(), AdministrationCatalog(), HostedContextCatalog(), PlatformCreditCatalog(), PlatformEntitlementCatalog(), OAuthGrantCatalog()} {
+	for _, catalog := range [][]Definition{WorkBoardCatalog(), ThreadCatalog(), CommandCatalog(), AttachmentCatalog(), ProjectCatalog(), LocalProjectCatalog(), WorkspaceCatalog(), OperatorChatCatalog(), ChangeCatalog(), AdministrationCatalog(), HostedContextCatalog(), PlatformCreditCatalog(), PlatformEntitlementCatalog(), OAuthGrantCatalog()} {
 		definitions = append(definitions, catalog...)
 	}
 	return definitions

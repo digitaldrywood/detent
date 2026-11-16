@@ -41,6 +41,7 @@ type contractSchema struct {
 func TestCatalogDecoderContract(t *testing.T) {
 	targets := map[string]reflect.Type{
 		BoardState:       reflect.TypeFor[boardStateArguments](),
+		WorkBoard:        reflect.TypeFor[WorkBoardArguments](),
 		FleetHealth:      reflect.TypeFor[struct{}](),
 		TelemetryUsage:   reflect.TypeFor[telemetryUsageArguments](),
 		RecentActivity:   reflect.TypeFor[recentActivityArguments](),

@@ -254,6 +254,7 @@ work set_queue_priority
 work transfer_item
 work verify_fix
 work workflow_timeline
+work_board work_board
 work_reads board_activity
 work_reads board_receipt
 work_reads board_session

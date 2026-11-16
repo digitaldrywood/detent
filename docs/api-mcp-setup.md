@@ -780,6 +780,10 @@ revisions expose later edits. Reads use stored data and never refresh GitHub.
 This tool requires the same read scope and current project grants as `work_item`.
 Existing tools retain their limits and response shapes.
 
+## Whole-board reads
+
+`work_board` reads the organization's whole native board in one call, for auditing whether work is moving. Arguments are optional: `project_ids` (default every readable project), `lanes` (`open`, `active` or `all`), `lane` and `exclude_lane` lists, `archived`, `completed_window` and `cursor`. The result matches `GET /api/v2/organizations/{organization}/work-board?format=compact`; see the Hub API work board section for the fields. Use `lanes: "active"` to see only dispatchable work, or `exclude_lane: ["Backlog"]` to drop a large lane while keeping its count. When a continuation has a `next_cursor`, call again with `lane: [that state]` and the cursor. Read permission is enough; worker credentials cannot call it.
+
 ## Publish a prepared release-pick PR
 
 This tool serves only projects whose release delivery is configured as GitHub

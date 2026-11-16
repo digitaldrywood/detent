@@ -104,6 +104,7 @@ func TestRegistrationCatalogGolden(t *testing.T) {
 			{"core", operatortool.Catalog()},
 			{"work", operatortool.WorkCatalog()},
 			{"work_reads", operatortool.WorkReadCatalog()},
+			{"work_board", operatortool.WorkBoardCatalog()},
 			{"commands", operatortool.CommandCatalog()},
 			{"projects", operatortool.ProjectCatalog()},
 			{"local_projects", operatortool.LocalProjectCatalog()},

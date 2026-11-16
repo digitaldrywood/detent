@@ -179,7 +179,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 	}
 
 	switch name {
-	case operatortool.ExplainItem, operatortool.BoardState, operatortool.Dashboard:
+	case operatortool.ExplainItem, operatortool.BoardState, operatortool.Dashboard, operatortool.WorkBoard:
 		return catalog.credential.HostedRole != "account", nil
 	case operatortool.BillingUsage, operatortool.HostedPlan, operatortool.HostedUsage, operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
 		return entryKeyHasDefinition(s.entryKeyBillingTools(ctx), name), nil
@@ -259,7 +259,7 @@ func entryKeyToolSupported(name string) bool {
 	switch name {
 	case operatortool.Reports, operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerHost, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity:
 		return true
-	case operatortool.BoardState, operatortool.Dashboard, operatortool.StopRun, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.VerifyFix:
+	case operatortool.BoardState, operatortool.Dashboard, operatortool.WorkBoard, operatortool.StopRun, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.VerifyFix:
 		return true
 	case operatortool.OrganizationSession, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationEdit, operatortool.InvitationResend, operatortool.MemberRole, operatortool.MemberGrant:
 		return true

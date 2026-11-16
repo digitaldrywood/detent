@@ -44,7 +44,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		}
 		definition, _ := operatortool.Lookup(operatortool.ExplainItem)
 		definitions = append(definitions, definition)
-		for _, name := range []string{operatortool.BoardState, operatortool.Dashboard} {
+		for _, name := range []string{operatortool.BoardState, operatortool.Dashboard, operatortool.WorkBoard} {
 			definition, _ := operatortool.Lookup(name)
 			definitions = append(definitions, definition)
 		}
@@ -78,6 +78,9 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	}()
 	if call.Name == operatortool.BoardState || call.Name == operatortool.Dashboard {
 		return e.service.executeBoardRead(ctx, call)
+	}
+	if call.Name == operatortool.WorkBoard {
+		return e.service.executeWorkBoard(ctx, call)
 	}
 	if operatortool.IsAttachmentTool(call.Name) && call.Name != operatortool.UploadAttachment {
 		return e.attachmentOperation(ctx, call)

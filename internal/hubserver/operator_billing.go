@@ -195,7 +195,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			result, err = e.service.canonicalToolResult(ctx, result, call.Name)
 		}
 	}()
-	if call.Name == operatortool.BoardState || call.Name == operatortool.Dashboard {
+	if call.Name == operatortool.BoardState || call.Name == operatortool.Dashboard || call.Name == operatortool.WorkBoard {
 		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}
 	if operatortool.IsHostedContext(call.Name) {
