@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -323,6 +326,220 @@ func TestRegistrationCleanupRejectsStalePayload(t *testing.T) {
 			_, _, err = readTenantRunCleanupData(t.Context(), content, &tenantRunCleanupPredecessor{attempt: snapshot.Attempt, lease: snapshot.Lease, event: event})
 			if errors.Is(err, artifact.ErrIntegrity) != tc.invalid {
 				t.Fatalf("cleanup archive error = %v, invalid=%t", err, tc.invalid)
+			}
+		})
+	}
+}
+
+func newRunnerPGTenantFixtures(t *testing.T) []runnerPGFixture {
+	t.Helper()
+	admin := postgresStartupTemplate.Database(t)
+	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	seedHostedStartup(t, cfg)
+	second := *cfg.Hosted
+	second.OrganizationID, second.WorkOSOrganizationID = "org_second", "provider_org_second"
+	secondConfig := cfg
+	secondConfig.Hosted = &second
+	seedHostedStartup(t, secondConfig)
+	var fixtures []runnerPGFixture
+	for _, config := range []Config{cfg, secondConfig} {
+		service, err := Open(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := service.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		fixtures = append(fixtures, seedRunnerPGFixture(t, admin, service, tracker.OrganizationID(config.Hosted.OrganizationID)))
+	}
+	return fixtures
+}
+
+type releasedCleanupShape struct {
+	advanced     bool
+	stalePayload bool
+	payloadRunID string
+	archived     bool
+	corrupt      *memoryRunDetails
+}
+
+func prepareReleasedCleanup(t *testing.T, f runnerPGFixture, index int, shape releasedCleanupShape) (string, tracker.NativeRunEvent) {
+	t.Helper()
+	lease, data := f.leases[index], f.data[index]
+	path := "/api/v2/organizations/" + string(f.organization) + "/projects/prj_runner/work-items/" + string(lease.WorkItemID) + "/events"
+	now := time.Now().UTC()
+	data.Sequence = 2
+	data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", WorkerLaunch: &tracker.NativeWorkerLaunch{PID: 123, ProcessStart: now, ExecutionVersion: "example", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "example", PolicyID: f.policy.PolicyID, Protocol: 1, SelectedAt: now}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "observe_" + data.AttemptID}, Type: "run.observed", SchemaVersion: 1, Data: data}), http.StatusOK)
+	finished := data
+	finished.Sequence, finished.Outcome = 3, "cancelled"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "finish_" + data.AttemptID}, Type: "run.finished", SchemaVersion: 1, Data: finished}), http.StatusOK)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken)}, "example")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sequence := int64(3)
+	if shape.advanced {
+		sequence = 4
+		var payloadKey string
+		if err := f.admin.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE organization_id=$1 AND id=$2", f.organization, data.AttemptID).Scan(&payloadKey); err != nil {
+			t.Fatal(err)
+		}
+		if !shape.stalePayload {
+			terminated := finished
+			terminated.Sequence = sequence
+			terminated.MachineID, terminated.SessionID, terminated.RunnerID = lease.MachineID, lease.SessionID, f.bindings[index].RunnerID
+			if shape.payloadRunID != "" {
+				terminated.RunID = shape.payloadRunID
+			}
+			raw, err := json.Marshal(terminated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, err := f.service.runDetailStore().StoreDetail(t.Context(), string(f.organization), raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: f.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: now})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			payloadKey = ref.Key
+		}
+		if _, err := f.admin.ExecContext(t.Context(), "UPDATE native_attempts SET sequence=$3,payload_object_key=$4 WHERE organization_id=$1 AND id=$2", f.organization, data.AttemptID, sequence, payloadKey); err != nil {
+			t.Fatal(err)
+		}
+		if store := shape.corrupt; store != nil {
+			store.mu.Lock()
+			corrupted := bytes.Clone(store.data[payloadKey])
+			corrupted[0] = 'x'
+			store.data[payloadKey] = corrupted
+			store.mu.Unlock()
+		}
+	}
+	if shape.archived {
+		if _, err := f.admin.ExecContext(t.Context(), "UPDATE issues SET archived=true WHERE organization_id=$1 AND native_id=$2", f.organization, lease.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	termination := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":terminated:" + strconv.FormatInt(sequence+1, 10)}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, Sequence: sequence + 1, LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: f.policy.PolicyID, Identity: data.Identity, Outcome: "cancelled"}}
+	return path, termination
+}
+
+func releasedCleanupAttempt(t *testing.T, f runnerPGFixture, id string) leasestore.Attempt {
+	t.Helper()
+	var attempt leasestore.Attempt
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		attempt, err = r.Attempt(t.Context(), id)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return attempt
+}
+
+func TestReleasedCleanupAcknowledgesPreUpgradeAttempts(t *testing.T) {
+	t.Parallel()
+	fixtures := newRunnerPGTenantFixtures(t)
+	for _, f := range fixtures {
+		for index, tc := range []struct {
+			name  string
+			shape releasedCleanupShape
+		}{{"terminal history behind attempt", releasedCleanupShape{advanced: true}}, {"archived work item", releasedCleanupShape{archived: true}}} {
+			t.Run(string(f.organization)+"/"+tc.name, func(t *testing.T) {
+				path, termination := prepareReleasedCleanup(t, f, index, tc.shape)
+				credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.organization, apikey.HashToken(f.tokens[index]), "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				scope := hubscope.NativeScope{Organization: f.organization, Project: "prj_runner", Credential: credential}
+				snapshot := runnerauth.RoutingSnapshot{RunnerID: f.bindings[index].RunnerID}
+				for range 2 {
+					if err := f.service.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 || snapshot.ClaimState.ReleasedExecutions[0].AttemptID != termination.Data.AttemptID {
+					t.Fatalf("%s runner %d cleanup offer = %+v", f.organization, index, snapshot.ClaimState)
+				}
+				cleanupPath := "/api/v2/organizations/" + string(f.organization) + "/projects/prj_runner/work-items/" + string(f.leases[index].WorkItemID) + "/attempts/" + termination.Data.AttemptID + "?view=cleanup"
+				view := performHubAPIRequest(t, f.service, http.MethodGet, cleanupPath, f.tokens[index], nil)
+				if view.Code != http.StatusOK {
+					t.Fatalf("%s runner %d cleanup view status = %d: %s", f.organization, index, view.Code, view.Body.String())
+				}
+				var cleanup tracker.NativeAttempt
+				decodeHubResponse(t, view, &cleanup)
+				if cleanup.Sequence+1 != termination.Data.Sequence || cleanup.PolicyID != termination.Data.PolicyID || *cleanup.Identity != *termination.Data.Identity {
+					t.Fatalf("%s runner %d cleanup view = %+v", f.organization, index, cleanup.NativeRunData)
+				}
+				other := fixtures[0]
+				if other.organization == f.organization {
+					other = fixtures[1]
+				}
+				if response := performHubAPIRequest(t, f.service, http.MethodPost, path, other.tokens[index], termination); response.Code == http.StatusOK {
+					t.Fatalf("%s accepted another tenant's termination", f.organization)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], termination), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], termination), http.StatusOK)
+				attempt := releasedCleanupAttempt(t, f, termination.Data.AttemptID)
+				if attempt.CleanupAcknowledgedAt == nil || attempt.Sequence != termination.Data.Sequence || attempt.Status != "cancelled" {
+					t.Fatalf("%s runner %d acknowledged attempt = %+v", f.organization, index, attempt)
+				}
+				if err := f.service.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot); err != nil {
+					t.Fatal(err)
+				}
+				if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
+					t.Fatalf("%s runner %d acknowledged cleanup is still offered: %+v", f.organization, index, snapshot.ClaimState)
+				}
+			})
+		}
+	}
+}
+
+func TestReleasedCleanupRejectsUnprovenTermination(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		shape  releasedCleanupShape
+		modify func(*tracker.NativeRunEvent)
+		want   int
+	}{
+		{name: "different fencing token", shape: releasedCleanupShape{advanced: true}, modify: func(e *tracker.NativeRunEvent) { e.Data.FencingToken++ }, want: http.StatusConflict},
+		{name: "different policy", shape: releasedCleanupShape{advanced: true}, modify: func(e *tracker.NativeRunEvent) { e.Data.PolicyID = "policy_" + strings.Repeat("c", 64) }, want: http.StatusConflict},
+		{name: "payload from another run", shape: releasedCleanupShape{advanced: true, payloadRunID: "run_other"}, want: http.StatusInternalServerError},
+		{name: "stale terminal payload", shape: releasedCleanupShape{advanced: true, stalePayload: true}, want: http.StatusInternalServerError},
+		{name: "corrupted stored payload", shape: releasedCleanupShape{advanced: true, corrupt: &memoryRunDetails{}}, want: http.StatusServiceUnavailable},
+		{name: "archived item with different fencing token", shape: releasedCleanupShape{archived: true}, modify: func(e *tracker.NativeRunEvent) { e.Data.FencingToken++ }, want: http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			details := tc.shape.corrupt
+			f := newRunnerPGFixtureWithDetails(t, func(store attachment.DetailStore) attachment.DetailStore {
+				if details != nil {
+					return details
+				}
+				return store
+			})
+			path, termination := prepareReleasedCleanup(t, f, 0, tc.shape)
+			before := releasedCleanupAttempt(t, f, termination.Data.AttemptID)
+			if tc.modify != nil {
+				tc.modify(&termination)
+			}
+			if response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[0], termination); response.Code == http.StatusOK {
+				t.Fatalf("unproven termination was accepted: %s", response.Body.String())
+			} else if response.Code != tc.want {
+				t.Fatalf("rejection status = %d, want %d: %s", response.Code, tc.want, response.Body.String())
+			}
+			after := releasedCleanupAttempt(t, f, termination.Data.AttemptID)
+			if after.CleanupAcknowledgedAt != nil || after.Sequence != before.Sequence || after.PayloadObjectKey != before.PayloadObjectKey {
+				t.Fatalf("rejected termination changed the attempt: before=%+v after=%+v", before, after)
 			}
 		})
 	}
