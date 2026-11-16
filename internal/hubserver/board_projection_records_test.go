@@ -534,3 +534,95 @@ func (r *boardAdvancingAttemptReader) LatestAttempt(ctx context.Context, itemID 
 	r.repository.once.Do(func() { r.repository.advanceErr = r.repository.advance(ctx) })
 	return attempt, r.repository.advanceErr
 }
+
+func TestBoardMaintenanceFeatureDrainsDirtyItemsInBoundedBatches(t *testing.T) {
+	t.Parallel()
+	repository := projectRecordPostgres(t)
+	now := time.Date(2026, 11, 16, 6, 0, 0, 0, time.UTC)
+	details := &memoryRunDetails{}
+	counts := map[tracker.OrganizationID]int{"org_first": boardMaintenanceBatch + 8, "org_second": 3}
+	features := map[tracker.OrganizationID]hubmaintenance.Feature{}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		service := &Service{config: Config{TenantRepository: repository, RunDetails: hubmaintenance.LimitDetails(details), Clock: func() time.Time { return now }}, localOrganization: string(org)}
+		for _, feature := range service.ReadModelMaintenanceFeatures() {
+			if feature.Name == "board" {
+				features[org] = feature
+			}
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: now}); err != nil {
+				return err
+			}
+			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "example", Name: "Example", Profile: "native"}, States: nativeFixtureStates()})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for index := range counts[org] {
+			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%02d", index))
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: id, Number: index + 1, Revision: 1}, Title: fmt.Sprintf("Example %d", index), State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
+			raw, err := json.Marshal(issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
+					return err
+				}
+				_, err := w.CreateCollaborationVersion(t.Context(), version)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	cards := func(org tracker.OrganizationID) int {
+		t.Helper()
+		var count int
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			rows, err := r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: "example", Limit: 200})
+			for _, row := range rows {
+				if row.OrganizationID != org {
+					t.Errorf("cross-tenant card: %+v", row)
+				}
+			}
+			count = len(rows)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	for _, step := range []struct {
+		name        string
+		org         tracker.OrganizationID
+		wantFirst   int
+		wantSecond  int
+		wantItemMax int
+	}{
+		{name: "dirty backlog drains one bounded batch per turn", org: "org_first", wantFirst: boardMaintenanceBatch, wantSecond: 0, wantItemMax: boardMaintenanceBatch},
+		{name: "second tenant drains its own backlog", org: "org_second", wantFirst: boardMaintenanceBatch, wantSecond: 3, wantItemMax: 4},
+		{name: "remaining backlog drains on the next turn", org: "org_first", wantFirst: boardMaintenanceBatch + 8, wantSecond: 3, wantItemMax: 9},
+		{name: "settled board probes one item per turn", org: "org_first", wantFirst: boardMaintenanceBatch + 8, wantSecond: 3, wantItemMax: 1},
+	} {
+		tenant := hubmaintenance.Tenant{Organization: string(step.org), Generation: 1}
+		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: BoardMaintenanceBytes}
+		outcome, err := features[step.org].Step(budget.Context(t.Context(), tenant), tenant, budget)
+		if err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if !outcome.Progress || outcome.Items < 1 || outcome.Items > step.wantItemMax {
+			t.Errorf("%s: outcome=%+v, want progress with 1..%d items", step.name, outcome, step.wantItemMax)
+		}
+		if got := cards("org_first"); got != step.wantFirst {
+			t.Errorf("%s: org_first has %d cards, want %d", step.name, got, step.wantFirst)
+		}
+		if got := cards("org_second"); got != step.wantSecond {
+			t.Errorf("%s: org_second has %d cards, want %d", step.name, got, step.wantSecond)
+		}
+	}
+}
