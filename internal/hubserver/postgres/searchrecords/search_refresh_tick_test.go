@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -134,60 +135,211 @@ func TestSearchRefreshTickRebuildsBacklogInBudgetedTicks(t *testing.T) {
 	}
 }
 
-func TestSearchRefreshTickDeadlineCancelsBlockedOperation(t *testing.T) {
+type expiringContext struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+	stop func() bool
+}
+
+func newExpiringContext(parent context.Context) *expiringContext {
+	ctx := &expiringContext{Context: parent, done: make(chan struct{})}
+	ctx.stop = context.AfterFunc(parent, ctx.expire)
+	return ctx
+}
+
+func (c *expiringContext) expire() { c.once.Do(func() { close(c.done) }) }
+
+func (c *expiringContext) Done() <-chan struct{} { return c.done }
+
+func (c *expiringContext) Err() error {
+	select {
+	case <-c.done:
+		if err := c.Context.Err(); err != nil {
+			return err
+		}
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+type refreshBudgets struct {
+	mu    sync.Mutex
+	ticks []*expiringContext
+	steps []*expiringContext
+}
+
+func (b *refreshBudgets) timeout(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	ctx := newExpiringContext(parent)
+	b.mu.Lock()
+	if budget == searchstore.RefreshTickDuration {
+		b.ticks = append(b.ticks, ctx)
+	} else {
+		b.steps = append(b.steps, ctx)
+	}
+	b.mu.Unlock()
+	return ctx, func() {
+		ctx.stop()
+		ctx.expire()
+	}
+}
+
+func (b *refreshBudgets) latest(steps bool) *expiringContext {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	budgets := b.ticks
+	if steps {
+		budgets = b.steps
+	}
+	if len(budgets) == 0 {
+		return nil
+	}
+	return budgets[len(budgets)-1]
+}
+
+type hookedSearchObjects struct {
+	attachment.DetailStore
+	mu     sync.Mutex
+	onRead func(context.Context, attachment.ArchiveReference) error
+}
+
+func (o *hookedSearchObjects) hook(read func(context.Context, attachment.ArchiveReference) error) {
+	o.mu.Lock()
+	o.onRead = read
+	o.mu.Unlock()
+}
+
+func (o *hookedSearchObjects) ReadDetail(ctx context.Context, org string, ref attachment.ArchiveReference) ([]byte, error) {
+	o.mu.Lock()
+	read := o.onRead
+	o.mu.Unlock()
+	if read != nil {
+		if err := read(ctx, ref); err != nil {
+			return nil, err
+		}
+	}
+	return o.DetailStore.ReadDetail(ctx, org, ref)
+}
+
+func searchRefreshBacklog(t *testing.T, f searchFixture, org tracker.OrganizationID) (stale, pending, scopes int) {
+	t.Helper()
+	if err := f.admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM search_documents WHERE organization_id=$1 AND kind='issue' AND indexed_revision<>revision),
+		(SELECT count(*) FROM search_postings WHERE organization_id=$1 AND term='~pending'),
+		(SELECT count(*) FROM search_scope_refresh WHERE organization_id=$1)`, org).Scan(&stale, &pending, &scopes); err != nil {
+		t.Fatal(err)
+	}
+	return stale, pending, scopes
+}
+
+func TestSearchRefreshTickBudgets(t *testing.T) {
 	t.Parallel()
-	f := newSearchFixture(t)
-	seedPendingIssues(t, f, "org_first", 3)
-	barrier := &searchReadBarrier{DetailStore: f.objects, read: make(chan struct{}), release: make(chan struct{})}
-	content := searchstore.NewContent(barrier)
-	counter := countPublications(f.repository)
-	parent := t.Context()
-	if end, ok := t.Deadline(); ok {
-		guarded, cancel := context.WithDeadline(parent, end.Add(-time.Until(end)/10))
-		t.Cleanup(cancel)
-		parent = guarded
+	const documents = 3
+	for _, test := range []struct {
+		name   string
+		poison bool
+	}{{"tick budget expires during a slow step", false}, {"step budget expires on a document that cannot finish", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newSearchFixture(t)
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				seedPendingIssues(t, f, org, documents)
+				if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_scope_refresh(organization_id,project_id,work_item_id,archived,principal_id,after_id) VALUES($1,'prj_first','',false,'','issue/wi_tick_1')`, org); err != nil {
+					t.Fatal(err)
+				}
+			}
+			second := [3]int{}
+			second[0], second[1], second[2] = searchRefreshBacklog(t, f, "org_second")
+			if second[0] != documents || second[1] == 0 || second[2] != 1 {
+				t.Fatalf("org_second backlog stale=%d pending=%d scopes=%d", second[0], second[1], second[2])
+			}
+			objects := &hookedSearchObjects{DetailStore: f.objects}
+			content := searchContent(objects)
+			counter := countPublications(f.repository)
+			budgets := &refreshBudgets{}
+			var poisonMu sync.Mutex
+			poison := ""
+			if test.poison {
+				objects.hook(func(ctx context.Context, ref attachment.ArchiveReference) error {
+					poisonMu.Lock()
+					if poison == "" {
+						poison = ref.Key
+					}
+					hit := poison == ref.Key
+					poisonMu.Unlock()
+					if !hit {
+						return nil
+					}
+					if step := budgets.latest(true); step != nil {
+						step.expire()
+					} else {
+						t.Error("refresh step ran without its own budget")
+						budgets.latest(false).expire()
+					}
+					return ctx.Err()
+				})
+			} else {
+				var once sync.Once
+				objects.hook(func(ctx context.Context, _ attachment.ArchiveReference) error {
+					var err error
+					once.Do(func() {
+						budgets.latest(false).expire()
+						err = ctx.Err()
+					})
+					return err
+				})
+			}
+			processed, err := content.RefreshTick(t.Context(), counter, "org_first", budgets.timeout)
+			if test.poison {
+				if !errors.Is(err, context.DeadlineExceeded) || processed != 0 {
+					t.Fatalf("expired step processed=%d err=%v, want reported deadline", processed, err)
+				}
+				counter.requireEachOnce(t, "issue/wi_tick_", 0)
+				processed, err = content.RefreshTick(t.Context(), counter, "org_first", budgets.timeout)
+				if !errors.Is(err, context.DeadlineExceeded) || processed != documents-1 {
+					t.Fatalf("tick after poison processed=%d err=%v, want the other %d documents and the poison deadline", processed, err, documents-1)
+				}
+				counter.requireEachOnce(t, "issue/wi_tick_", documents-1)
+				if stale, pending, _ := searchRefreshBacklog(t, f, "org_first"); stale != 1 || pending != 1 {
+					t.Fatalf("org_first after poison stale=%d pending=%d, want only the poison document", stale, pending)
+				}
+			} else {
+				if err != nil || processed != 1 {
+					t.Fatalf("slow step processed=%d err=%v, want the started step published", processed, err)
+				}
+				counter.requireEachOnce(t, "issue/wi_tick_", 1)
+				if stale, _, _ := searchRefreshBacklog(t, f, "org_first"); stale != documents-1 {
+					t.Fatalf("org_first stale=%d after one slow step, want %d", stale, documents-1)
+				}
+				objects.hook(nil)
+				for ticks := 0; ; ticks++ {
+					processed, err := content.RefreshTick(t.Context(), counter, "org_first", withoutDeadline)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if processed == 0 {
+						break
+					}
+					if ticks > documents {
+						t.Fatal("refresh did not converge")
+					}
+				}
+				if stale, pending, scopes := searchRefreshBacklog(t, f, "org_first"); stale != 0 || pending != 0 || scopes != 0 {
+					t.Fatalf("org_first not ready stale=%d pending=%d scopes=%d", stale, pending, scopes)
+				}
+			}
+			if stale, pending, scopes := searchRefreshBacklog(t, f, "org_second"); [3]int{stale, pending, scopes} != second {
+				t.Fatalf("org_first refresh changed org_second backlog to stale=%d pending=%d scopes=%d from %v", stale, pending, scopes, second)
+			}
+			objects.hook(nil)
+			if _, err := content.RefreshTick(t.Context(), counter, "org_second", withoutDeadline); err != nil {
+				t.Fatal(err)
+			}
+			if stale, pending, scopes := searchRefreshBacklog(t, f, "org_second"); stale != 0 || pending != 0 || scopes != 0 {
+				t.Fatalf("org_second not ready stale=%d pending=%d scopes=%d", stale, pending, scopes)
+			}
+		})
 	}
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(barrier.release) }) }
-	stop, helperDone := make(chan struct{}), make(chan struct{})
-	t.Cleanup(func() {
-		close(stop)
-		release()
-		<-helperDone
-	})
-	expired := make(chan context.CancelFunc, 1)
-	deadline := func(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
-		if budget != searchstore.RefreshTickDuration {
-			t.Errorf("tick budget=%s want %s", budget, searchstore.RefreshTickDuration)
-		}
-		ctx, cancel := context.WithCancel(parent)
-		expired <- cancel
-		return ctx, cancel
-	}
-	go func() {
-		defer close(helperDone)
-		select {
-		case <-barrier.read:
-		case <-stop:
-			return
-		}
-		select {
-		case expire := <-expired:
-			expire()
-		case <-stop:
-		}
-	}()
-	processed, err := content.RefreshTick(parent, counter, "org_first", deadline)
-	if err != nil || processed != 0 || pendingSearchDocuments(t, f, "org_first") != 3 {
-		t.Fatalf("expired tick processed=%d pending=%d err=%v", processed, pendingSearchDocuments(t, f, "org_first"), err)
-	}
-	counter.requireEachOnce(t, "issue/wi_tick_", 0)
-	release()
-	processed, err = content.RefreshTick(t.Context(), counter, "org_first", withoutDeadline)
-	if err != nil || processed != 3 || pendingSearchDocuments(t, f, "org_first") != 0 {
-		t.Fatalf("next tick processed=%d pending=%d err=%v", processed, pendingSearchDocuments(t, f, "org_first"), err)
-	}
-	counter.requireEachOnce(t, "issue/wi_tick_", 3)
 }
 
 func TestSearchRefreshTickProgressesEachOrganization(t *testing.T) {

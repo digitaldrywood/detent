@@ -92,22 +92,17 @@ func (c *Content) Read(ctx context.Context, document Document) (Text, error) {
 const (
 	RefreshTickDocuments = 100
 	RefreshTickDuration  = 2 * time.Second
+	RefreshStepDuration  = 30 * time.Second
 )
 
 func (c *Content) RefreshTick(ctx context.Context, repository Repository, organization tracker.OrganizationID, timeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)) (int, error) {
 	tick, cancel := timeout(ctx, RefreshTickDuration)
 	defer cancel()
 	processed := 0
-	for processed < RefreshTickDocuments {
-		if tick.Err() != nil {
-			break
-		}
-		more, err := c.RefreshOne(tick, repository, organization)
+	for processed < RefreshTickDocuments && tick.Err() == nil {
+		more, err := c.refreshStep(ctx, repository, organization, timeout)
 		if err != nil {
-			if tick.Err() != nil && ctx.Err() == nil {
-				break
-			}
-			return processed, err
+			return processed, fmt.Errorf("refresh search document: %w", err)
 		}
 		if !more {
 			break
@@ -115,6 +110,12 @@ func (c *Content) RefreshTick(ctx context.Context, repository Repository, organi
 		processed++
 	}
 	return processed, ctx.Err()
+}
+
+func (c *Content) refreshStep(ctx context.Context, repository Repository, organization tracker.OrganizationID, timeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)) (bool, error) {
+	step, cancel := timeout(ctx, RefreshStepDuration)
+	defer cancel()
+	return c.RefreshOne(step, repository, organization)
 }
 
 func (c *Content) RefreshOne(ctx context.Context, repository Repository, organization tracker.OrganizationID) (bool, error) {
