@@ -97,7 +97,7 @@ func boardViewSQL() string {
 	revision := func(subject, id string) string {
 		return "coalesce((SELECT r.revision FROM native_board_access_revisions r WHERE r.organization_id=$1 AND r.subject_kind='" + subject + "' AND r.subject_id=" + id + "),0)"
 	}
-	scoped := "c.ready AND NOT c.workspace AND c.archived=$5 AND ($4::text='' OR c.actor_principal_id=$4)"
+	scoped := "c.ready AND NOT c.workspace AND c.archived=$5 AND ($4::text='' OR c.actor_principal_id=$4 AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=c.project_id AND i.native_id=c.work_item_id AND i.actor_principal_id=$4))"
 	ctes := `WITH visible AS MATERIALIZED (SELECT p.id FROM projects p WHERE p.organization_id=$1 AND p.id=ANY($2::text[]) AND p.deleted_at IS NULL AND p.profile='native'),
 cards AS MATERIALIZED (SELECT c.* FROM native_board_cards c WHERE c.organization_id=$1 AND c.project_id IN (SELECT id FROM visible) AND ` + scoped + `
  AND (CASE WHEN $11::boolean THEN c.work_item_id=ANY($10::text[]) ELSE NOT c.terminal END)),

@@ -179,11 +179,20 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 			return workBoardView{}, err
 		}
 		selection.Allowed, selection.Projects = entry.allowed, nil
+		denied := false
 		for _, id := range request.projects {
 			if !slices.Contains(entry.allowed, id) {
-				return workBoardView{}, hubapi.NativeNotFound()
+				denied = true
+				break
 			}
 			selection.Projects = append(selection.Projects, id)
+		}
+		if denied {
+			s.boardAccess.drop(boardAccessKey(scope, request.projects))
+			if attempt == 1 {
+				return workBoardView{}, hubapi.NativeNotFound()
+			}
+			continue
 		}
 		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			model, ok := reader.(interface {
