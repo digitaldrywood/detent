@@ -294,13 +294,7 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 			view.EffectivePolicy = &descriptor
 		}
 	}
-	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud {
-		view.Source = "cloud_workflow"
-	} else if current.WorkflowRef != "" {
-		view.Source = "configured_committed_workflow"
-	} else {
-		view.Source = "configured_local_workflow_read_only"
-	}
+	view.Source = policySourceKind(current, workflow)
 	if loaded, err := loadWorkflowForScheduling(ctx, current, p.policyScheduling); err == nil {
 		selected := loaded
 		selected.Config = WithMappedNativeTracker(selected.Config, p.policyScheduling, p.ID())
@@ -477,7 +471,7 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 		if p != nil {
 			actual := p.Workflow().Config.Policy
 			view.EffectivePolicy = &actual
-			view.SelectedPolicy = &actual
+			view.SelectedPolicy, view.Source = p.reportedPolicy(actual, view.Source)
 			view.Paused = p.Paused()
 			view.RuntimeRegistered = true
 			view.Registered = true
@@ -542,28 +536,8 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 	if desired.AllowLocalBinding != p.Workflow().Config.Worker.EffectiveAllowLocalBinding() && (desired.UnsettledAttempts != 0 || view.UnsettledAttempts != 0) {
 		return fail("Active or deferred work must settle through the Hub before changing local binding.")
 	}
-	p.mu.Lock()
-	previousWorker := p.cfg.GlobalWorker
-	p.cfg.GlobalWorker.AllowLocalBinding = new(desired.AllowLocalBinding)
-	p.mu.Unlock()
-	workflow, err := workflowconfig.ApplyNativePolicy(p.Workflow(), *desired.EffectivePolicy)
-	if err != nil {
-		p.mu.Lock()
-		p.cfg.GlobalWorker = previousWorker
-		p.mu.Unlock()
-		return fail("The Hub approved policy cannot be applied to this runtime.")
-	}
-	workflow.Config.Policy = *desired.EffectivePolicy
-	if p.Workflow().Config.Policy.ID != desired.EffectivePolicy.ID || p.Workflow().Config.Worker.EffectiveAllowLocalBinding() != desired.AllowLocalBinding {
-		if err := p.applyWorkflowUpdate(ctx, configwatcher.Update{Workflow: workflow, At: time.Now().UTC()}, true); err != nil {
-			p.mu.Lock()
-			p.cfg.GlobalWorker = previousWorker
-			p.mu.Unlock()
-			return fail("The runtime could not apply the Hub approved policy.")
-		}
-	}
-	if p.Workflow().Config.Policy.ID != desired.EffectivePolicy.ID {
-		return fail("The effective runtime policy does not match the Hub approved policy.")
+	if constraint := p.applyHubPolicy(ctx, desired); constraint != "" {
+		return fail(constraint)
 	}
 
 	if desired.Paused && !p.Paused() {
@@ -597,6 +571,7 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 		}
 	}
 	view = desired
+	view.SelectedPolicy, view.Source = p.reportedPolicy(*desired.EffectivePolicy, desired.Source)
 	view.RuntimeRegistered = true
 	view.Paused = p.Paused()
 	view.AllowLocalBinding = p.Workflow().Config.Worker.EffectiveAllowLocalBinding()
@@ -616,4 +591,46 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 		return fail("The runtime has not reached the Hub desired configuration.")
 	}
 	return view
+}
+
+func (p *Project) reportedPolicy(effective policy.Descriptor, source string) (*policy.Descriptor, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.observedPolicy == nil {
+		return &effective, source
+	}
+	observed := *p.observedPolicy
+	return &observed, p.observedSource
+}
+
+func (p *Project) applyHubPolicy(ctx context.Context, desired runnerauth.ProjectConfiguration) string {
+	p.configMu.Lock()
+	defer p.configMu.Unlock()
+	p.mu.Lock()
+	previousWorker := p.cfg.GlobalWorker
+	p.cfg.GlobalWorker.AllowLocalBinding = new(desired.AllowLocalBinding)
+	p.mu.Unlock()
+	workflow, err := workflowconfig.ApplyNativePolicy(p.Workflow(), *desired.EffectivePolicy)
+	if err != nil {
+		p.mu.Lock()
+		p.cfg.GlobalWorker = previousWorker
+		p.mu.Unlock()
+		return "The Hub approved policy cannot be applied to this runtime."
+	}
+	workflow.Config.Policy = *desired.EffectivePolicy
+	if p.Workflow().Config.Policy.ID != desired.EffectivePolicy.ID || p.Workflow().Config.Worker.EffectiveAllowLocalBinding() != desired.AllowLocalBinding {
+		if err := p.applyWorkflowUpdate(ctx, configwatcher.Update{Workflow: workflow, At: time.Now().UTC()}, true); err != nil {
+			p.mu.Lock()
+			p.cfg.GlobalWorker = previousWorker
+			p.mu.Unlock()
+			return "The runtime could not apply the Hub approved policy."
+		}
+	}
+	if p.Workflow().Config.Policy.ID != desired.EffectivePolicy.ID {
+		return "The effective runtime policy does not match the Hub approved policy."
+	}
+	p.mu.Lock()
+	p.hubPolicyID = desired.EffectivePolicy.ID
+	p.mu.Unlock()
+	return ""
 }

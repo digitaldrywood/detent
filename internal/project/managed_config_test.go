@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -316,4 +317,192 @@ type managedRuntimeScheduling struct{ testSchedulingSource }
 
 func (*managedRuntimeScheduling) ConnectorForProject(string) (connector.Connector, bool) {
 	return fakehub.New(fakehub.Config{}), true
+}
+
+type hubPolicyScheduling struct {
+	mu sync.Mutex
+	testSchedulingSource
+	checked      []string
+	project      *Project
+	unserialized []string
+}
+
+func (s *hubPolicyScheduling) ConnectorForProject(string) (connector.Connector, bool) {
+	return fakehub.New(fakehub.Config{}), true
+}
+
+func (s *hubPolicyScheduling) CheckProjectPolicy(_ context.Context, _, _ string, descriptor policy.Descriptor) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checked = append(s.checked, descriptor.ID)
+	if s.project != nil && s.project.configMu.TryLock() {
+		s.project.configMu.Unlock()
+		s.unserialized = append(s.unserialized, descriptor.ID)
+	}
+	return nil
+}
+
+func (s *hubPolicyScheduling) serialize(p *Project) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.project = p
+}
+
+func (s *hubPolicyScheduling) unserializedChecks() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.unserialized)
+}
+
+func (s *hubPolicyScheduling) checkedSince(index int) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.checked[index:])
+}
+
+func TestHubConfigurationOwnsRuntimePolicy(t *testing.T) {
+	for _, path := range []string{"reconcile", "watcher update"} {
+		t.Run(path, func(t *testing.T) {
+			root := t.TempDir()
+			repository := "---\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\nworkspace:\n  root: " + filepath.Join(root, "workspaces") + "\n---\nRepository instructions changed after approval.\n"
+			if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(repository), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			selected := globalconfig.Project{ID: "selected", Workflow: filepath.Join(root, "WORKFLOW.md"), Workdir: root, Weight: 1, Paused: true}
+			selected.GlobalWorker.AllowLocalBinding = new(false)
+			scheduling := &hubPolicyScheduling{}
+			repositoryWorkflow, err := loadWorkflowForScheduling(t.Context(), selected, scheduling)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mapped := repositoryWorkflow
+			mapped.Config = WithMappedNativeTracker(mapped.Config, scheduling, "selected")
+			observed, err := ResolvePolicy(selected, mapped)
+			if err != nil {
+				t.Fatal(err)
+			}
+			approvedRoot := filepath.Join(root, "approved")
+			if err := os.MkdirAll(approvedRoot, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(approvedRoot, "WORKFLOW.md"), []byte(strings.Replace(repository, "Repository instructions changed after approval.", "Approved instructions.", 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			candidate, err := loadWorkflowForScheduling(t.Context(), globalconfig.Project{ID: "selected", Workflow: filepath.Join(approvedRoot, "WORKFLOW.md"), Workdir: approvedRoot}, scheduling)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate.Config = WithMappedNativeTracker(candidate.Config, scheduling, "selected")
+			approved, err := ResolvePolicy(selected, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if approved.ID == observed.ID {
+				t.Fatal("fixture policies must differ")
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			global := globalconfig.Config{Projects: []globalconfig.Project{selected}}
+			manager, err := NewManager(ManagerConfigFromGlobal(global), ManagerDependencies{ProjectFactory: func(project globalconfig.Project) (*Project, error) {
+				workflow, err := loadWorkflowForScheduling(ctx, project, scheduling)
+				if err != nil {
+					return nil, err
+				}
+				return NewContext(ctx, Config{Project: project, Workflow: workflow}, Dependencies{Runner: &managedRuntimeRunner{}, Scheduling: scheduling, Logger: slog.New(slog.DiscardHandler), WorkflowReconcileInterval: time.Hour, ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) { return fakehub.New(fakehub.Config{}), nil }, WorkflowWatcherFactory: func(string) (WorkflowWatcher, error) { return managedRuntimeWatcher{}, nil }, OrchestratorFactory: func(config orchestrator.Config, deps orchestrator.Dependencies) (*orchestrator.Orchestrator, error) {
+					sample := func(context.Context) (hostpressure.Sample, error) { return hostpressure.Sample{}, nil }
+					deps.ReadMemoryPressure = sample
+					deps.ReadIOPressure = sample
+					deps.ReadCPUPressure = sample
+					return orchestrator.New(config, deps)
+				}})
+			}})
+			if err != nil {
+				cancel()
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				cancel()
+				manager.Wait()
+				for _, p := range manager.Registry().List() {
+					if err := p.Close(); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			if err := manager.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			p, ok := manager.Registry().Get("selected")
+			if !ok {
+				t.Fatal("selected runtime absent")
+			}
+			scheduling.serialize(p)
+			desired := runnerauth.ProjectConfiguration{ProjectID: "native-selected", Authority: "hub_configuration", ConfigRevision: strings.Repeat("b", 64), Registered: true, Source: "cloud_workflow", EffectivePolicy: &approved, SelectedPolicy: &approved, ObservedAt: time.Now().UTC()}
+			result := manager.ApplyHubConfiguration(ctx, "selected", desired)
+			if !result.Applied || result.Constraint != "" || !p.Running() {
+				t.Fatalf("Hub application=%+v running=%v", result, p.Running())
+			}
+			if p.Workflow().Config.Policy.ID != approved.ID {
+				t.Errorf("resuming the Hub-configured project replaced its policy with %s", p.Workflow().Config.Policy.ID)
+			}
+			orch := p.Orchestrator()
+			checked := len(scheduling.checkedSince(0))
+			reload := func() {
+				t.Helper()
+				switch path {
+				case "reconcile":
+					if err := p.reconcileWorkflow(ctx); err != nil {
+						t.Fatal(err)
+					}
+				case "watcher update":
+					if err := p.handleWorkflowUpdate(ctx, configwatcher.Update{Path: selected.Workflow, Workflow: repositoryWorkflow, At: time.Now().UTC()}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			reload()
+			if p.Workflow().Config.Policy.ID != approved.ID {
+				t.Errorf("repository %s replaced the Hub-applied policy with %s", path, p.Workflow().Config.Policy.ID)
+			}
+			if pinned := scheduling.checkedSince(checked); slices.Contains(pinned, observed.ID) {
+				t.Errorf("repository %s pinned claims to the unapproved policy: %v", path, pinned)
+			}
+			selected.Paused = false
+			global.Projects = []globalconfig.Project{selected}
+			reconciled, err := manager.Reconcile(ctx, ManagerConfigFromGlobal(global))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current, _ := manager.Registry().Get("selected"); len(reconciled.Changed) != 0 || current != p || p.Orchestrator() != orch {
+				t.Errorf("runner project refresh restarted the Hub-configured project: %+v", reconciled)
+			}
+			result = manager.ApplyHubConfiguration(ctx, "selected", desired)
+			if !result.Applied || result.EffectivePolicy == nil || result.EffectivePolicy.ID != approved.ID || p.Workflow().Config.Policy.ID != approved.ID {
+				t.Errorf("next Hub application=%+v policy=%s", result, p.Workflow().Config.Policy.ID)
+			}
+			if result.SelectedPolicy == nil || result.SelectedPolicy.ID != observed.ID || result.Source != "configured_local_workflow_read_only" {
+				t.Errorf("repository policy was not reported as observed: selected=%v source=%s", result.SelectedPolicy, result.Source)
+			}
+			if p.Orchestrator() != orch || !p.Running() {
+				t.Error("Hub application restarted the project")
+			}
+			repositoryApproved := desired
+			repositoryApproved.ConfigRevision = strings.Repeat("c", 64)
+			repositoryApproved.EffectivePolicy, repositoryApproved.SelectedPolicy = &observed, &observed
+			if result := manager.ApplyHubConfiguration(ctx, "selected", repositoryApproved); !result.Applied || p.Workflow().Config.Policy.ID != observed.ID {
+				t.Fatalf("approved repository policy application=%+v policy=%s", result, p.Workflow().Config.Policy.ID)
+			}
+			reload()
+			newer := desired
+			newer.ConfigRevision = strings.Repeat("d", 64)
+			if result := manager.ApplyHubConfiguration(ctx, "selected", newer); !result.Applied || p.Workflow().Config.Policy.ID != approved.ID {
+				t.Fatalf("newer approved policy application=%+v policy=%s", result, p.Workflow().Config.Policy.ID)
+			}
+			if checked := scheduling.checkedSince(0); checked[len(checked)-1] != approved.ID {
+				t.Errorf("claims are pinned to %s after the Hub applied %s", checked[len(checked)-1], approved.ID)
+			}
+			if unserialized := scheduling.unserializedChecks(); len(unserialized) != 0 {
+				t.Errorf("policy checks ran outside the configuration owner and can repin claims after a Hub application: %v", unserialized)
+			}
+		})
+	}
 }
