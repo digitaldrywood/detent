@@ -161,7 +161,7 @@ func backfillPageFixture(t *testing.T, repository tenantstore.Repository, org tr
 	t.Fatal("fixture backfill did not complete")
 }
 
-func TestScheduledSourceClassificationKeepsPagesClean(t *testing.T) {
+func TestScheduledSourceClassificationKeepsProjectionQueuesClean(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
@@ -170,13 +170,13 @@ func TestScheduledSourceClassificationKeepsPagesClean(t *testing.T) {
 		pgstoretest.SeedRepository(t, repository, org)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		dirty := func() int {
+		queued := func(table string) bool {
 			t.Helper()
 			var count int
-			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_work_item_page_dirty WHERE organization_id=$1`, org).Scan(&count); err != nil {
+			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM `+table+` WHERE organization_id=$1`, org).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
-			return count
+			return count > 0
 		}
 		for _, test := range []struct {
 			name      string
@@ -187,8 +187,10 @@ func TestScheduledSourceClassificationKeepsPagesClean(t *testing.T) {
 			{"comment classification", `UPDATE native_comments SET source_revision=revision,source_scheduled=NOT source_scheduled,source_observed_at=clock_timestamp() WHERE organization_id=$1`, false},
 			{"issue title", `UPDATE issues SET title=title||' changed' WHERE organization_id=$1`, true},
 		} {
-			if _, err := admin.ExecContext(t.Context(), `DELETE FROM native_work_item_page_dirty WHERE organization_id=$1`, org); err != nil {
-				t.Fatal(err)
+			for _, table := range []string{"native_work_item_page_dirty", "native_board_dirty"} {
+				if _, err := admin.ExecContext(t.Context(), `DELETE FROM `+table+` WHERE organization_id=$1`, org); err != nil {
+					t.Fatal(err)
+				}
 			}
 			result, err := admin.ExecContext(t.Context(), test.statement, org)
 			if err != nil {
@@ -197,8 +199,10 @@ func TestScheduledSourceClassificationKeepsPagesClean(t *testing.T) {
 			if rows, err := result.RowsAffected(); err != nil || rows == 0 {
 				t.Fatalf("%s %s updated no rows: %v", org, test.name, err)
 			}
-			if got := dirty() > 0; got != test.dirty {
-				t.Errorf("%s %s queued page work=%t want %t", org, test.name, got, test.dirty)
+			for _, table := range []string{"native_work_item_page_dirty", "native_board_dirty"} {
+				if got := queued(table); got != test.dirty {
+					t.Errorf("%s %s queued %s work=%t want %t", org, test.name, table, got, test.dirty)
+				}
 			}
 		}
 	}

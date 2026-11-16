@@ -12418,6 +12418,21 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/migrations/20261116063135_board_dirty_ignores_source_classification.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues",
+          "hub/native_board_dirty"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
