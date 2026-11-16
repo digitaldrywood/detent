@@ -68,6 +68,8 @@ var diagnosticFailure = regexp.MustCompile(`(?m)^[\t ]*(?:` +
 
 var diagnosticSummary = regexp.MustCompile(`^[\t ]*(?:--- FAIL|FAIL\t|panic:|fatal error:|test timed out|[^\s:]+:[0-9]+:[0-9]+:)`)
 
+var goTestFailure = regexp.MustCompile(`^[\t ]*(?:--- FAIL:|FAIL(?:[\t ]|$)|panic:|fatal error:|WARNING: DATA RACE|test timed out)`)
+
 func Diagnostic(value string, maxBytes int) (string, bool) {
 	value = ansi.Strip(strings.ToValidUTF8(value, "�"))
 	if maxBytes <= 0 || len(value) <= maxBytes {
@@ -76,6 +78,7 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 	lines := strings.SplitAfter(value, "\n")
 	var failures []int
 	selected := make([]bool, len(lines))
+	goFailure := make([]bool, len(lines))
 	timeout, running := false, false
 	previouslyDropped := 0
 	for i, line := range lines {
@@ -100,6 +103,7 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 			}
 			failures = append(failures, i)
 			selected[i] = true
+			goFailure[i] = running || goTestFailure.MatchString(line)
 		}
 		if strings.Contains(line, "test timed out") {
 			timeout = true
@@ -122,14 +126,22 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 	if total > budget {
 		reserve := len(fmt.Sprintf("[%d failure lines dropped]\n", len(failures)+previouslyDropped))
 		remaining := maxBytes - reserve
+		kept := make([]bool, len(lines))
+		for _, preferred := range []bool{true, false} {
+			for _, i := range failures {
+				if goFailure[i] == preferred && len(lines[i]) <= remaining {
+					kept[i] = true
+					remaining -= len(lines[i])
+				}
+			}
+		}
 		dropped := previouslyDropped
 		for _, i := range failures {
-			if len(lines[i]) > remaining {
+			if !kept[i] {
 				dropped++
 				continue
 			}
 			output.WriteString(lines[i])
-			remaining -= len(lines[i])
 		}
 		fmt.Fprintf(&output, "[%d failure lines dropped]\n", dropped)
 		return validPrefix(output.String(), maxBytes), true

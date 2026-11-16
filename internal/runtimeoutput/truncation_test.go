@@ -149,15 +149,22 @@ func TestBufferDoesNotBackfillHeadAfterMultibyteBoundary(t *testing.T) {
 func TestDiagnostic(t *testing.T) {
 	for _, limit := range []int{4096, 64 * 1024} {
 		for _, test := range []struct {
-			name  string
-			input string
-			want  []string
+			name    string
+			input   string
+			want    []string
+			chained bool
 		}{
 			{name: "mixed diagnostics", input: "assertion setup\nAssertionError: expected range\nexpected selection\nactual null\n" + strings.Repeat("assertion detail\n", 12) + "diagnostic region end\n" + strings.Repeat("ok example.org/passing\n", 8000) + "--- FAIL: TestLater (0.01s)\n", want: []string{"assertion setup\n", "AssertionError: expected range\n", "expected selection\n", "actual null\n", "diagnostic region end\n", "--- FAIL: TestLater (0.01s)\n"}},
 			{name: "separated failures", input: "--- FAIL: TestFirst (0.01s)\n" + strings.Repeat("ok example.org/passing\n", 4000) + "--- FAIL: TestSecond (0.02s)\n" + strings.Repeat("ok example.org/passing\n", 4000) + "FAIL\texample.org/second\t1s\n", want: []string{"--- FAIL: TestFirst (0.01s)\n", "--- FAIL: TestSecond (0.02s)\n", "FAIL\texample.org/second\t1s\n"}},
 			{name: "failure at EOF stays a complete line", input: strings.Repeat("ok example.org/passing\n", 4000) + "test timed out after 1m0s", want: []string{"test timed out after 1m0s\n"}},
 			{name: "failure overflow", input: strings.Repeat("--- FAIL: TestExample (0.01s)\n", limit), want: []string{"failure lines dropped]\n"}},
 			{name: "oversized failure before short failure", input: "panic: " + strings.Repeat("界", limit) + "\n--- FAIL: TestShort (0.01s)\n", want: []string{"--- FAIL: TestShort (0.01s)\n", "[1 failure lines dropped]\n"}},
+			{name: "go test failures outrank earlier sourcemap warnings", input: strings.Repeat("node_modules/@tanstack/query-core/build/modern/index.js (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.\n", limit/64) +
+				"Error: dashboard API is unreachable\n" + strings.Repeat("ok  \tgithub.com/example-org/example-project/internal/passing\t0.412s\n", 200) +
+				"--- FAIL: TestStoreRefresh (0.02s)\n" +
+				"panic: test timed out after 10m0s\n\trunning tests:\n\t\tTestProviderEligibility (6s)\n\t\tTestProviderEligibility/beyond_project_quota (6s)\n\ngoroutine 1 [running]:\n" +
+				"FAIL\tgithub.com/example-org/example-project/internal/hub\t601.021s\nFAIL\n",
+				want: []string{"--- FAIL: TestStoreRefresh (0.02s)\n", "panic: test timed out after 10m0s\n", "\trunning tests:\n", "\t\tTestProviderEligibility/beyond_project_quota (6s)\n", "FAIL\tgithub.com/example-org/example-project/internal/hub\t601.021s\n", "failure lines dropped]\n"}, chained: true},
 		} {
 			t.Run(fmt.Sprintf("%s/%d", test.name, limit), func(t *testing.T) {
 				got, truncated := Diagnostic(test.input, limit)
@@ -167,6 +174,14 @@ func TestDiagnostic(t *testing.T) {
 				for _, want := range test.want {
 					if !strings.Contains(got, want) {
 						t.Errorf("missing %q", want)
+					}
+				}
+				if test.chained && limit > 4096 {
+					public, _ := Diagnostic(got, 4096)
+					for _, want := range test.want {
+						if !strings.Contains(public, want) {
+							t.Errorf("stored diagnostic missing %q", want)
+						}
 					}
 				}
 				if test.name == "failure overflow" {
