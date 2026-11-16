@@ -48,7 +48,7 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 			pilotStatus(t, "project", project, http.StatusSeeOther)
 			o.project = strings.TrimPrefix(project.location, "/organizations/"+o.id+"/projects/")
 
-			pilotStatus(t, "runner grant", owner.form("/organizations/"+o.id+"/organization/grants", url.Values{"user": {"user_member"}, "project": {o.project}, "write": {"true"}, "runner": {"true"}, "csrf": {o.ownerCSRF}}), http.StatusSeeOther)
+			pilotStatus(t, "owner self grant refused because the owner role already grants runner access", owner.form("/organizations/"+o.id+"/organization/grants", url.Values{"user": {"user_member"}, "project": {o.project}, "write": {"true"}, "runner": {"true"}, "csrf": {o.ownerCSRF}}), http.StatusConflict)
 			binding := runnerauth.NewBinding()
 			enrollment := owner.json(http.MethodPost, o.api()+"/runner-enrollments", o.ownerCSRF, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(o.project)}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900})
 			pilotStatus(t, "enrollment", enrollment, http.StatusCreated)

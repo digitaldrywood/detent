@@ -894,17 +894,38 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 	for _, scenario := range []string{"membership removed", "project grant removed", "role downgraded", "policy blocked", "policy approval", "refresh expired", "expired consumed refresh", "browser revoke"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
+			organization, user := "org_alpha", "user_alice"
+			if scenario == "project grant removed" {
+				organization, user = "org_beta", "user_bob"
+			}
 			f := entryfixture.New(t)
 			b := harness.NewBrowser(t, f.Service.Handler())
-			b.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			b.Login("/organizations/"+organization+"/organization", user+":p"+organization)
+			if user != "user_alice" {
+				db := f.Fixtures[organization].Database
+				principal := "hosted_" + apikey.HashToken(user)[:32]
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO public.api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) SELECT organization_id,$1,$2,$3,'','operator',true,created_at,updated_at FROM public.hosted_members WHERE organization_id=$4 AND user_id='user_alice'`, principal, principal, apikey.HashToken(user+"_principal"), organization); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO public.hosted_members(organization_id,user_id,email,membership_id,role,active,principal_id,notify_issues,created_at,updated_at) SELECT organization_id,$1,$2,$3,'member',true,$4,true,created_at,updated_at FROM public.hosted_members WHERE organization_id=$5 AND user_id='user_alice'`, user, strings.TrimPrefix(user, "user_")+"@example.test", "om_"+user+"_p"+organization, principal, organization); err != nil {
+					t.Fatal(err)
+				}
+				owner := harness.NewBrowser(t, f.Service.Handler())
+				owner.Login("/organizations/"+organization+"/organization", "user_alice:p"+organization)
+				_, bootstrap := owner.Get("/organizations/" + organization + "/app/bootstrap")
+				granted := owner.Do(http.MethodPost, "/organizations/"+organization+"/organization/grants", url.Values{"user": {user}, "project": {harness.Project(t, owner, organization)}, "write": {"true"}, "csrf": {harness.CSRF(t, bootstrap)}}, nil)
+				if granted.StatusCode != http.StatusSeeOther {
+					t.Fatalf("member grant=%d %s", granted.StatusCode, granted.Body)
+				}
+			}
 			client := harness.RegisterOAuth(t, b, "Assistant", "none")
-			token := harness.ExchangeOAuth(t, b, harness.ApproveOAuth(t, b, client, "org_alpha"))
+			token := harness.ExchangeOAuth(t, b, harness.ApproveOAuth(t, b, client, organization))
 			key, err := f.Service.ActiveMCPKey(t.Context(), apikey.HashToken(token.AccessToken))
 			if err != nil {
 				t.Fatal(err)
 			}
 			call := harness.MCPClient(t, harness.NewBrowser(t, f.Service.Handler()), token.AccessToken, "2025-11-25", "/mcp")
-			project := harness.Project(t, b, "org_alpha")
+			project := harness.Project(t, b, organization)
 			exec := func(query string, args ...any) {
 				t.Helper()
 				if _, err := f.DB.ExecContext(t.Context(), query, args...); err != nil {
@@ -917,9 +938,11 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 				delete(f.Provider.MembershipRecords, "om_user_alice_porg_alpha")
 				f.Provider.Mu.Unlock()
 			case "project grant removed":
-				tenant := f.Fixtures["org_alpha"]
-				db := tenant.Database
-				if _, err := db.ExecContext(t.Context(), "DELETE FROM public.hosted_project_grants WHERE organization_id='org_alpha' AND user_id='user_alice' AND project_id=$1", project); err != nil {
+				if raw, failed := call(operatortool.WorkList, map[string]any{"organization_id": organization, "project_id": project}); failed {
+					t.Fatalf("granted member read=%s", raw)
+				}
+				db := f.Fixtures[organization].Database
+				if _, err := db.ExecContext(t.Context(), "DELETE FROM public.hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3", organization, user, project); err != nil {
 					t.Fatal(err)
 				}
 			case "role downgraded":
@@ -966,7 +989,7 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 				}
 				return
 			}
-			if raw, failed := call(operatortool.WorkList, map[string]any{"organization_id": "org_alpha", "project_id": project}); !failed {
+			if raw, failed := call(operatortool.WorkList, map[string]any{"organization_id": organization, "project_id": project}); !failed {
 				t.Fatalf("authority removal=%s", raw)
 			}
 			if scenario == "membership removed" || scenario == "browser revoke" {
