@@ -31,6 +31,7 @@ const (
 	runnerBase                        = "/api/v2/organizations/:organization/runners"
 	attachmentMetadataBase            = nativeBase + "/attachment-metadata"
 	Cookie                            = "detent_hosted_session"
+	workBoardPath                     = "/api/v2/organizations/:organization/work-board"
 )
 
 type Credential struct {

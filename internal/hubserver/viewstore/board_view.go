@@ -12,6 +12,16 @@ const (
 	BoardViewMaxPage     = 200
 )
 
+const (
+	LanesOpen   = "open"
+	LanesActive = "active"
+	LanesAll    = "all"
+)
+
+func ValidLanePreset(preset string) bool {
+	return preset == LanesOpen || preset == LanesActive || preset == LanesAll
+}
+
 type BoardClosedPosition struct {
 	ClosedAt   *time.Time
 	Identifier string
@@ -27,8 +37,10 @@ type BoardViewSelection struct {
 	PrincipalID  string
 	UserID       string
 	ClosedPage   int
-	ClosedLane   string
 	ClosedAfter  *BoardClosedPosition
+	LanePreset   string
+	IncludeLanes []string
+	ExcludeLanes []string
 }
 
 func (s BoardViewSelection) ProjectStrings() []string { return idStrings(s.Projects) }

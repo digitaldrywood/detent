@@ -150,6 +150,26 @@ safe to repeat. Explicit URL parameters override the saved preference without
 writing it; user changes save after a debounce. Browser storage caches only
 confirmed Hub values under an account, organization, and view scope key.
 
+## Work board
+
+`GET /api/v2/organizations/{organization}/work-board` returns the organization's native board from one database statement. Browser sessions, hosted API keys of any permission, shared-entry keys and self-hosted operator or admin tokens may call it; worker and runner credentials are refused. Reporters see only items they filed.
+
+Access is a prefilter. Repeat `project` to name projects; with none, the board covers every project the credential can read, up to 500. The Hub intersects the named projects with the credential's readable set and omits the rest; when nothing readable remains the response is `404`. Cross-project dependencies are shown when the credential can read the linked project, whether or not it was named.
+
+Lane selection uses the project's workflow flags, not state names:
+
+| Parameter | Meaning |
+| --- | --- |
+| `lanes=open` | Every non-terminal lane (default) |
+| `lanes=active` | Dispatchable lanes |
+| `lanes=all` | Every lane; each terminal lane returns its newest 20 cards per project with a continuation cursor |
+| `lane` | Repeatable; only the named lanes (the default preset becomes `all`) |
+| `exclude_lane` | Repeatable; removes the named lanes |
+
+A lane name that no selected project defines returns `422`. Counts for every lane, selected or not, are always present. `state` optionally carries a saved board view state (`archived`, `completedWindow`); `item` reads named items for live updates.
+
+`format=compact` returns the audit form that the `work_board` MCP tool returns: `projects[]` with every lane's `total`, `running`, `returned` and `selected` flag and shipped counts per window, `unavailable_projects`, `continuations[]` and `cards[]`. Each card carries `identifier`, `number`, `title`, `state`, `type`, `priority`, `labels`, `assignees`, `live`, `attempt` (`count`, `status`, `started_at`, `model`), `execution` (`running`, `stage`, `started_at`), `dependency_ready`, `blocked_by`, `open_blockers`, `unblocks`, `change` (`id`, `status`) and its timestamps. A compact result stays within the 256 KiB tool-result limit: every lane keeps cards, `truncated` is true when any lane was cut, and a lane's `next_cursor` continues it with `lane=<state>&cursor=<next_cursor>` and the same `project` and `state` parameters.
+
 ## Saved Work views
 
 `/api/v2/organizations/{organization}/work-views` stores personal or shared Work

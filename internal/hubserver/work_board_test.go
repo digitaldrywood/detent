@@ -80,14 +80,21 @@ func TestWorkBoardWorkingSet(t *testing.T) {
 			requireNativeStatus(t, read(viewer, base, ids, selected), http.StatusUnprocessableEntity)
 		})
 	}
+	t.Run("every readable project", func(t *testing.T) {
+		response := read(viewer, base, nil, state)
+		requireNativeStatus(t, response, http.StatusOK)
+		var view workBoardView
+		decodeHubResponse(t, response, &view)
+		if len(view.Projects) != 2 || len(view.Cards) != 2 {
+			t.Fatalf("projects=%d cards=%d", len(view.Projects), len(view.Cards))
+		}
+	})
 	for _, test := range []struct {
 		name string
 		ids  []string
 	}{
-		{"missing", nil},
-		{"empty", []string{}},
 		{"duplicate", []string{ids[0], ids[0]}},
-		{"oversized", slices.Repeat(ids, 51)},
+		{"oversized", slices.Repeat(ids, 251)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requireNativeStatus(t, read(viewer, base, test.ids, state), http.StatusUnprocessableEntity)
@@ -98,6 +105,13 @@ func TestWorkBoardWorkingSet(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	requireNativeStatus(t, read(viewer, base, ids, state), http.StatusNotFound)
+	response = read(viewer, base, ids, state)
+	requireNativeStatus(t, response, http.StatusOK)
+	var remaining workBoardView
+	decodeHubResponse(t, response, &remaining)
+	if len(remaining.Projects) != 1 || remaining.Projects[0].Project.ID != f.project {
+		t.Fatalf("after revoking one project the board kept %+v", remaining.Projects)
+	}
+	requireNativeStatus(t, read(viewer, base, []string{string(second.ID)}, state), http.StatusNotFound)
 	requireNativeStatus(t, read(viewer, "/api/v2/organizations/org_other/work-board", ids, state), http.StatusNotFound)
 }

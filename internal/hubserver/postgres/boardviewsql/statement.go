@@ -97,13 +97,16 @@ func boardViewSQL() string {
 	revision := func(subject, id string) string {
 		return "coalesce((SELECT r.revision FROM native_board_access_revisions r WHERE r.organization_id=$1 AND r.subject_kind='" + subject + "' AND r.subject_id=" + id + "),0)"
 	}
+	after := "(coalesce(c.closed_at,'-infinity'::timestamptz),c.identifier)<(coalesce($13::timestamptz,'-infinity'::timestamptz),$14::text)"
 	scoped := "c.ready AND NOT c.workspace AND c.archived=$5 AND ($4::text='' OR c.actor_principal_id=$4 AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=c.project_id AND i.native_id=c.work_item_id AND i.actor_principal_id=$4))"
 	ctes := `WITH visible AS MATERIALIZED (SELECT p.id FROM projects p WHERE p.organization_id=$1 AND p.id=ANY($2::text[]) AND p.deleted_at IS NULL AND p.profile='native'),
+lanes AS MATERIALIZED (SELECT w.project_id,w.name,w.terminal FROM project_workflow_states w JOIN visible v ON w.organization_id=$1 AND w.project_id=v.id
+ WHERE NOT $11::boolean AND ($12::text='all' OR NOT w.terminal AND ($12::text='open' OR w.dispatchable)) AND (cardinality($16::text[])=0 OR w.name=ANY($16::text[])) AND w.name<>ALL($17::text[])),
 cards AS MATERIALIZED (SELECT c.* FROM native_board_cards c WHERE c.organization_id=$1 AND c.project_id IN (SELECT id FROM visible) AND ` + scoped + `
- AND (CASE WHEN $11::boolean THEN c.work_item_id=ANY($10::text[]) ELSE NOT c.terminal END)),
-closed AS MATERIALIZED (SELECT x.* FROM (SELECT w.project_id,w.name FROM project_workflow_states w JOIN visible v ON w.organization_id=$1 AND w.project_id=v.id WHERE w.terminal AND NOT $11::boolean AND ($12::text='' OR w.name=$12)) t
+ AND (CASE WHEN $11::boolean THEN c.work_item_id=ANY($10::text[]) ELSE NOT c.terminal AND (c.project_id,c.state) IN (SELECT project_id,name FROM lanes WHERE NOT terminal) AND (NOT $15::boolean OR ` + after + `) END)),
+closed AS MATERIALIZED (SELECT x.* FROM (SELECT project_id,name FROM lanes WHERE terminal) t
  CROSS JOIN LATERAL (SELECT c.* FROM native_board_cards c WHERE c.organization_id=$1 AND c.project_id=t.project_id AND c.state=t.name AND c.terminal AND ` + scoped + `
-  AND (NOT $15::boolean OR (coalesce(c.closed_at,'-infinity'::timestamptz),c.identifier)<(coalesce($13::timestamptz,'-infinity'::timestamptz),$14::text))
+  AND (NOT $15::boolean OR ` + after + `)
   ORDER BY coalesce(c.closed_at,'-infinity'::timestamptz) DESC,c.identifier DESC LIMIT $9) x),
 linked AS MATERIALIZED (SELECT project_id,work_item_id FROM cards WHERE has_links UNION SELECT project_id,work_item_id FROM closed WHERE has_links),
 evaluated AS MATERIALIZED (SELECT project_id,change_policy_id,change_review_policy_id FROM cards WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed'

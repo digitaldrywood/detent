@@ -61,10 +61,11 @@ type Project struct {
 type View struct {
 	Projects []Project
 	Cards    []tracker.NativeBoardCard
+	Running  map[tracker.NativeWorkItemID]bool
 }
 
 func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRows, window string, now time.Time, closedPage int) (View, []Cursor, error) {
-	view := View{Projects: []Project{}, Cards: []tracker.NativeBoardCard{}}
+	view := View{Projects: []Project{}, Cards: []tracker.NativeBoardCard{}, Running: map[tracker.NativeWorkItemID]bool{}}
 	type stateRow struct {
 		rank, transitionRank int64
 		state                tracker.NativeState
@@ -249,6 +250,9 @@ func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRo
 			issue.UnblocksReason = workitemread.VisibleDependencyReason(tracker.DependencyReason{Text: boardViewText(reason.Text[3]), Basis: boardViewText(reason.Text[4]), CurrentBasis: boardViewText(reason.Text[5]), Revision: boardViewNumber(reason.Int[1])}, unblocks, slices.ContainsFunc(issue.Dependents, cross))
 		}
 		card := tracker.NativeBoardCard{Issue: issue}
+		if boardViewFlag(c.Running) {
+			view.Running[issue.WorkItemID] = true
+		}
 		if boardViewText(c.AttemptID) != "" {
 			card.Attempt = &tracker.NativeBoardAttempt{ID: boardViewText(c.AttemptID), Count: int(boardViewNumber(c.AttemptCount)), Status: boardViewText(c.AttemptStatus), RunnerID: boardViewText(c.AttemptRunnerID), MachineID: boardViewText(c.AttemptMachineID), StartedAt: boardViewStamp(c.AttemptStartedAt)}
 			if boardViewText(c.AttemptBackend) != "" || boardViewText(c.AttemptModel) != "" {

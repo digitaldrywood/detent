@@ -51,7 +51,7 @@ func (s *Service) registerLocalAppRoutes(e *echo.Echo) {
 		e.PUT(path, s.workViewPreference, s.localAppOnly)
 		e.DELETE(path, s.workViewPreference, s.localAppOnly)
 	}
-	e.GET(hostedOrganizationBase+"/work-board", s.workBoard, s.localAppOnly)
+	e.GET(hostedOrganizationBase+"/work-board", s.workBoard, s.requireAPIScope(hubapi.APIScopeOperator))
 	e.GET(hostedOrganizationBase+"/work-views", s.savedWorkViews, s.localAppOnly)
 	e.POST(hostedOrganizationBase+"/work-views", s.savedWorkViews, s.localAppOnly)
 	e.GET(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, s.localAppOnly)

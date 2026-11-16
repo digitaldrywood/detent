@@ -59,7 +59,18 @@ func TestBoardViewReadsOpenCardsPerTenant(t *testing.T) {
 		admin := hubscope.NativeScope{Organization: org, Project: project, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 		state := savedWorkState{View: "board", CompletedWindow: "24h"}
 		t.Run(string(org)+"/board", func(t *testing.T) {
-			view := readTestWorkBoard(t, t.Context(), service, admin, state)
+			params := boardViewParams(t, state, []tracker.ProjectID{project})
+			params.Set("lanes", "all")
+			request, err := parseWorkBoardRequest(params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := admin
+			scope.Project = ""
+			view, err := service.readWorkBoard(t.Context(), scope, request)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var open, closed []tracker.NativeWorkItemID
 			for _, card := range view.Cards {
 				if card.Issue.OrganizationID != org || card.Issue.ProjectID != project || card.Issue.Title != "Example "+string(org) {

@@ -32,7 +32,7 @@ func (s *Authenticator) RequireAPI(options APIOptions, allowed ...TokenScope) ec
 				if credential.Hosted == nil && credential.Runner.RunnerID == "" && c.Path() != "/health" && !options.ArtifactPublisher(c, credential) && !options.ChangePrincipal(c, credential) {
 					return options.Error(c, hubapi.NotFound())
 				}
-				hostedRoute := c.Path() == "/api/v2/capabilities" || strings.HasPrefix(c.Path(), nativeBase) || c.Path() == "/api/v2/organizations" && c.Request().Method == http.MethodGet || c.Path() == nativeOrganizationIssuePath && ReadRequest(c)
+				hostedRoute := c.Path() == "/api/v2/capabilities" || strings.HasPrefix(c.Path(), nativeBase) || c.Path() == "/api/v2/organizations" && c.Request().Method == http.MethodGet || (c.Path() == nativeOrganizationIssuePath || c.Path() == workBoardPath) && ReadRequest(c)
 				if options.ConfigurationRank(c) {
 					hostedRoute = true
 				}
