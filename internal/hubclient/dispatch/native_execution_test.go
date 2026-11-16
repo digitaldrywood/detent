@@ -1192,17 +1192,11 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 				}, nil); err != nil {
 					t.Fatal(err)
 				}
-				if err := scheduler.ReleaseClaim(t.Context(), id, "released"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-					t.Fatalf("release outage = %v", err)
-				}
-				if execution.CompletionData().Outcome != "failed" || finishedEvents != 1 {
-					t.Fatalf("Finish acknowledgement = %q, events = %d", execution.CompletionData().Outcome, finishedEvents)
-				}
-				claim = scheduler.nativeClaims[id]
-				claim.deadline = time.Now().Add(-time.Second)
-				scheduler.nativeClaims[id] = claim
 				if err := scheduler.ReleaseClaim(t.Context(), id, "released"); err != nil {
 					t.Fatalf("acknowledged Finish lost on release retry: %v", err)
+				}
+				if execution.CompletionData().Outcome != "failed" || releaseCalls != 2 {
+					t.Fatalf("Finish acknowledgement = %q, release calls = %d", execution.CompletionData().Outcome, releaseCalls)
 				}
 				if finishedEvents != 1 {
 					t.Fatalf("Finish published again: %d events", finishedEvents)

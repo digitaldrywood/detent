@@ -28,8 +28,8 @@ func TestNativeWorkflowWriteReleasesStaleFencing(t *testing.T) {
 		{name: "current token"},
 		{name: "network retry", failure: "network"},
 		{name: "server retry", failure: "server"},
-		{name: "uncertain release retains authority", failure: "release_network"},
-		{name: "server release failure retains authority", failure: "release_server"},
+		{name: "uncertain release retried", failure: "release_network"},
+		{name: "server release failure retried", failure: "release_server"},
 		{name: "delayed release preserves successor", failure: "stale_fencing_token", successor: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -124,11 +124,8 @@ func TestNativeWorkflowWriteReleasesStaleFencing(t *testing.T) {
 					t.Fatal(err)
 				}
 				releaseErr := scheduler.ReleaseClaim(t.Context(), string(lease.WorkItemID), "completed")
-				if strings.HasPrefix(test.failure, "release_") {
-					if !errors.Is(releaseErr, ErrUnavailable) || native.FencedMutation(t.Context(), lease.WorkItemID, tracker.Mutation{}).FencingToken != lease.FencingToken {
-						t.Fatalf("uncertain release discarded local authority: %v", releaseErr)
-					}
-					releaseErr = scheduler.ReleaseClaim(t.Context(), string(lease.WorkItemID), "completed")
+				if strings.HasPrefix(test.failure, "release_") && releases[lease.ID] != 2 {
+					t.Fatalf("uncertain release was not retried: %d calls", releases[lease.ID])
 				}
 				if releaseErr != nil {
 					t.Fatal(releaseErr)

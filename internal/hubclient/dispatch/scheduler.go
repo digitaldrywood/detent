@@ -375,7 +375,7 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		}
 	}
 	if native.execution == nil {
-		err = native.source.NativeClient().Release(ctx, native.lease, "released")
+		err = native.source.NativeClient().ReleaseTerminal(ctx, native.lease, "released")
 	}
 	var rejection interface{ CompletionRejected() }
 	if err != nil && !claimLost(err) && !errors.As(err, &rejection) {

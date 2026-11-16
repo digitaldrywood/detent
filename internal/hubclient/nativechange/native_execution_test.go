@@ -984,7 +984,10 @@ func TestNativeRejectedCompletionReleasesClaim(t *testing.T) {
 				return next.RoundTrip(request)
 			}))
 			err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
-			if test.fault != "" {
+			if test.fault == "release" && !faulted {
+				t.Fatal("release outage was not exercised")
+			}
+			if test.fault != "" && test.fault != "release" {
 				if !faulted || err == nil || fixtureClaims(h.scheduler)[issue.ID].lease.ID == "" {
 					t.Fatalf("outage did not preserve claim: %v", err)
 				}
@@ -1017,6 +1020,72 @@ func TestNativeRejectedCompletionReleasesClaim(t *testing.T) {
 			}
 			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || len(events) != wantEvents {
 				t.Fatalf("refused event retried: %v, %d", err, len(events))
+			}
+		})
+	}
+}
+
+func TestNativeTerminalReleaseOutlivesSpentCompletionBudget(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		worker bool
+	}{
+		{name: "release"},
+		{name: "worker close", worker: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+				{Name: "Done", Terminal: true},
+			}, true)
+			issue := h.createInProgress(t, "completion")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			closed := 0
+			if test.worker {
+				if err := execution.KeepWorker(func(ctx context.Context) error {
+					closed++
+					return ctx.Err()
+				}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := execution.PrepareFinish(t.Context(), "failed", "The worker failed.", nil); err != nil {
+				t.Fatal(err)
+			}
+			ctx, spend := context.WithCancel(t.Context())
+			defer spend()
+			client := execution.claim.source.NativeClient().Transport()
+			next := fixtureClient(client).requests.Load()
+			releases := 0
+			fixtureClient(client).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if err := request.Context().Err(); err != nil {
+					return nil, err
+				}
+				if strings.HasSuffix(request.URL.Path, "/release") {
+					releases++
+				}
+				response, err := next.RoundTrip(request)
+				if err == nil && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") && response.StatusCode < http.StatusMultipleChoices {
+					spend()
+				}
+				return response, err
+			}))
+			if err := execution.FinishPrepared(ctx, "completed"); err != nil {
+				t.Fatalf("terminal release after spent completion budget: %v", err)
+			}
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			if err != nil || evidence.Attempt == nil {
+				t.Fatalf("attempt = %+v, %v", evidence, err)
+			}
+			if releases != 1 || evidence.Attempt.Status != "failed" || evidence.Attempt.ClaimReleasedAt == nil {
+				t.Fatalf("lease kept after terminal attempt: releases=%d attempt=%+v", releases, evidence.Attempt)
+			}
+			if test.worker && closed != 1 {
+				t.Fatalf("worker closed %d times", closed)
 			}
 		})
 	}

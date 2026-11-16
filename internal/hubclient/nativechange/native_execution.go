@@ -696,6 +696,8 @@ func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminal
 	return &public
 }
 
+const terminalWorkerCloseTimeout = 10 * time.Second
+
 func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (err error) {
 	defer func() {
 		e.mu.Lock()
@@ -788,7 +790,9 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	}(); err != nil {
 		return err
 	}
-	if err := e.CloseWorkers(ctx); err != nil {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalWorkerCloseTimeout)
+	defer cancel()
+	if err := e.CloseWorkers(cleanup); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -817,7 +821,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 		finalization.VersionError == "" && finalization.Error == ""
 	retain := reason != runner.FinalStateOperatorStopped && data.Identity != nil && rejection == nil && e.scheduler.client.Enrolled() && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
 	if !retain {
-		if err := e.claim.source.NativeClient().Release(ctx, e.claim.lease, "released"); err != nil && !claimLost(err) {
+		if err := e.claim.source.NativeClient().ReleaseTerminal(ctx, e.claim.lease, "released"); err != nil && !claimLost(err) {
 			return errors.Join(finishErr, err)
 		}
 	}
