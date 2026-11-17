@@ -754,3 +754,15 @@ comparison. The ratchet does not follow call graphs, types or runtime
 multiplicity, and an empty debt list is not proof the migration is complete;
 review applies the remaining rules and the
 [review checklist](architecture/multi-tenancy.md#review-checklist).
+
+## INV-24 — The Hub owns application state transitions
+
+Only the authenticated Hub owner for the tenant may authorize an application state transition that governs later work. It records the decision and the facts that justify it in typed PostgreSQL state. A runner, CLI or browser may request an action, report an observation and execute work the Hub authorized. This applies to refusals and retries as well as successful work.
+
+A project may supply configuration from its authorized repository revision. A runner may use the installation inputs defined in INV-17 and track processes it is executing in memory. Immutable payload bytes may live in object storage under an identity the Hub owns. A replacement client given the same authorized inputs and observations must obtain the same decision, and the Hub must be able to explain it after the original client is gone.
+
+Existing paths that depend on a client file, cache or in-memory counter to decide what happens next are migration debt. Move each decision to its existing Hub owner as the path is repaired.
+
+Both landing gates run `tools/authoritycheck` against the target and candidate commits. The operation names in [the authority registry](../internal/invariants/authority_operations.txt) cover routing cache reads and writes, the local provider capacity and prompt loaders, and update state operations. A candidate must retain every target registry entry. For changed production Go files in `cmd`, `internal` and `tools`, the check rejects an increase in direct calls per file and enclosing function, including diagnostic calls. Deleting a call lowers the limit for future changes.
+
+The check excludes test files and `testdata` directories. It recognizes package functions through ordinary, renamed and dot imports. For registered methods, it resolves receiver types and their aliases using production Go files in the owning package from each commit's original Git objects. It counts calls only in changed files. Review covers build-specific declarations, inferred receivers, indirect calls, non-Go code and whether a new operation decides application state.

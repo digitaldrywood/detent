@@ -143,8 +143,9 @@ class ShortLandingGateTest(unittest.TestCase):
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence: ")]
                 self.assertTrue(any(check["scope"] == "unit-short" and check["exit_code"] == 0 for check in evidence))
                 trace = self.trace()
-                self.assertEqual([(call["tool"], call["args"][0]) for call in trace], [("make", "-j1"), ("go", "build"), ("go", "list"), ("go", "test"), ("make", "-j1"), ("golangci-lint", "run")])
-                test = trace[3]
+                self.assertEqual([(call["tool"], call["args"][0]) for call in trace], [("go", "run"), ("make", "-j1"), ("go", "build"), ("go", "list"), ("go", "test"), ("make", "-j1"), ("golangci-lint", "run")])
+                self.assertEqual(trace[0]["args"], ["run", "-p", budget, "./tools/authoritycheck", self.base, self.git("rev-parse", "HEAD").strip()])
+                test = trace[4]
                 self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(expected + self.required_packages))
                 self.assertFalse(test["token"])
                 self.assertEqual(test["postgres"], "binary")
@@ -167,8 +168,8 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.assertIn("-timeout=90m", test["args"])
                 self.assertEqual([arg for arg in trace[-1]["args"] if arg.startswith("./")], sorted({"./" + str(Path(path).parent) for path in paths}))
                 self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
-                self.assertIn("assets", trace[0]["args"])
-                self.assertIn("generate-docs", trace[0]["args"])
+                self.assertIn("assets", trace[1]["args"])
+                self.assertIn("generate-docs", trace[1]["args"])
 
     def test_test_imports_select_without_propagating(self):
         for name in ("consumer", "dual", "dualconsumer"):
@@ -439,7 +440,7 @@ func TestGateLifetime(t *testing.T) {
                             subprocess.run(["pg_ctl", "stop", "-D", str(data), "-m", "immediate", "-w"], env=dict(os.environ, PATH=real_path), capture_output=True, check=False)
 
     def test_failures_stop_the_gate(self):
-        for stage in ("build", "list", "test", "lint"):
+        for stage in ("run", "build", "list", "test", "lint"):
             with self.subTest(stage=stage):
                 (self.root / "lib/source.go").write_text("package lib\nconst Value = 1\n")
                 if stage == "build":

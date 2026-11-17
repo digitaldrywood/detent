@@ -50,6 +50,7 @@ export DETENT_TEST_POSTGRES=binary
 
 check_with_evidence sqlite-policy python3 scripts/check-sqlite-policy.py "$base_head" "$head"
 check_with_evidence tenancy-policy python3 scripts/check-tenancy-policy.py "$base_head" "$head"
+check_with_evidence authority-sites go run -p "$procs" ./tools/authoritycheck "$base_head" "$head"
 check_with_evidence assets make -j1 assets generate-docs TEST_PROCS="$procs"
 check_with_evidence build go build -p "$procs" ./...
 

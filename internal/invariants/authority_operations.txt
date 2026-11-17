@@ -1,0 +1,7 @@
+internal/config nativeMachinePrompt
+internal/providercapacity Load
+internal/runnerauth LoadRoutingCache
+internal/runnerauth SaveRoutingCache
+internal/update Scheduler.recordEnrolledApplied
+internal/update loadSchedulerState
+internal/update saveSchedulerState
