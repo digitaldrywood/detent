@@ -16,6 +16,7 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/internal/pathcleanup"
 )
 
 var ErrMergeResolutionInvalid = errors.New("merge resolution is invalid")
@@ -459,7 +460,8 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	var process ValidationProcess
 	var groupID int
 	defer func() {
-		cleanupCtx := context.WithoutCancel(ctx)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
 		var cleanupErr error
 		if process != nil || toolcache.ManagedBuildFromContext(ctx) != "" {
 			cleanupErr = procgroup.Cleanup(groupID)
@@ -469,7 +471,16 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 			}
 		}
 		if cleanupErr == nil {
-			cleanupErr = CleanupWorkerScratch(info.Path, scratch)
+			removeAll := l.removeScratchPath
+			if removeAll == nil {
+				removeAll = os.RemoveAll
+			}
+			cleanupErr = cleanupWorkerScratch(cleanupCtx, info.Path, scratch, removeAll)
+			var removalErr *pathcleanup.RemovalError
+			if errors.As(cleanupErr, &removalErr) {
+				pathcleanup.LogFailure(l.logger, scratch, cleanupErr)
+				cleanupErr = nil
+			}
 		}
 		resultErr = errors.Join(resultErr, cleanupErr)
 		if process != nil {

@@ -3,14 +3,19 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -275,6 +280,124 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 			}
 			if !test.truncated && !strings.Contains(test.output, "\xff") && decoded.Output != test.output {
 				t.Errorf("untruncated output changed")
+			}
+		})
+	}
+}
+
+func TestValidationScratchRemovalPreservesReceipt(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		exit          int
+		persistent    bool
+		errno         error
+		reaperFailure bool
+	}{
+		{name: "concurrent creator", errno: syscall.ENOTEMPTY},
+		{name: "existing entry", errno: syscall.EEXIST},
+		{name: "retention fallback", persistent: true, errno: syscall.ENOTEMPTY},
+		{name: "command failure", exit: 7, persistent: true, errno: syscall.ENOTEMPTY},
+		{name: "writer scan failure", errno: syscall.ENOTEMPTY, reaperFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := retentionBackend(t)
+			info, err := backend.Create(t.Context(), Issue{Identifier: "example-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			backend.logger = slog.New(slog.NewTextHandler(&logs, nil))
+			var scratch string
+			var events []string
+			var child procgroup.Identity
+			var completed gate.CommandResult
+			finished := false
+			writerErr := errors.New("writer inventory unavailable")
+			ctx := WithProcessSource(t.Context(), func(context.Context, string) ([]int, error) {
+				events = append(events, "reap")
+				if test.reaperFailure && len(events) > 1 {
+					return nil, writerErr
+				}
+				return nil, nil
+			})
+			ctx = WithValidationProcessOwner(ctx, func(_ context.Context, _ Info, _ Issue, path string) (ValidationProcess, error) {
+				scratch = path
+				return validationProcessFixture{
+					started: func(procgroup.Identity) error { return nil },
+					finished: func(result gate.CommandResult, cleanupErr error) error {
+						finished = true
+						completed = result
+						if (test.reaperFailure && !errors.Is(cleanupErr, writerErr)) || (!test.reaperFailure && cleanupErr != nil) {
+							t.Errorf("completion cleanup error=%v", cleanupErr)
+						}
+						return nil
+					},
+				}, nil
+			})
+			attempts := 0
+			backend.removeScratchPath = func(path string) error {
+				attempts++
+				if test.reaperFailure && attempts == 1 {
+					child, _ = startScratchEnvironmentDescendant(t, path, false)
+				}
+				events = append(events, "remove")
+				if attempts == 1 || test.persistent {
+					created := make(chan error, 1)
+					go func() { created <- os.WriteFile(filepath.Join(path, "late-entry"), nil, 0o600) }()
+					if err := <-created; err != nil {
+						return err
+					}
+					return &os.PathError{Op: "unlinkat", Path: path, Err: test.errno}
+				}
+				return os.RemoveAll(path)
+			}
+			command := fmt.Sprintf("printf 'validation-receipt'; exit %d", test.exit)
+			result, err := backend.runValidationCommand(ctx, info, Issue{}, command)
+			if (test.reaperFailure && !errors.Is(err, writerErr)) || (!test.reaperFailure && err != nil) {
+				t.Fatalf("validation error=%v", err)
+			}
+			if !finished || result.ExitCode != test.exit || result.Output != "validation-receipt" || result.StartedAt.IsZero() || result.FinishedAt.IsZero() || result.Execution != "executed" || !reflect.DeepEqual(completed, result) {
+				t.Fatalf("receipt changed: result=%+v completed=%+v finished=%t", result, completed, finished)
+			}
+			for i, event := range events {
+				if event == "remove" && (i == 0 || events[i-1] != "reap") {
+					t.Fatalf("removal without prior reaping: %v", events)
+				}
+			}
+			if test.reaperFailure {
+				if alive, err := procgroup.Alive(child); err != nil || !alive {
+					t.Fatalf("fixture child not alive: %v, %v", alive, err)
+				}
+				if attempts != 1 {
+					t.Fatalf("removed despite unverified writers: %v", events)
+				}
+				return
+			}
+			if test.persistent {
+				if attempts != 4 || !strings.Contains(logs.String(), "late-entry") || !strings.Contains(logs.String(), "validation scratch cleanup deferred to retention") {
+					t.Fatalf("retry/log missing: attempts=%d logs=%s", attempts, logs.String())
+				}
+				sibling, err := PrepareWorkerScratch(t.Context(), info.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = CleanupWorkerScratch(info.Path, sibling) }()
+				now := time.Now()
+				_, err = backend.SweepRetention(t.Context(), RetentionRequest{Now: now, ScratchState: func(_ context.Context, path string) (bool, bool, error) { return true, path == scratch, nil }})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = os.Stat(sibling); err != nil {
+					t.Fatalf("retention removed active sibling: %v", err)
+				}
+				if _, err = os.Stat(filepath.Join(info.Path, ".git")); err != nil {
+					t.Fatalf("retention removed source: %v", err)
+				}
+			} else if attempts != 2 {
+				t.Fatalf("retry attempts=%d", attempts)
+			}
+			if _, err = os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("scratch remains: %v", err)
 			}
 		})
 	}
