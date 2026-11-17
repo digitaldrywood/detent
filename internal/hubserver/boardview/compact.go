@@ -93,6 +93,13 @@ type CompactChange struct {
 	Status string `json:"status"`
 }
 
+type CompactActor struct {
+	Kind        string `json:"kind"`
+	PrincipalID string `json:"principal_id"`
+	DisplayName string `json:"display_name,omitempty"`
+	Agent       string `json:"agent,omitempty"`
+}
+
 type CompactCard struct {
 	ProjectID       tracker.ProjectID        `json:"project_id"`
 	ID              tracker.NativeWorkItemID `json:"id"`
@@ -100,6 +107,7 @@ type CompactCard struct {
 	Number          int                      `json:"number"`
 	Title           string                   `json:"title"`
 	State           string                   `json:"state"`
+	CreatedBy       CompactActor             `json:"created_by"`
 	Type            string                   `json:"type,omitempty"`
 	Priority        *int                     `json:"priority,omitempty"`
 	Labels          []string                 `json:"labels,omitempty"`
@@ -138,7 +146,8 @@ type CompactBoard struct {
 
 func compactCard(card tracker.NativeBoardCard, running bool) CompactCard {
 	issue := card.Issue
-	out := CompactCard{ProjectID: issue.ProjectID, ID: issue.WorkItemID, Identifier: Identifier(issue.ProjectID, issue.Number), Number: issue.Number, Title: issue.Title, State: issue.State, Type: issue.Type, Priority: issue.Priority,
+	out := CompactCard{ProjectID: issue.ProjectID, ID: issue.WorkItemID, Identifier: Identifier(issue.ProjectID, issue.Number), Number: issue.Number, Title: issue.Title, State: issue.State,
+		CreatedBy: CompactActor{Kind: issue.Actor.Kind, PrincipalID: issue.Actor.PrincipalID, DisplayName: issue.Actor.DisplayName, Agent: issue.Actor.Agent}, Type: issue.Type, Priority: issue.Priority,
 		Labels: issue.Labels, Assignees: issue.Assignees, Archived: issue.Archived, Live: running, DependencyReady: issue.DependencyReady, BlockedBy: len(issue.Blockers), Unblocks: len(issue.Dependents),
 		CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt, LastActivityAt: issue.LastActivityAt, ClosedAt: issue.ClosedAt}
 	for _, blocker := range issue.Blockers {
