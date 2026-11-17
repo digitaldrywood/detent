@@ -41,7 +41,10 @@ func (s *Index) Rows(ctx context.Context, table string, filters map[string]strin
 		columns = append(columns, column)
 	}
 	slices.Sort(columns)
-	descriptor, _ := json.Marshal([]any{table, columns, order})
+	descriptor, err := json.Marshal([]any{table, columns, order})
+	if err != nil {
+		return nil, err
+	}
 	index, found := s.indexes[string(descriptor)]
 	numeric := make([]bool, len(order))
 	schema := s.schema[table]
@@ -60,9 +63,7 @@ func (s *Index) Rows(ctx context.Context, table string, filters map[string]strin
 		for i := range order {
 			var result int
 			if numeric[i] {
-				left, _ := strconv.ParseInt(a[i], 10, 64)
-				right, _ := strconv.ParseInt(b[i], 10, 64)
-				result = cmp.Compare(left, right)
+				result = cmp.Compare(neutralInteger(a[i]), neutralInteger(b[i]))
 			} else {
 				result = strings.Compare(a[i], b[i])
 			}
@@ -102,7 +103,10 @@ func (s *Index) Rows(ctx context.Context, table string, filters map[string]strin
 						values[i] = &value
 					}
 				}
-				group, _ := json.Marshal(values)
+				group, err := json.Marshal(values)
+				if err != nil {
+					return nil, err
+				}
 				entry := indexEntry{key: slices.Clone(row.Key), order: make([]string, len(order))}
 				for i, column := range order {
 					if err := row.Decode(map[string]any{column: &entry.order[i]}); err != nil {
@@ -133,7 +137,10 @@ func (s *Index) Rows(ctx context.Context, table string, filters map[string]strin
 	for i, column := range columns {
 		values[i] = filters[column]
 	}
-	group, _ := json.Marshal(values)
+	group, err := json.Marshal(values)
+	if err != nil {
+		return nil, err
+	}
 	entries := index[string(group)]
 	start := 0
 	if len(after) != 0 {
@@ -155,6 +162,14 @@ func (s *Index) Rows(ctx context.Context, table string, filters map[string]strin
 		result = append(result, row)
 	}
 	return result, nil
+}
+
+func neutralInteger(value string) int64 {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func (s *Index) One(ctx context.Context, table string, filters map[string]string, order []string) (Row, error) {
