@@ -519,6 +519,18 @@ func (r *boardAdvancingAttemptRepository) ReadTenantSnapshot(ctx context.Context
 	})
 }
 
+type boardTestRegistry []hubmaintenance.Tenant
+
+func (r boardTestRegistry) Page(_ context.Context, after string, limit int) ([]hubmaintenance.Tenant, error) {
+	var page []hubmaintenance.Tenant
+	for _, tenant := range r {
+		if tenant.Organization > after && len(page) < limit {
+			page = append(page, tenant)
+		}
+	}
+	return page, nil
+}
+
 type boardAdvancingAttemptReader struct {
 	tenantstore.Reader
 	eventstore.WorkflowTransitionReader
@@ -545,8 +557,8 @@ func TestBoardMaintenanceFeatureDrainsDirtyItemsInBoundedBatches(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service := &Service{config: Config{TenantRepository: repository, RunDetails: hubmaintenance.LimitDetails(details), Clock: func() time.Time { return now }}, localOrganization: string(org)}
 		for _, feature := range service.ReadModelMaintenanceFeatures() {
-			if feature.Name == "board" {
-				features[org] = feature
+			if feature.Name == "board" || feature.Name == "board-dirty" {
+				features[org+"/"+tracker.OrganizationID(feature.Name)] = feature
 			}
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -597,26 +609,46 @@ func TestBoardMaintenanceFeatureDrainsDirtyItemsInBoundedBatches(t *testing.T) {
 		}
 		return count
 	}
+	service := &Service{config: Config{TenantRepository: repository, RunDetails: hubmaintenance.LimitDetails(details), Clock: func() time.Time { return now }}, localOrganization: "org_first"}
+	scheduled := service.ReadModelMaintenanceFeatures()
+	for i := range scheduled {
+		if !strings.HasPrefix(scheduled[i].Name, "board") {
+			scheduled[i].Step = func(context.Context, hubmaintenance.Tenant, hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+				return hubmaintenance.Outcome{Items: 1}, nil
+			}
+		}
+	}
+	scheduler, err := hubmaintenance.New(boardTestRegistry{{Organization: "org_first", Generation: 1}, {Organization: "org_second", Generation: 1}}, scheduled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Tick(t.Context()); err != nil {
+		t.Fatalf("first tick: %v", err)
+	}
+	if first, second := cards("org_first"), cards("org_second"); first != boardMaintenanceBatch || second != 3 {
+		t.Fatalf("first maintenance tick projected %d and %d dirty cards, want %d and 3", first, second, boardMaintenanceBatch)
+	}
 	for _, step := range []struct {
 		name        string
 		org         tracker.OrganizationID
+		feature     string
 		wantFirst   int
 		wantSecond  int
 		wantItemMax int
 	}{
-		{name: "dirty backlog drains one bounded batch per turn", org: "org_first", wantFirst: boardMaintenanceBatch, wantSecond: 0, wantItemMax: boardMaintenanceBatch},
-		{name: "second tenant drains its own backlog", org: "org_second", wantFirst: boardMaintenanceBatch, wantSecond: 3, wantItemMax: 4},
-		{name: "remaining backlog drains on the next turn", org: "org_first", wantFirst: boardMaintenanceBatch + 8, wantSecond: 3, wantItemMax: 9},
-		{name: "settled board probes one item per turn", org: "org_first", wantFirst: boardMaintenanceBatch + 8, wantSecond: 3, wantItemMax: 1},
+		{name: "dirty-only lead drains the remaining backlog", org: "org_first", feature: "board-dirty", wantFirst: boardMaintenanceBatch + 8, wantSecond: 3, wantItemMax: 8},
+		{name: "dirty-only lead never sweeps a settled board", org: "org_first", feature: "board-dirty", wantFirst: boardMaintenanceBatch + 8, wantSecond: 3},
+		{name: "settled board probes one item per turn", org: "org_first", feature: "board", wantFirst: boardMaintenanceBatch + 8, wantSecond: 3, wantItemMax: 1},
 	} {
+		feature := features[step.org+"/"+tracker.OrganizationID(step.feature)]
 		tenant := hubmaintenance.Tenant{Organization: string(step.org), Generation: 1}
-		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: BoardMaintenanceBytes}
-		outcome, err := features[step.org].Step(budget.Context(t.Context(), tenant), tenant, budget)
+		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: feature.Bytes}
+		outcome, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget)
 		if err != nil {
 			t.Fatalf("%s: %v", step.name, err)
 		}
-		if !outcome.Progress || outcome.Items < 1 || outcome.Items > step.wantItemMax {
-			t.Errorf("%s: outcome=%+v, want progress with 1..%d items", step.name, outcome, step.wantItemMax)
+		if outcome.Progress != (step.wantItemMax > 0) || outcome.Items > step.wantItemMax || step.wantItemMax > 0 && outcome.Items < 1 {
+			t.Errorf("%s: outcome=%+v, want up to %d items", step.name, outcome, step.wantItemMax)
 		}
 		if got := cards("org_first"); got != step.wantFirst {
 			t.Errorf("%s: org_first has %d cards, want %d", step.name, got, step.wantFirst)

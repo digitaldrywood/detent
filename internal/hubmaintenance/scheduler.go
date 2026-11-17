@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,17 +42,20 @@ type Outcome struct {
 type Feature struct {
 	Name  string
 	Bytes int64
+	Lead  bool
 	Step  func(context.Context, Tenant, Budget) (Outcome, error)
 }
 
 type Scheduler struct {
-	registry Registry
-	features []Feature
-	active   atomic.Bool
-	running  atomic.Bool
-	cursor   string
-	family   int
-	wait     func(context.Context, time.Duration) error
+	registry    Registry
+	features    []Feature
+	leads       []Feature
+	leadCursors []string
+	active      atomic.Bool
+	running     atomic.Bool
+	cursor      string
+	family      int
+	wait        func(context.Context, time.Duration) error
 }
 
 func New(registry Registry, features []Feature) (*Scheduler, error) {
@@ -67,7 +69,19 @@ func New(registry Registry, features []Feature) (*Scheduler, error) {
 		}
 		names[feature.Name] = true
 	}
-	return &Scheduler{registry: registry, features: slices.Clone(features), wait: waitForWake}, nil
+	scheduler := &Scheduler{registry: registry, wait: waitForWake}
+	for _, feature := range features {
+		if feature.Lead {
+			scheduler.leads = append(scheduler.leads, feature)
+		} else {
+			scheduler.features = append(scheduler.features, feature)
+		}
+	}
+	if len(scheduler.features) == 0 {
+		return nil, errors.New("maintenance requires a rotating feature family")
+	}
+	scheduler.leadCursors = make([]string, len(scheduler.leads))
+	return scheduler, nil
 }
 
 func waitForWake(ctx context.Context, duration time.Duration) error {
@@ -110,12 +124,29 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	}
 	defer s.active.Store(false)
 	envelope := tickEnvelope{bytes: ByteLimit, items: make(map[string]int)}
+	leads := tickEnvelope{bytes: ByteLimit, items: envelope.items}
 	var failure error
+	for index, feature := range s.leads {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		cursor := s.leadCursors[index]
+		result, err := s.serve(ctx, &leads, feature, cursor, ItemLimit/2)
+		if err == nil && result.completed && result.served == 0 && cursor != "" {
+			result, err = s.serve(ctx, &leads, feature, "", ItemLimit/2)
+		}
+		s.leadCursors[index] = result.cursor
+		failure = errors.Join(failure, err)
+	}
 	for range ProbeLimit {
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		result, err := s.batch(ctx, &envelope)
+		result, err := s.serve(ctx, &envelope, s.features[s.family], s.cursor, ItemLimit)
+		s.cursor = result.cursor
+		if result.completed {
+			s.family = (s.family + 1) % len(s.features)
+		}
 		failure = errors.Join(failure, err)
 		if err != nil || result.progress || result.exhausted {
 			break
@@ -133,28 +164,30 @@ type tickEnvelope struct {
 type batchResult struct {
 	progress  bool
 	exhausted bool
+	completed bool
+	served    int
+	cursor    string
 }
 
-func (s *Scheduler) batch(ctx context.Context, envelope *tickEnvelope) (batchResult, error) {
-	var result batchResult
-	page, err := s.registry.Page(ctx, s.cursor, TenantLimit)
+func (s *Scheduler) serve(ctx context.Context, envelope *tickEnvelope, feature Feature, cursor string, itemLimit int) (batchResult, error) {
+	result := batchResult{cursor: cursor}
+	page, err := s.registry.Page(ctx, cursor, TenantLimit)
 	if err != nil {
 		return result, fmt.Errorf("page maintenance tenants: %w", err)
 	}
 	if len(page) > TenantLimit {
 		return result, errors.New("maintenance registry exceeded page budget")
 	}
-	after := s.cursor
+	after := cursor
 	for _, tenant := range page {
 		if tenant.Organization <= after || len(tenant.Organization) > 128 || tenant.Generation <= 0 {
 			return result, errors.New("invalid maintenance tenant page")
 		}
 		after = tenant.Organization
 	}
-	feature := s.features[s.family]
 	count := int(min(int64(len(page)), envelope.bytes/feature.Bytes))
 	for index, tenant := range page[:count] {
-		if ItemLimit-envelope.items[tenant.Organization] < MinItems {
+		if itemLimit-envelope.items[tenant.Organization] < MinItems {
 			count = index
 			break
 		}
@@ -172,7 +205,7 @@ func (s *Scheduler) batch(ctx context.Context, envelope *tickEnvelope) (batchRes
 					continue
 				}
 				envelope.mu.Lock()
-				items := ItemLimit - envelope.items[tenant.Organization]
+				items := itemLimit - envelope.items[tenant.Organization]
 				envelope.mu.Unlock()
 				budget := Budget{Items: items, Bytes: feature.Bytes}
 				allowance := &byteBudget{tenant: tenant, allowance: feature.Bytes, remaining: feature.Bytes}
@@ -204,16 +237,16 @@ dispatch:
 		case <-ctx.Done():
 			break dispatch
 		case jobs <- tenant:
-			s.cursor = tenant.Organization
+			result.cursor = tenant.Organization
 			dispatched++
 		}
 	}
 	close(jobs)
 	workers.Wait()
 	close(failures)
+	result.served = dispatched
 	if dispatched == len(page) && len(page) < TenantLimit {
-		s.cursor = ""
-		s.family = (s.family + 1) % len(s.features)
+		result.cursor, result.completed = "", true
 	}
 	var failure error
 	for err := range failures {
