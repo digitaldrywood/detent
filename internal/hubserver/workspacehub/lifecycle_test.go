@@ -71,10 +71,10 @@ func TestWorkspaceSweepCursorBoundsTenantPages(t *testing.T) {
 		}
 		service := New(Deps{
 			Repository: repository, Organization: func() tracker.OrganizationID { return organization }, Now: func() time.Time { return now },
-			Reader: func(r tenantstore.Reader) Reader { return lifecycleReader{r.(postgres.WorkspaceReader)} },
-			Writer: func(w tenantstore.Writer) Writer {
+			Reader: func(r tenantstore.Reader) (Reader, error) { return lifecycleReader{r.(postgres.WorkspaceReader)}, nil },
+			Writer: func(w tenantstore.Writer) (Writer, error) {
 				owner := w.(postgres.WorkspaceWriter)
-				return lifecycleWriter{lifecycleReader{owner}, owner}
+				return lifecycleWriter{lifecycleReader{owner}, owner}, nil
 			},
 			PrepareIssueClose: func(ctx context.Context, org tracker.OrganizationID, project tracker.ProjectID, item string, at time.Time) (func(context.Context, tenantstore.Writer) error, error) {
 				if item != "" {
@@ -124,7 +124,11 @@ func TestWorkspaceSweepCursorBoundsTenantPages(t *testing.T) {
 		}
 		for tenant, other := range services {
 			if err := repository.ReadTenant(t.Context(), other.deps.Organization(), corestore.Serving, func(r tenantstore.Reader) error {
-				row, err := other.deps.Reader(r).WorkspaceSession(t.Context(), projects[tenant], first.ID)
+				owner, err := other.deps.Reader(r)
+				if err != nil {
+					return err
+				}
+				row, err := owner.WorkspaceSession(t.Context(), projects[tenant], first.ID)
 				if err != nil {
 					return err
 				}

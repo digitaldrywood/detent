@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -80,19 +81,19 @@ func (w *workspaceService) newLifecycle() *workspacehub.Service {
 		Repository:   workspaceLifecycleRepository{w.server},
 		Organization: w.server.accessOrganization,
 		Now:          w.now,
-		Reader: func(r tenantstore.Reader) workspacehub.Reader {
+		Reader: func(r tenantstore.Reader) (workspacehub.Reader, error) {
 			reader, ok := r.(postgres.WorkspaceReader)
 			if !ok {
-				panic("tenant reader does not support workspace reads")
+				return nil, errors.New("tenant reader does not support workspace reads")
 			}
-			return workspaceLifecycleReader{reader}
+			return workspaceLifecycleReader{reader}, nil
 		},
-		Writer: func(w tenantstore.Writer) workspacehub.Writer {
+		Writer: func(w tenantstore.Writer) (workspacehub.Writer, error) {
 			owner, ok := w.(postgres.WorkspaceWriter)
 			if !ok {
-				panic("tenant writer does not support workspace writes")
+				return nil, errors.New("tenant writer does not support workspace writes")
 			}
-			return workspaceLifecycleWriter{workspaceLifecycleReader: workspaceLifecycleReader{owner}, workspaceLifecycleStateWriter: workspaceLifecycleStateWriter{owner}, owner: owner}
+			return workspaceLifecycleWriter{workspaceLifecycleReader: workspaceLifecycleReader{owner}, workspaceLifecycleStateWriter: workspaceLifecycleStateWriter{owner}, owner: owner}, nil
 		},
 		PrepareIssueClose: func(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, item string, now time.Time) (func(context.Context, tenantstore.Writer) error, error) {
 			scope := hubscope.NativeScope{Organization: organization, Project: project, SourceActor: &tracker.Actor{Kind: "system", PrincipalID: "workspace_service"}}

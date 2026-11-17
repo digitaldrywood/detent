@@ -19,8 +19,8 @@ type Deps struct {
 	Repository        tenantstore.Repository
 	Organization      func() tracker.OrganizationID
 	Now               func() time.Time
-	Reader            func(tenantstore.Reader) Reader
-	Writer            func(tenantstore.Writer) Writer
+	Reader            func(tenantstore.Reader) (Reader, error)
+	Writer            func(tenantstore.Writer) (Writer, error)
 	PrepareIssueClose func(context.Context, tracker.OrganizationID, tracker.ProjectID, string, time.Time) (func(context.Context, tenantstore.Writer) error, error)
 	Committed         func(context.Context, Record)
 }
@@ -42,7 +42,11 @@ func (w *Service) Page(ctx context.Context, after time.Time, id string) ([]Recor
 	defer cancel()
 	var records []Record
 	err := w.deps.Repository.ReadTenant(ctx, w.deps.Organization(), corestore.Background, func(r tenantstore.Reader) error {
-		rows, err := w.deps.Reader(r).WorkspaceOpenSessions(ctx, after, id, SweepBatch)
+		owner, err := w.deps.Reader(r)
+		if err != nil {
+			return err
+		}
+		rows, err := owner.WorkspaceOpenSessions(ctx, after, id, SweepBatch)
 		if err != nil {
 			return err
 		}
@@ -82,8 +86,10 @@ func (w *Service) ApplyLifecycle(ctx context.Context, record Record, now time.Ti
 	var checkedLease leasestore.Lease
 	var leaseChecked, leaseMissing bool
 	err := w.deps.Repository.ReadTenant(ctx, record.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
-		owner := w.deps.Reader(r)
-		var err error
+		owner, err := w.deps.Reader(r)
+		if err != nil {
+			return err
+		}
 		current, err = owner.WorkspaceSession(ctx, record.ProjectID, record.ID)
 		if err != nil {
 			return err
@@ -154,7 +160,10 @@ func (w *Service) ApplyLifecycle(ctx context.Context, record Record, now time.Ti
 		if err := writer.LockWorkItemProject(ctx, record.ProjectID); err != nil {
 			return err
 		}
-		owner := w.deps.Writer(writer)
+		owner, err := w.deps.Writer(writer)
+		if err != nil {
+			return err
+		}
 		row, err := owner.WorkspaceSession(ctx, record.ProjectID, record.ID)
 		if err != nil {
 			return err
