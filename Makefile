@@ -47,9 +47,10 @@ GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))
 GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)
 GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)
 GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
-HEFT_VERSION := $(shell awk '/digitaldrywood\/heft$$/ { found = 1 } found && $$1 == "version:" { print $$2; exit }' .custom-gcl.yml)
+HEFT_VERSION := $(shell awk '/digitaldrywood\/heft$$/ { found = 1 } found && $$1 == "version:" { print $$2; exit }' .custom-gcl.yml 2>/dev/null)
 GOLANGCI_LINT_CUSTOM_DIR := $(CURDIR)/tmp/tools/golangci-lint-custom/$(GOLANGCI_LINT_VERSION)-heft-$(HEFT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)
 GOLANGCI_LINT_CUSTOM := $(GOLANGCI_LINT_CUSTOM_DIR)/golangci-lint-custom
+GOLANGCI_LINT_RUN := $(if $(wildcard .custom-gcl.yml),$(GOLANGCI_LINT_CUSTOM),$(GOLANGCI_LINT))
 HEFT := GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" go run github.com/digitaldrywood/heft/cmd/heft@$(HEFT_VERSION)
 # G115: existing conversions are bounded or intentionally preserve platform/API widths.
 # G301: shared runtime, service, and artifact directories intentionally require traversal access.
@@ -270,10 +271,12 @@ visual-e2e: build
 	@if [ ! -x node_modules/.bin/playwright ]; then npm ci; fi
 	node_modules/.bin/playwright test
 
-lint: $(GOLANGCI_LINT_CUSTOM)
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT_CUSTOM)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m
+lint: $(GOLANGCI_LINT_RUN)
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT_RUN)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m
+ifneq ($(wildcard .custom-gcl.yml),)
 	$(HEFT) check ./...
 	$(HEFT) baseline tighten -check ./...
+endif
 
 $(GOLANGCI_LINT_CUSTOM): $(GOLANGCI_LINT) .custom-gcl.yml $(GOLANGCI_LINT_VERSION_FILE)
 	@grep -q '^version: $(GOLANGCI_LINT_VERSION)$$' .custom-gcl.yml || { echo ".custom-gcl.yml version must match $(GOLANGCI_LINT_VERSION_FILE) ($(GOLANGCI_LINT_VERSION))"; exit 1; }
@@ -313,7 +316,7 @@ check-release:
 
 .PHONY: check-landing
 check-landing:
-	bash scripts/check-landing.sh "$(CHECK_LAND_BASE)" "$(TEST_PROCS)" "$(GOLANGCI_LINT_CUSTOM)"
+	bash scripts/check-landing.sh "$(CHECK_LAND_BASE)" "$(TEST_PROCS)" "$(GOLANGCI_LINT_RUN)"
 
 check-fast: check-invariants check-migrations check-generated check-app lint vet test-fast
 	go build ./...

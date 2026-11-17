@@ -126,8 +126,9 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 		"GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))",
 		"GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)",
 		"GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)",
-		"lint: $(GOLANGCI_LINT)",
-		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m`,
+		"GOLANGCI_LINT_RUN := $(if $(wildcard .custom-gcl.yml),$(GOLANGCI_LINT_CUSTOM),$(GOLANGCI_LINT))",
+		"lint: $(GOLANGCI_LINT_RUN)",
+		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT_RUN)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m`,
 		`@bash scripts/runner-setup.sh go-tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint $(GOLANGCI_LINT_VERSION) "$(GOLANGCI_LINT)" "$(GOLANGCI_LINT_TOOLCHAIN)"`,
 	} {
 		if !strings.Contains(makefile, want) {
