@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/workspace/internal/pathcleanup"
+
 	"github.com/digitaldrywood/detent/internal/workspace/internal/model"
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 
@@ -299,6 +301,7 @@ type LocalGit struct {
 	logger             *slog.Logger
 	createMu           *sync.Mutex
 	removeOwnedPath    func(string, string) error
+	removeScratchPath  func(string) error
 	scanWorkspacePaths workspaceProcessScanner
 }
 
@@ -2067,33 +2070,23 @@ func (l *LocalGit) retrySourceWorktreeRemoveAfterPermissionRemediation(ctx conte
 }
 
 func removeWorkspacePath(root string, path string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return removeWorkspacePathWithContext(ctx, root, path, os.RemoveAll)
+}
+
+func removeWorkspacePathWithContext(ctx context.Context, root, path string, removeAll func(string) error) error {
 	path, err := validateWorkspacePath(root, path)
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(path); err != nil {
-		if !errors.Is(err, fs.ErrPermission) {
-			return err
-		}
-		if chmodErr := makeWorkspaceTreeRemovable(path); chmodErr != nil {
-			return &workspaceRemovalError{
-				path:        path,
-				remediation: workspaceRemovalRemediation,
-				err:         errors.Join(err, fmt.Errorf("remediate workspace permissions: %w", chmodErr)),
-			}
-		}
-		if retryErr := os.RemoveAll(path); retryErr != nil {
-			return &workspaceRemovalError{
-				path:        path,
-				remediation: workspaceRemovalRemediation,
-				err:         retryErr,
-			}
-		}
+	if err := pathcleanup.Remove(ctx, path, removeAll, ReapProcesses); err != nil {
+		return err
 	}
 	if exists, _, err := pathExists(path); err != nil {
 		return err
 	} else if exists {
-		return fmt.Errorf("workspace path still exists after removal: %s", path)
+		return &pathcleanup.RemovalError{Err: fmt.Errorf("workspace path still exists after removal: %s", path)}
 	}
 	return nil
 }
@@ -2182,6 +2175,12 @@ func WorkerArtifactCleanupRoot(workspacePath, cleanupPath string) (string, error
 }
 
 func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return cleanupWorkerScratch(ctx, workspacePath, scratchPath, os.RemoveAll)
+}
+
+func cleanupWorkerScratch(ctx context.Context, workspacePath, scratchPath string, removeAll func(string) error) error {
 	if strings.TrimSpace(scratchPath) == "" {
 		return nil
 	}
@@ -2193,7 +2192,7 @@ func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
 	if _, err := os.Lstat(scratchRoot); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	if err := removeWorkspacePath(scratchRoot, scratchPath); err != nil {
+	if err := removeWorkspacePathWithContext(ctx, scratchRoot, scratchPath, removeAll); err != nil {
 		return fmt.Errorf("remove worker scratch: %w", err)
 	}
 	return nil
@@ -2280,35 +2279,7 @@ func remediateWorkspacePathPermissions(root string, path string) (string, error)
 	if err != nil {
 		return path, err
 	}
-	return validated, makeWorkspaceTreeRemovable(validated)
-}
-
-func makeWorkspaceTreeRemovable(path string) error {
-	return filepath.WalkDir(path, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return fmt.Errorf("inspect %s: %w", path, err)
-		}
-		mode := info.Mode().Perm()
-		switch {
-		case entry.IsDir():
-			mode |= 0o700
-		case runtime.GOOS == "windows":
-			mode |= 0o600
-		default:
-			return nil
-		}
-		if err := os.Chmod(path, mode); err != nil { // #nosec G122 -- the path is confined by validateWorkspacePath and symlinks are skipped before chmod.
-			return fmt.Errorf("chmod %s: %w", path, err)
-		}
-		return nil
-	})
+	return validated, pathcleanup.MakeRemovable(validated)
 }
 
 func (l *LocalGit) runHook(ctx context.Context, name string, command string, info Info, issue Issue) error {
