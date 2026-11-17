@@ -68,11 +68,11 @@ func boardViewCardRow(kind, alias string) string {
 	return boardViewRow(kind, alias+".project_id", alias+".work_item_id", values)
 }
 
-func boardViewSource(reporter bool) (string, string) {
+func boardViewSource(reporter bool) string {
 	if reporter {
-		return "page_reporter_", "$4::text<>''"
+		return "page_reporter_"
 	}
-	return "page_", "$4::text=''"
+	return "page_"
 }
 
 func boardViewArrayRow(kind, source string, slots map[string]string) string {
@@ -87,52 +87,43 @@ const boardViewLinked = ` FROM linked c JOIN native_board_items x ON x.organizat
 
 const boardViewReadable = `lp.id IS NOT NULL AND lp.id=ANY($3::text[]) AND ($4::text='' OR li.actor_principal_id=$4)`
 
-func boardViewLinkSource(relation, prefix string, reporter bool) string {
-	source, gate := boardViewSource(reporter)
-	field := func(name string) string { return "x." + source + prefix + "_" + name + "[l.n]" }
-	return "SELECT '" + relation + "'::text AS relation," + field("project_id") + "::text AS project,l.card::text AS card," + field("id") + "::text AS id," + field("title") + "::text AS title," +
-		field("state") + "::text AS state," + field("identifier") + "::text AS identifier," + field("web_url") + "::text AS web_url," + field("number") + "::bigint AS number,l.n::bigint AS n," +
-		field("terminal") + "::boolean AS terminal," + field("dispatchable") + "::boolean AS dispatchable," + field("closed_at") + "::timestamptz AS closed_at," + field("started_at") + "::timestamptz AS started_at" + boardViewLinked + `
-CROSS JOIN LATERAL (SELECT c.work_item_id AS card,n FROM generate_series(1,coalesce(cardinality(x.` + source + prefix + `_id),0)) n) l
-LEFT JOIN issues li ON li.organization_id=$1 AND li.project_id=` + field("project_id") + ` AND li.native_id=` + field("id") + `
-LEFT JOIN projects lp ON lp.organization_id=$1 AND lp.id=li.project_id AND lp.deleted_at IS NULL AND lp.profile='native'
-WHERE ` + gate + " AND " + boardViewReadable
-}
-
-func boardViewLinkRows() string {
-	var sources []string
-	for _, reporter := range []bool{false, true} {
-		for _, relation := range [][2]string{{"blocker", "blockers"}, {"dependent", "dependents"}, {"related", "related"}} {
-			sources = append(sources, boardViewLinkSource(relation[0], relation[1], reporter))
+func boardViewLinkRows(reporter bool) string {
+	source := boardViewSource(reporter)
+	names := []string{"project_id", "id", "title", "state", "identifier", "web_url", "number", "terminal", "dispatchable", "closed_at", "started_at"}
+	var relations []string
+	for _, relation := range [][2]string{{"blocker", "blockers"}, {"dependent", "dependents"}, {"related", "related"}} {
+		arrays := make([]string, len(names))
+		for i, name := range names {
+			arrays[i] = "x." + source + relation[1] + "_" + name
 		}
+		relations = append(relations, "SELECT '"+relation[0]+"'::text AS relation,u.* FROM unnest("+strings.Join(arrays, ",")+") WITH ORDINALITY u("+strings.Join(names, ",")+",n)")
 	}
-	return boardViewArrayRow("links", strings.Join(sources, "\nUNION ALL\n"), map[string]string{"ta1": "relation", "ta2": "project", "ta3": "card", "ta4": "id", "ta5": "title", "ta6": "state",
+	links := "SELECT l.relation,l.project_id::text AS project,c.work_item_id::text AS card,l.id::text AS id,l.title::text AS title," +
+		"l.state::text AS state,l.identifier::text AS identifier,l.web_url::text AS web_url,l.number::bigint AS number,l.n::bigint AS n," +
+		"l.terminal::boolean AS terminal,l.dispatchable::boolean AS dispatchable,l.closed_at::timestamptz AS closed_at,l.started_at::timestamptz AS started_at" + boardViewLinked + `
+CROSS JOIN LATERAL (` + strings.Join(relations, "\nUNION ALL ") + `) l
+LEFT JOIN issues li ON li.organization_id=$1 AND li.project_id=l.project_id AND li.native_id=l.id
+LEFT JOIN projects lp ON lp.organization_id=$1 AND lp.id=li.project_id AND lp.deleted_at IS NULL AND lp.profile='native'
+WHERE ` + boardViewReadable
+	return boardViewArrayRow("links", links, map[string]string{"ta1": "relation", "ta2": "project", "ta3": "card", "ta4": "id", "ta5": "title", "ta6": "state",
 		"ta7": "identifier", "ta8": "web_url", "ia1": "number", "ia2": "n", "ba1": "terminal", "ba2": "dispatchable", "da1": "closed_at", "da2": "started_at"})
 }
 
-func boardViewDependencyRows() string {
-	var sources []string
-	for _, reporter := range []bool{false, true} {
-		source, gate := boardViewSource(reporter)
-		sources = append(sources, "SELECT c.project_id::text AS project,c.work_item_id::text AS card,x."+source+"dependencies[l.n]::text AS id,l.n::bigint AS n"+boardViewLinked+`
-CROSS JOIN LATERAL generate_series(1,coalesce(cardinality(x.`+source+`dependencies),0)) l(n)
-LEFT JOIN issues li ON li.organization_id=$1 AND li.native_id=x.`+source+`dependencies[l.n]
+func boardViewDependencyRows(reporter bool) string {
+	dependencies := "SELECT c.project_id::text AS project,c.work_item_id::text AS card,l.id::text AS id,l.n::bigint AS n" + boardViewLinked + `
+CROSS JOIN LATERAL unnest(x.` + boardViewSource(reporter) + `dependencies) WITH ORDINALITY l(id,n)
+LEFT JOIN issues li ON li.organization_id=$1 AND li.native_id=l.id
 LEFT JOIN projects lp ON lp.organization_id=$1 AND lp.id=li.project_id AND lp.deleted_at IS NULL AND lp.profile='native'
-WHERE `+gate+" AND li.id IS NOT NULL AND "+boardViewReadable)
-	}
-	return boardViewArrayRow("dependencies", strings.Join(sources, "\nUNION ALL\n"), map[string]string{"ta1": "project", "ta2": "card", "ta3": "id", "ia1": "n"})
+WHERE li.id IS NOT NULL AND ` + boardViewReadable
+	return boardViewArrayRow("dependencies", dependencies, map[string]string{"ta1": "project", "ta2": "card", "ta3": "id", "ia1": "n"})
 }
 
-func boardViewReasonRows() string {
-	var sources []string
-	for _, reporter := range []bool{false, true} {
-		source, gate := boardViewSource(reporter)
-		field := func(name string) string { return "x." + source + name }
-		sources = append(sources, "SELECT c.project_id::text AS project,c.work_item_id::text AS card,"+field("blocked_reason_text")+"::text AS t1,"+field("blocked_reason_basis")+"::text AS t2,"+
-			field("blocked_reason_current_basis")+"::text AS t3,"+field("unblocks_reason_text")+"::text AS t4,"+field("unblocks_reason_basis")+"::text AS t5,"+field("unblocks_reason_current_basis")+"::text AS t6,"+
-			field("blocked_reason_revision")+"::bigint AS i1,"+field("unblocks_reason_revision")+"::bigint AS i2,"+field("dependency_ready")+"::boolean AS b1"+boardViewLinked+" WHERE "+gate)
-	}
-	return boardViewArrayRow("reasons", strings.Join(sources, "\nUNION ALL\n"), map[string]string{"ta1": "project", "ta2": "card", "ta3": "t1", "ta4": "t2", "ta5": "t3", "ta6": "t4", "ta7": "t5", "ta8": "t6",
+func boardViewReasonRows(reporter bool) string {
+	field := func(name string) string { return "x." + boardViewSource(reporter) + name }
+	reasons := "SELECT c.project_id::text AS project,c.work_item_id::text AS card," + field("blocked_reason_text") + "::text AS t1," + field("blocked_reason_basis") + "::text AS t2," +
+		field("blocked_reason_current_basis") + "::text AS t3," + field("unblocks_reason_text") + "::text AS t4," + field("unblocks_reason_basis") + "::text AS t5," + field("unblocks_reason_current_basis") + "::text AS t6," +
+		field("blocked_reason_revision") + "::bigint AS i1," + field("unblocks_reason_revision") + "::bigint AS i2," + field("dependency_ready") + "::boolean AS b1" + boardViewLinked
+	return boardViewArrayRow("reasons", reasons, map[string]string{"ta1": "project", "ta2": "card", "ta3": "t1", "ta4": "t2", "ta5": "t3", "ta6": "t4", "ta7": "t5", "ta8": "t6",
 		"ia1": "i1", "ia2": "i2", "ba1": "b1"})
 }
 
@@ -143,7 +134,7 @@ func boardViewStateRows() string {
 		map[string]string{"ta1": "project", "ta2": "name", "ta3": "target", "ia1": "rank", "ia2": "transition", "ba1": "terminal", "ba2": "dispatchable", "ba3": "operator_only"})
 }
 
-func boardViewSQL() string {
+func boardViewSQL(reporter bool) string {
 	revision := func(subject, id string) string {
 		return "coalesce((SELECT r.revision FROM native_board_access_revisions r WHERE r.organization_id=$1 AND r.subject_kind='" + subject + "' AND r.subject_id=" + id + "),0)"
 	}
@@ -183,7 +174,7 @@ evaluated AS MATERIALIZED (SELECT project_id,change_policy_id,change_review_poli
 			` FROM visible v JOIN native_board_page_summaries o ON o.organization_id=$1 AND o.project_id=v.id AND o.audience=$4 AND o.archive_scope='all' AND o.exclude_workspace AND o.kind IN ('total','lane') AND $5::text<>'all'` + affected,
 		boardViewCardRow("card", "c") + ` FROM cards c`,
 		boardViewCardRow("closed", "c") + ` FROM closed c`,
-		boardViewLinkRows(), boardViewDependencyRows(), boardViewReasonRows(),
+		boardViewLinkRows(reporter), boardViewDependencyRows(reporter), boardViewReasonRows(reporter),
 		boardViewRow("change", "c.project_id", "c.id", nil) + ` FROM change_requests c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
 WHERE c.organization_id=$1 AND (c.project_id,c.id) IN (SELECT project_id,change_id FROM cards WHERE change_id<>'' UNION SELECT project_id,change_id FROM closed WHERE change_id<>'') AND ($4::text='' OR i.actor_principal_id=$4)`,
 		boardViewRow("policy", "p.project_id", "r.policy_id", map[string]string{"t1": "COALESCE(a.approved_by,r.approved_by)", "d1": "COALESCE(a.approved_at,r.approved_at)"}) +
@@ -207,4 +198,11 @@ AND (k.review_policy_id IN (SELECT e.change_review_policy_id FROM evaluated e WH
 	return ctes + strings.Join(rows, "\nUNION ALL\n")
 }
 
-var Statement = boardViewSQL()
+var statements = [2]string{boardViewSQL(false), boardViewSQL(true)}
+
+func Statement(reporter bool) string {
+	if reporter {
+		return statements[1]
+	}
+	return statements[0]
+}
