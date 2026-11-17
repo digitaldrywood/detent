@@ -156,13 +156,11 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 		} {
 			t.Run(string(org)+"/legacy/"+test.name, func(t *testing.T) {
 				state := test.state
-				state.View, state.Lanes, state.CompletedWindow = "board", []string{"Backlog", "Todo"}, "24h"
 				params := url.Values{"include": {"board"}, "state": {"Todo"}, "type": state.Type, "label": state.Label, "assignee": state.Assignee, "priority": state.Priority}
 				if state.CreatedBy != "" {
 					params.Set("created_by", state.CreatedBy)
 				}
 				if state.CompletedFrom != "" || state.CompletedTo != "" {
-					state.View, state.Tab, state.Sort = "list", "closed", "closed"
 					params.Del("state")
 					params.Set("open", "false")
 					params.Set("completed_from", state.CompletedFrom)

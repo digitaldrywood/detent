@@ -238,7 +238,6 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				t.Fatalf("candidates=%d want %d", len(scan.plans), index+1)
 			}
 			legacy := scan.plans[0]
-			legacy.ChangeFacts = nil
 			expected, err := service.hydrateCurrentChangeDetail(t.Context(), scope, legacy.Candidate.WorkItemID, legacy.ChangeRecord, &legacy.ChangeVersion, legacy.ChangePolicy, now)
 			if err != nil {
 				t.Fatal(err)
@@ -642,7 +641,6 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		scalar.ChangeFacts = nil
 		expected, err := service.hydrateCurrentChangeDetail(t.Context(), scope, scalar.Candidate.WorkItemID, scalar.ChangeRecord, &scalar.ChangeVersion, scalar.ChangePolicy, now)
 		if err != nil {
 			t.Fatalf("scalar legacy audit without dispositions: %v", err)
@@ -742,7 +740,6 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 					t.Fatal(err)
 				}
 				scalar := plan
-				scalar.ChangeFacts = nil
 				if _, err := service.hydrateCurrentChangeDetail(t.Context(), scope, scalar.Candidate.WorkItemID, scalar.ChangeRecord, &scalar.ChangeVersion, scalar.ChangePolicy, now); !errors.Is(err, artifact.ErrIntegrity) {
 					t.Errorf("scalar accepted typed %s mismatch: %v", tc.name, err)
 				}

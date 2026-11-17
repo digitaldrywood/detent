@@ -821,7 +821,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						if len(storedComments) == 1 {
 							comment = storedComments[0]
 						}
-						if err != nil || comment.Body != answer || comment.Actor.Kind != "human" || comment.Actor.PrincipalID != operatortool.ConnectionIdentity(ctx).PrincipalID || comment.Provenance == nil || comment.Provenance.Provider != "chat" || !strings.HasPrefix(comment.Provenance.ExternalID, record.ID+":") {
+						if comment.Body != answer || comment.Actor.Kind != "human" || comment.Actor.PrincipalID != operatortool.ConnectionIdentity(ctx).PrincipalID || comment.Provenance == nil || comment.Provenance.Provider != "chat" || !strings.HasPrefix(comment.Provenance.ExternalID, record.ID+":") {
 							t.Fatalf("answer comment=%+v error=%v", comment, err)
 						}
 					} else if reason != "" {

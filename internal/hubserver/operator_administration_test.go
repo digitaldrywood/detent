@@ -243,7 +243,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 						t.Fatal(err)
 					}
 					view := current.Credential
-					if err != nil || view.ID != test.id || view.Name != test.id+" "+string(scope.organization) || view.Fingerprint != "fingerprint_"+string(scope.organization) || view.Scope != hubapi.APIScopeOperator || view.Kind != "service" || view.NativeOnly || view.Token != "" || !view.CreatedAt.Equal(now) || view.Grants == nil || view.Projects == nil || len(view.Grants) != wantCount || len(view.Projects) != wantCount {
+					if view.ID != test.id || view.Name != test.id+" "+string(scope.organization) || view.Fingerprint != "fingerprint_"+string(scope.organization) || view.Scope != hubapi.APIScopeOperator || view.Kind != "service" || view.NativeOnly || view.Token != "" || !view.CreatedAt.Equal(now) || view.Grants == nil || view.Projects == nil || len(view.Grants) != wantCount || len(view.Projects) != wantCount {
 						t.Fatalf("%s tenant metadata: id=%s grants=%d projects=%d error=%v", scope.name, view.ID, len(view.Grants), len(view.Projects), err)
 					}
 					for index := range wantCount {

@@ -467,9 +467,8 @@ func TestHostedImportOutboxFields(t *testing.T) {
 				item, err = w.(projectstore.GitHubOutboxWriter).ClaimGitHubOutbound(t.Context(), f.service.config.Clock(), f.service.config.Clock().Add(time.Minute), fmt.Sprint(index+1))
 				return err
 			})
-			found := err == nil
-			if err != nil || !found || item.Key != entry.name || item.IssueNumber != int64(entry.claim) {
-				t.Fatalf("claim=%+v found=%v error=%v", item, found, err)
+			if err != nil || item.Key != entry.name || item.IssueNumber != int64(entry.claim) {
+				t.Fatalf("claim=%+v error=%v", item, err)
 			}
 			payload, err := eventstore.NewContent(objects).Receipt(t.Context(), item.Payload)
 			if err != nil {

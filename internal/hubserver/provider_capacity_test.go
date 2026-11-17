@@ -796,7 +796,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 				t.Fatalf("provider routing=%+v error=%v", capacity, err)
 			}
 			view := capacity.ProviderCapacity[0]
-			if err != nil || view.Used != test.used || view.MaxConcurrent != test.bound || view.State != test.state {
+			if view.Used != test.used || view.MaxConcurrent != test.bound || view.State != test.state {
 				t.Fatalf("view = %+v, %v; want used=%d bound=%d state=%s", view, err, test.used, test.bound, test.state)
 			}
 			if test.leaseEnd != "" {
@@ -811,7 +811,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 					t.Fatalf("ended provider routing=%+v error=%v", capacity, err)
 				}
 				view = capacity.ProviderCapacity[0]
-				if err != nil || view.Used != 0 || view.MaxConcurrent != test.finalBound {
+				if view.Used != 0 || view.MaxConcurrent != test.finalBound {
 					t.Fatalf("ended lease view = %+v, %v; want used=0 bound=%d", view, err, test.finalBound)
 				}
 			}
