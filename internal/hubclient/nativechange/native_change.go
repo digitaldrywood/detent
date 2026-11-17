@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -290,6 +291,10 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if err := e.requireRecoveredSource(detail, diff); err != nil {
 		return "", false, err
 	}
+	artifacts, err := e.publicationEvidence(ctx)
+	if err != nil {
+		return "", false, err
+	}
 	for _, version := range detail.Versions {
 		if version.ID != detail.Change.CurrentVersion || version.HeadSHA != diff.HeadSHA {
 			continue
@@ -308,6 +313,10 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		// that recorded session, so publish this execution's validated source
 		// rather than repeatedly auditing an unreviewable imported version.
 		if version.AttemptID == "" && detail.Summary.NativeReview != "changes_requested" && (version.Policy.Gates.SecurityAudit || version.Policy.Gates.Validator || version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired) {
+			break
+		}
+		artifacts = mergePublicationArtifacts(version.Artifacts, artifacts)
+		if !slices.Equal(artifacts, version.Artifacts) {
 			break
 		}
 		e.recoveredSource = &tracker.NativeChangeReference{ChangeID: changeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
@@ -349,7 +358,7 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 			BaseSHA:    diff.BaseSHA, HeadSHA: diff.HeadSHA, MergeBaseSHA: diff.BaseSHA,
 			Repository: e.repository,
 			Code:       tracker.ChangeArtifact{Kind: "code", URI: e.repository + "/commit/" + diff.HeadSHA, SHA256: hex.EncodeToString(digest[:]), Availability: "unverified"},
-			Artifacts:  []tracker.ChangeArtifact{},
+			Artifacts:  artifacts,
 			RunID:      e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.data.PolicyID,
 			Source: source,
 		},
@@ -412,7 +421,7 @@ func errorText(err error) string {
 // none. A rework run's commits belong to the change the item already has.
 // The idempotency key is the attempt's, so a retried open cannot open two.
 func (e *nativeExecution) openChange(ctx context.Context, diff tracker.AttemptDiffRequest) (string, error) {
-	return changecreation.Open(ctx, e.claim.source.NativeClient(), changecreation.Input{Item: e.claim.lease.WorkItemID, AttemptID: e.data.AttemptID, Title: e.claim.recovery.Issue.Title, Lease: e.claim.lease, Diff: diff})
+	return changecreation.Open(ctx, e.claim.source.NativeClient(), changecreation.Input{Item: e.claim.lease.WorkItemID, AttemptID: e.data.AttemptID, Title: e.claim.recovery.Issue.Title, Lease: e.claim.lease, Diff: diff, Outcome: e.preparedMessage})
 }
 
 func publicationErrorCode(err error) string {

@@ -18,6 +18,7 @@ type Input struct {
 	Item      tracker.NativeWorkItemID
 	AttemptID string
 	Title     string
+	Outcome   string
 	Lease     tracker.NativeLease
 	Diff      tracker.AttemptDiffRequest
 }
@@ -37,7 +38,7 @@ func Open(ctx context.Context, client Authority, input Input) (string, error) {
 	created, err := client.CreateChange(ctx, item, tracker.CreateChange{
 		Mutation: tracker.Mutation{IdempotencyKey: input.AttemptID + ":change", LeaseID: input.Lease.ID, FencingToken: input.Lease.FencingToken},
 		Title:    nativeChangeTitle(input.Title, item),
-		Body:     nativeChangeBody(input.AttemptID, diff),
+		Body:     nativeChangeBody(input.AttemptID, diff) + outcomeBody(input.Outcome),
 	})
 	if err != nil {
 		return "", fmt.Errorf("create change: %w", err)
@@ -62,4 +63,11 @@ func nativeChangeTitle(title string, item tracker.NativeWorkItemID) string {
 func nativeChangeBody(attempt string, diff tracker.AttemptDiffRequest) string {
 	return fmt.Sprintf("Opened by the runner when attempt %s succeeded.\n\nBase: %s\nHead: %s\nFiles changed: %d\n\nThe change is the attempt's stored diff.",
 		attempt, diff.BaseSHA, diff.HeadSHA, len(diff.Files))
+}
+
+func outcomeBody(outcome string) string {
+	if outcome == "" {
+		return ""
+	}
+	return "\n\n" + outcome
 }
