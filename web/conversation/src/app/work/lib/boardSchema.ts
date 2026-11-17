@@ -56,7 +56,7 @@ export function decodeBoardView(wire: typeof BoardViewWire.Type, options: { read
     }
   }
   const dropped = wire.cards.length - cards.length;
-  if (options.partial !== true && dropped > 0 && (dropped === wire.cards.length || dropped > Math.max(1, wire.cards.length * BOARD_CARD_DROP_TOLERANCE))) {
+  if (dropped > 0 && (options.partial === true || dropped === wire.cards.length || dropped > Math.max(1, wire.cards.length * BOARD_CARD_DROP_TOLERANCE))) {
     throw new Error(`The board could not be shown: ${dropped} of ${wire.cards.length} cards do not match this version of the app.`);
   }
   return { ...wire, cards };

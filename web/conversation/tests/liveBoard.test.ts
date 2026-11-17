@@ -333,6 +333,26 @@ describe("the live board", () => {
     expect(errors.mock.calls[0]![1]).toMatchObject({ work_item_id: dropped });
   });
 
+  it("keeps a card whose pushed update does not match the contract and rereads the board", async () => {
+    let broken = "";
+    const { read, boards, stream, openAll } = await liveBoard((body, url) => {
+      if (!url.searchParams.has("item")) return;
+      for (const card of body.cards) if (card.issue.work_item_id === broken) card.issue.actor.kind = "";
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    read.start();
+    openAll();
+    await vi.advanceTimersByTimeAsync(0);
+    broken = read.snapshot().items.find((item) => item.projectId === "proj_alpha")!.id;
+    stream("proj_alpha").emit("work_item", JSON.stringify({ entity_id: broken, kind: "upsert" }), "1");
+    await vi.advanceTimersByTimeAsync(LIVE_DELTA_WINDOW_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(boards.filter((url) => url.searchParams.has("item"))).toHaveLength(1);
+    expect(boards.filter((url) => !url.searchParams.has("item")).length).toBeGreaterThan(1);
+    expect(read.snapshot().items.some((item) => item.id === broken)).toBe(true);
+    expect(read.snapshot().error).toBeNull();
+  });
+
   it.each([["every card", 0], ["more than one card in twenty", 2]])("reports an error instead of a board when %s does not match the contract", async (_, kept) => {
     let total = 0;
     let bad = 0;
