@@ -94,7 +94,7 @@ func TestConversationPostgresStreamReauthorizesAgainstTenantProject(t *testing.T
 			if response.StatusCode != http.StatusOK {
 				t.Fatalf("stream status = %d, want %d", response.StatusCode, http.StatusOK)
 			}
-			stream := &sseStream{reader: bufio.NewReader(response.Body), cancel: cancel}
+			stream := &sseStream{reader: bufio.NewReader(response.Body)}
 			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(writer tenantstore.Writer) error {
 				_, err := writer.AppendConversationEvent(t.Context(), conversationstore.Event{
 					OrganizationID: organization.ID,

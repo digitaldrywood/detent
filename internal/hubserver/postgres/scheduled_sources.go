@@ -87,7 +87,7 @@ func (r *Repository) BackfillScheduledSourcesAfter(ctx context.Context, organiza
 			if !row.BodyMissing {
 				body = new(row.BodyObjectKey)
 			}
-			keys = append(keys, scheduledSourceKey{project: row.ProjectID, item: tracker.NativeWorkItemID(row.WorkItemID), record: string(row.RecordID), revision: row.Revision, body: body})
+			keys = append(keys, scheduledSourceKey{project: row.ProjectID, item: tracker.NativeWorkItemID(row.WorkItemID), record: row.RecordID, revision: row.Revision, body: body})
 			requested[i] = eventstore.CollaborationVersionKey{RecordID: row.RecordID, Revision: row.Revision}
 		}
 		versions, err = s.CollaborationVersions(ctx, requested)

@@ -175,7 +175,7 @@ func (s *session) HealthSourceItems(ctx context.Context, project tracker.Project
 	}
 	out := make([]healthstore.ItemSource, len(rows))
 	for index, row := range rows {
-		out[index] = healthstore.ItemSource{WorkItemReference: corestore.WorkItemReference{ProjectID: row.ProjectID, WorkItemID: tracker.NativeWorkItemID(row.NativeID)}, ID: row.ID}
+		out[index] = healthstore.ItemSource{WorkItemReference: corestore.WorkItemReference{ProjectID: row.ProjectID, WorkItemID: row.NativeID}, ID: row.ID}
 	}
 	return out, nil
 }

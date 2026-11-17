@@ -530,7 +530,7 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope hubscope.N
 		page, fetchErr := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: batch.Discovery.Repository, Stage: "batch", Discovery: &batch.Discovery})
 		if fetchErr != nil {
 			var status *githubconnector.StatusError
-			if !errors.Is(fetchErr, githubconnector.ErrNotFound) && !errors.Is(fetchErr, githubconnector.ErrRateLimited) && !(errors.As(fetchErr, &status) && (status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusTooManyRequests)) {
+			if !errors.Is(fetchErr, githubconnector.ErrNotFound) && !errors.Is(fetchErr, githubconnector.ErrRateLimited) && (!errors.As(fetchErr, &status) || status.StatusCode != http.StatusNotFound && status.StatusCode != http.StatusTooManyRequests) {
 				return fetchErr
 			}
 			if (errors.Is(fetchErr, githubconnector.ErrNotFound) || status != nil && status.StatusCode == http.StatusNotFound) && scope.GitHubIntakeRevision.FallbackRunner != "" {
@@ -598,7 +598,7 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope hubscope.N
 		if itemErr != nil {
 			var source *linkedSnapshotSourceError
 			var invalid *hubapi.NativeError
-			if ctx.Err() != nil || !errors.As(itemErr, &source) && !(errors.As(itemErr, &invalid) && invalid.Status == http.StatusUnprocessableEntity) {
+			if ctx.Err() != nil || !errors.As(itemErr, &source) && (!errors.As(itemErr, &invalid) || invalid.Status != http.StatusUnprocessableEntity) {
 				return itemErr
 			}
 			item.Status = "failed"
