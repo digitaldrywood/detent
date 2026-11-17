@@ -111,6 +111,10 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 				return err
 			}
 			snapshot.Event, err = r.LatestRunEvent(ctx, project, attempt.ID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				facts.CheckpointNoEvents = true
+				return nil
+			}
 		}
 		if err == nil {
 			err = hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot)
@@ -124,7 +128,7 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 	if err != nil {
 		return facts, err
 	}
-	if facts.AttemptID != "" && !facts.CheckpointUnreadable {
+	if facts.AttemptID != "" && !facts.CheckpointUnreadable && !facts.CheckpointNoEvents {
 		checkpoint, err := deps.Checkpoint(ctx, snapshot)
 		if candidateLocal(err) {
 			facts.CheckpointUnreadable, checkpoint, err = true, nil, nil
@@ -167,6 +171,14 @@ func Refusal(ctx context.Context, r tenantstore.Reader, project tracker.ProjectI
 		return "", err
 	case attempt.ID != facts.AttemptID || attempt.CheckpointObjectKey == nil || *attempt.CheckpointObjectKey != facts.CheckpointObjectKey:
 		return "", corestore.ErrRevisionConflict
+	}
+	if facts.CheckpointNoEvents {
+		if _, err := r.LatestRunEvent(ctx, project, facts.AttemptID); !errors.Is(err, corestore.ErrNotFound) {
+			if err != nil {
+				return "", err
+			}
+			return "", corestore.ErrRevisionConflict
+		}
 	}
 	change, err := r.LatestChange(ctx, project, item.NativeID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {

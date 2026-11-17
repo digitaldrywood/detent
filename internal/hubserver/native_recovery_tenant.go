@@ -240,13 +240,14 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 			return corestore.ErrInvalidPage
 		}
 		checkpointCursor := leasestore.AttemptCursor{}
-		for len(checkpointCandidates) < claimPreparationLimit {
-			remaining := claimPreparationLimit - len(checkpointCandidates)
+		for scanned := 0; scanned < claimPreparationLimit; {
+			remaining := claimPreparationLimit - scanned
 			limit := min(corestore.MaxPageSize, remaining)
 			page, err := checkpointReader.CheckpointAttemptPage(ctx, row.ID, checkpointCursor, limit)
 			if err != nil {
 				return err
 			}
+			scanned += len(page.Items)
 			attemptIDs := make([]string, 0, len(page.Items))
 			for _, attempt := range page.Items {
 				if attempt.IssueID != row.ID || attempt.CheckpointObjectKey == nil {
@@ -272,6 +273,11 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 			for _, attempt := range page.Items {
 				event, ok := eventsByAttempt[attempt.ID]
 				if !ok {
+					if _, err := r.LatestRunEvent(ctx, scope.Project, attempt.ID); errors.Is(err, corestore.ErrNotFound) {
+						continue
+					} else if err != nil {
+						return err
+					}
 					return corestore.ErrNotFound
 				}
 				if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != row.NativeID || event.AttemptID != attempt.ID || event.Type != "run.checkpointed" {
@@ -283,7 +289,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 				break
 			}
 			checkpointCursor = page.Next
-			if len(checkpointCandidates) == claimPreparationLimit {
+			if scanned == claimPreparationLimit {
 				checkpointPageTruncated = true
 			}
 		}
@@ -348,6 +354,10 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 				return corestore.ErrNotFound
 			}
 			event, err := r.LatestRunEvent(ctx, scope.Project, attempt.ID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				snapshots = append(snapshots, hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease})
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -527,6 +537,9 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		if _, ok := selected[snapshot.Attempt.ID]; !ok {
 			continue
 		}
+		if snapshot.Event.ID == "" {
+			continue
+		}
 		attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.Clock())
 		if err != nil {
 			return result, fmt.Errorf("hydrate selected recovery attempt: %w", err)
@@ -553,7 +566,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 	for _, attempt := range ordered {
 		value, ok := hydrated[attempt.ID]
 		if !ok {
-			return result, corestore.ErrNotFound
+			continue
 		}
 		result.Attempts = append(result.Attempts, value)
 	}
