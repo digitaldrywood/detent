@@ -206,7 +206,8 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 			return runDoctorStartupPreflight(ctx, cfg, options{}, doctorDeps{})
 		}, probeRunnerProviderAuth)
 		var setupErr error
-		if checks.Configuration == "passed" {
+		switch checks.Configuration {
+		case "passed":
 			var descriptor policy.Descriptor
 			_, _, descriptor, setupErr = resolveRunnerProjectPolicy(ctx, cfg, name)
 			if setupErr == nil {
@@ -220,7 +221,7 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 				checks.Configuration, checks.ConfigurationAt = "failed", time.Now().UTC()
 				checks.ConfigurationMessage = "Project policy could not be resolved or reported."
 			}
-		} else if checks.Configuration == "failed" {
+		case "failed":
 			setupErr = errors.New(checks.ConfigurationMessage)
 		}
 		for _, emit := range report {

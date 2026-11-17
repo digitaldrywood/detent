@@ -89,7 +89,7 @@ func TestEntryPostgresHealthPreservesReadinessAndReadScope(t *testing.T) {
 			f.service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil).WithContext(t.Context()))
 			for _, id := range []string{"org_alpha", "org_beta"} {
 				_, called := visited.Load(id)
-				wantCall := !test.closeDatabase && !(id == "org_beta" && test.state != "")
+				wantCall := !test.closeDatabase && (id != "org_beta" || test.state == "")
 				if called != wantCall {
 					t.Errorf("tenant %s probed = %v, want %v", id, called, wantCall)
 				}

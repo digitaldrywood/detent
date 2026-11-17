@@ -81,8 +81,8 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 						if organization.ID == "org_alpha" {
 							raw = `["example-org/alpha-new"]`
 							count := alphaCalls.Add(1)
-							switch {
-							case count == blockedCall:
+							switch count {
+							case blockedCall:
 								close(blocked)
 								select {
 								case <-release:
@@ -90,13 +90,13 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 									return nil, request.Context().Err()
 								}
 								raw = `["example-org/alpha-old"]`
-							case count == 1:
+							case 1:
 								raw = `["example-org/alpha-old"]`
-							case count == blockedCall+2:
+							case blockedCall + 2:
 								status = http.StatusServiceUnavailable
-							case count == blockedCall+3:
+							case blockedCall + 3:
 								raw = `[`
-							case count == blockedCall+4:
+							case blockedCall + 4:
 								return nil, errors.New("example tenant transport failure")
 							}
 						} else {

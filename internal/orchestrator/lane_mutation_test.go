@@ -358,7 +358,7 @@ func (f *runtimeFixture) ListRecentTerminalWorkAttempts(ctx context.Context, que
 			continue
 		}
 		unfiltered := issueID == "" && identifier == "" && issueURL == ""
-		if !unfiltered && !(issueID != "" && attempt.IssueID == issueID) && !(identifier != "" && attempt.Identifier == identifier) && !(issueURL != "" && attempt.IssueURL == issueURL) {
+		if !unfiltered && (issueID == "" || attempt.IssueID != issueID) && (identifier == "" || attempt.Identifier != identifier) && (issueURL == "" || attempt.IssueURL != issueURL) {
 			continue
 		}
 		recent = append(recent, attempt)

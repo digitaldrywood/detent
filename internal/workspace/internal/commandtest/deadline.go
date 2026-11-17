@@ -30,7 +30,7 @@ func (c *commandDeadlineContext) Err() error {
 	}
 }
 func Fixture(t *testing.T, delay, timeout time.Duration, expire bool) (context.Context, func(context.Context, *exec.Cmd) error) {
-	var ctx context.Context = t.Context()
+	ctx := t.Context()
 	var cancel context.CancelFunc = func() {}
 	if !expire {
 		ctx, cancel = context.WithTimeout(t.Context(), timeout)
