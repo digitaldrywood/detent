@@ -13,6 +13,7 @@ linters:
     - contextcheck
     - errcheck
     - errorlint
+    - heft
     - fatcontext
     - gosec
     - govet
@@ -29,6 +30,17 @@ linters:
     - wastedassign
 
   settings:
+    custom:
+      heft:
+        type: module
+        description: Keeps Go packages small so tests stay fast and cache well.
+        original-url: github.com/digitaldrywood/heft
+        settings:
+          exclude:
+            - "**/*_templ.go"
+            - "**/*.sql.go"
+          baseline: .heft-baseline.json
+
     errcheck:
       check-blank: true
       check-type-assertions: true

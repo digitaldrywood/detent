@@ -161,13 +161,14 @@ class LandingGateTest(unittest.TestCase):
             with self.subTest(target=target, budget=budget, failure=failure, changed=changed), tempfile.TemporaryDirectory(prefix="npm-nilaway-", dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
-                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh", "scripts/race-packages.sh", "scripts/check-sqlite-policy.py"):
+                for name in ("Makefile", ".golangci-version", ".custom-gcl.yml", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh", "scripts/race-packages.sh", "scripts/check-sqlite-policy.py"):
                     (root / name).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(ROOT / name, root / name)
-                for name in ("go", "git", "lint", "python3"):
+                for name in ("go", "git", "lint", "lint-installer", "python3"):
                     path = root / name
                     path.write_text(TOOL)
                     path.chmod(0o700)
+                os.utime(root / "lint-installer", (0, 0))
                 app_changed = changed.startswith("web/conversation/")
                 contract_changed = changed.startswith("internal/hubserver/")
                 if app_changed:
@@ -189,7 +190,7 @@ class LandingGateTest(unittest.TestCase):
                 if target == "test-race" and changed:
                     env["RACE_SHARD"] = changed
                 failed = bool(failure)
-                result = subprocess.run([env["PROBE_MAKE"], target, f"TEST_PROCS={budget}", f"GOLANGCI_LINT={root / 'lint'}"], cwd=root, env=env, capture_output=True, text=True, timeout=600)
+                result = subprocess.run([env["PROBE_MAKE"], target, f"TEST_PROCS={budget}", f"GOLANGCI_LINT={root / 'lint-installer'}", f"GOLANGCI_LINT_CUSTOM={root / 'lint'}", "HEFT=:"], cwd=root, env=env, capture_output=True, text=True, timeout=600)
                 self.assertEqual(result.returncode == 0, not failed, result.stdout + result.stderr)
                 events = [json.loads(line) for line in (root / "trace").read_text().splitlines()]
                 tests = [event for event in events if event["action"] == "start" and event["stage"] in ("unit-short", "invariants")]
