@@ -114,10 +114,13 @@ func SeedRepository(t *testing.T, repository corestore.Repository, organization 
 }
 
 func SeedCoreOrganization(ctx context.Context, writer corestore.Writer, organization tracker.OrganizationID) error {
-	access := writer.(interface {
+	access, ok := writer.(interface {
 		accessstore.Reader
 		accessstore.Writer
 	})
+	if !ok {
+		return errors.New("core writer does not support access records")
+	}
 	if _, err := access.AccessOrganization(ctx); !errors.Is(err, corestore.ErrNotFound) {
 		return err
 	}

@@ -3,8 +3,10 @@ package pgstoretest
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -114,6 +116,12 @@ func TenantTx(t *testing.T, runtime *postgres.Runtime, pool *pgxpool.Pool, organ
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { tx.Rollback(t.Context()) })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+		defer cancel()
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Logf("roll back test transaction: %v", err)
+		}
+	})
 	return tx
 }

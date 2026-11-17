@@ -51,14 +51,14 @@ func Fixture(t *testing.T, delay, timeout time.Duration, expire bool) (context.C
 			if err != nil {
 				return err
 			}
-			defer ready.Close()
-			defer signal.Close()
+			defer closeFile(t, ready)
+			defer closeFile(t, signal)
 			input, hold, err := os.Pipe()
 			if err != nil {
 				return err
 			}
-			defer input.Close()
-			defer hold.Close()
+			defer closeFile(t, input)
+			defer closeFile(t, hold)
 			cmd := command
 			cmd.ExtraFiles = []*os.File{signal}
 			cmd.Stdin = input
@@ -92,4 +92,10 @@ func Fixture(t *testing.T, delay, timeout time.Duration, expire bool) (context.C
 	}
 
 	return ctx, run
+}
+
+func closeFile(t *testing.T, file *os.File) {
+	if err := file.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		t.Errorf("close %s: %v", file.Name(), err)
+	}
 }

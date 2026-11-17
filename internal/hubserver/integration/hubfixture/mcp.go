@@ -79,10 +79,11 @@ func MCPData(t *testing.T, reply MCPReply, denied bool) json.RawMessage {
 	refusal := len(result.Data) == 0
 	if denied && !refusal {
 		var body map[string]json.RawMessage
-		_ = json.Unmarshal(result.Data, &body)
-		_, hasCode := body["code"]
-		_, hasMessage := body["message"]
-		refusal = hasCode && hasMessage && len(body) == 2
+		if err := json.Unmarshal(result.Data, &body); err == nil {
+			_, hasCode := body["code"]
+			_, hasMessage := body["message"]
+			refusal = hasCode && hasMessage && len(body) == 2
+		}
 	}
 	if failed != denied || denied && !refusal || !denied && len(result.Data) == 0 {
 		t.Fatalf("denied=%t response=%s %s", denied, reply.Result, reply.Error)

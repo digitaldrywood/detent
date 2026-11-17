@@ -83,7 +83,10 @@ func WorkItems(t *testing.T, repository fs.FS, org tracker.OrganizationID, proje
 		}{{1, "snapshot", baseRaw}, {2, encoding, patch}} {
 			fixture.Add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix, "record_id": "wi_core_import" + suffix, "revision": version.revision, "encoding": version.encoding, "record_json": string(version.raw)})
 		}
-		commentActor, _ := json.Marshal(tracker.Actor{Kind: "human", PrincipalID: "example-commenter"})
+		commentActor, err := json.Marshal(tracker.Actor{Kind: "human", PrincipalID: "example-commenter"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		comment := tracker.NativeComment{ID: "comment_core_import" + suffix, OrganizationID: org, ProjectID: project, WorkItemID: tracker.NativeWorkItemID("wi_core_import" + suffix), Revision: 1, Sequence: 1, Body: "Example comment", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-commenter"}, CreatedAt: parseTime(t, created), UpdatedAt: parseTime(t, created)}
 		commentRaw, err := json.Marshal(comment)
 		if err != nil {
@@ -97,7 +100,10 @@ func WorkItems(t *testing.T, repository fs.FS, org tracker.OrganizationID, proje
 		}
 		fixture.Add("queue_entries", map[string]any{"id": 41 + index*2, "issue_id": 41 + index*2, "scope": "native", "state": queueState, "rank": "010", "priority_override": 1, "created_at": created, "updated_at": updated})
 		for sequence, name := range []string{"issue.created", "issue.edited"} {
-			data, _ := json.Marshal(tracker.CollaborationData{Revision: tracker.Revision(sequence + 1)})
+			data, err := json.Marshal(tracker.CollaborationData{Revision: tracker.Revision(sequence + 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
 			fixture.Add("collaboration_events", map[string]any{"id": "event_core_import_" + string(rune('1'+sequence)) + suffix, "sequence": sequence + 1, "type": name, "schema_version": 1, "actor_json": string(actorJSON), "data_json": string(data), "event_revision": sequence + 1, "recorded_at": []string{created, updated}[sequence], "organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix})
 		}
 		fixture.Add("issues", map[string]any{"id": 41 + index*2, "native_id": "wi_core_import" + suffix, "project_id": project, "number": 1 + index*2, "revision": 2, "event_sequence": 2, "native_source_key": nil, "title": "Updated title", "body": body, "issue_contract_json": nil, "report_context_json": nil, "actor_json": string(actorJSON), "provenance_json": nil, "archived": 0, "created_at": created, "updated_at": updated, "native_created_at": created, "native_updated_at": updated, "last_activity_at": updated, "workflow_state_id": 1, "labels_json": "[\"needs-review\"]", "assignees_json": "[\"example-assignee\"]", "author_login": "example-author", "repository_id": 1, "dispatch_wait_since": nil, "organization_id": org})

@@ -69,7 +69,10 @@ func OpenHosted(t *testing.T, cfg Config) *Hosted {
 	if cfg.Hosted == nil {
 		t.Fatal("hubfixture.OpenHosted needs a hosted configuration")
 	}
-	provider, _ := cfg.Hosted.Provider.(*HostedProvider)
+	var provider *HostedProvider
+	if hostedProvider, ok := cfg.Hosted.Provider.(*HostedProvider); ok {
+		provider = hostedProvider
+	}
 	if cfg.Hosted.Provider == nil {
 		provider = NewHostedProvider()
 		hosted := *cfg.Hosted
