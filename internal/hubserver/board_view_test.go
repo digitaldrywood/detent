@@ -151,6 +151,72 @@ func TestBoardViewReadsOpenCardsPerTenant(t *testing.T) {
 			}
 		})
 	}
+	t.Run("lane change shows before projection", func(t *testing.T) {
+		credential := hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}
+		find := func(org tracker.OrganizationID, item tracker.NativeWorkItemID, lanes string) (tracker.NativeBoardCard, bool) {
+			params := boardViewParams(t, savedWorkState{View: "board", CompletedWindow: "24h"}, []tracker.ProjectID{projects[org]})
+			params.Set("lanes", lanes)
+			request, err := parseWorkBoardRequest(params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			view, err := service.readWorkBoard(t.Context(), hubscope.NativeScope{Organization: org, Credential: credential}, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := slices.IndexFunc(view.Cards, func(card tracker.NativeBoardCard) bool { return card.Issue.WorkItemID == item })
+			if index < 0 {
+				return tracker.NativeBoardCard{}, false
+			}
+			return view.Cards[index], true
+		}
+		for _, move := range []struct {
+			item          tracker.NativeWorkItemID
+			from, to      string
+			terminal      bool
+			openBefore    bool
+			openAfterward bool
+		}{
+			{item: "wi_view_0002", from: "In Progress", to: "Done", terminal: true, openBefore: true},
+			{item: "wi_view_0003", from: "Done", to: "Todo", openAfterward: true},
+		} {
+			if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+				item, err := w.WorkItem(t.Context(), projects["org_first"], move.item)
+				if err != nil {
+					return err
+				}
+				item.WorkflowStateName = new(move.to)
+				_, err = w.UpdateWorkItem(t.Context(), item)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			request, err := parseWorkBoardRequest(boardViewParams(t, savedWorkState{View: "board", CompletedWindow: "24h"}, []tracker.ProjectID{projects["org_first"]}, move.item))
+			if err != nil {
+				t.Fatal(err)
+			}
+			view, err := service.readWorkBoard(t.Context(), hubscope.NativeScope{Organization: "org_first", Credential: credential}, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(view.Cards) != 1 || view.Cards[0].Issue.State != move.to || view.Cards[0].Issue.Terminal != move.terminal {
+				t.Fatalf("%s item read=%+v want %s terminal=%t", move.item, view.Cards, move.to, move.terminal)
+			}
+			if _, open := find("org_first", move.item, "open"); open != move.openAfterward {
+				t.Fatalf("%s on the open board=%t after moving to %s", move.item, open, move.to)
+			}
+			if card, open := find("org_first", move.item, "all"); open && card.Issue.State != move.to {
+				t.Fatalf("%s shown in %s after moving to %s", move.item, card.Issue.State, move.to)
+			}
+			other, open := find("org_first_second", move.item, "all")
+			if !open || other.Issue.State != move.from {
+				t.Fatalf("other tenant's %s=%+v open=%t want %s", move.item, other.Issue.NativeReference, open, move.from)
+			}
+			if _, open := find("org_first_second", move.item, "open"); open != move.openBefore {
+				t.Fatalf("other tenant's %s on the open board=%t", move.item, open)
+			}
+		}
+	})
 	org := tracker.OrganizationID("org_first")
 	if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
 		item, err := w.WorkItem(t.Context(), projects[org], "wi_view_0001")
