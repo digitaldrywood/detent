@@ -3,6 +3,7 @@ package claim_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -11,15 +12,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type hydrateSource struct{ released []tracker.LeaseID }
+type hydrateSource struct {
+	released     []tracker.LeaseID
+	failures     map[tracker.NativeWorkItemID]error
+	releaseFails map[tracker.LeaseID]error
+}
 
-func (s *hydrateSource) Recovery(context.Context, tracker.NativeWorkItemID) (tracker.NativeRecovery, error) {
-	return tracker.NativeRecovery{}, nil
+func (s *hydrateSource) Recovery(_ context.Context, item tracker.NativeWorkItemID) (tracker.NativeRecovery, error) {
+	return tracker.NativeRecovery{}, s.failures[item]
 }
 
 func (s *hydrateSource) Release(_ context.Context, lease tracker.NativeLease, _ string) error {
 	s.released = append(s.released, lease.ID)
-	return nil
+	return s.releaseFails[lease.ID]
 }
 
 func (s *hydrateSource) Forget(tracker.NativeLease) {}
@@ -45,23 +50,42 @@ func TestHydrateLaterClaimRefusal(t *testing.T) {
 		{"runner draining releases won lease", &api.APIError{Status: http.StatusConflict, Code: "runner_draining"}, 0},
 		{"lost claim releases won lease", &api.APIError{Status: http.StatusConflict, Code: "stale_fencing_token"}, 0},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			source := &hydrateSource{}
-			lease := tracker.NativeLease{ID: "lease-won", WorkItemID: "wi_won", FencingToken: 3}
-			result, err := claim.Hydrate(t.Context(), source, []tracker.NativeLease{lease}, false, test.err)
-			if len(result.Candidates) != test.retained {
-				t.Fatalf("retained=%d want %d error=%v", len(result.Candidates), test.retained, err)
-			}
-			if test.retained == 1 {
-				if err != nil || len(source.released) != 0 || !errors.Is(result.Degraded, test.err) || result.Candidates[0].Lease.ID != lease.ID {
-					t.Fatalf("result=%+v released=%v error=%v", result, source.released, err)
+		for _, mode := range []string{"claim", "recovery", "recovery_release_lost"} {
+			recovery := mode != "claim"
+			t.Run(fmt.Sprintf("%s/%s", test.name, mode), func(t *testing.T) {
+				t.Parallel()
+				source := &hydrateSource{}
+				lease := tracker.NativeLease{ID: "lease-won", WorkItemID: "wi_won", FencingToken: 3}
+				leases := []tracker.NativeLease{lease}
+				cycleErr := test.err
+				if recovery {
+					refused := tracker.NativeLease{ID: "lease-refused", WorkItemID: "wi_refused", FencingToken: 4}
+					leases = []tracker.NativeLease{refused, lease}
+					source.failures = map[tracker.NativeWorkItemID]error{refused.WorkItemID: test.err}
+					cycleErr = nil
+					if mode == "recovery_release_lost" {
+						source.releaseFails = map[tracker.LeaseID]error{refused.ID: &api.APIError{Status: http.StatusConflict, Code: "stale_fencing_token"}}
+					}
 				}
-				return
-			}
-			if err == nil || len(source.released) != 1 || source.released[0] != lease.ID {
-				t.Fatalf("released=%v error=%v", source.released, err)
-			}
-		})
+				result, err := claim.Hydrate(t.Context(), source, leases, false, cycleErr)
+				if len(result.Candidates) != test.retained {
+					t.Fatalf("retained=%d want %d error=%v", len(result.Candidates), test.retained, err)
+				}
+				wantReleased := len(leases)
+				if test.retained == 1 {
+					wantReleased = len(leases) - 1
+					if err != nil || len(source.released) != wantReleased || !errors.Is(result.Degraded, test.err) || result.Candidates[0].Lease.ID != lease.ID {
+						t.Fatalf("result=%+v released=%v error=%v", result, source.released, err)
+					}
+					if recovery && source.released[0] != "lease-refused" {
+						t.Fatalf("released=%v want only the refused lease", source.released)
+					}
+					return
+				}
+				if err == nil || len(source.released) != wantReleased {
+					t.Fatalf("released=%v error=%v", source.released, err)
+				}
+			})
+		}
 	}
 }
