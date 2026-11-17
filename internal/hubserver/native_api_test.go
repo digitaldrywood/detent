@@ -412,6 +412,7 @@ func TestNativeAPIError(t *testing.T) {
 		{"domain not found", "not_found", "Resource was not found", "", corestore.ErrNotFound, http.StatusNotFound},
 		{"authorization missing resource", "access_denied", "operator access is unavailable", "WARN", &operatortool.AuthorizationError{Stage: "check", Cause: corestore.ErrNotFound}, http.StatusForbidden},
 		{"search refresh pending", "not_ready", "Search index refresh is pending", "", searchstore.ErrIndexPending, http.StatusServiceUnavailable},
+		{"search budget", "service_unavailable", "Search is busy; retry the request", "ERROR", hubapi.ProjectRecordError(fmt.Errorf("board search: %w", errors.Join(searchstore.ErrBusy, context.DeadlineExceeded))), http.StatusServiceUnavailable},
 		{"service unavailable", "storage_owner_unavailable", "Dependency is temporarily unavailable", "ERROR", &hubapi.NativeError{Code: "storage_owner_unavailable", Message: "Dependency is temporarily unavailable", Status: http.StatusServiceUnavailable, PublicMessage: true, LogAttributes: []any{"private_detail", "private-context"}}, http.StatusServiceUnavailable},
 		{"internal error", "native_operation_failed", "Native operation could not be completed", "ERROR", errors.New("database unavailable"), http.StatusInternalServerError},
 	} {
@@ -439,6 +440,9 @@ func TestNativeAPIError(t *testing.T) {
 						t.Fatal(err)
 					}
 					failure := requireNativeCode(t, recorded, test.status, test.code)
+					if retry := recorded.Header().Get("Retry-After"); (test.name == "search budget") != (retry == "1") {
+						t.Fatalf("Retry-After = %q", retry)
+					}
 					wantReason := test.reason
 					if test.name == "private validation" && !hosted {
 						wantReason = "private-context"

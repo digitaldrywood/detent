@@ -43,6 +43,7 @@ type NativeError struct {
 	Status          int              `json:"-"`
 	PublicMessage   bool             `json:"-"`
 	LogAttributes   []any            `json:"-"`
+	RetryAfter      int              `json:"-"`
 }
 
 func (e *NativeError) Error() string {

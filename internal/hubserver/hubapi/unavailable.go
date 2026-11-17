@@ -4,10 +4,14 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strconv"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -63,6 +67,9 @@ func ProjectRecordError(err error) error {
 	if errors.Is(err, projectstore.ErrStateInUse) {
 		return NativeWorkflowInvalid("Workflow states used by work items cannot be removed")
 	}
+	if errors.Is(err, searchstore.ErrBusy) {
+		return &NativeError{Code: "service_unavailable", Message: "Search is busy; retry the request", Status: http.StatusServiceUnavailable, PublicMessage: true, RetryAfter: 1}
+	}
 	if errors.Is(err, projectstore.ErrActiveWork) {
 		return NativePublicInvalid("Finish or cancel active work before deleting this project")
 	}
@@ -80,4 +87,11 @@ func WorkspaceUnavailable() error {
 		Status:        http.StatusUnprocessableEntity,
 		PublicMessage: true,
 	}
+}
+
+func WithRetryAfter(c echo.Context, failure *NativeError) echo.Context {
+	if failure.RetryAfter > 0 {
+		c.Response().Header().Set("Retry-After", strconv.Itoa(failure.RetryAfter))
+	}
+	return c
 }

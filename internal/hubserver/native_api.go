@@ -194,9 +194,9 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 			if failure.Status >= http.StatusInternalServerError && failure.Code != "checkout_unavailable" {
 				message = "The requested operation is unavailable"
 			}
-			return s.refusedAPIError(c, failure.Status, failure.Code, message, &hubapi.NativeError{Code: failure.Code, Message: message, CurrentRevision: failure.CurrentRevision, Details: failure.Details, Status: failure.Status}, attributes...)
+			return s.refusedAPIError(hubapi.WithRetryAfter(c, failure), failure.Status, failure.Code, message, &hubapi.NativeError{Code: failure.Code, Message: message, CurrentRevision: failure.CurrentRevision, Details: failure.Details, Status: failure.Status}, attributes...)
 		}
-		return s.refusedAPIError(c, failure.Status, failure.Code, message, failure, attributes...)
+		return s.refusedAPIError(hubapi.WithRetryAfter(c, failure), failure.Status, failure.Code, message, failure, attributes...)
 	}
 	var conflict *operatortool.ConflictError
 	if errors.As(err, &conflict) {
