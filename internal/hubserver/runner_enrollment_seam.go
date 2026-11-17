@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/labstack/echo/v4"
 
@@ -33,23 +32,6 @@ func (s *Service) registerRunnerRoutes(e *echo.Echo) {
 	e.PUT("/api/v2/organizations/:organization/machines/:machine/routing", s.updateRunnerHost, admin)
 	e.POST(hubapi.NativeBase+"/leases/:lease/validate", s.validateRunnerLease, s.requireNativeScope(hubapi.APIScopeWorker))
 	e.POST(hubapi.NativeBase+"/machines/:machine/heartbeat", s.heartbeatNativeMachine, s.requireNativeScope(hubapi.APIScopeWorker))
-}
-
-func requireRunnerUpdate(result sql.Result, err error) error {
-	if err != nil {
-		return err
-	}
-	if result == nil {
-		return hubapi.NativeNotFound()
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count != 1 {
-		return hubapi.NativeNotFound()
-	}
-	return nil
 }
 
 func (s *Service) runnerEnrollmentService() *runnerenroll.Service {

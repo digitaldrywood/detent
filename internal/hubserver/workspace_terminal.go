@@ -1,8 +1,6 @@
 package hubserver
 
 import (
-	"context"
-	"database/sql"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -63,14 +61,6 @@ func (s *Service) getWorkspaceTerminalRecording(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.Blob(http.StatusOK, "application/x-asciicast; charset=utf-8", []byte(recording.Cast))
-}
-
-// nativeExecer is the write half of nativeQueryer. A recording is written
-// outside the hub's transaction helper, the way an audit row is: both have to
-// survive a torn connection, and a record that vanished with a rolled-back
-// write would not be a record.
-type nativeExecer interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 func terminalRecordingFromPostgres(row postgres.TerminalRecording) terminalRecordingRecord {

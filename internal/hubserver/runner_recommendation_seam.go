@@ -39,10 +39,6 @@ func recommendationHoursFromSegments(segments []hostmetrics.Summary) ([]recommen
 	return runneradvice.HoursFromSegments(segments)
 }
 
-func mergeHostSummary(a, b hostmetrics.Summary) (hostmetrics.Summary, bool) {
-	return runneradvice.MergeHostSummary(a, b)
-}
-
 func (s *Service) runnerAdviceService() *runneradvice.Service {
 	return runneradvice.New(runneradvice.Deps{
 		Repository: s.config.TenantRepository, Now: s.config.Clock, Auth: s.requestAuth, RecordError: hubapi.ProjectRecordError,

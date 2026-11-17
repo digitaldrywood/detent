@@ -25,7 +25,6 @@ type (
 	runnerUpdateChange       = runnerupdate.Change
 	urgentRunnerUpdate       = runnerupdate.UrgentUpdate
 	urgentRunnerUpdateChange = runnerupdate.UrgentChange
-	runnerReceiptWrite       = runnerupdate.ReceiptWrite
 )
 
 func (s *Service) runnerUpdateService() *runnerupdate.Service {

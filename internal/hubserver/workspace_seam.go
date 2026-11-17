@@ -139,12 +139,10 @@ func terminalIsolationAllowed(requires []string, configured, reported string) bo
 	return workspacehub.TerminalIsolationAllowed(requires, configured, reported)
 }
 
-type relayRoom = workspacerelay.Room
 type execRunState = workspacerelay.ExecRun
 type terminalStreamState = workspacerelay.TerminalStream
 type relayStream = workspacerelay.Stream
 type relayOutbound = workspacerelay.Outbound
-type relayBufferedFrame = workspacerelay.BufferedFrame
 type relayConnection = workspacerelay.Connection
 
 const (

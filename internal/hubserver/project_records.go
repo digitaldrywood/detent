@@ -42,43 +42,6 @@ func (s *Service) authorizeProjectRecord(ctx context.Context, scope hubscope.Nat
 	return s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
 }
 
-func (s *Service) authorizeProjectRecordWith(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, write bool) error {
-	if scope.Credential.Runner.RunnerID != "" && scope.Credential.Runner.OrganizationID != scope.Organization {
-		return hubapi.NativeNotFound()
-	}
-	if s.config.Hosted != nil && string(scope.Organization) != s.config.Hosted.OrganizationID {
-		return hubapi.NativeNotFound()
-	}
-	if scope.Project == "" {
-		if scope.Credential.Scope != hubapi.APIScopeAdmin && (scope.Credential.Hosted == nil || scope.Credential.HostedRole != "owner" && scope.Credential.HostedRole != "admin") {
-			return hubapi.NativeNotFound()
-		}
-		var exists bool
-		if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id=?)", scope.Organization).Scan(&exists); err != nil {
-			return err
-		}
-		if !exists {
-			return hubapi.NativeNotFound()
-		}
-		return nil
-	}
-	condition, args := scope.Credential.ProjectAccessSQL("p.organization_id", "p.id", "1")
-	args = append([]any{scope.Organization, scope.Project}, args...)
-	var allowed bool
-	if err := query.QueryRowContext(ctx, "WITH p AS (SELECT ? AS organization_id,? AS id) SELECT ("+condition+") FROM p", args...).Scan(&allowed); err != nil {
-		return err
-	}
-	if !allowed {
-		return hubapi.NativeNotFound()
-	}
-	if scope.Credential.Hosted != nil {
-		if err := s.requireHostedProject(ctx, query, scope, write); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 type projectAccessAuthority struct{}
 
 func (projectAccessAuthority) Rollback() error { return nil }

@@ -46,22 +46,16 @@ const (
 
 type Service struct {
 	archiveEncoder          attachment.ArchiveEncoder
-	changeColumnFamily      int
 	changeColumnAfter       any
-	changeSessionAfter      string
 	dashboard               *dashboardDelivery
 	releaseNotes            []releasenotes.Build
-	issuePages              nativeIssuePageCache
 	boardAccess             boardAccessCache
 	writerStatsAt           atomic.Int64
 	writerWaits             atomic.Int64
 	writerWaited            atomic.Int64
-	readerWaits             atomic.Int64
-	readerWaited            atomic.Int64
 	requestMetrics          *tenantRequestMetrics
 	maintenance             *hubmaintenance.Scheduler
 	runnerPublishedReleases sync.Map
-	tokenUse                sync.Map
 	tokenUseWork            sync.WaitGroup
 	mcpHTTP                 *mcp.HTTPHandler
 	operatorChat            *chat.Service
@@ -89,13 +83,9 @@ type Service struct {
 	workerCancel            context.CancelFunc
 	workerDone              chan struct{}
 	boardRefresh            chan struct{}
-	activityConvertFamily   atomic.Uint64
-	projectionCursors       sync.Map
 	cleanupPollCursors      sync.Map
 	boardRefreshCursor      string
 	boardRetentionScope     hubscope.NativeScope
-	lastNativeCleanup       time.Time
-	githubBatchCursor       tracker.ProjectID
 	workerStopOnce          sync.Once
 	pullRequests            *pullRequestCache
 	notifications           *notificationBroker

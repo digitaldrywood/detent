@@ -28,17 +28,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type runnerSettings struct {
-	MachineUse                  string                                  `json:"machine_use,omitempty"`
-	ProjectRanks                map[tracker.ProjectID]int               `json:"project_ranks,omitempty"`
-	ProjectConfigurationCommand *runnerauth.ProjectConfigurationCommand `json:"project_configuration_request,omitempty"`
-	UpdateRequest               *runnerauth.UpdateRequest               `json:"update_request,omitempty"`
-	CapacityRequest             *runnerauth.CapacityRequest             `json:"capacity_request,omitempty"`
-	IsolationTier               string                                  `json:"isolation_tier"`
-	HostServices                []string                                `json:"host_services"`
-	Availability                runnerauth.Availability                 `json:"availability"`
-}
-
 func (s *Service) getRunnerRouting(c echo.Context) error {
 	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
@@ -709,24 +698,6 @@ func runnerExcluded(exclusions []runnerauth.Exclusion) error {
 		return nil
 	}
 	return &hubapi.NativeError{Code: exclusions[0].Code, Message: exclusions[0].Message, Status: http.StatusConflict}
-}
-
-func requireLeaseRunner(ctx context.Context, tx hubapi.NativeQueryer, lease tracker.LeaseID, scope hubscope.NativeScope) error {
-	var count int
-	query := `SELECT count(*) FROM leases l JOIN issues i ON i.id = l.issue_id JOIN machines m ON m.id = l.machine_id
-WHERE l.lease_id = ? AND i.organization_id = ? AND i.project_id = ? AND m.organization_id = ? AND m.token_id = ?`
-	args := []any{lease, scope.Organization, scope.Project, scope.Organization, scope.Credential.ID}
-	if scope.Credential.Runner.RunnerID != "" {
-		query = `SELECT count(*) FROM leases l JOIN issues i ON i.id = l.issue_id JOIN lease_runners lr ON lr.lease_id = l.lease_id
-JOIN runner_identities r ON r.id = lr.runner_id WHERE l.lease_id = ? AND i.organization_id = ? AND i.project_id = ? AND r.organization_id = ? AND r.token_id = ?`
-	}
-	if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
-		return err
-	}
-	if count != 1 {
-		return hubapi.NativeNotFoundAt("lease_runner_credential")
-	}
-	return nil
 }
 
 func (s *Service) validateRunnerLease(c echo.Context) error {

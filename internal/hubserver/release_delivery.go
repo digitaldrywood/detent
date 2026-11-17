@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -41,26 +40,6 @@ func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativeConflict(current.Revision))
 	}
 	return c.JSON(http.StatusOK, status)
-}
-
-func readReleaseDelivery(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, item string) (tracker.ReleaseDelivery, bool, error) {
-	var d tracker.ReleaseDelivery
-	var at string
-	var version sql.NullString
-	err := query.QueryRowContext(ctx, `SELECT source_issue_id, source_change_id, source_merge_sha, repository, pr_number,
-head_ref, head_sha, base_ref, base_sha, frozen_sha, change_id, version_id, principal_id, actor_kind, via_key, associated_at
-FROM release_deliveries WHERE organization_id = ? AND project_id = ? AND work_item_id = ?`, scope.Organization, scope.Project, item).Scan(
-		&d.SourceIssueID, &d.SourceChangeID, &d.SourceMergeSHA, &d.Repository, &d.PRNumber, &d.HeadRef, &d.HeadSHA, &d.BaseRef, &d.BaseSHA, &d.FrozenSHA,
-		&d.ChangeID, &version, &d.Actor.PrincipalID, &d.Actor.Kind, &d.Actor.ViaKey, &at)
-	if errors.Is(err, sql.ErrNoRows) {
-		return d, false, nil
-	}
-	if err != nil {
-		return d, false, err
-	}
-	d.VersionID = version.String
-	d.AssociatedAt, err = hubapi.ParseTimeValue(at)
-	return d, err == nil, err
 }
 
 func (s *Service) prepareReleasePick(ctx context.Context, scope hubscope.NativeScope, item string, r tracker.AssociateReleasePick) error {

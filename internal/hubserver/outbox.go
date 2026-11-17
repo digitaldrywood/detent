@@ -74,13 +74,6 @@ type WorkflowStateChange struct {
 }
 
 type outboxRecord struct {
-	idempotencyKey string
-	repositoryID   int64
-	issueID        int64
-	kind           MutationKind
-	targetNodeID   string
-	desired        json.RawMessage
-	coalesceKey    string
 }
 
 func (s *Service) ChangeWorkflowState(ctx context.Context, change WorkflowStateChange) (OutboxItem, error) {
