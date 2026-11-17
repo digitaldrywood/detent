@@ -4,8 +4,6 @@ package hubserver
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"testing"

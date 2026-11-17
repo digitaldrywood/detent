@@ -5,7 +5,6 @@ package procgroup
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"time"
 )
