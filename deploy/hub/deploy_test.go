@@ -860,3 +860,113 @@ func TestSocketActivationInstallerIsRepeatable(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployHealthProgressWindows(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, samples, want string
+		steps               int
+	}{
+		{"unavailable health", "return 1", "failed", 3},
+		{"invalid health", "echo broken", "failed", 3},
+		{"wrong commit", "sample starting false 1 wrong", "failed", 3},
+		{"stalled migration", "sample starting true 1", "failed", 9},
+		{"migration stalls after progress", "if (( tick < 4 )); then sample starting true $((tick / 2 + 1)); else sample starting true 3; fi", "failed", 13},
+		{"non-migration stall", "sample starting false 1", "failed", 3},
+		{"health becomes available", "if (( tick < 2 )); then return 1; fi; if (( tick < 4 )); then sample starting false 1; else sample ok false 1; fi", "healthy", 4},
+		{"advancing hub migrations", "if (( tick < 12 )); then sample starting true $((tick / 2 + 1)); else sample ok false 7; fi", "healthy", 12},
+		{"advancing registry migrations", "sample_registry=$((tick / 2 + 1)); if (( tick < 12 )); then sample starting true 1; else sample ok false 1; fi", "healthy", 12},
+		{"advancing auth migrations", "sample_auth=$((tick / 2 + 1)); if (( tick < 12 )); then sample starting true 1; else sample ok false 1; fi", "healthy", 12},
+		{"advancing platform migrations", "sample_platform=$((tick / 2 + 1)); if (( tick < 12 )); then sample starting true 1; else sample ok false 1; fi", "healthy", 12},
+		{"regressing versions are not progress", "if (( tick % 2 )); then sample starting true 1; else sample starting true 2; fi", "failed", 9},
+		{"health disappears during migration", "if (( tick == 0 )); then sample starting true 1; else return 1; fi", "failed", 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			script, err := filepath.Abs("deploy-from-ci.sh")
+			if err != nil {
+				t.Fatal(err)
+			}
+			code := `source "$1"
+release=candidate short=abcdef123 unit=example NAME=example STATE=unused
+tick=0
+systemctl() { echo 1; }
+sudo() { echo "$release"; }
+health_wait_now() { echo "$tick"; }
+sleep() { tick=$((tick + 1)); if (( tick > 20 )); then echo unbounded >&2; exit 90; fi; }
+sample() {
+ printf '{"status":"%s","migrations_running":%s,"schema_version":%s,"registry_schema_version":%s,"auth_schema_version":%s,"platform_schema_version":%s,"commit":"%s","schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","auth_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","platform_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true}' "$1" "$2" "$3" "${sample_registry:-1}" "${sample_auth:-1}" "${sample_platform:-1}" "${4:-abcdef123}"
+}
+read_health() { ` + test.samples + `; }
+if wait_healthy 3 9; then echo healthy; else echo failed; fi
+printf 'steps=%s\n' "$tick"
+`
+			command := exec.CommandContext(t.Context(), "bash", "-euo", "pipefail", "-c", code, "test", script)
+			command.Env = []string{"PATH=" + os.Getenv("PATH")}
+			output, err := command.CombinedOutput()
+			if err != nil || !strings.HasSuffix(string(output), fmt.Sprintf("%s\nsteps=%d\n", test.want, test.steps)) {
+				t.Fatalf("wait = %v: %s; want %s after %d steps", err, output, test.want, test.steps)
+			}
+		})
+	}
+}
+
+func TestDeployNoProgressRollback(t *testing.T) {
+	t.Parallel()
+	script, err := os.ReadFile("deploy-from-ci.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := string(script[strings.LastIndex(string(script), "if wait_healthy; then"):strings.LastIndex(string(script), "\n}\n")])
+	path, err := filepath.Abs("deploy-from-ci.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ name, previousSchema, health, want string }{
+		{"compatible previous release", "1", "return 1", "RESTORED"},
+		{"incompatible previous release", "2", "return 1", "recovery required"},
+		{"unknown schema", "1", "echo broken", "recovery required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			code := `source "$1"
+NAME=example STATE=unused unit=example OPT=unused
+previous=/releases/detent-123456789 release=$previous short=123456789
+tick=0
+systemctl() { echo 1; }
+sudo() {
+ if [ "$2" = readlink ]; then echo "$release";
+ elif [ "$2" = ln ]; then echo RESTORED;
+ else return 1; fi
+}
+health_wait_now() { echo "$tick"; }
+sleep() { tick=$((tick + 60)); if (( tick > 300 )); then echo unbounded; exit 90; fi; }
+read_health() {
+ if [ "$release" = candidate ]; then ` + test.health + `; else
+ echo '{"status":"ok","migrations_running":false,"schema_version":1,"registry_schema_version":1,"auth_schema_version":1,"platform_schema_version":1,"commit":"123456789","schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","auth_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","platform_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true}'
+ fi
+}
+capture_previous_schema
+release=candidate short=abcdef123
+binary_schema() {
+ local version=1
+ if [ "$1" = "$previous" ]; then version=` + test.previousSchema + `; fi
+ printf '%s %s %s %s' "$version" "$version" "$version" "$version"
+ printf ' %s' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ echo ' true'
+}
+postgres_cutover_active() { return 1; }
+restart_unit() { return 0; }
+` + decision
+			command := exec.CommandContext(t.Context(), "bash", "-euo", "pipefail", "-c", code, "test", path)
+			command.Env = []string{"PATH=" + os.Getenv("PATH")}
+			output, err := command.CombinedOutput()
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 || !strings.Contains(string(output), test.want) || !strings.Contains(string(output), "no progress for 120 seconds") {
+				t.Fatalf("deploy = %v: %s; want failed deploy and %s", err, output, test.want)
+			}
+			if test.want != "RESTORED" && strings.Contains(string(output), "RESTORED") {
+				t.Fatalf("unsafe rollback: %s", output)
+			}
+		})
+	}
+}

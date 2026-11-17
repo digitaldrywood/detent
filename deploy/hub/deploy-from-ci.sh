@@ -96,8 +96,14 @@ capture_previous_schema() {
 	rollback_platform_applicable=$platform_applicable
 }
 
+health_wait_now() {
+	python3 -c 'import time; print(int(time.monotonic()))'
+}
+
 wait_healthy() {
 	local raw_health health health_valid status running schema registry auth platform hub_fingerprint registry_fingerprint auth_fingerprint platform_fingerprint hub_applicable registry_applicable auth_applicable platform_applicable facts_complete observed sample_valid
+	local no_progress_window=${1:-120} migration_window=${2:-3600} last_progress now window was_valid=false
+	last_progress=$(health_wait_now) || return 1
 	applied=0
 	applied_registry=0
 	applied_auth=0
@@ -136,8 +142,16 @@ wait_healthy() {
 		if [ -n "$raw_health" ]; then health=$(printf '%s' "$raw_health" | parse_health 2>/dev/null) || health="invalid unavailable false -1 -1 -1 -1 - - - - false false false false false unknown"; else health="missing unavailable false -1 -1 -1 -1 - - - - false false false false false unknown"; fi
 		read -r health_valid status running schema registry auth platform hub_fingerprint registry_fingerprint auth_fingerprint platform_fingerprint hub_applicable registry_applicable auth_applicable platform_applicable facts_complete observed <<<"$health"
 		if [ "$health_valid" != missing ]; then rollback_schema_known=false; fi
-	if [[ "$observed" = "$short"* && ( "$hub_applicable" != true || "$schema" =~ ^[1-9][0-9]*$ ) && ( "$registry_applicable" != true || "$registry" =~ ^[1-9][0-9]*$ ) && ( "$auth_applicable" != true || "$auth" =~ ^[1-9][0-9]*$ ) && ( "$platform_applicable" != true || "$platform" =~ ^[1-9][0-9]*$ ) ]]; then
+	if [[ "$health_valid" = valid && "$observed" = "$short"* && ( "$hub_applicable" != true || "$schema" =~ ^[1-9][0-9]*$ ) && ( "$registry_applicable" != true || "$registry" =~ ^[1-9][0-9]*$ ) && ( "$auth_applicable" != true || "$auth" =~ ^[1-9][0-9]*$ ) && ( "$platform_applicable" != true || "$platform" =~ ^[1-9][0-9]*$ ) ]]; then
 	  sample_valid=true
+	  now=$(health_wait_now) || return 1
+	  if [ "$was_valid" = false ] ||
+	     { [ "$hub_applicable" = true ] && (( schema > applied )); } ||
+	     { [ "$registry_applicable" = true ] && (( registry > applied_registry )); } ||
+	     { [ "$auth_applicable" = true ] && (( auth > applied_auth )); } ||
+	     { [ "$platform_applicable" = true ] && (( platform > applied_platform )); }; then
+	    last_progress=$now
+	  fi
 	  if [ "$running" = true ] || [ "$facts_complete" != true ]; then applied_final=false; else applied_final=true; fi
 	  if [ "$running" = false ] && [ "$facts_complete" = true ]; then
 		    rollback_schema_known=true
@@ -178,6 +192,14 @@ wait_healthy() {
     if [[ "$running" = true && "$observed" = "$short"* ]]; then
       echo "startup migrations running; applied schema $applied" >&2
     fi
+		was_valid=$sample_valid
+		now=$(health_wait_now) || return 1
+		window=$no_progress_window
+		if [[ "$sample_valid" = true && "$running" = true ]]; then window=$migration_window; fi
+		if (( now - last_progress >= window )); then
+			echo "health check made no progress for $window seconds; migrations running: $running" >&2
+			return 1
+		fi
     sleep 2
 	done
 }
