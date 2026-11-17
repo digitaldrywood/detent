@@ -43,7 +43,7 @@ func Hydrate(ctx context.Context, source Source, leases []tracker.NativeLease, r
 		}
 		return SchedulingError(cause)
 	}
-	if err != nil && (len(leases) == 0 || !independentFailure(ctx, err)) {
+	if err != nil && (len(leases) == 0 || !independentFailure(ctx, err) && !laterClaimRefused(ctx, err)) {
 		return Result{}, release(leases, err)
 	}
 	degraded := err
@@ -87,6 +87,14 @@ func independentFailure(ctx context.Context, err error) bool {
 		return false
 	}
 	return errors.Is(err, api.ErrUnavailable)
+}
+
+func laterClaimRefused(ctx context.Context, err error) bool {
+	var failure *api.APIError
+	if ctx.Err() != nil || !errors.As(err, &failure) {
+		return false
+	}
+	return failure.Status == http.StatusNotFound && failure.Code == "not_found" || failure.Status == http.StatusConflict && (failure.Code == "issue_contract_unsatisfied" || failure.Code == "revision_conflict")
 }
 
 func SchedulingError(err error) error {
