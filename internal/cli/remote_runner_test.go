@@ -9,11 +9,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/cli/internal/workspacefixture"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func TestHubRunnerDoesNotOpenLocalRuntimeState(t *testing.T) {
@@ -188,6 +192,136 @@ func TestHubRunnerUpdateUsesRemoteReceiptOwner(t *testing.T) {
 				if _, err := os.Stat(path); !os.IsNotExist(err) {
 					t.Errorf("scheduler created local state %s: %v", path, err)
 				}
+			}
+		})
+	}
+}
+
+func TestRemoteRunnerWorkspaceLane(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "private", "runner.json")
+	identity, err := runnerauth.Initialize(identityPath, "https://hub.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.Identity.OrganizationID = "org_test"
+	identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+	identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+	if err := runnerauth.Save(identityPath, identity); err != nil {
+		t.Fatal(err)
+	}
+
+	seenSessions := map[string]bool{}
+	for _, scenario := range []struct {
+		name  string
+		valid bool
+	}{{"serving", true}, {"restarted", true}, {"unresolvable policy", false}} {
+		valid := scenario.valid
+		t.Run(scenario.name, func(t *testing.T) {
+			root := t.TempDir()
+			selected := writeWorkspaceLaneProject(t, "example")
+			runDoctorWorkflowSourceGit(t, selected.Workdir, "init")
+			if !valid {
+				selected.Workflow = filepath.Join(root, "missing", "WORKFLOW.md")
+			}
+			ticks := make(chan time.Time, 1)
+			tickerReady := make(chan struct{})
+			hub := workspacefixture.New(t, identity)
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			cfg := BootConfig{Version: "dev", Headless: true, Shutdown: NewShutdownController(), remoteHubHTTPClient: hub.Client}
+			cfg.remoteHeartbeatTicker = func(time.Duration) (<-chan time.Time, func()) { close(tickerReady); return ticks, func() {} }
+			cfg.Global, err = globalconfig.Default()
+			if err != nil {
+				t.Fatal(err)
+			}
+			selected.Weight = 1
+			cfg.Global.Projects = []globalconfig.Project{selected}
+			cfg.Global.Client = globalconfig.HubClient{URL: identity.HubURL, IdentityFile: identityPath, OrganizationID: "org_test", NativeProjects: map[string]string{"example": "prj_test"}, ProviderCapacityFile: writeProviderCapacityFixture(t, root)}
+			cfg.Global.Path = ""
+			done := make(chan error, 1)
+			go func() { done <- startRemoteRunner(ctx, cfg) }()
+			joined := false
+			t.Cleanup(func() {
+				cancel()
+				hub.Unblock()
+				if !joined {
+					<-done
+				}
+			})
+			waitCtx := testenv.WaitContext(t, ctx)
+			wait := func(ch <-chan struct{}) {
+				t.Helper()
+				select {
+				case <-ch:
+				case err := <-done:
+					joined = true
+					t.Fatalf("runner stopped: %v", err)
+				case <-waitCtx.Done():
+					t.Fatal("workspace lane did not advance")
+				}
+			}
+			wait(tickerReady)
+		drain:
+			for {
+				select {
+				case <-hub.Reports:
+				default:
+					break drain
+				}
+			}
+			ticks <- time.Now()
+			seen := false
+			for !seen {
+				select {
+				case report := <-hub.Reports:
+					if valid {
+						if report == nil || !report.Files {
+							t.Fatalf("serving lane advertised no capabilities: %+v", report)
+						}
+						seen = true
+					} else {
+						if report != nil && *report != (workspacesession.Capabilities{}) {
+							t.Fatalf("no lane advertised capabilities: %+v", report)
+						}
+						seen = true
+					}
+				case err := <-done:
+					joined = true
+					t.Fatalf("runner stopped before heartbeat: %v", err)
+				case <-waitCtx.Done():
+					t.Fatal("heartbeat not observed")
+				}
+			}
+			if valid {
+				wait(hub.Released)
+			}
+			cancel()
+			if valid {
+				select {
+				case err := <-done:
+					joined = true
+					t.Fatalf("runner did not join workspace release: %v", err)
+				default:
+				}
+			}
+			hub.Unblock()
+			if err := <-done; !errors.Is(err, context.Canceled) {
+				t.Errorf("shutdown = %v", err)
+			}
+			joined = true
+			if valid {
+				if seenSessions[hub.WorkspaceSession] {
+					t.Fatalf("runner restart reused session %q", hub.WorkspaceSession)
+				}
+				seenSessions[hub.WorkspaceSession] = true
+				for _, id := range hub.IssueSessions {
+					if id == hub.WorkspaceSession {
+						t.Fatal("workspace reused issue session")
+					}
+				}
+			}
+			if valid && hub.Claims != 1 {
+				t.Errorf("claims = %d, want one", hub.Claims)
 			}
 		})
 	}

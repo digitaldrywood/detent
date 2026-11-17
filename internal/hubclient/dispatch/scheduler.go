@@ -23,14 +23,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type SchedulerConfig struct {
-	HubProcessReceipts bool
-	ExecutionFactory   ExecutionFactory
-	CompletionRestorer CompletionRestorer
-	ReleasedStopped    func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
-	AvailableCapacity  func(context.Context, int) int
+	WorkspaceCapabilities func() workspacesession.Capabilities
+	HubProcessReceipts    bool
+	ExecutionFactory      ExecutionFactory
+	CompletionRestorer    CompletionRestorer
+	ReleasedStopped       func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
+	AvailableCapacity     func(context.Context, int) int
 
 	StorageConstraint func(context.Context) string
 
@@ -61,13 +63,14 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
-	hubProcessReceipts bool
-	executionFactory   ExecutionFactory
-	completionRestorer CompletionRestorer
-	controlMu          sync.RWMutex
-	controlPaused      atomic.Bool
-	releasedStopped    func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
-	availableCapacity  func(context.Context, int) int
+	workspaceCapabilities func() workspacesession.Capabilities
+	hubProcessReceipts    bool
+	executionFactory      ExecutionFactory
+	completionRestorer    CompletionRestorer
+	controlMu             sync.RWMutex
+	controlPaused         atomic.Bool
+	releasedStopped       func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
+	availableCapacity     func(context.Context, int) int
 
 	storageConstraint func(context.Context) string
 
@@ -166,6 +169,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		isolationReport:       config.IsolationReport,
 		providerReports:       config.ProviderReports,
 		claimPolicies:         make(map[string]claimPolicy),
+		workspaceCapabilities: config.WorkspaceCapabilities,
 		client:                client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
 		leaseTTL: config.LeaseTTL, now: now, sessionID: sessionID, claims: make(map[string]tracker.Lease),
 		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),

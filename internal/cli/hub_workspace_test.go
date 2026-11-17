@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"crypto/rand"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,11 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
-
-// The runner's workspace lane wiring. A workspace is
-// claimed only by a runner that reports the capabilities it requires, so the
-// decision to run a lane at all and the report on the heartbeat answer one
-// question and must agree.
 
 func TestWorkspaceLaneEnabled(t *testing.T) {
 	t.Parallel()
@@ -54,11 +50,11 @@ func TestWorkspaceSessionIDsAreUniqueAndDistinct(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
-		generations []int64
+		generations []string
 	}{
-		{name: "one generation", generations: []int64{1}},
-		{name: "overlapping generations", generations: []int64{1, 2}},
-		{name: "restarted generation counters", generations: []int64{7, 8, 9}},
+		{name: "one generation", generations: []string{"1"}},
+		{name: "overlapping generations", generations: []string{"1", "2"}},
+		{name: "process generations", generations: []string{rand.Text(), rand.Text(), rand.Text()}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -126,7 +122,7 @@ func writeWorkspaceLaneProject(t *testing.T, projectID string) globalconfig.Proj
 	t.Helper()
 	root := t.TempDir()
 	path := filepath.Join(root, "WORKFLOW.md")
-	raw := "---\ntracker:\n  kind: hub_native\n  repository: acme/" + projectID +
+	raw := "---\ntracker:\n  kind: hub_native\n  repository: example-org/" + projectID +
 		"\n  api_key: test-token\nworkspace:\n  root: " + filepath.Join(root, "worktrees") + "\n---\nPrivate instructions.\n"
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
@@ -170,7 +166,7 @@ func TestNewWorkspaceLanes(t *testing.T) {
 			if test.scheduling != nil {
 				scheduling = test.scheduling(t)
 			}
-			lanes := newWorkspaceLanes(t.Context(), cfg, scheduling, 1, slog.New(slog.DiscardHandler), testWorkspaceSupport())
+			lanes := newWorkspaceLanes(t.Context(), cfg, scheduling, "1", slog.New(slog.DiscardHandler), testWorkspaceSupport())
 			if len(lanes) != test.want {
 				t.Fatalf("newWorkspaceLanes() returned %d lanes, want %d", len(lanes), test.want)
 			}

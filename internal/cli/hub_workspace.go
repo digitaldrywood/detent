@@ -18,35 +18,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Wiring for the runner's workspace lane.
-//
-// A workspace is its own work item kind and is claimed in a lane of its own,
-// beside dispatch rather than through it, because it "does not end when a turn
-// ends, and it stays claimed until the workspace closes". Everything that lane
-// needs is per project: its own hub client, the project's approved policy, and
-// the worktree backend the project's own runs use.
-
-// workspaceLaneEnabled reports whether this runner should run a workspace lane
-// at all.
-//
-// The workspace session contract lets a runner claim a workspace "only if it reports every
-// capability in requires with a fresh heartbeat", and a request that names no
-// capability still gets `files` and `diff`. A runner that cannot serve files
-// would therefore be refused every claim it made, so it starts no lane and
-// never asks: the gate here is the same condition the heartbeat reports, so
-// the two can never disagree.
 func workspaceLaneEnabled(capabilities workspacesession.Capabilities) bool {
 	return capabilities.Files
 }
 
-// workspaceLaneCapabilities is what this runner reports for workspace sessions
-// on its machine heartbeat, and the zero value when it runs no workspace lane.
-// The hub's claim gate reads the report from the enrolled runner's identity, so
-// a runner without an enrolled identity or without native projects could never
-// pass it: it reports nothing and starts no lane. The heartbeat report and the
-// lane start both read this, so the two can never disagree. Git is reported
-// only when every native project's worktree backend produces git worktrees,
-// because the report is one answer for the whole runner.
 func workspaceLaneCapabilities(ctx context.Context, cfg globalconfig.Config, support workspacerunner.Support) workspacesession.Capabilities {
 	client := cfg.Client
 	capabilities := workspacerunner.Capabilities(support)
@@ -57,8 +32,6 @@ func workspaceLaneCapabilities(ctx context.Context, cfg globalconfig.Config, sup
 	return capabilities
 }
 
-// nativeProjectsUseGit reports whether every native project resolves to a
-// git worktree backend. A project that cannot be resolved counts as not git.
 func nativeProjectsUseGit(ctx context.Context, cfg globalconfig.Config) bool {
 	projects := project.ManagerConfigFromGlobal(cfg).Projects
 	for name := range cfg.Client.NativeProjects {
@@ -77,34 +50,19 @@ func nativeProjectsUseGit(ctx context.Context, cfg globalconfig.Config) bool {
 	return true
 }
 
-// workspaceLaneScheduler is the part of the hub scheduler a workspace lane
-// needs. It is an interface so the boot path depends on the two accessors
-// rather than on the concrete scheduler.
 type workspaceLaneScheduler interface {
 	NativeClient(project string) (*hubclient.NativeClient, bool)
 	MachineID() tracker.MachineID
 }
 
-// workspaceSessionIDs hands every claim a session id of its own.
-//
-// The hub pins a policy per lease session and answers a session that already
-// holds a lease with that lease rather than a new one. Sharing the issue
-// lane's sessions would therefore hand the workspace lane a run's lease, so
-// the ids are both unique and visibly distinct.
-func workspaceSessionIDs(machineID tracker.MachineID, generation int64) func() (string, error) {
+func workspaceSessionIDs(machineID tracker.MachineID, generation string) func() (string, error) {
 	var counter atomic.Uint64
 	return func() (string, error) {
-		return fmt.Sprintf("%s-workspace-g%d-%d", machineID, generation, counter.Add(1)), nil
+		return fmt.Sprintf("%s-workspace-g%s-%d", machineID, generation, counter.Add(1)), nil
 	}
 }
 
-// newWorkspaceLanes builds one lane per configured native project.
-//
-// A project whose policy or worktree backend cannot be resolved is skipped
-// with a warning rather than failing the daemon: the workspace surfaces are an
-// addition to a runner whose real job is dispatch, and a misconfigured one
-// must not stop it from running.
-func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling orchestrator.SchedulingSource, generation int64, logger *slog.Logger, support workspacerunner.Support) []*workspacerunner.Lane {
+func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling orchestrator.SchedulingSource, generation string, logger *slog.Logger, support workspacerunner.Support) []*workspacerunner.Lane {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -138,8 +96,6 @@ func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling 
 	return lanes
 }
 
-// newWorkspaceLane resolves one project's policy and worktree backend and
-// builds its lane.
 func newWorkspaceLane(
 	ctx context.Context,
 	projects []globalconfig.Project,
@@ -167,52 +123,32 @@ func newWorkspaceLane(
 	if err != nil {
 		return nil, fmt.Errorf("resolve policy for %s: %w", projectID, err)
 	}
-	// LeaseTTL is left to the claimer's default on purpose: a workspace claim
-	// is held for the 90 seconds the workspace session contract gives a workspace before
-	// lease_lost, which is the workspace heartbeat's clock rather than the
-	// runner's configured issue-lane TTL.
 	claimer, err := hubclient.NewWorkspaceClaimer(native, hubclient.WorkspaceLaneConfig{
 		PolicyID: descriptor.ID, MachineID: machineID, SessionID: sessionIDs,
 	})
 	if err != nil {
 		return nil, err
 	}
-	// The workspace uses the project's own worktree backend, so a fresh
-	// workspace lands under the configured workspace root beside every other
-	// worktree rather than inside the repository. GitWorktree keeps a fresh
-	// workspace off the issue's identifier, which is what stops it holding the
-	// branch an ordinary run of the same issue needs (sequencing step 2).
 	backend, err := buildWorkspaceBackendContext(ctx, workflow.Config, selected.Workdir, logger)
 	if err != nil {
 		return nil, err
 	}
-	// The hostname is best effort: a host that cannot name itself still serves
-	// every channel, and the picker simply cannot claim the worktree is local.
 	hostname, err := os.Hostname()
 	if err != nil {
 		logger.Debug("workspace.hostname_unknown", "project_id", projectID, "error", err)
 	}
-	// The shell is the project's own, the one its workspace hooks already run
-	// through (runner.go builds workspace.Hooks from the same field), so a
-	// terminal opens the shell the project's commands were written for.
 	return workspacerunner.NewLane(workspacerunner.LaneConfig{
 		Claimer:  claimer,
 		Hub:      claimer.Native(),
 		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: projectID, Resolve: claimer.RunIdentifier},
 		Logger:   logger,
 		Hostname: hostname,
-		// The same Support the heartbeat reports (hub_client.go), so the
-		// capability the hub gates a claim on and the one this lane's sessions
-		// bind with can never disagree.
-		Support: support,
-		Shell:   workflow.Config.Hooks.Shell,
-		// The reporter turns a run nobody watched into a row somebody can read.
+		Support:  support,
+		Shell:    workflow.Config.Hooks.Shell,
 		Reporter: workspaceActionRunReporter{native: claimer.Native()},
 	})
 }
 
-// workspaceActionRunReporter adapts the native client onto the lane's
-// ActionRunReporter seam.
 type workspaceActionRunReporter struct {
 	native *hubclient.NativeClient
 }
@@ -225,7 +161,6 @@ func (r workspaceActionRunReporter) ReportActionRun(ctx context.Context, workspa
 	})
 }
 
-// workspaceLaneProject finds a configured project by id.
 func workspaceLaneProject(projects []globalconfig.Project, projectID string) (globalconfig.Project, bool) {
 	for _, selected := range projects {
 		if selected.ID == projectID {
@@ -235,10 +170,6 @@ func workspaceLaneProject(projects []globalconfig.Project, projectID string) (gl
 	return globalconfig.Project{}, false
 }
 
-// runWorkspaceLane runs one lane until ctx is cancelled. A lane that stops on
-// its own is a bug rather than a shutdown, so it is logged; the caller waits
-// for this to return before the process exits, which is what gives every open
-// workspace the chance to unbind instead of timing out unreachable.
 func runWorkspaceLane(ctx context.Context, lane *workspacerunner.Lane, logger *slog.Logger) {
 	if err := lane.Run(ctx); err != nil && ctx.Err() == nil {
 		logger.Warn("workspace.lane_stopped", "error", err)
