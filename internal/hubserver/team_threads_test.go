@@ -1,14 +1,10 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -30,25 +26,6 @@ func newTeamThreadNativeFixture(t *testing.T, service *Service, organization tra
 	f := newNativeFixture(t, service, organization, name)
 	f.service.registerTeamThreadRoutes(f.service.echo)
 	return f
-}
-
-type teamThreadReadGuardKey struct{}
-
-type teamThreadReadGuard struct {
-	tenantstore.Repository
-}
-
-func (r teamThreadReadGuard) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	depth, ok := ctx.Value(teamThreadReadGuardKey{}).(*atomic.Int32)
-	if !ok {
-		return r.Repository.ReadTenant(ctx, organization, workload, read)
-	}
-	if depth.Add(1) != 1 {
-		depth.Add(-1)
-		return errors.New("thread read requested another reader while holding a reader")
-	}
-	defer depth.Add(-1)
-	return r.Repository.ReadTenant(ctx, organization, workload, read)
 }
 
 func threadBase(f nativeFixture) string {
@@ -616,15 +593,4 @@ func TestTeamThreadAuthorizationMCPRoutes(t *testing.T) {
 			}
 		})
 	}
-}
-
-type countingReader struct {
-	reader io.Reader
-	read   int
-}
-
-func (r *countingReader) Read(p []byte) (int, error) {
-	n, err := r.reader.Read(p)
-	r.read += n
-	return n, err
 }

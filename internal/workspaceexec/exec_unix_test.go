@@ -19,12 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// requirePOSIXShell skips a test whose command is written in POSIX shell.
-func requirePOSIXShell(t *testing.T) {
-	t.Helper()
-
-}
-
 func TestRunChunksOutputWithinTheFrameCap(t *testing.T) {
 	t.Parallel()
 

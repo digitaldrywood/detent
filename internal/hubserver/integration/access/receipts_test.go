@@ -78,20 +78,6 @@ func performHubAPIRequest(t *testing.T, service *hubserver.Service, method, path
 	return response
 }
 
-func requireNativeStatus(t *testing.T, response *httptest.ResponseRecorder, expected int) {
-	t.Helper()
-	if response.Code != expected {
-		t.Fatalf("status=%d body=%s want=%d", response.Code, response.Body.String(), expected)
-	}
-}
-
-func decodeHubResponse(t *testing.T, response *httptest.ResponseRecorder, value any) {
-	t.Helper()
-	if err := json.Unmarshal(response.Body.Bytes(), value); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestPostgresHostedOperationReceiptsExpiredHTTPResponse(t *testing.T) {
 	admin := hubtest.Database(t)
 	repository := hubtest.RepositoryOn(t, admin)

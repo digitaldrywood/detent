@@ -88,9 +88,3 @@ func (b *recordingOutboxBackend) record(item githubcontract.OutboxItem, failures
 	}
 	return nil
 }
-
-func (b *recordingOutboxBackend) keys() []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return append([]string(nil), b.deliveredKeys...)
-}

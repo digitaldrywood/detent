@@ -874,37 +874,6 @@ func TestProblemForErrorExtractsInlineDidYouMeanFromHint(t *testing.T) {
 	}
 }
 
-type projectPaths struct {
-	root         string
-	workflowPath string
-	workdirPath  string
-}
-
-func createProjectFiles(t *testing.T) projectPaths {
-	t.Helper()
-
-	return createProjectFilesWithWorkflow(t, validWorkflowContent())
-}
-
-func createProjectFilesWithWorkflow(t *testing.T, content string) projectPaths {
-	t.Helper()
-
-	root := t.TempDir()
-	workdir := filepath.Join(root, "project")
-	workflow := filepath.Join(workdir, "WORKFLOW.md")
-
-	if err := os.MkdirAll(workdir, 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-	writeWorkflow(t, workflow, content)
-
-	return projectPaths{
-		root:         root,
-		workflowPath: workflow,
-		workdirPath:  workdir,
-	}
-}
-
 func writeWorkflow(t *testing.T, path string, content string) {
 	t.Helper()
 
@@ -914,17 +883,6 @@ func writeWorkflow(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-}
-
-func validWorkflowContent() string {
-	return `---
-tracker:
-  kind: github
-  api_key: fixture-token
-  repository: example-org/example-project
----
-Test workflow prompt.
-`
 }
 
 func workflowContentWithServer(host string, port int) string {
@@ -979,11 +937,6 @@ func writeCLIInstallConfig(t *testing.T, path string, projects []globalconfig.Pr
 	return cfg
 }
 
-func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
-	t.Helper()
-	writeCLIInstallConfig(t, path, projects)
-}
-
 func assertHintedError(t *testing.T, err error, wantErr error, wantMessage string, wantHint string, wantCommands []string) {
 	t.Helper()
 
@@ -1003,9 +956,4 @@ func assertHintedError(t *testing.T, err error, wantErr error, wantMessage strin
 	if !reflect.DeepEqual(gotCommands, wantCommands) {
 		t.Fatalf("commands = %#v, want %#v", gotCommands, wantCommands)
 	}
-}
-
-func readStoredCLIConfiguration(t *testing.T, path string) (globalconfig.Config, error) {
-	t.Helper()
-	return globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
 }

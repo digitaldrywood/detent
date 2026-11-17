@@ -46,7 +46,6 @@ var (
 	newFakeProvider           = harness.NewFakeProvider
 	newBrowser                = harness.NewBrowser
 	csrfFrom                  = harness.CSRF
-	bootstrapCSRF             = harness.BootstrapCSRF
 	jsonBody                  = harness.JSONBody
 	newSpacesFixture          = harness.NewSpaces
 	newTenantIn               = harness.NewTenantIn

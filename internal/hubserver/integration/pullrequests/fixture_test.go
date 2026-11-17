@@ -53,7 +53,6 @@ type RepositorySource = githubcontract.RepositorySource
 type PullRequestSource = githubcontract.PullRequestSource
 type PullRequestDetailSource = githubcontract.PullRequestDetailSource
 type pullRequestView = pullrequests.View
-type pullRequestConnector = pullrequests.Connector
 
 const pullRequestRefreshInterval = pullrequests.RefreshInterval
 const workItemRecordBody = "## Acceptance criteria\nThe issue is served.\n## Must not break\nOther tenants.\n## How we know it worked\nRead the issue."

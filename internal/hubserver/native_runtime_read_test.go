@@ -41,24 +41,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type runtimeReadQuery struct {
-	hubapi.NativeQueryer
-	statements []string
-	arguments  [][]any
-}
-
-func (q *runtimeReadQuery) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
-	q.statements = append(q.statements, statement)
-	q.arguments = append(q.arguments, args)
-	return q.NativeQueryer.QueryContext(ctx, statement, args...)
-}
-
-func (q *runtimeReadQuery) QueryRowContext(ctx context.Context, statement string, args ...any) *sql.Row {
-	q.statements = append(q.statements, statement)
-	q.arguments = append(q.arguments, args)
-	return q.NativeQueryer.QueryRowContext(ctx, statement, args...)
-}
-
 type runtimeHistoryTraceKey struct{}
 
 type runtimeHistoryTraceCapture struct {

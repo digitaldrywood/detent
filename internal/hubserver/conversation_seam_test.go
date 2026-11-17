@@ -35,13 +35,10 @@ type conversationQuestionContent = conversations.ConversationQuestionContent
 type conversationRecordContent = conversations.ConversationRecordContent
 type conversationReferenceResource = conversations.ConversationReferenceResource
 type conversationResource = conversations.ConversationResource
-type conversationScheduling = conversations.ConversationScheduling
 type conversationStore = conversations.ConversationStore
 type conversationStream = conversations.ConversationStream
 type conversationWorkItemReferencePage = conversations.ConversationWorkItemReferencePage
 type conversationWorkItemResource = conversations.ConversationWorkItemResource
-type errConversationLinked = conversations.ErrConversationLinked
-type errConversationRevision = conversations.ErrConversationRevision
 
 const (
 	conversationDefaultTitle          = conversations.ConversationDefaultTitle
@@ -61,10 +58,6 @@ func conversationAttachmentURL(p0 tracker.OrganizationID, p1 tracker.ProjectID, 
 
 func conversationModelFromReport(p0 providercapacity.Report, p1 string) conversations.ConversationModel {
 	return conversations.ConversationModelFromReport(p0, p1)
-}
-
-func conversationQueueFull() error {
-	return hubapi.FromFeatureError(conversations.ConversationQueueFull())
 }
 
 func preparePGWorkerEvent(p0 context.Context, p1 *conversations.ConversationPublicationPlan, p2 any) error {

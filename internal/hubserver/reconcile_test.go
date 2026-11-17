@@ -34,11 +34,3 @@ func (b *scriptedReconcileBackend) Requests() []ReconcileRequest {
 	defer b.mu.Unlock()
 	return append([]ReconcileRequest(nil), b.requests...)
 }
-
-func int64Pointer(value int64) *int64 {
-	return &value
-}
-
-func stringPointer(value string) *string {
-	return &value
-}

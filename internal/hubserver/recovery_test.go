@@ -6,8 +6,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 )
 
-const recoveryTestToken = "fresh-recovery-administrator-token-example"
-
 func TestRecoveryMergeHistoryBoundReportsPossibleOmission(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

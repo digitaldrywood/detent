@@ -47,15 +47,14 @@ import (
 func TestMain(m *testing.M) { hubtest.Main(m) }
 
 type memoryRunDetails struct {
-	mu          sync.Mutex
-	data        map[string][]byte
-	fail        bool
-	uploads     int
-	reads       int
-	keyReads    map[string]int
-	writerReads int
-	afterStore  func(attachment.ArchiveReference)
-	beforeRead  func(context.Context) error
+	mu         sync.Mutex
+	data       map[string][]byte
+	fail       bool
+	uploads    int
+	reads      int
+	keyReads   map[string]int
+	afterStore func(attachment.ArchiveReference)
+	beforeRead func(context.Context) error
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
@@ -565,14 +564,6 @@ func (r *runnerFixture) enroll(t *testing.T) {
 	response := performHubAPIRequest(t, r.service, http.MethodPost, r.base+"/runner-enrollments/redeem", r.enrollment.Token, r.redemption)
 	requireNativeStatus(t, response, http.StatusCreated)
 	decodeHubResponse(t, response, &r.identity)
-}
-
-func reportRunnerCapacity(t *testing.T, service *testHub, projectBase, credential string, machine tracker.MachineID, displayName string, backends isolation.Report, capacity int) {
-	t.Helper()
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, projectBase+"/machines/"+string(machine)+"/heartbeat", credential, map[string]any{
-		"display_name": displayName, "capacity": capacity, "version": "test", "backend_isolation": backends,
-		"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: service.config.Clock()},
-	}), http.StatusOK)
 }
 
 func costTestObservation(metric string, from, to time.Time) costObservation {

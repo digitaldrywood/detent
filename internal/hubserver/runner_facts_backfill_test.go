@@ -272,7 +272,3 @@ func (r *runnerFactsReceiptReader) Receipt(ctx context.Context, actor, operation
 	r.repository.lookups = append(r.repository.lookups, [3]string{actor, operation, key})
 	return r.Reader.Receipt(ctx, actor, operation, key)
 }
-
-func setSpriteFactsFixtureMode(t *testing.T, _ nativeFixture, _ bool) {
-	t.Helper()
-}

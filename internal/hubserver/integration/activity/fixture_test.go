@@ -50,15 +50,14 @@ import (
 )
 
 type memoryRunDetails struct {
-	mu          sync.Mutex
-	data        map[string][]byte
-	fail        bool
-	uploads     int
-	reads       int
-	keyReads    map[string]int
-	writerReads int
-	afterStore  func(attachment.ArchiveReference)
-	beforeRead  func(context.Context) error
+	mu         sync.Mutex
+	data       map[string][]byte
+	fail       bool
+	uploads    int
+	reads      int
+	keyReads   map[string]int
+	afterStore func(attachment.ArchiveReference)
+	beforeRead func(context.Context) error
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {

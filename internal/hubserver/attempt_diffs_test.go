@@ -24,20 +24,6 @@ type attemptDiffFixture struct {
 	run      string
 }
 
-func newAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
-	t.Helper()
-	fixture := newClaimedAttemptDiffFixture(t)
-	fixture.start(t)
-	return fixture
-}
-
-// newClaimedAttemptDiffFixture claims the issue and stops before run.started,
-// so a test can change the item between the claim and the start.
-func newClaimedAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
-	t.Helper()
-	return claimedAttemptDiffFixture(t, false, Config{})
-}
-
 func claimedAttemptDiffFixture(t *testing.T, enrolled bool, cfg Config) *attemptDiffFixture {
 	t.Helper()
 	service := newClockedPostgresNativeService(t, cfg)

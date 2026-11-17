@@ -35,15 +35,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (f changeFixture) changeWithCurrentVersion(t *testing.T) tracker.ChangeRequest {
-	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.path, f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	var detail tracker.ChangeDetail
-	decodeHubResponse(t, response, &detail)
-	return detail.Change
-}
-
 func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 	t.Parallel()
 	details := &memoryRunDetails{keyReads: make(map[string]int)}

@@ -13,16 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// patchLabels replaces the issue's labels and returns what the hub stored.
-func patchLabels(t *testing.T, f hubfixture.Native, issue tracker.NativeIssue, key string, labels []string) tracker.NativeIssue {
-	t.Helper()
-	response := f.Hub.Request(t, http.MethodPatch, f.Base+"/work-items/"+string(issue.WorkItemID), f.Token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedRevision: issue.Revision, Labels: &labels})
-	hubfixture.RequireStatus(t, response, http.StatusOK)
-	var updated tracker.NativeIssue
-	hubfixture.Decode(t, response, &updated)
-	return updated
-}
-
 // The picker's other two writes: an assignee list, and a priority that is
 // removed rather than replaced.
 func TestNativeIssueAssigneesAndPriorityClear(t *testing.T) {

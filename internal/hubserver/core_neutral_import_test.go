@@ -22,11 +22,6 @@ func newCoreNeutralFixture(t *testing.T, organization tracker.OrganizationID, na
 	return neutralimporttest.New(t, os.DirFS("../.."), organization, names...)
 }
 
-func coreImportPostgres(t *testing.T) *postgres.Repository {
-	t.Helper()
-	repository, _ := coreImportPostgresWithAdmin(t, 3)
-	return repository
-}
 func coreImportPostgresWithAdmin(t *testing.T, maxConnections int, configure ...func(*pgxpool.Config)) (*postgres.Repository, *sql.DB) {
 	t.Helper()
 	admin := postgresStartupTemplate.Database(t)

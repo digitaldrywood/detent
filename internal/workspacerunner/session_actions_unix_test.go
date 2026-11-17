@@ -17,12 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// requirePOSIXShell skips a test whose action command is POSIX shell syntax.
-func requirePOSIXShell(t *testing.T) {
-	t.Helper()
-
-}
-
 func TestSessionRunsAnActionOnTheExecChannel(t *testing.T) {
 	t.Parallel()
 	f := startSession(t, nil)

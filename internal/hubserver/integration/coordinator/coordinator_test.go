@@ -91,18 +91,6 @@ func (b toolBackend) open(t *testing.T) *hubfixture.Hub {
 	})
 }
 
-func (b toolBackend) call(t *testing.T, name, arguments string) runner.AgentToolResult {
-	t.Helper()
-	b.calls <- runner.AgentToolCall{Name: name, Arguments: json.RawMessage(arguments)}
-	select {
-	case result := <-b.results:
-		return result
-	case <-t.Context().Done():
-		t.Fatalf("coordinator never called %s", name)
-	}
-	return runner.AgentToolResult{}
-}
-
 type conversation struct {
 	h       *hubfixture.Hub
 	p       hubfixture.Native

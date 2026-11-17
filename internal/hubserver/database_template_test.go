@@ -37,8 +37,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-const defaultHubOperatorID = "tok_test_default"
-
 func nativeFixtureStates() []tracker.NativeState {
 	return []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},

@@ -20,10 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type githubOutboundSignal struct {
-	calls chan githubcontract.OutboxItem
-}
-
 type gitHubDeadlineBackend struct {
 	deadline time.Time
 	bounded  bool
@@ -60,19 +56,6 @@ func (b *gitHubDeadlineBackend) Execute(ctx context.Context, _ githubcontract.Ou
 
 func (b *gitHubDeadlineBackend) VerifyAndExecute(ctx context.Context, item githubcontract.OutboxItem) error {
 	return b.Execute(ctx, item)
-}
-
-func (s githubOutboundSignal) Execute(ctx context.Context, item githubcontract.OutboxItem) error {
-	select {
-	case s.calls <- item:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (s githubOutboundSignal) VerifyAndExecute(ctx context.Context, item githubcontract.OutboxItem) error {
-	return s.Execute(ctx, item)
 }
 
 func TestPostgresGitHubOutboundUsesConfiguredBackend(t *testing.T) {

@@ -1,19 +1,11 @@
 package nativework_test
 
 import (
-	"database/sql"
 	"reflect"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 )
-
-func openSQLParameterTestDatabase(t *testing.T) *sql.DB {
-	t.Helper()
-	_, db := hubfixture.RepositoryWithAdmin(t, 2)
-	return db
-}
 
 func TestSQLParameterBinding(t *testing.T) {
 	for _, test := range []struct {

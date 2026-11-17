@@ -332,14 +332,6 @@ func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSe
 	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
 }
 
-func seedHostedSecurityProject(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID) error {
-	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
-	return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_security", Name: "private-project-sentinel", Profile: "native", CreatedAt: time.Now().UTC()}, States: states})
-		return err
-	})
-}
-
 func (f hostedSecurityFixture) user(t *testing.T, name, role, email, grant, supportActor string) hostedSecurityUser {
 	t.Helper()
 	now := time.Now().UTC()

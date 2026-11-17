@@ -700,13 +700,6 @@ func TestRefuseTerminalGrantMatrix(t *testing.T) {
 	}
 }
 
-func boolToInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
-}
-
 // resumeFrame is a person's resume for one stream.
 func resumeFrame(t *testing.T, channel, stream string, lastSeq int64) workspacesession.Frame {
 	t.Helper()

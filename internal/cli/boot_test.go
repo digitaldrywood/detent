@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1218,16 +1217,6 @@ func projectProvisioningStartExitError(err error) error {
 	return fmt.Errorf("startRunning returned before project provisioning started: %w", err)
 }
 
-func waitForBootDashboardURL(t *testing.T, output *bootOutput, done <-chan error) string {
-	t.Helper()
-
-	url, err := awaitBootDashboardURL(output, done, bootDashboardURLTimeout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return url
-}
-
 func awaitBootDashboardURL(output *bootOutput, done <-chan error, timeout time.Duration) (string, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -1337,68 +1326,6 @@ func dashboardExitError(err error) error {
 	return fmt.Errorf("startRunning returned before dashboard responded: %w", err)
 }
 
-func waitForDashboardCondition(t *testing.T, url string, done <-chan error, name string, ok func(string) bool) string {
-	t.Helper()
-
-	return waitForDashboardConditionWithTimeout(t, url, done, name, 15*time.Second, ok)
-}
-
-func waitForDashboardConditionWithTimeout(t *testing.T, url string, done <-chan error, name string, timeout time.Duration, ok func(string) bool) string {
-	t.Helper()
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	lastBody := ""
-	for ctx.Err() == nil {
-		body := waitForDashboardContext(t, ctx, url, done)
-		lastBody = body
-		if ok(body) {
-			return body
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for dashboard condition %q at %s; last body:\n%s", name, url, lastBody)
-	return ""
-}
-
-func postDashboardForm(t *testing.T, rawURL string, done <-chan error, form url.Values) (int, string) {
-	t.Helper()
-
-	client := http.Client{Timeout: time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	for ctx.Err() == nil {
-		select {
-		case err := <-done:
-			t.Fatalf("startRunning returned before form post completed: %v", err)
-		default:
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
-		if err != nil {
-			t.Fatalf("NewRequestWithContext() error = %v", err)
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		resp, err := client.Do(req)
-		if err == nil {
-			body, readErr := io.ReadAll(resp.Body)
-			closeErr := resp.Body.Close()
-			if readErr != nil {
-				t.Fatalf("ReadAll() error = %v", readErr)
-			}
-			if closeErr != nil {
-				t.Fatalf("Body.Close() error = %v", closeErr)
-			}
-			return resp.StatusCode, string(body)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out posting form to %s", rawURL)
-	return 0, ""
-}
-
 type bootProjectFiles struct {
 	workflowPath string
 	workdirPath  string
@@ -1420,24 +1347,6 @@ Test workflow prompt.
 	return bootProjectFiles{
 		workflowPath: workflow,
 		workdirPath:  workdir,
-	}
-}
-
-func writeBootKanbanWorkflow(t *testing.T, path string, mode string) {
-	t.Helper()
-
-	content := `---
-tracker:
-  kind: hub_native
-  lanes: [{name: Backlog, role: holding}, {name: Blocked, role: holding}, {name: Ready, role: active}, {name: Doing, role: active}, {name: Done, role: terminal}]
-server:
-  kanban:
-    mode: ` + mode + `
----
-Test workflow prompt.
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
 	}
 }
 
@@ -1513,33 +1422,6 @@ func (m terminalDashboardQuitModel) Init() tea.Cmd {
 
 func (m terminalDashboardQuitModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
-}
-
-func writeBootLocalProjects(t *testing.T, path string, projects []globalconfig.Project) {
-	t.Helper()
-
-	cfg, err := readLocalConfigurationFile(t.Context(), path)
-	if err != nil {
-		t.Fatalf("readLocalConfigurationFile() error = %v", err)
-	}
-	cfg.Projects = projects
-	if err := globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
-		t.Fatalf("globalconfig.Write() error = %v", err)
-	}
-}
-
-func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
-	t.Helper()
-
-	cfg, err := globalconfig.DefaultAt(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Global.MaxConcurrentAgents = 8
-	cfg.Projects = projects
-	if err := globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
-		t.Fatalf("globalconfig.Write() error = %v", err)
-	}
 }
 
 func newRefreshProject(t *testing.T, id string) *projectpkg.Project {

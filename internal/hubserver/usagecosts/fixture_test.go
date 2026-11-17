@@ -29,15 +29,14 @@ import (
 )
 
 type memoryRunDetails struct {
-	mu          sync.Mutex
-	data        map[string][]byte
-	fail        bool
-	uploads     int
-	reads       int
-	keyReads    map[string]int
-	writerReads int
-	afterStore  func(attachment.ArchiveReference)
-	beforeRead  func(context.Context) error
+	mu         sync.Mutex
+	data       map[string][]byte
+	fail       bool
+	uploads    int
+	reads      int
+	keyReads   map[string]int
+	afterStore func(attachment.ArchiveReference)
+	beforeRead func(context.Context) error
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
@@ -141,7 +140,6 @@ func newCostLedgerTestService(t *testing.T, now time.Time) *costFixture {
 
 const testHubAdminToken = "detent_test_hub_admin_token_00000000000000000000000000000000"
 
-func nativeFixtureStates() []tracker.NativeState { return hubtest.States() }
 func createOrganization(t *testing.T, repo tenantstore.Repository, name string) (testOrganization, error) {
 	t.Helper()
 	org := hubtest.Organization(t, repo, hubtest.OrganizationOptions{Name: name})

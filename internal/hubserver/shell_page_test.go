@@ -6,12 +6,10 @@ import (
 	"net/http"
 	"os"
 	"slices"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -96,16 +94,4 @@ func TestOnboardingPageDoesNotReadObjects(t *testing.T) {
 			}
 		}
 	}
-}
-
-type shellSnapshotRepository struct {
-	tenantstore.Repository
-	tenantstore.RequestReader
-	active atomic.Int32
-}
-
-func (r *shellSnapshotRepository) ReadRequest(ctx context.Context, organization tracker.OrganizationID, read func(context.Context) error) error {
-	r.active.Add(1)
-	defer r.active.Add(-1)
-	return r.RequestReader.ReadRequest(ctx, organization, read)
 }

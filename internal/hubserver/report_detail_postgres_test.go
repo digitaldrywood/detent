@@ -29,15 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/usagecost"
 )
 
-type completionCostFailureReader struct {
-	tenantstore.Reader
-	err error
-}
-
-func (r completionCostFailureReader) ReadCompletionCosts(context.Context, reportstore.CompletionCostQuery) ([]reportstore.CompletionCostFact, error) {
-	return nil, r.err
-}
-
 func TestReportCurrentUsageIngestionPreservesCoverage(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)

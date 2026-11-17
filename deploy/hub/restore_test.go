@@ -97,10 +97,3 @@ exec "$@"
 		})
 	}
 }
-
-func writeDeployFixture(t *testing.T, path, contents string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
-		t.Fatal(err)
-	}
-}
