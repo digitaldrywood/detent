@@ -128,16 +128,31 @@ def package_set(arguments, listed):
     return rest + packages
 
 
+def contract_packages():
+    return ["./" + package.split("/detent/", 1)[1] for package in REQUIRED_POSTGRES]
+
+
+def thread_budget(arguments):
+    index = arguments.index("-p")
+    procs = int(arguments[index + 1])
+    packages = [argument for argument in arguments if argument == "." or argument.startswith("./")]
+    selected = [package for package in packages if package not in contract_packages()] or packages
+    threads = max(1, procs // max(1, min(len(selected), procs)))
+    width = max(1, min(len(packages), procs // threads))
+    return [*arguments[:index], "-p", str(width), *arguments[index + 2:]], threads
+
+
 def run_tests(arguments):
     environment = dict(os.environ)
     environment.pop("DETENT_API_TOKEN", None)
     listed = environment.pop("DETENT_LANDING_PACKAGES", None)
     try:
-        arguments = package_set(arguments, listed)
+        arguments, threads = thread_budget(package_set(arguments, listed))
     except ValueError as error:
         print(error, file=sys.stderr, flush=True)
         return 1
     environment["DETENT_TEST_POSTGRES"] = "binary"
+    environment["GOMAXPROCS"] = str(threads)
     with subprocess.Popen(["go", "test", "-json", *arguments], env=environment, stdout=subprocess.PIPE, text=True) as process:
         inventory = test_events(process.stdout, lambda line: print(line, flush=True))
         result = process.wait()
@@ -149,8 +164,8 @@ if __name__ == "__main__":
     if command == "supervise":
         sys.exit(supervise(arguments))
     if command == "packages":
-        for package in REQUIRED_POSTGRES:
-            print("./" + package.split("/detent/", 1)[1])
+        for package in contract_packages():
+            print(package)
     elif command == "digest":
         print(package_digest(arguments))
     elif command == "tests":

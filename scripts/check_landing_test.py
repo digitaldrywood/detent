@@ -120,12 +120,13 @@ class ShortLandingGateTest(unittest.TestCase):
 
     def test_changed_package_includes_transitive_and_test_dependents(self):
         cases = (
-            ("test only", ("lib/source_test.go",), ["./lib"], "1"),
-            ("production", ("lib/source.go",), ["./app", "./integration", "./lib"], "4"),
-            ("mixed", ("lib/source.go", "lib/source_test.go"), ["./app", "./integration", "./lib"], "7"),
-            ("separate test and production", ("lib/source_test.go", "unrelated/source.go"), ["./lib", "./unrelated"], "2"),
+            ("test only", ("lib/source_test.go",), ["./lib"], "1", 1, 1),
+            ("test only with the whole budget", ("lib/source_test.go",), ["./lib"], "4", 1, 4),
+            ("production", ("lib/source.go",), ["./app", "./integration", "./lib"], "4", 4, 1),
+            ("mixed", ("lib/source.go", "lib/source_test.go"), ["./app", "./integration", "./lib"], "7", 3, 2),
+            ("separate test and production", ("lib/source_test.go", "unrelated/source.go"), ["./lib", "./unrelated"], "2", 2, 1),
         )
-        for index, (name, paths, expected, budget) in enumerate(cases):
+        for index, (name, paths, expected, budget, width, threads) in enumerate(cases):
             with self.subTest(name=name):
                 self.base = self.git("rev-parse", "HEAD").strip()
                 self.git("update-ref", "refs/remotes/origin/develop", self.base)
@@ -147,12 +148,13 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.assertEqual(test["tmpdir"], self.env["TMPDIR"])
                 self.assertIn("-json", test["args"])
                 for call in trace:
-                    if call["tool"] == "go":
+                    if call["tool"] == "go" and call["args"][0] == "test":
+                        self.assertEqual((int(call["args"][call["args"].index("-p") + 1]), int(call["budget"])), (width, threads))
+                        self.assertLessEqual(width * threads, int(budget))
+                    elif call["tool"] == "go":
                         self.assertEqual(call["budget"], "1")
-                        if call["args"][0] in ("build", "test"):
-                            package_procs = int(call["args"][call["args"].index("-p") + 1])
-                            self.assertEqual(package_procs, int(budget))
-                            self.assertLessEqual(package_procs * int(call["budget"]), int(budget))
+                        if call["args"][0] == "build":
+                            self.assertEqual(int(call["args"][call["args"].index("-p") + 1]), int(budget))
                     elif call["tool"] == "golangci-lint":
                         self.assertEqual(call["budget"], budget)
                         self.assertIn("--concurrency=" + budget, call["args"])
@@ -181,6 +183,30 @@ class ShortLandingGateTest(unittest.TestCase):
         self.assertRegex(unit["command"], r"^[a-zA-Z0-9_. /:+,=-]{1,256}$")
         digest = hashlib.sha256("".join(package + "\n" for package in packages).encode()).hexdigest()
         self.assertEqual(unit["command"], f"python3 scripts/check-landing.py tests --package-count={len(packages)} --package-sha256={digest} -p 2 -short -timeout=10m")
+
+    def test_test_threads_share_the_package_budget(self):
+        contract = runpy.run_path(str(ROOT / "scripts/check-landing.py"))
+        for selected, budget, width, threads in (
+            (1, 4, 1, 4),
+            (2, 4, 2, 2),
+            (4, 4, 4, 1),
+            (8, 4, 4, 1),
+            (1, 8, 1, 8),
+            (2, 8, 2, 4),
+            (3, 8, 4, 2),
+            (8, 8, 8, 1),
+            (1, 1, 1, 1),
+        ):
+            with self.subTest(selected=selected, budget=budget):
+                packages = ["./feature" + str(index) for index in range(selected)] + self.required_packages
+                arguments, gomaxprocs = contract["thread_budget"](["-p", str(budget), "-short", *packages])
+                self.assertEqual(arguments, ["-p", str(width), "-short", *packages])
+                self.assertEqual(gomaxprocs, threads)
+                self.assertLessEqual(width * gomaxprocs, budget)
+        for packages, width, threads in ((self.required_packages, 2, 2), (["."] + self.required_packages, 1, 4), ([".", "./feature"] + self.required_packages, 2, 2)):
+            with self.subTest(packages=packages):
+                arguments, gomaxprocs = contract["thread_budget"](["-p", "4", "-short", *packages])
+                self.assertEqual((arguments[:2], gomaxprocs), (["-p", str(width)], threads))
 
     def test_unit_package_list_must_match_recorded_digest(self):
         contract = runpy.run_path(str(ROOT / "scripts/check-landing.py"))
