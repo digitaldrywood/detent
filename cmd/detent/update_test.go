@@ -9,9 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/update"
-	"github.com/spf13/cobra"
 )
 
 func TestUpdateCommandCheckJSON(t *testing.T) {

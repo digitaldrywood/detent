@@ -11,10 +11,11 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
+
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"gopkg.in/yaml.v3"
 )
 
 var jobLabelConditionPatterns = []*regexp.Regexp{

@@ -18,8 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/cli/doctor"
 	"github.com/spf13/cobra"
+
+	"github.com/digitaldrywood/detent/internal/cli/doctor"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/codex"

@@ -4,10 +4,11 @@ import (
 	"context"
 	"io"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/digitaldrywood/detent/internal/cli/doctor"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"gopkg.in/yaml.v3"
 )
 
 func doctorProjectID(project globalconfig.Project) string { return doctor.ProjectID(project) }
