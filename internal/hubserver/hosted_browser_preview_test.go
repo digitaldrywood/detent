@@ -33,6 +33,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const browserHostedOwnerEmail = "owner@example.test"
+
 func TestHostedBrowserPreview(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
