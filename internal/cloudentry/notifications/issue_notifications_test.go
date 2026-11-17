@@ -5,16 +5,18 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
-	"github.com/digitaldrywood/detent/internal/cloudentry/origin"
-	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
-	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
-	"github.com/labstack/echo/v4"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
+	"github.com/digitaldrywood/detent/internal/cloudentry/origin"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )

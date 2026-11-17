@@ -1,8 +1,9 @@
 package cloudentry
 
 import (
-	"github.com/digitaldrywood/detent/internal/cloudentry/origin"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry/origin"
 )
 
 func (s *Service) originPolicy() *origin.Service {

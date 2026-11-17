@@ -3,14 +3,15 @@ package tenantcall
 import (
 	"bytes"
 	"crypto/ed25519"
-	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
-	"github.com/digitaldrywood/detent/internal/mcp"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
+	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 type sizedTransport struct{ size int }

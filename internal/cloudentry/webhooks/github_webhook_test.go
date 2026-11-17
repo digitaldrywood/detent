@@ -7,9 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
-	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
-	"github.com/labstack/echo/v4"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,6 +17,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
 )
 
 func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {

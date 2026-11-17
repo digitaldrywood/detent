@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/cloudentry/internal/keylock"
-	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/keylock"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
 
 	"github.com/labstack/echo/v4"
 

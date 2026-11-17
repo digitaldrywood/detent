@@ -2,9 +2,10 @@ package notifications
 
 import (
 	"context"
+	"net/http"
+
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
-	"net/http"
 
 	"github.com/labstack/echo/v4"
 )
