@@ -12,10 +12,11 @@ import (
 )
 
 type commandDeadlineContext struct {
-	context.Context
 	deadline time.Time
 	done     chan struct{}
 }
+
+func (c *commandDeadlineContext) Value(any) any { return nil }
 
 func (c *commandDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
 
@@ -38,7 +39,7 @@ func Fixture(t *testing.T, delay, timeout time.Duration, expire bool) (context.C
 	t.Cleanup(cancel)
 	var controlled *commandDeadlineContext
 	if expire {
-		controlled = &commandDeadlineContext{Context: t.Context(), deadline: time.Now().Add(timeout), done: make(chan struct{})}
+		controlled = &commandDeadlineContext{deadline: time.Now().Add(timeout), done: make(chan struct{})}
 		ctx = controlled
 	}
 	deadline, _ := ctx.Deadline()

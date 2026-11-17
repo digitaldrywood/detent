@@ -241,9 +241,9 @@ func (h *Hosted) Request(t *testing.T, user HostedUser, method, path string, bod
 		reader = strings.NewReader(string(raw))
 		contentType = "application/json"
 	}
-	request := httptest.NewRequest(method, path, reader)
+	request := httptest.NewRequestWithContext(context.Background(), method, path, reader)
 	if user.Token != "" {
-		request.AddCookie(&http.Cookie{Name: HostedCookie, Value: user.Token})
+		request.AddCookie(&http.Cookie{Name: HostedCookie, Value: user.Token, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		request.Header.Set("X-CSRF-Token", HostedCSRF(user.Token))
 	}
 	if contentType != "" {
@@ -256,9 +256,9 @@ func (h *Hosted) Request(t *testing.T, user HostedUser, method, path string, bod
 
 func (h *Hosted) Page(t *testing.T, user HostedUser, path string) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
 	if user.Token != "" {
-		request.AddCookie(&http.Cookie{Name: HostedCookie, Value: user.Token})
+		request.AddCookie(&http.Cookie{Name: HostedCookie, Value: user.Token, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	}
 	response := httptest.NewRecorder()
 	h.Handler().ServeHTTP(response, request)

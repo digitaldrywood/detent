@@ -2,6 +2,7 @@ package hubfixture
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ func NewRequest(t *testing.T, method, path, token string, payload any) *http.Req
 			t.Fatal(err)
 		}
 	}
-	request := httptest.NewRequest(method, path, bytes.NewReader(body))
+	request := httptest.NewRequestWithContext(context.Background(), method, path, bytes.NewReader(body))
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -43,7 +44,7 @@ func WorkCall(t *testing.T, handler http.Handler, path, token, name string, body
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(raw)))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(string(raw)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Mcp-Protocol-Version", MCPProtocolVersion)

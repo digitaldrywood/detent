@@ -130,6 +130,7 @@ func Repository(t *testing.T, admin *sql.DB, connection pgtransport.Connection, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {

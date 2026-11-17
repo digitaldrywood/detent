@@ -222,7 +222,7 @@ func (h *HTTPHarness) Request(t *testing.T, actor HTTPActor, method, target stri
 			t.Fatal(err)
 		}
 	}
-	request := httptest.NewRequest(method, target, bytes.NewReader(encoded)).WithContext(t.Context())
+	request := httptest.NewRequestWithContext(t.Context(), method, target, bytes.NewReader(encoded))
 	if body != nil {
 		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	}
@@ -233,7 +233,7 @@ func (h *HTTPHarness) Request(t *testing.T, actor HTTPActor, method, target stri
 }
 func (a HTTPActor) Apply(request *http.Request) {
 	if a.Cookie {
-		request.AddCookie(&http.Cookie{Name: hubauth.Cookie, Value: a.Token})
+		request.AddCookie(&http.Cookie{Name: hubauth.Cookie, Value: a.Token, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	} else if a.Token != "" {
 		request.Header.Set(echo.HeaderAuthorization, "Bearer "+a.Token)
 	}

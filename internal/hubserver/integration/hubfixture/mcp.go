@@ -40,7 +40,7 @@ func MCP(t *testing.T, handler http.Handler, path, token string) func(method, na
 		if err != nil {
 			t.Fatal(err)
 		}
-		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(frame))).WithContext(t.Context())
+		request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(string(frame)))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer "+token)
 		request.Header.Set("Mcp-Protocol-Version", MCPProtocolVersion)

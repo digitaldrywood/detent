@@ -96,7 +96,7 @@ func SeedCore(t *testing.T, db *sql.DB) {
 func RequireSQLState(t *testing.T, err error, state string) {
 	t.Helper()
 	var pgerr *pgconn.PgError
-	if !errors.As(err, &pgerr) || string(pgerr.Code) != state {
+	if !errors.As(err, &pgerr) || pgerr.Code != state {
 		t.Fatalf("expected PostgreSQL SQLSTATE %s, got %v", state, err)
 	}
 }
