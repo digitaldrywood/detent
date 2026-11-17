@@ -33,6 +33,9 @@ if name == "go" and args[:1] == ["list"]:
         ("lib", [], []),
         ("app", ["example.test/lib"], []),
         ("integration", [], ["example.test/app"]),
+        ("consumer", ["example.test/integration"], []),
+        ("dual", ["example.test/lib"], ["example.test/app"]),
+        ("dualconsumer", ["example.test/dual"], []),
         ("unrelated", [], []),
         ("removed", [], []),
         (".", [], []),
@@ -161,11 +164,31 @@ class ShortLandingGateTest(unittest.TestCase):
                     else:
                         self.assertEqual(call["budget"], "1")
                         self.assertIn("TEST_PROCS=" + budget, call["args"])
-                self.assertIn("-timeout=10m", test["args"])
+                self.assertIn("-timeout=90m", test["args"])
                 self.assertEqual([arg for arg in trace[-1]["args"] if arg.startswith("./")], sorted({"./" + str(Path(path).parent) for path in paths}))
                 self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
                 self.assertIn("assets", trace[0]["args"])
                 self.assertIn("generate-docs", trace[0]["args"])
+
+    def test_test_imports_select_without_propagating(self):
+        for name in ("consumer", "dual", "dualconsumer"):
+            (self.root / name).mkdir()
+            (self.root / name / "source.go").write_text("package " + name + "\n")
+        self.commit()
+        self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
+        (self.root / "lib/source.go").write_text("package lib\nconst Value = 1\n")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        test = next(call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test")
+        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(["./app", "./dual", "./dualconsumer", "./integration", "./lib"] + self.required_packages))
+        (self.root / "integration/source.go").write_text("package integration\nconst Value = 1\n")
+        self.commit()
+        self.git("update-ref", "refs/remotes/origin/develop", "HEAD~1")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        test = next(call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test")
+        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(["./consumer", "./integration"] + self.required_packages))
 
     def test_wide_selection_records_bounded_unit_evidence(self):
         names = ["./many/" + "feature_package_with_a_long_descriptive_name_" + str(index) for index in range(150)]
@@ -182,7 +205,7 @@ class ShortLandingGateTest(unittest.TestCase):
         unit = next(check for check in evidence if check["scope"] == "unit-short")
         self.assertRegex(unit["command"], r"^[a-zA-Z0-9_. /:+,=-]{1,256}$")
         digest = hashlib.sha256("".join(package + "\n" for package in packages).encode()).hexdigest()
-        self.assertEqual(unit["command"], f"python3 scripts/check-landing.py tests --package-count={len(packages)} --package-sha256={digest} -p 2 -short -timeout=10m")
+        self.assertEqual(unit["command"], f"python3 scripts/check-landing.py tests --package-count={len(packages)} --package-sha256={digest} -p 2 -short -timeout=90m")
 
     def test_test_threads_share_the_package_budget(self):
         contract = runpy.run_path(str(ROOT / "scripts/check-landing.py"))

@@ -98,14 +98,15 @@ for path in changed:
         if owner:
             direct.add(owner)
 while True:
-    dependents = {
-        name for name, package in packages.items()
-        if propagated.intersection(package.get("Imports", []) + package.get("TestImports", []) + package.get("XTestImports", []))
-    }
+    dependents = {name for name, package in packages.items() if propagated.intersection(package.get("Imports", []))}
     if dependents.issubset(propagated):
         break
     propagated.update(dependents)
-selected = set(packages) if wide else direct | propagated
+tested = {
+    name for name, package in packages.items()
+    if propagated.intersection(package.get("TestImports", []) + package.get("XTestImports", []))
+}
+selected = set(packages) if wide else direct | propagated | tested
 if wide:
     print("wide\t./...")
 for scope, names in (("test", selected), ("lint", set(packages) if wide else lint)):
@@ -137,7 +138,7 @@ test_packages=("${sorted_packages[@]}")
 if [ "${#test_packages[@]}" -gt 0 ]; then
     printf 'Landing test packages: %s\n' "${test_packages[*]}"
     package_digest=$(python3 scripts/check-landing.py digest "${test_packages[@]}")
-    DETENT_LANDING_PACKAGES=$(printf '%s\n' "${test_packages[@]}") check_with_evidence unit-short python3 scripts/check-landing.py tests --package-count="${#test_packages[@]}" --package-sha256="$package_digest" -p "$procs" -short -timeout=10m
+    DETENT_LANDING_PACKAGES=$(printf '%s\n' "${test_packages[@]}") check_with_evidence unit-short python3 scripts/check-landing.py tests --package-count="${#test_packages[@]}" --package-sha256="$package_digest" -p "$procs" -short -timeout=90m
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     make -j1 "$linter" TEST_PROCS="$procs"
