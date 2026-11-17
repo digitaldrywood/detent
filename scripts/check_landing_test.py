@@ -370,6 +370,7 @@ func TestGateLifetime(t *testing.T) {
 '''
         real_path = os.environ["PATH"]
         real_go = shutil.which("go", path=real_path)
+        (ROOT / "tmp").mkdir(exist_ok=True)
         for name, cancel in (("failure", None), ("SIGTERM", signal.SIGTERM), ("SIGINT", signal.SIGINT)):
             with self.subTest(name=name), tempfile.TemporaryDirectory(dir=ROOT / "tmp", prefix="gate-lifetime-") as directory:
                 base = Path(directory)
