@@ -598,6 +598,13 @@ func (p *Project) Running() bool {
 	return p.done != nil
 }
 
+func (p *Project) unstarted() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.done == nil && !p.started && !p.closed
+}
+
 func (p *Project) Paused() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()

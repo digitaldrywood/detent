@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -30,64 +31,85 @@ import (
 func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
 	t.Parallel()
 
-	events := hub.New[project.Event](hub.WithBuffer(4))
-	sub, err := events.Subscribe(context.Background())
-	if err != nil {
-		t.Fatalf("Subscribe() error = %v", err)
-	}
+	for _, reconciledBeforeStart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reconciled_before_start=%t", reconciledBeforeStart), func(t *testing.T) {
+			t.Parallel()
 
-	var slept []time.Duration
-	var logs bytes.Buffer
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
-		Projects: []globalconfig.Project{
-			{ID: "alpha", Weight: 1},
-			{ID: "bravo", Weight: 1},
-			{ID: "charlie", Weight: 1, Paused: true},
-		},
-		Startup: project.StartupConfig{
-			Jitter:            time.Second,
-			MaxSpawnPerSecond: 2,
-		},
-	}, project.ManagerDependencies{
-		Events: events,
-		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
-		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			return newManagerTestProject(t, cfg, events)
-		},
-		Jitter: func(time.Duration) time.Duration {
-			return 100 * time.Millisecond
-		},
-		Sleep: func(_ context.Context, delay time.Duration) error {
-			slept = append(slept, delay)
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+			events := hub.New[project.Event](hub.WithBuffer(4))
+			sub, err := events.Subscribe(context.Background())
+			if err != nil {
+				t.Fatalf("Subscribe() error = %v", err)
+			}
 
-	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+			var slept []time.Duration
+			var logs bytes.Buffer
+			created := map[string]int{}
+			cfg := project.ManagerConfig{
+				Projects: []globalconfig.Project{
+					{ID: "alpha", Weight: 1},
+					{ID: "bravo", Weight: 1},
+					{ID: "charlie", Weight: 1, Paused: true},
+				},
+				Startup: project.StartupConfig{
+					Jitter:            time.Second,
+					MaxSpawnPerSecond: 2,
+				},
+			}
+			initial := cfg
+			if reconciledBeforeStart {
+				initial.Projects = nil
+			}
+			manager, err := projectfixture.NewManager(initial, project.ManagerDependencies{
+				Events: events,
+				Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+				ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+					created[cfg.ID]++
+					return newManagerTestProject(t, cfg, events)
+				},
+				Jitter: func(time.Duration) time.Duration {
+					return 100 * time.Millisecond
+				},
+				Sleep: func(_ context.Context, delay time.Duration) error {
+					slept = append(slept, delay)
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+			if reconciledBeforeStart {
+				if _, err := manager.Reconcile(context.Background(), cfg); err != nil {
+					t.Fatalf("Reconcile() before Start error = %v", err)
+				}
+			}
 
-	wantSleeps := []time.Duration{600 * time.Millisecond}
-	if !reflect.DeepEqual(slept, wantSleeps) {
-		t.Fatalf("sleep delays = %v, want %v", slept, wantSleeps)
-	}
+			if err := manager.Start(context.Background()); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
 
-	started := []project.ID{
-		receiveEvent(t, sub.C()).ProjectID,
-		receiveEvent(t, sub.C()).ProjectID,
-	}
-	slices.Sort(started)
-	if !reflect.DeepEqual(started, []project.ID{"alpha", "bravo"}) {
-		t.Fatalf("started projects = %v, want [alpha bravo]", started)
-	}
-	if manager.Registry().Len() != 3 {
-		t.Fatalf("Registry().Len() = %d, want 3", manager.Registry().Len())
-	}
-	if got := logs.String(); !strings.Contains(got, "level=INFO msg=\"project startup skipped\" project_id=charlie reason=paused") {
-		t.Fatalf("startup logs missing paused project skip: %s", got)
+			wantSleeps := []time.Duration{600 * time.Millisecond}
+			if !reflect.DeepEqual(slept, wantSleeps) {
+				t.Fatalf("sleep delays = %v, want %v", slept, wantSleeps)
+			}
+
+			started := []project.ID{
+				receiveEvent(t, sub.C()).ProjectID,
+				receiveEvent(t, sub.C()).ProjectID,
+			}
+			slices.Sort(started)
+			if !reflect.DeepEqual(started, []project.ID{"alpha", "bravo"}) {
+				t.Fatalf("started projects = %v, want [alpha bravo]", started)
+			}
+			if manager.Registry().Len() != 3 {
+				t.Fatalf("Registry().Len() = %d, want 3", manager.Registry().Len())
+			}
+			if want := map[string]int{"alpha": 1, "bravo": 1, "charlie": 1}; !reflect.DeepEqual(created, want) {
+				t.Fatalf("created projects = %v, want each once %v", created, want)
+			}
+			if got := logs.String(); !strings.Contains(got, "level=INFO msg=\"project startup skipped\" project_id=charlie reason=paused") {
+				t.Fatalf("startup logs missing paused project skip: %s", got)
+			}
+		})
 	}
 }
 
