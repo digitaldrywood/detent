@@ -859,9 +859,6 @@
     "internal/hubserver/project_record_participants.go": {
       "organization:Hosted.OrganizationID": 2
     },
-    "internal/hubserver/project_records.go": {
-      "organization:Hosted.OrganizationID": 1
-    },
     "internal/hubserver/readable_url_records.go": {
       "organization:appOrganizationID": 5
     },
