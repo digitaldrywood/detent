@@ -66,9 +66,3 @@ func mergeHistogramDurations(durations ...operatortool.AnalyticsDuration) operat
 	out.P50Seconds, out.P90Seconds = quantile(.5), quantile(.9)
 	return out
 }
-
-type diagnosticsResidenceHour struct {
-	transitions int
-	todo        *int
-	Partial     bool `json:"-"`
-}

@@ -51,8 +51,6 @@ const storageConversionBytes = 1 << 20
 type storageBatchKey struct{}
 
 type storageRowPosition struct {
-	family    string
-	row       int64
 	candidate Candidate
 }
 

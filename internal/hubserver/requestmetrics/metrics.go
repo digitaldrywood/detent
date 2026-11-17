@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -99,7 +98,6 @@ type Service struct {
 	runners        map[string]*RunnerWindow
 	routesOnce     sync.Once
 	routes         map[string]bool
-	ingested       atomic.Int64
 }
 
 func (m *Service) Record(now time.Time, route, kind, caller string, status int, elapsed time.Duration) {

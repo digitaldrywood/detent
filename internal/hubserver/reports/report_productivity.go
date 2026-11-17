@@ -21,7 +21,6 @@ type productivityMetrics struct {
 	CostPerCompleted *float64 `json:"cost_per_completed_usd"`
 	CycleP50         *float64 `json:"cycle_p50_seconds"`
 	ReworkRate       *float64 `json:"rework_percent"`
-	cycles           []float64
 }
 
 type productivityProject struct {

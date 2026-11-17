@@ -30,10 +30,6 @@ type ReportsFilter struct {
 	Stages     []string
 }
 
-func (f ReportsFilter) attempts() bool {
-	return len(f.Runners)+len(f.Models)+len(f.Stages) > 0
-}
-
 func ReportsQueryValues(params url.Values, name string) []string {
 	values := slices.Concat(params[name], params[name+"[]"])
 	out := make([]string, 0, len(values))

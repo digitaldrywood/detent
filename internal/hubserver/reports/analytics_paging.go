@@ -60,20 +60,6 @@ func AnalyticsPagingFromContext(ctx context.Context) *AnalyticsPaging {
 	return nil
 }
 
-func analyticsPopulationOffset(ctx context.Context, name string) int {
-	page := AnalyticsPagingFromContext(ctx)
-	if page == nil {
-		return 0
-	}
-	if page.Name == name {
-		return page.Offset
-	}
-	if name == "residence_issues" && page.Name == "residence_events" {
-		return page.issuesOffset
-	}
-	return 0
-}
-
 type AnalyticsResidenceCursor struct {
 	IssuesAfter   tracker.NativeWorkItemID
 	EventItem     tracker.NativeWorkItemID
