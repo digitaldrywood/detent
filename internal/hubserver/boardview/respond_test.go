@@ -21,26 +21,39 @@ func TestRespondCompressesWhenTheClientAcceptsGzip(t *testing.T) {
 		accept string
 		value  any
 		gzip   bool
+		status int
 	}{
-		{"browser encodings", "gzip, deflate, br, zstd", large, true},
-		{"gzip with quality", "br;q=1.0, gzip;q=0.5", large, true},
-		{"gzip refused", "gzip;q=0, br", large, false},
-		{"no encoding", "", large, false},
-		{"other encoding only", "br", large, false},
-		{"small body", "gzip", small, true},
-		{"identity refused", "gzip, identity;q=0", small, true},
-		{"wildcard", "*;q=1, identity;q=0", large, true},
-		{"wildcard with gzip refused", "*, gzip;q=0", large, false},
+		{"browser encodings", "gzip, deflate, br, zstd", large, true, 0},
+		{"gzip with quality", "br;q=1.0, gzip;q=0.5", large, true, 0},
+		{"gzip refused", "gzip;q=0, br", large, false, 0},
+		{"no encoding", "", large, false, 0},
+		{"other encoding only", "br", large, false, 0},
+		{"small body", "gzip", small, true, 0},
+		{"identity refused", "gzip, identity;q=0", small, true, 0},
+		{"wildcard", "*;q=1, identity;q=0", large, true, 0},
+		{"wildcard with gzip refused", "*, gzip;q=0", large, false, 0},
+		{"every coding refused", "gzip;q=0, identity;q=0", large, false, http.StatusNotAcceptable},
+		{"wildcard refused", "*;q=0", large, false, http.StatusNotAcceptable},
+		{"refusals in separate headers", "gzip;q=0|identity;q=0", large, false, http.StatusNotAcceptable},
+		{"gzip in a second header", "br|gzip", large, true, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			request := httptest.NewRequest(http.MethodGet, "/work-board", nil)
-			if test.accept != "" {
-				request.Header.Set("Accept-Encoding", test.accept)
+			for _, value := range strings.Split(test.accept, "|") {
+				if value != "" {
+					request.Header.Add("Accept-Encoding", value)
+				}
 			}
 			recorder := httptest.NewRecorder()
 			if err := Respond(recorder, request, http.StatusOK, test.value); err != nil {
 				t.Fatal(err)
+			}
+			if test.status != 0 {
+				if recorder.Code != test.status || recorder.Body.Len() != 0 {
+					t.Fatalf("status %d with %d body bytes, want %d and no body", recorder.Code, recorder.Body.Len(), test.status)
+				}
+				return
 			}
 			if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "application/json" || recorder.Header().Get("Vary") != "Accept-Encoding" {
 				t.Fatalf("status %d headers %v", recorder.Code, recorder.Header())
