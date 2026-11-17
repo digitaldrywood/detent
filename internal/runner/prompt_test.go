@@ -1,14 +1,15 @@
 package runner
 
 import (
+	"strconv"
+	"strings"
+	"testing"
+
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
-	"strconv"
-	"strings"
-	"testing"
 )
 
 func TestNativeOrphanHandoffPreservesPlanOnly(t *testing.T) {

@@ -1,9 +1,10 @@
 package signing
 
 import (
-	"github.com/digitaldrywood/detent/internal/testenv"
 	"os"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestMain(m *testing.M) {

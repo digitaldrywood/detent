@@ -2,10 +2,11 @@ package api
 
 import (
 	"context"
-	"github.com/google/uuid"
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
