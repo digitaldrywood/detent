@@ -930,7 +930,6 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 			for _, elapsed := range []time.Duration{30 * time.Second, 70 * time.Second} {
 				clock.Advance(elapsed)
-				now = clock.Now()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
 			}
 			if test.retained {

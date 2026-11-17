@@ -373,8 +373,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	if view.Policy == nil || view.Policy.ID != descriptorB.ID {
 		t.Fatalf("second observed policy was not approved: %+v", view.Policy)
 	}
-	descriptorC := descriptorB
-	descriptorC = authoredDescriptor("Implement a third assigned issue.\n", strings.Repeat("c", 40))
+	descriptorC := authoredDescriptor("Implement a third assigned issue.\n", strings.Repeat("c", 40))
 	sourceC := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("c", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("d", 40), DefaultBranchReachable: true}
 	report(runners[1], descriptorC, sourceC)
 	view = read()

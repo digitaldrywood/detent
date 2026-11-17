@@ -700,7 +700,6 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			}
 			probe := &payloadRecoveryRepository{Repository: f.service.config.TenantRepository.(*postgres.Repository)}
 			f.service.config.TenantRepository = probe
-			readContext := context.WithValue(f.service.freshRunDetailContext(t.Context()), payloadRecoveryProbeKey{}, probe)
 			historyObjects := 0
 			originalContent, originalDetails := f.service.config.Content, f.service.config.RunDetails
 			f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
@@ -715,7 +714,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 				}
 				return nil
 			}}
-			readContext = context.WithValue(f.service.freshRunDetailContext(t.Context()), payloadRecoveryProbeKey{}, probe)
+			readContext := context.WithValue(f.service.freshRunDetailContext(t.Context()), payloadRecoveryProbeKey{}, probe)
 			proof := tracker.Transition{Mutation: tracker.Mutation{LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, State: "Todo", BlockerAttemptID: f.attempt, PolicyID: f.policy}
 			recovery, proofErr := f.service.prepareRecordedRecoveryTenant(readContext, scope, row, issue, proof)
 			f.service.config.Content, f.service.config.RunDetails = originalContent, originalDetails

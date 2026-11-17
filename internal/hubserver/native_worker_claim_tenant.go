@@ -976,7 +976,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			}
 			landingCapacity = capacity
 		}
-		exposure := budget.CostExposure{RunnerAPI: !workspaceItem && runnerAPI}
+		var exposure budget.CostExposure
 		joining := ""
 		if replay == nil {
 			availableCapacity, projectCapacity, projectCapacityConfigured, err := runnerClaimCapacity(identity, scope.Project, authoritativeNow)
