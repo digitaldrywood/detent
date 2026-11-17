@@ -111,6 +111,10 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 				return err
 			}
 			snapshot.Event, err = r.LatestRunEvent(ctx, project, attempt.ID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				facts.AttemptID, facts.CheckpointObjectKey = "", ""
+				return nil
+			}
 		}
 		if err == nil {
 			err = hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot)
