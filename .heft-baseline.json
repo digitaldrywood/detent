@@ -19,13 +19,13 @@
     },
     "github.com/digitaldrywood/detent/internal/hubserver": {
       "files": 432,
-      "loc": 94800,
+      "loc": 94794,
       "test-files": 481,
       "test-funcs": 1401
     },
     "github.com/digitaldrywood/detent/internal/hubserver/postgres": {
       "files": 257,
-      "loc": 44370
+      "loc": 44360
     },
     "github.com/digitaldrywood/detent/internal/orchestrator": {
       "files": 112,
