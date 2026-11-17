@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -275,7 +276,7 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 				select {
 				case report := <-hub.Reports:
 					if valid {
-						if report == nil || !report.Files {
+						if report == nil || *report != workspacerunner.Capabilities(workspacerunner.DefaultSupport()) {
 							t.Fatalf("serving lane advertised no capabilities: %+v", report)
 						}
 						seen = true
@@ -294,6 +295,7 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 			}
 			if valid {
 				wait(hub.Released)
+				wait(hub.IssueRequested)
 			}
 			cancel()
 			if valid {

@@ -2,21 +2,23 @@ package workspacefixture
 
 import (
 	"encoding/json"
-	"github.com/digitaldrywood/detent/internal/isolation"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspacesession"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type Hub struct {
 	Client           *http.Client
 	Reports          chan *workspacesession.Capabilities
 	Released         chan struct{}
+	IssueRequested   chan struct{}
 	releaseBarrier   chan struct{}
 	once             sync.Once
 	Claims           int
@@ -31,14 +33,14 @@ func (h *Hub) Unblock() { h.once.Do(func() { close(h.releaseBarrier) }) }
 
 func New(t *testing.T, identity runnerauth.File) *Hub {
 	t.Helper()
-	h := &Hub{Reports: make(chan *workspacesession.Capabilities, 10), Released: make(chan struct{}), releaseBarrier: make(chan struct{})}
+	h := &Hub{Reports: make(chan *workspacesession.Capabilities, 10), Released: make(chan struct{}), IssueRequested: make(chan struct{}), releaseBarrier: make(chan struct{})}
 	h.Client = &http.Client{Transport: transport(func(r *http.Request) (*http.Response, error) {
 		w := httptest.NewRecorder()
 		w.Header().Set("Content-Type", "application/json")
 		var response any
 		switch {
 		case r.URL.Path == "/api/v2/capabilities":
-			response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeWorkspaceCapability, tracker.NativeRunnerUpdateCapability, tracker.NativeProviderCapacityCapability}}
+			response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeDispatchPriorityCapability, tracker.NativeWorkspaceCapability, tracker.NativeRunnerUpdateCapability, tracker.NativeProviderCapacityCapability}}
 		case strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID):
 			response = identity.Identity
 		case strings.HasSuffix(r.URL.Path, "/update/receipt"):
@@ -50,6 +52,20 @@ func New(t *testing.T, identity runnerauth.File) *Hub {
 			return w.Result(), nil
 		case strings.HasSuffix(r.URL.Path, "/policy"):
 			response = map[string]any{"policy": nil}
+		case strings.HasSuffix(r.URL.Path, "/routing"):
+			response = runnerauth.Runner{Binding: identity.Identity.Binding, HostCapacity: 1, ReportedCapacity: 1, Routing: runnerauth.Routing{State: "active", CapacityLimit: 1}.Normalized()}
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/work-items"):
+			response = tracker.Page[tracker.NativeIssue]{}
+		case strings.HasSuffix(r.URL.Path, "/claims/preview"):
+			var preview tracker.NativeCapacityPreview
+			if err := json.NewDecoder(r.Body).Decode(&preview); err != nil {
+				t.Error(err)
+			}
+			h.IssueSessions = append(h.IssueSessions, preview.SessionID)
+			if len(h.IssueSessions) == 1 {
+				close(h.IssueRequested)
+			}
+			response = tracker.NativeCapacityPage{}
 		case strings.HasSuffix(r.URL.Path, "/heartbeat"):
 			var report struct {
 				WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities"`
@@ -66,6 +82,9 @@ func New(t *testing.T, identity runnerauth.File) *Hub {
 			}
 			if !strings.Contains(claim.SessionID, "-workspace-") {
 				h.IssueSessions = append(h.IssueSessions, claim.SessionID)
+				if len(h.IssueSessions) == 1 {
+					close(h.IssueRequested)
+				}
 				w.WriteHeader(http.StatusConflict)
 				_, _ = w.WriteString(`{"code":"no_claimable_work"}`)
 				return w.Result(), nil
