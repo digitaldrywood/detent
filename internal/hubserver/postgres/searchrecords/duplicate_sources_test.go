@@ -2,7 +2,6 @@ package searchrecords_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -34,17 +33,13 @@ func TestDuplicateSourcesReadTheBoundedPageWindow(t *testing.T) {
 	ctx := t.Context()
 	now := pgstoretest.HistoryAt()
 	fingerprint := issueorigin.Origin{Kind: "worker", Fingerprint: "example-duplicate-fingerprint"}
+	republishSearchText(t, f, "wi_first_1", 1, "Magazine count reason code", "Counting magazines by reason code")
+	republishSearchText(t, f, "wi_first_2", 2, "Example unrelated", issueorigin.Stamp("Unrelated body", fingerprint))
 	for _, statement := range []string{
-		`UPDATE native_work_item_pages SET title='Magazine count reason code',body='Counting magazines by reason code' WHERE work_item_id='wi_first_1'`,
-		`UPDATE native_work_item_pages SET title='Example unrelated',body=$1 WHERE work_item_id='wi_first_2'`,
 		`UPDATE native_work_item_page_progress SET backfill_phase=2`,
 		`DELETE FROM native_work_item_page_dirty WHERE kind='item'`,
 	} {
-		args := []any{}
-		if strings.Contains(statement, "$1") {
-			args = append(args, issueorigin.Stamp("Unrelated body", fingerprint))
-		}
-		if _, err := f.admin.ExecContext(ctx, statement, args...); err != nil {
+		if _, err := f.admin.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -53,7 +48,7 @@ func TestDuplicateSourcesReadTheBoundedPageWindow(t *testing.T) {
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, row := range searchstore.FingerprintRows("prj_first", issueorigin.Stamp("Unrelated body", fingerprint)) {
-			if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind,release_series) VALUES($1,'prj_first','wi_first_2','item','wi_first_2',$2,$3,$4,$5)`, org, row.Digest, row.Origin, row.OriginKind, row.ReleaseSeries); err != nil {
+			if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind,release_series) VALUES($1,'prj_first','wi_first_2','item','wi_first_2',$2,$3,$4,$5) ON CONFLICT DO NOTHING`, org, row.Digest, row.Origin, row.OriginKind, row.ReleaseSeries); err != nil {
 				t.Fatal(err)
 			}
 		}

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,7 +33,7 @@ type principalSearchGate struct {
 type principalSearchTracer struct{}
 
 func (principalSearchTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, query pgx.TraceQueryStartData) context.Context {
-	if gate, ok := ctx.Value(principalSearchGateKey{}).(*principalSearchGate); ok && strings.Contains(query.SQL, "search_vector") {
+	if gate, ok := ctx.Value(principalSearchGateKey{}).(*principalSearchGate); ok && strings.Contains(query.SQL, "terms @@") {
 		gate.once.Do(func() {
 			close(gate.ready)
 			<-gate.release
@@ -98,8 +99,8 @@ func TestBoardSearchPrincipalAdmission(t *testing.T) {
 					<-finished
 					var pgErr *pgconn.PgError
 					timedOut := errors.Is(hostileErr, context.DeadlineExceeded) || (errors.As(hostileErr, &pgErr) && pgErr.Code == "57014")
-					if !timedOut {
-						t.Errorf("hostile search escaped deadline: %v", hostileErr)
+					if !timedOut || errors.Is(hostileErr, searchstore.ErrBusy) {
+						t.Errorf("hostile search escaped its caller's deadline or was reported as a busy search: %v", hostileErr)
 					}
 				})
 				go func() {
@@ -135,7 +136,7 @@ func TestBoardSearchPrincipalAdmission(t *testing.T) {
 						})
 					}
 					same := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "example", Limit: 1, Reporter: true, ReporterPrincipalID: "example"}
-					if err := read(org, same); !errors.Is(err, context.DeadlineExceeded) {
+					if err := read(org, same); !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, searchstore.ErrBusy) {
 						t.Fatalf("model=%t same principal escaped concurrency bound: %v", model, err)
 					}
 					other := same

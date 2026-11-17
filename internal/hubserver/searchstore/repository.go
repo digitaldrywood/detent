@@ -11,6 +11,7 @@ const MaxQueryTextBytes = 512
 
 var ErrInvalid = errors.New("invalid search record or query")
 var ErrIndexPending = errors.New("search index refresh is pending")
+var ErrBusy = errors.New("search did not finish within its budget")
 
 type Document struct {
 	OrganizationID tracker.OrganizationID

@@ -79,7 +79,12 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 		body := fmt.Sprintf("(SELECT string_agg((%s)[1+abs(hashtext(n::text||':'||g::text))%%50],' ') FROM generate_series(1,%d) g)", boardSearchVocabulary, words)
 		clone("native_board_items", org, "''", first, count)
 		clone("native_work_item_pages", org, body, first, count)
-		if _, err := f.admin.ExecContext(ctx, "ANALYZE issues,native_board_items,native_work_item_pages"); err != nil {
+		if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_search(organization_id,project_id,work_item_id,number,terms)
+ SELECT organization_id,project_id,work_item_id,number,setweight(to_tsvector('pg_catalog.english',lower(title COLLATE pg_catalog.pg_c_utf8)),'A')||strip(to_tsvector('pg_catalog.english',lower(body COLLATE pg_catalog.pg_c_utf8)))
+ FROM native_work_item_pages WHERE organization_id=$1 AND work_item_id LIKE 'wi_window_%' ON CONFLICT DO NOTHING`, org); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.admin.ExecContext(ctx, "ANALYZE issues,native_board_items,native_work_item_pages,native_work_item_search"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -87,7 +92,7 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 	matching := func(org tracker.OrganizationID) int {
 		t.Helper()
 		var want int
-		if err := f.admin.QueryRowContext(ctx, `SELECT count(*) FROM native_work_item_pages WHERE organization_id=$1 AND project_id='prj_first' AND search_vector @@ to_tsquery('pg_catalog.english',$2)`, org, searchstore.WindowQuery(text)).Scan(&want); err != nil {
+		if err := f.admin.QueryRowContext(ctx, `SELECT count(*) FROM native_work_item_search WHERE organization_id=$1 AND project_id='prj_first' AND terms @@ to_tsquery('pg_catalog.english',$2)`, org, searchstore.WindowQuery(text)).Scan(&want); err != nil {
 			t.Fatal(err)
 		}
 		return want
@@ -254,7 +259,7 @@ func inspectSearchPlan(t *testing.T, f searchFixture, org tracker.OrganizationID
 		}
 	}
 	inspect(plans[0].Plan)
-	for _, relation := range []string{"native_work_item_pages", "native_work_item_fingerprints", "native_board_items", "issues"} {
+	for _, relation := range []string{"native_work_item_pages", "native_work_item_search", "native_work_item_fingerprints", "native_board_items", "issues"} {
 		if visited[relation] > bound {
 			t.Errorf("tenant %s search visited %.0f %s rows for one page: %s", org, visited[relation], relation, raw)
 		}

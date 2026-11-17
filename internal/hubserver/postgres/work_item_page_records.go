@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/searchsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -134,6 +135,11 @@ func (s *session) PublishWorkItemPage(ctx context.Context, candidate viewstore.P
 		}
 		if _, err := s.db.Exec(ctx, "DELETE FROM "+table+" WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3"+predicate, args...); err != nil {
 			return mapError(ctx, err)
+		}
+		if candidate.Kind == "item" {
+			if _, err := s.db.Exec(ctx, searchsql.TermsDelete, args...); err != nil {
+				return mapError(ctx, err)
+			}
 		}
 	}
 	if err := s.replaceWorkItemFingerprints(ctx, candidate, fingerprints); err != nil {

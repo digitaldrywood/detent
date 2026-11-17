@@ -3209,7 +3209,6 @@ type NativeWorkItemPage struct {
 	ReferenceUrls                   []string
 	ReferenceRepositories           []string
 	ReferenceNumbers                []int64
-	SearchVector                    interface{}
 }
 
 type NativeWorkItemPageDirty struct {
@@ -3239,6 +3238,14 @@ type NativeWorkItemPageProgress struct {
 	FingerprintPhase     int16
 	FingerprintIssueID   int64
 	FingerprintCommentID string
+}
+
+type NativeWorkItemSearch struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	Number         int64
+	Terms          string
 }
 
 type NeutralImportRecord struct {

@@ -247,6 +247,7 @@ type session struct {
 	leaseClock         func() time.Time
 	searchBudget       time.Duration
 	searchDeadline     time.Time
+	searchBudgetLimits bool
 	searchAdmitted     bool
 	cacheMu            sync.Mutex
 	projectGrants      map[projectAccessKey]accessstore.ProjectGrant

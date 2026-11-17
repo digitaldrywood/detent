@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -103,6 +104,22 @@ func publishSearchBody(ctx context.Context, f searchFixture, w tenantstore.Write
 		return err
 	}
 	return w.(viewstore.WorkItemPageWriter).PublishWorkItemPage(ctx, candidate, &viewstore.ItemPageRecord{Value: issue, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: pgstoretest.HistoryAt()}, nil)
+}
+
+func republishSearchText(t *testing.T, f searchFixture, id tracker.NativeWorkItemID, number int, title, body string) {
+	t.Helper()
+	ctx := t.Context()
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if _, err := f.admin.ExecContext(ctx, "INSERT INTO native_work_item_page_dirty(organization_id,project_id,work_item_id,record_id,kind) VALUES($1,'prj_first',$2,$2,'item') ON CONFLICT DO NOTHING", org, id); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: id, Revision: 1, Number: number}, Title: title, Body: body, State: "Todo", CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}}
+			return publishSearchBody(ctx, f, w, issue)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
@@ -218,7 +235,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 					t.Error(err)
 				}
 			}()
-			if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_work_item_pages IN ACCESS EXCLUSIVE MODE"); err != nil {
+			if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_work_item_search IN ACCESS EXCLUSIVE MODE"); err != nil {
 				t.Fatal(err)
 			}
 			bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -226,11 +243,57 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			err = f.repository.ReadTenant(bounded, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 				return read(bounded, r)
 			})
-			if !timedOut(err) {
-				t.Fatalf("search did not enforce a server statement timeout: %v", err)
+			if !timedOut(err) || !errors.Is(err, searchstore.ErrBusy) {
+				t.Fatalf("search did not enforce a server statement timeout as a busy search: %v", err)
 			}
 		})
 	}
+	t.Run("caller deadlines and cancellation are not busy searches", func(t *testing.T) {
+		config := pgstoretest.SmallPool()
+		config.SearchBudget = time.Hour
+		patient, err := postgres.NewRepository(ctx, f.pool, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		settleSearch(t)
+		blocker, err := f.admin.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := blocker.Rollback(); err != nil {
+				t.Error(err)
+			}
+		}()
+		if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_work_item_search IN ACCESS EXCLUSIVE MODE"); err != nil {
+			t.Fatal(err)
+		}
+		caller, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		defer cancel()
+		err = patient.ReadTenant(caller, "org_first", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.BoardPage(caller, selection); return err })
+		if !timedOut(err) || errors.Is(err, searchstore.ErrBusy) {
+			t.Fatalf("caller deadline error=%v, want a timeout that is not a busy search", err)
+		}
+		finished := make(chan error, 1)
+		go func() {
+			finished <- patient.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.BoardPage(ctx, selection); return err })
+		}()
+		testenv.WaitUntil(t, ctx, func() error {
+			var cancelled bool
+			if err := blocker.QueryRowContext(ctx, `SELECT coalesce(bool_or(pg_cancel_backend(pid)),false) FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%FROM native_work_item_search%'`).Scan(&cancelled); err != nil {
+				return err
+			}
+			if !cancelled {
+				return errors.New("search is not waiting on the table lock yet")
+			}
+			return nil
+		})
+		err = <-finished
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "57014" || errors.Is(err, searchstore.ErrBusy) {
+			t.Fatalf("administrative cancellation error=%v, want SQLSTATE 57014 that is not a busy search", err)
+		}
+	})
 	t.Run("principal concurrency cap", func(t *testing.T) {
 		held, err := f.admin.BeginTx(ctx, nil)
 		if err != nil {
@@ -296,14 +359,14 @@ func TestBoardSearchMatchesTitleAndBodyWords(t *testing.T) {
 	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
-	if _, err := f.admin.ExecContext(ctx, `UPDATE native_work_item_pages SET title='Example ÉCOLE', body=$1`, "bodyuniquemarker %_\\marker Café magazine counts reasons\nfingerprint: example-key\n"); err != nil {
-		t.Fatal(err)
+	for index, id := range []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"} {
+		republishSearchText(t, f, id, index+1, "Example ÉCOLE", "bodyuniquemarker %_\\marker Café magazine counts reasons\nfingerprint: example-key\n")
 	}
 	if _, err := f.admin.ExecContext(ctx, "UPDATE issues SET actor_principal_id='another-owner' WHERE native_id='wi_first_1'"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind)
- SELECT organization_id,project_id,work_item_id,'item',work_item_id,$1,true,'worker' FROM native_work_item_pages WHERE project_id='prj_first'`, searchstore.FingerprintDigest("example-key")); err != nil {
+ SELECT organization_id,project_id,work_item_id,'item',work_item_id,$1,true,'worker' FROM native_work_item_pages WHERE project_id='prj_first' ON CONFLICT DO NOTHING`, searchstore.FingerprintDigest("example-key")); err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -361,6 +424,61 @@ func TestBoardSearchMatchesTitleAndBodyWords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+		}
+	}
+	republishSearchText(t, f, "wi_first_1", 1, "Overlapmarker example", strings.Repeat("overlapmarker ", 50))
+	republishSearchText(t, f, "wi_first_2", 2, "Overlapmarker example", "Unrelated description")
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+			rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "overlapmarker", SearchRanked: true, Limit: 10})
+			if err == nil && (len(rows) != 2 || rows[0].WorkItemID != "wi_first_2" || rows[0].Position.SearchRank != rows[1].Position.SearchRank) {
+				t.Errorf("tenant %s description repeats of a title word changed its rank: %+v", org, rows)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	republishSearchText(t, f, "wi_first_1", 1, "Rankingmarker example", "Unrelated description")
+	republishSearchText(t, f, "wi_first_2", 2, "Example", strings.Repeat("rankingmarker ", 50))
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+			rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "rankingmark", SearchRanked: true, Limit: 10})
+			if err != nil {
+				return err
+			}
+			if len(rows) != 2 || rows[0].WorkItemID != "wi_first_1" || rows[0].Position.SearchRank <= rows[1].Position.SearchRank {
+				t.Errorf("tenant %s title match did not outrank a repeated description match: %+v", org, rows)
+			}
+			if _, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "rankingmark", SearchRanked: true, WorkOrder: true, Limit: 10, After: &rows[0].Position}); !errors.Is(err, corestore.ErrInvalidPage) {
+				t.Errorf("tenant %s work-order search accepted a continuation cursor: %v", org, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tenant := range []string{"", "org_first"} {
+		tx, err := f.admin.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, "SET LOCAL ROLE detent_runtime_v2"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, "SELECT set_config('detent.organization_id',$1,true)", tenant); err != nil {
+			t.Fatal(err)
+		}
+		var visible, foreign int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*),count(*) FILTER (WHERE organization_id<>$1) FROM native_work_item_search", tenant).Scan(&visible, &foreign); err != nil {
+			t.Fatal(err)
+		}
+		_, insertErr := tx.ExecContext(ctx, "INSERT INTO native_work_item_search(organization_id,project_id,work_item_id,number,terms) VALUES('org_second','prj_first','wi_foreign',99,'example'::tsvector)")
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]int{"": 0, "org_first": 2}[tenant]; visible != want || foreign != 0 || insertErr == nil {
+			t.Fatalf("tenant %q saw %d search rows (%d foreign), foreign insert error=%v", tenant, visible, foreign, insertErr)
 		}
 	}
 }

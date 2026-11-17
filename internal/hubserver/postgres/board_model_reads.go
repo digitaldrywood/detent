@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/searchsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 )
@@ -112,7 +114,8 @@ var boardModelParameter = regexp.MustCompile(`\$[0-9]+`)
 
 func (s *session) BoardModelPages(ctx context.Context, selection viewstore.BoardSelection, work *viewstore.BoardSelection, authority accessstore.Authority) (result viewstore.BoardModelPage, resultErr error) {
 	if selection.SearchText != "" || selection.Fingerprint != "" {
-		return s.boardSearchModelPages(ctx, selection, work)
+		result, resultErr = s.boardSearchModelPages(ctx, selection, work)
+		return result, s.boardSearchFailure(ctx, selection, resultErr)
 	}
 	query, args, err := s.boardModelQuery(selection, authority)
 	if err != nil {
@@ -246,6 +249,10 @@ func (s *session) readBoardModelBatch(ctx context.Context, batch *pgx.Batch) err
 	return mapError(ctx, err)
 }
 
+const boardSearchTimeoutMargin = 50 * time.Millisecond
+
+var errBoardSearchRefused = errors.Join(searchstore.ErrBusy, context.DeadlineExceeded)
+
 const boardProjectionPendingSQL = `(EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 OFFSET 256) OR EXISTS(SELECT 1 FROM (SELECT work_item_id FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 LIMIT 256) d LEFT JOIN native_board_items b ON b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=d.work_item_id LEFT JOIN issues i ON i.organization_id=$1 AND i.project_id=$2 AND i.native_id=d.work_item_id WHERE b.work_item_id IS NULL OR i.id IS NULL OR b.actor_principal_id<>coalesce(i.actor_principal_id,'')) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready))`
 
 const boardModelMetadataSQL = `SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),` + boardProjectionPendingSQL + `,(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`
@@ -268,7 +275,7 @@ func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore
 	})
 	if selection.SearchRanked && selection.SearchText != "" {
 		windowArgs := []any{s.organization, selection.ProjectID}
-		batch.Queue("SELECT count(*),min(w.number) FROM "+boardSearchWindow(&windowArgs, selection, "number")+" w", windowArgs...).QueryRow(func(row pgx.Row) error {
+		batch.Queue("SELECT count(*),min(w.number) FROM "+searchsql.Window(&windowArgs, selection, "number")+" w", windowArgs...).QueryRow(func(row pgx.Row) error {
 			var scanned int64
 			var lowest *int64
 			if err := row.Scan(&scanned, &lowest); err != nil {
@@ -282,7 +289,7 @@ func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore
 	}
 	if selection.SearchRanked && selection.SearchText == "" && selection.Fingerprint != "" {
 		scanArgs := []any{s.organization, selection.ProjectID}
-		batch.Queue("SELECT count(*),max(k.work_item_id) FROM "+boardFingerprintScan(&scanArgs, selection)+" k", scanArgs...).QueryRow(func(row pgx.Row) error {
+		batch.Queue("SELECT count(*),max(k.work_item_id) FROM "+searchsql.FingerprintScan(&scanArgs, selection)+" k", scanArgs...).QueryRow(func(row pgx.Row) error {
 			var scanned int64
 			var last *string
 			if err := row.Scan(&scanned, &last); err != nil {
@@ -322,9 +329,9 @@ func (s *session) beginBoardSearch(ctx context.Context, selection viewstore.Boar
 		if budget <= 0 {
 			budget = defaultBoardSearchBudget
 		}
-		s.searchDeadline = time.Now().Add(budget)
+		s.searchDeadline, s.searchBudgetLimits = time.Now().Add(budget), true
 		if deadline, ok := ctx.Deadline(); ok && deadline.Before(s.searchDeadline) {
-			s.searchDeadline = deadline
+			s.searchDeadline, s.searchBudgetLimits = deadline, false
 		}
 	}
 	ctx, cancel := context.WithDeadline(ctx, s.searchDeadline)
@@ -332,7 +339,7 @@ func (s *session) beginBoardSearch(ctx context.Context, selection viewstore.Boar
 		return ctx, cancel, err
 	}
 	if initial {
-		milliseconds := max(1, (time.Until(s.searchDeadline) - 25*time.Millisecond).Milliseconds())
+		milliseconds := max(1, (time.Until(s.searchDeadline) - boardSearchTimeoutMargin/2).Milliseconds())
 		lockKey := fmt.Sprintf("board-search:%q:%q", s.organization, selection.ReporterPrincipalID)
 		const statement = `SELECT set_config('statement_timeout',$1,true) IS NOT NULL AND pg_try_advisory_xact_lock(hashtextextended($2,0))`
 		if len(batches) > 0 {
@@ -341,7 +348,7 @@ func (s *session) beginBoardSearch(ctx context.Context, selection viewstore.Boar
 					return err
 				}
 				if !s.searchAdmitted {
-					return context.DeadlineExceeded
+					return errBoardSearchRefused
 				}
 				return nil
 			})
@@ -355,7 +362,7 @@ func (s *session) beginBoardSearch(ctx context.Context, selection viewstore.Boar
 		s.searchAdmitted = admitted
 	}
 	if !s.searchAdmitted {
-		return ctx, cancel, context.DeadlineExceeded
+		return ctx, cancel, errBoardSearchRefused
 	}
 	return ctx, cancel, nil
 }

@@ -5165,9 +5165,7 @@
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.DuplicateSourceState:QueryRow": 1,
-          "session.DuplicateSourceState:SQL": 1,
           "session.DuplicateSources:Query": 1,
-          "session.DuplicateSources:SQL": 1,
           "session.LockDuplicateSource:generated:LockActiveProject": 1,
           "session.LockDuplicateSource:query-receiver": 1,
           "session.advanceDuplicateSource:generated:AdvanceDuplicateSource": 1,
@@ -5175,9 +5173,7 @@
           "session.lockDuplicateSourceProject:generated:DuplicateProjectLock": 1,
           "session.lockDuplicateSourceProject:query-receiver": 1
         },
-        "tables": [
-          "hub/projects"
-        ]
+        "tables": []
       }
     },
     "internal/hubserver/postgres/event_records.go": {
@@ -12168,6 +12164,18 @@
         "tables": [
           "hub/native_board_items"
         ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261117043721_work_item_search_terms.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "search"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
       }
     },
     "internal/hubserver/postgres/monthly_costs.go": {
@@ -19387,6 +19395,36 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/searchsql/duplicates.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "search"
+      ],
+      "inventory": {
+        "operations": {
+          "DuplicateState:SQL": 1,
+          "Duplicates:SQL": 1
+        },
+        "tables": [
+          "hub/projects"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/searchsql/statement.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "search"
+      ],
+      "inventory": {
+        "operations": {
+          "Ranked:Query": 1,
+          "Ranked:SQL": 3,
+          "TermsDelete:SQL": 1,
+          "TermsUpsert:SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/slack_contract.go": {
       "disposition": "target-adapter",
       "families": [
@@ -19721,7 +19759,8 @@
           "session.NextBoardCandidate:SQL": 1,
           "session.boardPage:Query": 1,
           "session.boardPage:QueryRow": 1,
-          "session.boardPage:SQL": 2
+          "session.boardPage:SQL": 2,
+          "session.boardSearchPage:Query": 1
         },
         "tables": [
           "hub/api_tokens",
@@ -19825,7 +19864,7 @@
           "session.CommentPageRecords:SQL": 1,
           "session.NextWorkItemPageCandidate:QueryRow": 1,
           "session.NextWorkItemPageCandidate:SQL": 1,
-          "session.PublishWorkItemPage:Exec": 2,
+          "session.PublishWorkItemPage:Exec": 3,
           "session.PublishWorkItemPage:QueryRow": 2,
           "session.PublishWorkItemPage:SQL": 4,
           "session.PublishWorkItemPage:generated:AdvanceDuplicateSource": 1,
@@ -19855,7 +19894,7 @@
         "operations": {
           "session.putCommentPage:Exec": 1,
           "session.putCommentPage:SQL": 1,
-          "session.putItemPage:Exec": 1,
+          "session.putItemPage:Exec": 2,
           "session.putItemPage:SQL": 1
         },
         "tables": []
