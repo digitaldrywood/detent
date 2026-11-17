@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
@@ -47,14 +48,25 @@ func Hydrate(ctx context.Context, source Source, leases []tracker.NativeLease, r
 		return Result{}, release(leases, err)
 	}
 	degraded := err
+	leases = slices.Clone(leases)
 	candidates := make([]Candidate, 0, len(leases))
-	for i, lease := range leases {
+	for i := 0; i < len(leases); i++ {
+		lease := leases[i]
 		recovery, err := source.Recovery(ctx, lease.WorkItemID)
 		if err == nil && recovery.Issue.LinkedSource != nil && recovery.Issue.LinkedSource.Status != "complete" {
 			err = source.Intake(ctx, lease, recovery.Issue)
 			if err == nil {
 				recovery, err = source.Recovery(ctx, lease.WorkItemID)
 			}
+		}
+		if err != nil && laterClaimRefused(ctx, err) {
+			if releaseErr := release([]tracker.NativeLease{lease}, nil); releaseErr != nil && !api.ClaimLost(releaseErr) {
+				return Result{}, release(slices.Delete(leases, i, i+1), errors.Join(degraded, err, releaseErr))
+			}
+			leases = slices.Delete(leases, i, i+1)
+			i--
+			degraded = errors.Join(degraded, err)
+			continue
 		}
 		if err != nil {
 			if len(candidates) == 0 || !independentFailure(ctx, err) {
