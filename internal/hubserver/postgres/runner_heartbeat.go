@@ -338,9 +338,9 @@ func (r *Repository) ReadRunnerHeartbeatSnapshot(ctx context.Context, organizati
 		if err := h.readSnapshotRows(ctx); err != nil {
 			return err
 		}
-		ctx = context.WithValue(ctx, runnerHeartbeatIdentityKey{}, runnerHeartbeatIdentity{session: s, identity: &h.identity})
-		ctx = context.WithValue(ctx, runnerHeartbeatSnapshotKey{}, h)
-		return read(ctx, h, now)
+		snapshotCtx := context.WithValue(ctx, runnerHeartbeatIdentityKey{}, runnerHeartbeatIdentity{session: s, identity: &h.identity})
+		snapshotCtx = context.WithValue(snapshotCtx, runnerHeartbeatSnapshotKey{}, h)
+		return read(snapshotCtx, h, now)
 	})
 }
 

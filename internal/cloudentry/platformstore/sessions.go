@@ -122,9 +122,6 @@ func (r *Repository) Authorize(ctx context.Context, hash string, organization tr
 			return err
 		}
 		count := stored.RowsAffected()
-		if err != nil {
-			return err
-		}
 		if count != 1 {
 			return ErrNoSession
 		}

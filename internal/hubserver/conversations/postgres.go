@@ -572,7 +572,6 @@ func (s *Server) ReadPGConversationPage(ctx context.Context, scope hubauth.Input
 				return err
 			}
 			messages.Items = append(batch.Items, messages.Items...)
-			messages.Next = batch.Next
 			remaining -= len(batch.Items)
 			if batch.Next == 0 {
 				break

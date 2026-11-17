@@ -97,9 +97,6 @@ func (r *Repository) ExchangeOAuthCode(ctx context.Context, organization tracker
 			return err
 		}
 		n := result.RowsAffected()
-		if err != nil {
-			return err
-		}
 		if n != 1 {
 			return ErrNoSession
 		}

@@ -115,9 +115,6 @@ func (r *Repository) ApproveKey(ctx context.Context, organization tracker.Organi
 			return err
 		}
 		n := result.RowsAffected()
-		if err != nil {
-			return err
-		}
 		if n != 1 {
 			return ErrNoSession
 		}

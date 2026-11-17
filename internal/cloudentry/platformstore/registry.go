@@ -47,9 +47,6 @@ func (r *Repository) Register(ctx context.Context, o Organization) (bool, error)
 			return err
 		}
 		count := inserted.RowsAffected()
-		if err != nil {
-			return err
-		}
 		if count == 0 {
 			current, err := scanOrganization(tx.QueryRow(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id=$1 FOR UPDATE`, o.ID))
 			switch {

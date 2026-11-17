@@ -392,7 +392,7 @@ func (s *Service) resolveHealthRecord(ctx context.Context, organization tracker.
 		}
 		return nil
 	})
-	if err == errHealthOutsideExaminedScope {
+	if errors.Is(err, errHealthOutsideExaminedScope) {
 		return nil
 	}
 	return err
