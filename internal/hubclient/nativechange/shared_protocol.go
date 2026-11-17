@@ -19,9 +19,12 @@ func nativeAuthorityLost(err error) bool        { return api.NativeAuthorityLost
 
 func diagnosticError(err error) string { return api.DiagnosticError(err) }
 func diagnosticErrorCode(err error) string {
+	var mismatch *provider.IdentityMismatchError
 	switch {
 	case errors.Is(err, provider.ErrReportSourceMissing):
 		return "provider_report_source_missing"
+	case errors.As(err, &mismatch):
+		return mismatch.DiagnosticCode()
 	case errors.Is(err, provider.ErrIdentityMismatch):
 		return "provider_identity_mismatch"
 	default:

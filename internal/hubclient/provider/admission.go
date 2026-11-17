@@ -2,7 +2,7 @@ package provider
 
 import (
 	"errors"
-	"fmt"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -13,6 +13,20 @@ var (
 	ErrReportSourceMissing = errors.New("provider report source is missing for the dispatch reservation")
 	ErrIdentityMismatch    = errors.New("provider execution identity differs from its dispatch reservation")
 )
+
+type IdentityMismatchError struct {
+	fields []string
+}
+
+func (e *IdentityMismatchError) Error() string {
+	return ErrIdentityMismatch.Error() + ": " + strings.Join(e.fields, ", ")
+}
+
+func (e *IdentityMismatchError) Unwrap() error { return ErrIdentityMismatch }
+
+func (e *IdentityMismatchError) DiagnosticCode() string {
+	return "provider_identity_mismatch_" + strings.Join(e.fields, "_")
+}
 
 func ValidateStart(reservation *providercapacity.Reservation, identity tracker.NativeExecutionIdentity, reportsSource func() ([]providercapacity.Report, error), reject func(error) error) error {
 	if reservation == nil {
@@ -26,10 +40,17 @@ func ValidateStart(reservation *providercapacity.Reservation, identity tracker.N
 		return reject(ErrReportSourceMissing)
 	}
 	if required != reservation.Requirement {
-		if required.Validate() != nil || reservation.Requirement.Validate() != nil {
-			return reject(ErrIdentityMismatch)
+		var fields []string
+		if required.Role != reservation.Role {
+			fields = append(fields, "role")
 		}
-		return reject(fmt.Errorf("%w: reserved %s/%s/%s, selected %s/%s/%s", ErrIdentityMismatch, reservation.Role, reservation.Backend, reservation.Model, required.Role, required.Backend, required.Model))
+		if required.Backend != reservation.Backend {
+			fields = append(fields, "backend")
+		}
+		if required.Model != reservation.Model {
+			fields = append(fields, "model")
+		}
+		return reject(&IdentityMismatchError{fields: fields})
 	}
 	reports, err := reportsSource()
 	if err != nil {
