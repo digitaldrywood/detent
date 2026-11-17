@@ -16,7 +16,7 @@ import (
 
 var gzipWriters = sync.Pool{New: func() any { return gzip.NewWriter(nil) }}
 
-func acceptsGzip(header string) bool {
+func acceptedCodings(header string) (gzipped, identity bool) {
 	quality := map[string]float64{}
 	for part := range strings.SplitSeq(header, ",") {
 		coding, parameters, _ := strings.Cut(strings.TrimSpace(part), ";")
@@ -30,10 +30,16 @@ func acceptsGzip(header string) bool {
 		}
 		quality[strings.ToLower(strings.TrimSpace(coding))] = value
 	}
-	if value, found := quality["gzip"]; found {
-		return value > 0
+	acceptable := func(coding string, fallback float64) bool {
+		if value, found := quality[coding]; found {
+			return value > 0
+		}
+		if value, found := quality["*"]; found {
+			return value > 0
+		}
+		return fallback > 0
 	}
-	return quality["*"] > 0
+	return acceptable("gzip", 0), acceptable("identity", 1)
 }
 
 func Respond(w http.ResponseWriter, r *http.Request, status int, value any) error {
@@ -43,10 +49,15 @@ func Respond(w http.ResponseWriter, r *http.Request, status int, value any) erro
 		return fmt.Errorf("encode board response: %w", err)
 	}
 	header := w.Header()
-	header.Set("Content-Type", "application/json")
 	header.Add("Vary", "Accept-Encoding")
+	gzipped, identity := acceptedCodings(strings.Join(r.Header.Values("Accept-Encoding"), ","))
+	if !gzipped && !identity {
+		w.WriteHeader(http.StatusNotAcceptable)
+		return nil
+	}
+	header.Set("Content-Type", "application/json")
 	payload := body.Bytes()
-	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+	if gzipped {
 		var compressed bytes.Buffer
 		writer := gzipWriters.Get().(*gzip.Writer)
 		writer.Reset(&compressed)
