@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -89,7 +90,7 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
 		store, ok := reader.(reportstore.Reader)
 		if !ok {
-			return fmt.Errorf("PostgreSQL report reader is unavailable")
+			return errors.New("PostgreSQL report reader is unavailable")
 		}
 		var err error
 		priorRecorded, err = store.HasPriorData(ctx, ids, prior.To, query.Principal)
@@ -116,7 +117,7 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 		}
 		historyReader, ok := reader.(reportstore.HistoryReader)
 		if !ok {
-			return fmt.Errorf("PostgreSQL report history reader is unavailable")
+			return errors.New("PostgreSQL report history reader is unavailable")
 		}
 		history, err = historyReader.ReadHistory(ctx, query)
 		if err != nil {
@@ -124,7 +125,7 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 		}
 		landingReader, ok := reader.(reportstore.LandingReader)
 		if !ok {
-			return fmt.Errorf("PostgreSQL report landing reader is unavailable")
+			return errors.New("PostgreSQL report landing reader is unavailable")
 		}
 		landings, err = landingReader.ReadLandingFacts(ctx, query)
 		if err != nil {
@@ -132,7 +133,7 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 		}
 		qualityReader, ok := reader.(reportstore.QualityReader)
 		if !ok {
-			return fmt.Errorf("PostgreSQL report quality reader is unavailable")
+			return errors.New("PostgreSQL report quality reader is unavailable")
 		}
 		escapes, err = qualityReader.ReadEscapeFacts(ctx, query)
 		if err != nil {

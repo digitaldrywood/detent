@@ -21,7 +21,7 @@ func (s *session) RunnerClaimState(ctx context.Context, runner string, project t
 	if err != nil {
 		return page, err
 	}
-	machineID := ""
+	var machineID string
 	if snapshot, ok := ctx.Value(runnerHeartbeatSnapshotKey{}).(*runnerHeartbeatSnapshot); ok && snapshot.session == s && snapshot.identity.RunnerID == runner && snapshot.project == project && snapshot.now.Equal(now) {
 		machineID = snapshot.machine.ID
 		page.State.HostCapacity = int(snapshot.machine.Capacity)

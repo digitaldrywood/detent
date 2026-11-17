@@ -127,7 +127,7 @@ func (s *Service) readVersion(ctx context.Context, scope hubscope.NativeScope, i
 		if json.Unmarshal(body, &value) != nil || value.OrganizationID != scope.Organization || value.ProjectID != scope.Project || string(value.WorkItemID) != item || value.ID != comment || int64(value.Revision) != revision {
 			return nil, artifact.ErrIntegrity
 		}
-		return json.RawMessage(body), nil
+		return body, nil
 	}
 	var issue tracker.NativeIssue
 	if json.Unmarshal(body, &issue) != nil || issue.OrganizationID != scope.Organization || issue.ProjectID != scope.Project || string(issue.WorkItemID) != item || int64(issue.Revision) != revision {

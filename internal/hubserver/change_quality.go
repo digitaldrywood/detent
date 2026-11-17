@@ -286,7 +286,7 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope hubs
 		return nil, err
 	}
 	for _, candidate := range candidates {
-		body := ""
+		var body string
 		if candidate.comment == nil {
 			issue, err := s.hydrateCanonicalWorkItemRecord(ctx, candidate.item, candidate.version)
 			if err != nil {

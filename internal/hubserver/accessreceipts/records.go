@@ -150,7 +150,7 @@ func (s *Service) Complete(ctx context.Context, command Command, value any) (jso
 	defer cancel()
 	organization := command.Organization
 	content := eventstore.NewContent(s.deps.Details)
-	record, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: organization, ActorID: command.Actor, Operation: command.Operation, CommandKey: command.Key, RequestHash: hash, CreatedAt: s.deps.Now().UTC()}, []byte(raw))
+	record, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: organization, ActorID: command.Actor, Operation: command.Operation, CommandKey: command.Key, RequestHash: hash, CreatedAt: s.deps.Now().UTC()}, raw)
 	if err != nil {
 		return nil, errors.Join(mutation.ErrUncertain, err)
 	}

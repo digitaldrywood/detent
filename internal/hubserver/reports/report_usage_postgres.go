@@ -3,7 +3,6 @@ package reports
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"strings"
 
@@ -60,7 +59,7 @@ func PostgresReportUsageRows(facts []reportstore.UsageFact) (map[string][]usager
 	out := map[string][]usagereport.Row{}
 	for _, fact := range facts {
 		if fact.AttemptID == "" || fact.ProjectID == "" || fact.WorkItemID == "" || fact.Period.IsZero() || !strings.EqualFold(fact.Currency, "usd") || fact.Cost < 0 || math.IsNaN(fact.Cost) || math.IsInf(fact.Cost, 0) || fact.Input < 0 || fact.CachedInput < 0 || fact.Output < 0 {
-			return nil, fmt.Errorf("invalid typed report usage row")
+			return nil, errors.New("invalid typed report usage row")
 		}
 		out[fact.AttemptID] = append(out[fact.AttemptID], usagereport.Row{AttemptID: fact.AttemptID, Period: fact.Period, Provider: fact.Provider, Model: fact.Model, Input: fact.Input, CachedInput: fact.CachedInput, Output: fact.Output, Cost: fact.Cost, Currency: "usd", RunnerID: fact.RunnerID, RunnerName: fact.RunnerName})
 	}
@@ -97,7 +96,7 @@ func ApplyPostgresReportUsage(out *HostedReportsReport, work []reportstore.Overv
 	for _, fact := range facts {
 		attempt, ok := byAttempt[fact.AttemptID]
 		if !ok || attempt.ProjectID != fact.ProjectID || attempt.WorkItemID != fact.WorkItemID {
-			return fmt.Errorf("typed report usage has no scoped attempt")
+			return errors.New("typed report usage has no scoped attempt")
 		}
 		rows, err := PostgresReportUsageRows([]reportstore.UsageFact{fact})
 		if err != nil {
@@ -262,7 +261,7 @@ func ReadPostgresReportCompletionCosts(ctx context.Context, reader tenantstore.R
 	}
 	owner, ok := reader.(reportstore.CompletionCostReader)
 	if !ok {
-		return nil, fmt.Errorf("PostgreSQL completion cost owner is unavailable")
+		return nil, errors.New("PostgreSQL completion cost owner is unavailable")
 	}
 	rows, err := owner.ReadCompletionCosts(ctx, reportstore.CompletionCostQuery{Items: items, Principal: query.Principal, CurrentTo: w.To, PriorTo: prior.To})
 	if errors.Is(err, reportstore.ErrPopulationExceeded) {
@@ -277,12 +276,12 @@ func ReadPostgresReportCompletionCosts(ctx context.Context, reader tenantstore.R
 	for _, row := range rows {
 		_, duplicate := out[row.CompletionCostItem]
 		if !seen[row.CompletionCostItem] || duplicate {
-			return nil, fmt.Errorf("completion cost population differs from selected work items")
+			return nil, errors.New("completion cost population differs from selected work items")
 		}
 		out[row.CompletionCostItem] = row
 	}
 	if len(out) != len(items) {
-		return nil, fmt.Errorf("completion cost population is incomplete")
+		return nil, errors.New("completion cost population is incomplete")
 	}
 	return out, nil
 }

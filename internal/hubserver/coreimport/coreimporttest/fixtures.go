@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -246,7 +247,7 @@ func Changes(t *testing.T, repository fs.FS, organization tracker.OrganizationID
 		baseSHA, headSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
 		bundle := ChangeBundle(baseSHA, headSHA)
 		source := &tracker.ChangeSource{Format: "git-bundle", BaseSHA: baseSHA, HeadSHA: headSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("e", 64), Bytes: int64(len(bundle))}
-		externalID := fmt.Sprintf("%d", 201+index)
+		externalID := strconv.Itoa(201 + index)
 		version := tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: baseSHA, HeadSHA: headSHA, MergeBaseSHA: baseSHA, Repository: "https://github.com/example-org/example-project", AttemptID: "source_" + suffix, PolicyID: descriptor.ID, Code: tracker.ChangeArtifact{Kind: "code", URI: "bundle://example"}, Validation: validation, External: &tracker.ChangeExternalReference{Provider: "github", ID: externalID, URL: "https://github.com/example-org/example-project/pull/" + externalID}, Source: source}, ID: "version_" + suffix, ChangeID: id, Number: int64(index + 1), Policy: descriptor, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: createdAt}
 		versionJSON, err := json.Marshal(version)
 		if err != nil {

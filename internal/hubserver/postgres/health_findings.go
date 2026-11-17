@@ -175,7 +175,7 @@ func (s *session) HealthSourceItems(ctx context.Context, project tracker.Project
 	}
 	out := make([]healthstore.ItemSource, len(rows))
 	for index, row := range rows {
-		out[index] = healthstore.ItemSource{WorkItemReference: corestore.WorkItemReference{ProjectID: tracker.ProjectID(row.ProjectID), WorkItemID: tracker.NativeWorkItemID(row.NativeID)}, ID: row.ID}
+		out[index] = healthstore.ItemSource{WorkItemReference: corestore.WorkItemReference{ProjectID: row.ProjectID, WorkItemID: tracker.NativeWorkItemID(row.NativeID)}, ID: row.ID}
 	}
 	return out, nil
 }
@@ -189,7 +189,7 @@ func (s *session) HealthSourceQuestions(ctx context.Context, afterConversation, 
 	}
 	out := make([]healthstore.QuestionSource, len(rows))
 	for index, row := range rows {
-		value := healthstore.QuestionSource{ProjectID: tracker.ProjectID(row.ProjectID), ConversationID: row.ConversationID, ID: row.ID, AttemptID: row.AttemptID, Status: row.Status, ConversationStatus: row.ConversationStatus, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, ConversationDeleted: row.ConversationDeletedAt != nil, ConversationArchived: row.ConversationArchived}
+		value := healthstore.QuestionSource{ProjectID: row.ProjectID, ConversationID: row.ConversationID, ID: row.ID, AttemptID: row.AttemptID, Status: row.Status, ConversationStatus: row.ConversationStatus, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, ConversationDeleted: row.ConversationDeletedAt != nil, ConversationArchived: row.ConversationArchived}
 		if row.WorkItemID != nil {
 			value.WorkItemID = tracker.NativeWorkItemID(*row.WorkItemID)
 		}
@@ -208,7 +208,7 @@ func (s *session) HealthSourceConversationQuestions(ctx context.Context, convers
 	}
 	out := make([]healthstore.QuestionSource, len(rows))
 	for index, row := range rows {
-		value := healthstore.QuestionSource{ProjectID: tracker.ProjectID(row.ProjectID), ConversationID: row.ConversationID, ID: row.ID, AttemptID: row.AttemptID, Status: row.Status, ConversationStatus: row.ConversationStatus, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, ConversationDeleted: row.ConversationDeletedAt != nil, ConversationArchived: row.ConversationArchived}
+		value := healthstore.QuestionSource{ProjectID: row.ProjectID, ConversationID: row.ConversationID, ID: row.ID, AttemptID: row.AttemptID, Status: row.Status, ConversationStatus: row.ConversationStatus, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, ConversationDeleted: row.ConversationDeletedAt != nil, ConversationArchived: row.ConversationArchived}
 		if row.WorkItemID != nil {
 			value.WorkItemID = tracker.NativeWorkItemID(*row.WorkItemID)
 		}

@@ -367,7 +367,7 @@ func (s *Service) readChangeRecordSection(ctx context.Context, scope hubscope.Na
 	}
 	complete := cursor.After >= cursor.Through || count == 0 || pastBoundary
 	if !complete && !omitHistory && count <= changeLimit(args) {
-		last := int64(0)
+		var last int64
 		if cursor.Section == "versions" {
 			last = versions[count-1].Number
 		} else {

@@ -330,7 +330,7 @@ func (s *session) ProjectPolicyLanding(ctx context.Context, project tracker.Proj
 		if err != nil {
 			return eventstore.PolicyLanding{}, mapError(ctx, err)
 		}
-		version, item = row.ChangeVersion, tracker.NativeWorkItemID(row.WorkItemID)
+		version, item = row.ChangeVersion, row.WorkItemID
 	} else {
 		row, err := s.queries.RecordProjectPolicyLanding(ctx, pgquery.RecordProjectPolicyLandingParams{OrganizationID: s.organization, ProjectID: project, MergeSha: mergeSHA, Repositories: repositories, BaseRef: baseRef})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -339,7 +339,7 @@ func (s *session) ProjectPolicyLanding(ctx context.Context, project tracker.Proj
 		if err != nil {
 			return eventstore.PolicyLanding{}, mapError(ctx, err)
 		}
-		version, item = row.ChangeVersion, tracker.NativeWorkItemID(row.WorkItemID)
+		version, item = row.ChangeVersion, row.WorkItemID
 	}
 	record := versionRecord(version)
 	if !record.LandingHistoryKnown || record.FrozenLanding == nil {
@@ -1579,7 +1579,7 @@ func (s *session) ScheduledSources(ctx context.Context, project tracker.ProjectI
 				if row.SourceObservedAt == nil {
 					return nil, false, eventstore.ErrInvalidRecord
 				}
-				keys = append(keys, scheduledSourceKey{project: project, item: tracker.NativeWorkItemID(row.WorkItemID), record: string(row.RecordID), revision: row.Revision, observed: *row.SourceObservedAt})
+				keys = append(keys, scheduledSourceKey{project: project, item: tracker.NativeWorkItemID(row.WorkItemID), record: row.RecordID, revision: row.Revision, observed: *row.SourceObservedAt})
 			}
 		}
 	} else {
@@ -1591,7 +1591,7 @@ func (s *session) ScheduledSources(ctx context.Context, project tracker.ProjectI
 				if row.SourceObservedAt == nil {
 					return nil, false, eventstore.ErrInvalidRecord
 				}
-				keys = append(keys, scheduledSourceKey{project: project, item: tracker.NativeWorkItemID(row.WorkItemID), record: string(row.RecordID), revision: row.Revision, observed: *row.SourceObservedAt})
+				keys = append(keys, scheduledSourceKey{project: project, item: tracker.NativeWorkItemID(row.WorkItemID), record: row.RecordID, revision: row.Revision, observed: *row.SourceObservedAt})
 			}
 		}
 	}

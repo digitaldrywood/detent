@@ -432,7 +432,6 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 			}
 			if errors.Is(err, reportstore.ErrPopulationExceeded) {
 				costs = nil
-				err = nil
 			}
 			dependency, dependencyKnown, err = readHealthDependencySource(ctx, reader, project)
 			if err != nil {

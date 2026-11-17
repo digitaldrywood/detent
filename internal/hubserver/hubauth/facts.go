@@ -29,7 +29,7 @@ func ProjectFilter(credential Credential, project tracker.ProjectID, after track
 		PrincipalID:   credential.HostedPrincipal,
 		CredentialID:  credential.ID,
 		KeyKind:       credential.HostedKeyKind,
-		ProjectAccess: string(credential.HostedProjectAccess),
+		ProjectAccess: credential.HostedProjectAccess,
 		After:         after,
 		Only:          project,
 		Limit:         limit,

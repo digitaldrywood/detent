@@ -90,7 +90,7 @@ func postgresErrorAttributes(err error) []any {
 		return nil
 	}
 	attributes := make([]any, 0, 8)
-	state := string(postgresError.Code)
+	state := postgresError.Code
 	validState := len(state) == 5
 	for _, char := range state {
 		if (char < '0' || char > '9') && (char < 'A' || char > 'Z') {
