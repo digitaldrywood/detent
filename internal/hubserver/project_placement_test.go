@@ -998,12 +998,36 @@ func TestClaimScanSkipsUnreadableSourceCheckpoint(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		bad    int
-		damage func(*memoryRunDetails, string)
+		damage func(*testing.T, *Service, *memoryRunDetails, leasestore.Attempt)
 		status int
 	}{
-		{"missing across a page boundary", nativeClaimCandidatePageSize, func(objects *memoryRunDetails, key string) { delete(objects.data, key) }, http.StatusConflict},
-		{"corrupt", 1, func(objects *memoryRunDetails, key string) { objects.data[key] = []byte(`{"resume":`) }, http.StatusConflict},
-		{"storage outage", 1, func(objects *memoryRunDetails, _ string) {
+		{"missing across a page boundary", nativeClaimCandidatePageSize, func(_ *testing.T, _ *Service, objects *memoryRunDetails, attempt leasestore.Attempt) {
+			delete(objects.data, *attempt.CheckpointObjectKey)
+		}, http.StatusConflict},
+		{"corrupt", 1, func(_ *testing.T, _ *Service, objects *memoryRunDetails, attempt leasestore.Attempt) {
+			objects.data[*attempt.CheckpointObjectKey] = []byte(`{"resume":`)
+		}, http.StatusConflict},
+		{"run events missing", 1, func(t *testing.T, service *Service, _ *memoryRunDetails, attempt leasestore.Attempt) {
+			tx, err := usagePostgresAdmin(t, service).BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := tx.ExecContext(t.Context(), "SET LOCAL session_replication_role=replica"); err != nil {
+				t.Fatal(err)
+			}
+			result, err := tx.ExecContext(t.Context(), `DELETE FROM collaboration_events WHERE organization_id=$1 AND attempt_id=$2`, attempt.OrganizationID, attempt.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count, err := result.RowsAffected(); err != nil || count == 0 {
+				t.Fatalf("deleted run events=%d error=%v", count, err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+		}, http.StatusConflict},
+		{"storage outage", 1, func(_ *testing.T, _ *Service, objects *memoryRunDetails, _ leasestore.Attempt) {
 			objects.beforeRead = func(context.Context) error { return errors.New("object store unavailable") }
 		}, http.StatusServiceUnavailable},
 	} {
@@ -1036,7 +1060,7 @@ func TestClaimScanSkipsUnreadableSourceCheckpoint(t *testing.T) {
 				items = append(items, issue.WorkItemID)
 			}
 			healthy := f.create(t, "healthy after unreadable checkpoints").WorkItemID
-			var keys []string
+			var attempts []leasestore.Attempt
 			placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 				for index, id := range append(items, healthy) {
 					entry, err := w.QueueEntry(t.Context(), f.project.ID, id, string(f.project.ID))
@@ -1058,15 +1082,18 @@ func TestClaimScanSkipsUnreadableSourceCheckpoint(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					keys = append(keys, *attempt.CheckpointObjectKey)
+					attempts = append(attempts, attempt)
 				}
 				return nil
 			})
 			objects.mu.Lock()
-			for _, key := range keys {
-				test.damage(objects, key)
+			for _, attempt := range attempts {
+				test.damage(t, f.service, objects, attempt)
 			}
 			objects.mu.Unlock()
+			if test.status == http.StatusConflict {
+				requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request("explicit-damaged", items[0])), http.StatusConflict, "no_claimable_work")
+			}
 			if test.bad > 1 {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request("scan-first-page", "")), test.status)
 			}

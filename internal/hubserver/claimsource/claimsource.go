@@ -105,23 +105,26 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 		}
 		facts.AttemptID, facts.CheckpointObjectKey = attempt.ID, *attempt.CheckpointObjectKey
 		snapshot.Attempt = attempt
-		if snapshot.Lease, err = r.Lease(ctx, attempt.LeaseID); err != nil {
-			return err
+		if snapshot.Lease, err = r.Lease(ctx, attempt.LeaseID); err == nil {
+			facts.CheckpointMachine = snapshot.Lease.MachineID
+			if facts.CheckpointRunner, err = runner(attempt.LeaseID); err != nil {
+				return err
+			}
+			snapshot.Event, err = r.LatestRunEvent(ctx, project, attempt.ID)
 		}
-		if snapshot.Event, err = r.LatestRunEvent(ctx, project, attempt.ID); err != nil {
-			return err
+		if err == nil {
+			err = hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot)
 		}
-		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
-			return err
+		if errors.Is(err, corestore.ErrNotFound) || candidateLocal(err) {
+			facts.CheckpointUnreadable = true
+			return nil
 		}
-		facts.CheckpointMachine = snapshot.Lease.MachineID
-		facts.CheckpointRunner, err = runner(attempt.LeaseID)
 		return err
 	})
 	if err != nil {
 		return facts, err
 	}
-	if facts.AttemptID != "" {
+	if facts.AttemptID != "" && !facts.CheckpointUnreadable {
 		checkpoint, err := deps.Checkpoint(ctx, snapshot)
 		if candidateLocal(err) {
 			facts.CheckpointUnreadable, checkpoint, err = true, nil, nil
