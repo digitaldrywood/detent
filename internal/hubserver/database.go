@@ -22,8 +22,6 @@ import (
 type database struct {
 	policies               hubrecords.ProjectPolicyCache
 	dashboardCommitted     chan struct{}
-	analyticsRetryMu       sync.Mutex
-	analyticsRetryCursor   string
 	linkedSourceBase       string
 	postgres               *postgres.Repository
 	billingRepository      tenantstore.Repository
@@ -39,19 +37,10 @@ type database struct {
 	hostedBilling          bool
 	aiCreditMode           string
 	aiCreditCostMultiplier float64
-	// workspaceRetainAfterRun is workspaces.retain_after_run, read by the
-	// claim gate: inside that window an attempt's worktree still exists on
-	// the runner that produced it, and only that runner may serve a
-	// workspace on the attempt.
-	workspaceRetainAfterRun time.Duration
-	// workspaceTerminalIsolation is workspaces.terminal.isolation, read by the
-	// claim gate so a runner whose terminal is less confined than the
-	// organization allows is never handed a workspace that requires one.
-	workspaceTerminalIsolation string
-	now                        func() time.Time
-	newLeaseID                 func() string
-	closeOnce                  sync.Once
-	closeErr                   error
+	now                    func() time.Time
+	newLeaseID             func() string
+	closeOnce              sync.Once
+	closeErr               error
 }
 
 func openDatabase(ctx context.Context, cfg Config) (*database, error) {

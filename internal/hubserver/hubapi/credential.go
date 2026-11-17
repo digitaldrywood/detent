@@ -125,11 +125,6 @@ const (
 	HostedProjectsSelected HostedProjectAccess = "selected"
 )
 
-func (credential APICredential) ProjectGrantSQL(organization, project string) (string, []any) {
-	live := "EXISTS (SELECT 1 FROM projects live_project WHERE live_project.organization_id=" + organization + " AND live_project.id=" + project + " AND live_project.deleted_at IS NULL)"
-	return credential.ProjectAccessSQL(organization, project, live)
-}
-
 func (credential APICredential) ProjectAccessSQL(organization, project, live string) (string, []any) {
 	if credential.EntryKey != nil {
 		condition, args := credential.entryKeyGrantSQL(organization, project)

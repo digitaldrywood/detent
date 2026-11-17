@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"net/url"
 	"time"
 
@@ -102,12 +101,6 @@ func withAnalyticsLiveIssues(p0 context.Context) context.Context {
 }
 func buildAnalyticsResidenceTimeline(p0 reports.AnalyticsResidenceIssue, p1 map[string]tracker.NativeState, p2 time.Time) reports.AnalyticsResidenceTimeline {
 	return reports.BuildAnalyticsResidenceTimeline(p0, p1, p2)
-}
-
-type analyticsAttemptLanding = reports.AnalyticsAttemptLanding
-
-func analyticsFailureTime(p0 *reports.AnalyticsAttemptLanding, p1 string, p2 string) sql.NullString {
-	return reports.AnalyticsFailureTime(p0, p1, p2)
 }
 
 type nativeAnalyticsCapacityWait = reports.NativeAnalyticsCapacityWait

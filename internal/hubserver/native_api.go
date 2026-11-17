@@ -439,25 +439,6 @@ func (d *database) authorizeNativeProject(ctx context.Context, scope hubscope.Na
 	})
 }
 
-func authorizeNativeProject(ctx context.Context, db hubapi.NativeQueryer, scope hubscope.NativeScope) error {
-	if scope.Credential.Runner.RunnerID != "" && scope.Credential.Runner.OrganizationID != scope.Organization {
-		return hubapi.NativeNotFound()
-	}
-	var count int
-	query := "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?"
-	args := []any{scope.Organization, scope.Project}
-	condition, grantArgs := scope.Credential.ProjectGrantSQL("projects.organization_id", "projects.id")
-	query += " AND (" + condition + ")"
-	args = append(args, grantArgs...)
-	if err := db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
-		return err
-	}
-	if count != 1 {
-		return hubapi.NativeNotFound()
-	}
-	return nil
-}
-
 func nativeIntegrationActor(principalID string) *tracker.Actor {
 	return &tracker.Actor{Kind: "integration", PrincipalID: principalID}
 }
@@ -515,25 +496,6 @@ func (s *Service) requireCompatibilityResource(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, hubapi.APIErrorResponse{Code: "not_found", Message: "Resource was not found"})
 	}
 	return nil
-}
-
-func nativeCommandReceiptReference(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, operation, key, hash string) (string, bool, error) {
-	var storedHash, response string
-	var expired bool
-	err := query.QueryRowContext(ctx, `SELECT request_hash, COALESCE(NULLIF(response_object_key,''),response_json),response_expired FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND operation>=? AND operation<? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.Organization, scope.Credential.ID, key, operation, operation+"!", operation, operation, operation).Scan(&storedHash, &response, &expired)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	if storedHash != hash {
-		return "", false, &hubapi.NativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, PublicMessage: true}
-	}
-	if expired {
-		return "", true, commandResponseExpired()
-	}
-	return response, true, nil
 }
 
 // External-read commands consult the same receipt before fetching a provider.

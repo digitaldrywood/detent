@@ -2,7 +2,6 @@ package hubrecords
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -15,56 +14,6 @@ import (
 )
 
 const ChangeLegacyReadLimit = 100
-
-type ChangeLegacyRows struct {
-	QueryPage     func(int) (*sql.Rows, error) `json:"-"`
-	rows          *sql.Rows
-	offset, count int
-	err           error
-	closed        bool
-	Cursor        []any `json:"-"`
-}
-
-func (r *ChangeLegacyRows) NextPage() error {
-	rows, err := r.QueryPage(r.offset)
-	if err != nil {
-		return err
-	}
-	r.rows, r.count = rows, 0
-	return nil
-}
-
-func (r *ChangeLegacyRows) Next() bool {
-	if r.closed || r.err != nil {
-		return false
-	}
-	if r.rows.Next() {
-		r.count++
-		return true
-	}
-	r.err = errors.Join(r.rows.Err(), r.rows.Close())
-	if r.err != nil || r.count < ChangeLegacyReadLimit {
-		return false
-	}
-	r.offset += r.count
-	r.err = r.NextPage()
-	if r.err != nil {
-		return false
-	}
-	return r.Next()
-}
-
-func (r *ChangeLegacyRows) Scan(dest ...any) error {
-	columns := make([]any, 0, len(r.Cursor)+len(dest))
-	for index := range r.Cursor {
-		columns = append(columns, &r.Cursor[index])
-	}
-	return r.rows.Scan(append(columns, dest...)...)
-}
-
-func (r *ChangeLegacyRows) Err() error { return r.err }
-
-func (r *ChangeLegacyRows) Close() error { r.closed = true; return r.rows.Close() }
 
 type ChangeVersionApproval struct {
 	Policy       policy.Descriptor
