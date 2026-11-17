@@ -2,16 +2,18 @@ package credits
 
 import (
 	"encoding/json"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/labstack/echo/v4"
-	"net/http"
-	"testing"
-	"time"
 )
 
 func TestPlatformAICreditBalanceReadsPostgresTenantLedger(t *testing.T) {

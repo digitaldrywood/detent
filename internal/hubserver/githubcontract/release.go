@@ -3,6 +3,7 @@ package githubcontract
 import (
 	"context"
 	"errors"
+
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 

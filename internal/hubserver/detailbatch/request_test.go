@@ -5,9 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"sync/atomic"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"

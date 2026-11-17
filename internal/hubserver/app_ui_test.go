@@ -811,7 +811,7 @@ func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
 					config.Workspace = &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: test.terminal}}
 				}
 			})
-				operations := []string{runnerauth.Claim}
+			operations := []string{runnerauth.Claim}
 			if test.mutation == "missing claim operation" {
 				operations = nil
 			}

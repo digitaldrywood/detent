@@ -11,6 +11,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/budget"
@@ -22,7 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/jackc/pgx/v5"
 )
 
 func TestBillingPlansKeepHistoricalTermsAndTenantScope(t *testing.T) {

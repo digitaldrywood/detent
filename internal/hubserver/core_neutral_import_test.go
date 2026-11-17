@@ -7,13 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport/coreimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func newCoreNeutralFixture(t *testing.T, organization tracker.OrganizationID, names ...string) *neutralimporttest.Fixture {
@@ -73,7 +74,6 @@ func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID,
 	t.Helper()
 	return coreimporttest.Changes(t, os.DirFS("../.."), organization, project, createdAt, descriptor, policyJSON)
 }
-
 
 func parseTestTime(t *testing.T, raw string) time.Time {
 	t.Helper()

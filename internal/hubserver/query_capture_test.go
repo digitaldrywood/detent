@@ -2,8 +2,10 @@ package hubserver
 
 import (
 	"context"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+
 	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 )
 
 type activityQueryCapture struct {

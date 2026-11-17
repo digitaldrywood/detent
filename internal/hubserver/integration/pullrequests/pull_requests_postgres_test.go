@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"net/http"
 	"reflect"
 	"slices"
@@ -14,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"

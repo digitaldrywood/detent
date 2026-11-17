@@ -39,16 +39,16 @@ type GrantRecord struct {
 }
 
 type EntitlementReport struct {
-	OrganizationID   string              `json:"organization_id"`
-	Base             PlanReference       `json:"base"`
-	EffectiveBase    PlanReference       `json:"effective_base"`
-	Source           string              `json:"source"`
-	Revision         int64               `json:"revision"`
-	Features         []string            `json:"features"`
+	OrganizationID   string        `json:"organization_id"`
+	Base             PlanReference `json:"base"`
+	EffectiveBase    PlanReference `json:"effective_base"`
+	Source           string        `json:"source"`
+	Revision         int64         `json:"revision"`
+	Features         []string      `json:"features"`
 	Grants           []GrantRecord `json:"grants"`
 	GrantHistory     []GrantRecord `json:"grant_history"`
-	NextGrantHistory string              `json:"next_grant_history,omitempty"`
-	Plans            []HostedPlan        `json:"plans"`
+	NextGrantHistory string        `json:"next_grant_history,omitempty"`
+	Plans            []HostedPlan  `json:"plans"`
 }
 
 func (d *Service) Entitlements(ctx context.Context, historyAfter int64, historyLimit int) (EntitlementReport, error) {

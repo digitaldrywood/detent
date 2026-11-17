@@ -6,10 +6,11 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func CoreWorkEventRepository(t *testing.T, db *sql.DB, fixture *pgtest.Template) (*postgres.Repository, *pgxpool.Pool) {

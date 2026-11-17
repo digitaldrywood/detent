@@ -2,11 +2,12 @@ package hubserver
 
 import (
 	"database/sql"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest/pgwire"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest/pgwire"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
 type boardWire struct {

@@ -1,10 +1,11 @@
 package hubserver
 
 import (
-	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"net/http"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func readWorkItem(t *testing.T, f nativeFixture, id tracker.NativeWorkItemID, query string) tracker.NativeIssue {

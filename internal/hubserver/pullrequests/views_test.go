@@ -3,12 +3,13 @@ package pullrequests
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPullRequestMergeableJSON(t *testing.T) {

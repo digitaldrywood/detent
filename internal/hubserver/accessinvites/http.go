@@ -4,12 +4,13 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/labstack/echo/v4"
 )
 
 type HTTPOptions struct {

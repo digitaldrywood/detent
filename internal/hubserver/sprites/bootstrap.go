@@ -2,8 +2,9 @@ package sprites
 
 import (
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const spriteBootstrapSource = "https://raw.githubusercontent.com/digitaldrywood/detent/%s/scripts/sprite-runner-bootstrap.sh"

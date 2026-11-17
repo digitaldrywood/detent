@@ -2,6 +2,11 @@ package validation
 
 import (
 	"context"
+	"net/http"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
@@ -12,9 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
-	"net/http"
-	"time"
 )
 
 type Deps struct {

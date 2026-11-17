@@ -2,12 +2,13 @@ package pullrequests_test
 
 import (
 	"bytes"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func changeTestSource(t *testing.T, input *tracker.ChangeVersionInput, content ...[]byte) []byte {

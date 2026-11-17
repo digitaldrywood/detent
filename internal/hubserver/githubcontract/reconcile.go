@@ -2,8 +2,9 @@ package githubcontract
 
 import (
 	"context"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type ReconcileMode string

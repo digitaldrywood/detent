@@ -8,10 +8,11 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pressly/goose/v3"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 )
 
 var Template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {

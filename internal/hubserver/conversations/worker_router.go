@@ -98,7 +98,7 @@ type WorkerBindResponse struct {
 	// project's configured defaults.
 	Preferences conversation.Preferences   `json:"preferences"`
 	Resume      ConversationResumeResource `json:"resume"`
-	Pending     []WorkerControl      `json:"pending"`
+	Pending     []WorkerControl            `json:"pending"`
 	Cursor      int64                      `json:"cursor"`
 }
 
@@ -115,7 +115,7 @@ type conversationUnbindResponse struct {
 
 type WorkerControlsResponse struct {
 	Controls []WorkerControl `json:"controls"`
-	Cursor   int64                 `json:"cursor"`
+	Cursor   int64           `json:"cursor"`
 }
 
 // WorkerControl is the envelope handed to the worker. Its kind is the

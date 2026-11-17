@@ -3,15 +3,16 @@ package githuboutbound
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"io"
 	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 )
 
 func outboundDeps() Deps {

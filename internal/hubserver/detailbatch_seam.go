@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 )

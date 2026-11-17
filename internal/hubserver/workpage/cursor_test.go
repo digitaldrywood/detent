@@ -6,16 +6,17 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"net/url"
+	"sync"
+	"testing"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"net/url"
-	"sync"
-	"testing"
-	"time"
 )
 
 func TestMain(m *testing.M) { hubtest.Main(m) }

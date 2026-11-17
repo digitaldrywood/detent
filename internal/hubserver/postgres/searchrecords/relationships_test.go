@@ -11,13 +11,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/jackc/pgx/v5"
 )
 
 func TestRelationshipsAndLabelsAreTenantScopedAndAtomic(t *testing.T) {

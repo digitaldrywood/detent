@@ -2,16 +2,17 @@ package runnerupdate
 
 import (
 	"bytes"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
-	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {

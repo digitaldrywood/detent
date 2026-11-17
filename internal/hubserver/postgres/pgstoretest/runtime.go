@@ -6,14 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func RolePool(t *testing.T, admin *sql.DB, group, attributes string) *pgxpool.Pool {

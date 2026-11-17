@@ -112,17 +112,17 @@ type usageRunner struct {
 }
 
 type Report struct {
-	MonthlyCosts *usagecosts.Report    `json:"monthly_costs,omitempty"`
-	Chat         ChatSummary           `json:"chat"`
-	Range        usagecosts.Window     `json:"range"`
-	Total        usageTotal            `json:"total"`
-	Providers    []usageProvider       `json:"providers"`
-	Daily        []usageDay            `json:"daily"`
-	Totals       usageTotals           `json:"totals"`
-	Breakdown    usageBreakdown        `json:"breakdown"`
-	Limits       map[string]Limit `json:"limits"`
-	Runners      []usageRunner         `json:"runners"`
-	Currency     string                `json:"currency"`
+	MonthlyCosts *usagecosts.Report `json:"monthly_costs,omitempty"`
+	Chat         ChatSummary        `json:"chat"`
+	Range        usagecosts.Window  `json:"range"`
+	Total        usageTotal         `json:"total"`
+	Providers    []usageProvider    `json:"providers"`
+	Daily        []usageDay         `json:"daily"`
+	Totals       usageTotals        `json:"totals"`
+	Breakdown    usageBreakdown     `json:"breakdown"`
+	Limits       map[string]Limit   `json:"limits"`
+	Runners      []usageRunner      `json:"runners"`
+	Currency     string             `json:"currency"`
 }
 
 type Row struct {

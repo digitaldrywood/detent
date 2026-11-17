@@ -3,9 +3,10 @@ package githubcontract
 import (
 	"context"
 	"encoding/json"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"time"
 )
 
 type GitHubImportRequest struct {

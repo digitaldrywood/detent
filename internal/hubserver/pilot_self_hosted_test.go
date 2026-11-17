@@ -7,9 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/labstack/echo/v4"
 )
 
 func TestPilotSelfHostedStaysFree(t *testing.T) {

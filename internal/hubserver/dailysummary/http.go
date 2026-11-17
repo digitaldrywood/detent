@@ -3,9 +3,10 @@ package dailysummary
 import (
 	"net/http"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
-	"github.com/labstack/echo/v4"
 )
 
 type HTTPDeps struct {
