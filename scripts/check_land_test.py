@@ -24,7 +24,7 @@ if name == "make":
         if "build" in args:
             Path("browser-build-args").write_text(json.dumps(args))
             sys.exit(0)
-        if "check-app" not in args:
+        if "check-app" not in args and "app-contract" not in args:
             os.execv(os.environ["PROBE_MAKE"], ["make"] + args)
     elif "test" not in args and "test-race" not in args:
         sys.exit(0)
@@ -51,6 +51,8 @@ if name == "git":
         if "--name-only" in args:
             print(os.environ.get("PROBE_CHANGED", ""))
             sys.exit(0)
+        if "web/conversation" not in args:
+            sys.exit(int(Path("app-changed").exists() or Path("contract-changed").exists()))
         sys.exit(int(Path("app-changed").exists()))
     elif args[0] == "rev-parse":
         print("head")
@@ -154,6 +156,7 @@ class LandingGateTest(unittest.TestCase):
         shared_ui = "web/conversation/src/app/App.tsx"
         cases += [("check-land", 4, "", path) for path in (shared_ui, "web/conversation/src/app/main.tsx", "web/conversation/src/app/router.tsx", "web/conversation/src/components/ui/button.tsx", "tests/visual/cloud-reports.spec.js")]
         cases += [("check-land", 4, failure, shared_ui) for failure in ("app", "lint", "unit-short")]
+        cases += [("check-land", 4, failure, "internal/hubserver/boardview/assemble.go") for failure in ("", "app")]
         for target, budget, failure, changed in cases:
             with self.subTest(target=target, budget=budget, failure=failure, changed=changed), tempfile.TemporaryDirectory(prefix="npm-nilaway-", dir=scratch) as directory:
                 root = Path(directory)
@@ -166,8 +169,11 @@ class LandingGateTest(unittest.TestCase):
                     path.write_text(TOOL)
                     path.chmod(0o700)
                 app_changed = changed.startswith("web/conversation/")
+                contract_changed = changed.startswith("internal/hubserver/")
                 if app_changed:
                     (root / "app-changed").touch()
+                if contract_changed:
+                    (root / "contract-changed").touch()
                 (root / "tests/visual").mkdir(parents=True)
                 (root / "tests/visual/cloud-reports.spec.js").touch()
                 for name in ("make", "node_modules/.bin/playwright"):
@@ -205,8 +211,10 @@ class LandingGateTest(unittest.TestCase):
                     continue
                 self.assertFalse((root / "browser-args").exists())
                 self.assertFalse((root / "browser-build-args").exists())
-                if app_changed:
+                if app_changed or contract_changed:
                     self.assertEqual(starts.pop(0), "app")
+                    app_args = next(event["args"] for event in events if event["stage"] == "app")
+                    self.assertIn("check-app" if app_changed else "app-contract", app_args)
                 if failure == "app":
                     self.assertEqual(starts, [])
                     self.assertIn("deliberate app failure", result.stderr)
@@ -222,7 +230,7 @@ class LandingGateTest(unittest.TestCase):
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
                 if failure in generated:
                     self.assertFalse(set(starts) & {"lint", "vet", "build", "unit-short"})
-                    self.assertEqual([item["scope"] for item in evidence], ["sqlite-policy", "tenancy-policy"] + (["app"] if app_changed else []) + ["generated"])
+                    self.assertEqual([item["scope"] for item in evidence], ["sqlite-policy", "tenancy-policy"] + (["app"] if app_changed else ["app-contract"] if contract_changed else []) + ["generated"])
                     self.assertNotEqual(evidence[-1]["exit_code"], 0)
                     continue
                 starts = starts[len(generated):]
@@ -252,6 +260,8 @@ class LandingGateTest(unittest.TestCase):
                 expected_scopes.update(tail)
                 if app_changed:
                     expected_scopes.add("app")
+                if contract_changed:
+                    expected_scopes.add("app-contract")
                 self.assertEqual({item["scope"] for item in evidence}, expected_scopes)
                 self.assertEqual(sum(item["exit_code"] != 0 for item in evidence), int(failed))
 

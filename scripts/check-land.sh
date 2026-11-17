@@ -24,6 +24,8 @@ fi
 
 if [ "$app_changed" = true ]; then
     check_with_evidence app make check-app
+elif ! git diff --quiet "$base" -- internal/hubserver internal/tracker internal/operatortool; then
+    check_with_evidence app-contract make app-contract TEST_PROCS="$procs"
 fi
 
 check_with_evidence generated make check-generated
