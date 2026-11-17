@@ -301,3 +301,23 @@ func Compact(organization tracker.OrganizationID, now time.Time, view View, wind
 	slices.SortStableFunc(board.Cards, func(a, b CompactCard) int { return cmp.Or(cmp.Compare(a.State, b.State), compactOrder(a, b)) })
 	return board, cursors, nil
 }
+
+type Lane struct {
+	State      string `json:"state"`
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
+func LaneCursors(positions []Cursor, encode func(Cursor) (string, error)) ([]Lane, error) {
+	lanes := []Lane{}
+	for _, position := range positions {
+		lane := Lane{State: position.State}
+		if position.More {
+			var err error
+			if lane.NextCursor, err = encode(position); err != nil {
+				return nil, err
+			}
+		}
+		lanes = append(lanes, lane)
+	}
+	return lanes, nil
+}
