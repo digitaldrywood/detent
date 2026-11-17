@@ -110,9 +110,9 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.URL, testHubAdminToken, nil), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.URL, testHubAdminToken, nil), http.StatusNotFound)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.URL, testHubAdminToken, nil), http.StatusNotFound)
 				if stored, err := objects.ReadContent(t.Context(), string(f.org), object.Reference); err != nil || !bytes.Equal(stored, payload) {
 					t.Fatalf("retained blob = %q, %v", stored, err)
 				}
@@ -176,8 +176,8 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			}
 			state(3*size, map[string][2]int{uploads[0].ID: {1, 1}, uploads[1].ID: {1, 1}, uploads[2].ID: {1, 1}})
 			for _, upload := range uploads {
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.URL, testHubAdminToken, nil), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.URL, testHubAdminToken, nil), http.StatusNotFound)
 			}
 			state(size, map[string][2]int{uploads[0].ID: {0, 0}, uploads[1].ID: {0, 0}, uploads[2].ID: {1, 1}})
 			expired := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "expired.txt", "text/plain", payload)
@@ -213,9 +213,9 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			}
 			charged := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.other, "charged.txt", "text/plain", historical)
 			hsize := int64(len(historical))
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, charged.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, charged.URL, testHubAdminToken, nil), http.StatusNoContent)
 			state(hsize, map[string][2]int{charged.ID: {1, 1}})
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, backlog[0].Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, backlog[0].URL, testHubAdminToken, nil), http.StatusNoContent)
 			state(hsize, map[string][2]int{charged.ID: {1, 1}, backlog[0].ID: {0, 0}, backlog[1].ID: {1, 1}})
 		})
 	}
@@ -255,7 +255,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				return err
 			}}
 			service.config.TenantRepository = counter
-			response := performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil)
+			response := performHubAPIRequest(t, service, http.MethodDelete, upload.URL, testHubAdminToken, nil)
 			service.config.TenantRepository = repository
 			if !fired {
 				t.Fatal("write callback did not observe the downgrade")
@@ -281,11 +281,11 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.URL, testHubAdminToken, nil), http.StatusOK)
 			if _, err := admin.ExecContext(t.Context(), `UPDATE api_tokens SET operator_key_scope=$2 WHERE organization_id=$1 AND id='test_hub_admin'`, f.org, originalScope); err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.URL, testHubAdminToken, nil), http.StatusNoContent)
 		})
 	}
 	for _, f := range fixtures {
@@ -588,24 +588,24 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				t.Fatal("replay changed receipt or published content")
 			}
 			requireNativeStatus(t, postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "example.txt", "text/plain", []byte("different"), "upload"), http.StatusConflict)
-			read := performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil)
+			read := performHubAPIRequest(t, service, http.MethodGet, upload.URL, testHubAdminToken, nil)
 			requireNativeStatus(t, read, http.StatusOK)
 			if !bytes.Equal(read.Body.Bytes(), payload) {
 				t.Fatal("download differs")
 			}
 			for _, method := range []string{http.MethodGet, http.MethodDelete} {
-				requireNativeStatus(t, performHubAPIRequest(t, service, method, f.base+"/conversations/"+f.other+"/attachments/"+upload.Attachment.ID, testHubAdminToken, nil), http.StatusNotFound)
+				requireNativeStatus(t, performHubAPIRequest(t, service, method, f.base+"/conversations/"+f.other+"/attachments/"+upload.ID, testHubAdminToken, nil), http.StatusNotFound)
 				other := fixtures[1]
 				if other.org == f.org {
 					other = fixtures[0]
 				}
-				requireNativeStatus(t, performHubAPIRequest(t, service, method, other.base+"/conversations/"+other.id+"/attachments/"+upload.Attachment.ID, testHubAdminToken, nil), http.StatusNotFound)
+				requireNativeStatus(t, performHubAPIRequest(t, service, method, other.base+"/conversations/"+other.id+"/attachments/"+upload.ID, testHubAdminToken, nil), http.StatusNotFound)
 			}
 			objects.onIO = func() error {
 				_, err := admin.ExecContext(t.Context(), `UPDATE projects SET deleted_at=$3 WHERE organization_id=$1 AND id=$2`, f.org, f.project, time.Now().UTC())
 				return err
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.URL, testHubAdminToken, nil), http.StatusNotFound)
 			objects.onIO = nil
 			if _, err := admin.ExecContext(t.Context(), `UPDATE projects SET deleted_at=NULL WHERE organization_id=$1 AND id=$2`, f.org, f.project); err != nil {
 				t.Fatal(err)
@@ -622,11 +622,11 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			duplicate := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "duplicate.txt", "text/plain", payload)
 			usage(f, 2*int64(len(payload)))
 			objects.onIO = func() error { return fmt.Errorf("blob unavailable") }
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, duplicate.Attachment.URL, testHubAdminToken, nil), http.StatusInternalServerError)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, duplicate.URL, testHubAdminToken, nil), http.StatusInternalServerError)
 			objects.onIO = nil
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, duplicate.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, duplicate.URL, testHubAdminToken, nil), http.StatusNoContent)
 			usage(f, int64(len(payload)))
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.URL, testHubAdminToken, nil), http.StatusOK)
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 				n, err := r.ArchiveBytes(t.Context())
 				if err == nil && n <= 0 {
@@ -636,7 +636,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.URL, testHubAdminToken, nil), http.StatusNoContent)
 			usage(f, int64(len(payload)))
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 				n, err := r.ArchiveBytes(t.Context())
@@ -647,8 +647,8 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.URL, testHubAdminToken, nil), http.StatusNotFound)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.URL, testHubAdminToken, nil), http.StatusNotFound)
 			requireNativeStatus(t, postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "example.txt", "text/plain", payload, "upload"), http.StatusConflict)
 			baseUsage[f.org] += int64(len(payload))
 		})
@@ -667,14 +667,14 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 					return w.RevokeAccessCredential(t.Context(), "test_hub_admin", time.Now().UTC())
 				})
 			}
-			response := performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil)
+			response := performHubAPIRequest(t, service, http.MethodGet, upload.URL, testHubAdminToken, nil)
 			objects.onIO = nil
 			requireNativeStatus(t, response, http.StatusForbidden)
 			if bytes.Contains(response.Body.Bytes(), payload) {
 				t.Fatal("revoked read disclosed payload")
 			}
 			for _, method := range []string{http.MethodGet, http.MethodDelete} {
-				requireNativeStatus(t, performHubAPIRequest(t, service, method, upload.Attachment.URL, testHubAdminToken, nil), http.StatusUnauthorized)
+				requireNativeStatus(t, performHubAPIRequest(t, service, method, upload.URL, testHubAdminToken, nil), http.StatusUnauthorized)
 			}
 			requireNativeStatus(t, postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "example.txt", "text/plain", payload, "revoked"), http.StatusUnauthorized)
 			usage(f, int64(len(payload)))
@@ -803,7 +803,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "deleted":
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.URL, testHubAdminToken, nil), http.StatusNoContent)
 			case "sent":
 				command := conversation.Command{Key: "cmd_sweep_sent", Kind: conversation.CommandMessage, Text: "sent", Attachments: []string{upload.ID}}
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/conversations/"+f.id+"/commands", testHubAdminToken, command), http.StatusOK)
@@ -921,7 +921,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 				if a.expired || a.deleted {
 					want = http.StatusNotFound
 				}
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, a.upload.Attachment.URL, testHubAdminToken, nil), want)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, a.upload.URL, testHubAdminToken, nil), want)
 			}
 		})
 	}

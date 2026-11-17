@@ -1198,9 +1198,10 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 										store.mu.Unlock()
 										t.Fatal("fixture did not store the registered archive object")
 									}
-									if availability == "unavailable" {
+									switch availability {
+									case "unavailable":
 										delete(store.objects, object.ref.Key)
-									} else if availability == "invalid" {
+									case "invalid":
 										store.objects[object.ref.Key] = bytes.Repeat([]byte("!"), len(original))
 									}
 									store.mu.Unlock()

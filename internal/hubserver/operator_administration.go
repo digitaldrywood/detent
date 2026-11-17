@@ -264,8 +264,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 			return operatortool.ErrAccessDenied
 		}
 		var count int
-		var invitationErr error
-		invitationErr = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		invitationErr := s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
 			row, err := r.AccessInvitation(readCtx, in.InvitationID)
 			if err != nil || row.AcceptedUserID != "" && row.AcceptedUserID != credential.Hosted.Subject {
 				return operatortool.ErrAccessDenied
@@ -333,8 +332,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 	}
 	if invitation != "" {
 		var count int
-		var invitationErr error
-		invitationErr = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		invitationErr := s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
 			row, err := r.AccessInvitation(readCtx, invitation)
 			if err != nil || row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.Clock()) {
 				return operatortool.ErrAccessDenied

@@ -28,18 +28,18 @@ func TestInvisibleProjectMatchesMissingResource(t *testing.T) {
 	integration := func(key string) map[string]any {
 		return map[string]any{"idempotency_key": key, "expected_revision": "1", "intake": "disabled", "projection": "disabled"}
 	}
-	if err := hosted.Hub.Config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+	if err := hosted.Config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: "prj_ungranted", Name: "Example ungranted", Slug: "example-ungranted", Profile: "native"}, States: hubfixture.States()})
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := hosted.Hub.Config.TenantRepository.WriteTenant(t.Context(), "org_other", corestore.Serving, func(w tenantstore.Writer) error {
-		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_other", Name: "Example other tenant", CreatedAt: hosted.Hub.Config.Clock()})
+	if err := hosted.Config.TenantRepository.WriteTenant(t.Context(), "org_other", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_other", Name: "Example other tenant", CreatedAt: hosted.Config.Clock()})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := hubfixture.SeedHostedSecurityProject(t.Context(), hosted.Hub.Config.TenantRepository, "org_other"); err != nil {
+	if err := hubfixture.SeedHostedSecurityProject(t.Context(), hosted.Config.TenantRepository, "org_other"); err != nil {
 		t.Fatal(err)
 	}
 	for _, fixture := range []hubfixture.Native{f, sibling, other} {

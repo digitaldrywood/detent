@@ -448,9 +448,10 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				}
 				for index, statement := range statements {
 					args := []any{org, source.issue, source.prefix, source.count, base, source.project}
-					if index == 0 {
+					switch index {
+					case 0:
 						args = args[:4]
-					} else if index == 1 {
+					case 1:
 						args = args[:5]
 					}
 					if _, err := admin.ExecContext(t.Context(), statement, args...); err != nil {

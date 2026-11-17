@@ -625,12 +625,13 @@ func TestNativeExplanationIncompleteGateHistory(t *testing.T) {
 							if row.VersionID == nil || *row.VersionID != version.ID || row.Sequence > beforeComments.EvidenceSequence {
 								t.Fatalf("gate evidence escaped the captured current version: %+v", row)
 							}
-							if row.Kind == "review" {
+							switch row.Kind {
+							case "review":
 								reviews++
 								if row.Decision != review {
 									t.Fatalf("gate evidence ignored its snapshot sequence: %+v", row)
 								}
-							} else if row.Kind == "check" {
+							case "check":
 								checks++
 							}
 						}

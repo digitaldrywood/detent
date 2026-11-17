@@ -41,9 +41,7 @@ func (s *Service) Read(ctx context.Context, pages ...Page) (*View, error) {
 	defer cancel()
 	view := &View{Packs: []Pack{}, History: []Transaction{}}
 	var method string
-	var err error
-
-	err = s.read(ctx, func(reader tenantstore.Reader) error {
+	err := s.read(ctx, func(reader tenantstore.Reader) error {
 		account, err := reader.BillingCreditAccount(ctx, s.deps.Mode)
 		if err != nil {
 			return err

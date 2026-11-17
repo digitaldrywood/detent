@@ -837,8 +837,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					if outcome == "full access" {
 						want = "native-trusted"
 					}
-					var got string
-					got = coordinatorActionPool(t, f.service).IsolationTier
+					got := coordinatorActionPool(t, f.service).IsolationTier
 					if got != want {
 						t.Fatalf("saved tier=%q want=%q err=%v", got, want, nil)
 					}

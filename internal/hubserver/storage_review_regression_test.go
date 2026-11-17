@@ -79,15 +79,16 @@ func TestReportObjectDownloadsReleaseReaders(t *testing.T) {
 						defer func() { fixture.details.beforeRead = nil }()
 						ctx := fixture.hosted.service.freshRunDetailContext(t.Context())
 						var err error
-						if name == "analytics" {
+						switch name {
+						case "analytics":
 							identity := operatortool.Identity{PrincipalID: fixture.owner.identity.Subject, OrganizationID: string(fixture.organization), CredentialID: "test"}
 							ctx = operatortool.WithConnection(ctx, operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 								return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
 							}})
 							_, err = fixture.hosted.service.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{Limit: 1}, w)
-						} else if name == "cloud diagnostics" {
+						case "cloud diagnostics":
 							_, err = fixture.hosted.service.readCloudDiagnostics(ctx, credential, w)
-						} else {
+						default:
 							_, err = fixture.hosted.service.readDiagnosticsTenant(ctx, credential, w, fixture.hosted.project)
 						}
 						if err != nil {

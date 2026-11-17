@@ -47,7 +47,7 @@ func TestRunnersInTwoOrganizationsAreUsableAndIsolated(t *testing.T) {
 		hubfixture.RequireStatus(t, h.Request(t, http.MethodGet, r.IdentityPath()+"/routing", hubfixture.AdminToken, nil), http.StatusOK)
 		runners = append(runners, r)
 	}
-	foreign := h.Request(t, http.MethodPost, runners[1].Native.Base+"/machines/"+string(runners[0].Binding.MachineID)+"/heartbeat", runners[0].Redemption.Credential, map[string]any{"display_name": "foreign", "capacity": 1, "version": "test"})
+	foreign := h.Request(t, http.MethodPost, runners[1].Base+"/machines/"+string(runners[0].Binding.MachineID)+"/heartbeat", runners[0].Redemption.Credential, map[string]any{"display_name": "foreign", "capacity": 1, "version": "test"})
 	if foreign.Code == http.StatusOK {
 		t.Fatalf("foreign heartbeat status = %d: %s", foreign.Code, foreign.Body.String())
 	}

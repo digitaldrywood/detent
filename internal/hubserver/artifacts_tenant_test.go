@@ -609,7 +609,7 @@ func (w *artifactLeaseClockWriter) LockLease(ctx context.Context, id string) (le
 	lease, err := w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
 	if err == nil && w.renew {
 		w.renew = false
-		lease, err = w.Writer.Renew(ctx, leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, time.Minute)
+		lease, err = w.Renew(ctx, leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, time.Minute)
 	}
 	if err == nil {
 		w.afterLock(lease)

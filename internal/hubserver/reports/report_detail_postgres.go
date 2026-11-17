@@ -134,7 +134,8 @@ func SummarizePostgresHostedReport(facts []reportstore.OverviewFact, attempts []
 		if fact.PreviousCompletedAt != nil {
 			at := *fact.PreviousCompletedAt
 			if !at.Before(prior.From) && at.Before(prior.To) {
-				if fact.PreviousCompletedState == "Done" {
+				switch fact.PreviousCompletedState {
+				case "Done":
 					out.Previous.Done++
 					if fact.PreviousCycleSeconds != nil {
 						previousCycles = append(previousCycles, *fact.PreviousCycleSeconds)
@@ -145,7 +146,7 @@ func SummarizePostgresHostedReport(facts []reportstore.OverviewFact, attempts []
 					if costAvailable {
 						out.Previous.Cost += previousCost
 					}
-				} else if fact.PreviousCompletedState == "Cancelled" {
+				case "Cancelled":
 					out.Previous.Cancelled++
 				}
 			}
@@ -155,7 +156,8 @@ func SummarizePostgresHostedReport(facts []reportstore.OverviewFact, attempts []
 		}
 		at := *fact.CompletedAt
 		if !at.Before(w.From) && at.Before(w.To) {
-			if fact.CompletedState == "Done" {
+			switch fact.CompletedState {
+			case "Done":
 				out.Completion.Done++
 				if fact.CycleSeconds != nil {
 					currentCycles = append(currentCycles, *fact.CycleSeconds)
@@ -168,7 +170,7 @@ func SummarizePostgresHostedReport(facts []reportstore.OverviewFact, attempts []
 				if costAvailable {
 					out.Completion.Cost += currentCost
 				}
-			} else if fact.CompletedState == "Cancelled" {
+			case "Cancelled":
 				out.Completion.Cancelled++
 				out.Cancelled++
 			}

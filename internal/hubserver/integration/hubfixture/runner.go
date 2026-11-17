@@ -59,7 +59,7 @@ func (r Runner) IdentityPath() string { return r.OrgBase + "/runners/" + r.Bindi
 
 func (r Runner) ReportCapacity(t *testing.T) {
 	t.Helper()
-	ReportRunnerCapacity(t, r.Hub, r.Native.Base, r.Redemption.Credential, r.Binding.MachineID, r.Redemption.DisplayName, r.Redemption.BackendIsolation, r.Redemption.Capacity)
+	ReportRunnerCapacity(t, r.Hub, r.Base, r.Redemption.Credential, r.Binding.MachineID, r.Redemption.DisplayName, r.Redemption.BackendIsolation, r.Redemption.Capacity)
 }
 
 func ReportRunnerCapacity(t *testing.T, h *Hub, projectBase, credential string, machine tracker.MachineID, displayName string, backends isolation.Report, capacity int) {

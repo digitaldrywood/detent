@@ -236,7 +236,7 @@ func TestCostLedgerReplay(t *testing.T) {
 					}
 				})
 			}
-			before, err := s.Service.Monthly(t.Context(), organization, "organization", nil, Window{From: from, To: from.AddDate(0, 1, 0)}, now)
+			before, err := s.Monthly(t.Context(), organization, "organization", nil, Window{From: from, To: from.AddDate(0, 1, 0)}, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -256,7 +256,7 @@ func TestCostLedgerReplay(t *testing.T) {
 			if changed, err := recordPostgresTestCost(t, s.Service, organization, "original", corrected, now); err != nil || changed {
 				t.Fatalf("correction retry after restart changed ledger: %t %v", changed, err)
 			}
-			after, err := s.Service.Monthly(t.Context(), organization, "organization", nil, before.Period, now)
+			after, err := s.Monthly(t.Context(), organization, "organization", nil, before.Period, now)
 			if err != nil || !reflect.DeepEqual(before, after) {
 				t.Fatalf("restart totals changed: before=%+v after=%+v error=%v", before, after, err)
 			}
@@ -279,7 +279,7 @@ func TestCostLedgerReplay(t *testing.T) {
 			if _, err := recordPostgresTestCost(t, s.Service, organization, "original", overlapping, now); !errors.As(err, &overlap) || overlap.Overlap.Model != "example-model" || !overlap.Overlap.PeriodStart.Equal(overlapping.From) || !overlap.Overlap.PeriodEnd.Equal(overlapping.To) {
 				t.Fatalf("overlapping stored source = %v, want a typed overlap naming its model and period", err)
 			}
-			final, err := s.Service.Monthly(t.Context(), organization, "organization", nil, before.Period, now)
+			final, err := s.Monthly(t.Context(), organization, "organization", nil, before.Period, now)
 			if err != nil || len(final.Sources) != 1 || *final.Totals[0].KnownMicros != 10_000 || final.Sources[0].To != replacement.To {
 				t.Fatalf("period correction double counted: %+v %v", final, err)
 			}
@@ -353,7 +353,7 @@ func TestCostLedgerScopeIsolation(t *testing.T) {
 		{name: "no project grants reveals no costs", organization: "org", projects: []string{}, buckets: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			report, err := s.Service.Monthly(t.Context(), test.organization, "test", test.projects, Window{From: from, To: to}, to)
+			report, err := s.Monthly(t.Context(), test.organization, "test", test.projects, Window{From: from, To: to}, to)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -381,7 +381,7 @@ func TestSpriteCostInventory(t *testing.T) {
 		sprite := hubtest.Runner(t, repository, organization, hubtest.RunnerOptions{Organization: true, Hostname: "cost-sprite", Now: now})
 		hubtest.Runner(t, repository, organization, hubtest.RunnerOptions{Projects: []tracker.ProjectID{project.ID}, Hostname: "cost-local", Now: now})
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			identity, err := w.RunnerIdentity(t.Context(), sprite.Identity.Binding.RunnerID)
+			identity, err := w.RunnerIdentity(t.Context(), sprite.Identity.RunnerID)
 			if err != nil {
 				return err
 			}
@@ -403,7 +403,7 @@ func TestSpriteCostInventory(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), "UPDATE machines SET sprite_name=hostname WHERE organization_id=$1 AND id=$2", organization, sprite.Identity.Binding.MachineID); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "UPDATE machines SET sprite_name=hostname WHERE organization_id=$1 AND id=$2", organization, sprite.Identity.MachineID); err != nil {
 			t.Fatal(err)
 		}
 		window, err := Month("", now)

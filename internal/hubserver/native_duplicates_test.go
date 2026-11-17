@@ -780,7 +780,8 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 			if !errors.Is(err, corestore.ErrSerializationFailure) {
 				t.Fatalf("stale duplicate preparation was accepted: %v", err)
 			}
-			if change == "archived candidate" || change == "challenge disabled" {
+			switch change {
+			case "archived candidate", "challenge disabled":
 				raw, err := f.service.createNativeIssueCommand(t.Context(), scope, request)
 				var challenge duplicateChallenge
 				if err != nil || json.Unmarshal(raw, &challenge) != nil || challenge.ChallengeToken != "" || len(challenge.PossibleDuplicates) != 0 {
@@ -790,7 +791,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 				if json.Unmarshal(raw, &created) != nil || created.WorkItemID == "" || created.WorkItemID == first.WorkItemID {
 					t.Fatalf("current canonical filing did not create independent work: %s", raw)
 				}
-			} else if change == "challenge enabled" {
+			case "challenge enabled":
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 				requireNativeStatus(t, response, http.StatusConflict)
 			}

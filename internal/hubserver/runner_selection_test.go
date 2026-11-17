@@ -539,8 +539,8 @@ func TestClaimClassifiesLegacySourceWithinRequestBudget(t *testing.T) {
 					t.Fatal("changed source was not classified by a following request")
 				}
 			}
-			if details.memoryRunDetails.writerReads != 0 {
-				t.Fatalf("checkpoint objects read under the claim writer: %d", details.memoryRunDetails.writerReads)
+			if details.writerReads != 0 {
+				t.Fatalf("checkpoint objects read under the claim writer: %d", details.writerReads)
 			}
 		})
 	}

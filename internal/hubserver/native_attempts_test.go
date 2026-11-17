@@ -591,11 +591,12 @@ func copyNativeAttemptFixture(t *testing.T, f nativeFixture, worker string, issu
 	for _, sequence := range []int64{1, 2, 3} {
 		data := start.Data
 		status := "running"
-		if sequence == 3 {
+		switch sequence {
+		case 3:
 			data = source.NativeRunData
 			data.AttemptID, data.RunID, data.LeaseID, data.FencingToken, data.SessionID = start.Data.AttemptID, start.Data.RunID, lease.ID, lease.FencingToken, lease.SessionID
 			status = "succeeded"
-		} else if sequence == 2 {
+		case 2:
 			data.Handoff = nativeTestCheckpoint()
 		}
 		data.Sequence = sequence

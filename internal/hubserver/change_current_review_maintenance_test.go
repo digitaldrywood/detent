@@ -186,7 +186,7 @@ func TestPostgresMaintenanceRebuildsCurrentReviewsPastUnavailableChange(t *testi
 				if len(steps) != 2 || steps[1].id != "b_available" || steps[1].count != 1 || steps[1].err != nil {
 					t.Fatalf("unavailable Change starved later work: %+v", steps)
 				}
-				if err := probe.Repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := probe.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 					bad, err := r.Change(ctx, "a_unavailable")
 					if err != nil {
 						return err

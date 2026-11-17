@@ -62,7 +62,7 @@ func TestHotQueryPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	for n := range 1024 {
-		f.nativeFixture.worker(t, fmt.Sprintf("unrelated-runner-%d", n))
+		f.worker(t, fmt.Sprintf("unrelated-runner-%d", n))
 	}
 	r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim)
 	r.enroll(t)

@@ -541,11 +541,12 @@ func TestArchiveMigrationCompatibility(t *testing.T) {
 	for _, layout := range []string{"pre-reference", "scoped", "additional metadata"} {
 		t.Run(layout, func(t *testing.T) {
 			f := newArchiveRevisionFixture(t, newNativeFixture(t, nil, "", "archive-schema"), "Historical schema", 1)
-			if layout == "pre-reference" {
+			switch layout {
+			case "pre-reference":
 				f.table.Columns = []string{"rowid", "record_id", "revision", "record_json", "encoding"}
 				original := f.table.Rows[0]
 				f.table.Rows[0] = []json.RawMessage{original[0], original[4], original[5], original[6], original[7]}
-			} else if layout == "additional metadata" {
+			case "additional metadata":
 				f.table.Columns = append(f.table.Columns, "legacy_nullable", "legacy_integer", "legacy_text")
 				f.table.Rows[0] = append(f.table.Rows[0], archiveRevisionCells(t, nil, int64(9223372036854775806), "quote' ? --")...)
 			}

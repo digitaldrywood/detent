@@ -387,14 +387,15 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			}
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: queued.WorkItemID, MachineID: r.binding.MachineID, SessionID: "follow-hub", TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			claimResponse := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
-			if test.state == "active" {
+			switch test.state {
+			case "active":
 				requireNativeStatus(t, claimResponse, http.StatusOK)
 				var admitted tracker.NativeLease
 				decodeHubResponse(t, claimResponse, &admitted)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(admitted.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: admitted.FencingToken, Reason: "completed"}), http.StatusNoContent)
-			} else if test.state == "draining" {
+			case "draining":
 				requireNativeError(t, claimResponse, http.StatusConflict, "runner_draining")
-			} else {
+			default:
 				requireNativeError(t, claimResponse, http.StatusConflict, "runner_disabled")
 			}
 			applied.Version = deliveredVersion

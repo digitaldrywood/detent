@@ -74,9 +74,10 @@ func TestIssuePageFiltersPreservePopulationAndProjectScope(t *testing.T) {
 					params.Set("cursor", page.NextCursor)
 				}
 				count := 103
-				if filter.value == "known" {
+				switch filter.value {
+				case "known":
 					count = 1
-				} else if filter.value == "unknown" {
+				case "unknown":
 					count = 102
 				}
 				if len(seen) != count {

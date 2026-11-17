@@ -517,7 +517,7 @@ func (f *coordinatorFixture) events(t *testing.T, id string) []conversation.Even
 			if err := f.service.readConversationObject(t.Context(), string(f.organization), refs[row.ContentReference], &payload); err != nil {
 				t.Fatal(err)
 			}
-			row.Event.Data = payload.Data
+			row.Data = payload.Data
 		}
 		result = append(result, row.Event)
 	}

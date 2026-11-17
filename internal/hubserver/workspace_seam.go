@@ -182,79 +182,79 @@ func (w *workspaceService) workspaceRunReason(ctx context.Context, workspaceID s
 	return actionRunReasonFor(record.Reason)
 }
 
-func (r *workspaceRelay) stop(ctx context.Context) { r.Relay.Stop(ctx) }
+func (r *workspaceRelay) stop(ctx context.Context) { r.Stop(ctx) }
 func (r *workspaceRelay) closeWorkspace(ctx context.Context, workspaceID, reason string) {
-	r.Relay.CloseWorkspace(ctx, workspaceID, reason)
+	r.CloseWorkspace(ctx, workspaceID, reason)
 }
-func (r *workspaceRelay) sweep(ctx context.Context, now time.Time) { r.Relay.Sweep(ctx, now) }
+func (r *workspaceRelay) sweep(ctx context.Context, now time.Time) { r.Sweep(ctx, now) }
 func (r *workspaceRelay) attachPerson(connection *relayConnection) error {
-	return r.Relay.AttachPerson(connection)
+	return r.AttachPerson(connection)
 }
 func (r *workspaceRelay) detachPerson(ctx context.Context, connection *relayConnection, now time.Time) {
-	r.Relay.DetachPerson(ctx, connection, now)
+	r.DetachPerson(ctx, connection, now)
 }
 func (r *workspaceRelay) attachRunner(connection *relayConnection) (*relayConnection, error) {
-	return r.Relay.AttachRunner(connection)
+	return r.AttachRunner(connection)
 }
 func (r *workspaceRelay) detachRunner(ctx context.Context, connection *relayConnection) bool {
-	return r.Relay.DetachRunner(ctx, connection)
+	return r.DetachRunner(ctx, connection)
 }
 func (r *workspaceRelay) runnerFor(workspaceID string) *relayConnection {
-	return r.Relay.RunnerFor(workspaceID)
+	return r.RunnerFor(workspaceID)
 }
 func (r *workspaceRelay) openStream(connection *relayConnection, channel string) (*relayStream, string) {
-	return r.Relay.OpenStream(connection, channel)
+	return r.OpenStream(connection, channel)
 }
 func (r *workspaceRelay) openHubStream(workspaceID, channel string) (*relayStream, string) {
-	return r.Relay.OpenHubStream(workspaceID, channel)
+	return r.OpenHubStream(workspaceID, channel)
 }
 func (r *workspaceRelay) channelStream(connection *relayConnection, channel string) *relayStream {
-	return r.Relay.ChannelStream(connection, channel)
+	return r.ChannelStream(connection, channel)
 }
 func (r *workspaceRelay) lookupStream(connection *relayConnection, id string) *relayStream {
-	return r.Relay.LookupStream(connection, id)
+	return r.LookupStream(connection, id)
 }
 func (r *workspaceRelay) runnerStream(runner *relayConnection, id string) (*relayStream, *relayConnection) {
-	return r.Relay.RunnerStream(runner, id)
+	return r.RunnerStream(runner, id)
 }
 func (r *workspaceRelay) closeStream(ctx context.Context, workspaceID, id string) {
-	r.Relay.CloseStream(ctx, workspaceID, id)
+	r.CloseStream(ctx, workspaceID, id)
 }
 func (r *workspaceRelay) resumeStream(connection *relayConnection, id string, lastSeq int64, now time.Time) (*relayStream, []workspacesession.Frame, string) {
-	return r.Relay.ResumeStream(connection, id, lastSeq, now)
+	return r.ResumeStream(connection, id, lastSeq, now)
 }
 func (r *workspaceRelay) bufferForPerson(workspaceID string, stream *relayStream, frame workspacesession.Frame, seq int64) bool {
-	return r.Relay.BufferForPerson(workspaceID, stream, frame, seq)
+	return r.BufferForPerson(workspaceID, stream, frame, seq)
 }
 func (r *workspaceRelay) acknowledge(stream *relayStream, through int64) {
-	r.Relay.Acknowledge(stream, through)
+	r.Acknowledge(stream, through)
 }
-func (r *workspaceRelay) nextToRunner(stream *relayStream) int64 { return r.Relay.NextToRunner(stream) }
-func (r *workspaceRelay) nextToPerson(stream *relayStream) int64 { return r.Relay.NextToPerson(stream) }
+func (r *workspaceRelay) nextToRunner(stream *relayStream) int64 { return r.NextToRunner(stream) }
+func (r *workspaceRelay) nextToPerson(stream *relayStream) int64 { return r.NextToPerson(stream) }
 func (r *workspaceRelay) detachedCount(workspaceID string) int {
-	return r.Relay.DetachedCount(workspaceID)
+	return r.DetachedCount(workspaceID)
 }
-func (r *workspaceRelay) memoryUsed() int64 { return r.Relay.MemoryUsed() }
+func (r *workspaceRelay) memoryUsed() int64 { return r.MemoryUsed() }
 func (r *workspaceRelay) beginTerminalRecording(state *terminalStreamState) {
-	r.Relay.BeginTerminalRecording(state)
+	r.BeginTerminalRecording(state)
 }
 func (r *workspaceRelay) appendTerminalEvent(workspaceID, streamID, code, data string, at time.Time) {
-	r.Relay.AppendTerminalEvent(workspaceID, streamID, code, data, at)
+	r.AppendTerminalEvent(workspaceID, streamID, code, data, at)
 }
 func (r *workspaceRelay) resizeTerminalRecording(workspaceID, streamID string, cols, rows int, at time.Time) {
-	r.Relay.ResizeTerminalRecording(workspaceID, streamID, cols, rows, at)
+	r.ResizeTerminalRecording(workspaceID, streamID, cols, rows, at)
 }
 func (r *workspaceRelay) beginExecRun(workspaceID, streamID string, state *execRunState, runner *relayConnection) bool {
-	return r.Relay.BeginExecRun(workspaceID, streamID, state, runner)
+	return r.BeginExecRun(workspaceID, streamID, state, runner)
 }
 func (r *workspaceRelay) appendExecOutput(workspaceID, streamID string, data []byte) {
-	r.Relay.AppendExecOutput(workspaceID, streamID, data)
+	r.AppendExecOutput(workspaceID, streamID, data)
 }
 func (r *workspaceRelay) takeExecRun(workspaceID, streamID string) (*execRunState, bool) {
-	return r.Relay.TakeExecRun(workspaceID, streamID)
+	return r.TakeExecRun(workspaceID, streamID)
 }
 func (r *workspaceRelay) failWorkspaceExecRuns(ctx context.Context, workspaceID, reason string) {
-	r.Relay.FailWorkspaceExecRuns(ctx, workspaceID, reason)
+	r.FailWorkspaceExecRuns(ctx, workspaceID, reason)
 }
 
 type TerminalRecording = workspacerelay.TerminalRecording

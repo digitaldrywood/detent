@@ -1834,7 +1834,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 							t.Fatal(err)
 						}
 						requireNativeStatus(t, completed, http.StatusCreated)
-						expectedEvidence = []tracker.NativeEvidence{{AttachmentID: input.ID, Caption: "保留された証拠", Reference: input.Metadata.Markdown(string(f.project.OrganizationID))}}
+						expectedEvidence = []tracker.NativeEvidence{{AttachmentID: input.ID, Caption: "保留された証拠", Reference: input.Markdown(string(f.project.OrganizationID))}}
 						event.Type, event.Data.Sequence, event.IdempotencyKey = "run.observed", 2, "local-observation"
 						event.Data.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: time.Now().UTC(), Phase: "implementation"}
 					}
