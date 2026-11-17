@@ -603,18 +603,8 @@ func (s *session) BoardView(ctx context.Context, selection viewstore.BoardViewSe
 	if err != nil {
 		return result, mapError(ctx, err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var row viewstore.BoardViewRow
-		if err := rows.Scan(row.Targets()...); err != nil {
-			return viewstore.BoardViewRows{}, mapError(ctx, err)
-		}
-		result.Rows = append(result.Rows, row)
-	}
-	if err := rows.Err(); err != nil {
-		return viewstore.BoardViewRows{}, mapError(ctx, err)
-	}
-	return result, nil
+	result, err = boardviewsql.Scan(rows)
+	return result, mapError(ctx, err)
 }
 
 func (s *session) boardSearchPage(ctx context.Context, f viewstore.BoardSelection, typed bool) ([]viewstore.BoardRecord, error) {
