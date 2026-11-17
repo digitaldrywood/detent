@@ -25,9 +25,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type hubSchedulingOptions struct {
+	httpClient                *http.Client
+	workspaceCapabilities     func() workspacesession.Capabilities
 	applyProjectConfiguration func(context.Context, string, runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration
 	hubProcessReceipts        bool
 	workspaceSupport          func() workspacerunner.Support
@@ -80,13 +83,20 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		capacity = cfg.Global.MaxConcurrentAgents
 	}
 	version = firstNonBlankString(version, "dev")
+	var httpClient *http.Client
+	if len(options) > 0 {
+		httpClient = options[0].httpClient
+	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: clientConfig.RequestTimeout()}
+	}
 	client, err := hubclient.New(hubclient.Config{
 		ArtifactServiceID: clientConfig.ArtifactServiceID,
 		ArtifactBytes:     clientConfig.ArtifactBytes,
 		URL:               clientConfig.URL,
 		IdentityFile:      clientConfig.IdentityFile,
 		TokenSource:       func() string { return os.Getenv(clientConfig.TokenEnvironment) },
-		HTTPClient:        &http.Client{Timeout: clientConfig.RequestTimeout()},
+		HTTPClient:        httpClient,
 	})
 	if err != nil {
 		return nil, err
@@ -229,11 +239,11 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),
-			WorkspaceCapabilities: workspaceLaneCapabilities(context.Background(), cfg, support),
-			WorkspaceIsolation:    support.TerminalIsolation(),
+			WorkspaceIsolation: support.TerminalIsolation(),
 		},
-		HeartbeatInterval: min(clientConfig.HeartbeatInterval(), providercapacity.MaxAge/2),
-		LeaseTTL:          clientConfig.LeaseTTL(),
+		WorkspaceCapabilities: setupOptions.workspaceCapabilities,
+		HeartbeatInterval:     min(clientConfig.HeartbeatInterval(), providercapacity.MaxAge/2),
+		LeaseTTL:              clientConfig.LeaseTTL(),
 	})
 	if err != nil {
 		return nil, err

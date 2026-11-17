@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -19,6 +21,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspacerunner"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
@@ -37,8 +41,20 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	selected := remoterunner.NewConfigOwner(cfg.Global, func(next globalconfig.Config) error { return applyGlobalRuntimeConfig(gate, logLevel, next) })
 	var manager *project.Manager
 	var scheduling orchestrator.SchedulingSource
+	support := workspacerunner.DefaultSupport()
+	capabilities := workspaceLaneCapabilities(ctx, cfg.Global, support)
+	var serving atomic.Int64
+
 	scheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
 		hubProcessReceipts: true,
+		httpClient:         cfg.remoteHubHTTPClient,
+		workspaceSupport:   func() workspacerunner.Support { return support },
+		workspaceCapabilities: func() workspacesession.Capabilities {
+			if serving.Load() == 0 {
+				return workspacesession.Capabilities{}
+			}
+			return capabilities
+		},
 		applyProjectConfiguration: func(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
 			if manager == nil {
 				view := project.MissingConfigurationOwner(desired.ProjectID)
@@ -141,6 +157,14 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			stop()
 			workers.Wait()
 		}()
+		lanes := newWorkspaceLanes(runCtx, cfg.Global, scheduling, rand.Text(), logger, support)
+		serving.Store(int64(len(lanes)))
+		for _, lane := range lanes {
+			workers.Go(func() {
+				defer serving.Add(-1)
+				runWorkspaceLane(runCtx, lane, logger)
+			})
+		}
 		workers.Go(func() { update.Run(runCtx) })
 		if heartbeat, ok := scheduling.(remoterunner.Heartbeater); ok {
 			workers.Go(func() { remoterunner.RunHeartbeats(runCtx, heartbeat, cfg.remoteHeartbeatTicker, logger) })

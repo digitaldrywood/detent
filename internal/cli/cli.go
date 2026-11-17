@@ -157,6 +157,7 @@ type BootConfig struct {
 	Scheduling       orchestrator.SchedulingSource
 	StartupRecovery  StartupRecovery
 
+	remoteHubHTTPClient   *http.Client
 	remoteHeartbeatTicker remoterunner.Ticker
 }
 

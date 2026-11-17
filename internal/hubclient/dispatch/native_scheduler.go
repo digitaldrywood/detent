@@ -236,6 +236,9 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	s.machine.Problems = problems
 	machine := s.machine
 	s.mu.Unlock()
+	if s.workspaceCapabilities != nil {
+		machine.WorkspaceCapabilities = s.workspaceCapabilities()
+	}
 	if s.availableCapacity != nil {
 		machine.Capacity = max(0, min(machine.Capacity, s.availableCapacity(ctx, machine.Capacity)))
 	}
