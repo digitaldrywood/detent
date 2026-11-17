@@ -672,6 +672,7 @@ func (s *Service) ReadModelMaintenanceFeatures() []hubmaintenance.Feature {
 		s.IntegrationPageMaintenanceFeature(),
 		s.OnboardingPageMaintenanceFeature(),
 		s.HealthPageMaintenanceFeature(),
+		s.runnerUpdateService().MaintenanceFeature(),
 		s.ProjectPageMaintenanceFeature(),
 		s.UsageMaintenanceFeature(),
 		{Name: "github-intake", Bytes: 64 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {

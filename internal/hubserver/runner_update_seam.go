@@ -119,3 +119,7 @@ func (s *Service) registerRunnerUpdateRoutes(e *echo.Echo) {
 		Invalid: s.invalidAPIRequest,
 	})
 }
+
+func runnerUpdateOfferAllowed(ctx context.Context, r tenantstore.Reader, id string, request *runnerauth.UpdateRequest) (bool, error) {
+	return runnerupdate.OfferAllowed(ctx, r, id, request)
+}

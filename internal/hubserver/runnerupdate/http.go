@@ -32,6 +32,11 @@ func RegisterRoutes(e *echo.Group, deps HTTPDeps) {
 	s := &httpRoutes{deps: deps}
 	base := "/api/v2/organizations/:organization/runners/:runner/update"
 	urgent := "/api/v2/organizations/:organization/runner-update/urgent"
+	e.POST("/api/v2/organizations/:organization/runners/:runner/lifecycle", s.reportRunnerLifecycle, deps.Worker)
+	e.GET(base+"/target", s.getRunnerTarget, deps.Admin)
+	e.GET("/api/v2/organizations/:organization/runner-update/target", s.getRunnerTarget, deps.Admin)
+	e.PUT(base+"/target", s.setRunnerTarget, deps.Admin)
+	e.PUT("/api/v2/organizations/:organization/runner-update/target", s.setRunnerTarget, deps.Admin)
 	e.GET(base, s.getRunnerUpdate, deps.Admin)
 	e.POST(base+"/apply", s.applyRunnerUpdate, deps.Admin)
 	e.GET(base+"/receipt", s.getRunnerUpdateReceipt, deps.Worker)

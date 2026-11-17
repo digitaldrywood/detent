@@ -3,7 +3,7 @@
   "packages": {
     "github.com/digitaldrywood/detent/internal/cli": {
       "files": 118,
-      "loc": 30336,
+      "loc": 30314,
       "test-files": 147,
       "test-funcs": 609
     },
@@ -15,17 +15,17 @@
       "files": 48
     },
     "github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest": {
-      "loc": 17439
+      "loc": 17435
     },
     "github.com/digitaldrywood/detent/internal/hubserver": {
-      "files": 432,
-      "loc": 94789,
-      "test-files": 481,
-      "test-funcs": 1401
+      "files": 431,
+      "loc": 94725,
+      "test-files": 480,
+      "test-funcs": 1394
     },
     "github.com/digitaldrywood/detent/internal/hubserver/postgres": {
       "files": 257,
-      "loc": 44346
+      "loc": 44090
     },
     "github.com/digitaldrywood/detent/internal/orchestrator": {
       "files": 112,
@@ -35,12 +35,12 @@
     },
     "github.com/digitaldrywood/detent/internal/runner": {
       "files": 65,
-      "loc": 20286,
+      "loc": 20119,
       "test-files": 79,
-      "test-funcs": 429
+      "test-funcs": 424
     },
     "github.com/digitaldrywood/detent/internal/workspace": {
-      "loc": 11637,
+      "loc": 11630,
       "test-files": 47
     }
   }

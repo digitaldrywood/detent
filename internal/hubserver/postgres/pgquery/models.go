@@ -4302,6 +4302,17 @@ type ProjectOnboardingPage struct {
 	PageStepsItemDetail                                       []string
 	PageSteps                                                 []int64
 	PageReady                                                 []bool
+	PageRunnersItemRunnerLifecycleValueLifec8ea6fd88cf8986bb  []string
+	PageRunnersItemRunnerLifecycleValueLifec356b72452359a842  []int64
+	PageRunnersItemRunnerLifecycleValueLifecyclereportState   []string
+	PageRunnersItemRunnerLifecycleValueLifecB53bfd7e6cf2129b  []string
+	PageRunnersItemRunnerLifecycleValueLifec31ba2e3e3c1c8032  []string
+	PageRunnersItemRunnerLifecycleValueLifec7d88970c1424b483  []string
+	PageRunnersItemRunnerLifecycleValueLifecyclereportReason  []string
+	PageRunnersItemRunnerLifecycleValueLifec4018a41db5812948  []string
+	PageRunnersItemRunnerLifecycleValueLastTransitionAt       []time.Time
+	PageRunnersItemRunnerLifecycleValueConse6206ae7683f5a82b  []int64
+	PageRunnersItemRunnerLifecycle                            []bool
 }
 
 type ProjectOnboardingPageAccess struct {
@@ -4971,6 +4982,37 @@ type RunnerLeaseAssignment struct {
 	AssignedAt     time.Time
 }
 
+type RunnerLifecycle struct {
+	OrganizationID          tracker.OrganizationID
+	RunnerID                string
+	ProcessID               string
+	Sequence                int64
+	State                   string
+	Version                 string
+	BuildRevision           string
+	TargetVersion           string
+	Reason                  string
+	ErrorCode               string
+	ConsecutiveFailedStarts int32
+	LastTransitionAt        time.Time
+}
+
+type RunnerLifecycleTransition struct {
+	OrganizationID          tracker.OrganizationID
+	RunnerID                string
+	ProcessID               string
+	Sequence                int64
+	State                   string
+	Version                 string
+	BuildRevision           string
+	TargetVersion           string
+	Reason                  string
+	ErrorCode               string
+	ConsecutiveFailedStarts int32
+	LastTransitionAt        time.Time
+	TransitionID            pgtype.Int8
+}
+
 type RunnerLocalCheck struct {
 	OrganizationID       tracker.OrganizationID
 	RunnerID             string
@@ -5450,6 +5492,13 @@ type RunnerUpdateRequest struct {
 	FromRelease           bool
 	Urgent                bool
 	FollowHub             bool
+}
+
+type RunnerUpdateTarget struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	Version        string
+	Revision       int64
 }
 
 type RunnerUrgentUpdate struct {
