@@ -36,16 +36,11 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	selected := newGlobalConfigState(cfg.Global)
 	var manager *project.Manager
 	var scheduling orchestrator.SchedulingSource
-	applyProjects := func(ctx context.Context, current globalconfig.Config) error {
-		if manager == nil {
-			return errors.New("runner project manager is unavailable")
-		}
-		if _, err := manager.Reconcile(ctx, project.ManagerConfigFromGlobal(current)); err != nil {
-			return fmt.Errorf("reconcile runner projects: %w", err)
-		}
-		selected.set(current)
-		return nil
+	runtimeConfig := &remoteRunnerConfig{
+		state: selected, gate: gate, logLevel: runtimeLogLevelForReload(cfg),
 	}
+	applyProjects := runtimeConfig.applyProjects
+
 	scheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
 		hubProcessReceipts: true,
 		applyProjectConfiguration: func(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
@@ -76,7 +71,7 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 		if !ok {
 			return errors.New("hub runner receipt transport is unavailable")
 		}
-		receipts = &hubUpdateReceipts{ctx: ctx, client: transport.Transport(), running: runnerRunningBuild(ctx, cfg.Build, cfg.Version)}
+		receipts = newHubUpdateReceipts(ctx, transport.Transport(), runnerRunningBuild(ctx, cfg.Build, cfg.Version))
 	}
 	update, err := newRuntimeUpdateScheduler(ctx, cfg, logger,
 		func(ctx context.Context) (func(), bool) {
@@ -128,6 +123,16 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			}
 		}
 	}()
+	runtimeConfig.manager = manager
+	runtimeConfig.registry = manager.Registry()
+	syncGlobalDispatchProjects(gate, cfg.Global.Projects, manager.Registry())
+	reloadDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, nil, nil, nil, func(r *globalConfigReloader) {
+		r.applyConfiguration = runtimeConfig.applyFile
+	})
+	defer func() {
+		cancel()
+		waitGlobalConfigWatcher(reloadDone)
+	}()
 	if err := startRunnerProjects(ctx, manager, scheduling); err != nil {
 		return err
 	}
@@ -146,13 +151,20 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			HeartbeatInterval() time.Duration
 		}); ok {
 			workers.Go(func() {
-				ticker := time.NewTicker(heartbeat.HeartbeatInterval())
-				defer ticker.Stop()
+				newTicker := cfg.remoteHeartbeatTicker
+				if newTicker == nil {
+					newTicker = func(interval time.Duration) (<-chan time.Time, func()) {
+						ticker := time.NewTicker(interval)
+						return ticker.C, ticker.Stop
+					}
+				}
+				ticks, stopTicker := newTicker(heartbeat.HeartbeatInterval())
+				defer stopTicker()
 				for {
 					select {
 					case <-runCtx.Done():
 						return
-					case <-ticker.C:
+					case <-ticks:
 						if err := heartbeat.Heartbeat(runCtx); err != nil && runCtx.Err() == nil {
 							logger.Warn("Hub runner heartbeat failed", "error", err)
 						}
@@ -166,21 +178,31 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 }
 
 type hubUpdateReceipts struct {
-	ctx     context.Context
-	client  *api.Client
-	running runnerauth.BuildEvidence
+	load func() (*runnerauth.UpdateReceipt, error)
+	save func(*runnerauth.UpdateReceipt) error
+}
+
+func newHubUpdateReceipts(ctx context.Context, client *api.Client, running runnerauth.BuildEvidence) *hubUpdateReceipts {
+	return &hubUpdateReceipts{
+		load: func() (*runnerauth.UpdateReceipt, error) {
+			loadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			return client.RunnerUpdateReceipt(loadCtx)
+		},
+		save: func(receipt *runnerauth.UpdateReceipt) error {
+			saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			return client.StoreRunnerUpdateReceipt(saveCtx, receipt, running)
+		},
+	}
 }
 
 func (s *hubUpdateReceipts) Load() (*runnerauth.UpdateReceipt, error) {
-	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
-	defer cancel()
-	return s.client.RunnerUpdateReceipt(ctx)
+	return s.load()
 }
 
 func (s *hubUpdateReceipts) Save(receipt *runnerauth.UpdateReceipt) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), 10*time.Second)
-	defer cancel()
-	return s.client.StoreRunnerUpdateReceipt(ctx, receipt, s.running)
+	return s.save(receipt)
 }
 
 func remoteReleasedStopped(_ context.Context, _ tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (bool, error) {

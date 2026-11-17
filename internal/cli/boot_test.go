@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -50,7 +49,7 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 			name = "enrolled runner with absent checkout"
 		}
 		t.Run(name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
+			func(t *testing.T) {
 				observations := make(chan *runnerauth.UpdateObservation, 1)
 				var identity runnerauth.File
 				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +109,11 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 				}
 				port := 0
 				cfg := BootConfig{Mode: BootModeRunning, Version: "dev", Headless: true, Host: "127.0.0.1", Port: &port, Output: newBootOutput(), Shutdown: NewShutdownController(), Restart: NewRestartRequest()}
+				cfg.remoteHeartbeatTicker = func(time.Duration) (<-chan time.Time, func()) {
+					ticks := make(chan time.Time, 1)
+					ticks <- time.Now()
+					return ticks, func() {}
+				}
 				cfg.Global, err = globalconfig.Default()
 				if err != nil {
 					t.Fatal(err)
@@ -149,7 +153,7 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 				case <-waitCtx.Done():
 					t.Fatalf("headless heartbeat wait ended: %v", context.Cause(waitCtx))
 				}
-			})
+			}(t)
 		})
 	}
 }

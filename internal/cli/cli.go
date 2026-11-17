@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -155,6 +156,8 @@ type BootConfig struct {
 	ConnectorFactory project.ConnectorFactory
 	Scheduling       orchestrator.SchedulingSource
 	StartupRecovery  StartupRecovery
+
+	remoteHeartbeatTicker func(time.Duration) (<-chan time.Time, func())
 }
 
 type IsolatedRuntimeInfo struct {

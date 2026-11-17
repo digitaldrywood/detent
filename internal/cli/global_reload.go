@@ -31,6 +31,7 @@ type globalConfigReloader struct {
 	resolveGitHubToken func(context.Context, globalconfig.Config) (string, error)
 	applyRuntime       func(globalconfig.Config) error
 	onReload           func(globalconfig.Config)
+	applyConfiguration func(context.Context, globalconfig.Config) (project.ReconcileResult, error)
 }
 
 type globalConfigChange struct {
@@ -48,6 +49,7 @@ func startGlobalConfigWatcher(
 	githubToken *runtimeGitHubTokenState,
 	applyRuntime func(globalconfig.Config) error,
 	onReload func(globalconfig.Config),
+	configure ...func(*globalConfigReloader),
 ) <-chan struct{} {
 	if ctx == nil {
 		ctx = context.Background()
@@ -81,6 +83,9 @@ func startGlobalConfigWatcher(
 		githubToken:  githubToken,
 		applyRuntime: applyRuntime,
 		onReload:     onReload,
+	}
+	for _, configure := range configure {
+		configure(reloader)
 	}
 	syncLatestGlobalConfig(ctx, path, reloader)
 	go func() {
@@ -240,6 +245,13 @@ func (r *globalConfigReloader) applyCandidate(
 	if update.Err != nil {
 		return project.ReconcileResult{}, update.Err
 	}
+	if r.applyConfiguration != nil {
+		result, err := r.applyConfiguration(ctx, update.Value)
+		if err == nil {
+			r.current = update.Value
+		}
+		return result, err
+	}
 	if r.manager == nil {
 		return project.ReconcileResult{}, errMissingGlobalConfigManager
 	}
@@ -335,8 +347,6 @@ func withoutRuntimeGitHubTokenEnv(lookupEnv func(string) string) func(string) st
 		return lookupEnv(key)
 	}
 }
-
-const startupTokenRefreshTimeout = 30 * time.Second
 
 func startupManagerConfig(ctx context.Context, cfg globalconfig.Config, token *runtimeGitHubTokenState, refresh func(context.Context) (string, error), timeout time.Duration) (project.ManagerConfig, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
