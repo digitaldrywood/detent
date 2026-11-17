@@ -3,7 +3,7 @@
   "packages": {
     "github.com/digitaldrywood/detent/internal/cli": {
       "files": 118,
-      "loc": 30353,
+      "loc": 30336,
       "test-files": 147,
       "test-funcs": 609
     },

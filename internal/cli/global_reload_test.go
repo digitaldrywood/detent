@@ -39,6 +39,7 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 		name        string
 		update      configwatcher.FileUpdate[globalconfig.Config]
 		managerErr  error
+		owned       bool
 		wantCurrent globalconfig.Config
 		wantCalls   int
 		wantErr     error
@@ -70,6 +71,22 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 			wantCalls:   1,
 			wantErr:     reconcileErr,
 		},
+		{
+			name:        "configuration owner applies update and retains next config",
+			update:      configwatcher.FileUpdate[globalconfig.Config]{Path: next.Path, Value: next},
+			owned:       true,
+			wantCurrent: next,
+			wantCalls:   1,
+		},
+		{
+			name:        "configuration owner error keeps current config",
+			update:      configwatcher.FileUpdate[globalconfig.Config]{Path: next.Path, Value: next},
+			managerErr:  reconcileErr,
+			owned:       true,
+			wantCurrent: current,
+			wantCalls:   1,
+			wantErr:     reconcileErr,
+		},
 	}
 
 	for _, tt := range tests {
@@ -80,6 +97,12 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 			reloader := &globalConfigReloader{
 				current: current,
 				manager: manager,
+			}
+			if tt.owned {
+				reloader.manager = nil
+				reloader.applyConfiguration = func(ctx context.Context, cfg globalconfig.Config) (project.ReconcileResult, error) {
+					return manager.Reconcile(ctx, project.ManagerConfigFromGlobal(cfg))
+				}
 			}
 
 			_, err := reloader.apply(context.Background(), tt.update)

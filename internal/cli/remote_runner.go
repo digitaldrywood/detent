@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
+	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
@@ -33,14 +33,10 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	selected := newGlobalConfigState(cfg.Global)
+	logLevel := runtimeLogLevelForReload(cfg)
+	selected := remoterunner.NewConfigOwner(cfg.Global, func(next globalconfig.Config) error { return applyGlobalRuntimeConfig(gate, logLevel, next) })
 	var manager *project.Manager
 	var scheduling orchestrator.SchedulingSource
-	runtimeConfig := &remoteRunnerConfig{
-		state: selected, gate: gate, logLevel: runtimeLogLevelForReload(cfg),
-	}
-	applyProjects := runtimeConfig.applyProjects
-
 	scheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
 		hubProcessReceipts: true,
 		applyProjectConfiguration: func(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
@@ -53,8 +49,8 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 		},
 		providerUsage: usage,
 		logger:        logger,
-		applyProjects: applyProjects,
-		runtimeConfig: selected.get,
+		applyProjects: selected.ApplyProjects,
+		runtimeConfig: selected.Current,
 		releasedStopped: func(ctx context.Context, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (bool, error) {
 			return remoteReleasedStopped(ctx, item, attempt)
 		},
@@ -71,7 +67,7 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 		if !ok {
 			return errors.New("hub runner receipt transport is unavailable")
 		}
-		receipts = newHubUpdateReceipts(ctx, transport.Transport(), runnerRunningBuild(ctx, cfg.Build, cfg.Version))
+		receipts = remoterunner.NewUpdateReceipts(ctx, transport.Transport(), runnerRunningBuild(ctx, cfg.Build, cfg.Version))
 	}
 	update, err := newRuntimeUpdateScheduler(ctx, cfg, logger,
 		func(ctx context.Context) (func(), bool) {
@@ -106,7 +102,7 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	factory := withRunnerFactoryWithProjectTokens(ctx, provider, nil, nil, serviceapi.Connection{}, nil,
 		runnerIsolationPolicy(cfg.Global.Client.IdentityFile),
 		func(ctx context.Context, projectConfig globalconfig.Project, workflow workflowconfig.Config) (string, error) {
-			return resolveRunnerProjectGitHubToken(ctx, selected.get(), projectConfig, workflow, runtimeDeps{})
+			return resolveRunnerProjectGitHubToken(ctx, selected.Current(), projectConfig, workflow, runtimeDeps{})
 		}, update.WorkerArtifacts(), usage)
 	manager, err = project.NewManager(project.ManagerConfigFromGlobal(cfg.Global), project.ManagerDependencies{
 		ProjectFactory: factory, Logger: logger,
@@ -123,11 +119,11 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			}
 		}
 	}()
-	runtimeConfig.manager = manager
-	runtimeConfig.registry = manager.Registry()
-	syncGlobalDispatchProjects(gate, cfg.Global.Projects, manager.Registry())
+	syncDispatch := func(projects []globalconfig.Project) { syncGlobalDispatchProjects(gate, projects, manager.Registry()) }
+	selected.Attach(manager, syncDispatch)
+	syncDispatch(cfg.Global.Projects)
 	reloadDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, nil, nil, nil, func(r *globalConfigReloader) {
-		r.applyConfiguration = runtimeConfig.applyFile
+		r.applyConfiguration = selected.ApplyFile
 	})
 	defer func() {
 		cancel()
@@ -146,63 +142,12 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			workers.Wait()
 		}()
 		workers.Go(func() { update.Run(runCtx) })
-		if heartbeat, ok := scheduling.(interface {
-			Heartbeat(context.Context) error
-			HeartbeatInterval() time.Duration
-		}); ok {
-			workers.Go(func() {
-				newTicker := cfg.remoteHeartbeatTicker
-				if newTicker == nil {
-					newTicker = func(interval time.Duration) (<-chan time.Time, func()) {
-						ticker := time.NewTicker(interval)
-						return ticker.C, ticker.Stop
-					}
-				}
-				ticks, stopTicker := newTicker(heartbeat.HeartbeatInterval())
-				defer stopTicker()
-				for {
-					select {
-					case <-runCtx.Done():
-						return
-					case <-ticks:
-						if err := heartbeat.Heartbeat(runCtx); err != nil && runCtx.Err() == nil {
-							logger.Warn("Hub runner heartbeat failed", "error", err)
-						}
-					}
-				}
-			})
+		if heartbeat, ok := scheduling.(remoterunner.Heartbeater); ok {
+			workers.Go(func() { remoterunner.RunHeartbeats(runCtx, heartbeat, cfg.remoteHeartbeatTicker, logger) })
 		}
 		<-runCtx.Done()
 		return context.Cause(runCtx)
 	})
-}
-
-type hubUpdateReceipts struct {
-	load func() (*runnerauth.UpdateReceipt, error)
-	save func(*runnerauth.UpdateReceipt) error
-}
-
-func newHubUpdateReceipts(ctx context.Context, client *api.Client, running runnerauth.BuildEvidence) *hubUpdateReceipts {
-	return &hubUpdateReceipts{
-		load: func() (*runnerauth.UpdateReceipt, error) {
-			loadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			return client.RunnerUpdateReceipt(loadCtx)
-		},
-		save: func(receipt *runnerauth.UpdateReceipt) error {
-			saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			defer cancel()
-			return client.StoreRunnerUpdateReceipt(saveCtx, receipt, running)
-		},
-	}
-}
-
-func (s *hubUpdateReceipts) Load() (*runnerauth.UpdateReceipt, error) {
-	return s.load()
-}
-
-func (s *hubUpdateReceipts) Save(receipt *runnerauth.UpdateReceipt) error {
-	return s.save(receipt)
 }
 
 func remoteReleasedStopped(_ context.Context, _ tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (bool, error) {

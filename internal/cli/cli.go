@@ -10,11 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -157,7 +157,7 @@ type BootConfig struct {
 	Scheduling       orchestrator.SchedulingSource
 	StartupRecovery  StartupRecovery
 
-	remoteHeartbeatTicker func(time.Duration) (<-chan time.Time, func())
+	remoteHeartbeatTicker remoterunner.Ticker
 }
 
 type IsolatedRuntimeInfo struct {
