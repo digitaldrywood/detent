@@ -597,7 +597,7 @@ func (s *session) BoardView(ctx context.Context, selection viewstore.BoardViewSe
 	if selection.ClosedAfter != nil {
 		after, identifier = selection.ClosedAfter.ClosedAt, selection.ClosedAfter.Identifier
 	}
-	rows, err := s.db.Query(ctx, boardviewsql.Statement, s.organization, selection.ProjectStrings(), selection.AllowedStrings(), selection.Reporter, selection.Archived,
+	rows, err := s.db.Query(ctx, boardviewsql.Statement(selection.Reporter != ""), s.organization, selection.ProjectStrings(), selection.AllowedStrings(), selection.Reporter, selection.Archived,
 		selection.CredentialID, selection.PrincipalID, selection.UserID, selection.ClosedPage+1, selection.ItemStrings(), len(selection.Items) > 0,
 		selection.LanePreset, after, identifier, selection.ClosedAfter != nil, append([]string{}, selection.IncludeLanes...), append([]string{}, selection.ExcludeLanes...))
 	if err != nil {
