@@ -220,9 +220,9 @@
         "event"
       ],
       "members": [
-        "internal/hubserver/native_api.go#Service.executeNativeMutation",
-        "internal/hubserver/native_comments.go#Service.createNativeComment",
-        "internal/hubserver/native_issues.go#Service.createNativeIssue"
+        "internal/hubserver/postgres/issues.go#session.CreateWorkItem",
+        "internal/hubserver/postgres/native_comments.go#session.CreateComment",
+        "internal/hubserver/postgres/event_records.go#session.PutReceipt"
       ],
       "parity_tests": [
         "internal/hubserver/native_api_test.go#TestNativeIssueMutationConcurrencyAndHistory"
@@ -367,7 +367,7 @@
       ]
     },
     "project-records": {
-      "boundary": "internal/hubserver/project_records.go#Service.executeProjectRecordMutation",
+      "boundary": "internal/hubserver/postgres/repository.go#Repository.transaction",
       "contract": "Project creation, settings or retirement and the native command receipt share one tenant write scope. Prepare and hydrate payload objects outside it. Claims share the project row against retirement; deletion never releases claims or deletes retained issue history. The access owner retains its authority transaction through the bounded tenant write. Hosted grants, audit, plans, source updates and retirement cleanup enter through required lifecycle participants on that same scope; missing participants refuse the operation without SQLite project writes.",
       "families": [
         "activity",
@@ -2035,40 +2035,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/change_history_reads.go": {
-      "disposition": "serving",
-      "families": [
-        "event"
-      ],
-      "inventory": {
-        "operations": {
-          "queryChangeLegacyRows:QueryContext": 1,
-          "queryLegacyPageRows:QueryContext": 1,
-          "queryLegacyPageRows:SQL": 2
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/change_legacy_reads.go": {
-      "disposition": "serving",
-      "families": [
-        "core",
-        "event",
-        "lease",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "readLegacyIssueChangeSideData:QueryRowContext": 2,
-          "readLegacyIssueChangeSideData:SQL": 3
-        },
-        "tables": [
-          "hub/change_issue_links",
-          "hub/change_requests",
-          "hub/change_versions"
-        ]
-      }
-    },
     "internal/hubserver/change_version_records.go": {
       "atomic_groups": [
         "change-publication"
@@ -2494,60 +2460,6 @@
         ]
       }
     },
-    "internal/hubserver/issue_page_facts.go": {
-      "disposition": "serving",
-      "families": [
-        "board",
-        "core",
-        "event",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "readLegacyPageFact:SQL": 8
-        },
-        "tables": [
-          "hub/collaboration_events",
-          "hub/issues",
-          "hub/native_board_items",
-          "hub/projects",
-          "hub/workflow_states"
-        ]
-      }
-    },
-    "internal/hubserver/issue_page_filter_values.go": {
-      "disposition": "serving",
-      "families": [
-        "board",
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "readLegacyPageFilterValues:SQL": 4,
-          "replaceIssuePageFilterValues:ExecContext": 3,
-          "replaceIssuePageFilterValues:SQL": 3
-        },
-        "tables": [
-          "hub/issues",
-          "hub/native_board_filter_values",
-          "hub/native_board_items",
-          "hub/native_issue_page_filter_values"
-        ]
-      }
-    },
-    "internal/hubserver/linked_issue_sources.go": {
-      "disposition": "serving",
-      "families": [
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "readLinkedIssueSourceProjection:QueryRowContext": 1,
-          "readLinkedIssueSourceProjection:SQL": 1
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/luna_usage_costs.go": {
       "disposition": "serving",
       "families": [
@@ -2580,70 +2492,6 @@
         ]
       }
     },
-    "internal/hubserver/native_api.go": {
-      "atomic_groups": [
-        "change-publication",
-        "native-command"
-      ],
-      "disposition": "serving",
-      "families": [
-        "analytics",
-        "billing",
-        "claim",
-        "core",
-        "event",
-        "fleet",
-        "lease",
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "authorizeNativeProject:QueryRowContext": 1,
-          "authorizeNativeProject:SQL": 1,
-          "nativeCommandReceiptReference:QueryRowContext": 1,
-          "nativeCommandReceiptReference:SQL": 1
-        },
-        "tables": [
-          "hub/native_commands",
-          "hub/projects"
-        ]
-      }
-    },
-    "internal/hubserver/native_comments.go": {
-      "atomic_groups": [
-        "native-command"
-      ],
-      "disposition": "serving",
-      "families": [
-        "core",
-        "event"
-      ],
-      "inventory": {
-        "operations": {
-          "readNativeComment:QueryRowContext": 1,
-          "readNativeComment:SQL": 1
-        },
-        "tables": [
-          "hub/native_comments"
-        ]
-      }
-    },
-    "internal/hubserver/native_dependency_reasons.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "core",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "readNativeDependencyDetailsBatch:SQL": 2
-        },
-        "tables": [
-          "hub/issues"
-        ]
-      }
-    },
     "internal/hubserver/native_issue_change_seam.go": {
       "disposition": "non-storage",
       "families": [
@@ -2655,47 +2503,6 @@
           "Service.prepareNativeIssueChangeRecord:Prepare": 1
         },
         "tables": []
-      }
-    },
-    "internal/hubserver/native_issues.go": {
-      "atomic_groups": [
-        "native-command"
-      ],
-      "disposition": "serving",
-      "families": [
-        "claim",
-        "core",
-        "event",
-        "policy",
-        "workspace"
-      ],
-      "inventory": {
-        "operations": {
-          "readNativeIssueProjection:QueryRowContext": 2,
-          "readNativeIssueProjection:SQL": 2
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/native_relationships.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "core",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "readNativeRelatedBatch:QueryContext": 1,
-          "readNativeRelatedBatch:SQL": 1
-        },
-        "tables": [
-          "hub/issue_relationships",
-          "hub/issues",
-          "hub/organizations",
-          "hub/projects",
-          "hub/workflow_states"
-        ]
       }
     },
     "internal/hubserver/native_reporter.go": {
@@ -20228,28 +20035,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/project_records.go": {
-      "atomic_groups": [
-        "native-command",
-        "postgres-callback",
-        "project-records"
-      ],
-      "disposition": "serving",
-      "families": [
-        "access",
-        "core",
-        "event"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.authorizeProjectRecordWith:QueryRowContext": 2,
-          "Service.authorizeProjectRecordWith:SQL": 2
-        },
-        "tables": [
-          "hub/organizations"
-        ]
-      }
-    },
     "internal/hubserver/project_secrets.go": {
       "atomic_groups": [
         "secret-update"
@@ -20285,118 +20070,6 @@
           "hub/issues",
           "hub/organizations",
           "hub/projects"
-        ]
-      }
-    },
-    "internal/hubserver/release_delivery.go": {
-      "disposition": "serving",
-      "families": [
-        "core",
-        "event",
-        "lease",
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "readReleaseDelivery:QueryRowContext": 1,
-          "readReleaseDelivery:SQL": 1
-        },
-        "tables": [
-          "hub/release_deliveries"
-        ]
-      }
-    },
-    "internal/hubserver/report_query_facts.go": {
-      "disposition": "serving",
-      "families": [
-        "event",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "readLegacyReportFact:SQL": 4
-        },
-        "tables": [
-          "hub/collaboration_events",
-          "hub/native_attempts"
-        ]
-      }
-    },
-    "internal/hubserver/runner_admission_facts.go": {
-      "disposition": "serving",
-      "families": [
-        "fleet",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "readAdmissionFacts:QueryContext": 1,
-          "readAdmissionFacts:QueryRowContext": 2,
-          "readAdmissionFacts:SQL": 3,
-          "storeAdmissionFacts:ExecContext": 3,
-          "storeAdmissionFacts:SQL": 3,
-          "storeLegacyAdmission:ExecContext": 1,
-          "storeLegacyAdmission:QueryRowContext": 1,
-          "storeLegacyAdmission:SQL": 2
-        },
-        "tables": [
-          "hub/machines",
-          "hub/runner_admission_observations",
-          "hub/runner_admission_selectors"
-        ]
-      }
-    },
-    "internal/hubserver/runner_board_projection.go": {
-      "disposition": "serving",
-      "families": [
-        "fleet"
-      ],
-      "inventory": {
-        "operations": {
-          "storeRunnerBoardProjection:ExecContext": 3,
-          "storeRunnerBoardProjection:SQL": 3
-        },
-        "tables": [
-          "hub/runner_project_diagnostic_attempts",
-          "hub/runner_project_observations"
-        ]
-      }
-    },
-    "internal/hubserver/runner_machine_facts.go": {
-      "disposition": "serving",
-      "families": [
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "readMachineSpriteFacts:QueryRowContext": 1,
-          "readMachineSpriteFacts:SQL": 1
-        },
-        "tables": [
-          "hub/machines"
-        ]
-      }
-    },
-    "internal/hubserver/runner_routing.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "core",
-        "fleet",
-        "lease",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "requireLeaseRunner:QueryRowContext": 1,
-          "requireLeaseRunner:SQL": 2
-        },
-        "tables": [
-          "hub/issues",
-          "hub/lease_runners",
-          "hub/leases",
-          "hub/machines",
-          "hub/runner_identities"
         ]
       }
     },
