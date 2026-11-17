@@ -8,9 +8,10 @@ import { fileURLToPath } from "node:url";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
+import { BoardViewWire, decodeBoardView } from "../app/work/lib/boardSchema.ts";
 import { FIXTURE_SCHEMAS } from "./fixtures.ts";
 import { OrganizationReports } from "./reports.ts";
-import { HistoryPage, WorkItemPage } from "./work.ts";
+import { HistoryPage, NativeBoardCard, WorkItemPage } from "./work.ts";
 
 const directory = fileURLToPath(new URL("./fixtures", import.meta.url));
 const files = readdirSync(directory)
@@ -34,14 +35,31 @@ describe("contract fixtures", () => {
         expected.push(`${organization}--${include}--Backlog.json`);
       }
     }
+    const boards: string[] = [];
+    for (const organization of ["org_first", "org_first_second"]) {
+      for (const role of ["member", "reporter"]) {
+        for (const read of ["", "-all", "-delta"]) boards.push(`work-board-${organization}-${role}${read}.json`);
+      }
+    }
     const payloads = readdirSync(boardDirectory).filter((name) => name.endsWith(".json")).toSorted();
     expect(payloads, "PostgreSQL board handler fixtures are missing or unexpected").toEqual(
-      expected.flatMap((name) => [name, `operator-${name}`]).toSorted(),
+      [...expected.flatMap((name) => [name, `operator-${name}`]), ...boards].toSorted(),
     );
+    const kinds = new Set<string>();
     for (const name of payloads) {
       const raw: unknown = JSON.parse(readFileSync(join(boardDirectory, name), "utf8"));
-      expect(() => Schema.decodeUnknownSync(WorkItemPage)(raw), name).not.toThrow();
+      if (!boards.includes(name)) {
+        expect(() => Schema.decodeUnknownSync(WorkItemPage)(raw), name).not.toThrow();
+        continue;
+      }
+      const wire = Schema.decodeUnknownSync(BoardViewWire)(raw);
+      expect(wire.cards.length, name).toBeGreaterThan(0);
+      for (const card of wire.cards) expect(() => Schema.decodeUnknownSync(NativeBoardCard)(card), name).not.toThrow();
+      const view = decodeBoardView(wire);
+      expect(view.cards.length, name).toBe(wire.cards.length);
+      for (const card of view.cards) kinds.add(card.issue.actor.kind);
     }
+    expect([...kinds].toSorted()).toEqual(["human", "integration", "machine", "runner"]);
   });
 
   it("binds every fixture file to a schema", () => {

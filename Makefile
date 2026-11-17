@@ -54,7 +54,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306,G703,G704
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test app-test-run check-app build test test-fast test-race coverage-check test-cover soak visual-e2e lint vet gosec-build security-gosec-determinism check check-fast check-land check-release modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test app-test-run app-contract board-contract-run check-app build test test-fast test-race coverage-check test-cover soak visual-e2e lint vet gosec-build security-gosec-determinism check check-fast check-land check-release modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -137,13 +137,24 @@ app-test:
 	fi
 
 app-test-run: app
+	@$(MAKE) board-contract-run
+
+app-contract:
+	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
+		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
+		$(MAKE) board-contract-run APP_TEST_ARGS=src/contracts/fixtures.test.ts; \
+	else \
+		echo "No conversation client at $(APP_DIR); skipping the board contract check."; \
+	fi
+
+board-contract-run:
 	@set -e; mkdir -p "$(CURDIR)/tmp"; \
 		fixture_root=$$(mktemp -d "$(CURDIR)/tmp/board-contract.XXXXXX"); \
 		mkdir "$$fixture_root/runtime"; \
 		export TMPDIR="$$fixture_root/runtime" TMP="$$fixture_root/runtime" TEMP="$$fixture_root/runtime" \
 			DETENT_TEST_BOARD_CONTRACT_DIR="$$fixture_root" DETENT_TEST_POSTGRES=binary \
 			GOTOOLCHAIN="$$(awk '$$1 == "toolchain" {print $$2}' go.mod)"; \
-		env -u DETENT_API_TOKEN go test -p $(TEST_PROCS) -parallel=$(TEST_PROCS) -timeout=120s -v ./internal/hubserver -run '^TestBoardRequestHasFixedSQLBudget$$'; \
+		env -u DETENT_API_TOKEN go test -p $(TEST_PROCS) -parallel=$(TEST_PROCS) -timeout=120s -v ./internal/hubserver -run '^(TestBoardRequestHasFixedSQLBudget|TestBoardViewCardsMatchLaneCards)$$'; \
 		(cd "$(APP_DIR)" && npm test -- --maxWorkers=$(TEST_PROCS) $(APP_TEST_ARGS))
 
 css-watch:
@@ -358,6 +369,7 @@ help:
 	@echo "  app-dev      Run the conversation client dev server"
 	@echo "  app-test     Typecheck and test the conversation client"
 	@echo "  check-app    Client typecheck, design token and catalog checks, tests, build and attribution"
+	@echo "  app-contract Decode Go board handler payloads with the client contract"
 	@echo "  build        Build $(BINARY_NAME)"
 	@echo "  test         Run Go tests"
 	@echo "  test-race    Run the short unit suite under the race detector"

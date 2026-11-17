@@ -42,7 +42,9 @@ export interface BoardView extends Omit<typeof BoardViewWire.Type, "cards"> {
 
 const decodeCard = Schema.decodeUnknownExit(NativeBoardCard);
 
-export function decodeBoardView(wire: typeof BoardViewWire.Type): BoardView {
+export const BOARD_CARD_DROP_TOLERANCE = 0.05;
+
+export function decodeBoardView(wire: typeof BoardViewWire.Type, options: { readonly partial?: boolean } = {}): BoardView {
   const cards: NativeBoardCard[] = [];
   for (const raw of wire.cards) {
     const card = decodeCard(raw);
@@ -52,6 +54,10 @@ export function decodeBoardView(wire: typeof BoardViewWire.Type): BoardView {
       const id = typeof issue === "object" && issue !== null && "work_item_id" in issue ? issue.work_item_id : undefined;
       console.error("Dropped a board card that does not match the contract", { work_item_id: id, cause: card.cause });
     }
+  }
+  const dropped = wire.cards.length - cards.length;
+  if (options.partial !== true && dropped > 0 && (dropped === wire.cards.length || dropped > Math.max(1, wire.cards.length * BOARD_CARD_DROP_TOLERANCE))) {
+    throw new Error(`The board could not be shown: ${dropped} of ${wire.cards.length} cards do not match this version of the app.`);
   }
   return { ...wire, cards };
 }

@@ -332,4 +332,20 @@ describe("the live board", () => {
     expect(errors).toHaveBeenCalledOnce();
     expect(errors.mock.calls[0]![1]).toMatchObject({ work_item_id: dropped });
   });
+
+  it.each([["every card", 0], ["more than one card in twenty", 2]])("reports an error instead of a board when %s does not match the contract", async (_, kept) => {
+    let total = 0;
+    let bad = 0;
+    const { read } = await liveBoard((body) => {
+      total = body.cards.length;
+      bad = total - kept;
+      for (const card of body.cards.slice(kept)) card.issue.actor.kind = "";
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    read.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bad).toBeGreaterThan(1);
+    expect(read.snapshot().error).toBe(`The board could not be shown: ${bad} of ${total} cards do not match this version of the app.`);
+    expect(read.snapshot().items).toEqual([]);
+  });
 });

@@ -698,7 +698,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     origin: options.origin,
     apiBase: options.apiBase,
     readBoard: async (input) => decodeBoardView(await send(BoardViewWire, "GET", url(`${options.apiBase}/work-board`, { project: input.projectIds, item: input.items, lane: input.lane, cursor: input.cursor,
-      state: JSON.stringify({ ...input.state, priority: input.state.priority.map((name) => String(priorityValue(name) ?? name)) }) }), undefined, input.signal, false, input.projectIds)),
+      state: JSON.stringify({ ...input.state, priority: input.state.priority.map((name) => String(priorityValue(name) ?? name)) }) }), undefined, input.signal, false, input.projectIds), { partial: (input.items?.length ?? 0) > 0 }),
     listSavedViews: async (signal) => {
       const schema = Schema.Struct({ views: Schema.Array(SavedWorkView), next_cursor: Schema.optional(Schema.String) });
       const views: SavedView[] = [];
