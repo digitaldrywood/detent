@@ -24,10 +24,6 @@ func (s *Service) platformIdentity(ctx context.Context, email string, identity a
 	return s.platformRole(ctx, email) != "" && identity.SupportActor == ""
 }
 
-func (s *Service) platformStaff(ctx context.Context, session accountSession) bool {
-	return s.platformIdentity(ctx, session.Email, session.Identity)
-}
-
 func (s *Service) platformSession(c echo.Context, event string) (accountSession, bool, error) {
 	session, err := s.session(c)
 	if err != nil {
