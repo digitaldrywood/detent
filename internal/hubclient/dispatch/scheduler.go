@@ -25,8 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const hubWorkItemField = "detent_hub_work_item_id"
-
 type SchedulerConfig struct {
 	HubProcessReceipts bool
 	ExecutionFactory   ExecutionFactory
@@ -404,10 +402,6 @@ func randomSessionID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(value), nil
-}
-
-func intPointer(value int) *int {
-	return &value
 }
 
 func (s *Scheduler) SetClaimAdmission(admission func() (func(), bool)) {

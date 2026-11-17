@@ -885,14 +885,6 @@ func artifactGateWaitStatusBlocksDispatch(issue connector.Issue, cfg gate.Config
 	return dispatchplan.ArtifactGateWaitStatusBlocksDispatch(issue, cfg, artifactStatusFromIssue(issue, gate.Effective(cfg).Artifact.StatusField))
 }
 
-func artifactGateWaitStatusIsCurrent(issue connector.Issue, statusField string) bool {
-	return dispatchplan.ArtifactGateWaitStatusIsCurrent(issue, statusField)
-}
-
-func normalizeArtifactGateStatus(value string) string {
-	return dispatchplan.NormalizeArtifactGateStatus(value)
-}
-
 func (p dispatchPlanner) authorized(issue connector.Issue) bool {
 	return p.eligibility().Authorized(issue)
 }
@@ -903,10 +895,6 @@ func (p dispatchPlanner) authorizationDecision(issue connector.Issue) selector.D
 
 func (p dispatchPlanner) needsAssignee(issue connector.Issue) bool {
 	return p.eligibility().NeedsAssignee(issue)
-}
-
-func (p dispatchPlanner) assigneeEligibilityApplies(issue connector.Issue) bool {
-	return p.eligibility().AssigneeEligibilityApplies(issue)
 }
 
 func (p dispatchPlanner) assigneeEligibilityCandidates(issues []connector.Issue) []connector.Issue {
@@ -1116,10 +1104,6 @@ func (p dispatchPlanner) workerSlotsAvailable(state *State, preferredWorkerHost 
 
 func (p dispatchPlanner) selectWorkerHost(state *State, preferredWorkerHost string) (string, bool) {
 	return dispatchplan.NewHostSelector(dispatchHostConfig(p.cfg), p.workerHostAvailable).Select(workerHostCounts{state}.count, preferredWorkerHost)
-}
-
-func (p dispatchPlanner) workerHostSlotsAvailable(state *State, workerHost string) bool {
-	return dispatchHostConfig(p.cfg).SlotsAvailable(workerHost, workerHostCounts{state}.count)
 }
 
 func (c Config) workerHostCapacity(host string) int {
