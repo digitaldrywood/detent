@@ -221,7 +221,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					testenv.WaitUntil(t, t.Context(), func() error {
 						known, err := h.checkpointSourceKnown(t.Context(), attempt.AttemptID)
 						if err == nil && !known {
-							err = errors.New("Hub has not classified the historical checkpoint source")
+							err = errors.New("hub has not classified the historical checkpoint source")
 						}
 						return err
 					})

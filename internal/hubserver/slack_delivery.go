@@ -100,7 +100,7 @@ func (s *Service) readSlackWebhook(ctx context.Context, organization tracker.Org
 		return nil, err
 	}
 	if s.config.SecretKeys == nil {
-		return nil, errors.New("Slack secret storage is unavailable")
+		return nil, errors.New("slack secret storage is unavailable")
 	}
 	value, err := s.config.SecretKeys.Open(secret.Envelope, accessstore.SecretAAD(organization, "", slackWebhookSecret))
 	if err != nil {

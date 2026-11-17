@@ -74,7 +74,7 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	if cfg.Global.Client.IdentityFile != "" {
 		transport, ok := scheduling.(interface{ Transport() *api.Client })
 		if !ok {
-			return errors.New("Hub runner receipt transport is unavailable")
+			return errors.New("hub runner receipt transport is unavailable")
 		}
 		receipts = &hubUpdateReceipts{ctx: ctx, client: transport.Transport(), running: runnerRunningBuild(ctx, cfg.Build, cfg.Version)}
 	}

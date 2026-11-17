@@ -125,7 +125,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	loadedState, stateFound, err := loadSchedulerState(cfg.StatePath)
 	if cfg.ReceiptStore != nil {
 		if strings.TrimSpace(cfg.StatePath) != "" {
-			return nil, errors.New("Hub update receipts cannot use a local state path")
+			return nil, errors.New("hub update receipts cannot use a local state path")
 		}
 		loadedState.EnrolledReceipt, err = cfg.ReceiptStore.Load()
 		if err != nil {

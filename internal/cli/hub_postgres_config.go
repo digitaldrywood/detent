@@ -46,26 +46,26 @@ func readHubServeConfig(path string, lookupEnv func(string) string) (_ *hostedpl
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, nil, errors.New("Hub configuration could not be opened")
+		return nil, nil, errors.New("hub configuration could not be opened")
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
-			resultErr = errors.Join(resultErr, errors.New("Hub configuration could not be closed"))
+			resultErr = errors.Join(resultErr, errors.New("hub configuration could not be closed"))
 		}
 	}()
 	const maxConfigBytes = 128 * 1024
 	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
 	if err != nil || len(data) > maxConfigBytes {
-		return nil, nil, errors.New("Hub configuration could not be read within the size limit")
+		return nil, nil, errors.New("hub configuration could not be read within the size limit")
 	}
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	var document yaml.Node
 	if err := decoder.Decode(&document); err != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
-		return nil, nil, errors.New("Hub configuration is invalid")
+		return nil, nil, errors.New("hub configuration is invalid")
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, nil, errors.New("Hub configuration must contain one document")
+		return nil, nil, errors.New("hub configuration must contain one document")
 	}
 	fields := document.Content[0].Content
 	if len(fields) == 2 && fields[0].Kind == yaml.ScalarNode && fields[0].Value == "postgres" {
@@ -75,7 +75,7 @@ func readHubServeConfig(path string, lookupEnv func(string) string) (_ *hostedpl
 		decoder := yaml.NewDecoder(bytes.NewReader(data))
 		decoder.KnownFields(true)
 		if err := decoder.Decode(&config); err != nil {
-			return nil, nil, errors.New("Hub PostgreSQL configuration is invalid")
+			return nil, nil, errors.New("hub PostgreSQL configuration is invalid")
 		}
 		pg, err := config.Postgres.runtime(lookupEnv)
 		return nil, pg, err

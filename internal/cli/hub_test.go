@@ -145,8 +145,8 @@ func TestHubServeCommandValidatesDatabase(t *testing.T) {
 	}{
 		{name: "missing configuration", want: "PostgreSQL Hub configuration is required"},
 		{name: "obsolete database path", body: hubServePostgresConfig, flags: []string{"--database", "hub.db"}, want: "unknown flag: --database"},
-		{name: "invalid PostgreSQL field", body: hubServePostgresConfig + "  unexpected: true\n", want: "Hub PostgreSQL configuration is invalid"},
-		{name: "extra document", body: hubServePostgresConfig + "---\npostgres: {}\n", want: "Hub configuration must contain one document"},
+		{name: "invalid PostgreSQL field", body: hubServePostgresConfig + "  unexpected: true\n", want: "hub PostgreSQL configuration is invalid"},
+		{name: "extra document", body: hubServePostgresConfig + "---\npostgres: {}\n", want: "hub configuration must contain one document"},
 		{name: "partial hosted configuration", body: hubServePostgresConfig + "organization_id: org_example\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

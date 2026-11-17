@@ -53,7 +53,7 @@ func (f *FleetClient) Fleet(ctx context.Context) (runnerauth.Fleet, error) {
 			return runnerauth.Fleet{}, err
 		}
 		if len(page) > 50 {
-			return runnerauth.Fleet{}, errors.New("Hub fleet page exceeds requested limit")
+			return runnerauth.Fleet{}, errors.New("hub fleet page exceeds requested limit")
 		}
 		result.Runners = append(result.Runners, page...)
 		next := response.header.Get("X-Next-Offset")
@@ -63,7 +63,7 @@ func (f *FleetClient) Fleet(ctx context.Context) (runnerauth.Fleet, error) {
 		}
 		value, err := strconv.Atoi(next)
 		if err != nil || value <= offset || value != offset+len(page) || value > 100000 {
-			return runnerauth.Fleet{}, errors.New("Hub fleet pagination is invalid")
+			return runnerauth.Fleet{}, errors.New("hub fleet pagination is invalid")
 		}
 		offset = value
 	}
