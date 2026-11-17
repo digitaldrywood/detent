@@ -177,7 +177,8 @@ func (l *LocalGit) Head(ctx context.Context, info Info, issue Issue) (string, er
 	if err != nil {
 		return "", err
 	}
-	return runGitAt(ctx, normalized.Path, "rev-parse", "--verify", "HEAD")
+	head, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", "HEAD")
+	return strings.TrimSpace(head), err
 }
 
 func (l *LocalGit) DiffStat(ctx context.Context, info Info, issue Issue) (DiffStat, error) {

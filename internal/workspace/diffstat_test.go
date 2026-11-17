@@ -432,7 +432,7 @@ func TestLocalGitSeedReviewHeadUsesPullRequestRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	head, err := backend.Head(t.Context(), info, issue)
-	if err != nil || strings.TrimSpace(head) != wanted {
+	if err != nil || head != wanted {
 		t.Fatalf("HEAD = %q, error = %v; want %q", head, err, wanted)
 	}
 }

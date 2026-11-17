@@ -5,11 +5,15 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -165,6 +169,58 @@ func TestDispatchCapacityMatchesAttemptModelScope(t *testing.T) {
 			}
 			if !reflect.DeepEqual(backend.models, selectionCatalog()) {
 				t.Fatal("selection changed shared backend catalog")
+			}
+		})
+	}
+}
+
+func TestNativeCheckpointProviderReservation(t *testing.T) {
+	const normal, complex, previous = "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol"
+	for _, test := range []struct {
+		name, checkpointModel, label, want string
+		resume                             bool
+	}{
+		{name: "fresh", want: normal},
+		{name: "pre-upgrade checkpoint", checkpointModel: previous, want: normal},
+		{name: "complex issue with pre-upgrade checkpoint", checkpointModel: previous, label: "complexity:complex", want: complex},
+		{name: "authorized checkpoint", checkpointModel: normal, want: normal, resume: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config.Config{Policy: runnerTestPolicy()}
+			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), NormalModel: new(normal), ComplexModel: new(complex)}
+			owner := newNativeSessionOwner(cfg.Policy)
+			local := workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest"}
+			work := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}, recoveryStates: []workspace.RecoveryState{local}}
+			agent := &fakeCodexClient{err: errors.New("provider reached")}
+			report := providercapacity.Report{Backend: "codex", Models: []string{normal, complex, previous}}
+			for _, model := range report.Models {
+				agent.models = append(agent.models, AgentModel{ID: model, Model: model, SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"}})
+			}
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: owner.client("current"), ProjectID: "example", Workflow: config.Workflow{Config: cfg}, Workspace: work, AgentBackend: agent})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := RunRequest{ProjectID: "example", Issue: connector.Issue{ID: "work", State: "In Progress", Labels: []string{test.label}}, Policy: cfg.Policy, Mode: RunModeImplement, ProviderReports: []providercapacity.Report{report}}
+			reserved, err := r.DispatchCapacity(t.Context(), req)
+			if err != nil || reserved != (providercapacity.Requirement{Role: RoleCode, Backend: "codex", Model: test.want}) {
+				t.Fatalf("preview = %+v, %v", reserved, err)
+			}
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine"}}}
+			if model := test.checkpointModel; model != "" {
+				now := time.Now()
+				effort := "medium"
+				identity := agentidentity.Configured("codex", "codex", "default", RoleCode, model, "", effort, "", now)
+				owner.seed("previous", store.SessionStart{RequestedModel: model, AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode, RuntimeIdentity: identity}, AgentResume{ThreadID: "thread"}, store.SessionFinish{FinalState: "failed"})
+				checkpoint := executionCheckpoint(&local)
+				checkpoint.Resume = "resume_session"
+				execution.recovery.Attempts = []tracker.NativeAttempt{{Status: "failed", Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{AttemptID: "previous", MachineID: "machine", Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex", Model: model, ReasoningEffort: effort}}}}
+			}
+			req.Execution = &capacityTestExecution{Execution: execution, reservation: &providercapacity.Reservation{Requirement: reserved, Report: report}}
+			_, err = r.Run(t.Context(), req)
+			got := execution.identity
+			t.Logf("reserved=%s/%s/%s start=%s/%s/%s", reserved.Role, reserved.Backend, reserved.Model, got.Role, got.Backend, got.Model)
+			if !errors.Is(err, agent.err) || got.Role != reserved.Role || got.Backend != reserved.Backend || got.Model != reserved.Model || agent.request.Model != test.want || (agent.request.Resume.ThreadID == "thread") != test.resume {
+				t.Fatalf("worker model=%q resume=%q error=%v", agent.request.Model, agent.request.Resume.ThreadID, err)
 			}
 		})
 	}

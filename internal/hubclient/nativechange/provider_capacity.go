@@ -7,7 +7,11 @@ import (
 )
 
 func (e *nativeExecution) validateProviderStart(identity tracker.NativeExecutionIdentity) error {
-	return provider.ValidateStart(e.claim.lease.ProviderReservation, identity, e.scheduler.providerReports, e.unavailable)
+	err := provider.ValidateStart(e.claim.lease.ProviderReservation, identity, e.scheduler.providerReports, e.unavailable)
+	if err != nil {
+		e.HostOperation("native.provider_start", e.scheduler.now(), err, false)
+	}
+	return err
 }
 
 func (e *nativeExecution) ProviderCapacity() *providercapacity.Reservation {

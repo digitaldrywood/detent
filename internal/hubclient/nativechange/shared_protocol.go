@@ -2,8 +2,10 @@ package nativechange
 
 import (
 	"context"
+	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/provider"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -15,6 +17,15 @@ func cancelNativeReleasedAttempt(ctx context.Context, client *NativeClient, item
 func nativeTransportUnavailable(err error) bool { return api.NativeTransportUnavailable(err) }
 func nativeAuthorityLost(err error) bool        { return api.NativeAuthorityLost(err) }
 
-func diagnosticError(err error) string           { return api.DiagnosticError(err) }
-func diagnosticErrorCode(err error) string       { return api.DiagnosticErrorCode(err) }
+func diagnosticError(err error) string { return api.DiagnosticError(err) }
+func diagnosticErrorCode(err error) string {
+	switch {
+	case errors.Is(err, provider.ErrReportSourceMissing):
+		return "provider_report_source_missing"
+	case errors.Is(err, provider.ErrIdentityMismatch):
+		return "provider_identity_mismatch"
+	default:
+		return api.DiagnosticErrorCode(err)
+	}
+}
 func nativeAdmissionCapacityFull(err error) bool { return api.NativeAdmissionCapacityFull(err) }

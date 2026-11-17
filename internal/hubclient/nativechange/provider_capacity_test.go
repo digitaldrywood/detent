@@ -3,11 +3,13 @@ package nativechange
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -35,13 +37,17 @@ func TestLocalProviderRevalidation(t *testing.T) {
 		{"account change", func(r *providercapacity.Report) { r.AccountAlias = "other" }, "sol", false},
 		{"shared pool change", func(r *providercapacity.Report) { r.SharedAccountAlias = "other" }, "sol", false},
 		{"model changed", func(*providercapacity.Report) {}, "astra", false},
+		{"missing report source", nil, "sol", false},
 		{"removed account limit", func(r *providercapacity.Report) { r.MaxConcurrent = 0 }, "sol", true},
 		{"invalid report", func(r *providercapacity.Report) { r.MaxConcurrent = -1 }, "sol", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			current := report
-			test.change(&current)
-			e := &nativeExecution{scheduler: &executionAuthority{now: func() time.Time { return now }, providerReports: func() ([]providercapacity.Report, error) { return []providercapacity.Report{current}, nil }}, claim: nativeClaim{lease: tracker.NativeLease{ProviderReservation: &providercapacity.Reservation{Requirement: requirement, Report: report}}}}
+			e := &nativeExecution{scheduler: &executionAuthority{now: func() time.Time { return now }}, claim: nativeClaim{lease: tracker.NativeLease{ProviderReservation: &providercapacity.Reservation{Requirement: requirement, Report: report}}}}
+			if test.change != nil {
+				test.change(&current)
+				e.scheduler.providerReports = func() ([]providercapacity.Report, error) { return []providercapacity.Report{current}, nil }
+			}
 			remote, _ := nativeSSHExecution(t, t.Context(), e, t.TempDir())
 			if got := remote.(runner.ProviderCapacityExecution).ProviderCapacity(); !reflect.DeepEqual(got, e.ProviderCapacity()) {
 				t.Fatalf("SSH changed the central reservation: %#v", got)
@@ -49,6 +55,13 @@ func TestLocalProviderRevalidation(t *testing.T) {
 			err := e.validateProviderStart(tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: test.model})
 			if (err == nil) != test.want || err != nil && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 				t.Fatal(err)
+			}
+			code := e.DiagnosticAttempt(runnerauth.DiagnosticAttempt{}).LatestErrorCode
+			if test.change == nil && code != "provider_report_source_missing" {
+				t.Fatalf("missing report source: code=%q error=%v", code, err)
+			}
+			if test.model != requirement.Model && (code != "provider_identity_mismatch" || !strings.Contains(err.Error(), "code/codex/sol") || !strings.Contains(err.Error(), "code/codex/astra")) {
+				t.Fatalf("identity mismatch: code=%q error=%v", code, err)
 			}
 		})
 	}

@@ -1014,6 +1014,14 @@ func (r *Runner) lookupNativeResumeState(ctx context.Context, req RunRequest, ru
 	if err := r.checkResumePolicy(ctx, req, state); err != nil {
 		return store.AgentResumeState{}, fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, err)
 	}
+	if capacity, ok := req.Execution.(ProviderCapacityExecution); ok && req.RecoveryAttemptID == 0 && !state.RuntimeIdentity.IsZero() {
+		reserved := capacity.ProviderCapacity()
+		saved := state.RuntimeIdentity
+		savedModel := effectiveModel(saved.RequestedModel.Value, saved.ResolvedModel.Value, model)
+		if reserved != nil && (reserved.Role != state.AgentRole || reserved.Backend != saved.BackendID || reserved.Model != savedModel) {
+			return store.AgentResumeState{}, nil
+		}
+	}
 	return state, nil
 }
 
