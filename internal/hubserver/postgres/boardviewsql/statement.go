@@ -19,6 +19,18 @@ var boardViewCardColumns = []boardViewColumn{
 	{"execution_backend", "text"}, {"execution_model", "text"}, {"execution_effort", "text"}, {"change_id", "text"}, {"change_title", "text"},
 	{"change_status", "text"}, {"change_external_provider", "text"}, {"change_external_id", "text"}, {"change_external_url", "text"},
 	{"change_principal_id", "text"}, {"change_version_id", "text"}, {"change_policy_id", "text"}, {"change_review_policy_id", "text"}, {"change_base_status", "text"},
+	{"actor_kind", "text"}, {"actor_via_key", "text"}, {"actor_display_name", "text"}, {"actor_agent", "text"}, {"actor_public_name", "text"}, {"web_url", "text"},
+	{"omitted_fields", "text[]"}, {"reporter_status", "text"}, {"reporter_view_status", "text"}, {"scheduling_eligible", "boolean"}, {"provenance_author_id", "text"},
+	{"provenance_author_display_name", "text"}, {"verification_present", "boolean"}, {"verification_state", "text"}, {"verified_by_present", "boolean"},
+	{"verified_by_kind", "text"}, {"verified_by_principal_id", "text"}, {"verified_by_via_key", "text"}, {"verified_by_display_name", "text"}, {"verified_by_agent", "text"},
+	{"verified_at", "timestamptz"}, {"report_context_present", "boolean"}, {"report_context_url", "text"}, {"report_context_app_build", "text"},
+	{"report_context_browser", "text"}, {"report_context_os", "text"}, {"report_context_viewport", "text"}, {"report_context_captured_at", "text"},
+	{"contract_present", "boolean"}, {"contract_human_action", "text"}, {"attempt_expires_at", "timestamptz"}, {"attempt_role", "text"},
+	{"execution_expires_at", "timestamptz"}, {"execution_role", "text"},
+}
+
+func PublicActorName(organization, principal string) string {
+	return `coalesce((SELECT nullif(member.email,'') FROM hosted_members member WHERE member.organization_id=` + organization + ` AND member.principal_id=` + principal + ` LIMIT 1),(SELECT credential.name FROM api_tokens credential WHERE credential.organization_id=` + organization + ` AND credential.id=` + principal + `),'')`
 }
 
 var boardViewGenericColumns = []boardViewColumn{
@@ -47,6 +59,7 @@ func boardViewCardRow(kind, alias string) string {
 	for _, column := range boardViewCardColumns {
 		values[column.name] = alias + "." + column.name
 	}
+	values["actor_public_name"] = PublicActorName("$1", alias+".actor_principal_id")
 	return boardViewRow(kind, alias+".project_id", alias+".work_item_id", values)
 }
 

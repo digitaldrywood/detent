@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -206,12 +207,30 @@ func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRo
 		project := tracker.ProjectID(boardViewText(row.Project))
 		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(id), Number: int(boardViewNumber(c.Number)), Revision: tracker.Revision(boardViewNumber(c.Revision)), Profile: "native"},
 			Type: boardViewText(c.IssueType), Title: boardViewText(c.Title), State: boardViewText(c.State), Archived: boardViewFlag(c.Archived), Terminal: boardViewFlag(c.Terminal), Labels: c.Labels, Assignees: c.Assignees,
-			Actor: tracker.Actor{PrincipalID: boardViewText(c.ActorPrincipalID)}, CreatedAt: boardViewStamp(c.CreatedAt), UpdatedAt: boardViewStamp(c.UpdatedAt), ClosedAt: c.ClosedAt, LastActivityAt: boardViewStamp(c.LastActivityAt), DependencyReady: true}
+			Actor:  tracker.Actor{Kind: boardViewText(c.ActorKind), PrincipalID: boardViewText(c.ActorPrincipalID), ViaKey: boardViewText(c.ActorViaKey), DisplayName: cmp.Or(boardViewText(c.ActorPublicName), boardViewText(c.ActorDisplayName)), Agent: boardViewText(c.ActorAgent)},
+			WebURL: boardViewText(c.WebURL), OmittedFields: c.OmittedFields, ReporterStatus: boardViewText(c.ReporterStatus), SchedulingEligible: c.SchedulingEligible,
+			CreatedAt: boardViewStamp(c.CreatedAt), UpdatedAt: boardViewStamp(c.UpdatedAt), ClosedAt: c.ClosedAt, LastActivityAt: boardViewStamp(c.LastActivityAt), DependencyReady: true}
+		if scope.Credential.HostedRole == "reporter" {
+			issue.ReporterStatus = boardViewText(c.ReporterViewStatus)
+		}
 		if c.Priority != nil {
 			issue.Priority = new(int(*c.Priority))
 		}
 		if boardViewText(c.ProvenanceProvider) != "" {
-			issue.Provenance = &tracker.Provenance{Provider: boardViewText(c.ProvenanceProvider), ExternalID: boardViewText(c.ProvenanceExternalID), CreatedAt: boardViewStamp(c.ProvenanceCreatedAt), UpdatedAt: boardViewStamp(c.ProvenanceUpdatedAt), ObservedAt: boardViewStamp(c.ProvenanceObservedAt)}
+			issue.Provenance = &tracker.Provenance{Provider: boardViewText(c.ProvenanceProvider), ExternalID: boardViewText(c.ProvenanceExternalID), AuthorID: boardViewText(c.ProvenanceAuthorID), AuthorDisplayName: boardViewText(c.ProvenanceAuthorDisplayName),
+				CreatedAt: boardViewStamp(c.ProvenanceCreatedAt), UpdatedAt: boardViewStamp(c.ProvenanceUpdatedAt), ObservedAt: boardViewStamp(c.ProvenanceObservedAt)}
+		}
+		if boardViewFlag(c.VerificationPresent) {
+			issue.Verification = &tracker.NativeVerification{State: boardViewText(c.VerificationState), VerifiedAt: c.VerifiedAt}
+			if boardViewFlag(c.VerifiedByPresent) {
+				issue.Verification.VerifiedBy = &tracker.Actor{Kind: boardViewText(c.VerifiedByKind), PrincipalID: boardViewText(c.VerifiedByPrincipalID), ViaKey: boardViewText(c.VerifiedByViaKey), DisplayName: boardViewText(c.VerifiedByDisplayName), Agent: boardViewText(c.VerifiedByAgent)}
+			}
+		}
+		if boardViewFlag(c.ReportContextPresent) {
+			issue.ReportContext = &tracker.ReportContext{URL: boardViewText(c.ReportContextURL), AppBuild: boardViewText(c.ReportContextAppBuild), Browser: boardViewText(c.ReportContextBrowser), OS: boardViewText(c.ReportContextOS), Viewport: boardViewText(c.ReportContextViewport), CapturedAt: boardViewText(c.ReportContextCapturedAt)}
+		}
+		if boardViewFlag(c.ContractPresent) {
+			issue.IssueContract = &issuecontract.State{HumanAction: boardViewText(c.ContractHumanAction)}
 		}
 		if c.PullRequestNumber != nil {
 			issue.PullRequest = &tracker.NativePullRequest{Number: int(*c.PullRequestNumber), URL: boardViewText(c.PullRequestURL)}
@@ -237,46 +256,44 @@ func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRo
 			issue.Dependencies = append(issue.Dependencies, link.value.ID)
 		}
 		issue.DependencyReady = !slices.ContainsFunc(issue.Blockers, func(link tracker.NativeDependency) bool { return !link.Terminal })
-		if reason, found := reasons[id]; found {
-			blocked, unblocks := make([]string, 0, len(issue.Dependencies)), make([]string, 0, len(issue.Dependents))
-			for _, dependency := range issue.Dependencies {
-				blocked = append(blocked, string(dependency))
-			}
-			for _, link := range issue.Dependents {
-				unblocks = append(unblocks, string(link.ID))
-			}
-			cross := func(link tracker.NativeDependency) bool { return link.ProjectID != project }
-			issue.BlockedReason = workitemread.VisibleDependencyReason(tracker.DependencyReason{Text: boardViewText(reason.Text[0]), Basis: boardViewText(reason.Text[1]), CurrentBasis: boardViewText(reason.Text[2]), Revision: boardViewNumber(reason.Int[0])}, blocked, slices.ContainsFunc(issue.Blockers, cross))
-			issue.UnblocksReason = workitemread.VisibleDependencyReason(tracker.DependencyReason{Text: boardViewText(reason.Text[3]), Basis: boardViewText(reason.Text[4]), CurrentBasis: boardViewText(reason.Text[5]), Revision: boardViewNumber(reason.Int[1])}, unblocks, slices.ContainsFunc(issue.Dependents, cross))
+		blocked, unblocks := make([]string, 0, len(issue.Dependencies)), make([]string, 0, len(issue.Dependents))
+		for _, dependency := range issue.Dependencies {
+			blocked = append(blocked, string(dependency))
 		}
+		for _, link := range issue.Dependents {
+			unblocks = append(unblocks, string(link.ID))
+		}
+		cross := func(link tracker.NativeDependency) bool { return link.ProjectID != project }
+		reason := reasons[id]
+		issue.BlockedReason = workitemread.VisibleDependencyReason(tracker.DependencyReason{Text: boardViewText(reason.Text[0]), Basis: boardViewText(reason.Text[1]), CurrentBasis: boardViewText(reason.Text[2]), Revision: boardViewNumber(reason.Int[0])}, blocked, slices.ContainsFunc(issue.Blockers, cross))
+		issue.UnblocksReason = workitemread.VisibleDependencyReason(tracker.DependencyReason{Text: boardViewText(reason.Text[3]), Basis: boardViewText(reason.Text[4]), CurrentBasis: boardViewText(reason.Text[5]), Revision: boardViewNumber(reason.Int[1])}, unblocks, slices.ContainsFunc(issue.Dependents, cross))
 		card := tracker.NativeBoardCard{Issue: issue}
 		if boardViewFlag(c.Running) {
 			view.Running[issue.WorkItemID] = true
 		}
 		if boardViewText(c.AttemptID) != "" {
-			card.Attempt = &tracker.NativeBoardAttempt{ID: boardViewText(c.AttemptID), Count: int(boardViewNumber(c.AttemptCount)), Status: boardViewText(c.AttemptStatus), RunnerID: boardViewText(c.AttemptRunnerID), MachineID: boardViewText(c.AttemptMachineID), StartedAt: boardViewStamp(c.AttemptStartedAt)}
-			if boardViewText(c.AttemptBackend) != "" || boardViewText(c.AttemptModel) != "" {
-				card.Attempt.Identity = &tracker.NativeExecutionIdentity{Backend: boardViewText(c.AttemptBackend), Model: boardViewText(c.AttemptModel), ReasoningEffort: boardViewText(c.AttemptEffort)}
+			card.Attempt = &tracker.NativeBoardAttempt{ID: boardViewText(c.AttemptID), Count: int(boardViewNumber(c.AttemptCount)), Status: boardViewText(c.AttemptStatus), RunnerID: boardViewText(c.AttemptRunnerID), MachineID: boardViewText(c.AttemptMachineID), StartedAt: boardViewStamp(c.AttemptStartedAt), ExpiresAt: boardViewStamp(c.AttemptExpiresAt)}
+			if identity := (tracker.NativeExecutionIdentity{Role: boardViewText(c.AttemptRole), Backend: boardViewText(c.AttemptBackend), Model: boardViewText(c.AttemptModel), ReasoningEffort: boardViewText(c.AttemptEffort)}); identity != (tracker.NativeExecutionIdentity{}) {
+				card.Attempt.Identity = &identity
 			}
 		}
 		if boardViewText(c.ExecutionID) != "" {
-			card.Execution = &tracker.NativeBoardExecution{ID: boardViewText(c.ExecutionID), Running: boardViewFlag(c.ExecutionRunning), Stage: boardViewText(c.ExecutionStage), RunnerID: boardViewText(c.ExecutionRunnerID), StartedAt: c.ExecutionStartedAt}
-			if boardViewText(c.ExecutionBackend) != "" || boardViewText(c.ExecutionModel) != "" {
-				card.Execution.Identity = &tracker.NativeExecutionIdentity{Backend: boardViewText(c.ExecutionBackend), Model: boardViewText(c.ExecutionModel), ReasoningEffort: boardViewText(c.ExecutionEffort)}
+			card.Execution = &tracker.NativeBoardExecution{ID: boardViewText(c.ExecutionID), Running: boardViewFlag(c.ExecutionRunning), Stage: boardViewText(c.ExecutionStage), RunnerID: boardViewText(c.ExecutionRunnerID), StartedAt: c.ExecutionStartedAt, ExpiresAt: boardViewStamp(c.ExecutionExpiresAt)}
+			if identity := (tracker.NativeExecutionIdentity{Role: boardViewText(c.ExecutionRole), Backend: boardViewText(c.ExecutionBackend), Model: boardViewText(c.ExecutionModel), ReasoningEffort: boardViewText(c.ExecutionEffort)}); identity != (tracker.NativeExecutionIdentity{}) {
+				card.Execution.Identity = &identity
 			}
 		}
-		if boardViewText(c.ChangeID) != "" && changes[string(project)+"\x00"+boardViewText(c.ChangeID)] && scope.ReporterOwns(tracker.Actor{PrincipalID: boardViewText(c.ChangePrincipalID)}) {
+		owned := scope.ReporterOwns(tracker.Actor{PrincipalID: boardViewText(c.ChangePrincipalID)})
+		if !owned {
+			card.Issue.ListChange, card.Issue.PullRequest = nil, nil
+		}
+		if boardViewText(c.ChangeID) != "" && changes[string(project)+"\x00"+boardViewText(c.ChangeID)] && owned {
 			card.Change = &tracker.NativeBoardChange{ID: boardViewText(c.ChangeID), Title: boardViewText(c.ChangeTitle), Status: boardViewText(c.ChangeStatus)}
-			if boardViewText(c.ChangeExternalID) != "" || boardViewText(c.ChangeExternalURL) != "" {
+			if boardViewText(c.ChangeProvider) != "" {
 				card.Change.External = &tracker.ChangeExternalReference{Provider: boardViewText(c.ChangeProvider), ID: boardViewText(c.ChangeExternalID), URL: boardViewText(c.ChangeExternalURL)}
 			}
 			record := viewstore.BoardRecord{Display: viewstore.BoardDisplay{Change: card.Change, ChangeProvenance: &viewstore.BoardChangeProvenance{VersionID: boardViewText(c.ChangeVersionID), PolicyID: boardViewText(c.ChangePolicyID), ReviewPolicyID: boardViewText(c.ChangeReviewPolicyID), BaseStatus: boardViewText(c.ChangeBaseStatus)}}}
 			card.Change.Status = overlays[project].Status(record)
-		} else {
-			card.Issue.Change, card.Issue.ListChange, card.Issue.PullRequest = nil, nil, nil
-			if boardViewText(c.ChangeID) == "" {
-				card.Issue.ListChange, card.Issue.PullRequest = issue.ListChange, issue.PullRequest
-			}
 		}
 		return card
 	}

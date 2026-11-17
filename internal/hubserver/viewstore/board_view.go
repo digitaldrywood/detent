@@ -62,65 +62,99 @@ func idStrings(ids []tracker.ProjectID) []string {
 }
 
 type BoardViewCard struct {
-	Number               *int64
-	Revision             *int64
-	State                *string
-	Archived             *bool
-	Terminal             *bool
-	Running              *bool
-	Dispatchable         *bool
-	Priority             *int64
-	ActivityAt           *time.Time
-	Identifier           *string
-	ClosedAt             *time.Time
-	CreatedAt            *time.Time
-	UpdatedAt            *time.Time
-	LastActivityAt       *time.Time
-	ActorPrincipalID     *string
-	IssueType            *string
-	Title                *string
-	Labels               []string
-	Assignees            []string
-	HasLinks             *bool
-	ProvenanceProvider   *string
-	ProvenanceExternalID *string
-	ProvenanceCreatedAt  *time.Time
-	ProvenanceUpdatedAt  *time.Time
-	ProvenanceObservedAt *time.Time
-	PullRequestNumber    *int64
-	PullRequestURL       *string
-	ListChangeBranch     *string
-	ListChangeHeadSHA    *string
-	CardReady            *bool
-	StatusLine           *string
-	AttemptID            *string
-	AttemptCount         *int64
-	AttemptStatus        *string
-	AttemptRunnerID      *string
-	AttemptMachineID     *string
-	AttemptStartedAt     *time.Time
-	AttemptBackend       *string
-	AttemptModel         *string
-	AttemptEffort        *string
-	ExecutionID          *string
-	ExecutionRunning     *bool
-	ExecutionStage       *string
-	ExecutionRunnerID    *string
-	ExecutionStartedAt   *time.Time
-	ExecutionBackend     *string
-	ExecutionModel       *string
-	ExecutionEffort      *string
-	ChangeID             *string
-	ChangeTitle          *string
-	ChangeStatus         *string
-	ChangeProvider       *string
-	ChangeExternalID     *string
-	ChangeExternalURL    *string
-	ChangePrincipalID    *string
-	ChangeVersionID      *string
-	ChangePolicyID       *string
-	ChangeReviewPolicyID *string
-	ChangeBaseStatus     *string
+	Number                      *int64
+	Revision                    *int64
+	State                       *string
+	Archived                    *bool
+	Terminal                    *bool
+	Running                     *bool
+	Dispatchable                *bool
+	Priority                    *int64
+	ActivityAt                  *time.Time
+	Identifier                  *string
+	ClosedAt                    *time.Time
+	CreatedAt                   *time.Time
+	UpdatedAt                   *time.Time
+	LastActivityAt              *time.Time
+	ActorPrincipalID            *string
+	IssueType                   *string
+	Title                       *string
+	Labels                      []string
+	Assignees                   []string
+	HasLinks                    *bool
+	ProvenanceProvider          *string
+	ProvenanceExternalID        *string
+	ProvenanceCreatedAt         *time.Time
+	ProvenanceUpdatedAt         *time.Time
+	ProvenanceObservedAt        *time.Time
+	PullRequestNumber           *int64
+	PullRequestURL              *string
+	ListChangeBranch            *string
+	ListChangeHeadSHA           *string
+	CardReady                   *bool
+	StatusLine                  *string
+	AttemptID                   *string
+	AttemptCount                *int64
+	AttemptStatus               *string
+	AttemptRunnerID             *string
+	AttemptMachineID            *string
+	AttemptStartedAt            *time.Time
+	AttemptBackend              *string
+	AttemptModel                *string
+	AttemptEffort               *string
+	ExecutionID                 *string
+	ExecutionRunning            *bool
+	ExecutionStage              *string
+	ExecutionRunnerID           *string
+	ExecutionStartedAt          *time.Time
+	ExecutionBackend            *string
+	ExecutionModel              *string
+	ExecutionEffort             *string
+	ChangeID                    *string
+	ChangeTitle                 *string
+	ChangeStatus                *string
+	ChangeProvider              *string
+	ChangeExternalID            *string
+	ChangeExternalURL           *string
+	ChangePrincipalID           *string
+	ChangeVersionID             *string
+	ChangePolicyID              *string
+	ChangeReviewPolicyID        *string
+	ChangeBaseStatus            *string
+	ActorKind                   *string
+	ActorViaKey                 *string
+	ActorDisplayName            *string
+	ActorAgent                  *string
+	ActorPublicName             *string
+	WebURL                      *string
+	OmittedFields               []string
+	ReporterStatus              *string
+	ReporterViewStatus          *string
+	SchedulingEligible          *bool
+	ProvenanceAuthorID          *string
+	ProvenanceAuthorDisplayName *string
+	VerificationPresent         *bool
+	VerificationState           *string
+	VerifiedByPresent           *bool
+	VerifiedByKind              *string
+	VerifiedByPrincipalID       *string
+	VerifiedByViaKey            *string
+	VerifiedByDisplayName       *string
+	VerifiedByAgent             *string
+	VerifiedAt                  *time.Time
+	ReportContextPresent        *bool
+	ReportContextURL            *string
+	ReportContextAppBuild       *string
+	ReportContextBrowser        *string
+	ReportContextOS             *string
+	ReportContextViewport       *string
+	ReportContextCapturedAt     *string
+	ContractPresent             *bool
+	ContractHumanAction         *string
+	AttemptExpiresAt            *time.Time
+	AttemptRole                 *string
+	ExecutionExpiresAt          *time.Time
+	ExecutionRole               *string
 }
 
 type BoardViewRow struct {
@@ -142,7 +176,12 @@ func (r *BoardViewRow) Targets() []any {
 		&c.ProvenanceCreatedAt, &c.ProvenanceUpdatedAt, &c.ProvenanceObservedAt, &c.PullRequestNumber, &c.PullRequestURL, &c.ListChangeBranch, &c.ListChangeHeadSHA, &c.CardReady, &c.StatusLine,
 		&c.AttemptID, &c.AttemptCount, &c.AttemptStatus, &c.AttemptRunnerID, &c.AttemptMachineID, &c.AttemptStartedAt, &c.AttemptBackend, &c.AttemptModel, &c.AttemptEffort, &c.ExecutionID,
 		&c.ExecutionRunning, &c.ExecutionStage, &c.ExecutionRunnerID, &c.ExecutionStartedAt, &c.ExecutionBackend, &c.ExecutionModel, &c.ExecutionEffort, &c.ChangeID, &c.ChangeTitle,
-		&c.ChangeStatus, &c.ChangeProvider, &c.ChangeExternalID, &c.ChangeExternalURL, &c.ChangePrincipalID, &c.ChangeVersionID, &c.ChangePolicyID, &c.ChangeReviewPolicyID, &c.ChangeBaseStatus}
+		&c.ChangeStatus, &c.ChangeProvider, &c.ChangeExternalID, &c.ChangeExternalURL, &c.ChangePrincipalID, &c.ChangeVersionID, &c.ChangePolicyID, &c.ChangeReviewPolicyID, &c.ChangeBaseStatus,
+		&c.ActorKind, &c.ActorViaKey, &c.ActorDisplayName, &c.ActorAgent, &c.ActorPublicName, &c.WebURL, &c.OmittedFields, &c.ReporterStatus, &c.ReporterViewStatus, &c.SchedulingEligible,
+		&c.ProvenanceAuthorID, &c.ProvenanceAuthorDisplayName, &c.VerificationPresent, &c.VerificationState, &c.VerifiedByPresent, &c.VerifiedByKind, &c.VerifiedByPrincipalID,
+		&c.VerifiedByViaKey, &c.VerifiedByDisplayName, &c.VerifiedByAgent, &c.VerifiedAt, &c.ReportContextPresent, &c.ReportContextURL, &c.ReportContextAppBuild, &c.ReportContextBrowser,
+		&c.ReportContextOS, &c.ReportContextViewport, &c.ReportContextCapturedAt, &c.ContractPresent, &c.ContractHumanAction, &c.AttemptExpiresAt, &c.AttemptRole,
+		&c.ExecutionExpiresAt, &c.ExecutionRole}
 	for i := range r.Text {
 		targets = append(targets, &r.Text[i])
 	}

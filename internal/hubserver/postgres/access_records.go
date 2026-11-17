@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -21,7 +22,7 @@ var ErrLocalOrganizationRequired = errors.New("populated PostgreSQL database has
 const designatedLocalOrganizationQuery = `SELECT public.lookup_designated_local_organization()`
 
 func publicActorNameSQL(organization, principal string) string {
-	return `coalesce((SELECT nullif(member.email,'') FROM hosted_members member WHERE member.organization_id=` + organization + ` AND member.principal_id=` + principal + ` LIMIT 1),(SELECT credential.name FROM api_tokens credential WHERE credential.organization_id=` + organization + ` AND credential.id=` + principal + `),'')`
+	return boardviewsql.PublicActorName(organization, principal)
 }
 
 func (s *session) AccessPublicNames(ctx context.Context, principals []string) (map[string]string, error) {
