@@ -33,15 +33,10 @@ const (
 	workBoardCompactBytes = operatortool.MaxResultBytes - 16<<10
 )
 
-type workBoardLane struct {
-	State      string `json:"state"`
-	NextCursor string `json:"next_cursor,omitempty"`
-}
-
 type workBoardView struct {
 	Projects     []boardview.Project       `json:"projects"`
 	Cards        []tracker.NativeBoardCard `json:"cards"`
-	Lanes        []workBoardLane           `json:"lanes"`
+	Lanes        []boardview.Lane          `json:"lanes"`
 	GrantVersion string                    `json:"grant_version"`
 	compact      *boardview.CompactBoard
 }
@@ -211,13 +206,19 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 			return workBoardView{}, hubapi.NativeNotFound()
 		}
 	}
-	cursorParams := url.Values{"project": request.params["project"], "state": request.params["state"]}
-	if request.cursor != "" {
-		cursorParams.Set("cursor", request.cursor)
+	cursorParams := url.Values{"project": request.params["project"], "state": request.params["state"], "cursor": {request.cursor}}
+	var cursor nativeCursor
+	var key []byte
+	pageCursor := func() (err error) {
+		if key == nil {
+			_, cursor, key, err = s.readNativePageLimit(ctx, scope, "/work-board", cursorParams, viewstore.BoardViewMaxPage, workBoardClosedPage)
+		}
+		return err
 	}
-	_, cursor, key, err := s.readNativePageLimit(ctx, scope, "/work-board", cursorParams, viewstore.BoardViewMaxPage, workBoardClosedPage)
-	if err != nil {
-		return workBoardView{}, err
+	if request.cursor != "" {
+		if err := pageCursor(); err != nil {
+			return workBoardView{}, err
+		}
 	}
 	if position := cursor.Issues; position != nil {
 		if position.State != request.lanes.Include[0] {
@@ -287,7 +288,7 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 			return workBoardView{}, hubapi.NativePublicInvalid("Unknown lane " + strconv.Quote(name))
 		}
 	}
-	view := workBoardView{Projects: assembled.Projects, Cards: assembled.Cards, Lanes: []workBoardLane{}}
+	view := workBoardView{Projects: assembled.Projects, Cards: assembled.Cards, Lanes: []boardview.Lane{}}
 	for i := range view.Cards {
 		view.Cards[i].Issue = boardIssueCollections(view.Cards[i].Issue)
 		view.Cards[i].StatusLine = nativeBoardStatusLine(view.Cards[i])
@@ -298,8 +299,19 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 	}
 	digest := sha256.Sum256(raw)
 	view.GrantVersion = hex.EncodeToString(digest[:])
+	encode := func(position boardview.Cursor) (string, error) {
+		if err := pageCursor(); err != nil {
+			return "", err
+		}
+		next := cursor
+		next.Issues = &nativeIssuePageCursor{State: position.State, Identifier: position.Identifier}
+		if position.ClosedAt != nil {
+			next.Issues.Activity = position.ClosedAt.UTC().Format(time.RFC3339Nano)
+		}
+		return encodeNativeCursor(next, key)
+	}
 	if request.budget == 0 {
-		view.Lanes, err = workBoardCursors(positions, cursor, key)
+		view.Lanes, err = boardview.LaneCursors(positions, encode)
 		return view, err
 	}
 	for budget := request.budget; ; {
@@ -310,7 +322,7 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 		if err != nil {
 			return workBoardView{}, err
 		}
-		if view.Lanes, err = workBoardCursors(cut, cursor, key); err != nil {
+		if view.Lanes, err = boardview.LaneCursors(cut, encode); err != nil {
 			return workBoardView{}, err
 		}
 		for i, continuation := range compact.Continuations {
@@ -330,26 +342,6 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 		}
 		budget -= len(raw) - request.budget + 512
 	}
-}
-
-func workBoardCursors(positions []boardview.Cursor, cursor nativeCursor, key []byte) ([]workBoardLane, error) {
-	lanes := []workBoardLane{}
-	for _, position := range positions {
-		lane := workBoardLane{State: position.State}
-		if position.More {
-			next := cursor
-			next.Issues = &nativeIssuePageCursor{State: position.State, Identifier: position.Identifier}
-			if position.ClosedAt != nil {
-				next.Issues.Activity = position.ClosedAt.UTC().Format(time.RFC3339Nano)
-			}
-			var err error
-			if lane.NextCursor, err = encodeNativeCursor(next, key); err != nil {
-				return nil, err
-			}
-		}
-		lanes = append(lanes, lane)
-	}
-	return lanes, nil
 }
 
 func boardViewRevisions(rows viewstore.BoardViewRows) [4]int64 {

@@ -133,3 +133,39 @@ func TestLanesSelectByWorkflowFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestLaneCursorsEncodeOnlyLanesWithMore(t *testing.T) {
+	t.Parallel()
+	refused := errors.New("cursor key unavailable")
+	for _, test := range []struct {
+		name      string
+		positions []Cursor
+		encodeErr error
+		want      []Lane
+		encoded   []string
+		err       error
+	}{
+		{name: "no positions", want: []Lane{}},
+		{name: "complete lanes need no cursor", positions: []Cursor{{State: "Done"}, {State: "Cancelled"}}, want: []Lane{{State: "Done"}, {State: "Cancelled"}}},
+		{name: "a lane with more", positions: []Cursor{{State: "Done", More: true, Identifier: "example#9"}, {State: "Cancelled"}}, want: []Lane{{State: "Done", NextCursor: "cursor:Done"}, {State: "Cancelled"}}, encoded: []string{"Done"}},
+		{name: "encoding fails", positions: []Cursor{{State: "Done", More: true}}, encodeErr: refused, err: refused, encoded: []string{"Done"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var encoded []string
+			lanes, err := LaneCursors(test.positions, func(position Cursor) (string, error) {
+				encoded = append(encoded, position.State)
+				return "cursor:" + position.State, test.encodeErr
+			})
+			if !errors.Is(err, test.err) {
+				t.Fatalf("err = %v, want %v", err, test.err)
+			}
+			if fmt.Sprint(encoded) != fmt.Sprint(test.encoded) {
+				t.Fatalf("encoded = %v, want %v", encoded, test.encoded)
+			}
+			if test.err == nil && fmt.Sprint(lanes) != fmt.Sprint(test.want) {
+				t.Fatalf("lanes = %v, want %v", lanes, test.want)
+			}
+		})
+	}
+}
