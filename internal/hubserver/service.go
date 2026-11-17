@@ -667,6 +667,7 @@ func (s *Service) MaintenanceTenant() hubmaintenance.Tenant {
 
 func (s *Service) ReadModelMaintenanceFeatures() []hubmaintenance.Feature {
 	return []hubmaintenance.Feature{
+		s.boardFeature("board-dirty", hubmaintenance.ByteLimit/hubmaintenance.TenantLimit, true),
 		s.WorkItemPageMaintenanceFeature(),
 		s.IntegrationPageMaintenanceFeature(),
 		s.OnboardingPageMaintenanceFeature(),
@@ -686,7 +687,7 @@ func (s *Service) ReadModelMaintenanceFeatures() []hubmaintenance.Feature {
 			}
 			return hubmaintenance.Outcome{Progress: true, Items: 1}, s.maintainGitHubWebhookRecords(ctx)
 		}},
-		s.boardMaintenanceFeature(),
+		s.boardFeature("board", BoardMaintenanceBytes, false),
 	}
 }
 

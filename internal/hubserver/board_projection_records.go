@@ -79,39 +79,30 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-func (s *Service) boardMaintenanceFeature() hubmaintenance.Feature {
-	var after tracker.NativeWorkItemID
-	return hubmaintenance.Feature{Name: "board", Bytes: BoardMaintenanceBytes, Step: func(ctx context.Context, selected hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+func (s *Service) boardFeature(name string, bytes int64, dirtyOnly bool) hubmaintenance.Feature {
+	var sweep tracker.NativeWorkItemID
+	return hubmaintenance.Feature{Name: name, Bytes: bytes, Lead: dirtyOnly, Step: func(ctx context.Context, selected hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 		if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
 			return hubmaintenance.Outcome{}, err
 		}
-		var failures []error
-		attempted := make([]tracker.NativeWorkItemID, 0, boardMaintenanceBatch)
-		for len(attempted) < min(budget.Items, boardMaintenanceBatch) {
-			next, processed, required, err := s.maintainBudgetedBoardRecord(ctx, tracker.OrganizationID(selected.Organization), after, attempted...)
-			after = next
-			if err != nil {
-				failures = append(failures, err)
-			}
-			if !processed {
-				break
-			}
-			attempted = append(attempted, next)
-			if !required || ctx.Err() != nil {
-				break
-			}
+		var dirty tracker.NativeWorkItemID
+		cursor := &sweep
+		if dirtyOnly {
+			cursor = &dirty
 		}
-		return hubmaintenance.Outcome{Progress: len(attempted) > 0, Items: len(attempted)}, errors.Join(failures...)
+		return hubmaintenance.Drain(ctx, min(budget.Items, boardMaintenanceBatch), cursor, func(after tracker.NativeWorkItemID, attempted []tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, bool, error) {
+			return s.maintainBudgetedBoardRecord(ctx, tracker.OrganizationID(selected.Organization), bytes, dirtyOnly, after, attempted...)
+		})
 	}}
 }
 
 func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
-	next, processed, _, err := s.maintainBudgetedBoardRecord(ctx, organization, after, attempted...)
+	next, processed, _, err := s.maintainBudgetedBoardRecord(ctx, organization, BoardMaintenanceBytes, false, after, attempted...)
 	return next, processed, err
 }
 
-func (s *Service) maintainBudgetedBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, bool, error) {
-	if err := hubmaintenance.RequireAllowance(ctx, string(organization), BoardMaintenanceBytes); err != nil {
+func (s *Service) maintainBudgetedBoardRecord(ctx context.Context, organization tracker.OrganizationID, bytes int64, dirtyOnly bool, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, bool, error) {
+	if err := hubmaintenance.RequireAllowance(ctx, string(organization), bytes); err != nil {
 		return after, false, false, err
 	}
 	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
@@ -120,15 +111,15 @@ func (s *Service) maintainBudgetedBoardRecord(ctx context.Context, organization 
 	ctx = detailbatch.Clear(ctx)
 	ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, nil)
 	ctx = context.WithValue(ctx, hubcontent.RunDetailContextKey{}, nil)
-	return s.refreshNextBoardRecord(ctx, organization, after, attempted...)
+	return s.refreshNextBoardRecord(ctx, organization, dirtyOnly, after, attempted...)
 }
 
 func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
-	next, processed, _, err := s.refreshNextBoardRecord(ctx, organization, after, attempted...)
+	next, processed, _, err := s.refreshNextBoardRecord(ctx, organization, false, after, attempted...)
 	return next, processed, err
 }
 
-func (s *Service) refreshNextBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, bool, error) {
+func (s *Service) refreshNextBoardRecord(ctx context.Context, organization tracker.OrganizationID, dirtyOnly bool, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, bool, error) {
 	if organization == "" || s.config.TenantRepository == nil {
 		return after, false, false, corestore.ErrTenantMismatch
 	}
@@ -137,6 +128,9 @@ func (s *Service) refreshNextBoardRecord(ctx context.Context, organization track
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		candidate, err = r.NextBoardCandidate(ctx, after, attempted...)
+		if err == nil && !candidate.Required && dirtyOnly {
+			return corestore.ErrNotFound
+		}
 		if err == nil && !candidate.Required {
 			settled, err = boardRecordSettled(ctx, r, candidate)
 			if err != nil {

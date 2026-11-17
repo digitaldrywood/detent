@@ -57,7 +57,7 @@ func (l *serviceLog) busy(features []hubmaintenance.Feature) []hubmaintenance.Fe
 	out := make([]hubmaintenance.Feature, len(features))
 	for i, feature := range features {
 		name := feature.Name
-		out[i] = hubmaintenance.Feature{Name: name, Bytes: feature.Bytes, Step: func(_ context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+		out[i] = hubmaintenance.Feature{Name: name, Bytes: feature.Bytes, Lead: feature.Lead, Step: func(_ context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 			l.mu.Lock()
 			defer l.mu.Unlock()
 			if l.served[name] == nil {
@@ -68,6 +68,16 @@ func (l *serviceLog) busy(features []hubmaintenance.Feature) []hubmaintenance.Fe
 		}}
 	}
 	return out
+}
+
+func leads(features []hubmaintenance.Feature) int {
+	count := 0
+	for _, feature := range features {
+		if feature.Lead {
+			count++
+		}
+	}
+	return count
 }
 
 func traversalTicks(bytes int64, tenants int) int {
@@ -82,7 +92,9 @@ func TestRegisteredFamiliesAllBusyServiceGap(t *testing.T) {
 		t.Helper()
 		bound := 0
 		for _, feature := range features {
-			bound += traversalTicks(feature.Bytes, tenants)
+			if !feature.Lead {
+				bound += traversalTicks(feature.Bytes, tenants)
+			}
 		}
 		log := &serviceLog{served: map[string]map[string][]int{}}
 		scheduler, err := hubmaintenance.New(registry, log.busy(features))
@@ -102,6 +114,13 @@ func TestRegisteredFamiliesAllBusyServiceGap(t *testing.T) {
 				t.Fatalf("family %s reached %d of %d tenants in two derived rotations", feature.Name, len(log.served[feature.Name]), tenants)
 			}
 			for tenant, ticks := range log.served[feature.Name] {
+				if feature.Lead {
+					gap := traversalTicks(feature.Bytes, tenants)
+					if ticks[0] >= gap || len(ticks) != (2*bound-ticks[0]+gap-1)/gap {
+						t.Fatalf("lead %s tenant %s served at %d ticks from %d, want every %d", feature.Name, tenant, len(ticks), ticks[0], gap)
+					}
+					continue
+				}
 				if len(ticks) != 2 || ticks[0] >= bound || ticks[1]-ticks[0] != bound {
 					t.Fatalf("family %s tenant %s served at ticks %v, derived rotation %d", feature.Name, tenant, ticks, bound)
 				}
@@ -111,8 +130,8 @@ func TestRegisteredFamiliesAllBusyServiceGap(t *testing.T) {
 	}
 	t.Run("registered single-tenant registry", func(t *testing.T) {
 		_, bound := run(t, singleTenant{h.Service.MaintenanceTenant()}, 1)
-		if bound != len(features) {
-			t.Fatalf("single-tenant all-busy rotation=%d ticks want one per family (%d)", bound, len(features))
+		if bound != len(features)-leads(features) {
+			t.Fatalf("single-tenant all-busy rotation=%d ticks want one per rotating family (%d)", bound, len(features)-leads(features))
 		}
 		t.Logf("production registry: one tenant, %d families, all-busy service gap %d ticks", len(features), bound)
 	})
@@ -161,13 +180,13 @@ func TestIdleTicksStayInsideResourceCeilings(t *testing.T) {
 		mu.Lock()
 		steps := stepped
 		mu.Unlock()
-		if steps > hubmaintenance.ProbeLimit || transactions > 256 || statements > 4096 {
+		if steps > hubmaintenance.ProbeLimit+leads(features) || transactions > 256 || statements > 4096 {
 			t.Fatalf("idle tick exceeded fixed work: steps=%d transactions=%d statements=%d", steps, transactions, statements)
 		}
 		maxTransactions, maxStatements, maxSteps = max(maxTransactions, transactions), max(maxStatements, statements), max(maxSteps, steps)
 	}
-	if maxSteps != hubmaintenance.ProbeLimit {
-		t.Fatalf("idle ticks never reached the four-probe maximum (max steps %d)", maxSteps)
+	if maxSteps != hubmaintenance.ProbeLimit+leads(features) {
+		t.Fatalf("idle ticks never reached the four-probe maximum plus leads (max steps %d)", maxSteps)
 	}
 	t.Logf("idle real feature mix: max steps=%d transactions=%d statements=%d per tick", maxSteps, maxTransactions, maxStatements)
 }
