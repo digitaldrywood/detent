@@ -66,7 +66,8 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
   }
 
   const title = "Organization Sprite pool";
-  const turnedOn = pool.value !== undefined && (pool.value.max_runners > 0 || pool.value.members.some((member) => member.state !== "deleted"));
+  const visibleMembers = pool.value?.members.filter((member) => member.state !== "deleted") ?? [];
+  const turnedOn = pool.value !== undefined && (pool.value.max_runners > 0 || visibleMembers.length > 0);
   const notSetUp = pool.value !== undefined && !turnedOn;
   const needsAttention = turnedOn && !token.loading && (token.error !== null || token.value?.present === false);
   const integrationsUrl = `${account?.base_path ?? ""}/settings/integrations#sprites`;
@@ -77,7 +78,7 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
   React.useEffect(() => {
     if (compact) onAttentionChange?.(projectId, needsAttention);
   }, [compact, projectId, needsAttention, onAttentionChange]);
-  const status = unavailable ? "Could not load the pool." : pool.value === undefined ? (forbidden ? "Owner or admin access required." : "Loading…") : notSetUp ? "Not set up." : `${pool.value.members.filter((member) => member.state !== "deleted").length} members`;
+  const status = unavailable ? "Could not load the pool." : pool.value === undefined ? (forbidden ? "Owner or admin access required." : "Loading…") : notSetUp ? "Not set up." : `${visibleMembers.length} members`;
   const content = <div className="w-full space-y-4 py-4">
       <p className="text-sm text-muted-foreground">{context}</p>
       {unavailable ? <Alert variant="error">
@@ -109,7 +110,7 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
         {readOnly ? null : <Button type="submit" size="sm" disabled={pending || pool.loading}>{pending ? "Saving…" : "Save pool"}</Button>}
       </form> : null}
       <Button type="button" size="sm" variant="outline" disabled={pending || pool.loading} onClick={() => void reload()}>{forbidden && pool.value === undefined ? "Retry" : "Reload pool"}</Button>
-      {pool.value?.members.map((member) => <div key={member.name} className="space-y-1 rounded-md border border-border p-3 text-sm">
+      {visibleMembers.map((member) => <div key={member.name} className="space-y-1 rounded-md border border-border p-3 text-sm">
         <p className="break-all font-medium">{member.name} · {member.state}</p>
         {member.runner_id === "" ? <p className="text-xs text-muted-foreground">Runner has not enrolled.</p> : <p className="text-xs text-muted-foreground">Enrolled; work readiness follows runner health, provider setup and project policy.</p>}
         <details><summary className="cursor-pointer text-xs">Last bootstrap log</summary><pre className="mt-2 whitespace-pre-wrap break-words text-xs">{member.bootstrap_log || "No bootstrap progress recorded."}</pre></details>

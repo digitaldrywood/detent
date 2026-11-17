@@ -220,6 +220,32 @@ function mountPool(pool: typeof SpritePool.Type = emptyPool, token: boolean | "f
 }
 
 describe("Sprite pool setup and attention", () => {
+  it.each([
+    { name: "mixed members", max: 6, states: ["active", "provisioning", "enrolled", "draining", "deleting"] },
+    { name: "only deleted members in an enabled pool", max: 6, states: [] },
+    { name: "only deleted members in a disabled pool", max: 0, states: [] },
+  ])("hides deleted history with $name", async ({ max, states }) => {
+    const current = states.map((state) => ({ ...member, name: `example-${state}`, state, bootstrap_log: `Current ${state} log` }));
+    const deleted = ["first", "second"].map((name) => ({ ...member, name: `deleted-${name}`, state: "deleted", runner_id: "", bootstrap_log: `Historical ${name} log` }));
+    mountPool({ ...emptyPool, max_runners: max, members: [...deleted, ...current] }, true);
+    const row = await screen.findByTestId("sprite-pool-row");
+    await waitFor(() => expect(row.textContent).toContain(max === 0 ? "Not set up." : `${states.length} members`));
+    fireEvent.click(within(row).getByRole("button", { name: max === 0 ? "Set up Sprites" : "Configure pool" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "Organization Sprite pool" }));
+    for (const item of current) {
+      expect(dialog.getByText(`${item.name} · ${item.state}`)).toBeDefined();
+      expect(dialog.getByText(item.bootstrap_log)).toBeDefined();
+    }
+    for (const item of deleted) {
+      expect(dialog.queryByText(`${item.name} · deleted`)).toBeNull();
+      expect(dialog.queryByText(item.bootstrap_log)).toBeNull();
+    }
+    expect(dialog.queryByText("Runner has not enrolled.")).toBeNull();
+    expect(dialog.queryAllByText("Last bootstrap log")).toHaveLength(states.length);
+    expect((dialog.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe(String(max));
+    expect(dialog.getByRole("button", { name: "Save pool" })).toBeDefined();
+  });
+
   it("explains an unsupported setup instead of hiding the preparation requirement", async () => {
     const message = "Sprite pools require hosted configuration and the project secret store";
     mountPool(emptyPool, true, message);
