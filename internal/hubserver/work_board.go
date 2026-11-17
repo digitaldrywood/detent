@@ -177,9 +177,9 @@ func (s *Service) workBoard(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if view.compact != nil {
-		return c.JSON(http.StatusOK, view.compact)
+		return boardview.Respond(c.Response(), c.Request(), http.StatusOK, view.compact)
 	}
-	return c.JSON(http.StatusOK, view)
+	return boardview.Respond(c.Response(), c.Request(), http.StatusOK, view)
 }
 
 func (s *Service) readWorkBoardFor(ctx context.Context, credential hubapi.APICredential, organization string, request workBoardRequest) (workBoardView, error) {
