@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/big"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -262,6 +263,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	projects := make([]*Project, 0, len(m.cfg.Projects))
 	rollbackIDs := make([]ID, 0, len(m.cfg.Projects))
 	for _, cfg := range m.cfg.Projects {
+		if reconciled, ok := m.registry.Get(normalizeProjectID(ID(cfg.ID))); ok && reconciled.unstarted() && !slices.Contains(projects, reconciled) {
+			rollbackIDs = append(rollbackIDs, reconciled.ID())
+			projects = append(projects, reconciled)
+			continue
+		}
 		id, project, err := m.createProjectLocked(cfg)
 		if err != nil {
 			if m.handleInitialCreationFailureLocked(ctx, cfg, err) {
