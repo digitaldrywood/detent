@@ -284,10 +284,11 @@ func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRo
 			}
 		}
 		owned := scope.ReporterOwns(tracker.Actor{PrincipalID: boardViewText(c.ChangePrincipalID)})
-		if !owned {
+		visible := boardViewText(c.ChangeID) != "" && changes[string(project)+"\x00"+boardViewText(c.ChangeID)] && owned
+		if !owned || boardViewText(c.ChangeID) != "" && !visible {
 			card.Issue.ListChange, card.Issue.PullRequest = nil, nil
 		}
-		if boardViewText(c.ChangeID) != "" && changes[string(project)+"\x00"+boardViewText(c.ChangeID)] && owned {
+		if visible {
 			card.Change = &tracker.NativeBoardChange{ID: boardViewText(c.ChangeID), Title: boardViewText(c.ChangeTitle), Status: boardViewText(c.ChangeStatus)}
 			if boardViewText(c.ChangeProvider) != "" {
 				card.Change.External = &tracker.ChangeExternalReference{Provider: boardViewText(c.ChangeProvider), ID: boardViewText(c.ChangeExternalID), URL: boardViewText(c.ChangeExternalURL)}
