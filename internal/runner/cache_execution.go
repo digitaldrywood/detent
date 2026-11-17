@@ -20,7 +20,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (result RunResult, err
 		ctx = context.Background()
 	}
 	ctx = bindSessionExecution(ctx, r.store, req.Execution)
-	ctx = gobudget.WithContext(ctx, r.goBudget)
+	ctx = gobudget.WithContext(ctx, r.currentGoBudget())
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withCacheWaitObserver(ctx, req)
 	ctx = r.withValidationProcessOwner(ctx, req.Issue, req.WorkAttemptID)
@@ -67,7 +67,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (result gat
 		ctx = context.Background()
 	}
 	ctx = bindSessionExecution(ctx, r.store, req.usageExecution)
-	ctx = gobudget.WithContext(ctx, r.goBudget)
+	ctx = gobudget.WithContext(ctx, r.currentGoBudget())
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withCacheWaitObserver(ctx, RunRequest{Issue: req.Issue})
 	ctx = r.withValidationProcessOwner(ctx, req.Issue, 0)
@@ -80,7 +80,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (result Se
 		ctx = context.Background()
 	}
 	ctx = bindSessionExecution(ctx, r.store, req.usageExecution)
-	ctx = gobudget.WithContext(ctx, r.goBudget)
+	ctx = gobudget.WithContext(ctx, r.currentGoBudget())
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withCacheWaitObserver(ctx, RunRequest{Issue: req.Issue})
 	ctx = r.withValidationProcessOwner(ctx, req.Issue, 0)

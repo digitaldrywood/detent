@@ -195,6 +195,7 @@ type Runner struct {
 	admissionLeaks            admissionWorkspaceLeakTracker
 	startCompute              func(compute.Rates) func() *compute.Usage
 	lookupEnv                 func(string) string
+	goBudgetMu                sync.RWMutex
 	goBudget                  gobudget.Budget
 	goTestReceipts            gotestreceipt.Config
 }

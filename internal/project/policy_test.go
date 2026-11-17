@@ -212,7 +212,7 @@ func (s *policyTestScheduling) CheckProjectPolicy(_ context.Context, project, _ 
 
 func TestHostOverridesApplyWithoutPolicyConfiguration(t *testing.T) {
 	t.Parallel()
-	for _, override := range []string{"active hours", "model selection", "pricing path"} {
+	for _, override := range []string{"active hours", "model selection", "pricing path", "job slots"} {
 		t.Run(override, func(t *testing.T) {
 			t.Parallel()
 			cfg := globalconfig.Project{ID: "example-project", Workdir: t.TempDir()}
@@ -225,7 +225,8 @@ func TestHostOverridesApplyWithoutPolicyConfiguration(t *testing.T) {
 			descriptor.Configuration = nil
 			descriptor = descriptor.WithID()
 			workflow.Config.Policy = descriptor
-			p := &Project{cfg: cfg, workflow: workflow, workflowActiveHours: workflow.Config.ActiveHours}
+			runner := &jobSlotRunner{}
+			p := &Project{cfg: cfg, workflow: workflow, workflowActiveHours: workflow.Config.ActiveHours, runner: runner}
 			changed := cfg
 			switch override {
 			case "active hours":
@@ -234,6 +235,8 @@ func TestHostOverridesApplyWithoutPolicyConfiguration(t *testing.T) {
 				changed.ModelSelection = &workflowconfig.ModelSelection{NormalModel: new("gpt-6.1-sol")}
 			case "pricing path":
 				changed.GlobalBudget.PricingPath = new(filepath.Join(cfg.Workdir, "pricing.json"))
+			case "job slots":
+				changed.GlobalJobSlots = 6
 			}
 			if err := p.updateLiveConfig(t.Context(), changed); err != nil {
 				t.Fatalf("host override did not apply live: %v", err)
@@ -255,10 +258,21 @@ func TestHostOverridesApplyWithoutPolicyConfiguration(t *testing.T) {
 				if current.Config.Budget.PricingPath != *changed.GlobalBudget.PricingPath {
 					t.Fatalf("pricing path not applied: %s", current.Config.Budget.PricingPath)
 				}
+			case "job slots":
+				if runner.slots != 6 {
+					t.Fatalf("runner job slots = %d, want the reloaded 6", runner.slots)
+				}
 			}
 		})
 	}
 }
+
+type jobSlotRunner struct {
+	orchestrator.FakeRunner
+	slots int
+}
+
+func (r *jobSlotRunner) SetGoJobSlots(slots int) { r.slots = slots }
 
 func TestTrustedRefIgnoresWorkingBranchPolicyEdits(t *testing.T) {
 	t.Parallel()

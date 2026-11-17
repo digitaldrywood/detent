@@ -2637,17 +2637,27 @@ func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
 
 func TestHostGoBudgetUsesSharedHostLocation(t *testing.T) {
 	tests := []struct {
-		slots int
-		want  int
+		slots, jobs int
+		want, procs int
 	}{
 		{slots: 0, want: runtime.NumCPU()},
 		{slots: 6, want: 6},
+		{slots: 16, jobs: 6, want: 16, procs: 2},
 	}
 	for _, tt := range tests {
-		budget := hostGoBudget(tt.slots)
-		if budget.Slots != tt.want || budget.Dir != gobudget.HostDir() || budget.Executable == "" {
-			t.Fatalf("hostGoBudget(%d) = %+v, want %d slots in %s with an executable", tt.slots, budget, tt.want, gobudget.HostDir())
+		budget := hostGoBudget(tt.slots, tt.jobs)
+		if budget.Slots != tt.want || budget.TestProcs() != tt.procs || budget.Dir != gobudget.HostDir() || budget.Executable == "" {
+			t.Fatalf("hostGoBudget(%d, %d) = %+v, want %d slots and %d test processes in %s with an executable", tt.slots, tt.jobs, budget, tt.want, tt.procs, gobudget.HostDir())
 		}
+	}
+}
+
+func TestSSHRunnerJobSlotsReachLaterWorkerBootstraps(t *testing.T) {
+	r := &sshRunner{Runner: &runnerpkg.Runner{}}
+	r.goJobSlots.Store(1)
+	r.SetGoJobSlots(6)
+	if got := r.goJobSlots.Load(); got != 6 {
+		t.Fatalf("worker bootstrap job slots = %d, want the reloaded 6", got)
 	}
 }
 

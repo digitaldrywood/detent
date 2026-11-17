@@ -15,11 +15,13 @@ const (
 	WrapperName          = "detent-go-budget"
 	DirEnvironment       = "DETENT_GO_BUDGET_DIR"
 	SlotsEnvironment     = "DETENT_GO_BUDGET_SLOTS"
+	TestProcsEnvironment = "TEST_PROCS"
 	invocationsPerBudget = 4
 )
 
 type Budget struct {
 	Slots      int
+	Jobs       int
 	Dir        string
 	Executable string
 }
@@ -29,6 +31,18 @@ func New(slots int, dir string, executable string) Budget {
 		slots = runtime.NumCPU()
 	}
 	return Budget{Slots: slots, Dir: strings.TrimSpace(dir), Executable: strings.TrimSpace(executable)}
+}
+
+func (b Budget) WithJobs(jobs int) Budget {
+	b.Jobs = max(0, jobs)
+	return b
+}
+
+func (b Budget) TestProcs() int {
+	if b.Jobs <= 0 {
+		return 0
+	}
+	return max(1, b.Slots/b.Jobs)
 }
 
 func HostDir() string {
@@ -55,12 +69,16 @@ func (b Budget) Environment(inheritedGOFLAGS string) (map[string]string, error) 
 		return nil, err
 	}
 	width := strconv.Itoa(b.Width())
-	return map[string]string{
+	variables := map[string]string{
 		"GOFLAGS":        goflags(inheritedGOFLAGS, width, b.WrapperPath()),
 		"GOMAXPROCS":     width,
 		DirEnvironment:   b.Dir,
 		SlotsEnvironment: strconv.Itoa(b.Slots),
-	}, nil
+	}
+	if procs := b.TestProcs(); procs > 0 {
+		variables[TestProcsEnvironment] = strconv.Itoa(procs)
+	}
+	return variables, nil
 }
 
 func (b Budget) prepare() error {

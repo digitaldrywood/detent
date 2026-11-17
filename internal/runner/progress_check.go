@@ -52,7 +52,7 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 		return progresscheck.Decision{}, err
 	}
 	defer release()
-	ctx = gobudget.WithContext(guarded, r.goBudget)
+	ctx = gobudget.WithContext(guarded, r.currentGoBudget())
 	workflow, runtime, _, _ := r.runtimeSnapshot()
 	role := runRole(req.Mode, req.Issue)
 	selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), runtime.effectiveRunRole(role))

@@ -14,19 +14,21 @@ import (
 func TestReviewCommandSharesGoBudget(t *testing.T) {
 
 	for _, test := range []struct {
-		name, flags, procs, wantFlags, wantProcs string
-		enabled                                  bool
+		name, flags, procs, tests, wantFlags, wantProcs, wantTests string
+		enabled                                                    bool
 	}{
-		{name: "nested module", enabled: true, wantFlags: "-p=2 -trimpath", wantProcs: "2"},
-		{name: "operator limits", enabled: true, flags: "-p=1 -trimpath=false", procs: "1", wantFlags: "-p=1 -trimpath=false", wantProcs: "1"},
+		{name: "nested module", enabled: true, wantFlags: "-p=2 -trimpath", wantProcs: "2", wantTests: "2"},
+		{name: "operator limits", enabled: true, flags: "-p=1 -trimpath=false", procs: "1", tests: "1", wantFlags: "-p=1 -trimpath=false", wantProcs: "1", wantTests: "1"},
 		{name: "disabled", flags: "-p=1", procs: "3", wantFlags: "-p=1", wantProcs: "3"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("GOFLAGS", test.flags)
-			t.Setenv("GOMAXPROCS", test.procs)
-			if test.procs == "" {
-				if err := os.Unsetenv("GOMAXPROCS"); err != nil {
-					t.Fatal(err)
+			for key, value := range map[string]string{"GOMAXPROCS": test.procs, gobudget.TestProcsEnvironment: test.tests} {
+				t.Setenv(key, value)
+				if value == "" {
+					if err := os.Unsetenv(key); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			t.Setenv(gobudget.DirEnvironment, "")
@@ -55,7 +57,7 @@ func TestReviewCommandSharesGoBudget(t *testing.T) {
 			}
 			issue.PullRequestHeadSHA = strings.TrimSpace(head)
 			ctx := t.Context()
-			budget := gobudget.New(8, filepath.Join(t.TempDir(), "budget"), "/opt/example/detent")
+			budget := gobudget.New(8, filepath.Join(t.TempDir(), "budget"), "/opt/example/detent").WithJobs(4)
 			wantFlags := test.wantFlags
 			wantDir, wantSlots := "", ""
 			if test.enabled {
@@ -67,7 +69,8 @@ func TestReviewCommandSharesGoBudget(t *testing.T) {
 			t.Setenv("EXPECTED_GOMAXPROCS", test.wantProcs)
 			t.Setenv("EXPECTED_BUDGET_DIR", wantDir)
 			t.Setenv("EXPECTED_BUDGET_SLOTS", wantSlots)
-			command := `cd apps/api && test "$GOFLAGS" = "$EXPECTED_GOFLAGS" && test "$GOMAXPROCS" = "$EXPECTED_GOMAXPROCS" && test "$DETENT_GO_BUDGET_DIR" = "$EXPECTED_BUDGET_DIR" && test "$DETENT_GO_BUDGET_SLOTS" = "$EXPECTED_BUDGET_SLOTS" && printf 'budget environment verified\n'`
+			t.Setenv("EXPECTED_TEST_PROCS", test.wantTests)
+			command := `cd apps/api && test "$GOFLAGS" = "$EXPECTED_GOFLAGS" && test "$GOMAXPROCS" = "$EXPECTED_GOMAXPROCS" && test "${TEST_PROCS:-}" = "$EXPECTED_TEST_PROCS" && test "$DETENT_GO_BUDGET_DIR" = "$EXPECTED_BUDGET_DIR" && test "$DETENT_GO_BUDGET_SLOTS" = "$EXPECTED_BUDGET_SLOTS" && printf 'budget environment verified\n'`
 			receipt, err := backend.RunReviewCommand(ctx, info, issue, command)
 			if err != nil {
 				t.Fatal(err)

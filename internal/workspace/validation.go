@@ -58,8 +58,10 @@ func (l *LocalGit) applyValidationGoBudget(ctx context.Context, command *exec.Cm
 		l.logger.Warn("go build budget unavailable; validation Go commands run unqueued", "error", err)
 		return
 	}
-	if _, explicit := inherited["GOMAXPROCS"]; explicit {
-		delete(variables, "GOMAXPROCS")
+	for _, key := range []string{"GOMAXPROCS", gobudget.TestProcsEnvironment} {
+		if _, explicit := inherited[key]; explicit {
+			delete(variables, key)
+		}
 	}
 	procgroup.SetEnvironment(command, procgroup.Environment{Variables: variables})
 }

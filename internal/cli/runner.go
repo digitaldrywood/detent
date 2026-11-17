@@ -144,7 +144,7 @@ func withRunnerFactoryWithProjectTokens(
 			}); ok {
 				client, found := source.NativeClient(cfg.ID)
 				if !found {
-					return nil, errors.New("Hub session owner is unavailable for the runner project")
+					return nil, errors.New("runner project has no Hub session owner")
 				}
 				projectSessionStore = newHubBudgetSessionStore(client, cfg.ID)
 			}
@@ -187,7 +187,7 @@ func withRunnerFactoryWithProjectTokens(
 			}); ok {
 				identity = reporter.CommitIdentity()
 			}
-			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), projectSessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, providerUsage, projectGoTestReceipts(deps.Scheduling, cfg.ID, deps.Logger), isolationPolicy)
+			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget, cfg.GlobalJobSlots), projectSessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, providerUsage, projectGoTestReceipts(deps.Scheduling, cfg.ID, deps.Logger), isolationPolicy)
 			if local, ok := run.(*sshRunner); ok {
 				local.artifacts = artifacts
 			}
@@ -294,7 +294,9 @@ func buildRunnerWithIdentity(
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
-	return &sshRunner{Runner: run, commitIdentity: commitIdentity, buildCache: buildCache, workdir: projectWorkdir, projectID: projectID, memory: memory, goBuildSlots: goBudget.Slots, connection: serviceConnection, logger: logger, command: sshCommand}, nil
+	built := &sshRunner{Runner: run, commitIdentity: commitIdentity, buildCache: buildCache, workdir: projectWorkdir, projectID: projectID, memory: memory, goBuildSlots: goBudget.Slots, connection: serviceConnection, logger: logger, command: sshCommand}
+	built.goJobSlots.Store(int64(goBudget.Jobs))
+	return built, nil
 }
 
 func projectGoTestReceipts(scheduling any, projectID string, logger *slog.Logger) gotestreceipt.Config {
@@ -330,12 +332,12 @@ func installGoTestWrapper() (string, error) {
 	return gotestreceipt.Install(filepath.Join(cache, "detent", gotestreceipt.WrapperName), executable)
 }
 
-func hostGoBudget(slots int) gobudget.Budget {
+func hostGoBudget(slots int, jobs int) gobudget.Budget {
 	executable, err := os.Executable()
 	if err != nil {
 		executable = ""
 	}
-	return gobudget.New(slots, gobudget.HostDir(), executable)
+	return gobudget.New(slots, gobudget.HostDir(), executable).WithJobs(jobs)
 }
 
 // buildRunnerDependencies assembles production wiring independently of runner

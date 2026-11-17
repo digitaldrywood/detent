@@ -263,6 +263,7 @@ type Project struct {
 	GlobalMemory             Memory                             `yaml:"-"`
 	GlobalIO                 IO                                 `yaml:"-"`
 	GlobalCPU                CPU                                `yaml:"-"`
+	GlobalJobSlots           int                                `yaml:"-"`
 	IntakeConfigured         bool                               `yaml:"-"`
 }
 

@@ -518,6 +518,9 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 		}
 	}
 	applyRunner()
+	if updater, ok := projectRunner.(interface{ SetGoJobSlots(int) }); ok {
+		updater.SetGoJobSlots(cfg.GlobalJobSlots)
+	}
 
 	p.mu.Lock()
 	p.cfg = cfg

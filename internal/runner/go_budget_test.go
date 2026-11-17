@@ -267,6 +267,7 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 		budget    gobudget.Budget
 		hostFlags string
 		hostProcs string
+		hostTests string
 		variables map[string]string
 		want      map[string]string
 		managed   bool
@@ -319,6 +320,25 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			},
 		},
 		{
+			name:      "job slots share the host test budget",
+			workspace: goModule,
+			budget:    budget.WithJobs(3),
+			want: map[string]string{
+				"GOFLAGS": "-p=2 -trimpath " + toolexec, "GOMAXPROCS": "2",
+				gobudget.DirEnvironment: dir, gobudget.SlotsEnvironment: "8", gobudget.TestProcsEnvironment: "2",
+			},
+		},
+		{
+			name:      "host test budget is preserved",
+			workspace: goModule,
+			budget:    budget.WithJobs(1),
+			hostTests: "3",
+			want: map[string]string{
+				"GOFLAGS": "-p=2 -trimpath " + toolexec, "GOMAXPROCS": "2",
+				gobudget.DirEnvironment: dir, gobudget.SlotsEnvironment: "8", gobudget.TestProcsEnvironment: "3",
+			},
+		},
+		{
 			name:      "workspace without root module retains budget for subprocesses",
 			workspace: nonGo,
 			budget:    budget,
@@ -365,7 +385,7 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 				goBudget: tt.budget,
 				logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 				lookupEnv: func(key string) string {
-					return map[string]string{"GOFLAGS": tt.hostFlags, "GOMAXPROCS": tt.hostProcs}[key]
+					return map[string]string{"GOFLAGS": tt.hostFlags, "GOMAXPROCS": tt.hostProcs, gobudget.TestProcsEnvironment: tt.hostTests}[key]
 				},
 			}
 			input := procgroup.Environment{Variables: tt.variables, PathPrefixes: []string{"/shim"}}
@@ -415,5 +435,29 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 				t.Fatalf("PathPrefixes = %v, want preserved", got.PathPrefixes)
 			}
 		})
+	}
+}
+
+func TestGoJobSlotUpdatesReachLaterCommands(t *testing.T) {
+	budget := gobudget.New(8, filepath.Join(t.TempDir(), "budget"), "/opt/detent").WithJobs(1)
+	r := &Runner{goBudget: budget, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), lookupEnv: func(string) string { return "" }}
+	workspace := t.TempDir()
+	read := func() string {
+		return r.withGoBudget(t.Context(), workspace, procgroup.Environment{}).Variables[gobudget.TestProcsEnvironment]
+	}
+	if got := read(); got != "8" {
+		t.Fatalf("TEST_PROCS before reload = %q, want 8", got)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 100 {
+			read()
+		}
+	}()
+	r.SetGoJobSlots(4)
+	<-done
+	if got := read(); got != "2" {
+		t.Fatalf("TEST_PROCS after reload = %q, want 2", got)
 	}
 }

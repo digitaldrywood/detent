@@ -5,9 +5,22 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
+
+func (r *Runner) currentGoBudget() gobudget.Budget {
+	r.goBudgetMu.RLock()
+	defer r.goBudgetMu.RUnlock()
+	return r.goBudget
+}
+
+func (r *Runner) SetGoJobSlots(jobs int) {
+	r.goBudgetMu.Lock()
+	defer r.goBudgetMu.Unlock()
+	r.goBudget = r.goBudget.WithJobs(jobs)
+}
 
 func (r *Runner) withGoBudget(ctx context.Context, workspacePath string, environment procgroup.Environment) procgroup.Environment {
 	if variables := toolcache.ManagedEnvironment(ctx); len(variables) > 0 {
@@ -24,7 +37,7 @@ func (r *Runner) withGoBudget(ctx context.Context, workspacePath string, environ
 	if !explicit && r.lookupEnv != nil {
 		inherited = r.lookupEnv("GOFLAGS")
 	}
-	variables, err := r.goBudget.Environment(inherited)
+	variables, err := r.currentGoBudget().Environment(inherited)
 	if err != nil {
 		r.logger.Warn("go build budget unavailable; worker Go commands run unqueued", "error", err)
 		return environment
@@ -37,8 +50,10 @@ func (r *Runner) withGoBudget(ctx context.Context, workspacePath string, environ
 		merged[key] = value
 	}
 	if r.lookupEnv != nil {
-		if value := r.lookupEnv("GOMAXPROCS"); value != "" {
-			merged["GOMAXPROCS"] = value
+		for _, key := range []string{"GOMAXPROCS", gobudget.TestProcsEnvironment} {
+			if value := r.lookupEnv(key); value != "" {
+				merged[key] = value
+			}
 		}
 	}
 	for key, value := range environment.Variables {

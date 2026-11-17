@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -66,6 +67,7 @@ type sshRunner struct {
 	projectID      string
 	memory         globalconfig.Memory
 	goBuildSlots   int
+	goJobSlots     atomic.Int64
 	connection     serviceapi.Connection
 	logger         *slog.Logger
 	command        func(context.Context, string, string) *exec.Cmd
@@ -91,6 +93,7 @@ type sshBootstrap struct {
 	Repository      string
 	Memory          globalconfig.Memory
 	GoBuildSlots    int
+	GoJobSlots      int
 	Connection      serviceapi.Connection
 	BudgetChecker   bool
 	BudgetEstimator bool
@@ -101,6 +104,11 @@ type sshBootstrap struct {
 func sshCommand(ctx context.Context, host, command string) *exec.Cmd {
 	// #nosec G204 -- host is a validated operator-configured SSH destination; callers supply only fixed Detent protocol commands.
 	return exec.CommandContext(ctx, "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", "-o", "ForwardAgent=no", "--", host, command)
+}
+
+func (r *sshRunner) SetGoJobSlots(jobs int) {
+	r.goJobSlots.Store(int64(jobs))
+	r.Runner.SetGoJobSlots(jobs)
 }
 
 func (r *sshRunner) WorkerHostAvailable(ctx context.Context, host string) bool {
@@ -198,7 +206,7 @@ func (r *sshRunner) callSSH(ctx context.Context, request runnerpkg.RunRequest, m
 	if source == "" {
 		source = r.workdir
 	}
-	bootstrap := sshBootstrap{Issues: issues, Version: runnerpkg.SSHProtocolVersion, Workflow: workflow, Policy: workflow.Config.Policy, ProjectID: r.projectID, Workdir: r.workdir, Home: home, Repository: workspace.RepositoryURL(ctx, source), Memory: r.memory, GoBuildSlots: r.goBuildSlots, Connection: r.connection, BudgetChecker: checker, BudgetEstimator: estimator, GoTestReceipts: r.GoTestReceiptsEnabled(), Run: runnerpkg.NewSSHRunRequest(request)}
+	bootstrap := sshBootstrap{Issues: issues, Version: runnerpkg.SSHProtocolVersion, Workflow: workflow, Policy: workflow.Config.Policy, ProjectID: r.projectID, Workdir: r.workdir, Home: home, Repository: workspace.RepositoryURL(ctx, source), Memory: r.memory, GoBuildSlots: r.goBuildSlots, GoJobSlots: int(r.goJobSlots.Load()), Connection: r.connection, BudgetChecker: checker, BudgetEstimator: estimator, GoTestReceipts: r.GoTestReceiptsEnabled(), Run: runnerpkg.NewSSHRunRequest(request)}
 	command := "detent " + SSHWorkerArgument
 	cmd := r.command(ctx, request.WorkerHost, command)
 	cmd.WaitDelay = time.Second
@@ -341,7 +349,7 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 	if err != nil {
 		return nil, err
 	}
-	goBudget := hostGoBudget(boot.GoBuildSlots)
+	goBudget := hostGoBudget(boot.GoBuildSlots, boot.GoJobSlots)
 	// Bootstrap credentials have no durable owner. Remove them after the
 	// lifecycle has joined; retained work is never a retained credential.
 	cleanup := func() error {

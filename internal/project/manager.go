@@ -148,6 +148,7 @@ func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 		projects[index].GlobalMemory = cfg.Global.Memory
 		projects[index].GlobalIO = cfg.Global.IO
 		projects[index].GlobalCPU = cfg.Global.CPU
+		projects[index].GlobalJobSlots = cfg.Global.MaxConcurrentAgents
 		if cfg.Global.ActiveHours != nil {
 			activeHours := cfg.Global.ActiveHours.Normalize()
 			projects[index].GlobalActiveHours = &activeHours
@@ -1432,6 +1433,7 @@ func sameProjectConfigExceptLiveFields(left globalconfig.Project, right globalco
 	left.GlobalMemory.PollIntervalMS = right.GlobalMemory.PollIntervalMS
 	left.GlobalIO = right.GlobalIO
 	left.GlobalCPU = right.GlobalCPU
+	left.GlobalJobSlots = right.GlobalJobSlots
 	left.GlobalAgents = right.GlobalAgents
 	left.ModelSelection = right.ModelSelection
 	left.Priority = right.Priority

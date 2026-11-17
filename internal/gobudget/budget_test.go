@@ -46,6 +46,33 @@ func TestWidthDividesBudgetAcrossInvocations(t *testing.T) {
 	}
 }
 
+func TestEnvironmentSharesTestBudgetAcrossJobs(t *testing.T) {
+	tests := []struct {
+		name  string
+		slots int
+		jobs  int
+		want  string
+	}{
+		{name: "one job takes the host", slots: 16, jobs: 1, want: "16"},
+		{name: "six jobs share sixteen", slots: 16, jobs: 6, want: "2"},
+		{name: "two jobs share ten", slots: 10, jobs: 2, want: "5"},
+		{name: "more jobs than slots", slots: 4, jobs: 8, want: "1"},
+		{name: "unknown jobs keep the caller default", slots: 16, jobs: 0, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budget := New(tt.slots, filepath.Join(t.TempDir(), "budget"), filepath.Join(t.TempDir(), "detent")).WithJobs(tt.jobs)
+			environment, err := budget.Environment("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := environment[TestProcsEnvironment]; got != tt.want || ok != (tt.want != "") {
+				t.Fatalf("Environment()[%s] = %q (set %t), want %q", TestProcsEnvironment, got, ok, tt.want)
+			}
+		})
+	}
+}
+
 func TestGOFLAGSPreservesInheritedFlags(t *testing.T) {
 	tests := []struct {
 		name      string
