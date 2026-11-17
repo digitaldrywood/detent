@@ -2,19 +2,26 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -113,6 +120,61 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, result)
 	}
+	evidence := gate.ScheduledEvidence{Schema: 1, Repository: repository, RunID: input.RunID, RunAttempt: input.RunAttempt, JobID: input.JobID, JobName: input.JobName, HeadSHA: input.HeadSHA, Conclusion: input.ExitStatus,
+		OccurrenceKey: policy.Digest([]byte(input.RunID + "/" + input.RunAttempt + "/" + input.JobID)),
+		RunURL:        "https://github.com/" + repository + "/actions/runs/" + input.RunID + "/attempts/" + input.RunAttempt,
+		JobURL:        "https://github.com/" + repository + "/actions/jobs/" + input.JobID}
+	if s.config.ImportBackend == nil || len(gate.ParseScheduledEvidence(evidence.Stamp())) != 1 {
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("CI classification requires a verified failed job"))
+	}
+	request := GitHubImportRequest{Profile: "native", Repository: repository, Stage: "scheduled", Scheduled: &evidence}
+	approval, err := s.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if approval.Policy.ID != "" {
+		contract, err := config.ResolvePolicyIssueContract(approval.Policy)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if workflow, branch, _, authorized := contract.ScheduledImportWorkflow(); authorized {
+			request.ScheduledWorkflow, request.ScheduledBranch = workflow, branch
+		}
+	}
+	verified, err := s.config.ImportBackend.FetchImportPage(ctx, request)
+	if err != nil || verified.Scheduled == nil || verified.Scheduled.RunID != input.RunID || verified.Scheduled.RunAttempt != input.RunAttempt || verified.Scheduled.JobID != input.JobID || verified.Scheduled.HeadSHA != input.HeadSHA || verified.Scheduled.Repository != repository || verified.Scheduled.JobName != input.JobName || verified.Scheduled.Conclusion != input.ExitStatus {
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("CI classification requires a verified failed job"))
+	}
+	identity, err := json.Marshal([]string{string(scope.Project), repository, input.RunID, input.RunAttempt, input.JobID})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		now := s.config.Clock().UTC()
+		window, limit := time.Unix(0, 0).UTC(), int64(math.MaxInt64)
+		if plans := s.database.plansService().Plans(); plans != nil {
+			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
+			if err != nil {
+				return err
+			}
+			limit = entitlement.Allowances["api_mutations"]
+			window = time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
+		}
+		usage, err := w.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: scope.Organization, ID: "scheduled-ci/" + policy.Digest(identity), WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
+		if err != nil {
+			return err
+		}
+		if !usage.Allowed {
+			return &hostedplans.LimitError{Resource: "api_mutations", Allowance: limit, Consumption: usage.Used}
+		}
+		if !usage.Applied {
+			return &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
+		}
+		return nil
+	})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	result, err = (progresscheck.AI{Backend: ciTextBackend{config: s.config.Conversation}}).ClassifyCI(ctx, input)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -125,7 +187,23 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.StoreScheduledDecision(ctx, scope.Project, input, result, s.config.Clock().UTC())
+		if err := owner.StoreScheduledDecision(ctx, scope.Project, input, result, s.config.Clock().UTC()); err != nil {
+			return err
+		}
+		if s.database.plansService().Plans() != nil {
+			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, s.config.Clock().UTC()))
+			if err != nil {
+				return err
+			}
+			used, err := w.CollaborationBytes(ctx)
+			if err != nil {
+				return err
+			}
+			if limit, limited := entitlement.Allowances["collaboration_bytes"]; limited && used > limit {
+				return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return s.nativeAPIError(c, fmt.Errorf("store CI classification: %w", err))

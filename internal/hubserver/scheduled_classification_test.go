@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,9 +14,10 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -28,10 +30,16 @@ type ciDecisionBackend struct {
 	calls    int
 	decision progresscheck.CIDecision
 	fail     bool
+	onCall   func()
 }
 
 func (b *ciDecisionBackend) RunTurn(_ context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	b.calls++
+	if b.onCall != nil {
+		callback := b.onCall
+		b.onCall = nil
+		callback()
+	}
 	if !request.TextOnly || !request.ReadOnly || request.MaxTurns != 1 || request.ToolInstructions != progresscheck.CIInstructions || request.SupplementalTools {
 		b.t.Fatal("CI decision backend may only generate text from evidence")
 	}
@@ -66,13 +74,13 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			storage := projectRecordPostgres(t)
+			ref := billingstore.PlanReference{ID: "example", Version: 1}
+			allowances := map[string]int64{"api_mutations": 3, "collaboration_bytes": 100000}
+			seedConversationAllowancePostgres(t, storage, "org_example", ref, allowances)
 			backend := &ciDecisionBackend{t: t, decision: test.decision, fail: test.fail}
-			service := &Service{echo: echo.New(), config: Config{Logger: discardLogger(), TenantRepository: storage, Clock: time.Now, Conversation: &ConversationConfig{Backend: backend, Model: "configured-model"}}}
+			service := &Service{database: conversationAllowanceDatabase("org_example", ref, allowances, storage), echo: echo.New(), config: Config{Logger: discardLogger(), TenantRepository: storage, Clock: func() time.Time { return time.Unix(120, 0).UTC() }, Conversation: &ConversationConfig{Backend: backend, Model: "configured-model"}}}
 			repository := "owner/repository"
 			err := storage.WriteTenant(t.Context(), "org_example", corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_example", Name: "Example", CreatedAt: time.Now()}); err != nil {
-					return err
-				}
 				for _, id := range []tracker.ProjectID{"prj_first", "prj_second"} {
 					record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_example", ID: id, Name: string(id), Slug: strings.ReplaceAll(string(id), "_", "-"), Profile: "native"}, States: nativeFixtureStates()})
 					if err != nil {
@@ -101,6 +109,13 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				return response
 			}
 			input := progresscheck.CIFailure{Repository: repository, HeadSHA: strings.Repeat("a", 40), RunID: "1", RunAttempt: "1", JobID: "2", JobName: test.name, Step: "Run check", ExitStatus: "failure", LogTail: test.log, ChangedFiles: []string{"internal/example.go"}}
+			service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, r GitHubImportRequest) (GitHubImportPage, error) {
+				if r.Scheduled.RunID != "1" || r.Scheduled.JobID == "999" {
+					return GitHubImportPage{}, errors.New("unknown run")
+				}
+				return GitHubImportPage{Scheduled: r.Scheduled}, nil
+			})
+			backend.onCall = func() { requireNativeStatus(t, call("prj_first", input), http.StatusConflict) }
 			var first progresscheck.CIDecision
 			for n := range 2 {
 				response := call("prj_first", input)
@@ -125,6 +140,49 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				t.Fatal("another project reused the first project's decision")
 			}
 
+			for n := range 30 {
+				unknown := input
+				unknown.RunID = fmt.Sprint(n + 10)
+				unknown.JobID = fmt.Sprint(n + 100)
+				requireNativeStatus(t, call("prj_first", unknown), http.StatusUnprocessableEntity)
+			}
+			unknownJob := input
+			unknownJob.JobID = "999"
+			requireNativeStatus(t, call("prj_first", unknownJob), http.StatusUnprocessableEntity)
+			for n := range 30 {
+				distinct := input
+				distinct.JobID = fmt.Sprint(n + 100)
+				response := call("prj_first", distinct)
+				if n == 0 {
+					requireNativeStatus(t, response, http.StatusOK)
+				} else {
+					requireNativeStatus(t, response, http.StatusTooManyRequests)
+				}
+			}
+			if backend.calls != 3 {
+				t.Fatalf("unbounded model calls: %d", backend.calls)
+			}
+			err = storage.ReadTenant(t.Context(), "org_example", corestore.Serving, func(r tenantstore.Reader) error {
+				used, err := r.CollaborationBytes(t.Context())
+				if err != nil {
+					return err
+				}
+				if used <= 0 {
+					t.Fatal("decisions are unaccounted")
+				}
+				for n := range 30 {
+					distinct := input
+					distinct.JobID = fmt.Sprint(n + 100)
+					_, err := r.(policystore.ScheduledReader).ReadScheduledDecision(t.Context(), "prj_first", distinct)
+					if n == 0 && err != nil || n > 0 && !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("decision %d: %v", n, err)
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 			input.HeadSHA = strings.Repeat("b", 40)
 			response = call("prj_first", input)
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
@@ -132,7 +190,7 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			input.LogTail = strings.Repeat("x", 8001)
 			response = call("prj_first", input)
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-			if backend.calls != 2 {
+			if backend.calls != 3 {
 				t.Fatal("invalid evidence reached the AI backend")
 			}
 		})

@@ -30,6 +30,10 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 			if !ok {
 				t.Fatal("PostgreSQL scheduled decision owner is missing")
 			}
+			before, err := w.CollaborationBytes(t.Context())
+			if err != nil {
+				return err
+			}
 			if err := owner.StoreScheduledDecision(t.Context(), "prj_first", input, want, time.Now()); err != nil {
 				return err
 			}
@@ -37,6 +41,17 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 			other.Reason = "replacement"
 			if err := owner.StoreScheduledDecision(t.Context(), "prj_first", input, other, time.Now()); err != nil {
 				return err
+			}
+			after, err := w.CollaborationBytes(t.Context())
+			if err != nil {
+				return err
+			}
+			wantBytes := int64(72)
+			if org == "org_second" {
+				wantBytes = 74
+			}
+			if after-before != wantBytes {
+				t.Fatalf("decision bytes = %d, want %d (replays must charge once)", after-before, wantBytes)
 			}
 			got, err := owner.ReadScheduledDecision(t.Context(), "prj_first", input)
 			if err != nil {
