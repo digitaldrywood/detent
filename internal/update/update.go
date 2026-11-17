@@ -325,6 +325,7 @@ type Service struct {
 }
 
 type ApplyOptions struct {
+	ExactRelease          bool
 	ExpectedVersion       string
 	Urgent                bool
 	FollowHub             bool
@@ -413,13 +414,14 @@ func (s *Service) Check(ctx context.Context) (Status, error) {
 
 func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) {
 	target := ""
-	if opts.Urgent || opts.FollowHub {
+	exact := opts.FollowHub || opts.ExactRelease
+	if opts.Urgent || exact {
 		if opts.ExpectedVersion == "" {
 			return Status{Action: ActionRefused, FailureReason: "Update target resolution failed"}, ErrRefused
 		}
 		target = opts.ExpectedVersion
 	}
-	status, release, err := s.planForVersion(ctx, target, opts.FollowHub)
+	status, release, err := s.planForVersion(ctx, target, exact)
 	if err != nil {
 		status.FailureReason = "Update target resolution failed"
 		return status, err
@@ -437,7 +439,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 
 	switch status.InstallSource {
 	case InstallSourceHomebrew:
-		if opts.FollowHub {
+		if exact {
 			return s.applyReleaseUpdate(ctx, status, release, opts, true, false)
 		}
 		status.Action = ActionDelegate

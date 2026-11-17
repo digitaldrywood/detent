@@ -37,6 +37,7 @@ type FleetLease struct {
 }
 
 type FleetRecord struct {
+	Lifecycle           *runnerauth.Lifecycle
 	HostRevision        int64
 	OwnerPrincipalID    string
 	OwnerUserID         string

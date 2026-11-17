@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerfleet"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -190,6 +190,13 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 				return problem.ProjectID != "" && !visible[tracker.ProjectID(problem.ProjectID)]
 			})
 			if runner.ConnectionHealth == "online" {
+				runner.UpdateTargetVersion = record.Update.TargetVersion
+				runner.UpdateTargetHeld = record.Update.TargetHeld
+				if runner.Lifecycle != nil && record.Update.TargetVersion != "" {
+					lifecycle := *runner.Lifecycle
+					lifecycle.TargetVersion = record.Update.TargetVersion
+					runner.Lifecycle = &lifecycle
+				}
 				runner.Health = "online"
 				if len(runner.Problems) > 0 {
 					runner.Health = "needs_attention"
@@ -320,59 +327,7 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 }
 
 func runnerFromFleetRecord(record runnerstore.FleetRecord, now time.Time, urgent runnerstore.UrgentUpdate) runnerauth.Runner {
-	identity, machine := record.Identity, record.Machine
-	runner := runnerauth.Runner{
-		Binding:          runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID},
-		OrganizationID:   identity.OrganizationID,
-		Revision:         identity.Revision,
-		LastHeartbeatAt:  identity.LastHeartbeatAt,
-		Hostname:         machine.Hostname,
-		HostDisplayName:  machine.DisplayName,
-		HostCapacity:     int(machine.Capacity),
-		HostRevision:     record.HostRevision,
-		ReportedCapacity: int(identity.ReportedCapacity),
-		CapacityConfig:   identity.CapacityConfig,
-		OS:               identity.OS,
-		Architecture:     identity.Architecture,
-		BackendIsolation: record.Isolation,
-		Update:           record.Update.Observation,
-		Problems:         slices.Clone(record.Problems),
-		Operations:       slices.Clone(identity.Operations),
-		Routing: runnerauth.Routing{
-			ProjectRankOverrides:  maps.Clone(identity.ProjectRanks),
-			UpdateRequest:         record.Update.Desired,
-			CapacityRequest:       identity.CapacityRequest,
-			Scope:                 identity.Scope,
-			State:                 identity.State,
-			DisplayName:           identity.DisplayName,
-			ProjectIDs:            slices.Clone(identity.ProjectIDs),
-			Tags:                  slices.Clone(identity.Tags),
-			CapacityLimit:         int(identity.CapacityLimit),
-			ProjectCapacityLimits: maps.Clone(identity.ProjectCapacityLimits),
-			ProjectRanks:          maps.Clone(identity.ProjectRanks),
-			MachineUse:            identity.MachineUse,
-			IsolationTier:         identity.IsolationTier,
-			HostServices:          slices.Clone(identity.HostServices),
-			Availability: runnerauth.Availability{
-				Timezone:     identity.Availability.Timezone,
-				Windows:      slices.Clone(identity.Availability.Windows),
-				WindowSlots:  maps.Clone(identity.Availability.WindowSlots),
-				HardDeadline: identity.Availability.HardDeadline,
-			},
-		},
-	}
-	runner.Health = "online"
-	if record.CredentialRevoked {
-		runner.Health = "revoked"
-	} else if !identity.ExpiresAt.After(now) || now.Before(record.CredentialCreatedAt) || record.CredentialExpiresAt != nil && !record.CredentialExpiresAt.After(now) {
-		runner.Health = "expired"
-	} else if now.Before(identity.LastHeartbeatAt) || !now.Before(identity.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)) {
-		runner.Health = "offline"
-	}
-	runner.ConnectionHealth = runner.Health
-	applyUrgentRunnerRouting(&runner, urgentRunnerUpdate{Revision: urgent.Revision, Request: urgent.Request}, machine.Version)
-	applyRunnerProblemView(&runner, machine.SpriteName, now)
-	return runner
+	return runnerfleet.FromRecord(record, now, urgent)
 }
 
 type tenantFleetAccount struct{ provider, shared, runner, alias string }

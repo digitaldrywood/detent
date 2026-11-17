@@ -12,6 +12,15 @@ import (
 )
 
 func (s *Service) acceptStoredReceipt(ctx context.Context, reader tenantstore.Reader, runnerID string, state runnerstore.UpdateState, urgent runnerstore.UrgentUpdate, next *runnerauth.UpdateReceipt, running runnerauth.BuildEvidence) (bool, bool, error) {
+	if failure := next.PreviousFailure; failure != nil {
+		record, err := reader.RunnerUpdateRequest(ctx, failure.Request.ID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return false, false, err
+		}
+		if errors.Is(err, corestore.ErrNotFound) || !record.Request.Matches(failure.Request) || record.RunnerID != runnerID && (record.RunnerID != "" || !record.Request.Urgent) {
+			next.PreviousFailure = nil
+		}
+	}
 	known, accepted := acceptReceipt(state, urgent, next, running)
 	if known {
 		return known, accepted, nil

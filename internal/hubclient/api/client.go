@@ -57,27 +57,29 @@ type Config struct {
 }
 
 type Client struct {
-	artifactSettings   func() (string, int64)
-	now                func() time.Time
-	sessionTimings     SessionTimings
-	requestBudgetMu    sync.Mutex
-	requestBudgetUntil time.Time
-	receiptBudgetUntil time.Time
-	heartbeatProjects  map[string]*heartbeatProject
-	heartbeatMu        sync.Mutex
-	capabilitiesDigest string
-	reads              *nativeReadCache
-	capabilitiesAt     time.Time
-	capabilities       nativeCapabilities
-	capabilitiesMu     sync.Mutex
-	artifactServiceID  string
-	artifactBytes      int64
-	nativeLeases       sync.Map
-	runner             *RunnerState
-	baseURL            *url.URL
-	tokenSource        func() string
-	httpClient         *http.Client
-	leaseHTTPClient    *http.Client
+	runnerRoutingMu       sync.RWMutex
+	runnerRoutingObserver func(context.Context, string) error
+	artifactSettings      func() (string, int64)
+	now                   func() time.Time
+	sessionTimings        SessionTimings
+	requestBudgetMu       sync.Mutex
+	requestBudgetUntil    time.Time
+	receiptBudgetUntil    time.Time
+	heartbeatProjects     map[string]*heartbeatProject
+	heartbeatMu           sync.Mutex
+	capabilitiesDigest    string
+	reads                 *nativeReadCache
+	capabilitiesAt        time.Time
+	capabilities          nativeCapabilities
+	capabilitiesMu        sync.Mutex
+	artifactServiceID     string
+	artifactBytes         int64
+	nativeLeases          sync.Map
+	runner                *RunnerState
+	baseURL               *url.URL
+	tokenSource           func() string
+	httpClient            *http.Client
+	leaseHTTPClient       *http.Client
 }
 
 type Machine struct {

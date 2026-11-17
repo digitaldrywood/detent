@@ -28,6 +28,7 @@ import (
 )
 
 type hubSchedulingOptions struct {
+	lifecycleStart            func(*hubclient.Client) error
 	applyProjectConfiguration func(context.Context, string, runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration
 	hubProcessReceipts        bool
 	workspaceSupport          func() workspacerunner.Support
@@ -90,6 +91,11 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	})
 	if err != nil {
 		return nil, err
+	}
+	if len(options) > 0 && options[0].lifecycleStart != nil {
+		if err := options[0].lifecycleStart(client); err != nil {
+			return nil, err
+		}
 	}
 	nativeProjects := make(map[string]tracker.ProjectID, len(clientConfig.NativeProjects))
 	for name, id := range clientConfig.NativeProjects {

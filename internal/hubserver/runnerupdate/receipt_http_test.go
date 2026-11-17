@@ -91,7 +91,7 @@ func assertMonotonicReceipt(t *testing.T, f receiptFixture, index int, want runn
 }
 
 func TestPostgresRunnerUpdateReceiptMonotonic(t *testing.T) {
-	for _, mode := range []string{"put-put"} {
+	for _, mode := range []string{"put-put", "put-put-unregistered-history"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newReceiptFixture(t)
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -103,6 +103,20 @@ func TestPostgresRunnerUpdateReceiptMonotonic(t *testing.T) {
 				newer := runnerauth.UpdateReceipt{Request: request, Status: "applied", Applied: &build, ObservedAt: now.Add(time.Second)}
 				if index == 1 {
 					newer.ObservedAt = old.ObservedAt
+				}
+				if mode == "put-put-unregistered-history" {
+					legacy := request
+					legacy.ID = "legacy_" + request.ID
+					newer.PreviousFailure = &runnerauth.UpdateFailure{Request: legacy, FailureReason: "Prior process update failed", ObservedAt: now}
+					observation := runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: build, Receipt: &newer, ObservedAt: now, ReceivedAt: now}
+					observation.Revision = observation.BuildRevision()
+					if err := f.service.Repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+						return w.ReplaceRunnerUpdateObservation(t.Context(), f.bindings[index].RunnerID, &observation)
+					}); err != nil {
+						t.Errorf("persist current receipt with legacy history: %v", err)
+					}
+					writeMonotonicReceipt(t, f, index, "legacy history", newer, build)
+					newer.PreviousFailure = nil
 				}
 				writers := strings.Split(mode, "-")
 

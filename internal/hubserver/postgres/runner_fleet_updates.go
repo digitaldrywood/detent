@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/runnerrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -89,13 +90,13 @@ UNION SELECT previous_failure_request_id FROM runner_update_receipts WHERE organ
 			return mapError(ctx, err)
 		}
 		request, ok := requests[requestID]
-		if !ok || !runnerReceiptRequestOwned(request, id) {
+		if !ok || !runnerrecords.ReceiptRequestOwned(request, id) {
 			return corestore.ErrInvalidPage
 		}
 		receipt.Request = request.Request
 		if previousID.Valid {
 			previous, ok := requests[previousID.String]
-			if !ok || !runnerReceiptRequestOwned(previous, id) {
+			if !ok || !runnerrecords.ReceiptRequestOwned(previous, id) {
 				return corestore.ErrInvalidPage
 			}
 			receipt.PreviousFailure = &runnerauth.UpdateFailure{Request: previous.Request, FailureReason: previousReason.String, ObservedAt: previousAt.Time}
@@ -147,5 +148,5 @@ UNION SELECT previous_failure_request_id FROM runner_update_receipts WHERE organ
 			return corestore.ErrInvalidPage
 		}
 	}
-	return nil
+	return s.runnerRecords().FilterFleetOffers(ctx, records, indices, ids)
 }

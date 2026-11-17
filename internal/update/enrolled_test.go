@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -616,6 +618,53 @@ func TestSchedulerDevelopmentBuildSkipsDiscovery(t *testing.T) {
 			}
 			if updater.applyCalls != 1 || reservations != 1 || restarts != 1 || !updater.applyOptions[0].FromRelease {
 				t.Fatalf("explicit release owner changed: applies=%d reservations=%d restarts=%d options=%+v", updater.applyCalls, reservations, restarts, updater.applyOptions)
+			}
+		})
+	}
+}
+
+func TestSchedulerHubOwnedTarget(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("authorized=%t", allow), func(t *testing.T) {
+			now := time.Now().UTC()
+			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+			updater := &schedulerUpdaterStub{checkStatus: Status{LatestVersion: "1.2.9", UpdateAvailable: true}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.2.2", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}}
+			scheduler, err := NewScheduler(SchedulerConfig{CheckInterval: time.Hour, Updater: updater, RunningBuild: running, StatePath: filepath.Join(t.TempDir(), "state.json"), Now: func() time.Time { return now }, ReserveIdle: func(context.Context) (func(), bool) { return func() {}, true }, ReserveDrain: schedulerDrainReservation, RequestRestart: func(string) bool { return true }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			states := []runnerauth.LifecycleState{}
+			scheduler.SetLifecycleReporter(func(_ context.Context, state runnerauth.LifecycleState, reason, target string) error {
+				states = append(states, state)
+				if state == runnerauth.LifecycleUpdating && !allow {
+					return ErrRefused
+				}
+				if state == runnerauth.LifecycleUpdating && target != "1.2.2" {
+					t.Errorf("authorized target=%s", target)
+				}
+				if state == runnerauth.LifecycleShuttingDown && reason != "update" {
+					t.Errorf("shutdown reason=%s", reason)
+				}
+				return nil
+			})
+			observation := scheduler.EnrolledUpdate(t.Context(), running, nil)
+			request := runnerauth.UpdateRequest{ID: "hub-selected", Service: "detent", Version: "1.2.2", ExpectedBuildRevision: observation.Revision, Release: true, RequestedAt: now}
+			observation = scheduler.EnrolledUpdate(t.Context(), running, &request)
+			if !allow {
+				if updater.applyCalls != 0 || len(states) != 3 || states[2] != runnerauth.LifecycleReady {
+					t.Fatalf("rejected offer applied: calls=%d states=%v", updater.applyCalls, states)
+				}
+				return
+			}
+			if updater.applyCalls != 1 || updater.applyOptions[0].ExpectedVersion != "1.2.2" || updater.applyOptions[0].FollowHub || !updater.applyOptions[0].ExactRelease || observation.Receipt == nil || observation.Receipt.Status != "restart_requested" {
+				t.Fatalf("Hub target ignored: calls=%d observation=%+v", updater.applyCalls, observation)
+			}
+			if !slices.Equal(states, []runnerauth.LifecycleState{runnerauth.LifecycleDraining, runnerauth.LifecycleUpdating, runnerauth.LifecycleShuttingDown}) {
+				t.Fatalf("update transitions=%v", states)
+			}
+			scheduler.EnrolledUpdate(t.Context(), running, &request)
+			if updater.applyCalls != 1 {
+				t.Fatal("settled Hub request applied again")
 			}
 		})
 	}

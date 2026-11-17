@@ -3,7 +3,7 @@
   "packages": {
     "github.com/digitaldrywood/detent/internal/cli": {
       "files": 118,
-      "loc": 30336,
+      "loc": 30305,
       "test-files": 147,
       "test-funcs": 609
     },
@@ -19,13 +19,13 @@
     },
     "github.com/digitaldrywood/detent/internal/hubserver": {
       "files": 432,
-      "loc": 94789,
+      "loc": 94757,
       "test-files": 481,
       "test-funcs": 1401
     },
     "github.com/digitaldrywood/detent/internal/hubserver/postgres": {
       "files": 257,
-      "loc": 44360
+      "loc": 44117
     },
     "github.com/digitaldrywood/detent/internal/orchestrator": {
       "files": 112,

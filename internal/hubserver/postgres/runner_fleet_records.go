@@ -144,6 +144,9 @@ AND ($3='' OR (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHE
 	if err := s.fleetIsolationRecords(ctx, records, indices, ids); err != nil {
 		return nil, err
 	}
+	if err := s.runnerRecords().FillLifecycles(ctx, records, indices, ids); err != nil {
+		return nil, err
+	}
 	if err := s.fleetUpdateRecords(ctx, records, indices, ids); err != nil {
 		return nil, err
 	}
