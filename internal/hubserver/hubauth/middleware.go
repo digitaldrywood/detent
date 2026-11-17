@@ -20,8 +20,10 @@ type NativeMiddlewareOptions struct {
 }
 
 func RequestScope(c echo.Context) hubapi.Scope {
-	scope, _ := c.Get("hub_request_scope").(hubapi.Scope)
-	return scope
+	if scope, ok := c.Get("hub_request_scope").(hubapi.Scope); ok {
+		return scope
+	}
+	return hubapi.Scope{}
 }
 
 func (s *Authenticator) Native(options NativeMiddlewareOptions, roles ...TokenScope) echo.MiddlewareFunc {

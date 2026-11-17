@@ -16,7 +16,10 @@ import (
 )
 
 func (s *Service) projectNativeAnalyticsResidenceTenant(ctx context.Context, scope hubscope.NativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
-	live, _ := ctx.Value(analyticsLiveIssuesKey{}).(bool)
+	var live bool
+	if value, ok := ctx.Value(analyticsLiveIssuesKey{}).(bool); ok {
+		live = value
+	}
 	after, cursor, key, err := s.analyticsResidenceSeek(ctx, scope, out.Window, live)
 	if err != nil {
 		return err

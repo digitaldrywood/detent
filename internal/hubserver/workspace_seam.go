@@ -81,10 +81,17 @@ func (w *workspaceService) newLifecycle() *workspacehub.Service {
 		Organization: w.server.accessOrganization,
 		Now:          w.now,
 		Reader: func(r tenantstore.Reader) workspacehub.Reader {
-			return workspaceLifecycleReader{r.(postgres.WorkspaceReader)}
+			reader, ok := r.(postgres.WorkspaceReader)
+			if !ok {
+				panic("tenant reader does not support workspace reads")
+			}
+			return workspaceLifecycleReader{reader}
 		},
 		Writer: func(w tenantstore.Writer) workspacehub.Writer {
-			owner := w.(postgres.WorkspaceWriter)
+			owner, ok := w.(postgres.WorkspaceWriter)
+			if !ok {
+				panic("tenant writer does not support workspace writes")
+			}
 			return workspaceLifecycleWriter{workspaceLifecycleReader: workspaceLifecycleReader{owner}, workspaceLifecycleStateWriter: workspaceLifecycleStateWriter{owner}, owner: owner}
 		},
 		PrepareIssueClose: func(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, item string, now time.Time) (func(context.Context, tenantstore.Writer) error, error) {

@@ -154,8 +154,8 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	if preview {
 		return hubProjectResult(plan.View)
 	}
-	origin, _ := ctx.Value(hubscope.OperatorEntryOriginKey{}).(string)
-	if origin == "" {
+	origin, ok := ctx.Value(hubscope.OperatorEntryOriginKey{}).(string)
+	if !ok || origin == "" {
 		origin = operatortool.CurrentConnection(ctx).Origin
 	}
 	if scope.Credential.EntryKey != nil && origin == "" {

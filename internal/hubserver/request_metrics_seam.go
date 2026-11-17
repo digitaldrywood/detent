@@ -45,8 +45,10 @@ func (s *Service) requestMetricsHTTP() *requestmetrics.HTTP {
 	return requestmetrics.NewHTTP(requestmetrics.HTTPDeps{RequestTimeout: s.requestTimeout, Collector: s.requestMetrics, Repository: s.config.TenantRepository, Now: s.config.Clock, Logger: s.config.Logger, Echo: s.echo, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, err) }, Refuse: func(c echo.Context, status int, code, reason string, body any) error {
 		return s.refusedAPIError(c, status, code, reason, body)
 	}, JSONError: s.hostedJSONError, Credential: func(c echo.Context) hubauth.Credential {
-		cred, _ := c.Get("hub_api_credential").(hubapi.APICredential)
-		return hubscope.AuthCredential(cred)
+		if cred, ok := c.Get("hub_api_credential").(hubapi.APICredential); ok {
+			return hubscope.AuthCredential(cred)
+		}
+		return hubscope.AuthCredential(hubapi.APICredential{})
 	}, CurrentOperator: func(ctx context.Context) (hubauth.Credential, error) {
 		c, err := currentHubOperator(ctx)
 		return hubscope.AuthCredential(c), err

@@ -190,8 +190,10 @@ func (s *Service) creditWorkerService() *credits.Service {
 	cfg := s.hostedBillingConfig()
 	var funding *credits.Funding
 	if cfg != nil {
-		provider, _ := cfg.Provider.(billing.CreditProvider)
-		funding = &credits.Funding{Provider: provider, CheckoutDisabled: cfg.CheckoutDisabled}
+		funding = &credits.Funding{CheckoutDisabled: cfg.CheckoutDisabled}
+		if provider, ok := cfg.Provider.(billing.CreditProvider); ok {
+			funding.Provider = provider
+		}
 		for _, pack := range cfg.CreditPacks {
 			funding.CreditPacks = append(funding.CreditPacks, credits.Pack(pack))
 		}

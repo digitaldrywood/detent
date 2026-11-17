@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -50,7 +51,10 @@ func (m *scheduledSourceMaintenance) step(ctx context.Context, tenant hubmainten
 		return 0, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	value, _ := m.states.LoadOrStore(tenant.Organization, &scheduledSourceState{})
-	current := value.(*scheduledSourceState)
+	current, ok := value.(*scheduledSourceState)
+	if !ok {
+		return 0, errors.New("scheduled source maintenance state has an unexpected type")
+	}
 	current.mu.Lock()
 	if current.generation != tenant.Generation {
 		current.generation = tenant.Generation

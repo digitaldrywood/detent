@@ -56,8 +56,11 @@ type changeColumnCursor struct {
 }
 
 func (s *Service) populateChangeColumns(ctx context.Context) error {
-	cursor, _ := s.changeColumnAfter.(changeColumnCursor)
-	if prior, ok := s.changeColumnAfter.(string); ok {
+	var cursor changeColumnCursor
+	switch prior := s.changeColumnAfter.(type) {
+	case changeColumnCursor:
+		cursor = prior
+	case string:
 		cursor.Review = prior
 	}
 	checkpointTurn := cursor.CheckpointTurn

@@ -72,7 +72,10 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 		if err != nil {
 			return err
 		}
-		shared, _ := ctx.Value(runtimeAdmissionPageKey{}).(*runtimeAdmissionPage)
+		var shared *runtimeAdmissionPage
+		if page, ok := ctx.Value(runtimeAdmissionPageKey{}).(*runtimeAdmissionPage); ok {
+			shared = page
+		}
 		if shared != nil && shared.capacity != nil {
 			capacity = *shared.capacity
 		} else {

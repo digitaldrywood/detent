@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -85,8 +86,12 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope hubscop
 	if before.EventSequence != after.EventSequence {
 		var currentSequence int64
 		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			evidence, ok := reader.(eventstore.ProgressEvidenceReader)
+			if !ok {
+				return errors.New("tenant reader does not support progress evidence")
+			}
 			var err error
-			currentSequence, err = reader.(eventstore.ProgressEvidenceReader).ProgressEvidenceSequence(ctx, scope.Project, before.NativeID)
+			currentSequence, err = evidence.ProgressEvidenceSequence(ctx, scope.Project, before.NativeID)
 			return err
 		}); err != nil {
 			return progresscheck.Request{}, 0, err

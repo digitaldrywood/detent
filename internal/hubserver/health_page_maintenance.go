@@ -47,7 +47,10 @@ func (s *Service) HealthPageMaintenanceFeature() hubmaintenance.Feature {
 			return hubmaintenance.Outcome{}, err
 		}
 		value, _ := tenants.LoadOrStore(tenant.Organization, &healthMaintenanceState{})
-		state := value.(*healthMaintenanceState)
+		state, ok := value.(*healthMaintenanceState)
+		if !ok {
+			return hubmaintenance.Outcome{}, errors.New("health page maintenance state has an unexpected type")
+		}
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		if state.generation != tenant.Generation {

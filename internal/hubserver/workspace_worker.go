@@ -656,7 +656,11 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope hubs
 				return err
 			}
 			if workspacesession.Terminal(target) {
-				link, err := r.(postgres.WorkspaceReader).WorkspaceDispatchItem(ctx, scope.Project, id)
+				workspaces, ok := r.(postgres.WorkspaceReader)
+				if !ok {
+					return errors.New("tenant reader does not support workspace reads")
+				}
+				link, err := workspaces.WorkspaceDispatchItem(ctx, scope.Project, id)
 				if err != nil {
 					return err
 				}
@@ -719,7 +723,10 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope hubs
 			if current.Revision != before.Revision {
 				return corestore.ErrSerializationFailure
 			}
-			owner := writer.(postgres.WorkspaceWriter)
+			owner, ok := writer.(postgres.WorkspaceWriter)
+			if !ok {
+				return errors.New("tenant writer does not support workspace writes")
+			}
 			if linkID != "" {
 				if err := closure.write(ctx, writer); err != nil {
 					return err

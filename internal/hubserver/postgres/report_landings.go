@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -15,7 +16,11 @@ func (s *session) ReadLandingFacts(ctx context.Context, query reportstore.Overvi
 	if len(query.Projects) > maxReportProjects {
 		return nil, reportstore.ErrPopulationExceeded
 	}
-	candidates, err := s.readLandingCandidates(ctx, args[1].([]string), query.From.UTC(), query.To.UTC())
+	projectIDs, ok := args[1].([]string)
+	if !ok {
+		return nil, errors.New("report query projects have an unexpected type")
+	}
+	candidates, err := s.readLandingCandidates(ctx, projectIDs, query.From.UTC(), query.To.UTC())
 	if err != nil {
 		return nil, err
 	}

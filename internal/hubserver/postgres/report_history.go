@@ -69,7 +69,11 @@ func (s *session) ReadHistory(ctx context.Context, query reportstore.OverviewQue
 	if stateCount > 5000 {
 		return nil, reportstore.ErrPopulationExceeded
 	}
-	candidateIDs, err := s.readHistoryCandidates(ctx, args[1].([]string), query.From.UTC(), query.To.UTC())
+	projectIDs, ok := args[1].([]string)
+	if !ok {
+		return nil, errors.New("report query projects have an unexpected type")
+	}
+	candidateIDs, err := s.readHistoryCandidates(ctx, projectIDs, query.From.UTC(), query.To.UTC())
 	if err != nil {
 		return nil, err
 	}

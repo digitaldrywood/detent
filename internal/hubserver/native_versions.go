@@ -104,7 +104,10 @@ func (s *Service) readVersion(ctx context.Context, scope hubscope.NativeScope, i
 	var body json.RawMessage
 	if archived != nil {
 		ctx = s.archiveContext(ctx, scope, false)
-		state := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead)
+		state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead)
+		if !ok {
+			return nil, errors.New("native archive read state is unavailable")
+		}
 		section, found, readErr := state.load(ctx, item, "revision", recordID, revision, archived.ID, archived.First, archived.Last, archived.Archive.Reference)
 		if readErr != nil {
 			return nil, readErr

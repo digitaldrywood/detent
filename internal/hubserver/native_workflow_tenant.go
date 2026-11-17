@@ -360,9 +360,11 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		var sourceCancellation *projectstore.GitHubOutbound
 		if human && linkedSource != nil && previousState != request.State && request.State == "Cancelled" {
-			base, _ := ctx.Value(linkedSourceURLKey{}).(string)
+			var base string
 			if s.config.Hosted != nil {
 				base = s.config.Hosted.PublicURL
+			} else if linked, ok := ctx.Value(linkedSourceURLKey{}).(string); ok {
+				base = linked
 			}
 			if base != "" {
 				path, err := s.nativeIssueRecordBrowserPath(ctx, scope, item)

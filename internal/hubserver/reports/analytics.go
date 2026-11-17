@@ -133,19 +133,19 @@ type AnalyticsCohortSelection struct {
 }
 
 func AnalyticsCohortAllows(ctx context.Context, id tracker.NativeWorkItemID) bool {
-	selection, _ := ctx.Value(AnalyticsCohortKey{}).(*AnalyticsCohortSelection)
-	return selection == nil || selection.Items[id]
+	selection, ok := ctx.Value(AnalyticsCohortKey{}).(*AnalyticsCohortSelection)
+	return !ok || selection == nil || selection.Items[id]
 }
 
 func BindAnalyticsCohort(params url.Values, ctx context.Context) {
-	if selection, _ := ctx.Value(AnalyticsCohortKey{}).(*AnalyticsCohortSelection); selection != nil {
+	if selection, ok := ctx.Value(AnalyticsCohortKey{}).(*AnalyticsCohortSelection); ok && selection != nil {
 		params.Set("cohort", selection.Fingerprint)
 	}
 }
 
 func AnalyticsCohortRunners(ctx context.Context) []string {
-	selection, _ := ctx.Value(AnalyticsCohortKey{}).(*AnalyticsCohortSelection)
-	if selection == nil {
+	selection, ok := ctx.Value(AnalyticsCohortKey{}).(*AnalyticsCohortSelection)
+	if !ok || selection == nil {
 		return nil
 	}
 	return selection.Runners

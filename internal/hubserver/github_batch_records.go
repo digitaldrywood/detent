@@ -140,8 +140,8 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope hubscope.N
 	if stored != nil {
 		batch = &stored.GitHubBatch
 	}
-	origin, _ := ctx.Value(hubscope.OperatorEntryOriginKey{}).(string)
-	if origin == "" {
+	origin, ok := ctx.Value(hubscope.OperatorEntryOriginKey{}).(string)
+	if !ok || origin == "" {
 		origin = operatortool.CurrentConnection(ctx).Origin
 	}
 	issuer := hubscope.OperatorChatIdentity{Identity: hubscope.OperatorIdentity(scope.Credential, string(scope.Organization)), Origin: origin}
@@ -1084,7 +1084,11 @@ func (s *Service) reconcileRunnerGitHubBatch(ctx context.Context, scope hubscope
 		return s.saveGitHubBatchRecord(ctx, scope, batch)
 	}
 	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Background, func(writer tenantstore.Writer) error {
-		return writer.(projectstore.GitHubIntakeWriter).DeferGitHubIntake(ctx, scope.Project, s.config.Clock(), s.config.deps.Jitter())
+		intake, ok := writer.(projectstore.GitHubIntakeWriter)
+		if !ok {
+			return errors.New("tenant writer does not support GitHub intake")
+		}
+		return intake.DeferGitHubIntake(ctx, scope.Project, s.config.Clock(), s.config.deps.Jitter())
 	})
 }
 
@@ -1262,6 +1266,10 @@ func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope hubscope.Na
 		if current.Settings.Revision != project.Settings.Revision {
 			return corestore.ErrRevisionConflict
 		}
-		return writer.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(ctx, row, expected)
+		batches, ok := writer.(projectstore.IntakeBatchWriter)
+		if !ok {
+			return errors.New("tenant writer does not support intake batches")
+		}
+		return batches.SaveProjectIntakeBatch(ctx, row, expected)
 	})
 }

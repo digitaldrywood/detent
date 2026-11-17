@@ -1703,9 +1703,11 @@ func PreparedPGConversationQuestion(ctx context.Context, question conversationst
 	if err != nil {
 		return question, err
 	}
-	prepared, _ := ctx.Value(ConversationContentsKey{}).(PreparedConversationContents)
+	var prepared PreparedConversationContents
 	if plan, ok := ctx.Value(PgWorkerPublicationKey{}).(*ConversationPublicationPlan); ok {
 		prepared = plan.Prepared
+	} else if contents, ok := ctx.Value(ConversationContentsKey{}).(PreparedConversationContents); ok {
+		prepared = contents
 	}
 	ref, found := prepared[string(question.OrganizationID)+"/"+artifact.Digest(content)]
 	if !found {

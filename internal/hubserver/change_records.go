@@ -214,6 +214,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscop
 	evidence := eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: change.ID, Kind: kind, CreatedAt: hubcontent.PayloadTimestamp(ctx, now)}
 	var raw []byte
 	var quality *preparedTenantQualityEscape
+	var qualityEscape tracker.QualityEscape
 	var contentFields []cloudContentField
 	switch record := value.(type) {
 	case tracker.DiscussChange:
@@ -222,6 +223,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscop
 		}
 		contentFields = []cloudContentField{{name: "body", value: record.Body}}
 		if record.Escape != nil {
+			qualityEscape = *record.Escape
 			quality, err = s.prepareQualityEscapeTenant(ctx, scope, change, record, now)
 			if err != nil {
 				return nil, hubapi.ProjectRecordError(err)
@@ -328,7 +330,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscop
 				return corestore.ErrRevisionConflict
 			}
 			if quality != nil {
-				if err := recheckTenantQualityEscape(ctx, w, scope, change, *value.(tracker.DiscussChange).Escape, quality); err != nil {
+				if err := recheckTenantQualityEscape(ctx, w, scope, change, qualityEscape, quality); err != nil {
 					return err
 				}
 			}
