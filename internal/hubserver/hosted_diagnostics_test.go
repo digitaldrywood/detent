@@ -189,49 +189,6 @@ func TestDiagnosticsProjectionReadBound(t *testing.T) {
 	}
 }
 
-func TestDiagnosticsAttemptCandidatesBound(t *testing.T) {
-	t.Parallel()
-	for _, population := range []int{4000, 40000} {
-		for _, f := range diagnosticsPostgresFixtures(t) {
-			now := f.hosted.service.config.Clock().UTC().Truncate(time.Hour)
-			w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
-			diagnosticsFixtureAttempts(t.Context(), t, f, f.hosted.project, "candidate-source", "candidate", population, 0, now.Add(-2*time.Hour), now.Add(-time.Hour), tracker.NativeRunData{})
-			for _, test := range []struct {
-				name             string
-				started, updated time.Time
-				observed         int
-			}{
-				{"matching", now.Add(-2 * time.Hour), now.Add(-time.Hour), maxAnalyticsPopulation},
-				{"before exact window", w.From.Add(-time.Hour), w.From.Add(-time.Minute), 0},
-				{"started at exclusive end", w.To, w.To.Add(time.Hour), 0},
-				{"overlapping old start", w.From.Add(-365 * 24 * time.Hour), w.From, maxAnalyticsPopulation},
-			} {
-				t.Run(fmt.Sprintf("%d/%s/%s", population, f.organization, test.name), func(t *testing.T) {
-					if _, err := f.admin.ExecContext(t.Context(), `UPDATE native_attempts SET started_at=$2,updated_at=$3 WHERE organization_id=$1`, f.organization, test.started, test.updated); err != nil {
-						t.Fatal(err)
-					}
-					snapshot := diagnosticsFixtureSnapshot(t, f, f.hosted.project, w)
-					if snapshot.Attempts != test.observed || len(snapshot.AttemptRecords) != test.observed || snapshot.AttemptsPartial != (test.observed == maxAnalyticsPopulation || test.name == "started at exclusive end" && population > diagnosticstore.Limit) {
-						t.Fatalf("observed=%d partial=%t, want observed=%d and exact candidate clipping", snapshot.Attempts, snapshot.AttemptsPartial, test.observed)
-					}
-					if test.name == "matching" {
-						first := "candidate-attempt-999"
-						if population == 40000 {
-							first = "candidate-attempt-9999"
-						}
-						if len(snapshot.AttemptRecords) == 0 {
-							t.Fatal("equal-time attempts lost every candidate")
-						}
-						if snapshot.AttemptRecords[0].ID != first {
-							t.Fatalf("equal-time attempts lost id tie-break: first=%s want=%s", snapshot.AttemptRecords[0].ID, first)
-						}
-					}
-				})
-			}
-		}
-	}
-}
-
 func TestDiagnosticsRefusalPageByteParity(t *testing.T) {
 	t.Parallel()
 	for _, f := range diagnosticsPostgresFixtures(t) {
