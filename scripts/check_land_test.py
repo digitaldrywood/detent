@@ -147,7 +147,7 @@ class LandingGateTest(unittest.TestCase):
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "sqlite-policy"), (4, "tenancy-policy"), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "hub-sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
+        cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "sqlite-policy"), (4, "tenancy-policy"), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "hub-sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
         cases += [(target, 4, "", "") for target in ("test", "test-fast", "test-race", "test-cover")]
         cases += [("test-cover", 4, failure, shard) for failure, shard in (("", "2/3"), ("", "3/3"), ("hub-2", "2/3"))]
         cases += [("test-race", 4, "", shard) for shard in ("1/3", "2/3", "hub-2")]
@@ -187,7 +187,7 @@ class LandingGateTest(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, not failed, result.stdout + result.stderr)
                 events = [json.loads(line) for line in (root / "trace").read_text().splitlines()]
                 tests = [event for event in events if event["action"] == "start" and event["stage"] in ("unit-short", "invariants")]
-                if failure not in ("app", "docs", "sqlc", "hub-sqlc", "sqlite-policy", "tenancy-policy"):
+                if failure not in ("app", "docs", "hub-sqlc", "sqlite-policy", "tenancy-policy"):
                     self.assertTrue(tests)
                 for event in tests:
                     self.assertNotIn("-count=1", event["args"], event)
@@ -212,12 +212,12 @@ class LandingGateTest(unittest.TestCase):
                     self.assertIn("deliberate app failure", result.stderr)
                     continue
                 self.assertEqual(starts.count("docs"), 1)
-                generated = ["docs", "sqlc", "hub-sqlc"]
+                generated = ["docs", "hub-sqlc"]
                 if failure in generated:
                     generated = generated[:generated.index(failure) + 1]
                 self.assertEqual(starts[:len(generated)], generated)
                 sqlc_commands = [event["args"][-3:] for event in events if event["action"] == "start" and event["stage"] in ("sqlc", "hub-sqlc")]
-                configs = {"sqlc": "sqlc/sqlc.yaml", "hub-sqlc": "internal/hubserver/postgres/sqlc.yaml"}
+                configs = {"hub-sqlc": "internal/hubserver/postgres/sqlc.yaml"}
                 self.assertEqual(sqlc_commands, [["diff", "-f", configs[stage]] for stage in generated if stage in configs])
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
                 if failure in generated:
