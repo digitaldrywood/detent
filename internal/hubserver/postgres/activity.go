@@ -55,12 +55,14 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	}
 	out.IssuesPartial = len(recent) > activitystore.PopulationLimit
 	recent = recent[:min(len(recent), activitystore.PopulationLimit)]
-	rows, err = s.db.Query(ctx, `SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(i.workflow_state_name,''),i.native_created_at
- FROM (SELECT id FROM unnest($3::bigint[]) AS recent(id) LIMIT $4) recent
+	rows, err = s.db.Query(ctx, `WITH recent_issues AS MATERIALIZED (
+ SELECT i.id,i.project_id,i.native_id,i.number,i.title,i.workflow_state_name,i.native_created_at,i.native_updated_at FROM (SELECT id FROM unnest($3::bigint[]) AS recent(id) LIMIT $4) recent
  CROSS JOIN LATERAL (SELECT id,project_id,native_id,number,title,workflow_state_name,native_created_at,native_updated_at,archived,actor_principal_id FROM issues i WHERE i.organization_id=$1 AND i.id=recent.id LIMIT 1) i
- JOIN projects p ON p.organization_id=$1 AND p.id=i.project_id
+ WHERE i.project_id=ANY($2) AND NOT i.archived AND ($5='' OR i.actor_principal_id=$5)
+) SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(i.workflow_state_name,''),i.native_created_at
+ FROM recent_issues i JOIN projects p ON p.organization_id=$1 AND p.id=i.project_id
  JOIN project_workflow_states w ON w.organization_id=$1 AND w.project_id=i.project_id AND w.name=i.workflow_state_name
- WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND w.terminal AND ($5='' OR i.actor_principal_id=$5) ORDER BY i.native_updated_at DESC,i.native_id LIMIT $6`, s.organization, projects, recent, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
+ WHERE p.deleted_at IS NULL AND w.terminal ORDER BY i.native_updated_at DESC,i.native_id LIMIT $6`, s.organization, projects, recent, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -288,20 +290,23 @@ func (s *session) activityAttempts(ctx context.Context, f activitystore.Filter, 
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := s.db.Query(ctx, `SELECT a.id,a.issue_id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(r.runner_id,''),l.session_id,coalesce(pr.requirement_role,''),a.status,a.started_at,
- CASE WHEN a.status='running' THEN least(coalesce(l.released_at,l.expires_at),l.expires_at) ELSE a.updated_at END AS finished_at,
- a.status='running' AND l.released_at IS NULL AND l.renewed_at<=$4 AND l.expires_at>$4,
- coalesce(f.role,''),coalesce(f.duration_seconds,0),coalesce(f.phase_timing_status,'')<>'complete'
+	rows, err := s.db.Query(ctx, `WITH attempt_items AS MATERIALIZED (
+ SELECT a.*,i.project_id,i.native_id,i.number,i.title
  FROM (SELECT id FROM unnest($2::text[]) AS wanted(id) LIMIT $7) selected
  CROSS JOIN LATERAL (SELECT id,issue_id,lease_id,status,started_at,updated_at FROM native_attempts a WHERE a.organization_id=$1 AND a.id=selected.id LIMIT 1) a
  CROSS JOIN LATERAL (SELECT project_id,native_id,number,title,archived,actor_principal_id FROM issues i WHERE i.organization_id=$1 AND i.id=a.issue_id LIMIT 1) i
- JOIN projects p ON p.organization_id=$1 AND p.id=i.project_id
+ WHERE i.project_id=ANY($3) AND NOT i.archived AND ($5='' OR i.actor_principal_id=$5)
+) SELECT a.id,a.issue_id,a.project_id,a.native_id,a.number,a.title,p.name,coalesce(r.runner_id,''),l.session_id,coalesce(pr.requirement_role,''),a.status,a.started_at,
+ CASE WHEN a.status='running' THEN least(coalesce(l.released_at,l.expires_at),l.expires_at) ELSE a.updated_at END AS finished_at,
+ a.status='running' AND l.released_at IS NULL AND l.renewed_at<=$4 AND l.expires_at>$4,
+ coalesce(f.role,''),coalesce(f.duration_seconds,0),coalesce(f.phase_timing_status,'')<>'complete'
+ FROM attempt_items a JOIN projects p ON p.organization_id=$1 AND p.id=a.project_id
  JOIN leases l ON l.organization_id=$1 AND l.lease_id=a.lease_id
  LEFT JOIN runner_lease_assignments r ON r.organization_id=$1 AND r.lease_id=a.lease_id
  LEFT JOIN provider_reservations pr ON pr.organization_id=$1 AND pr.lease_id=a.lease_id
  LEFT JOIN LATERAL (SELECT latest_event_id FROM report_attempt_facts af WHERE af.organization_id=$1 AND af.attempt_id=a.id AND a.status<>'running' LIMIT 1) af ON true
  LEFT JOIN report_event_facts f ON f.organization_id=$1 AND f.event_id=af.latest_event_id
- WHERE i.project_id=ANY($3) AND NOT i.archived AND p.deleted_at IS NULL AND ($5='' OR i.actor_principal_id=$5) AND ($6='' OR r.runner_id=$6)
+ WHERE p.deleted_at IS NULL AND ($6='' OR r.runner_id=$6)
  ORDER BY finished_at DESC,a.id DESC`, s.organization, ids, projects, f.Now, f.Principal, f.RunnerID, len(ids))
 	if err != nil {
 		return mapError(ctx, err)
