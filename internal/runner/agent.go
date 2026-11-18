@@ -31,7 +31,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/procgroup"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -1928,7 +1927,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err := r.publishWorkspaceCreateStarted(req); err != nil {
 		return RunResult{}, err
 	}
-	ctx, stopHooks := runworkspace.WithHooks(ctx)
+	ctx, stopHooks := r.withWorkspaceHooks(ctx)
 	defer stopHooks(&returnErr)
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
@@ -3817,7 +3816,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		defer release()
 	}
 	r.logWorkerEvent(req.Issue, "worker_check_workspace_create_started")
-	ctx, stopHooks := runworkspace.WithHooks(ctx)
+	ctx, stopHooks := r.withWorkspaceHooks(ctx)
 	defer stopHooks(&returnErr)
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
@@ -4700,6 +4699,19 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 		}
 	}
 	return nil
+}
+
+func (r *Runner) withWorkspaceHooks(ctx context.Context) (context.Context, func(*error)) {
+	ctx, stop := workspace.WithHookProcesses(ctx)
+	return ctx, func(primary *error) {
+		if err := stop(); err != nil {
+			if *primary != nil {
+				*primary = errors.Join(*primary, err)
+				return
+			}
+			*primary = fmt.Errorf("%w: %w", ErrWorkerProcessReap, err)
+		}
+	}
 }
 
 func (r *Runner) reapWorkspaceProcessesAfterTurn(

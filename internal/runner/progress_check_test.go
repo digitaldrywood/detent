@@ -128,7 +128,6 @@ func (b *progressPolicyBackend) RunTurn(ctx context.Context, req AgentTurnReques
 }
 
 type progressUsageExecution struct {
-	source *workspace.ChangeSource
 	recordingUsageExecution
 	started    bool
 	identity   tracker.NativeExecutionIdentity
@@ -304,10 +303,7 @@ func (w progressWorkspace) VerifyReviewTree(context.Context, workspace.Info, wor
 }
 func (*progressUsageExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
 }
-func (e *progressUsageExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
-	if e.source != nil {
-		return *e.source, nil
-	}
+func (*progressUsageExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
 	return workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base", Source: &tracker.ChangeSource{}}}}, nil
 }
 
@@ -382,7 +378,7 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 				t.Fatal(err)
 			}
 			version := tracker.ChangeVersion{ID: "version_example", ChangeID: "change_example", ChangeVersionInput: tracker.ChangeVersionInput{Repository: repository, BaseSHA: base, HeadSHA: head, Source: &capture.Source}}
-			execution := &progressUsageExecution{source: &workspace.ChangeSource{Version: version, Bundle: capture.Bundle}}
+			execution := &progressSourceExecution{source: workspace.ChangeSource{Version: version, Bundle: capture.Bundle}}
 			evidence := progresscheck.Request{ProjectID: "project", IssueID: "example", PolicyID: "policy", EvidenceRevision: "1", SourceSHA: head, BaseSHA: base, Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}}
 			if test.mismatch == "head" {
 				evidence.SourceSHA = base
@@ -391,7 +387,7 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 				evidence.BaseSHA = head
 			}
 			if test.mismatch == "missing" {
-				execution.source = &workspace.ChangeSource{}
+				execution.source = workspace.ChangeSource{}
 			}
 			if test.mismatch == "metadata" {
 				execution.source.Version.Source = nil
@@ -436,6 +432,18 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 			}
 		})
 	}
+}
+
+type progressSourceExecution struct {
+	progressUsageExecution
+	source workspace.ChangeSource
+}
+
+func (*progressSourceExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+
+func (e *progressSourceExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
+	return e.source, nil
 }
 
 type progressInspectBackend struct {
@@ -536,8 +544,8 @@ func TestProgressPreparationNeverFallsBackWithoutRetainedSource(t *testing.T) {
 		sourceSHA string
 	}{
 		{"execution lacks source capability", &recordingUsageExecution{}, "head"},
-		{"empty recovered version", &progressUsageExecution{source: &workspace.ChangeSource{}}, "head"},
-		{"metadata missing", &progressUsageExecution{source: &workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base"}}}}, "head"},
+		{"empty recovered version", &progressSourceExecution{}, "head"},
+		{"metadata missing", &progressSourceExecution{source: workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base"}}}}, "head"},
 		{"source SHA missing", &progressUsageExecution{}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {

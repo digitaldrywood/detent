@@ -235,7 +235,7 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
-	hookOwner                  *hookproc.Owner
+	hookOwner                  *hookOwner
 	CleanupInUse               bool
 	cleanupPublishedReviewHead string
 
@@ -876,7 +876,7 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 
 func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue) (CleanupResult, error) {
 	result := CleanupResult{Path: info.Path}
-	release, ok := l.uses.TryCleanup(info.Path)
+	release, ok := l.uses.cleanup(info.Path)
 	if !ok {
 		return result, fmt.Errorf("%w: workspace in use", ErrWorkspacePreserved)
 	}
@@ -903,7 +903,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		return result, err
 	}
 	if !exists {
-		if err := l.uses.Stop(ctx, info.Path); err != nil {
+		if err := l.uses.stopHooks(ctx, info.Path); err != nil {
 			return result, err
 		}
 		_, pruneErr := l.runGit(ctx, "worktree", "prune")
@@ -923,7 +923,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		l.deleteCheckpointRef(ctx, issue)
 		return result, nil
 	}
-	if err := l.uses.CheckRemoval(ctx, info.Path); err != nil {
+	if _, err := l.uses.removableHooks(ctx, info.Path); err != nil {
 		return result, err
 	}
 	var hookErr error
@@ -931,7 +931,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		hookErr = l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, issue)
 	}
 
-	result.Processes, err = l.uses.Reap(ctx, info.Path)
+	result.Processes, err = l.uses.reapHooks(ctx, info.Path)
 	if hookErr != nil || err != nil {
 		return result, errors.Join(hookErr, err)
 	}
@@ -1527,7 +1527,7 @@ func (l *LocalGit) unreferencedDetachedHead(ctx context.Context, path string, cu
 }
 
 func (l *LocalGit) removeCleanWorktree(ctx context.Context, path string) error {
-	if err := l.uses.Stop(ctx, path); err != nil {
+	if err := l.uses.stopHooks(ctx, path); err != nil {
 		return err
 	}
 	_, err := l.runGit(ctx, "worktree", "remove", path)
@@ -1557,7 +1557,7 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 	if metadata.commonDir != sourceCommon {
 		return "", fmt.Errorf("refusing to quarantine worktree not managed by source: %s", path)
 	}
-	if err := l.uses.Stop(ctx, path); err != nil {
+	if err := l.uses.stopHooks(ctx, path); err != nil {
 		return "", err
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
@@ -1639,7 +1639,7 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 		return "", false, err
 	}
 	if !exists {
-		return "", false, l.uses.Stop(ctx, path)
+		return "", false, l.uses.stopHooks(ctx, path)
 	}
 	linkedWorktree := false
 	if isDir {
@@ -1657,7 +1657,7 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 	if err != nil {
 		return "", false, err
 	}
-	if err := l.uses.Stop(ctx, path); err != nil {
+	if err := l.uses.stopHooks(ctx, path); err != nil {
 		return "", false, err
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
@@ -1984,7 +1984,7 @@ func (l *LocalGit) isSourceWorktree(ctx context.Context, path string) bool {
 }
 
 func (l *LocalGit) removePath(ctx context.Context, path string) error {
-	if err := l.uses.Stop(ctx, path); err != nil {
+	if err := l.uses.stopHooks(ctx, path); err != nil {
 		return err
 	}
 	exists, _, err := pathExists(path)
@@ -2341,7 +2341,7 @@ func (l *LocalGit) executeHook(ctx context.Context, name string, command string,
 		slog.String("command", command),
 	)
 
-	owner, ownerErr := l.uses.Start(ctx, info.Path)
+	owner, ownerErr := l.uses.hookOwner(ctx, info.Path)
 	if ownerErr != nil {
 		return ownerErr
 	}
@@ -2358,7 +2358,7 @@ func (l *LocalGit) executeHook(ctx context.Context, name string, command string,
 	} else {
 		output, err = runHookCommand(hookCtx, command, l.hooks, info, issue)
 	}
-	err = errors.Join(err, owner.CommandFinished(ctx, err))
+	err = errors.Join(err, owner.commandFinished(ctx, err))
 	if err == nil {
 		return nil
 	}
@@ -2600,7 +2600,7 @@ func hookEnv(info Info, issue Issue, stripGitHubTokens bool) []string {
 		env = append(env, entry)
 	}
 	if issue.hookOwner != nil {
-		env = append(env, hookproc.HookOwnerKey+"="+issue.hookOwner.Token())
+		env = append(env, hookproc.HookOwnerKey+"="+issue.hookOwner.token)
 	}
 	variables := EnvironmentVariables(info, issue)
 	for _, key := range workspaceEnvironmentKeys {

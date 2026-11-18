@@ -44,9 +44,10 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &f.lease)
 			f.attempt, f.run = hubapi.NewID("attempt"), hubapi.NewID("run")
-			test.failure.ObservedAt = f.now
+			failure := test.failure
+			failure.ObservedAt = f.now
 			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{
-				LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed", TerminalFailure: &test.failure,
+				LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed", TerminalFailure: &failure,
 			}}
 			if test.preProvider {
 				event.Data.Sequence = 1
@@ -98,9 +99,10 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 			if !source.attemptsKnown {
 				t.Fatal("health source did not retain complete typed attempt facts")
 			}
+			attempts := source.rate.Attempts
 			wantSetup := test.preProvider && attribution == "instance"
 			found := false
-			for _, a := range source.rate.Attempts {
+			for _, a := range attempts {
 				if a.ID == f.attempt {
 					found = true
 					if a.Runner != r.binding.RunnerID || a.InstanceSetupFailure != wantSetup {

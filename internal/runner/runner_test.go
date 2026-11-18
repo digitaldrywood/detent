@@ -2,7 +2,6 @@ package runner
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -4443,22 +4442,24 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			execution := &reworkReviewExecution{}
-			execution.Err = test.recoverError
+			execution := &reworkReviewExecution{recoverError: test.recoverError}
 			if test.source {
 				execution.recovery.SourceVersionID = "version_1"
-				execution.Source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
+				execution.source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
 			}
 			if test.published {
 				execution.recovery.Change = &tracker.NativeChangeReference{ChangeID: "change_1", VersionID: "version_1", HeadSHA: "published-head"}
-				execution.Source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
+				execution.source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
 			}
 			agent := &fakeCodexClient{}
 			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}}, Workspace: &fakeWorkspaceBackend{createErr: refusal}, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}
-			state := cmp.Or(test.state, "In Progress")
+			state := test.state
+			if state == "" {
+				state = "In Progress"
+			}
 			supervisor, err := NewSupervisor(runner, SupervisorConfig{FailureRetryBaseDelay: 10 * time.Second, MaxRetryBackoff: 25 * time.Second})
 			if err != nil {
 				t.Fatal(err)

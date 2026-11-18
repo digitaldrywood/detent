@@ -18,11 +18,19 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func TestMain(m *testing.M) {
 	if gotestreceipt.IsWrapperInvocation(os.Args[0]) {
 		os.Exit(gotestreceipt.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) == 2 && os.Args[1] == toolcache.ProgramArgument {
+		if err := toolcache.RunProgram(os.Getenv("GOCACHE"), os.TempDir(), os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 	if err := flag.Set("test.parallel", "8"); err != nil {
 		panic(err)

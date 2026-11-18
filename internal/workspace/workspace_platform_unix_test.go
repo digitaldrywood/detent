@@ -811,7 +811,7 @@ func TestHookWithExitedShell(t *testing.T) {
 				var process *os.Process
 				uses := &workspaceUses{}
 				t.Cleanup(func() {
-					if err := uses.Stop(t.Context(), root); err != nil {
+					if err := uses.stopHooks(t.Context(), root); err != nil {
 						t.Error(err)
 						if process != nil {
 							_ = process.Kill()

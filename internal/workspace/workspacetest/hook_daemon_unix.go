@@ -171,7 +171,7 @@ func DetachedHook(t *testing.T) Daemon {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := "GOCOVERDIR=" + ShellQuote(t.TempDir()) + " TEST_HOOK_CHILD_COVER=" + ShellQuote(t.TempDir()) + " TEST_HOOK_CONTROL=" + ShellQuote(control) + " " + ShellQuote(executable) + " -test.run='^TestDetachedHookHelper$'"
+	command := "GOCOVERDIR=" + shellQuote(t.TempDir()) + " TEST_HOOK_CHILD_COVER=" + shellQuote(t.TempDir()) + " TEST_HOOK_CONTROL=" + shellQuote(control) + " " + shellQuote(executable) + " -test.run='^TestDetachedHookHelper$'"
 	return Daemon{Command: command, control: control}
 }
 
@@ -228,7 +228,7 @@ func (d Daemon) Request(t *testing.T) string {
 	return scratch
 }
 
-func ShellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
 func UseDaemonCandidates(t *testing.T, daemons ...Daemon) {
 	t.Helper()

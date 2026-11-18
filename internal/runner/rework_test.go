@@ -24,7 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner/internal/gitfixture"
-	"github.com/digitaldrywood/detent/internal/runner/runnertest"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -239,18 +238,24 @@ func (e *reworkArtifactsExecution) FinalizeArtifacts(ctx context.Context, path s
 
 type reworkReviewExecution struct {
 	reworkArtifactsExecution
-	runnertest.RecoveredSource
+	source          workspace.ChangeSource
 	body            string
 	reviews         []gate.ValidatorResult
 	acceptance      []gate.ValidatorResult
 	recordError     error
+	recoverError    error
 	failure         *tracker.NativeTerminalFailure
 	activitySession int64
 	repairTree      string
 }
 
+func (*reworkReviewExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+func (e *reworkReviewExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
+	return e.source, e.recoverError
+}
 func (e *reworkReviewExecution) NativeChange() *NativeChange {
-	change := &NativeChange{Changed: true, ChangeID: e.Source.Version.ChangeID, VersionID: e.Source.Version.ID, HeadSHA: e.Source.Version.HeadSHA}
+	change := &NativeChange{Changed: true, ChangeID: e.source.Version.ChangeID, VersionID: e.source.Version.ID, HeadSHA: e.source.Version.HeadSHA}
 	if len(e.reviews) > 0 {
 		result := e.reviews[len(e.reviews)-1]
 		change.ImplementationReview = &result
@@ -270,10 +275,10 @@ func (e *reworkReviewExecution) FinalizeArtifacts(ctx context.Context, path stri
 		if err != nil {
 			return err
 		}
-		e.Source.Version.ID = "version_repaired"
-		e.Source.Version.HeadSHA, e.Source.Version.BaseSHA = diff.HeadSHA, diff.BaseSHA
-		e.Source.Version.Validation = e.validation
-		e.Source.Version.Source, e.Source.Bundle = &capture.Source, capture.Bundle
+		e.source.Version.ID = "version_repaired"
+		e.source.Version.HeadSHA, e.source.Version.BaseSHA = diff.HeadSHA, diff.BaseSHA
+		e.source.Version.Validation = e.validation
+		e.source.Version.Source, e.source.Bundle = &capture.Source, capture.Bundle
 	}
 	return nil
 }
@@ -296,10 +301,10 @@ func (e *reworkReviewExecution) ObserveRuntime(ctx context.Context, observation 
 }
 func (e *reworkReviewExecution) RecordSourceValidation(_ context.Context, receipt gate.CommandResult) error {
 	if e.repairTree != "" {
-		if receipt.HeadSHA == "" || receipt.HeadSHA == e.Source.Version.HeadSHA || receipt.TreeSHA != e.repairTree {
+		if receipt.HeadSHA == "" || receipt.HeadSHA == e.source.Version.HeadSHA || receipt.TreeSHA != e.repairTree {
 			return errors.New("source validation lost the staged repair")
 		}
-	} else if receipt.HeadSHA != e.Source.Version.HeadSHA || receipt.TreeSHA != e.Source.Version.Validation.TreeSHA {
+	} else if receipt.HeadSHA != e.source.Version.HeadSHA || receipt.TreeSHA != e.source.Version.Validation.TreeSHA {
 		return errors.New("review source validation changed immutable source")
 	}
 	e.validation = &receipt
@@ -315,7 +320,7 @@ func (e *reworkReviewExecution) ReviewVersion(ctx context.Context) (NativeValida
 	if !ok {
 		return NativeValidation{}, errors.New("source diff unavailable")
 	}
-	return NativeValidation{Version: &e.Source.Version, Diff: &connector.ValidationDiff{Repository: e.Source.Version.Repository, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, Digest: "fixture-diff"}}, nil
+	return NativeValidation{Version: &e.source.Version, Diff: &connector.ValidationDiff{Repository: e.source.Version.Repository, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, Digest: "fixture-diff"}}, nil
 }
 func (e *reworkReviewExecution) RecordReview(_ context.Context, result gate.ValidatorResult) error {
 	if e.recordError != nil {
@@ -700,7 +705,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			bundleErr := fmt.Errorf("%w: Change bundle unavailable", ErrNativeRecoveryRequired)
 			if test.missingBundleBackend != "" {
 				execution.recovery.Change = &tracker.NativeChangeReference{ChangeID: "change_current", VersionID: "version_current", HeadSHA: original}
-				request.Execution = &reworkReviewExecution{reworkArtifactsExecution: *execution, RecoveredSource: runnertest.RecoveredSource{Err: bundleErr}}
+				request.Execution = &reworkReviewExecution{reworkArtifactsExecution: *execution, recoverError: bundleErr}
 			} else if test.resolvedPause {
 				request.Execution = &reworkValidationExecution{execution}
 			}
@@ -717,7 +722,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", HeadSHA: original, WorktreeState: "clean", ExternalEffect: "none", EffectState: "none"}
 				disposition := &tracker.NativeDisposition{Status: "complete", FinalSummary: "Source complete.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}
 				execution.recovery = tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: descriptor.ID}, Change: &tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}, ChangeDetail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: version.ChangeID, CurrentVersion: version.ID}, Versions: []tracker.ChangeVersion{version}, Reviews: []tracker.ChangeReview{{VersionID: version.ID, ImplementationReview: &gate.ValidatorResult{Verdict: gate.ValidatorVerdictWait}}}}, Attempts: []tracker.NativeAttempt{{Status: "succeeded", NativeRunData: tracker.NativeRunData{PolicyID: descriptor.ID, RunID: version.RunID, AttemptID: version.AttemptID, Disposition: disposition, CompletionBody: disposition.FinalSummary}, Checkpoint: &checkpoint}}}
-				owner := &reworkReviewExecution{reworkArtifactsExecution: *execution, RecoveredSource: runnertest.RecoveredSource{Source: workspace.ChangeSource{Version: version, Bundle: capture.Bundle}}}
+				owner := &reworkReviewExecution{reworkArtifactsExecution: *execution, source: workspace.ChangeSource{Version: version, Bundle: capture.Bundle}}
 				review := func(source bool, verdict string, versionID string) tracker.ChangeReview {
 					result := &gate.ValidatorResult{VersionID: versionID, HeadSHA: original, Verdict: verdict}
 					record := tracker.ChangeReview{VersionID: versionID, CreatedAt: time.Unix(200, 0)}
@@ -819,7 +824,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					owner.recovery.Attempts = append(owner.recovery.Attempts, later)
 				}
 				if test.sourceMismatch {
-					owner.Source.Version.ID = "version_newer"
+					owner.source.Version.ID = "version_newer"
 				}
 
 				freshSource := filepath.Join(t.TempDir(), "source")

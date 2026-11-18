@@ -11,7 +11,7 @@ import (
 // Completed work is published to the Hub before its item reaches a terminal
 // state, so an expired workspace is removed without a local copy.
 func (l *LocalGit) removeExpiredWorkspace(ctx context.Context, root *os.Root, record cleanupOwnershipRecord, total, ownership *RemovalTotal) error {
-	release, ok := l.uses.TryCleanup(record.Path)
+	release, ok := l.uses.cleanup(record.Path)
 	if !ok {
 		return nil
 	}

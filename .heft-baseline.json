@@ -29,18 +29,18 @@
     },
     "github.com/digitaldrywood/detent/internal/orchestrator": {
       "files": 112,
-      "loc": 45369,
+      "loc": 45379,
       "test-files": 157,
       "test-funcs": 1050
     },
     "github.com/digitaldrywood/detent/internal/runner": {
       "files": 65,
-      "loc": 20111,
+      "loc": 20286,
       "test-files": 79,
       "test-funcs": 429
     },
     "github.com/digitaldrywood/detent/internal/workspace": {
-      "loc": 11613,
+      "loc": 11637,
       "test-files": 47
     }
   }

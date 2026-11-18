@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/testenv"
-	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 var (
@@ -22,13 +21,6 @@ var (
 )
 
 func RunTests(m *testing.M) int {
-	if len(os.Args) == 2 && os.Args[1] == toolcache.ProgramArgument {
-		if err := toolcache.RunProgram(os.Getenv("GOCACHE"), os.TempDir(), os.Stdin, os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		return 0
-	}
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}

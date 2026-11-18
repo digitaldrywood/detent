@@ -461,7 +461,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	defer func() {
 		if owner := issue.hookOwner; owner != nil {
 			status := gate.CommandResult{ExitCode: result.ExitCode, StartedAt: result.StartedAt, FinishedAt: result.FinishedAt, DurationNS: result.DurationNS}
-			owner.OnExit(func(cleanup context.Context) error {
+			owner.finish = func(cleanup context.Context) error {
 				if err := CleanupWorkerScratch(info.Path, scratch); err != nil {
 					return err
 				}
@@ -469,7 +469,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 					return process.Finished(cleanup, status, nil)
 				}
 				return nil
-			})
+			}
 			return
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedWorkspacePreservationTimeout)
@@ -522,7 +522,9 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	if paged {
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
-	issue.hookOwner.Attach(cmd)
+	if issue.hookOwner != nil {
+		issue.hookOwner.descriptor.Attach(cmd)
+	}
 	if err := cmd.Start(); err != nil {
 		return result, fmt.Errorf("start validation command: %w", err)
 	}

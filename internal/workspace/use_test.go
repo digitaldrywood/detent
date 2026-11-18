@@ -22,32 +22,32 @@ func TestWorkspaceUseAndCleanup(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var uses workspaceUses
 				if workerFirst {
-					release, err := uses.Use(t.Context(), "same")
+					release, err := uses.use(t.Context(), "same")
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, ok := uses.TryCleanup("same"); ok {
+					if _, ok := uses.cleanup("same"); ok {
 						t.Fatal("cleanup acquired an active workspace")
 					}
-					other, ok := uses.TryCleanup("other")
+					other, ok := uses.cleanup("other")
 					if !ok {
 						t.Fatal("unrelated workspace was blocked")
 					}
 					other()
 					release()
-					cleanup, ok := uses.TryCleanup("same")
+					cleanup, ok := uses.cleanup("same")
 					if !ok {
 						t.Fatal("completed workspace remains in use")
 					}
 					cleanup()
 				} else {
-					release, ok := uses.TryCleanup("same")
+					release, ok := uses.cleanup("same")
 					if !ok {
 						t.Fatal("cleanup acquisition failed")
 					}
 					started := make(chan struct{})
 					go func() {
-						done, err := uses.Use(t.Context(), "same")
+						done, err := uses.use(t.Context(), "same")
 						if err != nil {
 							t.Error(err)
 							return
@@ -77,11 +77,11 @@ func TestWorkspaceUseAndCleanup(t *testing.T) {
 func TestWorkspaceUseCancellation(t *testing.T) {
 	t.Parallel()
 	var uses workspaceUses
-	release, _ := uses.TryCleanup("path")
+	release, _ := uses.cleanup("path")
 	defer release()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := uses.Use(ctx, "path"); !errors.Is(err, context.Canceled) {
+	if _, err := uses.use(ctx, "path"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v", err)
 	}
 }

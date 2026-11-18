@@ -9,11 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 )
 
-var ErrWorkspacePreserved = hookproc.ErrWorkspacePreserved
+var ErrWorkspacePreserved = errors.New("workspace retained for recovery")
 
 type Preservation struct {
 	LocalChangesVerified bool              `json:"local_changes_verified"`
