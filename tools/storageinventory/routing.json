@@ -2971,18 +2971,14 @@
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
-          "session.ActivitySnapshot:Query": 5,
-          "session.ActivitySnapshot:QueryRow": 1,
+          "session.ActivitySnapshot:Query": 6,
           "session.ActivitySnapshot:SQL": 6,
           "session.ActivitySnapshot:generated:ActivityIssueLinks": 1,
           "session.ActivitySnapshot:generated:ActivityLatestRunEvents": 1,
           "session.ActivitySnapshot:query-receiver": 2,
-          "session.activityCandidates:Query": 1,
-          "session.activityCandidates:QueryRow": 1,
-          "session.activityCandidates:SQL": 3,
-          "session.activityDurationPopulation:Query": 1,
-          "session.activityDurationPopulation:QueryRow": 2,
-          "session.activityDurationPopulation:SQL": 3
+          "session.activityAttempts:Query": 2,
+          "session.activityAttempts:QueryRow": 1,
+          "session.activityAttempts:SQL": 3
         },
         "tables": [
           "hub/collaboration_events",
@@ -5095,7 +5091,7 @@
           "diagnosticsLandingCandidatesQuery:SQL": 1,
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.DiagnosticsSnapshot:Query": 2,
-          "session.DiagnosticsSnapshot:SQL": 2,
+          "session.DiagnosticsSnapshot:SQL": 4,
           "session.DiagnosticsSnapshot:generated:RecordListEventBefore": 1,
           "session.DiagnosticsSnapshot:query-receiver": 1,
           "session.ReadAnalyticsFailurePage:Query": 1,
@@ -12184,6 +12180,20 @@
           "SQL": 1
         },
         "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118021624_activity_history_cutoff.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events"
+        ]
       }
     },
     "internal/hubserver/postgres/migrations/20261118085855_diagnostics_read_seeks.sql": {
