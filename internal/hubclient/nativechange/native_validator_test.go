@@ -104,10 +104,11 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 				t.Fatalf("prior version provenance changed: %+v, %v", latest.Versions, err)
 			}
 			for _, test := range []struct {
-				name    string
-				code    string
-				mutate  func(*tracker.ChangeDetail)
-				prepare func(*nativeExecution)
+				name            string
+				code            string
+				previousVersion string
+				mutate          func(*tracker.ChangeDetail)
+				prepare         func(*nativeExecution)
 			}{
 				{name: "missing change", code: "change_missing", prepare: func(e *nativeExecution) { e.change = nil }},
 				{name: "landing", code: "change_landed", prepare: func(e *nativeExecution) { e.change.Landing = &runner.NativeLanding{} }},
@@ -120,7 +121,7 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 				{name: "human action", code: "disposition_human_action", prepare: func(e *nativeExecution) { e.preparedDisposition.HumanAction = true }},
 				{name: "reason", code: "disposition_reason", prepare: func(e *nativeExecution) { e.preparedDisposition.ReasonCode = "private reason" }},
 				{name: "no change", code: "no_change_source_mismatch", prepare: func(e *nativeExecution) { e.change.NoChange = &tracker.NativeNoChangeCompletion{} }},
-				{name: "changed current version", code: "version_not_current", mutate: func(d *tracker.ChangeDetail) { d.Change.CurrentVersion = "new" }},
+				{name: "changed current version", code: "version_not_current", previousVersion: "version_previous"},
 				{name: "landed current version", code: "version_not_current", mutate: func(d *tracker.ChangeDetail) { d.Change.Landed = &tracker.ChangeLanding{VersionID: ref.VersionID} }},
 				{name: "unavailable version", code: "version_missing", mutate: func(d *tracker.ChangeDetail) { d.Versions = nil }},
 				{name: "head", code: "source_owner_mismatch", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].HeadSHA = nativeChangeFixtureHead("d") }},
@@ -158,7 +159,6 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 						response.Body.Close()
 						if test.mutate != nil && page.Detail != nil && len(page.Detail.Versions) != 0 {
 							test.mutate(page.Detail)
-							page.Read.VersionID = page.Detail.Change.CurrentVersion
 						}
 						body, err := json.Marshal(page)
 						if err != nil {
@@ -168,7 +168,12 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 						return response, nil
 					}))
 					t.Cleanup(func() { fixtureClient(h.native.Transport()).requests.Store(transport) })
-					err := second.PrepareReview(t.Context(), ref)
+					expected := ref
+					if test.previousVersion != "" {
+						expected.VersionID = test.previousVersion
+						second.change.VersionID = test.previousVersion
+					}
+					err := second.PrepareReview(t.Context(), expected)
 					if test.code == "" {
 						var readErr *runner.NativeImplementationReviewError
 						if !errors.As(err, &readErr) || !errors.Is(err, ErrUnavailable) {
