@@ -24,10 +24,10 @@ func (s *session) DiagnosticsSnapshot(ctx context.Context, projects []tracker.Pr
 	for i, id := range projects {
 		ids[i] = string(id)
 	}
-	rows, err := s.db.Query(ctx, `WITH RECURSIVE states AS ( SELECT p.project_id,first.name,1 AS depth FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL ( SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND NOT i.archived AND i.workflow_state_name IS NOT NULL ORDER BY i.workflow_state_name LIMIT 1 ) first UNION ALL SELECT s.project_id,next.name,s.depth+1 FROM states s CROSS JOIN LATERAL ( SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name>s.name ORDER BY i.workflow_state_name LIMIT 1 ) next WHERE s.depth<=$5 ), issues_by_state AS MATERIALIZED ( SELECT i.id FROM states s CROSS JOIN LATERAL ( SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name=s.name ORDER BY i.id LIMIT $6 ) i WHERE s.depth<=$5 UNION ALL SELECT i.id FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL ( SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND NOT i.archived AND i.workflow_state_name IS NULL ORDER BY i.id LIMIT $6 ) i )
-SELECT i.project_id,i.native_id,coalesce(i.workflow_state_name,''),i.native_created_at,EXISTS(SELECT 1 FROM states WHERE depth>$5) OR (SELECT count(*) FROM issues_by_state)>=$6
-FROM issues_by_state c CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=c.id LIMIT 1) i
-WHERE NOT i.archived AND ($4='' OR i.actor_principal_id=$4) ORDER BY c.id LIMIT $3`, s.organization, ids, diagnosticstore.Limit+1, principal, maxReportStateNames, maxOverviewCandidateRows+1)
+	rows, err := s.db.Query(ctx, `WITH open_issues AS MATERIALIZED (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2) AND NOT i.archived ORDER BY i.project_id,i.workflow_state_name,i.id LIMIT $5)
+SELECT i.project_id,i.native_id,coalesce(i.workflow_state_name,''),i.native_created_at,(SELECT count(*) FROM open_issues)>=$5
+FROM open_issues c CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=c.id LIMIT 1) i
+WHERE $4='' OR i.actor_principal_id=$4 ORDER BY c.id LIMIT $3`, s.organization, ids, diagnosticstore.Limit+1, principal, maxOverviewCandidateRows+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -38,13 +38,8 @@ WHERE NOT i.archived AND ($4='' OR i.actor_principal_id=$4) ORDER BY c.id LIMIT 
 		if err := rows.Scan(&row.ProjectID, &row.WorkItemID, &row.State, &row.CreatedAt, &truncated); err != nil {
 			return out, mapError(ctx, err)
 		}
-		if truncated {
-			out.ResidencePartial = true
-			out.Partial = true
-		}
-		if row.State == "" {
-			out.ResidencePartial = true
-			out.Partial = true
+		if truncated || row.State == "" {
+			out.ResidencePartial, out.Partial = true, true
 		}
 		out.Issues = append(out.Issues, row)
 	}
@@ -61,30 +56,28 @@ WHERE NOT i.archived AND ($4='' OR i.actor_principal_id=$4) ORDER BY c.id LIMIT 
 	if now.After(eventTo) {
 		eventTo = now.Add(time.Microsecond)
 	}
-	transitions, err := s.diagnosticEvents(ctx, ids, from, eventTo, "workflow.transitioned", diagnosticstore.Limit, principal)
+	transitions, transitionsClipped, err := s.diagnosticEvents(ctx, `SELECT e.* FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=ANY($2) AND e.type='workflow.transitioned' AND e.recorded_at>=$3 AND e.recorded_at<$4 ORDER BY e.project_id DESC,e.recorded_at DESC,e.sequence DESC,e.id DESC LIMIT $7`, `(SELECT count(*) FROM discovered)>=$7`, ids, from, eventTo, diagnosticstore.Limit, principal, maxOverviewCandidateRows+1)
 	if err != nil {
 		return out, err
 	}
-	if len(transitions) > diagnosticstore.Limit {
-		out.Partial = true
-		out.ResidencePartial = true
-		transitions = transitions[:diagnosticstore.Limit]
+	if transitionsClipped || len(transitions) > diagnosticstore.Limit {
+		out.Partial, out.ResidencePartial = true, true
+		transitions = transitions[:min(len(transitions), diagnosticstore.Limit)]
 	}
-	decisions, err := s.diagnosticEvents(ctx, ids, from, to, "scheduler.decision", diagnosticstore.ObjectLimit, principal)
+	decisions, decisionsClipped, err := s.diagnosticEvents(ctx, `SELECT e.* FROM (SELECT p.project_id FROM unnest($2::text[]) p(project_id) LIMIT $7) p CROSS JOIN LATERAL (SELECT e.* FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=p.project_id AND e.type='scheduler.decision' AND e.recorded_at>=$3 AND e.recorded_at<$4 ORDER BY e.recorded_at DESC,e.id DESC LIMIT $5) e`, `$6<>'' AND EXISTS(SELECT 1 FROM discovered GROUP BY project_id HAVING count(*)>=$5)`, ids, from, to, diagnosticstore.ObjectLimit, principal, len(ids))
 	if err != nil {
 		return out, err
 	}
-	if len(decisions) > diagnosticstore.ObjectLimit {
-		out.Partial = true
-		out.SchedulerPartial = true
-		decisions = decisions[:diagnosticstore.ObjectLimit]
+	if decisionsClipped || len(decisions) > diagnosticstore.ObjectLimit {
+		out.Partial, out.SchedulerPartial = true, true
+		decisions = decisions[:min(len(decisions), diagnosticstore.ObjectLimit)]
 	}
 	out.Events = append(transitions, decisions...)
 	slices.SortFunc(out.Events, func(a, b eventstore.Event) int {
 		return cmp.Or(a.RecordedAt.Compare(b.RecordedAt), cmp.Compare(a.ID, b.ID))
 	})
 
-	rows, err = s.db.Query(ctx, `WITH RECURSIVE lease_machines AS ( SELECT first.machine_id,1 AS depth FROM (SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 ORDER BY l.machine_id LIMIT 1) first UNION ALL SELECT next.machine_id,m.depth+1 FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id>m.machine_id ORDER BY l.machine_id LIMIT 1 ) next WHERE m.depth<=$8 ), windowed AS MATERIALIZED ( SELECT l.lease_id FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.lease_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id=m.machine_id AND l.expires_at>$3 ORDER BY l.expires_at LIMIT $7 ) l WHERE m.depth<=$8 )
+	rows, err = s.db.Query(ctx, `WITH RECURSIVE lease_machines AS ( SELECT first.machine_id,1 AS depth FROM (SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 ORDER BY l.machine_id LIMIT 1) first UNION ALL SELECT next.machine_id,m.depth+1 FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id>m.machine_id ORDER BY l.machine_id LIMIT 1 ) next WHERE m.depth<=$8 ), windowed AS MATERIALIZED ( SELECT l.lease_id FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.lease_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id=m.machine_id AND l.expires_at>$3 ORDER BY l.expires_at LIMIT $7 ) l WHERE m.depth<=$8 LIMIT $7 )
 SELECT l.acquired_at,least(coalesce(l.released_at,l.expires_at),l.expires_at),EXISTS(SELECT 1 FROM lease_machines WHERE depth>$8) OR (SELECT count(*) FROM windowed)>=$7
 FROM windowed w CROSS JOIN LATERAL (SELECT * FROM leases l WHERE l.organization_id=$1 AND l.lease_id=w.lease_id LIMIT 1) l
 CROSS JOIN LATERAL (SELECT i.project_id,i.actor_principal_id FROM issues i WHERE i.organization_id=$1 AND i.id=l.issue_id LIMIT 1) i
@@ -99,9 +92,7 @@ WHERE i.project_id=ANY($2) AND ($6='' OR i.actor_principal_id=$6) AND l.acquired
 		if err := rows.Scan(&row.AcquiredAt, &row.FinishedAt, &truncated); err != nil {
 			return out, mapError(ctx, err)
 		}
-		if truncated {
-			out.Partial = true
-		}
+		out.Partial = out.Partial || truncated
 		out.Leases = append(out.Leases, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -109,13 +100,12 @@ WHERE i.project_id=ANY($2) AND ($6='' OR i.actor_principal_id=$6) AND l.acquired
 	}
 	rows.Close()
 	if len(out.Leases) > diagnosticstore.Limit {
-		out.Partial = true
-		out.Leases = out.Leases[:diagnosticstore.Limit]
+		out.Partial, out.Leases = true, out.Leases[:diagnosticstore.Limit]
 	}
 	if err := s.diagnosticAttempts(ctx, ids, from, to, principal, &out); err != nil {
 		return out, err
 	}
-	if err := s.diagnosticUsage(ctx, ids, &out); err != nil {
+	if err := s.diagnosticUsage(ctx, &out); err != nil {
 		return out, err
 	}
 	if err := s.diagnosticLandings(ctx, ids, from, to, principal, &out); err != nil {
@@ -134,29 +124,32 @@ WHERE i.project_id=ANY($2) AND ($6='' OR i.actor_principal_id=$6) AND l.acquired
 	return out, nil
 }
 
-func (s *session) diagnosticEvents(ctx context.Context, ids []string, from, to time.Time, kind string, limit int, principal string) ([]eventstore.Event, error) {
-	rows, err := s.db.Query(ctx, `SELECT e.organization_id,e.project_id,e.work_item_id,e.id,e.sequence,e.type,e.schema_version,e.actor_kind,e.actor_principal_id,e.event_revision,e.from_state,e.to_state,e.recorded_at,e.payload_object_key,e.payload_sha256,e.payload_bytes,e.payload_content_bytes,e.payload_format_version,e.run_id,e.attempt_id
-FROM collaboration_events e
-WHERE e.organization_id=$1 AND e.project_id=ANY($2) AND e.recorded_at>=$3 AND e.recorded_at<$4 AND e.type=$5 AND ($7='' OR EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=e.organization_id AND i.project_id=e.project_id AND i.native_id=e.work_item_id AND i.actor_principal_id=$7)) ORDER BY e.recorded_at DESC,e.id DESC LIMIT $6`, s.organization, ids, from, to, kind, limit+1, principal)
+const diagnosticEventPrincipal = `($6='' OR EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=e.organization_id AND i.project_id=e.project_id AND i.native_id=e.work_item_id AND i.actor_principal_id=$6))`
+
+func (s *session) diagnosticEvents(ctx context.Context, source, clip string, ids []string, from, to time.Time, limit int, principal string, bound int) ([]eventstore.Event, bool, error) {
+	rows, err := s.db.Query(ctx, `WITH discovered AS MATERIALIZED (`+source+`) SELECT `+diagnosticEventPrincipal+` AS owned,`+clip+`,e.organization_id,e.project_id,e.work_item_id,e.id,e.sequence,e.type,e.schema_version,e.actor_kind,e.actor_principal_id,e.event_revision,e.from_state,e.to_state,e.recorded_at,e.payload_object_key,e.payload_sha256,e.payload_bytes,e.payload_content_bytes,e.payload_format_version,e.run_id,e.attempt_id
+FROM discovered e ORDER BY owned DESC,e.recorded_at DESC,e.id DESC LIMIT $5`, s.organization, ids, from, to, limit+1, principal, bound)
 	if err != nil {
-		return nil, mapError(ctx, err)
+		return nil, false, mapError(ctx, err)
 	}
 	defer rows.Close()
-	events := []eventstore.Event{}
+	events, clipped := []eventstore.Event{}, false
 	for rows.Next() {
 		var row eventstore.Event
-		if err := rows.Scan(&row.OrganizationID, &row.ProjectID, &row.WorkItemID, &row.ID, &row.Sequence, &row.Type, &row.SchemaVersion, &row.ActorKind, &row.ActorPrincipalID, &row.EventRevision, &row.FromState, &row.ToState, &row.RecordedAt, &row.PayloadObjectKey, &row.PayloadSHA256, &row.PayloadBytes, &row.PayloadContentBytes, &row.PayloadFormatVersion, &row.RunID, &row.AttemptID); err != nil {
-			return nil, mapError(ctx, err)
+		var owned bool
+		if err := rows.Scan(&owned, &clipped, &row.OrganizationID, &row.ProjectID, &row.WorkItemID, &row.ID, &row.Sequence, &row.Type, &row.SchemaVersion, &row.ActorKind, &row.ActorPrincipalID, &row.EventRevision, &row.FromState, &row.ToState, &row.RecordedAt, &row.PayloadObjectKey, &row.PayloadSHA256, &row.PayloadBytes, &row.PayloadContentBytes, &row.PayloadFormatVersion, &row.RunID, &row.AttemptID); err != nil {
+			return nil, false, mapError(ctx, err)
 		}
-		events = append(events, row)
+		if owned {
+			events = append(events, row)
+		}
 	}
-	return events, mapError(ctx, rows.Err())
+	return events, clipped, mapError(ctx, rows.Err())
 }
 
 const diagnosticsAttemptCandidatesQuery = `WITH completed AS MATERIALIZED (
  SELECT a.id,a.issue_id,a.status,a.started_at,a.updated_at FROM native_attempts a
- WHERE a.organization_id=$1 AND a.status<>'running' AND a.updated_at>=$3
- ORDER BY a.updated_at DESC,a.id DESC LIMIT $7
+ WHERE a.organization_id=$1 AND a.status<>'running' AND a.updated_at>=$3 ORDER BY a.updated_at DESC,a.id DESC LIMIT $7
 ),running AS MATERIALIZED (
  SELECT a.id,a.issue_id,a.status,a.started_at,a.updated_at FROM native_attempts a
  WHERE a.organization_id=$1 AND a.status='running'
@@ -164,7 +157,7 @@ const diagnosticsAttemptCandidatesQuery = `WITH completed AS MATERIALIZED (
 ),candidates AS MATERIALIZED (
  SELECT * FROM completed UNION ALL SELECT * FROM running
 ),selected AS MATERIALIZED (
- SELECT a.*,i.project_id,i.native_id FROM candidates a JOIN issues i ON i.organization_id=$1 AND i.id=a.issue_id
+ SELECT a.*,i.project_id,i.native_id FROM candidates a CROSS JOIN LATERAL (SELECT i.project_id,i.native_id,i.actor_principal_id FROM issues i WHERE i.organization_id=$1 AND i.id=a.issue_id LIMIT 1) i
  WHERE i.project_id=ANY($2) AND a.started_at<$4 AND a.updated_at>=$3 AND ($6='' OR i.actor_principal_id=$6)
  ORDER BY a.updated_at DESC,a.id DESC LIMIT $5
 )
@@ -234,69 +227,74 @@ func (s *session) diagnosticAttempts(ctx context.Context, projects []string, fro
 	return nil
 }
 
-func (s *session) diagnosticUsage(ctx context.Context, projects []string, out *diagnosticstore.Snapshot) error {
-	ids := make([]string, len(out.AttemptRecords))
+func (s *session) diagnosticUsage(ctx context.Context, out *diagnosticstore.Snapshot) error {
+	ids, owners := make([]string, len(out.AttemptRecords)), make([]string, len(out.AttemptRecords))
 	for index, attempt := range out.AttemptRecords {
-		ids[index] = attempt.ID
+		ids[index], owners[index] = attempt.ID, string(attempt.ProjectID)
 	}
-	rows, err := s.db.Query(ctx, `WITH usage AS (
- SELECT u.* FROM unnest($3::text[]) requested(attempt_id) CROSS JOIN LATERAL (SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input+u.output AS tokens,u.cost_estimate AS cost,u.complete FROM report_usage_current u WHERE u.organization_id=$1 AND u.attempt_id=requested.attempt_id ORDER BY u.period,u.provider,u.model LIMIT $4) u
- UNION ALL
- SELECT u.* FROM unnest($3::text[]) requested(attempt_id) CROSS JOIN LATERAL (SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input+u.output,u.cost_estimate,true FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=requested.attempt_id AND upper(u.currency)='USD' AND NOT EXISTS(SELECT 1 FROM report_usage_current c WHERE c.organization_id=u.organization_id AND c.attempt_id=u.attempt_id) ORDER BY u.period,u.provider,u.model LIMIT $4) u
-) SELECT u.attempt_id,u.period,u.cost,u.tokens,u.complete FROM usage u JOIN native_attempts a ON a.organization_id=$1 AND a.id=u.attempt_id JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id AND i.project_id=u.project_id WHERE i.project_id=ANY($2) ORDER BY u.attempt_id,u.period,u.provider,u.model LIMIT $4`, s.organization, projects, ids, diagnosticstore.Limit+1)
+	rows, err := s.db.Query(ctx, `SELECT u.attempt_id,u.period,u.cost,u.tokens,u.complete,u.owned FROM (SELECT u.attempt_id,u.period,u.provider,u.model,u.cost,u.tokens,u.complete,u.project_id=r.project_id AND upper(u.currency)='USD' AS owned
+ FROM (SELECT r.attempt_id,r.project_id FROM unnest($2::text[],$3::text[]) r(attempt_id,project_id) ORDER BY r.attempt_id LIMIT $4) r
+ LEFT JOIN LATERAL (SELECT true AS present FROM report_usage_current c WHERE c.organization_id=$1 AND c.attempt_id=r.attempt_id LIMIT 1) c ON true
+ CROSS JOIN LATERAL (SELECT u.attempt_id,u.project_id,u.period,u.provider,u.model,u.input+u.output AS tokens,u.cost_estimate AS cost,u.complete,'USD' AS currency FROM report_usage_current u WHERE c.present AND u.organization_id=$1 AND u.attempt_id=r.attempt_id
+ UNION ALL SELECT u.attempt_id,u.project_id,u.period,u.provider,u.model,u.input+u.output,u.cost_estimate,true,u.currency FROM attempt_usage u WHERE c.present IS NULL AND u.organization_id=$1 AND u.attempt_id=r.attempt_id) u LIMIT $5
+) u ORDER BY u.attempt_id,u.period,u.provider,u.model`, s.organization, ids, owners, len(ids), diagnosticstore.Limit+1)
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	defer rows.Close()
+	scanned := 0
 	for rows.Next() {
 		var usage diagnosticstore.Usage
-		if err := rows.Scan(&usage.AttemptID, &usage.Period, &usage.Cost, &usage.Tokens, &usage.Complete); err != nil {
+		var owned bool
+		if err := rows.Scan(&usage.AttemptID, &usage.Period, &usage.Cost, &usage.Tokens, &usage.Complete, &owned); err != nil {
 			return mapError(ctx, err)
 		}
-		out.Usage = append(out.Usage, usage)
-		if !usage.Complete {
-			out.Partial = true
-			out.UsagePartial = true
+		if scanned++; !owned {
+			continue
 		}
+		out.Usage = append(out.Usage, usage)
+		out.Partial, out.UsagePartial = out.Partial || !usage.Complete, out.UsagePartial || !usage.Complete
 	}
 	if err := rows.Err(); err != nil {
 		return mapError(ctx, err)
 	}
-	if len(out.Usage) > diagnosticstore.Limit {
-		out.Usage = out.Usage[:diagnosticstore.Limit]
-		out.Partial = true
-		out.UsagePartial = true
+	if scanned > diagnosticstore.Limit {
+		out.Usage = out.Usage[:min(len(out.Usage), diagnosticstore.Limit)]
+		out.Partial, out.UsagePartial = true, true
 	}
 	return nil
 }
 
-const diagnosticsLandingCandidatesQuery = `WITH selected AS MATERIALIZED (
- SELECT c.organization_id,c.project_id,c.work_item_id,c.id,c.landed_at FROM change_requests c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id
- WHERE c.organization_id=$1 AND c.project_id=ANY($2) AND c.landed_at>=$3 AND c.landed_at<$4 AND ($6='' OR i.actor_principal_id=$6) AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'
+const diagnosticsLandingCandidatesQuery = `WITH landed AS MATERIALIZED (SELECT c.id FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=ANY($2) AND c.landed_at>=$3 AND c.landed_at<$4 ORDER BY c.project_id DESC,c.landed_at DESC,c.id DESC LIMIT $7
+),selected AS MATERIALIZED (SELECT c.organization_id,c.project_id,c.work_item_id,c.id,c.landed_at FROM landed l CROSS JOIN LATERAL (SELECT * FROM change_requests c WHERE c.organization_id=$1 AND c.id=l.id LIMIT 1) c
+ CROSS JOIN LATERAL (SELECT i.actor_principal_id FROM issues i WHERE i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id LIMIT 1) i CROSS JOIN LATERAL (SELECT v.head_sha FROM change_versions v WHERE v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id LIMIT 1) v
+ WHERE ($6='' OR i.actor_principal_id=$6) AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'
  ORDER BY c.landed_at DESC,c.id DESC LIMIT $5
-) SELECT c.id,c.work_item_id,c.landed_at,entry.recorded_at FROM selected c LEFT JOIN LATERAL (
+) SELECT '' AS id,'' AS work_item_id,$3::timestamptz AS landed_at,NULL::timestamptz AS recorded_at,(SELECT count(*) FROM landed)>=$7 AS clipped UNION ALL SELECT c.id,c.work_item_id,c.landed_at,entry.recorded_at,false FROM selected c LEFT JOIN LATERAL (
  SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=c.organization_id AND e.project_id=c.project_id AND e.work_item_id=c.work_item_id AND e.type='workflow.transitioned' AND e.to_state='Merging' AND e.recorded_at<=c.landed_at ORDER BY e.recorded_at DESC,e.id DESC LIMIT 1
-) entry ON true`
+) entry ON true ORDER BY landed_at DESC,id DESC`
 
 func (s *session) diagnosticLandings(ctx context.Context, projects []string, from, to time.Time, principal string, out *diagnosticstore.Snapshot) error {
-	rows, err := s.db.Query(ctx, diagnosticsLandingCandidatesQuery, s.organization, projects, from, to, diagnosticstore.AttemptLimit+1, principal)
+	rows, err := s.db.Query(ctx, diagnosticsLandingCandidatesQuery, s.organization, projects, from, to, diagnosticstore.AttemptLimit+1, principal, maxOverviewCandidateRows+1)
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var landing diagnosticstore.Landing
-		if err := rows.Scan(&landing.ChangeID, &landing.WorkItemID, &landing.At, &landing.EnteredAt); err != nil {
+		var clipped bool
+		if err := rows.Scan(&landing.ChangeID, &landing.WorkItemID, &landing.At, &landing.EnteredAt, &clipped); err != nil {
 			return mapError(ctx, err)
 		}
-		out.Landings = append(out.Landings, landing)
+		if out.Partial = out.Partial || clipped; landing.ChangeID != "" {
+			out.Landings = append(out.Landings, landing)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return mapError(ctx, err)
 	}
 	if len(out.Landings) > diagnosticstore.AttemptLimit {
-		out.Landings = out.Landings[:diagnosticstore.AttemptLimit]
-		out.Partial = true
+		out.Partial, out.Landings = true, out.Landings[:diagnosticstore.AttemptLimit]
 	}
 	return nil
 }

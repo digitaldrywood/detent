@@ -25,7 +25,7 @@
     },
     "github.com/digitaldrywood/detent/internal/hubserver/postgres": {
       "files": 257,
-      "loc": 44360
+      "loc": 44346
     },
     "github.com/digitaldrywood/detent/internal/orchestrator": {
       "files": 112,

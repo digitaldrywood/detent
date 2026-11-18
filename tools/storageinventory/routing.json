@@ -12178,6 +12178,22 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/migrations/20261118085855_diagnostics_read_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events",
+          "hub/native_attempts"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
