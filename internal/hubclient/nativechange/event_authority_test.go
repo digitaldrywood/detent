@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -57,7 +58,7 @@ func replayExecution(t *testing.T, send func(*http.Request) (int, string, error)
 }
 
 func TestReplayEventRequiresCurrentAuthority(t *testing.T) {
-	for _, stage := range []string{"stopped finish", "expiry during diff", "expiry during request budget"} {
+	for _, stage := range []string{"stopped finish", "stopped execution with fresh context", "expiry during diff", "expiry during request budget"} {
 		t.Run(stage, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				posts, attempts := 0, 0
@@ -73,7 +74,7 @@ func TestReplayEventRequiresCurrentAuthority(t *testing.T) {
 							return 0, "", err
 						}
 						attempts++
-						if attempts == 1 && stage == "stopped finish" {
+						if attempts == 1 && strings.HasPrefix(stage, "stopped") {
 							return 0, "", ErrUnavailable
 						}
 						if attempts == 1 && stage == "expiry during request budget" {
@@ -88,13 +89,25 @@ func TestReplayEventRequiresCurrentAuthority(t *testing.T) {
 				guarded := api.WithMutationAuthority(ctx, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(ctx) })
 				want := runner.ErrExecutionAuthorityUnavailable
 				var err error
-				if stage == "stopped finish" {
+				if strings.HasPrefix(stage, "stopped") {
+					if stage == "stopped execution with fresh context" {
+						worker, stop, err := e.Guard(ctx)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer stop()
+						guarded = worker
+					}
 					if err := e.Finish(guarded, "succeeded"); !nativeTransportUnavailable(err) {
 						t.Fatalf("first finish = %v", err)
 					}
 					cancel(runner.ErrOperatorStopped)
 					want = runner.ErrOperatorStopped
-					err = e.Finish(context.WithoutCancel(guarded), "succeeded")
+					cleanup := context.WithoutCancel(guarded)
+					if stage == "stopped execution with fresh context" {
+						cleanup = t.Context()
+					}
+					err = e.Finish(cleanup, "succeeded")
 				} else {
 					err = e.Checkpoint(guarded, tracker.NativeCheckpoint{HeadSHA: nativeChangeFixtureHead("a"), WorktreeState: "unpushed"})
 				}
@@ -333,5 +346,62 @@ func TestStoppedGateRequiresVerifiedWorkspace(t *testing.T) {
 				t.Fatalf("diffs=%d events=%d error=%v", diffs, events, err)
 			}
 		})
+	}
+}
+
+func TestReleaseStoppedClaimWithPendingCheckpoint(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Stop with a pending checkpoint")
+	h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	guarded, stop, err := execution.Guard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop = sync.OnceFunc(stop)
+	defer stop()
+	if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "example"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.PrepareFinish(guarded, "cancelled", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	head := strings.Repeat("c", 40)
+	execution.SetDiffSource(nativeChangeDiff(head, "example.go"))
+	transport := fixtureClient(h.native.Transport()).requests.Load()
+	checkpoints := 0
+	fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/events") {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				return nil, err
+			}
+			req.Body = io.NopCloser(strings.NewReader(string(body)))
+			var event tracker.NativeRunEvent
+			if err := json.Unmarshal(body, &event); err != nil {
+				return nil, err
+			}
+			if event.Type == "run.checkpointed" {
+				checkpoints++
+				if checkpoints == 1 {
+					return nil, errors.New("checkpoint delivery interrupted")
+				}
+			}
+		}
+		return transport.RoundTrip(req)
+	}))
+	if err := execution.Checkpoint(guarded, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil || checkpoints != 1 {
+		t.Fatalf("checkpoint setup: posts=%d error=%v", checkpoints, err)
+	}
+	cancel(runner.ErrOperatorStopped)
+	stop()
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, runner.FinalStateOperatorStopped); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+	if err != nil || checkpoints != 1 || len(recovery.Attempts) != 1 || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Checkpoint != nil {
+		t.Fatalf("checkpoint POSTs=%d attempts=%+v error=%v", checkpoints, recovery.Attempts, err)
 	}
 }

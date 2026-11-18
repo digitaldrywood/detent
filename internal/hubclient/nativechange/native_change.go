@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/changecreation"
 	"github.com/digitaldrywood/detent/internal/hubclient/publication"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -43,7 +42,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	if e.settled || outcome != "succeeded" || !e.ownsChangeCompletion() {
 		return nil
 	}
-	if err := api.MutationEffectError(ctx); err != nil {
+	if err := e.mutationError(ctx); err != nil {
 		return err
 	}
 	if e.worktreeState != "clean" && e.worktreeState != "unpushed" {
@@ -333,7 +332,7 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if e.sourceRequired {
 		source, bundle = &e.retainedSource.Source, e.retainedSource.Bundle
 	}
-	if err := api.MutationEffectError(ctx); err != nil {
+	if err := e.mutationError(ctx); err != nil {
 		return "", false, err
 	}
 	if err := e.flushObservations(ctx); err != nil {

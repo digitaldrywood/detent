@@ -3,7 +3,6 @@ package nativechange
 import (
 	"context"
 
-	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/delivery"
 	landingrecord "github.com/digitaldrywood/detent/internal/hubclient/landing"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -38,7 +37,7 @@ func (a deliveryAuthority) AcceptDelivery(status tracker.ReleaseDeliveryStatus) 
 // branch: the item's Change Request, its current version, and the merge
 // method of the policy that version was published under.
 func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandingTarget, error) {
-	if err := api.MutationEffectError(ctx); err != nil {
+	if err := e.mutationError(ctx); err != nil {
 		return runner.NativeLandingTarget{}, err
 	}
 	if e.claim.source == nil || e.claim.source.NativeClient() == nil {
