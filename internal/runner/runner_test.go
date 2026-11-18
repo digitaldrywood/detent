@@ -1740,8 +1740,8 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 				reapWorkspaceProcesses: func(ctx context.Context, path string, _ time.Duration) (int, error) {
 					reaped = true
-					if path != workspacePath || ctx.Err() != nil {
-						t.Fatalf("reap workspace = %q, context error = %v", path, ctx.Err())
+					if path != backend.tempDir || ctx.Err() != nil {
+						t.Fatalf("reap attempt scratch = %q, context error = %v", path, ctx.Err())
 					}
 					if _, err := os.Stat(backend.tempDir); err != nil {
 						t.Fatalf("scratch missing before reap: %v", err)
@@ -6250,8 +6250,8 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	if !result.Submitted || result.Verdict != gate.ValidatorVerdictPass || result.Score != 0.93 {
 		t.Fatalf("Validate() result = %#v, want submitted pass score 0.93", result)
 	}
-	if workspaceReaped != workspacePath {
-		t.Fatalf("reaped workspace = %q, want %q", workspaceReaped, workspacePath)
+	if workspaceReaped == "" || workspaceReaped != validatorBackend.request.TempDir {
+		t.Fatalf("reaped scratch = %q, want %q", workspaceReaped, validatorBackend.request.TempDir)
 	}
 	if result.Summary != "Acceptance criteria are covered." {
 		t.Fatalf("Summary = %q, want parsed summary", result.Summary)
@@ -6888,8 +6888,8 @@ func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T
 						Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
 						ReapWorkspaceProcesses: func(ctx context.Context, path string, _ time.Duration) (int, error) {
 							workspaceReaps++
-							if path != backend.request.Workspace {
-								t.Fatalf("reaped workspace = %q, want %q", path, backend.request.Workspace)
+							if path != backend.request.TempDir {
+								t.Fatalf("reaped scratch = %q, want %q", path, backend.request.TempDir)
 							}
 							if err := ctx.Err(); err != nil {
 								t.Fatalf("workspace reap context error = %v", err)

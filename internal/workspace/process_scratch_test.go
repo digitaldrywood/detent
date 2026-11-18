@@ -36,7 +36,11 @@ func TestReapScratchProcessesOutsideWorkspace(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, exited := startScratchEnvironmentDescendant(t, scratch, legacy)
-			neighbor, _ := startScratchEnvironmentDescendant(t, t.TempDir(), false)
+			neighborScratch := filepath.Join(root, ".detent", "worker-tmp", "attempt-neighbor")
+			if err := os.MkdirAll(neighborScratch, 0700); err != nil {
+				t.Fatal(err)
+			}
+			neighbor, _ := startScratchEnvironmentDescendant(t, neighborScratch, false)
 			reaped, err := ReapWorkerArtifactProcesses(t.Context(), root, scratch, 10*time.Second)
 			if err != nil {
 				t.Fatal(err)
