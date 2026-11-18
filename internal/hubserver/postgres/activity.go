@@ -31,20 +31,14 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
-	for rows.Next() {
-		var project tracker.ProjectID
-		var state tracker.NativeState
-		var sequence int64
-		if err := rows.Scan(&project, &state.Name, &state.Terminal, &state.Dispatchable, &state.OperatorOnly, &sequence); err != nil {
-			rows.Close()
-			return out, mapError(ctx, err)
-		}
+	var project tracker.ProjectID
+	var state tracker.NativeState
+	var sequence int64
+	if _, err := pgx.ForEachRow(rows, []any{&project, &state.Name, &state.Terminal, &state.Dispatchable, &state.OperatorOnly, &sequence}, func() error {
 		out.States[project] = append(out.States[project], state)
 		out.Sequences[string(project)] = sequence
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+		return nil
+	}); err != nil {
 		return out, mapError(ctx, err)
 	}
 	issues := map[int64]activitystore.Issue{}
@@ -61,29 +55,26 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	}
 	out.IssuesPartial = len(recent) > activitystore.PopulationLimit
 	recent = recent[:min(len(recent), activitystore.PopulationLimit)]
-	rows, err = s.db.Query(ctx, `WITH recent AS MATERIALIZED(SELECT * FROM issues WHERE organization_id=$1 AND id=ANY($3) LIMIT $4)
- SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(i.workflow_state_name,''),i.native_created_at FROM recent i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
+	rows, err = s.db.Query(ctx, `SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(i.workflow_state_name,''),i.native_created_at
+ FROM (SELECT id FROM unnest($3::bigint[]) AS recent(id) LIMIT $4) recent
+ CROSS JOIN LATERAL (SELECT id,project_id,native_id,number,title,workflow_state_name,native_created_at,native_updated_at,archived,actor_principal_id FROM issues i WHERE i.organization_id=$1 AND i.id=recent.id LIMIT 1) i
+ JOIN projects p ON p.organization_id=$1 AND p.id=i.project_id
+ JOIN project_workflow_states w ON w.organization_id=$1 AND w.project_id=i.project_id AND w.name=i.workflow_state_name
  WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND w.terminal AND ($5='' OR i.actor_principal_id=$5) ORDER BY i.native_updated_at DESC,i.native_id LIMIT $6`, s.organization, projects, recent, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
+	var issue activitystore.Issue
 	count := 0
-	for rows.Next() {
-		var issue activitystore.Issue
-		if err := rows.Scan(&issue.ID, &issue.ProjectID, &issue.WorkItemID, &issue.Number, &issue.Title, &issue.ProjectName, &issue.State, &issue.CreatedAt); err != nil {
-			rows.Close()
-			return out, mapError(ctx, err)
-		}
+	if _, err := pgx.ForEachRow(rows, []any{&issue.ID, &issue.ProjectID, &issue.WorkItemID, &issue.Number, &issue.Title, &issue.ProjectName, &issue.State, &issue.CreatedAt}, func() error {
 		count++
 		if count <= filter.Limit {
 			issues[issue.ID] = issue
 		} else {
 			out.IssuesPartial = true
 		}
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+		return nil
+	}); err != nil {
 		return out, mapError(ctx, err)
 	}
 	ids := make([]int64, 0, len(issues))
@@ -139,30 +130,23 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 		return out, mapError(ctx, err)
 	}
 	historyCount := map[int64]int{}
-	for rows.Next() {
-		var transition activitystore.Transition
-		var kind string
-		if err := rows.Scan(&transition.IssueID, &transition.Sequence, &kind, &transition.From, &transition.To, &transition.At); err != nil {
-			rows.Close()
-			return out, mapError(ctx, err)
-		}
+	var transition activitystore.Transition
+	var kind string
+	if _, err := pgx.ForEachRow(rows, []any{&transition.IssueID, &transition.Sequence, &kind, &transition.From, &transition.To, &transition.At}, func() error {
 		historyCount[transition.IssueID]++
-		if historyCount[transition.IssueID] > activitystore.HistoryLimit {
+		switch {
+		case historyCount[transition.IssueID] > activitystore.HistoryLimit:
 			issue := issues[transition.IssueID]
 			issue.Partial = true
 			issues[transition.IssueID] = issue
 			out.IssuesPartial = true
-			continue
-		}
-		if kind == "issue.created" {
+		case kind == "issue.created":
 			out.Created[transition.IssueID] = true
-		} else {
+		default:
 			out.Transitions = append(out.Transitions, transition)
 		}
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+		return nil
+	}); err != nil {
 		return out, mapError(ctx, err)
 	}
 	known := map[string]int{}
@@ -232,7 +216,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 			byAttempt[row.AttemptID] = eventRecord(row)
 		}
 	}
-	links, err := s.queries.ActivityIssueLinks(ctx, pgquery.ActivityIssueLinksParams{OrganizationID: s.organization, IssueIds: ids})
+	links, err := s.queries.ActivityIssueLinks(ctx, pgquery.ActivityIssueLinksParams{OrganizationID: s.organization, IssueIds: ids, ProjectIds: selectedProjects, WorkItemIds: selectedItems, IssueCount: int32(len(ids))})
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
