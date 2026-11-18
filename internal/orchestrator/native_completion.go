@@ -420,7 +420,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); direct && dispatchableState(states, landing) {
 			target, ok = landing, true
 		} else if _, allowed := connector.CompletionLane(states, issue.State, "", false); allowed {
-			if err := o.continueNativeLandingRun(ctx, state, event, running); err != nil {
+			if err := o.continueNativeRun(ctx, state, event, running, false); err != nil {
 				return handoff(err)
 			}
 			return true
@@ -577,8 +577,10 @@ func (o *Orchestrator) observeNativeCompletion(ctx context.Context, event runpkg
 	}
 }
 
-func (o *Orchestrator) continueNativeLandingRun(ctx context.Context, state *State, event runpkg.Completion, running Running) error {
-	return o.continueNativeRun(ctx, state, event, running, false)
+func (o *Orchestrator) nativeContinuationContext(ctx context.Context, running *Running) context.Context {
+	ctx, running.cancel = context.WithTimeoutCause(ctx, o.cfg.MergeWorkerMaxDuration, runpkg.ErrMergeWorkerDurationExceeded)
+	ctx, running.stop = context.WithCancelCause(ctx)
+	return ctx
 }
 
 func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, event runpkg.Completion, running Running, reviewOnly bool) error {
@@ -625,28 +627,24 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	request.WorkerHost = workerHost
 	request.DeferExecutionFinish = true
 	request.AcquireModelPermit = nil
-	runCtx, cancel := context.WithTimeoutCause(ctx, o.cfg.MergeWorkerMaxDuration, runpkg.ErrMergeWorkerDurationExceeded)
-	runCtx, stop := context.WithCancelCause(runCtx)
-	if owner, ok := request.Execution.(interface{ BindReviewHandoff(<-chan struct{}) }); reviewOnly && ok {
-		owner.BindReviewHandoff(runCtx.Done())
+	if !reviewOnly {
+		ctx = o.nativeContinuationContext(ctx, &running)
 	}
 	if request.OnUsageUpdate != nil {
-		request.OnUsageUpdate = o.usageUpdateHandler(runCtx, event.IssueID, nil, running.progress)
+		request.OnUsageUpdate = o.usageUpdateHandler(ctx, event.IssueID, nil, running.progress)
 	}
 	if request.OnActivityUpdate != nil {
-		request.OnActivityUpdate = o.activityUpdateHandler(runCtx, running.Issue)
+		request.OnActivityUpdate = o.activityUpdateHandler(ctx, running.Issue)
 	}
 	running.Mode = request.Mode
 	running.WorkerHost = workerHost
 	running.ModelPermitExempt = !reviewOnly
 	running.globalSlot = slot
-	running.cancel = cancel
-	running.stop = stop
 	running.CompletionOwnershipReleased = false
 	state.Running[event.IssueID] = running
 	o.trackRunningHeartbeat(state, running, state.Claimed[event.IssueID], event.CompletedAt)
 	o.publishRuntimeState(state)
-	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
+	running.done = o.supervisor.Dispatch(ctx, request, o.runResults)
 	state.Running[event.IssueID] = running
 	return nil
 }
