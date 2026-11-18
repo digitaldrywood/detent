@@ -3282,9 +3282,22 @@ func PublicationFixtureKeepsLeaseUntilHandoff(t *testing.T, factories Constructo
 		t.Fatal(err)
 	}
 	returned()
-	SetSchedulerNow(h.scheduler, time.Now().Add(2*h.scheduler.LeaseDuration()))
+	before, ok := h.scheduler.ExecutionClaim(issue.ID)
+	if !ok {
+		t.Fatal("runner return released the publication lease")
+	}
+	SetSchedulerNow(h.scheduler, h.scheduler.Now())
+	SetSchedulerNow(h.scheduler, h.scheduler.Now().Add(h.scheduler.RemainingExecution(before.Lease)))
 	if err := fixture.Validate(guarded); err != nil {
-		t.Fatalf("publication guard did not retain renewable authority: %v", err)
+		t.Fatalf("publication guard did not renew before expiry: %v", err)
+	}
+	after, ok := h.scheduler.ExecutionClaim(issue.ID)
+	if !ok || !sameCompletionLease(after.Lease, before.Lease) || !after.Deadline.After(before.Deadline) {
+		t.Fatal("publication guard did not extend the same fenced lease")
+	}
+	SetSchedulerNow(h.scheduler, before.Deadline)
+	if err := fixture.Validate(guarded); err != nil {
+		t.Fatalf("renewed publication guard failed at the original deadline: %v", err)
 	}
 	if guarded.Err() != nil {
 		t.Errorf("runner return stopped the publication guard: %v", context.Cause(guarded))
