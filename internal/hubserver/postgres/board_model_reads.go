@@ -144,13 +144,11 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 	}
 	query = "SELECT * FROM (" + query + ") ordered ORDER BY page_part," + mainOrder + ",CASE WHEN page_part=2 THEN running END DESC,CASE WHEN page_part=2 THEN dispatchable END DESC,CASE WHEN page_part=2 THEN issue_number END DESC,identifier"
 	batch := &pgx.Batch{}
-	metaSQL := boardModelMetadataSQL
 	if selection.Summary {
-		summarySQL, summaryArgs, err := s.boardSummaryQuery(selection)
+		summarySQL, summaryArgs, err := s.boardSummaryQuery(selection, true)
 		if err != nil {
 			return result, err
 		}
-		summarySQL = "SELECT metadata.*,coalesce(c.kind,''),coalesce(c.state,''),coalesce(c.total,0),coalesce(c.running,0),coalesce(c.shipped_1h,0),coalesce(c.shipped_24h,0),coalesce(c.shipped_7d,0),coalesce(c.cancelled_1h,0),coalesce(c.cancelled_24h,0),coalesce(c.cancelled_7d,0),coalesce(c.projected_at,'0001-01-01'::timestamptz),coalesce(c.summary_sequence,0) FROM (" + metaSQL + ") metadata LEFT JOIN (" + summarySQL + ") c(kind,state,total,running,shipped_1h,shipped_24h,shipped_7d,cancelled_1h,cancelled_24h,cancelled_7d,projected_at,summary_sequence) ON true"
 		batch.Queue(summarySQL, summaryArgs...).Query(func(rows pgx.Rows) error {
 			defer rows.Close()
 			for rows.Next() {
@@ -159,9 +157,6 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 				if err := rows.Scan(targets...); err != nil {
 					return err
 				}
-				if summary.Sequence == -1 {
-					result.Pending = true
-				}
 				if summary.Kind != "" {
 					result.Summaries = append(result.Summaries, summary)
 				}
@@ -169,7 +164,7 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 			return rows.Err()
 		})
 	} else {
-		batch.Queue(metaSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error { return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt) })
+		batch.Queue(boardModelMetadataSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error { return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt) })
 	}
 
 	if selection.CountLanes {
@@ -253,9 +248,23 @@ const boardSearchTimeoutMargin = 50 * time.Millisecond
 
 var errBoardSearchRefused = errors.Join(searchstore.ErrBusy, context.DeadlineExceeded)
 
-const boardProjectionPendingSQL = `(EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 OFFSET 256) OR EXISTS(SELECT 1 FROM (SELECT work_item_id FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 LIMIT 256) d LEFT JOIN native_board_items b ON b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=d.work_item_id LEFT JOIN issues i ON i.organization_id=$1 AND i.project_id=$2 AND i.native_id=d.work_item_id WHERE b.work_item_id IS NULL OR i.id IS NULL OR b.actor_principal_id<>coalesce(i.actor_principal_id,'')) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready))`
-
-const boardModelMetadataSQL = `SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),` + boardProjectionPendingSQL + `,(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`
+const boardModelMetadataSQL = `WITH sample AS MATERIALIZED (
+ SELECT array_agg(d.work_item_id) AS ids,min(d.queued_at) AS oldest FROM (
+  SELECT work_item_id,queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 257
+ ) d
+)
+SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0) AS sequence,
+ CASE WHEN sample.ids IS NULL THEN false WHEN cardinality(sample.ids)>256 THEN true ELSE
+  cardinality(sample.ids) <> (SELECT count(matched.work_item_id) FROM (
+   SELECT b.work_item_id,b.actor_principal_id FROM native_board_items b
+   WHERE b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=ANY(sample.ids)
+   INTERSECT
+   SELECT i.native_id,coalesce(i.actor_principal_id,'') FROM issues i
+   WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=ANY(sample.ids)
+  ) matched)
+ END OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready)
+ OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready) AS pending,
+ sample.oldest FROM sample`
 
 func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore.BoardSelection, work *viewstore.BoardSelection) (viewstore.BoardModelPage, error) {
 	var result viewstore.BoardModelPage

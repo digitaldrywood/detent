@@ -70,7 +70,7 @@ ON CONFLICT(organization_id,project_id,audience,archive_scope,exclude_workspace,
 	return nil
 }
 
-func (s *session) boardSummaryQuery(selection viewstore.BoardSelection) (string, []any, error) {
+func (s *session) boardSummaryQuery(selection viewstore.BoardSelection, includeMetadata bool) (string, []any, error) {
 	if !selection.SupportsSummary() {
 		return "", nil, corestore.ErrInvalidPage
 	}
@@ -85,34 +85,42 @@ func (s *session) boardSummaryQuery(selection viewstore.BoardSelection) (string,
 			return "", nil, corestore.ErrNotFound
 		}
 	}
-	return `WITH readiness AS MATERIALIZED (SELECT ` + boardProjectionPendingSQL + ` AS pending),
+	query := `WITH metadata AS MATERIALIZED (` + boardModelMetadataSQL + `),
 counts AS MATERIALIZED (
  SELECT c.kind,c.state,c.total,c.running,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at
  FROM native_board_page_summaries c
- WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM readiness)
+ WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM metadata)
  ORDER BY c.kind,c.state LIMIT 204
 ), completion AS MATERIALIZED (
  SELECT c.kind,c.state,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at
  FROM native_board_page_summaries c
- WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope='all' AND c.exclude_workspace=$5 AND c.kind IN ('total','lane') AND NOT (SELECT pending FROM readiness)
+ WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope='all' AND c.exclude_workspace=$5 AND c.kind IN ('total','lane') AND NOT (SELECT pending FROM metadata)
  ORDER BY c.kind,c.state LIMIT 204
-)
-(SELECT coalesce(c.kind,a.kind,'total'),coalesce(c.state,a.state,''),coalesce(c.total,0),coalesce(c.running,0),
+), summary(kind,state,total,running,shipped_1h,shipped_24h,shipped_7d,cancelled_1h,cancelled_24h,cancelled_7d,projected_at,sequence) AS (
+ SELECT coalesce(c.kind,a.kind,'total'),coalesce(c.state,a.state,''),coalesce(c.total,0),coalesce(c.running,0),
  coalesce(a.shipped_1h,c.shipped_1h,0),
  coalesce(a.shipped_24h,c.shipped_24h,0),
  coalesce(a.shipped_7d,c.shipped_7d,0),
  coalesce(a.cancelled_1h,c.cancelled_1h,0),
  coalesce(a.cancelled_24h,c.cancelled_24h,0),
  coalesce(a.cancelled_7d,c.cancelled_7d,0),
- greatest(c.projected_at,a.projected_at),coalesce(s.sequence,0)
+ greatest(c.projected_at,a.projected_at),(SELECT sequence FROM metadata)
  FROM counts c FULL JOIN completion a ON c.kind=a.kind AND c.state=a.state
- LEFT JOIN native_board_sequences s ON s.organization_id=$1 AND s.project_id=$2
- WHERE NOT (SELECT pending FROM readiness) ORDER BY 1,2 LIMIT 204)
-UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELECT pending FROM readiness)`, []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace}, nil
+ ORDER BY 1,2 LIMIT 204)
+`
+	if includeMetadata {
+		query += `SELECT m.sequence,m.pending,m.oldest,coalesce(c.kind,''),coalesce(c.state,''),coalesce(c.total,0),coalesce(c.running,0),
+ coalesce(c.shipped_1h,0),coalesce(c.shipped_24h,0),coalesce(c.shipped_7d,0),coalesce(c.cancelled_1h,0),coalesce(c.cancelled_24h,0),coalesce(c.cancelled_7d,0),
+ coalesce(c.projected_at,'0001-01-01'::timestamptz),coalesce(c.sequence,0) FROM metadata m LEFT JOIN summary c ON true ORDER BY c.kind,c.state`
+	} else {
+		query += `SELECT * FROM summary
+UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELECT pending FROM metadata)`
+	}
+	return query, []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace}, nil
 }
 
 func (s *session) BoardSummaryModel(ctx context.Context, selection viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error) {
-	query, args, err := s.boardSummaryQuery(selection)
+	query, args, err := s.boardSummaryQuery(selection, false)
 	if err != nil {
 		return nil, err
 	}
