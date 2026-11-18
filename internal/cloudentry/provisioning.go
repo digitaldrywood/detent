@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -114,19 +116,26 @@ func (s *Service) startAllocator(parent context.Context) {
 	}
 	go func() {
 		defer close(s.allocatorDone)
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
+		const base = 5 * time.Second
+		interval := base
+		timer := time.NewTimer(interval)
+		defer timer.Stop()
+		var after platformstore.AllocationCandidate
 		for {
-			if allocation != nil {
-				s.resumeDeletions(ctx)
-				s.provisionDue(ctx)
+			if allocation != nil && s.provisionDue(ctx, &after) {
+				interval = base
+			} else {
+				interval = min(interval*2, time.Minute)
 			}
 			s.sweepAttachments(ctx)
+			timer.Reset(interval/2 + rand.N(interval/2))
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-timer.C:
 			case <-s.wake:
+				interval = base
+				after = platformstore.AllocationCandidate{}
 			}
 		}
 	}()
@@ -175,37 +184,37 @@ func (s *Service) tenantSpec(organization Organization) TenantSpec {
 	}
 }
 
-func (s *Service) provisionDue(ctx context.Context) {
-	due, err := s.dueOrganizations(ctx)
+func (s *Service) provisionDue(ctx context.Context, after *platformstore.AllocationCandidate) bool {
+	due, err := s.registry.store.db.postgres.DueAllocations(ctx, *after, s.config.Now())
 	if err != nil {
-		return
+		s.config.Logger.WarnContext(ctx, "read due allocations", "error", err)
+		return false
 	}
-	now := s.config.Now()
-	for _, organization := range due {
-		if organization.NextAttemptAt != "" {
-			if next, err := parseTime(organization.NextAttemptAt); err == nil && next.After(now) {
-				continue
+	*after = platformstore.AllocationCandidate{}
+	if len(due) == platformstore.AllocationPageSize {
+		*after = due[len(due)-1]
+	}
+	for _, row := range due {
+		if row.Deleting {
+			if err := s.finishDeletion(ctx, row.ID); err != nil {
+				s.config.Logger.WarnContext(ctx, "organization deletion is still pending", "organization", row.ID)
 			}
 		}
-		s.provision(ctx, organization)
 	}
-}
-
-func (s *Service) dueOrganizations(ctx context.Context) (_ []Organization, resultErr error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, organizationSelect+" WHERE managed = true AND state IN ('requested','allocating') ORDER BY created_at")
-	if err != nil {
-		return nil, err
-	}
-	defer closeEntryRows(rows, &resultErr)
-	var due []Organization
-	for rows.Next() {
-		organization, err := scanOrganization(rows)
-		if err != nil {
-			return nil, err
+	for _, row := range due {
+		if row.Deleting {
+			continue
 		}
-		due = append(due, organization)
+		org, err := s.registry.Organization(ctx, row.ID)
+		if err != nil || !org.Managed {
+			continue
+		}
+		if next, err := parseTime(org.NextAttemptAt); err == nil && next.After(s.config.Now()) {
+			continue
+		}
+		s.provision(ctx, org)
 	}
-	return due, rows.Err()
+	return len(due) > 0
 }
 
 func (s *Service) provision(ctx context.Context, organization Organization) {
@@ -779,35 +788,6 @@ func (s *Service) finishDeletion(ctx context.Context, id string) error {
 	}
 	_, err = s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = 'deleted', updated_at = $1 WHERE id = $2 AND state = 'deleting'", formatTime(s.config.Now()), id)
 	return err
-}
-
-func (s *Service) deletingOrganizations(ctx context.Context) (_ []string, resultErr error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id FROM platform.organizations WHERE managed = true AND state = 'deleting'")
-	if err != nil {
-		return nil, err
-	}
-	defer closeEntryRows(rows, &resultErr)
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
-func (s *Service) resumeDeletions(ctx context.Context) {
-	ids, err := s.deletingOrganizations(ctx)
-	if err != nil {
-		return
-	}
-	for _, id := range ids {
-		if err := s.finishDeletion(ctx, id); err != nil {
-			s.config.Logger.Warn("organization deletion is still pending", "organization", id)
-		}
-	}
 }
 
 func (a *authStore) revokeOrganization(ctx context.Context, organization string) (_ []authorization, resultErr error) {

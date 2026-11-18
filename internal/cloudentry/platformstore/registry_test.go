@@ -2,9 +2,11 @@ package platformstore
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -210,4 +212,64 @@ func TestOrganizationReadsUseOneStatement(t *testing.T) {
 			t.Fatalf("provider read used %d statements", count)
 		}
 	}
+}
+
+func TestDueAllocations(t *testing.T) {
+	db := template.Database(t)
+	var calls atomic.Int64
+	pool := rolePool(t, db, postgres.PlatformRoleName, "", countedTracer{calls: &calls})
+	native := pool.Config()
+	pool.Close()
+	native.MaxConns = 3
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	r, err := New(t.Context(), pool, testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := r.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	seedOrganizations(t, r)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='allocating',managed=true,next_attempt_at=$1,created_at=$2", now.Add(time.Minute), now); err != nil {
+		t.Fatal(err)
+	}
+	check := func(at time.Time, after AllocationCandidate, want ...string) []AllocationCandidate {
+		t.Helper()
+		before := calls.Load()
+		rows, err := r.DueAllocations(t.Context(), after, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count := calls.Load() - before; count != 1 {
+			t.Fatalf("allocator used %d statements", count)
+		}
+		var ids []string
+		for _, row := range rows {
+			ids = append(ids, row.ID)
+		}
+		if !slices.Equal(ids, want) {
+			t.Fatalf("selected %v, want %v", ids, want)
+		}
+		return rows
+	}
+	check(now, AllocationCandidate{})
+	if _, err := db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='deleting' WHERE id='org_second'"); err != nil {
+		t.Fatal(err)
+	}
+	due := check(now, AllocationCandidate{}, "org_second")
+	if !due[0].Deleting {
+		t.Fatal("deletion returned as provisioning")
+	}
+	due = check(now.Add(time.Minute), AllocationCandidate{}, "org_second", "org_first")
+	if due[1].Deleting {
+		t.Fatal("provisioning returned as deletion")
+	}
+	check(now.Add(time.Minute), due[0], "org_first")
 }
