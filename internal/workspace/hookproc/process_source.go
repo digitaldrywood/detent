@@ -29,19 +29,8 @@ func (l *Lifetime) Reap(ctx context.Context, path, owner string) (int, error) {
 	if owner == "" {
 		return 0, errors.New("hook owner is required")
 	}
-	return ReapProcesses(l.withOwner(ctx, owner), path, procgroup.DefaultTerminationGrace)
-}
-
-func (l *Lifetime) withOwner(ctx context.Context, owner string) context.Context {
-	return context.WithValue(context.WithValue(ctx, lifetimeKey{}, l), hookOwnerKey{}, owner)
-}
-
-func environmentMatcher(ctx context.Context, path string) func([]string) bool {
-	if owner, ok := ctx.Value(hookOwnerKey{}).(string); ok && owner != "" {
-		return func(env []string) bool { return hookSignalAllowed(owner, path, env) }
-	}
-	roots := workerScratchOwnerRoots(path)
-	return func(env []string) bool { return workerScratchEnvironmentMatches(roots, env) }
+	ctx = context.WithValue(ctx, lifetimeKey{}, l)
+	return ReapProcesses(context.WithValue(ctx, hookOwnerKey{}, owner), path, procgroup.DefaultTerminationGrace)
 }
 
 func hookSignalAllowed(owner, path string, env []string) bool {

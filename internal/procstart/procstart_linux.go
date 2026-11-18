@@ -41,9 +41,6 @@ func statStartTime(stat string) (string, error) {
 	if len(fields) <= statStartTimeField {
 		return "", fmt.Errorf("unexpected process stat %q", stat)
 	}
-	if fields[0] == "Z" || fields[0] == "X" {
-		return "", ErrNotRunning
-	}
 	if _, err := strconv.ParseUint(fields[statStartTimeField], 10, 64); err != nil {
 		return "", fmt.Errorf("parse process start time: %w", err)
 	}

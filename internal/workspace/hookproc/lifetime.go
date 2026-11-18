@@ -12,7 +12,6 @@ import (
 )
 
 type Lifetime struct {
-	starts map[int]string
 	reader *os.File
 	writer *os.File
 	dir    string

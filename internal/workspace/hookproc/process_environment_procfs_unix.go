@@ -18,7 +18,7 @@ func procFSScratchEnvironmentProcessIDs(ctx context.Context, root string, procRo
 	if err != nil {
 		return nil, err
 	}
-	matches := environmentMatcher(ctx, root)
+	ownerRoots := workerScratchOwnerRoots(root)
 	var owned []int
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
@@ -46,7 +46,7 @@ func procFSScratchEnvironmentProcessIDs(ctx context.Context, root string, procRo
 		if err != nil {
 			return nil, fmt.Errorf("inspect worker scratch ownership for process %d: %w", pid, err)
 		}
-		if matches(strings.Split(string(data), "\x00")) {
+		if workerScratchEnvironmentMatches(ownerRoots, strings.Split(string(data), "\x00")) {
 			owned = append(owned, pid)
 		}
 	}

@@ -31,7 +31,7 @@ func darwinScratchEnvironmentProcessIDs(
 ) ([]int, error) {
 	var owned []int
 	var result error
-	matches := environmentMatcher(ctx, root)
+	ownerRoots := workerScratchOwnerRoots(root)
 	for _, process := range processes {
 		if err := ctx.Err(); err != nil {
 			return owned, errors.Join(result, err)
@@ -51,7 +51,7 @@ func darwinScratchEnvironmentProcessIDs(
 			result = errors.Join(result, fmt.Errorf("inspect worker scratch ownership for process %d: %w", pid, err))
 			continue
 		}
-		if matches(darwinProcessEnvironment(data)) {
+		if workerScratchEnvironmentMatches(ownerRoots, darwinProcessEnvironment(data)) {
 			owned = append(owned, pid)
 		}
 	}

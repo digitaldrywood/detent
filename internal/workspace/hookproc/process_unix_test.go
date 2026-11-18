@@ -19,7 +19,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/procstart"
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
 
@@ -593,12 +592,11 @@ func TestParseLsofCwdProcessIDs(t *testing.T) {
 func TestHookSignalsRequireIdentityAndWorkspace(t *testing.T) {
 	const root = "/workspaces/example"
 	for _, tt := range []struct {
-		name, owner, workspace, marker              string
-		reuseBeforeTerm, reuseAfterTerm, loseMarker bool
-		want                                        []syscall.Signal
+		name, owner, workspace, marker  string
+		reuseBeforeTerm, reuseAfterTerm bool
+		want                            []syscall.Signal
 	}{
 		{name: "term then kill", owner: "first", workspace: root, marker: "first", want: []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}},
-		{name: "marker lost after TERM", owner: "first", workspace: root, marker: "first", loseMarker: true, want: []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}},
 		{name: "different attempt same directory", owner: "first", workspace: root, marker: "second"},
 		{name: "marker outside workspace", owner: "first", workspace: "/workspaces/another", marker: "first"},
 		{name: "out of process manager", owner: "first", workspace: root},
@@ -614,25 +612,27 @@ func TestHookSignalsRequireIdentityAndWorkspace(t *testing.T) {
 				}
 				start := "start-1"
 				active := true
-				termSent := false
 				scan := func(context.Context, string) ([]int, error) {
-					if active && !(tt.loseMarker && termSent) {
+					if active {
 						return []int{12345}, nil
 					}
 					return nil, nil
 				}
 				var signals []syscall.Signal
-				identityReads := 0
+				reads := 0
 				environment := func(int) ([]string, error) {
+					reads++
+					if tt.reuseBeforeTerm && reads == 2 {
+						start = "start-2"
+					}
 					env := []string{"DETENT_WORKSPACE=" + tt.workspace}
-					if tt.marker != "" && !(tt.loseMarker && termSent) {
+					if tt.marker != "" {
 						env = append(env, HookOwnerKey+"="+tt.marker)
 					}
 					return env, nil
 				}
 				signal := func(_ int, sig syscall.Signal) error {
 					signals = append(signals, sig)
-					termSent = true
 					if tt.reuseAfterTerm {
 						start = "start-2"
 					}
@@ -641,16 +641,7 @@ func TestHookSignalsRequireIdentityAndWorkspace(t *testing.T) {
 					}
 					return nil
 				}
-				_, err := reapVerifiedProcesses(ctx, root, time.Second, scan, func(int) (string, error) {
-					identityReads++
-					if tt.reuseBeforeTerm && identityReads == 3 {
-						start = "start-2"
-					}
-					if !active {
-						return "", procstart.ErrNotRunning
-					}
-					return start, nil
-				}, environment, signal)
+				_, err := reapVerifiedProcesses(ctx, root, time.Second, scan, func(int) (string, error) { return start, nil }, environment, signal)
 				if err != nil || !reflect.DeepEqual(signals, tt.want) {
 					t.Fatalf("signals = %v, error = %v, want %v", signals, err, tt.want)
 				}

@@ -124,9 +124,6 @@ func TestHookCleanupRetainsOwnerAfterInspectionFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	issue := Issue{Identifier: "EXAMPLE-1"}
-	scan := hookproc.ReapProcessScanner
-	t.Cleanup(func() { hookproc.ReapProcessScanner = scan })
-	hookproc.ReapProcessScanner = func(context.Context, string) ([]int, error) { return nil, nil }
 	info, err := fs.Create(attempt, issue)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +135,8 @@ func TestHookCleanupRetainsOwnerAfterInspectionFailure(t *testing.T) {
 		t.Fatalf("foreign attempt ran before_remove: %v", err)
 	}
 	cancel()
+	scan := hookproc.ReapProcessScanner
+	t.Cleanup(func() { hookproc.ReapProcessScanner = scan })
 	unavailable := errors.New("process inventory unavailable")
 	hookproc.ReapProcessScanner = func(ctx context.Context, path string) ([]int, error) {
 		if _, ok := ctx.Deadline(); !ok || ctx.Err() != nil || path != info.Path {
@@ -165,40 +164,29 @@ func TestHookCleanupRetainsOwnerAfterInspectionFailure(t *testing.T) {
 }
 
 func TestHookDaemonHostDiscovery(t *testing.T) {
-	for _, tc := range []struct{ name, hookPrefix string }{
-		{"inherited descriptor", ""},
-		{"closed descriptor", "exec 4>&-; "},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			attempt, finish := WithHookProcesses(t.Context())
-			t.Cleanup(func() {
-				if err := finish(); err != nil {
-					t.Error(err)
-				}
-			})
-			daemon := workspacetest.DetachedHook(t)
-			fs, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), Hooks: Hooks{AfterCreate: tc.hookPrefix + daemon.Command}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			prior := hookproc.ReapProcessScanner
-			hookproc.ReapProcessScanner = hookproc.ProcessIDs
-			t.Cleanup(func() { hookproc.ReapProcessScanner = prior })
-			info, err := fs.Create(attempt, Issue{Identifier: "EXAMPLE-1"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Rename(info.Path, filepath.Join(t.TempDir(), "retired")); err != nil {
-				t.Fatal(err)
-			}
-			daemon.Request(t)
-			if err := finish(); err != nil {
-				t.Fatal(err)
-			}
-			if daemon.Alive(t) {
-				t.Fatal("native process inventory missed the detached hook")
-			}
-		})
+	attempt, finish := WithHookProcesses(t.Context())
+	t.Cleanup(func() {
+		if err := finish(); err != nil {
+			t.Error(err)
+		}
+	})
+	daemon := workspacetest.DetachedHook(t)
+	fs, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), Hooks: Hooks{AfterCreate: daemon.Command}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := hookproc.ReapProcessScanner
+	hookproc.ReapProcessScanner = hookproc.ProcessIDs
+	t.Cleanup(func() { hookproc.ReapProcessScanner = prior })
+	if _, err := fs.Create(attempt, Issue{Identifier: "EXAMPLE-1"}); err != nil {
+		t.Fatal(err)
+	}
+	daemon.Request(t)
+	if err := finish(); err != nil {
+		t.Fatal(err)
+	}
+	if daemon.Alive(t) {
+		t.Fatal("native process inventory missed the detached hook")
 	}
 }
 
