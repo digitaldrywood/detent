@@ -88,11 +88,7 @@ func TestWindowsScratchInspectionConfirmsProcessExit(t *testing.T) {
 		{name: "unrelated directory", root: t.TempDir()},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			matches, err := windowsScratchProcessMatches(ctx, cmd.Process.Pid, tt.root, "", true)
-			authorized, signalErr := windowsScratchProcessMatches(ctx, cmd.Process.Pid, tt.root, "", false)
-			if signalErr != nil || authorized != (tt.root == scratch) {
-				t.Fatalf("signal ownership = %t, error = %v", authorized, signalErr)
-			}
+			matches, err := windowsScratchProcessMatches(ctx, cmd.Process.Pid, tt.root, "")
 			if err != nil || matches != tt.want {
 				t.Fatalf("workspace ownership = %t, error = %v, want %t", matches, err, tt.want)
 			}

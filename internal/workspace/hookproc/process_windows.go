@@ -54,7 +54,7 @@ func ProcessIDs(ctx context.Context, root string) ([]int, error) {
 		if pid <= 0 || int(pid) == os.Getpid() {
 			continue
 		}
-		matches, err := windowsScratchProcessMatches(ctx, int(pid), root, owner, true)
+		matches, err := windowsScratchProcessMatches(ctx, int(pid), root, owner)
 		if err != nil {
 			return nil, err
 		}
@@ -65,7 +65,7 @@ func ProcessIDs(ctx context.Context, root string) ([]int, error) {
 	return owned, nil
 }
 
-func windowsScratchProcessMatches(ctx context.Context, pid int, root string, owner string, includeCWD bool) (bool, error) {
+func windowsScratchProcessMatches(ctx context.Context, pid int, root string, owner string) (bool, error) {
 	p, err := process.NewProcessWithContext(ctx, int32(pid))
 	if errors.Is(err, process.ErrorProcessNotRunning) || errors.Is(err, windows.ERROR_INVALID_PARAMETER) || errors.Is(err, windows.ERROR_ACCESS_DENIED) {
 		return false, nil
@@ -89,9 +89,6 @@ func windowsScratchProcessMatches(ctx context.Context, pid int, root string, own
 	environment, err := p.EnvironWithContext(ctx)
 	if err != nil {
 		return false, scratchProcessInspectionError(ctx, pid, "scratch ownership", err, alive)
-	}
-	if !includeCWD {
-		return hookSignalAllowed("", root, environment), nil
 	}
 	if workerScratchEnvironmentMatches(workerScratchOwnerRoots(root), environment) {
 		return true, nil
@@ -138,39 +135,32 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 		if err != nil || len(pids) == 0 {
 			return reaped, err
 		}
-		before := reaped
 		for _, pid := range pids {
-			stopped, err := terminateWindowsScratchProcess(ctx, pid, path, grace)
-			if err != nil {
+			if err := terminateWindowsScratchProcess(ctx, pid, path, grace); err != nil {
 				return reaped, err
 			}
-			if stopped {
-				reaped++
-			}
-		}
-		if before == reaped {
-			return reaped, nil
+			reaped++
 		}
 	}
 }
 
-func terminateWindowsScratchProcess(ctx context.Context, pid int, root string, grace time.Duration) (bool, error) {
+func terminateWindowsScratchProcess(ctx context.Context, pid int, root string, grace time.Duration) error {
 	owned, err := os.FindProcess(pid)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer owned.Release()
 	identity, err := procgroup.Inspect(&exec.Cmd{Process: owned})
 	if errors.Is(err, procgroup.ErrProcessNotRunning) {
-		return false, nil
+		return nil
 	}
 	if err != nil {
-		return false, err
+		return err
 	}
-	matches, err := windowsScratchProcessMatches(ctx, pid, root, "", false)
+	matches, err := windowsScratchProcessMatches(ctx, pid, root, "")
 	if err != nil || !matches {
-		return false, err
+		return err
 	}
-	outcome, err := procgroup.Terminate(ctx, identity, grace)
-	return outcome == procgroup.TerminationOutcomeTerminated || outcome == procgroup.TerminationOutcomeKilled, err
+	_, err = procgroup.Terminate(ctx, identity, grace)
+	return err
 }

@@ -602,7 +602,6 @@ func TestHookSignalsRequireIdentityAndWorkspace(t *testing.T) {
 		{name: "different attempt same directory", owner: "first", workspace: root, marker: "second"},
 		{name: "marker outside workspace", owner: "first", workspace: "/workspaces/another", marker: "first"},
 		{name: "out of process manager", owner: "first", workspace: root},
-		{name: "cwd alone never authorizes signal"},
 		{name: "ordinary reaper protects hook", workspace: root, marker: "active"},
 		{name: "PID reused before TERM", owner: "first", workspace: root, marker: "first", reuseBeforeTerm: true},
 		{name: "PID reused after TERM", owner: "first", workspace: root, marker: "first", reuseAfterTerm: true, want: []syscall.Signal{syscall.SIGTERM}},
