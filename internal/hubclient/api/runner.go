@@ -102,9 +102,7 @@ func (c *Client) runnerRequest(ctx context.Context, token, method, path string, 
 	if err := runnerauth.ValidateHubURL(c.baseURL.String()); err != nil {
 		return err
 	}
-	transport := *c.httpClient
-	transport.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	raw := &Client{baseURL: c.baseURL, tokenSource: func() string { return token }, httpClient: &transport}
+	raw := &Client{baseURL: c.baseURL, tokenSource: func() string { return token }, httpClient: clientWithoutRedirects(c.httpClient)}
 	return raw.request(ctx, method, path, input, output)
 }
 

@@ -147,3 +147,35 @@ func TestRunnerSessionBudgetRechecksAuthority(t *testing.T) {
 		}
 	})
 }
+
+func TestRevokedSessionWriteRedirect(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			guard, revoke := context.WithCancelCause(t.Context())
+			defer revoke(nil)
+			var original, redirected int
+			sessions := sessionCallbackClient(t, func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodPost {
+					t.Fatalf("unexpected request method %s", r.Method)
+				}
+				rec := httptest.NewRecorder()
+				if r.URL.Path == "/destination" {
+					redirected++
+					err := json.NewEncoder(rec).Encode(runnersession.Snapshot{ID: 1, Revision: 1})
+					return rec.Result(), err
+				}
+				original++
+				revoke(runner.ErrOperatorStopped)
+				rec.Header().Set("Location", "/destination")
+				rec.WriteHeader(status)
+				return rec.Result(), nil
+			})
+			lease := tracker.NativeLease{ID: "lease_example", FencingToken: 1}
+			ctx := api.WithMutationAuthority(context.WithoutCancel(guard), sessions.Scope(), lease, func() error { return context.Cause(guard) })
+			_, err := sessions.StartSession(ctx, store.SessionStart{})
+			if original != 1 || redirected != 0 || err == nil {
+				t.Fatalf("original POSTs=%d redirected POSTs=%d error=%v, want 1, 0 and a rejected write", original, redirected, err)
+			}
+		})
+	}
+}
