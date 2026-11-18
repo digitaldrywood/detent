@@ -326,9 +326,10 @@ func (s *session) readOverviewCandidates(ctx context.Context, projects []string,
  SELECT e.project_id,e.work_item_id,e.to_state,e.recorded_at FROM collaboration_events e
  WHERE e.organization_id=$1 AND e.project_id=ANY($2::text[]) AND e.type='workflow.transitioned' AND e.recorded_at>=$3 AND e.recorded_at<$4
  AND e.to_state=ANY(ARRAY(SELECT ws.name FROM project_workflow_states ws WHERE ws.organization_id=$1 AND ws.project_id=ANY($2::text[]) AND ws.terminal UNION SELECT 'Rework'))
+ AND (cardinality($2::text[])=1 OR e.to_state='Rework' OR EXISTS (SELECT 1 FROM project_workflow_states ws WHERE ws.organization_id=e.organization_id AND ws.project_id=e.project_id AND ws.name=e.to_state AND ws.terminal))
  ORDER BY e.project_id,e.to_state,e.recorded_at,e.work_item_id LIMIT $6
 ), started AS MATERIALIZED (
- SELECT a.issue_id FROM native_attempts a WHERE a.organization_id=$1 AND a.project_id=ANY($2::text[]) AND a.started_at>=$3 AND a.started_at<$4 ORDER BY a.project_id,a.started_at,a.issue_id LIMIT $6
+ SELECT a.id FROM native_attempts a WHERE a.organization_id=$1 AND a.project_id=ANY($2::text[]) AND a.started_at>=$3 AND a.started_at<$4 ORDER BY a.project_id,a.started_at,a.started_at_submicro_ns,a.id LIMIT $6
 ), landed AS MATERIALIZED (
  SELECT c.id,c.project_id,c.work_item_id,c.landed_at,c.landed_version_id,c.landed_head_sha FROM change_requests c
  WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$3 AND c.landed_at<$4 AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ORDER BY c.project_id,c.landed_at,c.id LIMIT $6
@@ -342,7 +343,7 @@ func (s *session) readOverviewCandidates(ctx context.Context, projects []string,
  SELECT i.id,t.to_state,t.recorded_at FROM terminal t CROSS JOIN LATERAL (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=t.project_id AND i.native_id=t.work_item_id LIMIT 1) i
 ), keyed AS (
  SELECT id FROM created UNION SELECT id FROM named
- UNION SELECT issue_id FROM started
+ UNION SELECT a.issue_id FROM started s CROSS JOIN LATERAL (SELECT a.issue_id FROM native_attempts a WHERE a.organization_id=$1 AND a.id=s.id LIMIT 1) a
  UNION SELECT id FROM transitioned_items
  UNION SELECT id FROM verified
 )
