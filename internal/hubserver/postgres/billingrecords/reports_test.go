@@ -1853,7 +1853,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 				})
 			}
 		})
-		makeRecord := func(revision int64, amount int64, coverage string) billingstore.CostObservation {
+		makeRecord := func(revision int64, amount int64, coverage, kind string) billingstore.CostObservation {
 			record := billingCostObservation(t, organization, project, "report_current", run.AttemptID, "runner_api", now.Add(-time.Minute), now, amount)
 			o := &record.Observation
 			o.AttemptID = run.AttemptID
@@ -1862,6 +1862,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 			o.Input = 100
 			o.CachedInput = 50
 			o.Output = 10
+			o.UsageKind = kind
 			o.Coverage = coverage
 			o.Revision = revision
 			record.ReceivedAt = now
@@ -1876,7 +1877,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 			record.Reference = billingstore.AuditReferenceFromArchive(ref)
 			return record
 		}
-		first := makeRecord(1, 2000000, "complete")
+		first := makeRecord(1, 2000000, "complete", "incremental")
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			_, err := w.RecordBillingCosts(ctx, []billingstore.CostObservation{first})
 			return err
@@ -1890,6 +1891,13 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 			t.Fatal(err)
 		}
 		assertCoverage(true)
+		if _, err := admin.ExecContext(ctx, "UPDATE report_usage_current SET currency=NULL WHERE organization_id=$1 AND attempt_id=$2", organization, run.AttemptID); err != nil {
+			t.Fatal(err)
+		}
+		_, due, err := repository.SweepDue(ctx, string(organization), "usage", "", 100)
+		if err != nil || !due {
+			t.Errorf("legacy currency due=%t err=%v", due, err)
+		}
 		probe := pgstoretest.ReportObjectReadProbe{DetailStore: objects, Check: func() {
 			if repository.Stats().AcquiredConns() != 0 {
 				t.Fatal("object read held target transaction")
@@ -1902,8 +1910,24 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		if _, count, err := repository.RefreshReportUsagePage(ctx, organization, probe, after, 1); err != nil || count != 0 {
 			t.Fatalf("refresh page continuation count=%d err=%v", count, err)
 		}
+		var currency string
+		if err := admin.QueryRowContext(ctx, "SELECT currency FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2", organization, run.AttemptID).Scan(&currency); err != nil || currency != first.Observation.Currency {
+			t.Fatalf("repaired currency=%q err=%v", currency, err)
+		}
+		if _, due, err := repository.SweepDue(ctx, string(organization), "usage", "", 100); err != nil || due {
+			t.Fatalf("verified report still due=%t err=%v", due, err)
+		}
+		if _, err := admin.ExecContext(ctx, "UPDATE report_usage_current SET usage_kind=NULL WHERE organization_id=$1 AND attempt_id=$2", organization, run.AttemptID); err != nil {
+			t.Fatal(err)
+		}
+		if _, due, err := repository.SweepDue(ctx, string(organization), "usage", "", 100); err != nil || !due {
+			t.Fatalf("unverifiable usage kind due=%t err=%v", due, err)
+		}
+		if _, _, err := repository.RefreshReportUsagePage(ctx, organization, probe, "", 1); err != nil {
+			t.Fatal(err)
+		}
 		assertCoverage(true)
-		corrected := makeRecord(2, 3000000, "partial")
+		corrected := makeRecord(2, 3000000, "partial", "")
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.RecordBillingCosts(ctx, []billingstore.CostObservation{corrected}); err != nil {
 				return err
@@ -1929,7 +1953,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		}); err != nil {
 			t.Fatal(err)
 		}
-		zero := makeRecord(3, 0, "complete")
+		zero := makeRecord(3, 0, "complete", "")
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.RecordBillingCosts(ctx, []billingstore.CostObservation{zero}); err != nil {
 				return err
@@ -1960,7 +1984,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 			t.Fatal(err)
 		}
 
-		second := makeRecord(1, 5000000, "complete")
+		second := makeRecord(1, 5000000, "complete", "")
 		second.Observation.SourceID = "report_second"
 		second.Observation.From, second.Observation.To = now.Add(-2*time.Minute), now.Add(-time.Minute)
 		raw, err := json.Marshal(second.Observation)
@@ -1988,7 +2012,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 
 		classified := make([]billingstore.CostObservation, 0, 2)
 		for i, kind := range []string{"cumulative", "incremental"} {
-			record := makeRecord(1, 6000000, "complete")
+			record := makeRecord(1, 6000000, "complete", "")
 			o := &record.Observation
 			o.SourceID = "classified-" + kind
 			o.UsageKind = kind

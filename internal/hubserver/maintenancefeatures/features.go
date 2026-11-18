@@ -19,10 +19,9 @@ func ProbeFeatures(features []hubmaintenance.Feature, repository any, now func()
 		return features
 	}
 	for i, feature := range features {
-		if feature.Name == "board" || feature.Name == "usage" || feature.Name == "project-pages" {
+		if feature.Name == "board" || feature.Name == "usage" || feature.Name == "project-pages" || feature.Name == "integration-pages" {
 			continue
 		}
-		var projects sync.Map
 		features[i].Step = func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 			if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
 				return hubmaintenance.Outcome{}, err
@@ -30,20 +29,7 @@ func ProbeFeatures(features []hubmaintenance.Feature, repository any, now func()
 			if feature.Name == "github-intake" && !intake || feature.Name == "github-reconciliation" && !reconciliation {
 				return hubmaintenance.Outcome{}, nil
 			}
-			var due bool
-			var err error
-			if feature.Name == "integration-pages" {
-				var after string
-				if v, ok := projects.Load(tenant.Organization); ok {
-					after = v.(string)
-				}
-				due, err = SweepDue(ctx, repository, tenant.Organization, feature.Name, &after, 1)
-				if err == nil {
-					projects.Store(tenant.Organization, after)
-				}
-			} else {
-				due, err = probe.MaintenanceDue(ctx, tenant.Organization, feature.Name, now(), intake)
-			}
+			due, err := probe.MaintenanceDue(ctx, tenant.Organization, feature.Name, now(), intake)
 			if err != nil || !due {
 				return hubmaintenance.Outcome{}, err
 			}

@@ -1,9 +1,12 @@
 package maintenance_test
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
@@ -80,16 +83,41 @@ func TestIdleMaintenanceFamilyStatements(t *testing.T) {
 	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", hubfixture.Secondary); err != nil {
 		t.Fatal(err)
 	}
-	var next, scope string
-	var due bool
-	if err := tx.QueryRowContext(t.Context(), "SELECT next_id,due FROM public.project_sweep_due($1,'integration-pages','')", hubfixture.Primary).Scan(&next, &due); err != nil || !due {
-		t.Fatalf("missing primary projection due=%t err=%v", due, err)
+	for _, query := range []string{
+		"SELECT * FROM public.project_sweep_due($1,'integration-pages','')",
+		"SELECT public.github_outbound_due($1,now())",
+		"SELECT public.github_outbound_deadline($1)",
+		"SELECT * FROM public.claim_integration_page($1)",
+		"SELECT public.maintenance_family_due($1,'board-dirty',now(),false)",
+		"SELECT * FROM public.board_sweep_due($1,'')",
+		"SELECT * FROM public.usage_sweep_due($1,'',1)",
+	} {
+		if _, err := tx.ExecContext(t.Context(), "SAVEPOINT probe"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := tx.ExecContext(t.Context(), query, hubfixture.Primary)
+		var denied *pgconn.PgError
+		if !errors.As(err, &denied) || denied.Code != "42501" {
+			t.Errorf("mismatched probe %s: %v", query, err)
+		}
+		cleanup := "RELEASE SAVEPOINT probe"
+		if err != nil {
+			cleanup = "ROLLBACK TO SAVEPOINT probe"
+		}
+		if _, err := tx.ExecContext(t.Context(), cleanup); err != nil {
+			t.Fatal(err)
+		}
 	}
+	var scope string
 	if err := tx.QueryRowContext(t.Context(), "SELECT current_setting('detent.organization_id')").Scan(&scope); err != nil || scope != string(hubfixture.Secondary) {
-		t.Fatalf("probe returned caller to scope %q: %v", scope, err)
+		t.Fatalf("caller scope %q: %v", scope, err)
 	}
-	if err := tx.Rollback(); err != nil {
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
+	}
+	var queued bool
+	if err := h.Admin.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT FROM project_integration_page_dirty WHERE organization_id=$1)", hubfixture.Primary).Scan(&queued); err != nil || queued {
+		t.Fatalf("foreign dirty queue changed: queued=%t error=%v", queued, err)
 	}
 	step(hubfixture.Secondary)
 	if check(hubfixture.Primary) != 0 || check(hubfixture.Secondary) != 1 {
@@ -116,6 +144,50 @@ func TestIdleMaintenanceFamilyStatements(t *testing.T) {
 		}
 		if secondary != "" || (primary == "") != (org == hubfixture.Primary) {
 			t.Fatalf("webhook retention after serving %s: primary=%q secondary=%q", org, primary, secondary)
+		}
+	}
+}
+
+func TestIdleBoardWithRecordedChange(t *testing.T) {
+	h := quietHub(t)
+	for _, org := range []tracker.OrganizationID{hubfixture.Primary, hubfixture.Secondary} {
+		change := hubfixture.NewChange(t, h, org)
+		tenant := hubmaintenance.Tenant{Organization: string(org), Generation: 1}
+		for _, f := range h.Service.ReadModelMaintenanceFeatures() {
+			if f.Name != "board" {
+				continue
+			}
+			b := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: f.Bytes}
+			ctx := b.Context(t.Context(), tenant)
+			for range 4 {
+				if _, err := f.Step(ctx, tenant, b); err != nil {
+					t.Fatal(err)
+				}
+			}
+			statements, transactions := 0, 0
+			ctx = postgres.WithTransactionTiming(ctx, func(name string, _ time.Time) {
+				if name == "pg_begin" {
+					transactions++
+				}
+			}, func(time.Time, string) { statements++ })
+			out, err := f.Step(ctx, tenant, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("board with settled Change org=%s explicit_transactions=%d observed_statements=%d outcome=%+v", org, transactions, statements, out)
+			if transactions != 0 || statements != 1 || out.Progress && !out.CursorOnly {
+				t.Fatal("settled draft Change did not advance the cursor in one statement")
+			}
+			if _, err := h.Admin.ExecContext(t.Context(), "UPDATE native_board_items SET card_change_status='stale' WHERE organization_id=$1 AND work_item_id=$2", org, change.Issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.Step(ctx, tenant, b); err != nil {
+				t.Fatal(err)
+			}
+			var status string
+			if err := h.Admin.QueryRowContext(t.Context(), "SELECT card_change_status FROM native_board_items WHERE organization_id=$1 AND work_item_id=$2", org, change.Issue.WorkItemID).Scan(&status); err != nil || status != "draft" {
+				t.Fatalf("unverified Change card status=%q err=%v", status, err)
+			}
 		}
 	}
 }

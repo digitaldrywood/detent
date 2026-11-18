@@ -58,16 +58,7 @@ func (s *Service) Maintain(ctx context.Context, organization tracker.Organizatio
 	if _, ok := s.deps.Details.(*hubmaintenance.Details); !ok {
 		return false, errors.New("maintenance requires byte-limited payload storage")
 	}
-	var candidate projectstore.IntegrationCandidate
-	err := s.deps.Repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		writer, ok := w.(projectstore.IntegrationPageWriter)
-		if !ok {
-			return errors.New("integration page storage unavailable")
-		}
-		var err error
-		candidate, err = writer.ClaimIntegrationPage(ctx)
-		return err
-	})
+	candidate, err := s.claim(ctx, organization)
 	if err != nil {
 		return false, err
 	}
@@ -145,4 +136,23 @@ func (s *Service) Get(c echo.Context) error {
 		return s.deps.Error(c, err)
 	}
 	return c.JSON(http.StatusOK, value)
+}
+
+func (s *Service) claim(ctx context.Context, organization tracker.OrganizationID) (projectstore.IntegrationCandidate, error) {
+	if owner, ok := s.deps.Repository.(interface {
+		ClaimIntegrationPage(context.Context, tracker.OrganizationID) (projectstore.IntegrationCandidate, error)
+	}); ok {
+		return owner.ClaimIntegrationPage(ctx, organization)
+	}
+	var candidate projectstore.IntegrationCandidate
+	err := s.deps.Repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		writer, ok := w.(projectstore.IntegrationPageWriter)
+		if !ok {
+			return errors.New("integration page storage unavailable")
+		}
+		var err error
+		candidate, err = writer.ClaimIntegrationPage(ctx)
+		return err
+	})
+	return candidate, err
 }

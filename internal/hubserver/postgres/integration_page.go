@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/maintenanceprobe"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -82,28 +83,7 @@ func (s *session) IntegrationPage(ctx context.Context, project tracker.ProjectID
 }
 
 func (s *session) ClaimIntegrationPage(ctx context.Context) (projectstore.IntegrationCandidate, error) {
-	var project tracker.ProjectID
-	err := s.db.QueryRow(ctx, `INSERT INTO project_integration_page_progress AS cursor_state(organization_id,after_project_id)
- VALUES($1,COALESCE((SELECT id FROM projects WHERE organization_id=$1 ORDER BY id LIMIT 1),''))
- ON CONFLICT(organization_id) DO UPDATE SET after_project_id=COALESCE((SELECT p.id FROM projects p WHERE p.organization_id=$1 AND p.id>cursor_state.after_project_id ORDER BY p.id LIMIT 1),'')
- RETURNING after_project_id`, s.organization).Scan(&project)
-	if err != nil {
-		return projectstore.IntegrationCandidate{}, mapError(ctx, err)
-	}
-	if project != "" {
-		if _, err := s.db.Exec(ctx, `INSERT INTO project_integration_page_dirty(organization_id,project_id)
- SELECT p.organization_id,p.id FROM projects p WHERE p.organization_id=$1 AND p.id=$2 AND p.deleted_at IS NULL
- AND NOT EXISTS(SELECT 1 FROM project_integration_pages v WHERE v.organization_id=p.organization_id AND v.project_id=p.id)
- ON CONFLICT(organization_id,project_id) DO NOTHING`, s.organization, project); err != nil {
-			return projectstore.IntegrationCandidate{}, mapError(ctx, err)
-		}
-	}
-	var candidate projectstore.IntegrationCandidate
-	err = s.db.QueryRow(ctx, `UPDATE project_integration_page_dirty SET attempted_at=clock_timestamp() WHERE (organization_id,project_id)=(SELECT organization_id,project_id FROM project_integration_page_dirty WHERE organization_id=$1 ORDER BY attempted_at,project_id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING project_id,generation,source_at`, s.organization).Scan(&candidate.ProjectID, &candidate.Generation, &candidate.SourceAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return candidate, nil
-	}
-	return candidate, mapError(ctx, err)
+	return maintenanceprobe.ClaimIntegrationPage(ctx, s.db, s.organization)
 }
 
 func (s *session) PublishIntegrationPage(ctx context.Context, c projectstore.IntegrationCandidate, value *projectstore.Integration, now time.Time) error {
