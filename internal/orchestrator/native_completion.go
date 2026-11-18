@@ -136,9 +136,12 @@ func (o *Orchestrator) completeNativeChangeRun(
 			}
 		} else {
 			if running.DiffStats.RecoveryStateAvailable || recordedWorkProduct && dispatchableState(states, cfg.ReworkState) {
-				target = cfg.ReworkState
+				target, allowed = nativeRetryLane(states, issue.State, cfg.ReworkState)
+			} else if recoveryRequired || attributed {
+				target, allowed = nativeRetryLane(states, issue.State, target)
+			} else {
+				target, allowed = nativeMachineRetryLane(states, issue.State, target, cfg.ReworkState, issue.State)
 			}
-			target, allowed = nativeRetryLane(states, issue.State, target)
 			if !allowed {
 				return handoff(fmt.Errorf("native workflow allows no retry from %s", issue.State))
 			}
@@ -653,6 +656,20 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 }
 
 const noWorkProductMessage = "provider completed without a new source version"
+
+func nativeMachineRetryLane(states []connector.WorkflowState, current string, preferred ...string) (string, bool) {
+	for _, name := range preferred {
+		if lane, ok := nativeRetryLane(states, current, name); ok {
+			return lane, true
+		}
+	}
+	for _, candidate := range states {
+		if lane, ok := nativeRetryLane(states, current, candidate.Name); ok {
+			return lane, true
+		}
+	}
+	return "", false
+}
 
 func nativeRetryLane(states []connector.WorkflowState, current, preferred string) (string, bool) {
 	for _, state := range states {
