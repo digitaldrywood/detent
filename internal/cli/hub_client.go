@@ -239,11 +239,11 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),
-			WorkspaceIsolation: support.TerminalIsolation(),
+			WorkspaceIsolation:           support.TerminalIsolation(),
+			CurrentWorkspaceCapabilities: setupOptions.workspaceCapabilities,
 		},
-		WorkspaceCapabilities: setupOptions.workspaceCapabilities,
-		HeartbeatInterval:     min(clientConfig.HeartbeatInterval(), providercapacity.MaxAge/2),
-		LeaseTTL:              clientConfig.LeaseTTL(),
+		HeartbeatInterval: min(clientConfig.HeartbeatInterval(), providercapacity.MaxAge/2),
+		LeaseTTL:          clientConfig.LeaseTTL(),
 	})
 	if err != nil {
 		return nil, err
