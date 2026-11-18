@@ -2,7 +2,6 @@ package workitemchange
 
 import (
 	"context"
-	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -30,7 +29,7 @@ import (
 // The surface is assembled only for a caller that asks for it, because it
 // costs three reads the rest of the work item resource does not need.
 
-func (s *Service) Prepare(ctx context.Context, snapshot Snapshot, issue *tracker.NativeIssue) error {
+func (s *Service) Prepare(snapshot Snapshot, issue *tracker.NativeIssue) {
 	change := &tracker.NativeIssueChange{Connector: tracker.NativeChangeConnectorNone}
 	if snapshot.Project.Settings.RepositoryEnabled {
 		change.Connector = tracker.NativeChangeConnectorGitHub
@@ -49,51 +48,22 @@ func (s *Service) Prepare(ctx context.Context, snapshot Snapshot, issue *tracker
 		external = tracker.ChangeExternalReference{Provider: version.ExternalProvider, ID: version.ExternalID, URL: version.ExternalURL}
 	}
 	published := false
-	err := s.deps.Repository.ReadTenant(ctx, snapshot.Item.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
-		if version != nil {
-			publication, err := r.PRPublication(ctx, version.ID)
-			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-				return err
-			}
-			if err == nil && publication.ChangeID == version.ChangeID && publication.HeadSHA == version.HeadSHA && publication.Repository == version.Repository && publication.PolicyID == version.PolicyRevisionID && publication.SourceAttemptID == version.AttemptID {
-				external = publication.External
-				published = true
-			}
-		}
-		attempt, err := r.LatestAttempt(ctx, snapshot.Item.ID)
-		if errors.Is(err, corestore.ErrNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if attempt.Status != "succeeded" {
-			return nil
-		}
-		diff, err := r.LatestAttemptDiff(ctx, snapshot.Item.ProjectID, attempt.ID, "attempt")
-		if errors.Is(err, corestore.ErrNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if (version == nil || diff.HeadSHA == version.HeadSHA) && diff.Generation.Seq == attempt.Sequence && diff.FileCount > 0 {
-			change.Revision = tracker.Revision(attempt.WorkItemRevision)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
+	if publication := snapshot.Publication; version != nil && publication != nil && publication.ChangeID == version.ChangeID && publication.HeadSHA == version.HeadSHA && publication.Repository == version.Repository && publication.PolicyID == version.PolicyRevisionID && publication.SourceAttemptID == version.AttemptID {
+		external = publication.External
+		published = true
+	}
+	if attempt, diff := snapshot.Attempt, snapshot.Diff; attempt != nil && attempt.Status == "succeeded" && diff != nil && (version == nil || diff.HeadSHA == version.HeadSHA) && diff.Generation.Seq == attempt.Sequence && diff.FileCount > 0 {
+		change.Revision = tracker.Revision(attempt.WorkItemRevision)
 	}
 	if snapshot.Change == nil {
-		return nil
+		return
 	}
 	change.ChangeID, change.State = snapshot.Change.ID, "open"
 	if snapshot.Change.LandedVersionID != nil && snapshot.Change.CurrentVersionID != nil && *snapshot.Change.LandedVersionID == *snapshot.Change.CurrentVersionID {
 		change.State = "closed"
 	}
 	if version == nil {
-		return nil
+		return
 	}
 	issue.ListChange = &tracker.NativeListChange{HeadSHA: version.HeadSHA}
 	if snapshot.Change.LandedVersionID != nil && snapshot.Change.CurrentVersionID != nil && *snapshot.Change.LandedVersionID == *snapshot.Change.CurrentVersionID && version.ID == *snapshot.Change.CurrentVersionID {
@@ -109,7 +79,6 @@ func (s *Service) Prepare(ctx context.Context, snapshot Snapshot, issue *tracker
 	if published && change.Number > 0 {
 		issue.PullRequest = &tracker.NativePullRequest{Number: change.Number, URL: change.URL}
 	}
-	return nil
 }
 
 func (s *Service) ReadPage(ctx context.Context, scope hubapi.Scope, issue *tracker.NativeIssue) error {

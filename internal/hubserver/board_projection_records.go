@@ -39,6 +39,11 @@ func (e *boardRefreshError) Error() string { return e.cause.Error() }
 func (e *boardRefreshError) Unwrap() error { return e.cause }
 
 type boardProjectionSnapshot struct {
+	projectionVersion  viewstore.BoardProjectionVersion
+	relationships      []tenantstore.WorkItemRelationshipFact
+	dependencyReasons  []corestore.DependencyReason
+	publication        *eventstore.NativePRPublication
+	diff               *leasestore.AttemptDiff
 	organizationSlug   string
 	changePrincipalID  string
 	project            projectstore.Record
@@ -228,6 +233,11 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 			return err
 		}
 		snapshot.organizationSlug = organizationRecord.Slug
+		step = "projection_version"
+		snapshot.projectionVersion, err = r.BoardProjectionVersion(ctx, candidate.ProjectID, candidate.WorkItemID)
+		if err != nil {
+			return err
+		}
 		step = "work_item"
 		snapshot.item, err = r.WorkItem(ctx, candidate.ProjectID, candidate.WorkItemID)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -288,6 +298,15 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 				}
 			}
 			snapshot.attempt = &value
+			if attempt.Status == "succeeded" {
+				step = "attempt_diff"
+				diff, err := r.LatestAttemptDiff(ctx, candidate.ProjectID, attempt.ID, "attempt")
+				if err == nil {
+					snapshot.diff = &diff
+				} else if !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+			}
 			step = "attempt_count"
 			snapshot.attemptCount, err = r.BoardAttemptCount(ctx, snapshot.item.ID)
 			if err != nil {
@@ -359,11 +378,19 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 					return err
 				}
 				snapshot.changeVersion = &version
+				step = "pr_publication"
+				publication, err := r.PRPublication(ctx, version.ID)
+				if err == nil {
+					snapshot.publication = &publication
+				} else if !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
 			}
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		return nil
+		step = "relationships"
+		return snapshot.readRelationships(ctx, r, candidate)
 	})
 	return snapshot, err
 }
@@ -382,7 +409,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 	}
 	var runtimeSummary *leasestore.AttemptEvent
 	var recoveredClaimFacts *leasestore.AttemptClaimFacts
-	update := viewstore.BoardUpdate{ProjectID: candidate.ProjectID, WorkItemID: candidate.WorkItemID, ExpectedRevision: snapshot.item.Revision, ExpectedEventSequence: snapshot.item.EventSequence, ExpectedProjectRevision: snapshot.project.Core.ContentSettingsRevision}
+	update := viewstore.BoardUpdate{ProjectID: candidate.ProjectID, WorkItemID: candidate.WorkItemID, ExpectedProjection: &snapshot.projectionVersion, ExpectedRevision: snapshot.item.Revision, ExpectedEventSequence: snapshot.item.EventSequence, ExpectedProjectRevision: snapshot.project.Core.ContentSettingsRevision}
 	if snapshot.item.ID != 0 && snapshot.project.Core.DeletedAt == nil && snapshot.project.Core.Profile == "native" {
 		step = "issue_payload"
 		issue, err := s.hydrateWorkItemRecord(ctx, snapshot.item, snapshot.version)
@@ -495,14 +522,8 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		}
 		record.ProjectedAt = now
 		issue.WebURL = hubrecords.IssueBrowserPath(snapshot.organizationSlug, snapshot.project.Core.Slug, issue.Number)
-		step = "issue_change"
-		if err := s.prepareNativeIssueChangeRecord(ctx, snapshot, &issue); err != nil {
-			return err
-		}
-		projected, reporter, err := s.boardProjectedRelationshipIssues(ctx, organization, candidate.ProjectID, issue)
-		if err != nil {
-			return err
-		}
+		s.prepareNativeIssueChangeRecord(snapshot, &issue)
+		projected, reporter := s.boardProjectedRelationshipIssues(organization, candidate.ProjectID, issue, snapshot)
 		if record.Terminal && record.ClosedAt != nil {
 			for index, span := range nativeShippedWindowSpans {
 				expires := record.ClosedAt.Add(span.span).Add(time.Microsecond)

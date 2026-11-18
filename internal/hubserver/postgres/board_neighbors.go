@@ -86,7 +86,7 @@ func (s *session) queueBoardNeighbors(ctx context.Context, previous, next *views
 	_, err := s.db.Exec(ctx, `INSERT INTO native_board_dirty(organization_id,project_id,work_item_id)
  SELECT $1,n.project,n.item FROM unnest($2::text[],$3::text[]) n(project,item)
  WHERE EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=n.project AND i.native_id=n.item)
- ON CONFLICT DO NOTHING`, s.organization, projects, items)
+ ON CONFLICT (organization_id,project_id,work_item_id) DO UPDATE SET queued_at=native_board_dirty.queued_at`, s.organization, projects, items)
 	return mapError(ctx, err)
 }
 

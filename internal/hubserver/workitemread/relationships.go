@@ -236,14 +236,18 @@ func LoadDependencyReasons(ctx context.Context, r tenantstore.Reader, project tr
 		}
 		for _, record := range records {
 			for _, issue := range byID[record.WorkItemID] {
-				switch record.Kind {
-				case "blocked":
-					issue.BlockedReason = record.Reason
-				case "unblocks":
-					issue.UnblocksReason = record.Reason
-				}
+				ApplyDependencyReason(issue, record)
 			}
 		}
 	}
 	return nil
+}
+
+func ApplyDependencyReason(issue *tracker.NativeIssue, record corestore.DependencyReason) {
+	switch record.Kind {
+	case "blocked":
+		issue.BlockedReason = record.Reason
+	case "unblocks":
+		issue.UnblocksReason = record.Reason
+	}
 }
