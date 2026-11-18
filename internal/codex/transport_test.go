@@ -134,8 +134,8 @@ func TestModelCatalogCloseTimeoutAfterReaping(t *testing.T) {
 			models, catalogErr := backend.ListModels(ctx, runner.AgentProcessRequest{})
 			evidence := local.StartupProcessEvidence()
 			if test.unverified {
-				if evidence.ExitObserved || evidence.CleanupComplete || local.cmd.ProcessState != nil {
-					t.Fatalf("helper unexpectedly exited: %+v", evidence)
+				if alive, err := procgroup.Alive(local.WorkerProcess()); err != nil || !alive || evidence.ExitObserved || evidence.CleanupComplete {
+					t.Fatalf("helper liveness = %t, error = %v, evidence = %+v", alive, err, evidence)
 				}
 			} else {
 				assertLocalTransportClosed(t, local, "catalog cleanup timeout")
