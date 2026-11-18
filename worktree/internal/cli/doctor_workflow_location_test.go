@@ -1,0 +1,125 @@
+package cli
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+)
+
+func TestCheckDoctorWorkflowLocation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		rootWorkflow      bool
+		detentWorkflow    bool
+		configuredOutside bool
+		wantFinding       bool
+		wantFoundPath     bool
+		wantStatus        doctorStatus
+	}{
+		{name: "root present", rootWorkflow: true},
+		{name: "nonstandard present", detentWorkflow: true, wantFinding: true, wantFoundPath: true, wantStatus: doctorFail},
+		{name: "both present", rootWorkflow: true, detentWorkflow: true},
+		{name: "neither present", wantFinding: true, wantStatus: doctorFail},
+		{name: "config points outside repo", configuredOutside: true, wantFinding: true, wantFoundPath: true, wantStatus: doctorWarn},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			parent := t.TempDir()
+			repoRoot := filepath.Join(parent, "repo")
+			if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+				t.Fatalf("create repo root: %v", err)
+			}
+			expectedPath := filepath.Join(repoRoot, "WORKFLOW.md")
+			configuredPath := expectedPath
+			foundPath := filepath.Join(repoRoot, ".detent", "WORKFLOW.md")
+			if tt.configuredOutside {
+				configuredPath = filepath.Join(parent, "detent-config", "WORKFLOW.md")
+				foundPath = configuredPath
+			}
+			if tt.rootWorkflow {
+				writeDoctorWorkflowLocationFile(t, expectedPath)
+			}
+			if tt.detentWorkflow || tt.configuredOutside {
+				writeDoctorWorkflowLocationFile(t, foundPath)
+			}
+
+			check, gotFinding := checkDoctorWorkflowLocation(globalconfig.Project{
+				Workflow: configuredPath,
+				Workdir:  repoRoot,
+			})
+			if gotFinding != tt.wantFinding {
+				t.Fatalf("checkDoctorWorkflowLocation() finding = %t, want %t: %#v", gotFinding, tt.wantFinding, check)
+			}
+			if !tt.wantFinding {
+				return
+			}
+			if check.Status != tt.wantStatus {
+				t.Fatalf("check.Status = %s, want %s", check.Status, tt.wantStatus)
+			}
+			if !strings.Contains(check.Detail, expectedPath) {
+				t.Fatalf("check.Detail = %q, want expected path %q", check.Detail, expectedPath)
+			}
+			if tt.wantFoundPath && !strings.Contains(check.Detail, foundPath) {
+				t.Fatalf("check.Detail = %q, want found path %q", check.Detail, foundPath)
+			}
+			for _, want := range []string{"repository root", "checked in", "WORKFLOW.local.md"} {
+				if !strings.Contains(check.Hint, want) {
+					t.Fatalf("check.Hint = %q, want containing %q", check.Hint, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckDoctorProjectContinuesWithConfiguredExternalWorkflow(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	repoRoot := filepath.Join(root, "repo")
+	externalPath := filepath.Join(root, "config", "WORKFLOW.md")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("create repo root: %v", err)
+	}
+	writeDoctorWorkflowLocationFile(t, externalPath)
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+		return workflowconfig.Workflow{Config: validDoctorWorkflow(repoRoot)}, nil
+	}
+
+	checks := checkDoctorProject(context.Background(), globalconfig.Project{
+		ID:       "alpha",
+		Workflow: externalPath,
+		Workdir:  repoRoot,
+	}, deps, RuntimeSecret{}, false)
+	if len(checks) < 2 {
+		t.Fatalf("len(checks) = %d, want continued project checks: %#v", len(checks), checks)
+	}
+	if checks[0].Status != doctorWarn {
+		t.Fatalf("workflow check status = %s, want %s", checks[0].Status, doctorWarn)
+	}
+	for _, want := range []string{externalPath, filepath.Join(repoRoot, "WORKFLOW.md"), "is valid"} {
+		if !strings.Contains(checks[0].Detail, want) {
+			t.Fatalf("workflow check detail = %q, want containing %q", checks[0].Detail, want)
+		}
+	}
+}
+
+func writeDoctorWorkflowLocationFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create workflow directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("---\n---\n"), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+}

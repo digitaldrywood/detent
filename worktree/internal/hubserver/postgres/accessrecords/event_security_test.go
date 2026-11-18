@@ -1,0 +1,444 @@
+package accessrecords_test
+
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestEventChangeMissingObjects(t *testing.T) {
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	pgstoretest.SeedRepository(t, r, "org_first")
+	f := pgstoretest.SeedHistory(t, r, "org_first", "first")
+	for _, tc := range []struct {
+		name, key string
+		read      func() error
+	}{
+		{"receipt", f.Receipt.PayloadObjectKey, func() error { _, err := f.Content.Receipt(t.Context(), f.Receipt); return err }},
+		{"event", f.Event.PayloadObjectKey, func() error { _, err := f.Content.Event(t.Context(), f.Event); return err }},
+		{"snapshot", f.Snapshot.PayloadObjectKey, func() error { _, err := f.Content.CollaborationVersion(t.Context(), f.Snapshot); return err }},
+		{"change", f.Change.PayloadObjectKey, func() error { _, err := f.Content.Change(t.Context(), f.Change); return err }},
+		{"version", f.Version.PayloadObjectKey, func() error { _, err := f.Content.Version(t.Context(), f.Version); return err }},
+		{"evidence", f.Evidence.PayloadObjectKey, func() error { _, err := f.Content.Evidence(t.Context(), f.Evidence); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f.Objects.Mu.Lock()
+			original := f.Objects.Objects[tc.key]
+			delete(f.Objects.Objects, tc.key)
+			f.Objects.Mu.Unlock()
+			if err := tc.read(); !errors.Is(err, artifact.ErrIntegrity) {
+				t.Fatalf("missing object error=%v", err)
+			}
+			f.Objects.Mu.Lock()
+			f.Objects.Objects[tc.key] = []byte("corrupt compressed object")
+			f.Objects.Mu.Unlock()
+			if err := tc.read(); !errors.Is(err, artifact.ErrIntegrity) {
+				t.Fatalf("corrupt object error=%v", err)
+			}
+			f.Objects.Mu.Lock()
+			f.Objects.Objects[tc.key] = original
+			f.Objects.Mu.Unlock()
+		})
+	}
+}
+
+func TestEventChangeRowSecurity(t *testing.T) {
+	admin := pgstoretest.Template.Database(t)
+	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		pgstoretest.SeedRepository(t, r, org)
+		for _, suffix := range []string{"first", "second"} {
+			pgstoretest.SeedHistory(t, r, org, suffix)
+		}
+	}
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
+	for _, table := range []string{"collaboration_events", "collaboration_versions", "change_requests", "change_versions", "change_evidence", "change_issue_links", "native_commands"} {
+		t.Run(table, func(t *testing.T) {
+			for _, scope := range []struct {
+				org  string
+				want int
+			}{{"", 0}, {"org_first", 2}, {"org_second", 2}, {"org_unknown", 0}} {
+				tx := pgstoretest.TenantTx(t, runtime, pool, scope.org)
+				var count int
+				if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if count != scope.want {
+					t.Errorf("scope=%s count=%d want=%d", scope.org, count, scope.want)
+				}
+				if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+table+" WHERE organization_id='org_foreign'").Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if count != 0 {
+					t.Error("foreign filter escaped RLS")
+				}
+				if err := tx.Rollback(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var columns string
+			if err := admin.QueryRowContext(t.Context(), `SELECT string_agg(quote_ident(column_name),',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name<>'organization_id'`, table).Scan(&columns); err != nil {
+				t.Fatal(err)
+			}
+			state := "42501"
+			switch table {
+			case "collaboration_events", "collaboration_versions", "change_requests", "change_issue_links":
+				state = "23503"
+			}
+			for _, target := range []string{"org_second", "org_foreign"} {
+				t.Run("insert/"+target, func(t *testing.T) {
+					tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
+					selected := strings.ReplaceAll(columns, "payload_object_key", "replace(payload_object_key,'org_first',$1)")
+					_, err := tx.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT $1,%s FROM %s LIMIT 1", table, columns, selected, table), target)
+					pgstoretest.RequireSQLState(t, err, state)
+				})
+			}
+			for _, statement := range []string{"UPDATE " + table + " SET organization_id='org_first' WHERE organization_id='org_second'", "DELETE FROM " + table + " WHERE organization_id='org_second'"} {
+				tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
+				result, err := tx.Exec(t.Context(), statement)
+				if err != nil {
+					t.Fatal(err)
+				}
+				count := result.RowsAffected()
+				if count != 0 {
+					t.Fatalf("foreign mutation affected=%d error=%v", count, err)
+				}
+				if err := tx.Rollback(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var owner string
+			var forced, enabled bool
+			if err := admin.QueryRowContext(t.Context(), `SELECT pg_get_userbyid(relowner),relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=$1::regclass`, table).Scan(&owner, &enabled, &forced); err != nil {
+				t.Fatal(err)
+			}
+			if owner != "detent_migration_v2" || !forced || !enabled {
+				t.Fatalf("owner=%s forced=%v enabled=%v", owner, forced, enabled)
+			}
+		})
+	}
+}
+
+func TestEventChangeRelationships(t *testing.T) {
+	admin := pgstoretest.Template.Database(t)
+	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		pgstoretest.SeedRepository(t, r, org)
+	}
+	f := pgstoretest.SeedHistory(t, r, "org_first", "first")
+	pgstoretest.SeedHistory(t, r, "org_first", "second")
+	pgstoretest.SeedHistory(t, r, "org_second", "foreign")
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
+	for _, tc := range []struct{ name, statement, state string }{
+		{"event issue", `INSERT INTO collaboration_events SELECT organization_id,project_id,'wi_missing', 'other_event',sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,change_id,version_id,head_sha,run_id,attempt_id,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE id='event_first'`, "23503"},
+		{"change project", `INSERT INTO change_requests SELECT organization_id,'prj_second',work_item_id,'bad_change',revision,title,current_version_id,evidence_sequence,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_requests WHERE id='change_first'`, "23503"},
+		{"version foreign change", `INSERT INTO change_versions(organization_id,id,change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,'bad_version','change_foreign',number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id FROM change_versions LIMIT 1`, "23503"},
+		{"evidence wrong change version", `INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,change_id,99,'version_second',kind,'new_source',actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id FROM change_evidence WHERE change_id='change_first'`, "23503"},
+		{"link wrong project", `INSERT INTO change_issue_links VALUES ('org_first','prj_second','wi_second_1','change_first')`, "23503"},
+		{"foreign current version", `UPDATE change_requests SET current_version_id='version_foreign' WHERE id='change_first'`, "23503"},
+		{"duplicate version number", `INSERT INTO change_versions(organization_id,id,change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,'other_version',change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id FROM change_versions WHERE id='version_first'`, "23505"},
+		{"duplicate event sequence", `INSERT INTO collaboration_events SELECT organization_id,project_id,work_item_id,'other_event',sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,change_id,version_id,head_sha,run_id,attempt_id,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE id='event_first'`, "23505"},
+		{"cross tenant object", `UPDATE change_requests SET payload_object_key=replace(payload_object_key,'org_first','org_second') WHERE id='change_first'`, "23514"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
+			_, err := tx.Exec(t.Context(), tc.statement)
+			if err == nil && tc.name == "foreign current version" {
+				_, err = tx.Exec(t.Context(), "SET CONSTRAINTS ALL IMMEDIATE")
+			}
+			pgstoretest.RequireSQLState(t, err, tc.state)
+			if err := tx.Rollback(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		write func(eventstore.Writer) error
+	}{
+		{"tenant mismatch", func(w eventstore.Writer) error {
+			row := f.Event
+			row.OrganizationID = "org_second"
+			_, err := w.AppendEvent(t.Context(), row)
+			return err
+		}},
+		{"missing parent", func(w eventstore.Writer) error {
+			row := f.Event
+			row.WorkItemID = "missing"
+			_, err := w.AppendEvent(t.Context(), row)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, tc.write)
+			want := corestore.ErrTenantMismatch
+			if tc.name == "missing parent" {
+				want = corestore.ErrNotFound
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("error=%v want=%v", err, want)
+			}
+		})
+	}
+}
+
+func TestEventChangeUpdateAndPages(t *testing.T) {
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	pgstoretest.SeedRepository(t, r, "org_first")
+	f := pgstoretest.SeedHistory(t, r, "org_first", "first")
+	original := f.Change
+	updatedValue, err := f.Content.Change(t.Context(), original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedValue.Title = "Updated title"
+	updatedValue.Body = "Updated body"
+	updatedValue.CurrentVersion = f.Version.ID
+	update, err := f.Content.PrepareChange(t.Context(), "org_first", pgstoretest.HistoryJSON(t, updatedValue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
+		var err error
+		update, err = w.UpdateChange(t.Context(), update)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if update.Revision != original.Revision+1 || update.EvidenceSequence != 1 {
+		t.Fatalf("updated record=%+v", update)
+	}
+	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error { _, err := w.UpdateChange(t.Context(), original); return err }); !errors.Is(err, corestore.ErrRevisionConflict) {
+		t.Fatalf("stale update error=%v", err)
+	}
+	for _, limit := range []int{0, 201} {
+		err := r.ReadRecords(t.Context(), "org_first", corestore.Serving, func(reader eventstore.Reader) error {
+			_, err := reader.Events(t.Context(), "prj_first", "wi_first_1", 0, limit)
+			return err
+		})
+		if !errors.Is(err, corestore.ErrInvalidPage) {
+			t.Fatalf("limit %d error=%v", limit, err)
+		}
+	}
+	if err := r.ReadRecords(t.Context(), "org_first", corestore.Serving, func(reader eventstore.Reader) error {
+		row, err := reader.Change(t.Context(), update.ID)
+		if err != nil {
+			return err
+		}
+		if row.Revision != 2 || row.CurrentVersionID == nil || *row.CurrentVersionID != f.Version.ID {
+			t.Errorf("updated row=%+v", row)
+		}
+		update = row
+		events, err := reader.Events(t.Context(), "prj_first", "wi_first_1", f.Event.Sequence, 1)
+		if err != nil {
+			return err
+		}
+		if len(events) != 0 {
+			t.Error("event keyset repeated anchor")
+		}
+		versions, err := reader.Versions(t.Context(), f.Change.ID, f.Version.Number, 1)
+		if err != nil {
+			return err
+		}
+		if len(versions) != 0 {
+			t.Error("version keyset repeated anchor")
+		}
+		evidence, err := reader.Evidence(t.Context(), f.Change.ID, f.Evidence.Sequence, 1)
+		if err != nil {
+			return err
+		}
+		if len(evidence) != 0 {
+			t.Error("evidence keyset repeated anchor")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hydrated, err := f.Content.Change(t.Context(), update)
+	if err != nil || hydrated.Body != "Updated body" || hydrated.CurrentVersion != f.Version.ID || hydrated.Revision != 2 {
+		t.Fatalf("updated payload=%+v error=%v", hydrated, err)
+	}
+}
+
+func TestEventChangeLegacyDecodeRejectsInvalidPayload(t *testing.T) {
+	c := eventstore.NewContent(pgstoretest.NewHistoryObjects())
+	for _, tc := range []struct {
+		name    string
+		prepare func([]byte) error
+	}{
+		{"event", func(raw []byte) error { _, err := c.PrepareEvent(t.Context(), "org_first", raw); return err }},
+		{"change", func(raw []byte) error { _, err := c.PrepareChange(t.Context(), "org_first", raw); return err }},
+		{"version", func(raw []byte) error { _, err := c.PrepareVersion(t.Context(), "org_first", raw); return err }},
+		{"evidence", func(raw []byte) error {
+			_, err := c.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: "org_first", Kind: "discussion"}, raw)
+			return err
+		}},
+		{"snapshot", func(raw []byte) error {
+			_, err := c.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: "org_first"}, raw)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.prepare([]byte("{private-payload")); !errors.Is(err, eventstore.ErrInvalidRecord) || strings.Contains(err.Error(), "private-payload") {
+				t.Fatalf("invalid payload error=%v", err)
+			}
+		})
+	}
+	t.Run("malformed phase objects cannot replace typed receipts", func(t *testing.T) {
+		raw := []byte(`{"id":"malformed-phase","organization_id":"org_first","project_id":"prj_first","aggregate_id":"wi_first_1","type":"run.observed","schema_version":1,"actor":{"kind":"runner","principal_id":"example"},"data":{"run":{"attempt_id":"attempt","run_id":"run","runtime":{"phases":"malformed","activity":{"schema":1}}}}}`)
+		if _, err := c.PrepareEvent(t.Context(), "org_first", raw); !errors.Is(err, eventstore.ErrInvalidRecord) {
+			t.Fatalf("malformed typed phases error=%v", err)
+		}
+	})
+	t.Run("typed event facts", func(t *testing.T) {
+		value := tracker.CollaborationEvent{ID: "event_example", OrganizationID: "org_first", ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "workflow.transitioned", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "Persisted reason", Run: &tracker.NativeRunData{AttemptID: "persisted-attempt", FencingToken: 3}}}
+		original, err := c.PrepareEvent(t.Context(), value.OrganizationID, pgstoretest.HistoryJSON(t, value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct {
+			name     string
+			edit     func(*eventstore.Event)
+			revision tracker.Revision
+			from     string
+			to       string
+			invalid  bool
+		}{
+			{"current write", func(*eventstore.Event) {}, 2, "Todo", "Done", false},
+			{"typed historical correction", func(row *eventstore.Event) { row.EventRevision, row.FromState, row.ToState = 7, "Backlog", "Cancelled" }, 7, "Backlog", "Cancelled", false},
+			{"typed zero and empty states", func(row *eventstore.Event) { row.EventRevision, row.FromState, row.ToState = 0, "", "" }, 0, "", "", false},
+			{"legacy actor envelope", func(row *eventstore.Event) { row.ActorEnvelopeKnown, row.ActorViaKey = false, "untracked" }, 2, "Todo", "Done", false},
+			{"work item mismatch", func(row *eventstore.Event) { row.WorkItemID = "wi_other" }, 0, "", "", true},
+			{"actor mismatch", func(row *eventstore.Event) { row.ActorPrincipalID = "other" }, 0, "", "", true},
+			{"run id mismatch", func(row *eventstore.Event) { row.RunID = "other-run" }, 0, "", "", true},
+			{"attempt id mismatch", func(row *eventstore.Event) { row.AttemptID = "other-attempt" }, 0, "", "", true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				row := original
+				test.edit(&row)
+				for _, reader := range []struct {
+					name string
+					read func(eventstore.Event) (tracker.CollaborationEvent, error)
+				}{
+					{"event", func(row eventstore.Event) (tracker.CollaborationEvent, error) { return c.Event(t.Context(), row) }},
+					{"analytics", func(row eventstore.Event) (tracker.CollaborationEvent, error) {
+						value, malformed, err := c.AnalyticsEvent(t.Context(), row)
+						if malformed {
+							t.Fatal("valid phases classified malformed")
+						}
+						return value, err
+					}},
+				} {
+					t.Run(reader.name, func(t *testing.T) {
+						read := reader.read
+						got, err := read(row)
+						if test.invalid {
+							if !errors.Is(err, artifact.ErrIntegrity) {
+								t.Fatalf("mismatched event identity error=%v", err)
+							}
+							return
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						if got.Data.Revision != test.revision || got.Data.FromState != test.from || got.Data.ToState != test.to {
+							t.Fatalf("event facts=%+v want revision=%d from=%q to=%q", got.Data, test.revision, test.from, test.to)
+						}
+						if got.Data.Reason != value.Data.Reason || got.Data.Run == nil || !reflect.DeepEqual(got.Data.Run, value.Data.Run) || got.Actor != value.Actor {
+							t.Fatalf("event detail changed=%+v", got)
+						}
+					})
+				}
+
+			})
+		}
+	})
+	t.Run("non-run event projection", func(t *testing.T) {
+		value := tracker.CollaborationEvent{ID: "event_nonrun", OrganizationID: "org_first", ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "workflow.transitioned", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt()}
+		original, err := c.PrepareEvent(t.Context(), value.OrganizationID, pgstoretest.HistoryJSON(t, value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct {
+			name    string
+			run     string
+			attempt string
+			invalid bool
+		}{
+			{"empty projection", "", "", false},
+			{"invented run", "other-run", "", true},
+			{"invented attempt", "", "other-attempt", true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				row := original
+				row.RunID, row.AttemptID = test.run, test.attempt
+				got, err := c.Event(t.Context(), row)
+				if test.invalid {
+					if !errors.Is(err, artifact.ErrIntegrity) {
+						t.Fatalf("non-run projection error=%v", err)
+					}
+					return
+				}
+				if err != nil || got.Data.Run != nil {
+					t.Fatalf("non-run event run=%+v error=%v", got.Data.Run, err)
+				}
+			})
+		}
+	})
+}
+
+func TestEventChangeEvidenceKinds(t *testing.T) {
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	pgstoretest.SeedRepository(t, r, "org_first")
+	f := pgstoretest.SeedHistory(t, r, "org_first", "first")
+	for _, tc := range []struct {
+		kind     string
+		value    any
+		source   string
+		decision string
+	}{
+		{"review", tracker.ChangeReview{ID: "review", VersionID: f.Version.ID, Decision: "approved", Body: "Review body", Actor: pgstoretest.HistoryActor(), CreatedAt: pgstoretest.HistoryAt()}, "review-receipt", "approved"},
+		{"check", tracker.ChangeCheck{ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: "check-run", HeadSHA: "head", PolicyID: "policy", Conclusion: "success"}, VersionID: f.Version.ID, Actor: pgstoretest.HistoryActor(), ReceivedAt: pgstoretest.HistoryAt()}, "check-run", ""},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			row, err := f.Content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: "org_first", ChangeID: f.Change.ID, Kind: tc.kind, SourceKey: new(tc.source)}, pgstoretest.HistoryJSON(t, tc.value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.ActorKind != "human" || row.ActorPrincipalID != "example" || row.Decision != tc.decision || row.VersionID == nil || *row.VersionID != f.Version.ID || row.SourceKey == nil || *row.SourceKey != tc.source {
+				t.Fatalf("typed evidence=%+v", row)
+			}
+			if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
+				var err error
+				row, err = w.AppendEvidence(t.Context(), row)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var stored []eventstore.Evidence
+			if err := r.ReadRecords(t.Context(), "org_first", corestore.Serving, func(reader eventstore.Reader) error {
+				var err error
+				stored, err = reader.Evidence(t.Context(), f.Change.ID, row.Sequence-1, 1)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(stored) != 1 || stored[0].Kind != tc.kind {
+				t.Fatalf("stored evidence=%+v", stored)
+			}
+			raw, err := f.Content.Evidence(t.Context(), stored[0])
+			if err != nil || string(raw) != string(pgstoretest.HistoryJSON(t, tc.value)) {
+				t.Fatalf("evidence payload=%s error=%v", raw, err)
+			}
+		})
+	}
+}

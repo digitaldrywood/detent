@@ -1,0 +1,309 @@
+package testenv
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+)
+
+var insertStatement = regexp.MustCompile(`(?is)\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\(([^)]*)\)\s*VALUES\s*\(`)
+var conflictTarget = regexp.MustCompile(`(?is)\bON\s+CONFLICT\s*\(([^)]*)\)`)
+var numberedPlaceholder = regexp.MustCompile(`^\$([1-9][0-9]*)(?:::[A-Za-z_][A-Za-z0-9_.]*(?:\[\])?)*$`)
+
+// ConstantUniqueInserts reports INSERT statements in the non-test Go files of
+// dir that write a constant into every column of a UNIQUE or PRIMARY KEY index
+// of db. Such a statement can only ever succeed once per database, so every
+// later caller fails or is silently ignored. An ON CONFLICT clause naming
+// exactly that index's columns, or naming a key that is itself all constant,
+// marks a deliberate singleton row and is allowed.
+
+func ConstantUniquePostgresInserts(ctx context.Context, db *sql.DB, dir string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT n.nspname, c.relname, i.indexrelid::text, a.attname, pg_table_is_visible(c.oid)
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, position)
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+WHERE i.indisunique AND i.indisvalid AND i.indisready AND i.indislive
+  AND i.indpred IS NULL AND i.indexprs IS NULL
+  AND k.position <= i.indnkeyatts
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+ORDER BY n.nspname, c.relname, i.indexrelid, k.position`)
+	if err != nil {
+		return nil, fmt.Errorf("list PostgreSQL unique indexes: %w", err)
+	}
+	defer rows.Close()
+	indexes := map[string][][]string{}
+	var previous string
+	for rows.Next() {
+		var schema, table, index, column string
+		var visible bool
+		if err := rows.Scan(&schema, &table, &index, &column, &visible); err != nil {
+			return nil, fmt.Errorf("read PostgreSQL unique index: %w", err)
+		}
+		keys := []string{strings.ToLower(schema + "." + table)}
+		if visible {
+			keys = append(keys, strings.ToLower(table))
+		}
+		for _, key := range keys {
+			if index != previous {
+				indexes[key] = append(indexes[key], nil)
+			}
+			last := len(indexes[key]) - 1
+			indexes[key][last] = append(indexes[key][last], strings.ToLower(column))
+		}
+		previous = index
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate PostgreSQL unique indexes: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close PostgreSQL unique indexes: %w", err)
+	}
+	return constantUniqueInserts(dir, indexes)
+}
+
+func constantUniqueInserts(dir string, indexes map[string][][]string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read source directory: %w", err)
+	}
+	var violations []string
+	files := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(files, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", name, err)
+		}
+		constants := packageConstants(file)
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			for i, arg := range call.Args {
+				query, ok := constantString(arg, constants)
+				if !ok {
+					continue
+				}
+				for _, violation := range constantInsertViolations(query, call.Args[i+1:], call.Ellipsis.IsValid(), constants, indexes) {
+					violations = append(violations, fmt.Sprintf("%s: %s", files.Position(arg.Pos()), violation))
+				}
+				break
+			}
+			return true
+		})
+	}
+	return violations, nil
+}
+
+func constantInsertViolations(query string, args []ast.Expr, spread bool, constants map[string]ast.Expr, indexes map[string][][]string) []string {
+	var violations []string
+	for _, match := range insertStatement.FindAllStringSubmatchIndex(query, -1) {
+		table := strings.ToLower(query[match[2]:match[3]])
+		columns := splitTopLevel(query[match[4]:match[5]])
+		values, end := valuesList(query, match[1])
+		if values == nil || len(values) != len(columns) {
+			continue
+		}
+		placeholder := strings.Count(query[:match[1]], "?")
+		constant := map[string]bool{}
+		for i, value := range values {
+			value = strings.TrimSpace(value)
+			column := strings.ToLower(strings.TrimSpace(columns[i]))
+			argument := -1
+			switch {
+			case value == "?":
+				argument = placeholder
+			case numberedPlaceholder.MatchString(value):
+				position, err := strconv.Atoi(numberedPlaceholder.FindStringSubmatch(value)[1])
+				if err == nil {
+					argument = position - 1
+				}
+			case strings.EqualFold(value, "NULL"):
+			case constantSQL(value):
+				constant[column] = true
+			}
+			if argument >= 0 && argument < len(args) && (!spread || argument < len(args)-1) {
+				if _, ok := constantValue(args[argument], constants); ok {
+					constant[column] = true
+				}
+			}
+			placeholder += strings.Count(value, "?")
+		}
+		statement := query[match[0]:]
+		if next := insertStatement.FindStringIndex(query[end:]); next != nil {
+			statement = query[match[0] : end+next[0]]
+		}
+		targets := conflictTargets(statement)
+		if slices.ContainsFunc(targets, func(target []string) bool { return allConstant(target, constant) }) {
+			continue
+		}
+		for _, index := range indexes[table] {
+			if !allConstant(index, constant) || slices.ContainsFunc(targets, func(target []string) bool { return sameColumns(target, index) }) {
+				continue
+			}
+			violations = append(violations, fmt.Sprintf("INSERT INTO %s writes a constant into unique key (%s)", table, strings.Join(index, ",")))
+		}
+	}
+	return violations
+}
+
+func valuesList(query string, open int) ([]string, int) {
+	depth := 1
+	inString := false
+	for i := open; i < len(query); i++ {
+		switch c := query[i]; {
+		case c == '\'':
+			inString = !inString
+		case inString:
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return splitTopLevel(query[open:i]), i + 1
+			}
+		}
+	}
+	return nil, len(query)
+}
+
+func splitTopLevel(list string) []string {
+	var parts []string
+	depth, start := 0, 0
+	inString := false
+	for i := range len(list) {
+		switch c := list[i]; {
+		case c == '\'':
+			inString = !inString
+		case inString:
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case c == ',' && depth == 0:
+			parts = append(parts, list[start:i])
+			start = i + 1
+		}
+	}
+	return append(parts, list[start:])
+}
+
+func constantSQL(value string) bool {
+	if strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'") {
+		return true
+	}
+	_, err := strconv.ParseFloat(value, 64)
+	return err == nil
+}
+
+func allConstant(index []string, constant map[string]bool) bool {
+	for _, column := range index {
+		if !constant[column] {
+			return false
+		}
+	}
+	return true
+}
+
+func conflictTargets(statement string) [][]string {
+	var targets [][]string
+	for _, match := range conflictTarget.FindAllStringSubmatch(statement, -1) {
+		var target []string
+		for _, column := range splitTopLevel(match[1]) {
+			target = append(target, strings.ToLower(strings.TrimSpace(column)))
+		}
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func sameColumns(a, b []string) bool {
+	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
+}
+
+func packageConstants(file *ast.File) map[string]ast.Expr {
+	constants := map[string]ast.Expr{}
+	for _, decl := range file.Decls {
+		general, ok := decl.(*ast.GenDecl)
+		if !ok || general.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range general.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range value.Names {
+				if i < len(value.Values) {
+					constants[name.Name] = value.Values[i]
+				}
+			}
+		}
+	}
+	return constants
+}
+
+func constantString(expr ast.Expr, constants map[string]ast.Expr) (string, bool) {
+	value, ok := constantValue(expr, constants)
+	if !ok {
+		return "", false
+	}
+	text, err := strconv.Unquote(value)
+	if err != nil || !strings.Contains(strings.ToUpper(text), "INSERT") {
+		return "", false
+	}
+	return text, true
+}
+
+func constantValue(expr ast.Expr, constants map[string]ast.Expr) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		return e.Value, true
+	case *ast.ParenExpr:
+		return constantValue(e.X, constants)
+	case *ast.Ident:
+		value, ok := constants[e.Name]
+		if !ok {
+			return "", false
+		}
+		delete(constants, e.Name)
+		defer func() { constants[e.Name] = value }()
+		return constantValue(value, constants)
+	case *ast.BinaryExpr:
+		if e.Op != token.ADD {
+			return "", false
+		}
+		left, ok := constantValue(e.X, constants)
+		if !ok {
+			return "", false
+		}
+		right, ok := constantValue(e.Y, constants)
+		if !ok {
+			return "", false
+		}
+		l, lerr := strconv.Unquote(left)
+		r, rerr := strconv.Unquote(right)
+		if lerr != nil || rerr != nil {
+			return "", false
+		}
+		return strconv.Quote(l + r), true
+	}
+	return "", false
+}

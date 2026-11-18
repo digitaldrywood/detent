@@ -1,0 +1,2572 @@
+package github
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+)
+
+const (
+	DefaultGraphQLEndpoint = "https://api.github.com/graphql"
+	gitHubAPIVersion       = "2026-03-10"
+	maxErrorBodyBytes      = 1000
+)
+
+const (
+	restRateLimitKindPrimaryExhausted   = "primary_exhausted"
+	restRateLimitKindSecondaryThrottled = "secondary_throttled"
+	restFanoutCostUnitsPerRequest       = int64(4)
+	restConditionalFanoutCostUnits      = int64(1)
+	restRateLimitResetSkew              = 5 * time.Second
+	restFanoutDeferralRetry             = 30 * time.Second
+	restBudgetGateFanoutCap             = "fanout_cap"
+	restBudgetGateReserve               = "reserve"
+	restDivergenceMinUnexplained        = int64(10)
+)
+
+var defaultRESTBackoffs = newRESTBackoffRegistry()
+var defaultRESTDivergences = newRESTDivergenceRegistry()
+
+type HTTPClient interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+type ClientConfig struct {
+	Endpoint                   string
+	Project                    string
+	TokenSource                TokenSource
+	HTTPClient                 HTTPClient
+	GraphQLMinRemainingReserve int64
+	RESTPolicy                 RESTBudgetPolicy
+	DisableConditionalRequests bool
+	RESTDebugLogging           bool
+	Logger                     *slog.Logger
+}
+
+type RESTBudgetPolicy struct {
+	MinRemainingReserve int64
+	FanoutMaxRequests   int64
+}
+
+type Client struct {
+	endpoint               string
+	project                string
+	restEndpoint           string
+	tokenSource            TokenSource
+	httpClient             HTTPClient
+	graphQLMinReserve      int64
+	restPolicy             RESTBudgetPolicy
+	restDebugLogging       bool
+	logger                 *slog.Logger
+	mu                     sync.RWMutex
+	rateLimit              connector.GraphQLRateLimit
+	queryCosts             map[string]connector.GraphQLQueryCost
+	hasRateLimit           bool
+	hasRateLimitUsage      bool
+	graphQLRateLimitStatus string
+	graphQLSecondary       *graphQLSecondaryState
+	graphQLSecondaryKey    string
+	restRateLimit          connector.RESTRateLimit
+	restRateLimits         map[string]connector.RESTRateLimit
+	restBudgets            map[string]connector.RESTRateLimitBudget
+	restDivergenceKeys     map[string]struct{}
+	restDivergences        *restDivergenceRegistry
+	restRequests           map[string]connector.RESTEndpointUsage
+	unscopedRESTScope      *connector.RESTScope
+	restFanoutUnits        int64
+	restReserveHeld        bool
+	restFanoutDeferred     bool
+	restCache              map[string]restCacheEntry
+	conditionalRequests    bool
+	restBackoffUntil       time.Time
+	restBackoffKey         string
+	restBackoffs           *restBackoffRegistry
+	restRateLimitStatus    bool
+	hasRestRateLimit       bool
+	authHealth             connector.AuthHealth
+	hasAuthHealth          bool
+}
+
+type restProbeResult struct {
+	backoffKey         string
+	credentialIdentity string
+	StatusCode         int
+	Headers            http.Header
+	Body               string
+	FullBody           string
+}
+
+func NewClient(cfg ClientConfig) (*Client, error) {
+	endpoint := strings.TrimSpace(cfg.Endpoint)
+	if endpoint == "" {
+		endpoint = DefaultGraphQLEndpoint
+	}
+	if err := validateEndpoint(endpoint); err != nil {
+		return nil, err
+	}
+	restEndpoint, err := restEndpointFromGraphQLEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.TokenSource == nil {
+		return nil, ErrMissingToken
+	}
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = NewPooledHTTPClient(HTTPTransportConfig{})
+	}
+
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	restPolicy := normalizeRESTBudgetPolicy(cfg.RESTPolicy)
+	fanoutCapSource := "default"
+	if cfg.RESTPolicy.FanoutMaxRequests > 0 {
+		fanoutCapSource = "configured"
+	}
+	logger.Info("github rest fanout cap",
+		"fanout_cap", restPolicy.FanoutMaxRequests,
+		"fanout_cap_source", fanoutCapSource,
+		"fanout_scope", "shared across endpoint families",
+	)
+
+	client := &Client{
+		endpoint:            endpoint,
+		project:             strings.TrimSpace(cfg.Project),
+		restEndpoint:        restEndpoint,
+		tokenSource:         cfg.TokenSource,
+		httpClient:          httpClient,
+		graphQLMinReserve:   max(cfg.GraphQLMinRemainingReserve, 0),
+		restPolicy:          restPolicy,
+		restDebugLogging:    cfg.RESTDebugLogging,
+		logger:              logger,
+		restBackoffs:        defaultRESTBackoffs,
+		graphQLSecondary:    newGraphQLSecondaryState(),
+		restDivergences:     defaultRESTDivergences,
+		unscopedRESTScope:   &connector.RESTScope{Name: "outside_refresh"},
+		conditionalRequests: !cfg.DisableConditionalRequests,
+		restCache:           map[string]restCacheEntry{},
+	}
+	if resolver, ok := cfg.TokenSource.(*TokenResolver); ok {
+		resolver.unscopedRESTScope = client.unscopedRESTScope
+	}
+	if source, ok := cfg.TokenSource.(*InstallationTokenSource); ok {
+		source.unscopedRESTScope = client.unscopedRESTScope
+	}
+	return client, nil
+}
+
+func (c *Client) GraphQL(ctx context.Context, query string, variables map[string]any, out any) error {
+	return c.GraphQLWithType(ctx, "", query, variables, out)
+}
+
+func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query string, variables map[string]any, out any) error {
+	return c.graphQLWithType(ctx, queryType, query, variables, out, true)
+}
+
+func (c *Client) graphQLWithType(ctx context.Context, queryType string, query string, variables map[string]any, out any, allowTokenRefresh bool) error {
+	queryType = graphQLQueryType(queryType, query)
+	lookup := graphQLLookup(query)
+	trackerRead := graphQLTrackerRead(queryType, query)
+	attribution := c.restScope(ctx).Attribution("graphql", fixedGraphQLTimingPurpose(queryType))
+	token, err := c.resolveRequestToken(ctx, attribution)
+	if err != nil {
+		return fmt.Errorf("resolve github token: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ErrMissingToken
+	}
+
+	// Projects and refreshed installation tokens share the cooldown.
+	c.bindGraphQLSecondary(token)
+	if err := c.graphQLLookupBackoffError(queryType, lookup, time.Now()); err != nil {
+		return err
+	}
+
+	payload := map[string]any{"query": query}
+	if variables != nil {
+		payload["variables"] = variables
+	}
+
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return fmt.Errorf("encode github graphql request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, &body)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+
+	operation := firstLine(query)
+	c.logger.DebugContext(ctx, "github graphql request",
+		"endpoint_family", "graphql",
+		"request_purpose", queryType,
+		"operation", operation,
+		"variables_present", len(variables) > 0,
+		"live_connections", c.LiveConnections(),
+	)
+
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, c.httpClient, req, false, true)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, ctxErr)
+		}
+		return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, fmt.Errorf("%w: %w", ErrTransient, err))
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.logger.DebugContext(ctx, "github graphql response body drain failed", "operation", operation, "error", err)
+		}
+	}()
+
+	c.logger.DebugContext(ctx, "github graphql response",
+		"endpoint_family", "graphql",
+		"request_purpose", queryType,
+		"operation", operation,
+		"status", resp.StatusCode,
+		"live_connections", c.LiveConnections(),
+	)
+
+	finishHTTP.BeginBody()
+	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
+	if err != nil {
+		return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, fmt.Errorf("%w: read response: %w", ErrTransient, err))
+	}
+	connector.ReportProgress(ctx)
+	receivedAt := time.Now()
+	headerRateLimit := c.recordRateLimitFromHeaders(resp.Header, receivedAt)
+
+	if resp.StatusCode != http.StatusOK {
+		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
+		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
+			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
+		}
+		c.recordGraphQLRateLimitFailure(err, headerRateLimit, receivedAt)
+		return c.trackerReadStatusError(trackerRead, token, c.endpoint, queryType, resp.StatusCode, err)
+	}
+
+	var envelope struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []GraphQLError  `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+	}
+	if !c.recordRateLimitFromData(ctx, envelope.Data, queryType, receivedAt) {
+		c.recordGraphQLQueryCostFromHeaders(queryType, headerRateLimit)
+	}
+	if cost, snapshot, ok := graphQLAttributionCost(envelope.Data, headerRateLimit); ok {
+		defaultGraphQLAttribution.record(ctx, token, c.project, queryType, cost, snapshot, c.logger, c)
+	}
+	if len(envelope.Errors) > 0 {
+		err := classifyGraphQLErrors(envelope.Errors)
+		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
+			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
+		}
+		c.recordGraphQLRateLimitFailure(err, headerRateLimit, receivedAt)
+		return err
+	}
+	if queryType != graphQLQueryRateLimitProbe {
+		c.clearGraphQLRateLimitStatus()
+	}
+	if out == nil {
+		return nil
+	}
+	if len(envelope.Data) == 0 {
+		return ErrInvalidResponse
+	}
+	if err := json.Unmarshal(envelope.Data, out); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+	}
+
+	return nil
+}
+
+func (c *Client) REST(ctx context.Context, method string, path string, body any, out any) error {
+	_, err := c.rest(ctx, method, path, body, out)
+	return err
+}
+
+func (c *Client) RESTPage(ctx context.Context, path string, out any) (string, error) {
+	headers, err := c.rest(ctx, http.MethodGet, path, nil, out)
+	if err != nil {
+		return "", err
+	}
+	return c.nextRESTPage(headers)
+}
+
+func (c *Client) RESTText(ctx context.Context, path, accept string, maxBytes int) (string, bool, error) {
+	text, truncated, _, err := c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true, false)
+	return text, truncated, err
+}
+
+// RESTTextWithSize retains at most maxBytes while counting the complete response.
+func (c *Client) RESTTextWithSize(ctx context.Context, path, accept string, maxBytes int) (string, bool, int, error) {
+	return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true, true)
+}
+
+func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept string, maxBytes int, allowTokenRefresh, countSize bool) (string, bool, int, error) {
+	if maxBytes <= 0 {
+		return "", false, 0, errors.New("maximum response bytes must be positive")
+	}
+	attribution := c.restScope(ctx).Attribution(restEndpointFamily(http.MethodGet, path), "")
+	token, err := c.resolveRequestToken(ctx, attribution)
+	if err != nil {
+		return "", false, 0, fmt.Errorf("resolve github token: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false, 0, ErrMissingToken
+	}
+	backoffKey := c.restSharedBackoffKey(token)
+	credentialIdentity := c.restCredentialIdentity(token)
+	c.rememberRESTBackoffKey(backoffKey)
+	now := time.Now()
+	if err := c.restBackoffError(backoffKey, now); err != nil {
+		return "", false, 0, err
+	}
+	if err := c.restBudgetPolicyError(ctx, credentialIdentity, http.MethodGet, path, false, now); err != nil {
+		return "", false, 0, err
+	}
+
+	url, err := c.restURL(path)
+	if err != nil {
+		return "", false, 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", false, 0, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", strings.TrimSpace(accept))
+	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+
+	family := restEndpointFamily(http.MethodGet, path)
+	trackerRead := restTrackerRead(http.MethodGet, family)
+	c.logRESTRequest(ctx, "github rest text request", http.MethodGet, path, family, false)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, c.httpClient, req, true, false)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), ctxErr)
+		}
+		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: %w", ErrTransient, err))
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.logger.DebugContext(ctx, "github rest text response body close failed", "path", path, "endpoint_family", family, "error", err)
+		}
+	}()
+
+	finishHTTP.BeginBody()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
+	finishHTTP.BodyConsumed(err)
+	if err != nil {
+		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
+	}
+	connector.ReportProgress(ctx)
+	receivedAt := time.Now()
+	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, http.MethodGet, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
+	c.logRESTResponse(ctx, "github rest text response", http.MethodGet, path, family, resp.StatusCode)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		responseErr := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
+		c.logRESTStatusError(ctx, http.MethodGet, path, family, resp.StatusCode, responseErr)
+		if c.refreshAfterAuthFailure(ctx, responseErr, allowTokenRefresh) {
+			return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, false, countSize)
+		}
+		return "", false, 0, c.trackerReadStatusError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), resp.StatusCode, responseErr)
+	}
+	truncated := len(raw) > maxBytes
+	size := len(raw)
+	if truncated && countSize {
+		finishHTTP.BeginBody()
+		rest, err := io.Copy(io.Discard, resp.Body)
+		finishHTTP.BodyConsumed(err)
+		if err != nil {
+			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: count response: %w", ErrTransient, err))
+		}
+		size += int(rest)
+	}
+	if truncated {
+		raw = raw[:maxBytes]
+	}
+	return string(raw), truncated, size, nil
+}
+
+func (c *Client) restProbe(ctx context.Context, method string, path string, body any) (restProbeResult, error) {
+	return c.restProbeWithTokenRefresh(ctx, method, path, body, true)
+}
+
+func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, path string, body any, allowTokenRefresh bool) (restProbeResult, error) {
+	attribution := c.restScope(ctx).Attribution(restEndpointFamily(method, path), "")
+	token, err := c.resolveRequestToken(ctx, attribution)
+	if err != nil {
+		return restProbeResult{}, fmt.Errorf("resolve github token: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return restProbeResult{}, ErrMissingToken
+	}
+	backoffKey := c.restSharedBackoffKey(token)
+	credentialIdentity := c.restCredentialIdentity(token)
+	c.rememberRESTBackoffKey(backoffKey)
+
+	var requestBody io.Reader
+	if body != nil {
+		var encoded bytes.Buffer
+		if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+			return restProbeResult{}, fmt.Errorf("encode github rest request: %w", err)
+		}
+		requestBody = &encoded
+	}
+
+	url, err := c.restURL(path)
+	if err != nil {
+		return restProbeResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, requestBody)
+	if err != nil {
+		return restProbeResult{}, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	family := restEndpointFamily(method, path)
+	trackerRead := restTrackerRead(method, family)
+	c.logRESTRequest(ctx, "github rest probe request", method, path, family, body != nil)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, c.httpClient, req, true, true)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
+		}
+		return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: %w", ErrTransient, err))
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.logger.DebugContext(ctx, "github rest probe response body drain failed", "method", method, "path", path, "endpoint_family", family, "error", err)
+		}
+	}()
+
+	finishHTTP.BeginBody()
+	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
+	if err != nil {
+		return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
+	}
+	connector.ReportProgress(ctx)
+	receivedAt := time.Now()
+	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
+	c.logRESTResponse(ctx, "github rest probe response", method, path, family, resp.StatusCode)
+	result := restProbeResult{
+		backoffKey:         backoffKey,
+		credentialIdentity: credentialIdentity,
+		StatusCode:         resp.StatusCode,
+		Headers:            resp.Header.Clone(),
+		Body:               summarizeBody(raw),
+		FullBody:           string(bytes.TrimSpace(raw)),
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
+		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
+			return c.restProbeWithTokenRefresh(ctx, method, path, body, false)
+		}
+	}
+	return result, nil
+}
+
+func (c *Client) rest(ctx context.Context, method string, path string, body any, out any) (http.Header, error) {
+	return c.restWithTokenRefresh(ctx, method, path, body, out, true)
+}
+
+func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path string, body any, out any, allowTokenRefresh bool) (http.Header, error) {
+	attribution := c.restScope(ctx).Attribution(restEndpointFamily(method, path), "")
+	token, err := c.resolveRequestToken(ctx, attribution)
+	if err != nil {
+		return nil, fmt.Errorf("resolve github token: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, ErrMissingToken
+	}
+	backoffKey := c.restSharedBackoffKey(token)
+	credentialIdentity := c.restCredentialIdentity(token)
+	c.rememberRESTBackoffKey(backoffKey)
+	cached, conditional := c.restConditionalEntry(method, path)
+	now := time.Now()
+	if err := c.restBackoffError(backoffKey, now); err != nil {
+		c.logger.DebugContext(ctx, "github rest backoff active",
+			"method", strings.ToUpper(strings.TrimSpace(method)),
+			"path", path,
+			"endpoint_family", restEndpointFamily(method, path),
+			"request_purpose", restRequestPurpose(method, path),
+			"backoff_reason", restBackoffReason(err),
+			"retry_after_seconds", retryAfterSeconds(err),
+		)
+		return nil, err
+	}
+	if err := c.restBudgetPolicyError(ctx, credentialIdentity, method, path, conditional, now); err != nil {
+		c.logger.DebugContext(ctx, "github rest request deferred",
+			"method", strings.ToUpper(strings.TrimSpace(method)),
+			"path", path,
+			"endpoint_family", restEndpointFamily(method, path),
+			"request_purpose", restRequestPurpose(method, path),
+			"backoff_reason", restBackoffReason(err),
+		)
+		return nil, err
+	}
+
+	var requestBody io.Reader
+	if body != nil {
+		var encoded bytes.Buffer
+		if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+			return nil, fmt.Errorf("encode github rest request: %w", err)
+		}
+		requestBody = &encoded
+	}
+
+	url, err := c.restURL(path)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+	if conditional {
+		req.Header.Set("If-None-Match", cached.etag)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	family := restEndpointFamily(method, path)
+	trackerRead := restTrackerRead(method, family)
+	c.logRESTRequest(ctx, "github rest request", method, path, family, body != nil)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, c.httpClient, req, true, true)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
+		}
+		return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: %w", ErrTransient, err))
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.logger.DebugContext(ctx, "github rest response body drain failed", "method", method, "path", path, "endpoint_family", family, "error", err)
+		}
+	}()
+
+	c.logRESTResponse(ctx, "github rest response", method, path, family, resp.StatusCode)
+	finishHTTP.BeginBody()
+	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
+	if err != nil {
+		return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
+	}
+	connector.ReportProgress(ctx)
+	receivedAt := time.Now()
+	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, conditional)
+	if repository := branchRulesRepository(method, path); repository != "" {
+		if branchRulesUnavailableOnPlan(resp.StatusCode, raw) {
+			c.recordBranchRulesAvailability(ctx, repository, true)
+			return nil, errBranchRulesUnavailableOnPlan
+		}
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices || resp.StatusCode == http.StatusNotModified && conditional {
+			c.recordBranchRulesAvailability(ctx, repository, false)
+		}
+	}
+	if resp.StatusCode == http.StatusNotModified {
+		if !conditional {
+			return nil, ErrInvalidResponse
+		}
+		raw = cached.body
+		headers := mergeRESTHeaders(cached.headers, resp.Header)
+		if out == nil {
+			c.touchRESTConditionalEntry(method, path, cached.etag)
+			return headers, nil
+		}
+		if len(raw) == 0 {
+			return nil, ErrInvalidResponse
+		}
+		if err := json.Unmarshal(raw, out); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+		}
+		c.touchRESTConditionalEntry(method, path, cached.etag)
+		return headers, nil
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) {
+			statusErr.CredentialIdentity = credentialIdentity
+			statusErr.ObservedAt = receivedAt
+			c.mu.RLock()
+			statusErr.RateLimit = c.restBudgets[restCredentialFamilyKey(credentialIdentity, family)].RateLimit
+			c.mu.RUnlock()
+		}
+		c.logRESTStatusError(ctx, method, path, family, resp.StatusCode, err)
+		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
+			return c.restWithTokenRefresh(ctx, method, path, body, out, false)
+		}
+		return nil, c.trackerReadStatusError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), resp.StatusCode, err)
+	}
+	headers := resp.Header.Clone()
+	c.storeRESTConditionalEntry(method, path, headers, raw)
+	if out == nil || resp.StatusCode == http.StatusNoContent {
+		return headers, nil
+	}
+	if len(raw) == 0 {
+		return nil, ErrInvalidResponse
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+	}
+	return headers, nil
+}
+
+func (c *Client) restScope(ctx context.Context) *connector.RESTScope {
+	if scope := connector.RESTScopeFromContext(ctx); scope != nil {
+		return scope
+	}
+	return c.unscopedRESTScope
+}
+
+func classifyRESTScopeOutcome(response *http.Response, requestErr error) string {
+	outcome := "error"
+	if requestErr == nil && response != nil {
+		switch {
+		case response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices:
+			outcome = "200"
+		case response.StatusCode == http.StatusNotModified:
+			outcome = "304"
+		case response.StatusCode == http.StatusTooManyRequests:
+			outcome = "429"
+		case response.StatusCode == http.StatusForbidden &&
+			(response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""):
+			outcome = "429"
+		}
+	}
+	return outcome
+}
+
+func (c *Client) logRESTRequest(ctx context.Context, message string, method string, path string, family string, bodyPresent bool) {
+	if !c.restDebugLogging {
+		return
+	}
+	c.logger.DebugContext(ctx, message,
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", restRequestPurpose(method, path),
+		"body_present", bodyPresent,
+		"live_connections", c.LiveConnections(),
+	)
+}
+
+func (c *Client) logRESTResponse(ctx context.Context, message string, method string, path string, family string, status int) {
+	if !c.restDebugLogging {
+		return
+	}
+	c.logger.DebugContext(ctx, message,
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", restRequestPurpose(method, path),
+		"status", status,
+		"live_connections", c.LiveConnections(),
+	)
+}
+
+func (c *Client) logRESTStatusError(ctx context.Context, method string, path string, family string, status int, err error) {
+	if !shouldLogRESTStatusError(err) {
+		return
+	}
+	c.logger.WarnContext(ctx, "github rest request failed",
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", restRequestPurpose(method, path),
+		"status", status,
+		"rate_limited", errors.Is(err, ErrRateLimited),
+		"error", err,
+	)
+}
+
+func shouldLogRESTStatusError(err error) bool {
+	return !errors.Is(err, ErrNotFound)
+}
+
+func (c *Client) AuthHealth() (connector.AuthHealth, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.authHealth, c.hasAuthHealth
+}
+
+func (c *Client) refreshAfterAuthFailure(ctx context.Context, err error, allowTokenRefresh bool) bool {
+	if !errors.Is(err, ErrAuthenticationFailed) {
+		return false
+	}
+	c.recordAuthFailure(err, time.Now())
+	if !allowTokenRefresh {
+		return false
+	}
+	refresher, ok := c.tokenSource.(RefreshableTokenSource)
+	if !ok {
+		return false
+	}
+	if _, refreshErr := refresher.RefreshToken(ctx); refreshErr != nil {
+		c.logger.WarnContext(ctx, "github token refresh failed", "error", refreshErr)
+		return false
+	}
+	c.recordAuthRecovered(time.Now())
+	return true
+}
+
+func (c *Client) recordAuthFailure(err error, at time.Time) {
+	if err == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.authHealth.Status = connector.AuthStatusStale
+	c.authHealth.LastError = err.Error()
+	c.authHealth.LastErrorAt = at
+	c.authHealth.LastRecoveredAt = time.Time{}
+	c.hasAuthHealth = true
+}
+
+func (c *Client) recordAuthRecovered(at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.authHealth.Status = connector.AuthStatusRecovered
+	c.authHealth.LastRecoveredAt = at
+	c.hasAuthHealth = true
+}
+
+func (c *Client) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.graphQLRateLimitLocked(), c.hasRateLimit || !c.graphQLSecondary.deadline().IsZero()
+}
+
+func (c *Client) GraphQLRateLimitStatus() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.graphQLSecondary.deadline().After(time.Now()) {
+		return connector.GraphQLRateLimitStatusBackoff
+	}
+	if c.graphQLRateLimitStatus == connector.GraphQLRateLimitStatusBackoff {
+		return ""
+	}
+	return c.graphQLRateLimitStatus
+}
+
+func (c *Client) clearGraphQLRateLimitStatus() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.graphQLSecondary == nil {
+		c.graphQLRateLimitStatus = ""
+		return
+	}
+	c.graphQLSecondary.mu.Lock()
+	defer c.graphQLSecondary.mu.Unlock()
+	if !c.graphQLSecondary.until.After(time.Now()) {
+		c.graphQLRateLimitStatus = ""
+		c.graphQLSecondary.failures = 0
+	}
+}
+
+func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	status := c.graphQLRateLimitStatus
+	rateLimit := c.graphQLRateLimitLocked()
+	hasRateLimit := c.hasRateLimit
+	reserve := c.graphQLMinReserve
+
+	if backoffUntil := rateLimit.BackoffUntil; backoffUntil.After(now) {
+		return &StatusError{
+			StatusCode:    http.StatusTooManyRequests,
+			Body:          "GitHub GraphQL rate-limit response is in backoff",
+			Err:           ErrRateLimited,
+			RateLimitKind: restRateLimitKindSecondaryThrottled,
+			RetryAfter:    backoffUntil.Sub(now),
+		}
+	}
+	if !lookup || queryType == graphQLQueryRateLimitProbe {
+		return nil
+	}
+	if status == connector.GraphQLRateLimitStatusExhausted {
+		if !graphQLRateLimitSnapshotExpired(rateLimit, now) {
+			return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL rate-limit response is in backoff")
+		}
+		// Let lookup-only clients refresh the budget after the exhausted window ends.
+		c.graphQLRateLimitStatus = ""
+	}
+	if reserve > 0 && hasRateLimit && rateLimit.Limit > 0 && rateLimit.Remaining <= reserve && !graphQLRateLimitSnapshotExpired(rateLimit, now) {
+		return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL remaining budget is reserved for shared work")
+	}
+	return nil
+}
+
+func graphQLLookupPausedError(rateLimit connector.GraphQLRateLimit, now time.Time, body string) error {
+	retryAfter := max(rateLimit.RetryAfter, 0)
+	if !rateLimit.ResetAt.IsZero() {
+		retryAfter = max(rateLimit.ResetAt.Add(restRateLimitResetSkew).Sub(now), 0)
+	}
+	return &StatusError{
+		StatusCode:    http.StatusTooManyRequests,
+		Body:          body,
+		Err:           ErrRateLimited,
+		RateLimitKind: restRateLimitKindPrimaryExhausted,
+		RetryAfter:    retryAfter,
+		ResetAt:       rateLimit.ResetAt,
+	}
+}
+
+func graphQLRateLimitSnapshotExpired(rateLimit connector.GraphQLRateLimit, now time.Time) bool {
+	return !rateLimit.ResetAt.IsZero() && now.After(rateLimit.ResetAt.Add(restRateLimitResetSkew))
+}
+
+func (c *Client) ResetGraphQLRateLimitUsage() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.graphQLSecondary.deadline().After(time.Now()) {
+		c.graphQLRateLimitStatus = ""
+	}
+	c.queryCosts = nil
+	c.hasRateLimitUsage = false
+}
+
+func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	usage := connector.GraphQLRateLimitUsage{
+		RateLimitStatus: c.graphQLRateLimitStatus,
+		QueryCosts:      sortedGraphQLQueryCosts(c.queryCosts),
+	}
+	if c.hasRateLimitUsage || c.graphQLSecondary.deadline().After(time.Now()) {
+		usage.RateLimit = c.graphQLRateLimitLocked()
+		if usage.RateLimit.BackoffUntil.After(time.Now()) {
+			usage.RateLimitStatus = connector.GraphQLRateLimitStatusBackoff
+		}
+		usage.HasRateLimit = true
+	}
+	for _, cost := range usage.QueryCosts {
+		usage.TotalQueries += cost.Count
+		usage.TotalCost += cost.Cost
+	}
+	if !c.graphQLSecondary.deadline().After(time.Now()) {
+		c.graphQLRateLimitStatus = ""
+	}
+	c.queryCosts = nil
+	c.hasRateLimitUsage = false
+	return usage
+}
+
+func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	connector.LogRESTScope(c.logger, c.unscopedRESTScope.Drain())
+
+	rateLimit := c.restRateLimit
+	if core, ok := c.restRateLimits["core"]; ok {
+		rateLimit = core
+	}
+	backoffUntil := c.restBackoffUntil
+	if c.restBackoffs != nil && c.restBackoffKey != "" {
+		if shared := c.restBackoffs.until(c.restBackoffKey, time.Now()); shared.After(backoffUntil) {
+			backoffUntil = shared
+		}
+	}
+	usage := connector.RESTRateLimitUsage{
+		RateLimit:      rateLimit,
+		HasRateLimit:   c.hasRestRateLimit,
+		Requests:       sortedRESTEndpointUsages(c.restRequests),
+		Budgets:        sortedRESTRateLimitBudgets(c.restBudgets),
+		Divergences:    c.restDivergences.snapshots(c.restDivergenceKeys),
+		BackoffUntil:   backoffUntil,
+		ReserveHeld:    c.restReserveHeld,
+		FanoutDeferred: c.restFanoutDeferred,
+	}
+	if c.logger != nil {
+		for _, window := range usage.Divergences {
+			c.logger.Info("github rest quota window", "credential_identity", window.CredentialIdentity,
+				"resource", window.Resource, "window_started_at", window.WindowStartedAt,
+				"reset_at", window.ResetAt, "last_observed_at", window.LastObservedAt,
+				"consumed_quota", window.ObservedRequests,
+				"instrumented_billable_requests", window.DetentRequests,
+				"unattributed_remainder", window.AttributedRequests+window.UnattributedRequests)
+		}
+	}
+	for _, request := range usage.Requests {
+		usage.TotalRequests += request.Count
+		usage.ConditionalRequests += request.Conditional
+		usage.NotModifiedRequests += request.NotModified
+		usage.BillableRequests += request.Billable
+		if request.RateLimited {
+			usage.RateLimited = true
+		}
+	}
+	c.restRequests = nil
+	c.restFanoutUnits = 0
+	c.restReserveHeld = false
+	c.restFanoutDeferred = false
+	c.restRateLimitStatus = false
+	return usage
+}
+
+func (c *Client) RESTRateLimitStatus() connector.RESTRateLimitUsage {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	now := time.Now()
+	rateLimit := c.restRateLimit
+	if core, ok := c.restRateLimits["core"]; ok {
+		rateLimit = core
+	}
+	backoffUntil := c.restBackoffUntil
+	if c.restBackoffs != nil && c.restBackoffKey != "" {
+		if shared := c.restBackoffs.until(c.restBackoffKey, now); shared.After(backoffUntil) {
+			backoffUntil = shared
+		}
+	}
+	usage := connector.RESTRateLimitUsage{
+		RateLimit:      rateLimit,
+		HasRateLimit:   c.hasRestRateLimit,
+		Requests:       sortedRESTEndpointUsages(c.restRequests),
+		Budgets:        sortedRESTRateLimitBudgets(c.restBudgets),
+		BackoffUntil:   backoffUntil,
+		RateLimited:    c.restRateLimitStatus || backoffUntil.After(now),
+		ReserveHeld:    c.restReserveHeld,
+		FanoutDeferred: c.restFanoutDeferred,
+	}
+	return usage
+}
+
+func (c *Client) restBackoffError(backoffKey string, now time.Time) error {
+	c.mu.RLock()
+	backoffUntil := c.restBackoffUntil
+	c.mu.RUnlock()
+	if c.restBackoffs != nil && backoffKey != "" {
+		if shared := c.restBackoffs.until(backoffKey, now); shared.After(backoffUntil) {
+			backoffUntil = shared
+		}
+	}
+	if backoffUntil.IsZero() || !backoffUntil.After(now) {
+		return nil
+	}
+	if evidence := c.restBackoffs.failure(backoffKey); evidence != nil && evidence.status != nil {
+		status := *evidence.status
+		return &status
+	}
+	return &StatusError{
+		StatusCode:    http.StatusTooManyRequests,
+		Err:           ErrRateLimited,
+		RateLimitKind: restRateLimitKindPrimaryExhausted,
+		RetryAfter:    backoffUntil.Sub(now),
+	}
+}
+
+func normalizeRESTBudgetPolicy(policy RESTBudgetPolicy) RESTBudgetPolicy {
+	if policy.MinRemainingReserve < 0 {
+		policy.MinRemainingReserve = 0
+	}
+	if policy.FanoutMaxRequests < 0 {
+		policy.FanoutMaxRequests = 0
+	}
+	return policy
+}
+
+func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity string, method string, path string, conditional bool, now time.Time) error {
+	family := restEndpointFamily(method, path)
+	if !restFanoutEndpointFamily(family) {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	resource := restEndpointRateLimitResource(family)
+	rateLimit, hasRateLimit := c.restRateLimitForFamilyLocked(credentialIdentity, family)
+	reserve := RESTResourceReserve(resource, c.restPolicy.MinRemainingReserve)
+	requestCost := restFanoutCostUnitsPerRequest
+	if conditional {
+		requestCost = restConditionalFanoutCostUnits
+	}
+	budget, scoped := connector.RESTFanoutBudgetFromContext(ctx)
+	budgetScope := "refresh"
+	fanoutUnits := c.restFanoutUnits
+	reservedScoped := false
+	if scoped {
+		budgetScope = budget.Scope()
+	}
+	if c.restPolicy.FanoutMaxRequests > 0 {
+		maxUnits := c.restPolicy.FanoutMaxRequests * restFanoutCostUnitsPerRequest
+		if scoped {
+			var allowed bool
+			fanoutUnits, allowed = budget.Reserve(maxUnits, requestCost)
+			if !allowed {
+				c.restScope(ctx).Record(family, "fanout-deferred")
+				c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateFanoutCap, fanoutUnits, rateLimit, hasRateLimit, now)
+				return &RESTFanoutDeferralError{
+					EndpointFamily: family,
+					BudgetScope:    budgetScope,
+					FanoutCount:    float64(fanoutUnits) / float64(restFanoutCostUnitsPerRequest),
+					FanoutCap:      c.restPolicy.FanoutMaxRequests,
+					RetryAfter:     restFanoutDeferralRetry,
+				}
+			}
+			reservedScoped = true
+		} else if fanoutUnits+requestCost > maxUnits {
+			c.restScope(ctx).Record(family, "fanout-deferred")
+			c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateFanoutCap, fanoutUnits, rateLimit, hasRateLimit, now)
+			return &RESTFanoutDeferralError{
+				EndpointFamily: family,
+				BudgetScope:    budgetScope,
+				FanoutCount:    float64(fanoutUnits) / float64(restFanoutCostUnitsPerRequest),
+				FanoutCap:      c.restPolicy.FanoutMaxRequests,
+				RetryAfter:     restFanoutDeferralRetry,
+			}
+		}
+	}
+	if reserve > 0 &&
+		!conditional &&
+		hasRateLimit &&
+		rateLimit.Limit > 0 &&
+		!restRateLimitSnapshotExpired(rateLimit, now) &&
+		rateLimit.Remaining <= reserve {
+		if reservedScoped {
+			budget.Add(-requestCost)
+		}
+		c.restScope(ctx).Record(family, "reserve-refused")
+		c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateReserve, fanoutUnits, rateLimit, hasRateLimit, now)
+		return &StatusError{
+			StatusCode: http.StatusTooManyRequests,
+			Body:       "REST remaining budget is reserved for shared GitHub work",
+			Err:        ErrRESTBudgetReserved,
+		}
+	}
+	if !scoped {
+		c.restFanoutUnits += requestCost
+	}
+	return nil
+}
+
+func RESTResourceReserve(resource string, coreReserve int64) int64 {
+	if resource == "" || resource == "core" {
+		return max(coreReserve, 0)
+	}
+	return 0
+}
+
+func restRateLimitSnapshotExpired(rateLimit connector.RESTRateLimit, now time.Time) bool {
+	return !rateLimit.ResetAt.IsZero() && now.After(rateLimit.ResetAt.Add(restRateLimitResetSkew))
+}
+
+func (c *Client) restRateLimitForFamilyLocked(credentialIdentity string, family string) (connector.RESTRateLimit, bool) {
+	if c.restBudgets == nil {
+		return connector.RESTRateLimit{}, false
+	}
+	budget, ok := c.restBudgets[restCredentialFamilyKey(credentialIdentity, family)]
+	return budget.RateLimit, ok
+}
+
+func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, method string, path string, family string, budgetScope string, branch string, fanoutUnits int64, rateLimit connector.RESTRateLimit, hasRateLimit bool, now time.Time) {
+	fanoutCount := float64(fanoutUnits) / float64(restFanoutCostUnitsPerRequest)
+	snapshotAge := "unknown"
+	if !rateLimit.UpdatedAt.IsZero() {
+		age := now.Sub(rateLimit.UpdatedAt)
+		if age < 0 {
+			age = 0
+		}
+		snapshotAge = age.String()
+	}
+	if c.restRequests == nil {
+		c.restRequests = make(map[string]connector.RESTEndpointUsage)
+	}
+	requestKey := restCredentialFamilyKey(credentialIdentity, family) + "\x00" + budgetScope
+	request := c.restRequests[requestKey]
+	request.CredentialIdentity = credentialIdentity
+	request.EndpointFamily = family
+	request.BudgetScope = budgetScope
+	request.BudgetGate = branch
+	request.Count++
+	if hasRateLimit {
+		request.Limit = rateLimit.Limit
+		request.Used = rateLimit.Used
+		request.Remaining = rateLimit.Remaining
+		request.Resource = rateLimit.Resource
+		request.ResourceHeader = rateLimit.ResourceHeader
+		request.ResetAt = rateLimit.ResetAt
+		request.RetryAfter = rateLimit.RetryAfter
+	}
+	c.restRequests[requestKey] = request
+	message := "github rest reserve floor held"
+	if branch == restBudgetGateFanoutCap {
+		message = "github rest fanout cap reached (shared across endpoint families)"
+		c.restFanoutDeferred = true
+	} else {
+		c.restReserveHeld = true
+	}
+	c.logger.Warn(
+		message,
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"refused_endpoint_family", family,
+		"budget_scope", budgetScope,
+		"credential_identity", credentialIdentity,
+		"resource", rateLimit.Resource,
+		"resource_header", rateLimit.ResourceHeader,
+		"remaining", rateLimit.Remaining,
+		"reserve", RESTResourceReserve(rateLimit.Resource, c.restPolicy.MinRemainingReserve),
+		"gate_branch", branch,
+		"fanout_count", fanoutCount,
+		"fanout_cap", c.restPolicy.FanoutMaxRequests,
+		"snapshot_age", snapshotAge,
+	)
+}
+
+func (c *Client) restSharedBackoffKey(token string) string {
+	if source, ok := c.tokenSource.(CredentialIdentitySource); ok {
+		if identity := strings.TrimSpace(source.CredentialIdentity(token)); identity != "" {
+			return c.restEndpoint + "\x00" + identity
+		}
+	}
+	sum := sha256.Sum256([]byte(c.restEndpoint + "\x00" + token))
+	return c.restEndpoint + "\x00" + string(sum[:])
+}
+
+func (c *Client) restCredentialIdentity(token string) string {
+	if source, ok := c.tokenSource.(CredentialIdentitySource); ok {
+		if identity := strings.TrimSpace(source.CredentialIdentity(token)); identity != "" {
+			return identity
+		}
+	}
+	sum := sha256.Sum256([]byte(c.restEndpoint + "\x00" + token))
+	return fmt.Sprintf("github-rest:%x", sum[:6])
+}
+
+func (c *Client) rememberRESTBackoffKey(backoffKey string) {
+	if strings.TrimSpace(backoffKey) == "" {
+		return
+	}
+	c.mu.Lock()
+	if c.restBackoffKey != "" && c.restBackoffKey != backoffKey {
+		c.restBackoffUntil = time.Time{}
+		c.restRateLimitStatus = false
+		c.restRateLimit = connector.RESTRateLimit{}
+		c.restRateLimits = nil
+		c.restBudgets = nil
+		c.restRequests = nil
+		c.hasRestRateLimit = false
+		c.restReserveHeld = false
+	}
+	c.restBackoffKey = backoffKey
+	c.mu.Unlock()
+}
+
+func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey string, credentialIdentity string, method string, path string, status int, headers http.Header, body []byte, now time.Time, conditional bool) {
+	limit, hasLimit := int64Header(headers, "X-RateLimit-Limit")
+	used, hasUsed := int64Header(headers, "X-RateLimit-Used")
+	remaining, hasRemaining := int64Header(headers, "X-RateLimit-Remaining")
+	reset, hasReset := int64Header(headers, "X-RateLimit-Reset")
+	retryAfter, hasRetryAfter := parseRetryAfter(headers.Get("Retry-After"), now)
+	headerRateLimited := restStatusRateLimited(status, headers, nil)
+	// Plan limitations still consume quota, but are not throttling responses.
+	planUnavailable := branchRulesRepository(method, path) != "" && branchRulesUnavailableOnPlan(status, body)
+	rateLimited := !planUnavailable && restStatusRateLimited(status, headers, body)
+	family := restEndpointFamily(method, path)
+	resourceHeader := headers.Get("X-RateLimit-Resource")
+	resource := restRateLimitResourceName(strings.TrimSpace(resourceHeader), family)
+	budgetKey := restCredentialFamilyKey(credentialIdentity, family)
+	sharedBackoff := rateLimited && (restShouldApplySharedBackoff(family, remaining, hasRemaining) || !headerRateLimited)
+	fanoutBudget, _ := connector.RESTFanoutBudgetFromContext(ctx)
+	budgetScope := "refresh"
+	if fanoutBudget != nil {
+		budgetScope = fanoutBudget.Scope()
+	}
+
+	var resetAt time.Time
+	if hasReset {
+		resetAt = time.Unix(reset, 0).UTC()
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	currentCredential := backoffKey == c.restBackoffKey
+	if currentCredential {
+		c.restRateLimitStatus = c.restRateLimitStatus || rateLimited
+	}
+	snapshot := connector.RESTRateLimit{}
+	if c.restBudgets != nil {
+		snapshot = c.restBudgets[budgetKey].RateLimit
+	}
+	hasSnapshot := false
+	if hasLimit {
+		snapshot.Limit = limit
+		hasSnapshot = true
+	}
+	if hasUsed {
+		snapshot.Used = used
+		hasSnapshot = true
+	}
+	if hasRemaining {
+		snapshot.Remaining = remaining
+		hasSnapshot = true
+	}
+	if hasReset {
+		snapshot.ResetAt = resetAt
+		hasSnapshot = true
+	}
+	if hasRetryAfter && sharedBackoff {
+		snapshot.RetryAfter = retryAfter
+		hasSnapshot = true
+	} else if hasSnapshot {
+		snapshot.RetryAfter = 0
+	}
+	if resource != "" && (hasSnapshot || resourceHeader != "") {
+		snapshot.Resource = resource
+		snapshot.ResourceHeader = resourceHeader
+		hasSnapshot = true
+	}
+	if hasSnapshot {
+		snapshot.UpdatedAt = now
+		if path != "/rate_limit" {
+			divergenceKey := restDivergenceKey(c.restEndpoint, credentialIdentity, resource)
+			divergence, report := c.restDivergences.observe(
+				divergenceKey,
+				credentialIdentity,
+				snapshot,
+				status != http.StatusNotModified,
+				restDivergenceAttribution(credentialIdentity),
+				RESTResourceReserve(resource, c.restPolicy.MinRemainingReserve),
+			)
+			if !divergence.WindowStartedAt.IsZero() {
+				if c.restDivergenceKeys == nil {
+					c.restDivergenceKeys = make(map[string]struct{})
+				}
+				c.restDivergenceKeys[divergenceKey] = struct{}{}
+			}
+			c.logRESTUsageDivergence(ctx, divergence, report)
+		}
+		canUpdateQuota := path != "/rate_limit" || !c.hasRestRateLimit && c.restBackoffs.failure(backoffKey) == nil
+		if currentCredential && canUpdateQuota && (rateLimited || !c.restBackoffUntil.After(now)) {
+			c.restRateLimit = snapshot
+			if resource != "" {
+				if c.restRateLimits == nil {
+					c.restRateLimits = make(map[string]connector.RESTRateLimit)
+				}
+				c.restRateLimits[resource] = snapshot
+			}
+			c.hasRestRateLimit = true
+		}
+		if currentCredential {
+			if c.restBudgets == nil {
+				c.restBudgets = make(map[string]connector.RESTRateLimitBudget)
+			}
+			c.restBudgets[budgetKey] = connector.RESTRateLimitBudget{
+				CredentialIdentity: credentialIdentity,
+				EndpointFamily:     family,
+				RateLimit:          snapshot,
+			}
+		}
+	}
+
+	if c.restRequests == nil {
+		c.restRequests = make(map[string]connector.RESTEndpointUsage)
+	}
+	requestKey := restCredentialFamilyKey(credentialIdentity, family) + "\x00" + budgetScope
+	request := c.restRequests[requestKey]
+	request.CredentialIdentity = credentialIdentity
+	request.EndpointFamily = family
+	request.BudgetScope = budgetScope
+	request.Count++
+	if conditional {
+		request.Conditional++
+	}
+	if status == http.StatusNotModified {
+		request.NotModified++
+	} else {
+		request.Billable++
+		if conditional && restFanoutEndpointFamily(family) {
+			additionalCost := restFanoutCostUnitsPerRequest - restConditionalFanoutCostUnits
+			if fanoutBudget != nil {
+				fanoutBudget.Add(additionalCost)
+			} else {
+				c.restFanoutUnits += additionalCost
+			}
+		}
+	}
+	request.LastStatus = status
+	request.LastObservedAt = now
+	request.UsedObserved = hasUsed
+	if currentCredential {
+		request.RateLimited = request.RateLimited || rateLimited
+	}
+	if hasLimit {
+		request.Limit = limit
+	}
+	if hasUsed {
+		request.Used = used
+	}
+	if hasRemaining {
+		request.Remaining = remaining
+	}
+	if hasReset {
+		request.ResetAt = resetAt
+	}
+	if resource != "" && (hasLimit || hasUsed || hasRemaining || hasReset || hasRetryAfter || resourceHeader != "") {
+		request.Resource = resource
+		request.ResourceHeader = resourceHeader
+	}
+	if hasRetryAfter {
+		request.RetryAfter = retryAfter
+	}
+	c.restRequests[requestKey] = request
+
+	if sharedBackoff {
+		backoffUntil := restBackoffUntil(now, retryAfter, hasRetryAfter, resetAt, hasReset, remaining, hasRemaining)
+		if currentCredential && (c.restBackoffUntil.IsZero() || backoffUntil.After(c.restBackoffUntil)) {
+			c.restBackoffUntil = backoffUntil
+		}
+		if c.restBackoffs != nil && backoffKey != "" {
+			var rateError *StatusError
+			if errors.As(classifyStatusAt(status, headers, body, now), &rateError) {
+				rateError.CredentialIdentity = credentialIdentity
+				rateError.ObservedAt = now
+				rateError.RateLimit = snapshot
+				c.restBackoffs.set(backoffKey, backoffUntil, method, path, resource, rateError)
+			}
+		}
+		c.logger.Warn(
+			"github rest shared backoff recorded",
+			"method", strings.ToUpper(strings.TrimSpace(method)),
+			"path", path,
+			"endpoint_family", family,
+			"request_purpose", restRequestPurpose(method, path),
+			"backoff_reason", restRateLimitKind(status, headers, body),
+			"retry_after_seconds", int64(backoffUntil.Sub(now)/time.Second),
+			"remaining", remaining,
+		)
+	}
+}
+
+func (c *Client) recordRateLimitFromData(ctx context.Context, data json.RawMessage, queryType string, now time.Time) bool {
+	if len(data) == 0 {
+		return false
+	}
+
+	var envelope struct {
+		RateLimit *struct {
+			Limit     int64  `json:"limit"`
+			Used      int64  `json:"used"`
+			Remaining int64  `json:"remaining"`
+			Cost      int64  `json:"cost"`
+			ResetAt   string `json:"resetAt"`
+		} `json:"rateLimit"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.RateLimit == nil {
+		return false
+	}
+
+	var resetAt time.Time
+	if value := strings.TrimSpace(envelope.RateLimit.ResetAt); value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err == nil {
+			resetAt = parsed
+		}
+	}
+	c.setRateLimit(connector.GraphQLRateLimit{
+		Limit:     envelope.RateLimit.Limit,
+		Used:      envelope.RateLimit.Used,
+		Remaining: envelope.RateLimit.Remaining,
+		Cost:      envelope.RateLimit.Cost,
+		ResetAt:   resetAt,
+		UpdatedAt: now,
+	})
+	connector.RecordGraphQLPoints(ctx, envelope.RateLimit.Cost)
+	c.addGraphQLQueryCost(queryType, envelope.RateLimit.Cost)
+	return true
+}
+
+type graphQLHeaderRateLimit struct {
+	Previous           connector.GraphQLRateLimit
+	Current            connector.GraphQLRateLimit
+	HasPrevious        bool
+	HasCurrent         bool
+	HasPrimarySnapshot bool
+}
+
+func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) graphQLHeaderRateLimit {
+	limit, hasLimit := int64Header(headers, "X-RateLimit-Limit")
+	used, hasUsed := int64Header(headers, "X-RateLimit-Used")
+	remaining, hasRemaining := int64Header(headers, "X-RateLimit-Remaining")
+	reset, hasReset := int64Header(headers, "X-RateLimit-Reset")
+	retryAfter, hasRetryAfter := parseRetryAfter(headers.Get("Retry-After"), now)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	previous := c.rateLimit
+	hasPrevious := c.hasRateLimit
+	snapshot := previous
+	hasSnapshot := false
+	hasPrimarySnapshot := false
+	if hasLimit {
+		snapshot.Limit = limit
+		hasSnapshot = true
+		hasPrimarySnapshot = true
+	}
+	if hasUsed {
+		snapshot.Used = used
+		hasSnapshot = true
+		hasPrimarySnapshot = true
+	}
+	if hasRemaining {
+		snapshot.Remaining = remaining
+		hasSnapshot = true
+		hasPrimarySnapshot = true
+	}
+	if hasReset {
+		snapshot.ResetAt = time.Unix(reset, 0).UTC()
+		hasSnapshot = true
+		hasPrimarySnapshot = true
+	}
+	if hasPrimarySnapshot {
+		snapshot.Cost = 0
+	}
+	if hasRetryAfter {
+		snapshot.RetryAfter = retryAfter
+		hasSnapshot = true
+	} else if hasSnapshot {
+		snapshot.RetryAfter = 0
+	}
+
+	if hasSnapshot && !stalePrimaryRateLimitSnapshot(previous, snapshot, hasPrevious, hasPrimarySnapshot) {
+		snapshot.UpdatedAt = now
+		c.rateLimit = snapshot
+		c.hasRateLimit = true
+		c.hasRateLimitUsage = true
+	}
+	return graphQLHeaderRateLimit{
+		Previous:           previous,
+		Current:            snapshot,
+		HasPrevious:        hasPrevious,
+		HasCurrent:         hasSnapshot,
+		HasPrimarySnapshot: hasPrimarySnapshot,
+	}
+}
+
+func stalePrimaryRateLimitSnapshot(
+	previous connector.GraphQLRateLimit,
+	snapshot connector.GraphQLRateLimit,
+	hasPrevious bool,
+	hasPrimarySnapshot bool,
+) bool {
+	if !hasPrevious || !hasPrimarySnapshot {
+		return false
+	}
+	if previous.Limit <= 0 || snapshot.Limit <= 0 {
+		return false
+	}
+	if !previous.ResetAt.IsZero() && !snapshot.ResetAt.IsZero() && !previous.ResetAt.Equal(snapshot.ResetAt) {
+		return false
+	}
+	return snapshot.Used < previous.Used
+}
+
+func (c *Client) LiveConnections() int {
+	if c == nil || c.httpClient == nil {
+		return 0
+	}
+	stats, ok := c.httpClient.(interface {
+		LiveConnections() int
+	})
+	if !ok {
+		return 0
+	}
+	return stats.LiveConnections()
+}
+
+func (c *Client) Close() error {
+	if c == nil || c.httpClient == nil {
+		return nil
+	}
+	if closer, ok := c.httpClient.(interface {
+		Close() error
+	}); ok {
+		return closer.Close()
+	}
+	if closer, ok := c.httpClient.(interface {
+		CloseIdleConnections()
+	}); ok {
+		closer.CloseIdleConnections()
+	}
+	return nil
+}
+
+func (c *Client) setRateLimit(snapshot connector.GraphQLRateLimit) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	snapshot.BackoffUntil = c.graphQLSecondary.deadline()
+	c.rateLimit = snapshot
+	c.hasRateLimit = true
+	c.hasRateLimitUsage = true
+}
+
+func (c *Client) addGraphQLQueryCost(queryType string, cost int64) {
+	queryType = strings.TrimSpace(queryType)
+	if queryType == "" || cost < 0 {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.queryCosts == nil {
+		c.queryCosts = make(map[string]connector.GraphQLQueryCost)
+	}
+	current := c.queryCosts[queryType]
+	current.QueryType = queryType
+	current.Count++
+	current.Cost += cost
+	c.queryCosts[queryType] = current
+}
+
+func (c *Client) recordGraphQLQueryCostFromHeaders(queryType string, snapshot graphQLHeaderRateLimit) {
+	if !snapshot.HasCurrent || !snapshot.HasPrevious || !snapshot.HasPrimarySnapshot {
+		return
+	}
+	if snapshot.Current.Limit <= 0 || snapshot.Previous.Limit <= 0 {
+		return
+	}
+	if !snapshot.Current.ResetAt.IsZero() && !snapshot.Previous.ResetAt.IsZero() && !snapshot.Current.ResetAt.Equal(snapshot.Previous.ResetAt) {
+		return
+	}
+
+	cost := snapshot.Current.Used - snapshot.Previous.Used
+	if cost < 0 {
+		cost = snapshot.Previous.Remaining - snapshot.Current.Remaining
+	}
+	if cost < 0 {
+		cost = 0
+	}
+	c.addGraphQLQueryCost(queryType, cost)
+}
+
+func (c *Client) recordGraphQLRateLimitFailure(err error, snapshot graphQLHeaderRateLimit, now time.Time) {
+	status := graphQLRateLimitFailureStatus(err, snapshot)
+	if status == "" {
+		return
+	}
+	if status == connector.GraphQLRateLimitStatusBackoff {
+		delay := time.Minute
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) && statusErr.RetryAfter > 0 {
+			delay = statusErr.RetryAfter
+		} else if snapshot.HasCurrent && snapshot.Current.RetryAfter > 0 {
+			delay = snapshot.Current.RetryAfter
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.graphQLSecondary == nil {
+			c.graphQLSecondary = newGraphQLSecondaryState()
+		}
+		c.graphQLSecondary.mu.Lock()
+		defer c.graphQLSecondary.mu.Unlock()
+		c.graphQLSecondary.failures++
+		if c.graphQLSecondary.failures > 1 {
+			fallback := time.Minute
+			for i := 1; i < c.graphQLSecondary.failures && fallback < 15*time.Minute; i++ {
+				fallback *= 2
+			}
+			fallback = min(fallback, 15*time.Minute)
+			delay = max(delay, fallback)
+		}
+		if statusErr != nil && statusErr.RetryAfter <= 0 {
+			statusErr.RetryAfter = delay
+		}
+
+		deadline := now.Add(delay)
+		if deadline.After(c.graphQLSecondary.until) {
+			c.graphQLSecondary.until = deadline
+		}
+		c.rateLimit.BackoffUntil = c.graphQLSecondary.until
+		c.rateLimit.RetryAfter = delay
+		c.rateLimit.UpdatedAt = now
+		c.hasRateLimit = true
+		c.hasRateLimitUsage = true
+		if c.graphQLRateLimitStatus != connector.GraphQLRateLimitStatusExhausted {
+			c.graphQLRateLimitStatus = status
+		}
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.graphQLRateLimitStatus == connector.GraphQLRateLimitStatusExhausted {
+		return
+	}
+	c.graphQLRateLimitStatus = status
+}
+
+func graphQLRateLimitFailureStatus(err error, snapshot graphQLHeaderRateLimit) string {
+	if !errors.Is(err, ErrRateLimited) {
+		return ""
+	}
+
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		switch statusErr.RateLimitKind {
+		case restRateLimitKindPrimaryExhausted:
+			return connector.GraphQLRateLimitStatusExhausted
+		case restRateLimitKindSecondaryThrottled:
+			return connector.GraphQLRateLimitStatusBackoff
+		}
+	}
+	if snapshot.HasPrimarySnapshot && snapshot.Current.Remaining <= 0 {
+		return connector.GraphQLRateLimitStatusExhausted
+	}
+	if snapshot.Current.RetryAfter > 0 {
+		return connector.GraphQLRateLimitStatusBackoff
+	}
+	return connector.GraphQLRateLimitStatusExhausted
+}
+
+func validateEndpoint(endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("%w: %s", ErrInvalidEndpoint, endpoint)
+	}
+	return nil
+}
+
+func restEndpointFromGraphQLEndpoint(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+
+	basePath := strings.TrimRight(parsed.Path, "/")
+	if parsed.Host == "api.github.com" {
+		basePath = ""
+	} else if before, ok := strings.CutSuffix(basePath, "/api/graphql"); ok {
+		basePath = before + "/api/v3"
+	} else if before, ok := strings.CutSuffix(basePath, "/graphql"); ok {
+		basePath = before
+	}
+
+	parsed.Path = strings.TrimRight(basePath, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func (c *Client) restURL(path string) (string, error) {
+	parsed, err := url.Parse(c.restEndpoint)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", ErrInvalidEndpoint
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	relative, err := url.Parse(path)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + relative.Path
+	parsed.RawQuery = relative.RawQuery
+	return parsed.String(), nil
+}
+
+func (c *Client) nextRESTPage(headers http.Header) (string, error) {
+	link := nextRESTLink(headers)
+	if link == "" {
+		return "", nil
+	}
+	return c.restPath(link)
+}
+
+func nextRESTLink(headers http.Header) string {
+	for _, value := range headers.Values("Link") {
+		for part := range strings.SplitSeq(value, ",") {
+			part = strings.TrimSpace(part)
+			if !strings.HasPrefix(part, "<") {
+				continue
+			}
+			end := strings.Index(part, ">")
+			if end <= 1 {
+				continue
+			}
+			if linkHasRelNext(part[end+1:]) {
+				return strings.TrimSpace(part[1:end])
+			}
+		}
+	}
+	return ""
+}
+
+func linkHasRelNext(params string) bool {
+	for param := range strings.SplitSeq(params, ";") {
+		key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "rel") {
+			continue
+		}
+		if strings.EqualFold(strings.Trim(strings.TrimSpace(value), `"`), "next") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) restPath(value string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	if !parsed.IsAbs() {
+		if parsed.Path == "" {
+			return "", ErrInvalidEndpoint
+		}
+		return requestPath(parsed), nil
+	}
+
+	base, err := url.Parse(c.restEndpoint)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	if !strings.EqualFold(parsed.Scheme, base.Scheme) || !strings.EqualFold(parsed.Host, base.Host) {
+		return "", fmt.Errorf("%w: unexpected rest page host %s", ErrInvalidEndpoint, parsed.Host)
+	}
+
+	path := parsed.Path
+	basePath := strings.TrimRight(base.Path, "/")
+	if basePath != "" {
+		switch {
+		case path == basePath:
+			path = "/"
+		case strings.HasPrefix(path, basePath+"/"):
+			path = strings.TrimPrefix(path, basePath)
+		default:
+			return "", fmt.Errorf("%w: unexpected rest page path %s", ErrInvalidEndpoint, path)
+		}
+	}
+	parsed.Path = path
+	return requestPath(parsed), nil
+}
+
+func requestPath(value *url.URL) string {
+	path := value.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	if value.RawQuery != "" {
+		path += "?" + value.RawQuery
+	}
+	return path
+}
+
+func classifyStatus(status int, headers http.Header, body []byte) error {
+	return classifyStatusAt(status, headers, body, time.Now())
+}
+
+func classifyStatusAt(status int, headers http.Header, body []byte, now time.Time) error {
+	base := ErrUnexpectedStatus
+	switch {
+	case status == http.StatusUnauthorized:
+		base = ErrAuthenticationFailed
+	case status == http.StatusForbidden && githubCommentingDisabled(body):
+		base = ErrResourceExhausted
+	case status == http.StatusForbidden:
+		if restStatusRateLimited(status, headers, body) {
+			base = ErrRateLimited
+		} else {
+			base = ErrAuthenticationFailed
+		}
+	case status == http.StatusNotFound:
+		base = ErrNotFound
+	case status == http.StatusTooManyRequests:
+		base = ErrRateLimited
+	case status >= http.StatusInternalServerError:
+		base = ErrTransient
+	}
+
+	statusErr := &StatusError{
+		StatusCode: status,
+		Body:       summarizeBody(body),
+		Err:        base,
+	}
+	if errors.Is(base, ErrRateLimited) {
+		statusErr.RateLimitKind = restRateLimitKind(status, headers, body)
+		statusErr.RetryAfter, _ = parseRetryAfter(headers.Get("Retry-After"), now)
+		if reset, ok := int64Header(headers, "X-RateLimit-Reset"); ok {
+			statusErr.ResetAt = time.Unix(reset, 0).UTC()
+		}
+	}
+	return statusErr
+}
+
+func githubCommentingDisabled(body []byte) bool {
+	return strings.Contains(
+		strings.ToLower(string(body)),
+		"commenting is disabled on issues with more than 2500 comments",
+	)
+}
+
+func githubRateLimitExceeded(body []byte) bool {
+	var response struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(response.Message)), "rate limit")
+}
+
+func restStatusRateLimited(status int, headers http.Header, body []byte) bool {
+	switch status {
+	case http.StatusTooManyRequests:
+		return true
+	case http.StatusForbidden:
+		return strings.TrimSpace(headers.Get("Retry-After")) != "" ||
+			headers.Get("X-RateLimit-Remaining") == "0" ||
+			githubRateLimitExceeded(body)
+	default:
+		return false
+	}
+}
+
+func restRateLimitKind(status int, headers http.Header, body []byte) string {
+	if !restStatusRateLimited(status, headers, body) {
+		return ""
+	}
+	if remaining, ok := int64Header(headers, "X-RateLimit-Remaining"); ok && remaining <= 0 {
+		return restRateLimitKindPrimaryExhausted
+	}
+	return restRateLimitKindSecondaryThrottled
+}
+
+func restShouldApplySharedBackoff(family string, remaining int64, hasRemaining bool) bool {
+	if !restFanoutEndpointFamily(family) {
+		return true
+	}
+	return hasRemaining && remaining <= 0
+}
+
+func restRateLimitResourceName(headerResource string, family string) string {
+	if headerResource != "" {
+		return headerResource
+	}
+	return restEndpointRateLimitResource(family)
+}
+
+func restEndpointRateLimitResource(family string) string {
+	if family == "search" {
+		return "search"
+	}
+	return "core"
+}
+
+func restBackoffUntil(
+	now time.Time,
+	retryAfter time.Duration,
+	hasRetryAfter bool,
+	resetAt time.Time,
+	hasReset bool,
+	remaining int64,
+	hasRemaining bool,
+) time.Time {
+	if hasRetryAfter {
+		return now.Add(retryAfter)
+	}
+	if hasRemaining && remaining == 0 && hasReset && resetAt.After(now) {
+		return resetAt
+	}
+	return now.Add(time.Minute)
+}
+
+func int64Header(headers http.Header, name string) (int64, bool) {
+	value := strings.TrimSpace(headers.Get(name))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+
+	resetAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	if resetAt.Before(now) {
+		return 0, true
+	}
+	return resetAt.Sub(now), true
+}
+
+func classifyGraphQLErrors(errors []GraphQLError) error {
+	base := ErrGraphQLErrors
+	for _, err := range errors {
+		message := strings.ToLower(err.Message)
+		errorType := strings.ToUpper(err.Type)
+		switch {
+		case errorType == "RATE_LIMITED" || strings.Contains(message, "rate limit"):
+			base = ErrRateLimited
+		case errorType == "NOT_FOUND" || strings.Contains(message, "not found"):
+			base = ErrNotFound
+		case strings.Contains(message, "authentication") || strings.Contains(message, "bad credentials"):
+			base = ErrAuthenticationFailed
+		}
+	}
+
+	return &GraphQLErrorList{
+		Errors: errors,
+		Err:    base,
+	}
+}
+
+func summarizeBody(body []byte) string {
+	body = bytes.TrimSpace(body)
+	if len(body) <= maxErrorBodyBytes {
+		return string(body)
+	}
+	return string(body[:maxErrorBodyBytes]) + "...<truncated>"
+}
+
+func firstLine(text string) string {
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func graphQLQueryType(queryType string, query string) string {
+	queryType = strings.TrimSpace(queryType)
+	if queryType != "" {
+		return queryType
+	}
+
+	operation := firstLine(query)
+	parts := strings.Fields(operation)
+	if len(parts) >= 2 {
+		name := strings.TrimSpace(parts[1])
+		if index := strings.Index(name, "("); index >= 0 {
+			name = name[:index]
+		}
+		name = strings.Trim(name, "{}")
+		if name != "" {
+			return name
+		}
+	}
+	return "graphql"
+}
+
+func graphQLLookup(query string) bool {
+	return !strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "mutation")
+}
+
+func graphQLTrackerRead(queryType string, query string) bool {
+	if !graphQLLookup(query) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(queryType)) {
+	case graphQLQueryMergeQueue, graphQLQueryEnqueuePR, graphQLQueryLaneSignalStatus:
+		return false
+	default:
+		return true
+	}
+}
+
+func restTrackerRead(method string, family string) bool {
+	if strings.ToUpper(strings.TrimSpace(method)) != http.MethodGet {
+		return false
+	}
+	switch strings.TrimSpace(family) {
+	case "label issues", "repository issues", "issue reads", "issue comments", "issue dependencies", "issue field values", "search":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) trackerReadAvailabilityError(trackerRead bool, token string, endpoint string, operation string, err error) error {
+	if !trackerRead || err == nil || errors.Is(err, context.Canceled) {
+		return err
+	}
+	class := connector.TrackerAvailabilityClassTransport
+	if errors.Is(err, context.DeadlineExceeded) {
+		class = connector.TrackerAvailabilityClassTimeout
+	}
+	return connector.NewTrackerAvailabilityError(connector.TrackerAvailabilityScope{
+		Connector:          connector.BackendGitHub.String(),
+		Endpoint:           endpoint,
+		Operation:          operation,
+		CredentialIdentity: c.restCredentialIdentity(token),
+	}, class, err)
+}
+
+func (c *Client) trackerReadStatusError(trackerRead bool, token string, endpoint string, operation string, status int, err error) error {
+	if !trackerRead || status < http.StatusInternalServerError {
+		return err
+	}
+	return connector.NewTrackerAvailabilityError(connector.TrackerAvailabilityScope{
+		Connector:          connector.BackendGitHub.String(),
+		Endpoint:           endpoint,
+		Operation:          operation,
+		CredentialIdentity: c.restCredentialIdentity(token),
+	}, connector.TrackerAvailabilityClassServer, err)
+}
+
+func sortedGraphQLQueryCosts(costs map[string]connector.GraphQLQueryCost) []connector.GraphQLQueryCost {
+	if len(costs) == 0 {
+		return nil
+	}
+
+	out := make([]connector.GraphQLQueryCost, 0, len(costs))
+	for _, cost := range costs {
+		out = append(out, cost)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Cost != out[j].Cost {
+			return out[i].Cost > out[j].Cost
+		}
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].QueryType < out[j].QueryType
+	})
+	return out
+}
+
+func sortedRESTEndpointUsages(usages map[string]connector.RESTEndpointUsage) []connector.RESTEndpointUsage {
+	if len(usages) == 0 {
+		return nil
+	}
+
+	out := make([]connector.RESTEndpointUsage, 0, len(usages))
+	for _, usage := range usages {
+		out = append(out, usage)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		if out[i].RateLimited != out[j].RateLimited {
+			return !out[i].RateLimited
+		}
+		if out[i].CredentialIdentity != out[j].CredentialIdentity {
+			return out[i].CredentialIdentity < out[j].CredentialIdentity
+		}
+		if out[i].EndpointFamily != out[j].EndpointFamily {
+			return out[i].EndpointFamily < out[j].EndpointFamily
+		}
+		if out[i].BudgetScope != out[j].BudgetScope {
+			return out[i].BudgetScope < out[j].BudgetScope
+		}
+		return out[i].BudgetGate < out[j].BudgetGate
+	})
+	return out
+}
+
+func sortedRESTRateLimitBudgets(budgets map[string]connector.RESTRateLimitBudget) []connector.RESTRateLimitBudget {
+	if len(budgets) == 0 {
+		return nil
+	}
+
+	out := make([]connector.RESTRateLimitBudget, 0, len(budgets))
+	for _, budget := range budgets {
+		out = append(out, budget)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CredentialIdentity != out[j].CredentialIdentity {
+			return out[i].CredentialIdentity < out[j].CredentialIdentity
+		}
+		return out[i].EndpointFamily < out[j].EndpointFamily
+	})
+	return out
+}
+
+func sortedRESTUsageDivergences(divergences []connector.RESTUsageDivergence) []connector.RESTUsageDivergence {
+	sort.Slice(divergences, func(i, j int) bool {
+		if divergences[i].CredentialIdentity != divergences[j].CredentialIdentity {
+			return divergences[i].CredentialIdentity < divergences[j].CredentialIdentity
+		}
+		if divergences[i].Resource != divergences[j].Resource {
+			return divergences[i].Resource < divergences[j].Resource
+		}
+		return divergences[i].ResetAt.Before(divergences[j].ResetAt)
+	})
+	return divergences
+}
+
+type restUsageDivergence struct {
+	ObservedDrop           int64
+	DetentBillableRequests int64
+	UnexplainedRequests    int64
+}
+
+func restBudgetDivergence(previous connector.RESTRateLimit, current connector.RESTRateLimit, billable bool) (restUsageDivergence, bool) {
+	if previous.Limit <= 0 || current.Limit != previous.Limit || previous.ResetAt.IsZero() || !current.ResetAt.Equal(previous.ResetAt) {
+		return restUsageDivergence{}, false
+	}
+	observedDrop := previous.Remaining - current.Remaining
+	detentRequests := int64(0)
+	if billable {
+		detentRequests = 1
+	}
+	unexplained := observedDrop - detentRequests
+	divergence := restUsageDivergence{
+		ObservedDrop:           observedDrop,
+		DetentBillableRequests: detentRequests,
+		UnexplainedRequests:    unexplained,
+	}
+	return divergence, unexplained > 0
+}
+
+func restCredentialFamilyKey(credentialIdentity string, family string) string {
+	return credentialIdentity + "\x00" + family
+}
+
+func restCredentialResourceKey(credentialIdentity string, resource string) string {
+	return credentialIdentity + "\x00" + resource
+}
+
+func restDivergenceKey(endpoint string, credentialIdentity string, resource string) string {
+	return endpoint + "\x00" + restCredentialResourceKey(credentialIdentity, resource)
+}
+
+func restDivergenceAttribution(credentialIdentity string) string {
+	if strings.HasPrefix(strings.TrimSpace(credentialIdentity), "github-rest:") {
+		return connector.RESTDivergenceExpectedShared
+	}
+	return connector.RESTDivergenceUnattributed
+}
+
+type restDivergenceReport struct {
+	Level  slog.Level
+	Reason string
+	Emit   bool
+}
+
+type restDivergenceWindow struct {
+	last              connector.RESTRateLimit
+	usage             connector.RESTUsageDivergence
+	telemetryReported bool
+	warningReported   bool
+}
+
+type restDivergenceRegistry struct {
+	mu      sync.Mutex
+	windows map[string]restDivergenceWindow
+}
+
+func newRESTDivergenceRegistry() *restDivergenceRegistry {
+	return &restDivergenceRegistry{windows: make(map[string]restDivergenceWindow)}
+}
+
+func (r *restDivergenceRegistry) observe(
+	key string,
+	credentialIdentity string,
+	current connector.RESTRateLimit,
+	billable bool,
+	attribution string,
+	reserve int64,
+) (connector.RESTUsageDivergence, restDivergenceReport) {
+	if r == nil || strings.TrimSpace(key) == "" {
+		return connector.RESTUsageDivergence{}, restDivergenceReport{}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for existingKey, existing := range r.windows {
+		if existingKey != key && !existing.last.ResetAt.IsZero() && existing.last.ResetAt.Add(restRateLimitResetSkew).Before(current.UpdatedAt) {
+			delete(r.windows, existingKey)
+		}
+	}
+
+	window, ok := r.windows[key]
+	if !ok || window.last.Limit <= 0 || current.Limit != window.last.Limit ||
+		window.last.ResetAt.IsZero() || !current.ResetAt.Equal(window.last.ResetAt) {
+		r.windows[key] = restDivergenceWindow{last: current}
+		return connector.RESTUsageDivergence{}, restDivergenceReport{}
+	}
+	if current.Remaining > window.last.Remaining || current.Used < window.last.Used {
+		return window.usage, restDivergenceReport{}
+	}
+
+	divergence, diverged := restBudgetDivergence(window.last, current, billable)
+	previous := window.last
+	window.last = current
+	if window.usage.WindowStartedAt.IsZero() {
+		window.usage = connector.RESTUsageDivergence{
+			CredentialIdentity: credentialIdentity,
+			Resource:           current.Resource,
+			Attribution:        attribution,
+			WindowStartedAt:    previous.UpdatedAt,
+			ResetAt:            current.ResetAt,
+		}
+	}
+	window.usage.ObservedRequests += divergence.ObservedDrop
+	window.usage.DetentRequests += divergence.DetentBillableRequests
+	window.usage.LastObservedAt = current.UpdatedAt
+	if diverged {
+		if attribution == connector.RESTDivergenceExpectedShared {
+			window.usage.AttributedRequests += divergence.UnexplainedRequests
+		} else {
+			window.usage.UnattributedRequests += divergence.UnexplainedRequests
+		}
+	}
+
+	report := restDivergenceReport{}
+	reserveThreat := diverged && reserve > 0 && current.Remaining <= reserve
+	if reserveThreat && !window.warningReported {
+		report = restDivergenceReport{Level: slog.LevelWarn, Reason: "reserve_threat", Emit: true}
+		window.warningReported = true
+		window.telemetryReported = true
+		window.usage.WarningEmitted = true
+	} else if window.usage.UnattributedRequests >= restDivergenceMinUnexplained && !window.warningReported {
+		report = restDivergenceReport{Level: slog.LevelWarn, Reason: "unattributed_threshold", Emit: true}
+		window.warningReported = true
+		window.telemetryReported = true
+		window.usage.WarningEmitted = true
+	} else if window.usage.AttributedRequests >= restDivergenceMinUnexplained && !window.telemetryReported {
+		report = restDivergenceReport{Level: slog.LevelDebug, Reason: "expected_shared_usage", Emit: true}
+		window.telemetryReported = true
+	}
+
+	r.windows[key] = window
+	return window.usage, report
+}
+
+func (r *restDivergenceRegistry) snapshots(keys map[string]struct{}) []connector.RESTUsageDivergence {
+	if r == nil || len(keys) == 0 {
+		return nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]connector.RESTUsageDivergence, 0, len(keys))
+	for key := range keys {
+		window, ok := r.windows[key]
+		if ok && !window.usage.WindowStartedAt.IsZero() {
+			out = append(out, window.usage)
+		}
+	}
+	return sortedRESTUsageDivergences(out)
+}
+
+func (c *Client) logRESTUsageDivergence(ctx context.Context, divergence connector.RESTUsageDivergence, report restDivergenceReport) {
+	if !report.Emit {
+		return
+	}
+
+	c.logger.Log(
+		ctx,
+		report.Level,
+		"github rest usage divergence coalesced",
+		"credential_identity", divergence.CredentialIdentity,
+		"resource", divergence.Resource,
+		"attribution", divergence.Attribution,
+		"report_reason", report.Reason,
+		"observed_requests", divergence.ObservedRequests,
+		"detent_requests", divergence.DetentRequests,
+		"attributed_requests", divergence.AttributedRequests,
+		"unattributed_requests", divergence.UnattributedRequests,
+		"window_started_at", divergence.WindowStartedAt,
+		"last_observed_at", divergence.LastObservedAt,
+		"reset_at", divergence.ResetAt,
+		"reserve", RESTResourceReserve(divergence.Resource, c.restPolicy.MinRemainingReserve),
+	)
+}
+
+// graphQLSecondaryState is owned by the existing credential backoff registry.
+// Repair batches hold admission so queued repairs observe the preceding cooldown.
+// Ordinary mutations never acquire this slot, including nested mutation calls.
+type graphQLSecondaryState struct {
+	mu       sync.Mutex
+	until    time.Time
+	failures int
+	repairs  chan struct{}
+	scans    chan struct{}
+}
+
+func newGraphQLSecondaryState() *graphQLSecondaryState {
+	return &graphQLSecondaryState{repairs: make(chan struct{}, 1), scans: make(chan struct{}, 1)}
+}
+
+func (s *graphQLSecondaryState) deadline() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.until
+}
+
+func (c *Client) bindGraphQLSecondary(token string) *graphQLSecondaryState {
+	key := c.restSharedBackoffKey(token)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.graphQLSecondaryKey == key {
+		return c.graphQLSecondary
+	}
+	c.restBackoffs.mu.Lock()
+	defer c.restBackoffs.mu.Unlock()
+	state := c.restBackoffs.secondary[key]
+	if state == nil {
+		state = newGraphQLSecondaryState()
+		if c.graphQLSecondaryKey == "" && c.graphQLSecondary != nil {
+			state = c.graphQLSecondary
+		}
+		c.restBackoffs.secondary[key] = state
+	}
+	c.graphQLSecondary = state
+	c.graphQLSecondaryKey = key
+	return state
+}
+
+// Caller holds c.mu. Primary quota is client-local; secondary throttling is
+// shared by all projects using this credential.
+func (c *Client) graphQLRateLimitLocked() connector.GraphQLRateLimit {
+	quota := c.rateLimit
+	quota.BackoffUntil = c.graphQLSecondary.deadline()
+	return quota
+}
+
+type restBackoffRegistry struct {
+	mu        sync.RWMutex
+	untils    map[string]time.Time
+	failures  map[string]*restRecoveryEvidence
+	secondary map[string]*graphQLSecondaryState
+}
+
+func newRESTBackoffRegistry() *restBackoffRegistry {
+	return &restBackoffRegistry{untils: map[string]time.Time{}, failures: map[string]*restRecoveryEvidence{}, secondary: map[string]*graphQLSecondaryState{}}
+}
+
+func (r *restBackoffRegistry) until(key string, now time.Time) time.Time {
+	if r == nil || strings.TrimSpace(key) == "" {
+		return time.Time{}
+	}
+	r.mu.RLock()
+	until := r.untils[key]
+	r.mu.RUnlock()
+	if until.IsZero() || until.After(now) {
+		return until
+	}
+	r.mu.Lock()
+	if current := r.untils[key]; !current.IsZero() && !current.After(now) {
+		delete(r.untils, key)
+	}
+	r.mu.Unlock()
+	return time.Time{}
+}
+
+func (r *restBackoffRegistry) set(key string, until time.Time, method, path, resource string, status ...*StatusError) {
+	if r == nil || strings.TrimSpace(key) == "" || until.IsZero() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if current := r.untils[key]; current.IsZero() || until.After(current) {
+		r.untils[key] = until
+	}
+	evidence := &restRecoveryEvidence{resource: resource}
+	if len(status) > 0 {
+		evidence.status = status[0]
+	}
+	if method == http.MethodGet && path != "/rate_limit" {
+		evidence.path = path
+	} else if previous := r.failures[key]; previous != nil {
+		evidence.path = previous.path
+		evidence.resource = previous.resource
+	}
+	r.failures[key] = evidence
+}
+
+func restEndpointFamily(method string, path string) string {
+	if strings.ToUpper(strings.TrimSpace(method)) != http.MethodGet {
+		return "mutations"
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(path))
+	if err != nil {
+		return "other"
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) >= 2 && segments[0] == "search" && segments[1] == "issues" {
+		return "search"
+	}
+	if len(segments) < 4 || segments[0] != "repos" {
+		return "other"
+	}
+	switch {
+	case len(segments) == 4 && segments[3] == "issues" && parsed.Query().Get("labels") != "":
+		return "label issues"
+	case len(segments) == 4 && segments[3] == "issues":
+		return "repository issues"
+	case len(segments) == 5 && segments[3] == "issues" && segments[4] == "comments":
+		return "issue comments"
+	case len(segments) == 6 && segments[3] == "issues" && segments[5] == "comments":
+		return "issue comments"
+	case len(segments) >= 6 && segments[3] == "issues" && segments[5] == "issue-field-values":
+		return "issue field values"
+	case len(segments) >= 7 && segments[3] == "issues" && segments[5] == "dependencies":
+		return "issue dependencies"
+	case len(segments) == 5 && segments[3] == "issues":
+		return "issue reads"
+	case len(segments) == 4 && segments[3] == "pulls":
+		return "pull requests"
+	case len(segments) == 5 && segments[3] == "pulls":
+		return "pull requests"
+	case len(segments) == 6 && segments[3] == "pulls" && segments[5] == "reviews":
+		return "reviews"
+	case len(segments) == 6 && segments[3] == "pulls" && segments[5] == "merge":
+		return "mutations"
+	case len(segments) == 6 && segments[3] == "actions" && segments[4] == "runs":
+		return "workflow runs"
+	case len(segments) == 6 && segments[3] == "check-runs" && segments[5] == "annotations":
+		return "check run annotations"
+	case len(segments) == 6 && segments[3] == "commits" && segments[5] == "check-runs":
+		return "check runs"
+	case len(segments) == 6 && segments[3] == "commits" && segments[5] == "statuses":
+		return "commit statuses"
+	default:
+		return "other"
+	}
+}
+
+func restRequestPurpose(method string, path string) string {
+	family := restEndpointFamily(method, path)
+	switch family {
+	case "label issues":
+		return "fetch_issues_by_status_label"
+	case "repository issues":
+		return "fetch_repository_issues"
+	case "issue reads":
+		return "hydrate_issue"
+	case "issue comments":
+		return "hydrate_issue_comments"
+	case "issue dependencies":
+		return "hydrate_issue_dependencies"
+	case "issue field values":
+		return "hydrate_issue_fields"
+	case "pull requests":
+		return "hydrate_pull_request"
+	case "reviews":
+		return "hydrate_pull_request_reviews"
+	case "check runs":
+		return "hydrate_pull_request_checks"
+	case "commit statuses":
+		return "hydrate_pull_request_statuses"
+	case "search":
+		return "search_issue_metadata"
+	case "mutations":
+		return "mutate_github_state"
+	default:
+		return strings.ReplaceAll(family, " ", "_")
+	}
+}
+
+func restBackoffReason(err error) string {
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		if strings.TrimSpace(statusErr.RateLimitKind) != "" {
+			return statusErr.RateLimitKind
+		}
+	}
+	switch {
+	case errors.Is(err, ErrRESTFanoutDeferred):
+		return "github_rest_fanout_cap"
+	case errors.Is(err, ErrRESTBudgetReserved):
+		return "rest_budget_reserved"
+	case errors.Is(err, ErrRateLimited):
+		return "rate_limited"
+	default:
+		return ""
+	}
+}
+
+func retryAfterSeconds(err error) int64 {
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) || statusErr.RetryAfter <= 0 {
+		return 0
+	}
+	return int64(statusErr.RetryAfter / time.Second)
+}
+
+func restFanoutEndpointFamily(family string) bool {
+	switch family {
+	case "pull requests", "check runs", "check run annotations", "workflow runs", "commit statuses", "reviews", "repository issues",
+		"issue reads", "issue comments", "issue dependencies", "issue field values":
+		return true
+	default:
+		return false
+	}
+}

@@ -1,0 +1,82 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+)
+
+type runEventQueue struct{ batch *pgx.Batch }
+type runEventQueueRow struct{ query *pgx.QueuedQuery }
+
+func (q runEventQueue) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+	return runEventQueueRow{q.batch.Queue(sql, args...)}
+}
+func (r runEventQueueRow) Scan(dest ...any) error {
+	r.query.QueryRow(func(row pgx.Row) error { return row.Scan(dest...) })
+	return nil
+}
+
+type runEventAdvanceQueue struct{ runEventQueue }
+
+func (q runEventAdvanceQueue) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+	return runEventAdvanceRow{q.batch.Queue(sql, args...)}
+}
+
+type runEventAdvanceRow struct{ query *pgx.QueuedQuery }
+
+func (r runEventAdvanceRow) Scan(dest ...any) error {
+	r.query.QueryRow(func(row pgx.Row) error {
+		err := row.Scan(dest...)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return leasestore.ErrAttemptConflict
+		}
+		return err
+	})
+	return nil
+}
+
+func (q runEventQueue) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	q.batch.Queue(sql, args...)
+	return pgconn.NewCommandTag(""), nil
+}
+func (q runEventQueue) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return nil, corestore.ErrInvalidPage
+}
+
+func (f *runnerEventSession) flushRunEvents(ctx context.Context) error {
+	trim := func(context.Context) error { return nil }
+	if f.ownsBoardDeltas && len(f.session.boardDeltas) != 0 {
+		f.boardDelivery = true
+		trim = f.session.queueBoardDeltas(f.pending)
+	}
+	if f.pending.Len() == 0 {
+		return nil
+	}
+	db, ok := f.session.db.(timedQueries)
+	if !ok {
+		return corestore.ErrInvalidPage
+	}
+	executor, ok := db.DBTX.(pgtransport.Executor)
+	if !ok {
+		return corestore.ErrInvalidPage
+	}
+	batch := f.pending
+	f.pending = new(pgx.Batch)
+	started := time.Now()
+	err := executor.SendBatch(ctx, batch).Close()
+	for _, q := range batch.QueuedQueries {
+		observeStatement(ctx, started, q.SQL)
+	}
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	return trim(ctx)
+}

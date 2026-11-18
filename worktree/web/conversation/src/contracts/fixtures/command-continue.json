@@ -1,0 +1,9 @@
+{
+  "key": "cmd_01J8Z0V6C3N8",
+  "kind": "continue",
+  "text": "Land the fix and open a pull request.",
+  "expected": {
+    "attempt_id": null,
+    "turn_id": null
+  }
+}

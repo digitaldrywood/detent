@@ -1,0 +1,4 @@
+2026-09-30T01:02:03.0000000Z --- FAIL: TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle (0.01s)
+2026-09-30T01:02:03.0000000Z     dispatch_test.go:3281: missing skip_reason=already_running
+2026-09-30T01:02:03.0000000Z FAIL
+2026-09-30T01:02:03.0000000Z FAIL	github.com/digitaldrywood/detent/internal/orchestrator	0.025s

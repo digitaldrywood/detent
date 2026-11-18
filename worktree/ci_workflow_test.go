@@ -1,0 +1,331 @@
+package detent_test
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/release.yml")
+	for _, marker := range []string{
+		"checks: read",
+		"statuses: read",
+		"commits/$GITHUB_SHA/check-runs?filter=all&per_page=100",
+		"commits/$GITHUB_SHA/status?per_page=100",
+		"repos/$GITHUB_REPOSITORY\" --jq '.default_branch'",
+		"scripts/collect-release-rulesets.sh \"$GITHUB_REPOSITORY\" \"$rulesets\"",
+		"-default-branch-ref \"$default_branch_ref\"",
+		"-github-check-runs \"$check_runs\"",
+		"-github-statuses \"$statuses\"",
+		"-github-rulesets \"$rulesets\"",
+		"DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}",
+		"DETENT_RELEASE_REQUIRE_AUDIT: ${{ vars.DETENT_RELEASE_REQUIRE_AUDIT }}",
+		"-required-check-names-json \"$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON\"",
+	} {
+		if !strings.Contains(workflow, marker) {
+			t.Fatalf("release workflow missing authenticated provenance marker %q", marker)
+		}
+	}
+
+	finalizerWorkflow := readNormalizedFile(t, ".github/workflows/release-finalize.yml")
+	if !strings.Contains(finalizerWorkflow, "DETENT_RELEASE_REQUIRE_AUDIT: ${{ vars.DETENT_RELEASE_REQUIRE_AUDIT }}") {
+		t.Fatal("finalizer workflow must pass the audit opt in")
+	}
+	finalizer := readNormalizedFile(t, "scripts/release-finalize.sh")
+	for _, source := range []struct {
+		name, script, start, end, variable string
+	}{
+		{"release", workflow, `          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq`, "\n          test ", "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON"},
+		{"finalizer", finalizer, `required_checks="${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}"`, "\n\nplatform_status()", "required_checks"},
+	} {
+		for _, test := range []struct {
+			name, optIn, configured, want string
+		}{
+			{"default", "", `[]`, `["scheduled-full-ci"]`},
+			{"disabled", "false", `[]`, `["scheduled-full-ci"]`},
+			{"exact opt in required", "TRUE", `[]`, `["scheduled-full-ci"]`},
+			{"enabled", "true", `[]`, `["release-security-audit","scheduled-full-ci"]`},
+			{"configured audit without opt in", "", `["extra","release-security-audit"]`, `["extra","scheduled-full-ci"]`},
+			{"configured checks with opt in", "true", `["extra","release-security-audit"]`, `["extra","release-security-audit","scheduled-full-ci"]`},
+		} {
+			t.Run(source.name+" "+test.name, func(t *testing.T) {
+				t.Parallel()
+				script := workflowBetween(t, source.script, source.start, source.end)
+				command := exec.CommandContext(t.Context(), "bash", "-c", "set -euo pipefail\n"+script+"\nprintf '%s' \"$"+source.variable+"\"")
+				command.Env = []string{"PATH=" + os.Getenv("PATH"), "DETENT_RELEASE_REQUIRE_AUDIT=" + test.optIn, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON=" + test.configured}
+				output, err := command.CombinedOutput()
+				if err != nil || string(output) != test.want {
+					t.Fatalf("required checks = %s, %v; want %s", output, err, test.want)
+				}
+			})
+		}
+	}
+
+	collector := readNormalizedFile(t, "scripts/collect-release-rulesets.sh")
+	for _, marker := range []string{
+		"set -euo pipefail",
+		"rulesets?includes_parents=true&per_page=100",
+		"> \"$ruleset_ids\"",
+		"done < \"$ruleset_ids\"",
+		"mv \"$rulesets_staged\" \"$output\"",
+	} {
+		if !strings.Contains(collector, marker) {
+			t.Fatalf("release ruleset collector missing fail-closed marker %q", marker)
+		}
+	}
+	if strings.Contains(collector, "< <(") {
+		t.Fatal("release ruleset discovery must not run inside process substitution")
+	}
+}
+
+func TestReleaseHooksDoNotRegenerate(t *testing.T) {
+	t.Parallel()
+
+	config := readNormalizedFile(t, ".goreleaser.yaml")
+	hooks := workflowBetween(t, config, "before:", "\nbuilds:")
+	for _, forbidden := range []string{"make generate", "sqlc@", "sqlc generate"} {
+		t.Run(forbidden, func(t *testing.T) {
+			if strings.Contains(hooks, forbidden) {
+				t.Errorf("release hooks must verify committed sources, found %q", forbidden)
+			}
+		})
+	}
+}
+
+func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
+	t.Parallel()
+
+	makefile := readNormalizedFile(t, "Makefile")
+	if !strings.Contains(makefile, "GO_TEST := env -u DETENT_API_TOKEN go test") {
+		t.Fatal("Makefile Go test command must remove inherited DETENT_API_TOKEN")
+	}
+	if got, want := strings.Count(makefile, "go test"), strings.Count(makefile, "env -u DETENT_API_TOKEN go test"); got != want {
+		t.Fatalf("Makefile runs go test %d times, only %d remove inherited DETENT_API_TOKEN", got, want)
+	}
+}
+
+func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
+	t.Parallel()
+
+	version := strings.TrimSpace(readNormalizedFile(t, ".golangci-version"))
+	if !strings.HasPrefix(version, "v2.") {
+		t.Fatalf("golangci-lint version = %q, want a v2 release", version)
+	}
+
+	makefile := readNormalizedFile(t, "Makefile")
+	for _, want := range []string{
+		"GOLANGCI_LINT_VERSION_FILE := .golangci-version",
+		"GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))",
+		"GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)",
+		"GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)",
+		"GOLANGCI_LINT_RUN := $(if $(wildcard .custom-gcl.yml),$(GOLANGCI_LINT_CUSTOM),$(GOLANGCI_LINT))",
+		"lint: $(GOLANGCI_LINT_RUN)",
+		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT_RUN)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m`,
+		`@bash scripts/runner-setup.sh go-tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint $(GOLANGCI_LINT_VERSION) "$(GOLANGCI_LINT)" "$(GOLANGCI_LINT_TOOLCHAIN)"`,
+	} {
+		if !strings.Contains(makefile, want) {
+			t.Fatalf("Makefile missing pinned golangci-lint contract %q", want)
+		}
+	}
+	if strings.Contains(makefile, "cmd/golangci-lint@"+version) {
+		t.Fatal("Makefile must read the golangci-lint version from .golangci-version")
+	}
+}
+
+func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/deploy-staging.yml")
+	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
+	if want := "on:\n  workflow_call:\n    inputs:\n      version:\n        required: true\n        type: string\n"; triggers != want {
+		t.Fatalf("deploy-staging triggers = %q, want exactly %q", triggers, want)
+	}
+	for _, test := range []struct {
+		name    string
+		want    string
+		present bool
+	}{
+		{name: "hosted runner", want: "    runs-on: ubuntu-latest\n", present: true},
+		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.cloud.detent.build\n", present: true},
+		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},
+		{name: "release artifact", want: "          name: release-hub-binary\n", present: true},
+		{name: "release version", want: "          RELEASE_VERSION: ${{ steps.source.outputs.version }}\n", present: true},
+		{name: "develop build on push", want: "Build develop binary"},
+		{name: "competing deployment concurrency", want: "concurrency:"},
+		{name: "source asset preparation", want: "prepare-conversation"},
+		{name: "release commit", want: "          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}\n", present: true},
+		{name: "shared release deployment", want: `bash scripts/deploy-release.sh staging "$RELEASE_COMMIT" "$RELEASE_VERSION"`, present: true},
+		{name: "release identity smoke", want: `python3 scripts/cloud-origin-smoke.py --environment staging --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_COMMIT"`, present: true},
+		{name: "self-hosted runner", want: "self-hosted"},
+		{name: "pull request trigger", want: "pull_request"},
+		{name: "secrets inherited from repository", want: "secrets: inherit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := strings.Contains(workflow, test.want); got != test.present {
+				t.Fatalf("deploy-staging contains %q = %t, want %t", test.want, got, test.present)
+			}
+		})
+	}
+	if count := strings.Count(workflow, "runs-on:"); count != 1 {
+		t.Fatalf("deploy-staging has %d runs-on entries, want 1", count)
+	}
+
+	release := readNormalizedFile(t, ".github/workflows/release.yml")
+	if !strings.Contains(release, "concurrency:\n  group: validated-release\n  cancel-in-progress: false\n") {
+		t.Fatal("release must serialize artifact publication without cancellation")
+	}
+	var publishing struct {
+		Jobs map[string]yaml.Node `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(release), &publishing); err != nil {
+		t.Fatal(err)
+	}
+	if len(publishing.Jobs) != 3 {
+		t.Fatalf("release jobs = %v, want source, prepare and release only", publishing.Jobs)
+	}
+	for _, name := range []string{"source", "prepare", "release"} {
+		if _, ok := publishing.Jobs[name]; !ok {
+			t.Fatalf("release is missing %s", name)
+		}
+	}
+	prepare := workflowBetween(t, release, "\n  prepare:\n", "\n  release:")
+	for _, want := range []string{
+		"    needs: source\n",
+		"- name: Verify release-branch full-suite provenance or recorded owner override\n",
+		"args: build --single-target --clean\n",
+		"          GOOS: linux\n",
+		"          GOARCH: amd64\n",
+		"          name: release-hub-binary\n",
+		"          name: release-inputs\n",
+		"            tmp/detent_release_provenance.json\n",
+		"            tmp/prebuilt\n",
+	} {
+		if !strings.Contains(prepare, want) {
+			t.Fatalf("Hub preparation missing %q", want)
+		}
+	}
+	packaging := workflowBetween(t, release, "\n  release:\n", "")
+	for _, want := range []string{
+		"    needs: prepare\n",
+		"          name: release-inputs\n",
+		"          path: tmp\n",
+		"      DETENT_PREBUILT_DIR: ${{ github.workspace }}/tmp/prebuilt\n",
+	} {
+		if !strings.Contains(packaging, want) {
+			t.Fatalf("release packaging missing %q", want)
+		}
+	}
+}
+
+func TestReleaseHubArtifactMatchesPackagedBinary(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(readNormalizedFile(t, ".github/workflows/release.yml")), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var script string
+	for _, step := range workflow.Jobs["prepare"].Steps {
+		if step.Name == "Prepare Hub deployment artifact" {
+			script = step.Run
+		}
+	}
+	if script == "" {
+		t.Fatal("Hub artifact must be prepared before release packaging")
+	}
+	for _, test := range []struct {
+		name  string
+		count int
+	}{
+		{name: "missing binary"},
+		{name: "single binary", count: 1},
+		{name: "ambiguous binaries", count: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			for i := range test.count {
+				dir := filepath.Join(root, "tmp", "goreleaser", "detent_linux_amd64_v"+strconv.Itoa(i+1))
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "detent"), []byte("verified Linux binary"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := exec.CommandContext(t.Context(), "bash", "-e", "-c", script)
+			command.Dir = root
+			command.Env = append(os.Environ(), "RUNNER_TEMP="+root)
+			output, err := command.CombinedOutput()
+			if (err != nil) != (test.count != 1) {
+				t.Fatalf("prepare artifact: %v: %s", err, output)
+			}
+			if test.count == 1 {
+				wrapper, err := filepath.Abs("scripts/goreleaser-go.sh")
+				if err != nil {
+					t.Fatal(err)
+				}
+				prebuilt := filepath.Join(root, "tmp", "prebuilt")
+				if err := os.Chmod(filepath.Join(prebuilt, "linux_amd64", "detent"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				build := exec.CommandContext(t.Context(), "bash", wrapper, "build", "-o", "packaged-detent", "./cmd/detent")
+				build.Dir = root
+				build.Env = append(os.Environ(), "DETENT_PREBUILT_DIR="+prebuilt, "GOOS=linux", "GOARCH=amd64")
+				if output, err := build.CombinedOutput(); err != nil {
+					t.Fatalf("package binary: %v: %s", err, output)
+				}
+				for _, artifact := range []string{"detent", "tmp/prebuilt/linux_amd64/detent", "packaged-detent"} {
+					data, err := os.ReadFile(filepath.Join(root, artifact))
+					if err != nil || string(data) != "verified Linux binary" {
+						t.Fatalf("artifact %s = %q, %v", artifact, data, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func readNormalizedFile(t *testing.T, path string) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	return strings.ReplaceAll(string(raw), "\r\n", "\n")
+}
+
+func workflowBetween(t *testing.T, content string, startMarker string, endMarker string) string {
+	t.Helper()
+
+	start := strings.Index(content, startMarker)
+	if start == -1 {
+		t.Fatalf("workflow missing marker %q", startMarker)
+	}
+	section := content[start:]
+	if endMarker == "" {
+		return section
+	}
+	end := strings.Index(section[len(startMarker):], endMarker)
+	if end == -1 {
+		t.Fatalf("workflow missing end marker %q after %q", endMarker, startMarker)
+	}
+	return section[:len(startMarker)+end]
+}

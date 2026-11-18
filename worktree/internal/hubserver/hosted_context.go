@@ -1,0 +1,287 @@
+package hubserver
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+var errHostedContextUnavailable = errors.New("hosted application context is unavailable")
+
+type hostedContextExecutor struct{ service *Service }
+
+func (e hostedContextExecutor) credential(ctx context.Context, name, project string) (context.Context, hubapi.APICredential, error) {
+	requirement := operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: project}
+	if name == operatortool.AppUpdates {
+		requirement.ResourceKind = "runners"
+	}
+	ctx, err := operatortool.AuthorizeCurrent(ctx, requirement)
+	if err != nil {
+		return ctx, hubapi.APICredential{}, err
+	}
+	s := e.service
+	if s.config.Hosted == nil {
+		return ctx, hubapi.APICredential{}, errHostedContextUnavailable
+	}
+	if s.config.TenantRepository == nil || name != operatortool.AppUpdates && name != operatortool.AppBootstrapPayload && name != operatortool.ReleaseNotes {
+		return ctx, hubapi.APICredential{}, errHostedContextUnavailable
+	}
+	credential, err := currentHubOperator(ctx)
+	if err != nil {
+		return ctx, hubapi.APICredential{}, hubscope.OperatorAuthorizationError(err)
+	}
+	if credential.Hosted == nil || credential.HostedRole == "account" || hubscope.OperatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+		return ctx, hubapi.APICredential{}, operatortool.ErrAccessDenied
+	}
+	if name == operatortool.AppUpdates {
+		allowed, err := s.appAllRunnerGrants(ctx, credential)
+		if err != nil {
+			return ctx, hubapi.APICredential{}, err
+		}
+		if !allowed {
+			return ctx, hubapi.APICredential{}, operatortool.ErrAccessDenied
+		}
+	}
+	return ctx, credential, nil
+}
+
+func (e hostedContextExecutor) listTools(ctx context.Context) ([]operatortool.Definition, error) {
+	s := e.service
+	if s.config.Hosted == nil {
+		return nil, nil
+	}
+	if s.config.TenantRepository == nil {
+		return nil, nil
+	}
+	catalog, err := operatorCatalog(ctx)
+	if err != nil {
+		return nil, hubscope.OperatorAuthorizationError(err)
+	}
+	if catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || hubscope.OperatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+		return nil, nil
+	}
+	definitions := []operatortool.Definition{}
+	for _, definition := range operatortool.HostedContextCatalog() {
+		requirement := operatortool.Requirement{Scope: apikey.ScopeRead}
+		switch definition.Name {
+		case operatortool.AppUpdates:
+			requirement.ResourceKind = "runners"
+			allowed, err := s.appAllRunnerGrants(ctx, catalog.credential)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				continue
+			}
+		case operatortool.AppBootstrapPayload, operatortool.ReleaseNotes:
+		default:
+			continue
+		}
+		if _, err := s.authorizeCatalog(ctx, requirement); err != nil {
+			if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+				return nil, classified
+			}
+			continue
+		}
+		definitions = append(definitions, definition)
+	}
+	return definitions, nil
+}
+
+func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancelRead()
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		classified := hubscope.OperatorAuthorizationError(resultErr)
+		switch {
+		case errors.Is(resultErr, operatortool.ErrAccessDenied):
+			resultErr = classified
+		case errors.Is(resultErr, operatortool.ErrInvalidArguments):
+			resultErr = operatortool.ErrInvalidArguments
+		default:
+			resultErr = classified
+		}
+	}()
+	var releaseRequest operatortool.ReleaseNotesArguments
+	switch call.Name {
+	case operatortool.AppBootstrapPayload, operatortool.AppUpdates:
+		if err := operatortool.DecodeArguments(call.Arguments, &struct{}{}); err != nil {
+			return result, err
+		}
+	case operatortool.ReleaseNotes:
+		if err := operatortool.DecodeArguments(call.Arguments, &releaseRequest); err != nil {
+			return result, err
+		}
+	default:
+		return result, operatortool.ErrUnknownTool
+	}
+	ctx, credential, err := e.credential(ctx, call.Name, "")
+	if err != nil {
+		return result, err
+	}
+	s := e.service
+	var payload any
+	switch call.Name {
+	case operatortool.ReleaseNotes:
+		page, err := s.readReleaseNotes(readCtx, credential, releaseRequest)
+		if err != nil {
+			return result, err
+		}
+		payload = page
+	case operatortool.AppBootstrapPayload:
+		session := auth.Session{}
+		if credential.SessionHash != "" {
+			session, err = s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
+			if err != nil {
+				return result, hubscope.OperatorAuthorizationError(err)
+			}
+		} else if credential.HostedKeyScope != "" {
+			member, err := s.activeAccessMember(readCtx, credential.Hosted.Subject)
+			if err != nil {
+				return result, hubscope.OperatorAuthorizationError(err)
+			}
+			session.Email = member.Email
+		}
+		var bootstrap appBootstrap
+		bootstrap, err = s.readPostgresAppBootstrap(readCtx, credential, session)
+		if err != nil {
+			return result, err
+		}
+		if len(bootstrap.Projects) > operatortool.MaxItemLimit || len(bootstrap.Organizations) > operatortool.MaxItemLimit || len(bootstrap.Preferences.Models) > operatortool.MaxItemLimit {
+			return result, errHostedContextUnavailable
+		}
+		payload = struct {
+			ObservedAt string `json:"observed_at"`
+			Freshness  string `json:"freshness"`
+			appBootstrap
+		}{s.config.Clock().UTC().Format(time.RFC3339Nano), "current_observation", bootstrap}
+	case operatortool.AppUpdates:
+		updates, err := s.readAppUpdates(ctx, credential)
+		if err != nil {
+			return result, err
+		}
+		if len(updates.Runners) > operatortool.MaxItemLimit {
+			return result, errHostedContextUnavailable
+		}
+		payload = struct {
+			ObservedAt string `json:"observed_at"`
+			Freshness  string `json:"freshness"`
+			appUpdates
+		}{s.config.Clock().UTC().Format(time.RFC3339Nano), "current_observation", updates}
+
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil || len(raw) > operatortool.MaxResultBytes {
+		return result, errHostedContextUnavailable
+	}
+	if err := s.hostedAudit(ctx, credential.Hosted, "action", "mcp "+call.Name, "", http.StatusOK); err != nil {
+		return result, err
+	}
+	return operatortool.Result{Content: raw}, nil
+}
+
+func (s *Service) appAllRunnerGrants(ctx context.Context, credential hubapi.APICredential, projects ...tracker.ProjectID) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancel()
+	if credential.Hosted == nil {
+		return false, nil
+	}
+	return s.appAllRunnerGrantsPostgres(ctx, credential, projects)
+}
+
+func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential hubapi.APICredential, projects []tracker.ProjectID) (bool, error) {
+	if s.config.TenantRepository == nil {
+		return false, errHostedContextUnavailable
+	}
+	var allowed bool
+	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		allowed, err = s.appAllRunnerGrantsWith(ctx, reader, credential, projects)
+		return err
+	})
+	if err != nil {
+		classified := hubscope.OperatorAuthorizationError(err)
+		if errors.Is(classified, operatortool.ErrAccessDenied) {
+			return false, nil
+		}
+		return false, classified
+	}
+	return allowed, nil
+}
+
+func (s *Service) appAllRunnerGrantsWith(ctx context.Context, reader tenantstore.Reader, credential hubapi.APICredential, projects []tracker.ProjectID) (bool, error) {
+	if credential.HostedKeyScope == "" && (credential.HostedRole == "owner" || credential.HostedRole == "admin") {
+		return true, nil
+	}
+	if credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" || projects != nil && len(projects) == 0 {
+		return false, nil
+	}
+	var total, accessible int
+	err := func() error {
+		accessReader, ok := reader.(accessstore.ProjectAccessPageReader)
+		if !ok {
+			return hubapi.ErrProjectParticipants
+		}
+		if projects != nil {
+			if len(projects) > corestore.MaxPageSize {
+				return corestore.ErrInvalidPage
+			}
+			for _, project := range projects {
+				rows, err := accessReader.ProjectAccessPage(ctx, projectAccessFilter(credential, project, "", 1))
+				if err != nil {
+					return err
+				}
+				if len(rows) == 0 || rows[0].ProjectID != project || credential.HostedRole == "member" && !rows[0].ManageRunner {
+					return nil
+				}
+				accessible++
+			}
+			total = len(projects)
+			return nil
+		}
+		page, err := accessReader.ProjectAccessPage(ctx, projectAccessFilter(credential, "", "", corestore.MaxPageSize))
+		if err != nil {
+			return err
+		}
+		if len(page) > corestore.MaxPageSize {
+			return corestore.ErrInvalidPage
+		}
+		if credential.HostedRole == "member" {
+			for _, project := range page {
+				if !project.ManageRunner {
+					return operatortool.ErrAccessDenied
+				}
+			}
+		}
+		accessible = len(page)
+		projectsPage, err := reader.Projects(ctx, "", corestore.MaxPageSize)
+		if err != nil {
+			return err
+		}
+		if len(projectsPage) >= corestore.MaxPageSize {
+			return corestore.ErrInvalidPage
+		}
+		for _, project := range projectsPage {
+			if project.DeletedAt == nil {
+				total++
+			}
+		}
+		return nil
+	}()
+	return err == nil && total > 0 && total == accessible, err
+}

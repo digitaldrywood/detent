@@ -1,0 +1,585 @@
+package cloudentry
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/subtle"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent"
+	"github.com/digitaldrywood/detent/internal/activation"
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/keylock"
+	"github.com/digitaldrywood/detent/internal/cloudentry/notifications"
+	"github.com/digitaldrywood/detent/internal/cloudentry/origin"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
+	"github.com/digitaldrywood/detent/internal/cloudentry/webhooks"
+	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
+	"github.com/digitaldrywood/detent/internal/staticasset"
+	"github.com/digitaldrywood/detent/internal/web/templates"
+)
+
+const (
+	assertionLifetime = tenantcall.AssertionLifetime
+	sessionLifetime   = 30 * 24 * time.Hour
+	contentSecurity   = origin.ContentSecurity
+)
+
+type Config struct {
+	Storage                   StorageConfig
+	Build                     buildinfo.Info
+	PublicURL                 string
+	Issuer                    string
+	SigningKey                ed25519.PrivateKey
+	Provider                  auth.HostedProvider
+	Platform                  PlatformConfig
+	StaffEmails               []string
+	SupportActors             []string
+	EntitlementAdministrators []string
+	StateDir                  string
+	ListenAddress             string
+	Logger                    *slog.Logger
+	LookupEnv                 func(string) string
+	Allocation                *AllocationConfig
+	Billing                   *BillingConfig
+	ConfigPath                string
+	Reload                    func() (Config, error)
+	ConfigureRuntime          func(hostedplans.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error)
+	Runtime                   *hostedplans.HostedRuntimeUpdate
+	RestartSettings           []byte
+	ArchiveCredentials        func(context.Context, string, string) (attachment.Credentials, error)
+	Attachments               *attachment.Config
+	GitHubWebhookSecret       []byte
+	GitHubApp                 *github.InstallationTokenConfig
+	GitHubUserClientID        string
+	GitHubUserClientSecret    string
+
+	Now                 func() time.Time
+	GenerateToken       func() (string, error)
+	Transport           func(Organization) (http.RoundTripper, error)
+	ClientFS            fs.FS
+	AttachmentTransport http.RoundTripper
+	platformEmailSender auth.EmailSender
+
+	tenantStartTimeout time.Duration
+	platformDeadline   time.Duration
+	reloadSignals      <-chan os.Signal
+}
+
+func ValidateConfig(c Config) error { return c.validate() }
+
+func (c Config) validate() error {
+	if err := c.Storage.validate(); err != nil {
+		return err
+	}
+	if c.Storage.Backend == "postgres" && c.Attachments == nil {
+		return errors.New("PostgreSQL entry storage requires immutable object storage")
+	}
+	u, err := url.Parse(c.PublicURL)
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("shared entry public URL must be an origin without a path")
+	}
+	if u.Scheme != "https" {
+		ip := net.ParseIP(u.Hostname())
+		if u.Scheme != "http" || (u.Hostname() != "localhost" && (ip == nil || !ip.IsLoopback())) {
+			return errors.New("shared entry public URL must use HTTPS except on loopback")
+		}
+	}
+	host, _, err := net.SplitHostPort(c.ListenAddress)
+	if ip := net.ParseIP(strings.Trim(host, "[]")); err != nil || host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return errors.New("shared entry must listen on a loopback address behind the TLS proxy")
+	}
+	if err := c.Billing.validate(); err != nil {
+		return err
+	}
+	if err := c.Allocation.validate(); err != nil {
+		return err
+	}
+	if !safeID(c.Issuer) || len(c.SigningKey) != ed25519.PrivateKeySize || c.Provider == nil || strings.TrimSpace(c.StateDir) == "" {
+		return errors.New("shared entry requires an issuer, signing key, identity provider and state directory")
+	}
+	return nil
+}
+
+type Service struct {
+	notifications     *platformNotifications
+	runtime           atomic.Pointer[entryRuntime]
+	allowlist         atomic.Pointer[signupAllowlist]
+	reloadMu          sync.Mutex
+	keyMCP            *mcp.HTTPHandler
+	administration    *operatoradmin.Executor
+	config            Config
+	registry          *Registry
+	auth              *authStore
+	echo              *echo.Echo
+	secure            bool
+	transports        sync.Map
+	mutationMu        sync.Mutex
+	verified          sessionVerifications
+	refreshes         keylock.Mutex
+	attachments       attachment.Storage
+	attachmentLocks   attachmentLocks
+	attachmentSweepAt time.Time
+	githubWebhooks    *webhooks.Service
+
+	stopAuthReseal    context.CancelFunc
+	authResealDone    chan struct{}
+	stopOAuthBackfill context.CancelFunc
+	oauthBackfillDone chan struct{}
+	stopAllocator     context.CancelFunc
+	allocatorDone     chan struct{}
+	wake              chan struct{}
+	stopBilling       context.CancelFunc
+	billingDone       chan struct{}
+	closePlatformMCP  func() error
+}
+
+func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	if cfg.LookupEnv == nil {
+		cfg.LookupEnv = os.Getenv
+	}
+	keys, err := hubsecrets.FromEnvironment(cfg.LookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	if keys == nil {
+		cfg.Logger.Warn("Cloud entry uses legacy sealing: DETENT_HUB_SECRET_KEYS and DETENT_HUB_SECRET_KEY_VERSION are not configured")
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if cfg.tenantStartTimeout == 0 {
+		cfg.tenantStartTimeout = 30 * time.Second
+	}
+	if cfg.GenerateToken == nil {
+		cfg.GenerateToken = apikey.GenerateToken
+	}
+	var attachments attachment.Storage
+	if cfg.Attachments != nil {
+		var err error
+		attachments, err = attachment.NewStorage(ctx, *cfg.Attachments, cfg.AttachmentTransport)
+		if err != nil {
+			return nil, fmt.Errorf("configure attachments: %w", err)
+		}
+		archives, ok := attachments.(attachment.ArchiveStorage)
+		if !ok {
+			return nil, errors.New("archive storage is unavailable")
+		}
+		if err := archives.ConfigureArchiveReads(ctx, []string{strings.TrimRight(cfg.PublicURL, "/")}); err != nil {
+			cfg.Logger.Error("archive reads unavailable", "error", fmt.Errorf("configure archives: %w", err))
+		}
+	}
+	registry, authStorage, err := openEntryStores(ctx, cfg, keys)
+	if err != nil {
+		return nil, err
+	}
+	registry.now = cfg.Now
+	if err := registry.seedPlatformMembers(ctx, cfg); err != nil {
+		return nil, errors.Join(err, authStorage.Close(), registry.Close())
+	}
+	if len(cfg.StaffEmails)+len(cfg.SupportActors)+len(cfg.EntitlementAdministrators) > 0 {
+		cfg.Logger.Warn("legacy platform email lists are deprecated and used only to seed an empty registry")
+	}
+	seal, err := newTokenSeal(cfg.SigningKey)
+	if err != nil {
+		return nil, errors.Join(err, authStorage.Close(), registry.Close())
+	}
+	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.Now, seal: seal, keys: keys}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
+	service.attachments = attachments
+	if _, err := service.loadRuntime(ctx); err != nil {
+		return nil, errors.Join(err, authStorage.Close(), registry.Close())
+	}
+	service.configureRuntimeLauncher(ctx)
+	if cfg.Transport == nil {
+		service.config.Transport = service.tenantTransport
+	}
+	service.githubWebhooks = webhooks.New(webhooks.Deps{
+		Secret: service.config.GitHubWebhookSecret, Logger: service.config.Logger,
+		List: service.registry.List, ReadyOrganization: service.readyOrganization,
+		StartManaged: service.config.Allocation != nil,
+		StartTenant: func(ctx context.Context, organization *Organization) error {
+			return service.runStep(ctx, organization, "tenant_start")
+		},
+		ServiceCall: service.serviceCall, Claims: service.claims, SignedCall: service.signedCall,
+		OrganizationNotFound: ErrOrganizationNotFound,
+	})
+	service.echo = echo.New()
+	service.echo.HideBanner, service.echo.HidePort = true, true
+	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
+	service.routes()
+	service.registerPlatformCredits(ctx)
+	service.startAllocator(ctx)
+	if err := service.initializeGitHubRoutes(ctx); err != nil {
+		return nil, errors.Join(err, service.CloseContext(ctx))
+	}
+	service.startBillingWorker(ctx)
+	if err := service.startPlatformNotifications(ctx); err != nil {
+		return nil, errors.Join(err, service.CloseContext(ctx))
+	}
+	service.startOAuthClientBackfill(ctx)
+	service.startAuthReseal(ctx)
+	return service, nil
+}
+
+func (s *Service) Handler() http.Handler {
+	return s.echo
+}
+
+func (s *Service) Registry() *Registry {
+	return s.registry
+}
+
+func (s *Service) Close() error {
+	return s.CloseContext(context.Background())
+}
+
+func (s *Service) CloseContext(ctx context.Context) error {
+	var keyErr error
+	if s.keyMCP != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		keyErr = s.keyMCP.Shutdown(ctx)
+		cancel()
+	}
+	if s.stopAuthReseal != nil {
+		s.stopAuthReseal()
+		<-s.authResealDone
+	}
+	if s.stopOAuthBackfill != nil {
+		s.stopOAuthBackfill()
+		<-s.oauthBackfillDone
+	}
+	s.closePlatformNotifications()
+	s.closeBillingWorker()
+	var mcpErr error
+	if s.closePlatformMCP != nil {
+		mcpErr = s.closePlatformMCP()
+	}
+	err := errors.Join(keyErr, mcpErr, s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
+	return err
+}
+
+func Run(ctx context.Context, cfg Config) (resultErr error) {
+	service, err := Open(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, service.CloseContext(ctx))
+	}()
+	var listenConfig net.ListenConfig
+	return service.serveAfterTenantReadiness(ctx, func(ctx context.Context) (net.Listener, error) {
+		return activation.Listen(ctx, "tcp", cfg.ListenAddress, listenConfig.Listen)
+	})
+}
+
+func (s *Service) serveAfterTenantReadiness(ctx context.Context, listen func(context.Context) (net.Listener, error)) error {
+	if err := s.waitForTenantReadiness(ctx); err != nil {
+		return fmt.Errorf("wait for tenant Hubs before serving entry requests: %w", err)
+	}
+	listener, err := listen(ctx)
+	if err != nil {
+		return fmt.Errorf("listen for shared entry requests: %w", err)
+	}
+	return s.serve(ctx, listener)
+}
+
+func (s *Service) serve(ctx context.Context, listener net.Listener) error {
+	since, before := s.githubReplayWindow(ctx)
+	s.config.Logger.Info("shared entry serving", "address", listener.Addr().String())
+	result := make(chan error, 1)
+	go func() {
+		err := s.echo.Server.Serve(listener)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		result <- err
+	}()
+	replayCtx, cancelReplay := context.WithTimeout(ctx, 5*time.Minute)
+	replayDone := make(chan struct{})
+	go func() {
+		defer close(replayDone)
+		s.replayGitHubDeliveries(replayCtx, since, before)
+	}()
+	defer func() {
+		cancelReplay()
+		<-replayDone
+	}()
+	reloads := s.config.reloadSignals
+	if reloads == nil && s.config.Reload != nil && len(configurationSignals()) > 0 {
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, configurationSignals()...)
+		defer signal.Stop(signals)
+		reloads = signals
+	}
+	for {
+		select {
+		case <-reloads:
+			if err := s.reloadConfiguration(ctx); err != nil {
+				s.config.Logger.ErrorContext(ctx, "cloud configuration reload failed; retaining previous entry state", "actor", "operator", "reason", "SIGHUP", "error", err)
+			}
+		case err := <-result:
+			return err
+		case <-ctx.Done():
+			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return errors.Join(s.echo.Shutdown(shutdown), <-result)
+		}
+	}
+}
+
+func (s *Service) routes() {
+	s.registerAdministration()
+	s.registerAccessKeys()
+	s.registerKeyMCP()
+	s.registerOAuth()
+	s.registerGitHubConnection()
+	e := s.echo
+	e.Pre(s.boundary)
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
+	e.GET("/health", s.health)
+	e.GET("/", s.home)
+	e.HEAD("/", s.home)
+	e.GET("/login", func(c echo.Context) error {
+		target := "/"
+		if query := c.Request().URL.RawQuery; query != "" {
+			target += "?" + query
+		}
+		return c.Redirect(http.StatusSeeOther, target)
+	})
+	e.GET("/auth/oidc/start", s.startLogin)
+	e.GET("/auth/oidc/callback", s.completeLogin)
+	e.GET("/organizations", s.chooser)
+	e.GET("/organizations/new", s.newOrganizationPage)
+	e.POST("/organizations", s.createOrganization)
+	e.GET("/organizations/:organization/provisioning", s.provisioningPage)
+	e.POST("/organizations/:organization/provisioning/resume", s.resumeProvisioning)
+	e.GET("/api/cloud/organizations/:organization/provisioning", s.provisioningJSON)
+	e.GET("/organizations/:organization/delete", s.deleteOrganizationPage)
+	e.POST("/organizations/:organization/delete", s.deleteOrganization)
+	e.GET("/api/cloud/organizations", s.organizationsJSON)
+	e.GET("/api/cloud/session", s.sessionJSON)
+	e.POST("/logout", s.logout)
+	e.POST("/organizations/:organization/logout", s.logout)
+	e.GET(platformPath, s.platformPage)
+	e.GET(platformPath+"/*", s.platformPage)
+	e.GET("/api/cloud/platform/organizations", s.platformOrganizationsJSON)
+	e.GET("/api/cloud/platform/organizations/:organization", s.platformOrganizationJSON)
+	e.POST("/api/cloud/platform/organizations/:organization/resume", s.resumePlatformProvisioning)
+	e.GET("/api/cloud/platform/allowlist", s.platformAllowlistJSON)
+	e.GET("/api/cloud/platform/health", s.platformHealthJSON)
+	e.GET("/api/cloud/platform/users", s.platformUsersJSON)
+	e.GET("/api/cloud/platform/audit", s.platformAuditJSON)
+	e.GET("/api/cloud/platform/organizations/:organization/entitlements", s.platformEntitlementsJSON, s.platformEntitlementAuthority)
+	e.POST("/api/cloud/platform/organizations/:organization/entitlements", s.changePlatformEntitlement, s.platformEntitlementAuthority)
+	e.GET("/api/cloud/platform/members", s.platformMembersJSON)
+	e.POST("/api/cloud/platform/members", s.changePlatformMember)
+	e.PATCH("/api/cloud/platform/members/:email", s.changePlatformMember)
+	e.DELETE("/api/cloud/platform/members/:email", s.changePlatformMember)
+	e.GET("/support", s.supportPage)
+	e.POST("/support/start", s.startSupport)
+	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
+	e.POST("/api/v1/webhooks/github", s.githubWebhooks.Webhook)
+	e.GET("/invite", s.startInvitation)
+	s.registerAttachmentRoutes(e)
+	e.GET("/api/cloud/organizations/:organization/archive-storage", s.archiveStorageBinding)
+	e.PUT("/api/cloud/organizations/:organization/archive-storage", s.archiveStorageBinding)
+	e.GET("/api/cloud/organizations/:organization/archive-deletion", s.archiveDeletionReceipt)
+	e.GET("/api/cloud/organizations/:organization/slug", s.organizationSlug)
+	e.PUT("/api/cloud/organizations/:organization/slug", s.organizationSlug)
+	e.Any("/*", s.readableProxy)
+	e.Any("/organizations/:organization", s.proxy)
+	notifications.New(notifications.Deps{ReadyOrganization: s.readyOrganization, ServiceRequest: s.serviceRequest}).Register(e)
+	e.Any("/organizations/:organization/*", s.proxy)
+	e.Any("/api/v2/organizations/:organization/*", s.proxy)
+}
+
+func (s *Service) setCookie(c echo.Context, name, value string, expires time.Time) {
+	maxAge := int(time.Until(expires).Seconds())
+	if value == "" {
+		maxAge = -1
+	}
+	cookie := &http.Cookie{Name: s.cookieName(name), Value: value, Path: "/", Expires: expires, MaxAge: maxAge, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}
+	if !s.secure {
+		cookie.Secure = c.Request().TLS != nil
+	}
+	c.SetCookie(cookie)
+}
+
+// storedSession reads the account session from the entry's own store without
+// asking the provider; proxied requests verify the organization's access
+// token instead.
+func (s *Service) storedSession(c echo.Context) (accountSession, error) {
+	cookie, err := c.Cookie(s.cookieName("session"))
+	if err != nil || cookie.Value == "" || len(cookie.Value) > 256 {
+		return accountSession{}, ErrNoSession
+	}
+	return s.auth.session(c.Request().Context(), apikey.HashToken(cookie.Value))
+}
+
+func (s *Service) session(c echo.Context) (accountSession, error) {
+	session, err := s.storedSession(c)
+	if err != nil {
+		return accountSession{}, err
+	}
+	now := s.config.Now()
+	method := c.Request().Method
+	// Staff and support sessions reach across organizations, so they are
+	// re-verified on every request rather than trusted for the recheck window.
+	role, err := s.readPlatformRole(c.Request().Context(), session.Email)
+	if err != nil {
+		return accountSession{}, err
+	}
+	cacheable := role == "" && session.Identity.SupportActor == ""
+	if cacheable && (method == http.MethodGet || method == http.MethodHead) && session.Identity.ExpiresAt.After(now) && s.verified.fresh(session.Hash, now) {
+		return session, nil
+	}
+	current, err := s.config.Provider.CurrentSession(c.Request().Context(), session.Identity)
+	if err != nil || current.Subject != session.Subject || !current.ExpiresAt.After(now) {
+		s.verified.forget(session.Hash)
+		reason := auth.HostedIdentityReason(err)
+		if err == nil {
+			reason = auth.HostedReasonSessionInvalid
+		}
+		s.config.Logger.InfoContext(c.Request().Context(), "hosted session revalidation failed", "reason", reason, "request_id", auth.HostedRequestID(c.Response(), c.Request()))
+		if err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return accountSession{}, err
+		}
+		return accountSession{}, ErrNoSession
+	}
+	s.verified.record(session.Hash, now)
+	return session, nil
+}
+
+func (s *Service) supportActor(ctx context.Context, email string) bool {
+	role := s.platformRole(ctx, email)
+	return role == "admin" || role == "support"
+}
+
+func (s *Service) landing(ctx context.Context, email string, identity auth.HostedIdentity) string {
+	if !s.platformIdentity(ctx, email, identity) {
+		return "/organizations"
+	}
+	choices, err := s.organizationChoices(ctx, accountSession{Subject: identity.Subject, Email: email, Identity: identity})
+	if err != nil || len(choices) > 0 {
+		return "/organizations"
+	}
+	return platformPath
+}
+
+func listed(values []string, email string) bool {
+	for _, staff := range values {
+		if strings.EqualFold(strings.TrimSpace(staff), strings.TrimSpace(email)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) render(c echo.Context, status int, data templates.HostedPageData) error {
+	data.SharedOrigin = true
+	data.Assets.Favicon = "/static/img/detent-mark.svg"
+	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
+	c.Response().WriteHeader(status)
+	return templates.HostedPage(data).Render(c.Request().Context(), c.Response())
+}
+
+func (s *Service) denied(c echo.Context, status int, message string) error {
+	data := templates.HostedPageData{Mode: "denied", Title: "Access unavailable", Error: message}
+	if session, err := s.session(c); err == nil {
+		data.Email, data.CSRF = session.Email, cloudassert.CSRFToken(session.CSRFSecret, "")
+	}
+	return s.render(c, status, data)
+}
+
+func (s *Service) browserUnavailable(c echo.Context, status int) error {
+	request := c.Request()
+	organization := c.Param("organization")
+	retry := "/organizations/" + organization + "/work"
+	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && validReturnPath(request.URL.Path, organization) {
+		retry = request.URL.RequestURI()
+	}
+	data := templates.HostedPageData{Mode: "unavailable", Title: "Temporarily unavailable", Error: "We could not open this organization right now. Please try again shortly.", RetryURL: retry}
+	if session, err := s.storedSession(c); err == nil {
+		data.Email, data.CSRF = session.Email, cloudassert.CSRFToken(session.CSRFSecret, "")
+	}
+	return s.render(c, status, data)
+}
+
+func (s *Service) loginDenied(c echo.Context, status int, message string, denial auth.HostedDenial) error {
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError && denial.Err != nil {
+		status = entryAuthStatus(denial.Err, status)
+		if status == http.StatusServiceUnavailable {
+			message = "Sign-in is temporarily unavailable"
+		}
+	}
+	denial.Status = status
+	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
+	return s.denied(c, status, message)
+}
+
+func (s *Service) home(c echo.Context) error {
+	if session, err := s.session(c); err == nil {
+		return c.Redirect(http.StatusSeeOther, s.landing(c.Request().Context(), session.Email, session.Identity))
+	} else if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+		return c.NoContent(http.StatusServiceUnavailable)
+	}
+	if served, err := s.clientShell(c); served || err != nil {
+		return err
+	}
+	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "login", Title: "Sign in"})
+}
+
+func (s *Service) csrfValid(c echo.Context, session accountSession, organization string) bool {
+	if !s.sameOrigin(c) {
+		return false
+	}
+	value := c.Request().Header.Get("X-CSRF-Token")
+	if value == "" {
+		c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 64<<10)
+		value = c.FormValue("csrf")
+	}
+	return subtle.ConstantTimeCompare([]byte(value), []byte(cloudassert.CSRFToken(session.CSRFSecret, organization))) == 1
+}
+
+func (s *Service) contentSecurity() string {
+	if s.config.Attachments == nil {
+		return contentSecurity
+	}
+	return strings.Replace(contentSecurity, "connect-src 'self'", "connect-src 'self' "+strings.TrimRight(s.config.Attachments.Endpoint, "/"), 1)
+}
+
+func (s *Service) ForgetSessionVerifications() {
+	s.verified.reset()
+}
+
+func (s *Service) OAuthBackfillDone() <-chan struct{} {
+	return s.oauthBackfillDone
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Detent Hub listener
+
+[Socket]
+ListenStream=127.0.0.1:7777
+Accept=no
+Backlog=65535
+
+[Install]
+WantedBy=sockets.target

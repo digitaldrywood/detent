@@ -1,0 +1,137 @@
+package hubserver
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/onboarding"
+)
+
+func (s *Service) readOnboardingProgressRecord(ctx context.Context, scope hubscope.NativeScope) (onboarding.Progress, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancel()
+	var result onboarding.Progress
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		var err error
+		result, err = r.ProjectOnboardingProgress(ctx, scope.Project)
+		return err
+	})
+	return result, hubapi.ProjectRecordError(err)
+}
+
+func (s *Service) saveOnboardingProgressRecord(c echo.Context, request saveOnboardingRequest) error {
+	raw, err := s.saveOnboardingProgressCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Request().Method+" "+c.Request().URL.EscapedPath(), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, raw)
+}
+
+func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope hubscope.NativeScope, operation string, request saveOnboardingRequest) (json.RawMessage, error) {
+	if err := request.Progress.Validate(); err != nil {
+		return nil, hubapi.NativeInvalid(err.Error())
+	}
+	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.Progress.Revision < 0 {
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes and a nonnegative revision are required")
+	}
+	viewer, viewerKey, err := onboardingViewer(scope.Credential)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancel()
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, err
+	}
+	hash, err := hubapi.CommandHash(request)
+	if err != nil {
+		return nil, err
+	}
+	if raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+	progress := request.Progress
+	progress.Revision++
+	progress.UpdatedAt = hubapi.FormatHubTime(s.config.Clock().UTC())
+	raw, err := json.Marshal(progress)
+	if err != nil {
+		return nil, err
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.Clock().UTC()}, raw)
+	if err != nil {
+		return nil, err
+	}
+	var replay *eventstore.Receipt
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		previous, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
+		if err == nil {
+			if previous.RequestHash != hash {
+				return hubapi.NativeConflict(0)
+			}
+			replay = &previous
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock().UTC())); err != nil {
+			return err
+		}
+		writer, ok := w.(projectstore.OnboardingPageWriter)
+		if !ok {
+			return errors.New("onboarding page storage unavailable")
+		}
+		if err := writer.InvalidateOnboardingPage(ctx, scope.Project, viewerKey, viewer); err != nil {
+			return err
+		}
+		if err := w.SaveProjectOnboardingProgress(ctx, scope.Project, progress, request.Progress.Revision); err != nil {
+			return err
+		}
+		_, err = w.PutReceipt(ctx, receipt)
+		return err
+	})
+	if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, corestore.ErrUniqueViolation) {
+		if raw, found, readErr := s.authorizedChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || readErr != nil {
+			if readErr != nil {
+				return nil, readErr
+			}
+			return raw, nil
+		}
+		current, readErr := s.readOnboardingProgressRecord(ctx, scope)
+		if readErr != nil {
+			return nil, readErr
+		}
+		return nil, hubapi.NativeConflict(current.Revision)
+	}
+	if err != nil {
+		return nil, hubapi.ProjectRecordError(err)
+	}
+	if replay != nil {
+		raw, err = content.Receipt(ctx, *replay)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return raw, nil
+}

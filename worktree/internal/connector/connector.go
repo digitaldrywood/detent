@@ -1,0 +1,422 @@
+package connector
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+type progressReporterContextKey struct{}
+
+func WithProgressReporter(ctx context.Context, reporter func()) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if reporter == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, progressReporterContextKey{}, reporter)
+}
+
+func ReportProgress(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	reporter, ok := ctx.Value(progressReporterContextKey{}).(func())
+	if !ok || reporter == nil {
+		return
+	}
+	reporter()
+}
+
+type laneTransitionReasonContextKey struct{}
+
+type laneTransitionReason struct {
+	code   string
+	detail string
+}
+
+func WithLaneTransitionReason(ctx context.Context, reason, detail string) context.Context {
+	return context.WithValue(ctx, laneTransitionReasonContextKey{}, laneTransitionReason{code: reason, detail: detail})
+}
+
+func LaneTransitionReason(ctx context.Context) string {
+	reason, ok := ctx.Value(laneTransitionReasonContextKey{}).(laneTransitionReason)
+	if !ok {
+		return ""
+	}
+	return reason.code
+}
+
+func LaneTransitionReasonDetail(ctx context.Context) string {
+	reason, ok := ctx.Value(laneTransitionReasonContextKey{}).(laneTransitionReason)
+	if !ok {
+		return ""
+	}
+	return reason.detail
+}
+
+var (
+	ErrNotImplemented                = errors.New("connector operation not implemented")
+	ErrCommentNotCreated             = errors.New("comment was not created")
+	ErrResourceExhausted             = errors.New("connector resource exhausted")
+	ErrStateUpdateBlocked            = errors.New("issue state update blocked")
+	ErrPullRequestMergeQueueRequired = errors.New("pull request must use the merge queue")
+	ErrPullRequestBaseOutOfDate      = errors.New("pull request base is out of date")
+)
+
+type retryableError struct {
+	message string
+}
+
+func (e *retryableError) Error() string {
+	return e.message
+}
+
+func (e *retryableError) Retryable() bool {
+	return true
+}
+
+func NewRetryableError(message string) error {
+	return &retryableError{message: message}
+}
+
+func IsRetryable(err error) bool {
+	var retryable *retryableError
+	return errors.As(err, &retryable) && retryable != nil && retryable.Retryable()
+}
+
+type StateUpdateBlockedError struct {
+	IssueID      string
+	CurrentState string
+	TargetState  string
+}
+
+func (e *StateUpdateBlockedError) Error() string {
+	if e == nil {
+		return ErrStateUpdateBlocked.Error()
+	}
+	return ErrStateUpdateBlocked.Error() + ": " + e.IssueID + " is in terminal state " + e.CurrentState + "; refusing move to non-terminal " + e.TargetState
+}
+
+func (e *StateUpdateBlockedError) Is(target error) bool {
+	return target == ErrStateUpdateBlocked
+}
+
+type Connector interface {
+	Name() string
+	FetchCandidateIssues(context.Context) ([]Issue, error)
+	FetchIssuesByStates(context.Context, []string) ([]Issue, error)
+	FetchIssueStatesByIDs(context.Context, []string) ([]Issue, error)
+	CreateComment(context.Context, string, string) error
+	UpdateIssueState(context.Context, string, string) error
+	SetAssignee(context.Context, string, string) error
+	SetField(context.Context, string, string, string) error
+}
+
+type IssueFilterHint struct {
+	// SchedulerStates names observed lanes whose routing readers require evidence.
+	SchedulerStates []string
+	Authors         []string
+	Assignees       []string
+	LabelInclude    []string
+	LabelExclude    []string
+}
+
+type CandidateIssuesFilterFetcher interface {
+	FetchCandidateIssuesByStatesWithFilter(context.Context, []string, IssueFilterHint) ([]Issue, error)
+}
+
+type Closer interface {
+	Close() error
+}
+
+type Authenticator interface {
+	Authenticate(context.Context) error
+}
+
+type InstanceIdentifier interface {
+	InstanceLogin() string
+}
+
+type ProjectURLResolver interface {
+	ProjectURL(context.Context) (string, error)
+}
+
+type Provisioner interface {
+	Provision(context.Context) error
+}
+
+type IssueCloser interface {
+	CloseIssue(context.Context, string) error
+}
+
+type ProjectRemover interface {
+	RemoveIssueFromProject(context.Context, string) error
+}
+
+type IssueFieldSetter interface {
+	SetIssueField(context.Context, string, int, string) error
+}
+
+type IssueFieldClearer interface {
+	ClearIssueField(context.Context, string, int) error
+}
+
+type PullRequestCommenter interface {
+	CreatePullRequestComment(context.Context, string, int, string) error
+}
+
+type PullRequestMerger interface {
+	MergePullRequest(context.Context, string, int, string, string) error
+}
+
+type PullRequestMergeQueue interface {
+	InspectPullRequestMergeQueue(context.Context, Issue) (PullRequestMergeQueueStatus, error)
+	EnqueuePullRequest(context.Context, Issue) (PullRequestMergeQueueEntry, error)
+	DequeuePullRequest(context.Context, PullRequestMergeQueueEntry) error
+}
+
+type PullRequestMergeQueueStatus struct {
+	RemovalObserved   bool
+	RemovedAt         *time.Time
+	RemovedHeadSHA    string
+	RemovalReason     string
+	Depth             int
+	AdmissionLimit    int
+	HeadSHA           string
+	Available         bool
+	PullRequestNodeID string
+	Entry             *PullRequestMergeQueueEntry
+	Batching          MergeQueueBatching
+}
+
+// MergeQueueBatching mirrors the repository queue's grouping configuration.
+type MergeQueueBatching struct {
+	MaxGroupSize    int   `json:"max_group_size,omitempty" yaml:"max_group_size,omitempty"`
+	MinGroupSize    int   `json:"min_group_size,omitempty" yaml:"min_group_size,omitempty"`
+	MinGroupWaitSec int64 `json:"min_group_wait_seconds,omitempty" yaml:"min_group_wait_seconds,omitempty"`
+}
+
+type PullRequestMergeQueueEntry struct {
+	HeadSHA                     string             `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
+	BaseSHA                     string             `json:"base_sha,omitempty" yaml:"base_sha,omitempty"`
+	ID                          string             `json:"id,omitempty" yaml:"id,omitempty"`
+	State                       string             `json:"state,omitempty" yaml:"state,omitempty"`
+	Position                    int                `json:"position,omitempty" yaml:"position,omitempty"`
+	Depth                       int                `json:"depth,omitempty" yaml:"depth,omitempty"`
+	EstimatedTimeToMergeSeconds int64              `json:"estimated_time_to_merge_seconds,omitempty" yaml:"estimated_time_to_merge_seconds,omitempty"`
+	EnqueuedAt                  *time.Time         `json:"enqueued_at,omitempty" yaml:"enqueued_at,omitempty"`
+	URL                         string             `json:"url,omitempty" yaml:"url,omitempty"`
+	Batching                    MergeQueueBatching `json:"batching,omitzero" yaml:"batching,omitempty"`
+}
+
+type PullRequestHydrator interface {
+	HydratePullRequest(context.Context, Issue) (Issue, error)
+}
+
+type PullRequestReviewThreadHydrator interface {
+	HydratePullRequestReviewThreads(context.Context, Issue) (Issue, error)
+}
+
+type PullRequestReferenceRefresher interface {
+	RefreshPullRequestReference(context.Context, Issue) (Issue, error)
+}
+
+type PullRequestAssociationRevalidator interface {
+	RevalidatePullRequestAssociation(context.Context, Issue, bool) (Issue, error)
+}
+
+// BranchHeadLookup resolves a remote branch without requiring a local workspace.
+// An empty head with no error means the branch does not exist.
+type BranchHeadLookup interface {
+	LookupBranchHead(context.Context, string, string) (string, error)
+}
+
+type PullRequestHeadLookup interface {
+	LookupPullRequestByHead(context.Context, string, string, string) (PullRequest, bool, error)
+}
+
+type PullRequestDraftCreator interface {
+	CreateDraftPullRequest(context.Context, string, string, string, string) (PullRequest, error)
+}
+
+type PullRequestDiffFingerprintReader interface {
+	PullRequestDiffFingerprint(context.Context, Issue) (string, error)
+}
+
+// ValidationDiff is a PR-scoped snapshot. Digest covers the complete patch, even
+// when a caller chooses to show only part of it to the validator.
+type ValidationDiff struct {
+	Repository string
+	PRNumber   int
+	BaseSHA    string
+	HeadSHA    string
+	Files      []string
+	Patch      string
+	Digest     string
+}
+
+type ValidationDiffReader interface {
+	PullRequestValidationDiff(context.Context, Issue) (ValidationDiff, error)
+}
+
+type PullRequestCheckRerunner interface {
+	RerunPullRequestChecks(context.Context, Issue, []PullRequestCheck) error
+}
+
+type PullRequestLabelReapplier interface {
+	ReapplyPullRequestLabel(context.Context, string, int, string, time.Duration) error
+}
+
+// CommitStatusPoster records a commit status on a repository commit, such as
+// the local gate's success on the exact pull request head Detent validated.
+type CommitStatusPoster interface {
+	PostCommitStatus(ctx context.Context, repository, sha, statusContext, description string) error
+}
+
+type IssueCommentReader interface {
+	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
+}
+
+type IssueCommentAuthorizer interface {
+	IsIssueCommentAuthorAuthorized(context.Context, Issue, IssueComment) (bool, error)
+}
+
+type IssueEventReader interface {
+	FetchIssueEvents(context.Context, Issue) ([]IssueEvent, error)
+}
+
+type IssueCommentUpdater interface {
+	UpdateIssueComment(context.Context, string, string, string) error
+}
+
+type IssueBodyUpdater interface {
+	UpdateIssueBody(context.Context, string, string) error
+}
+
+type IssueCommentDeleter interface {
+	DeleteIssueComment(context.Context, string, string) error
+}
+
+type PullRequestCommentReader interface {
+	FetchPullRequestComments(context.Context, string, int) ([]IssueComment, error)
+}
+
+type IssueDraft struct {
+	Title  string
+	Body   string
+	Labels []string
+}
+
+type IssueCreator interface {
+	CreateIssue(context.Context, IssueDraft) (Issue, error)
+}
+
+type IssuesByStatesLimiter interface {
+	FetchIssuesByStatesLimit(context.Context, []string, int) ([]Issue, error)
+}
+
+type FreshIssuesByStatesFetcher interface {
+	FetchFreshIssuesByStates(context.Context, []string) ([]Issue, error)
+}
+
+type IssueStateScan struct {
+	Issues           []Issue        `json:"issues,omitempty"`
+	BoardCounts      map[string]int `json:"board_counts,omitempty"`
+	EnumeratedCounts map[string]int `json:"enumerated_counts,omitempty"`
+	ItemsFetched     int            `json:"items_fetched,omitempty"`
+	TotalItems       int            `json:"total_items,omitempty"`
+}
+
+type IssueStateScanner interface {
+	FetchIssuesByStatesScan(context.Context, []string, int) (IssueStateScan, error)
+}
+
+type CandidateIssuesByStatesFetcher interface {
+	FetchCandidateIssuesByStates(context.Context, []string) ([]Issue, error)
+}
+
+type RefreshIssueResult struct {
+	// LaneSignalCandidates retains diagnostic inputs outside configured lanes.
+	LaneSignalCandidates []Issue
+	Candidates           []Issue
+	Statuses             []Issue
+	CandidateError       error
+	StatusError          error
+}
+
+type RefreshIssueFetcher interface {
+	CombinedRefreshEnabled() bool
+	FetchRefreshIssues(context.Context, []string, []string, IssueFilterHint) RefreshIssueResult
+}
+
+type IssueStateProber interface {
+	FetchIssueStateProbe(context.Context, []string, int) ([]Issue, error)
+}
+
+type IssueStateIDProber interface {
+	FetchIssueStateProbeByIDs(context.Context, []string) ([]Issue, error)
+}
+
+type StatusDriftReader interface {
+	FetchStatusDrift(context.Context) (StatusDrift, error)
+}
+
+type ConditionalPoller interface {
+	ConditionalPollingEnabled() bool
+}
+
+type IssueReferenceResolver interface {
+	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
+}
+
+type IssueStateTransitionReader interface {
+	IssueStateTransition(context.Context, Issue) (IssueStateTransition, bool, error)
+}
+
+// CurrentLaneEntryReader reports when an issue entered its current tracker
+// lane, from the tracker's own history.
+type CurrentLaneEntryReader interface {
+	CurrentLaneEntry(context.Context, Issue) (IssueStateTransition, bool, error)
+}
+
+type IssueStateTransition struct {
+	EnteredAt time.Time  `json:"entered_at" yaml:"entered_at"`
+	Actor     IssueActor `json:"actor,omitzero" yaml:"actor,omitempty"`
+}
+
+type IssueActor struct {
+	Login string `json:"login,omitempty" yaml:"login,omitempty"`
+	Kind  string `json:"kind,omitempty" yaml:"kind,omitempty"`
+}
+
+type IssueDependencyWriter interface {
+	AddIssueBlockedByDependency(context.Context, string, string) error
+	RemoveIssueBlockedByDependency(context.Context, string, string) error
+}
+
+type IssueUpserter interface {
+	UpsertIssues(context.Context, []Issue) error
+}
+
+type IssueParentResolver interface {
+	FetchIssueParents(context.Context, string) ([]Issue, error)
+}
+
+type IssueChildrenResolver interface {
+	FetchIssueChildren(context.Context, string) ([]BlockedRef, error)
+}
+
+type StatusDrift struct {
+	UntrackedOpen        []Issue `json:"untracked_open,omitempty" yaml:"untracked_open,omitempty"`
+	OpenTerminal         []Issue `json:"open_terminal,omitempty" yaml:"open_terminal,omitempty"`
+	ClosedActive         []Issue `json:"closed_active,omitempty" yaml:"closed_active,omitempty"`
+	LaneSignalCandidates []Issue `json:"-" yaml:"-"`
+}
+
+// ValidationIssueReader bypasses board snapshots for authoritative review input.
+// It preserves the supplied PR provenance and refreshes the task body/comments.
+type ValidationIssueReader interface {
+	FetchValidationIssue(context.Context, Issue) (Issue, error)
+}

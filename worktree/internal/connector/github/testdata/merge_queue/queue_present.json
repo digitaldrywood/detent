@@ -1,0 +1,20 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_42",
+        "mergeStateStatus": "CLEAN",
+        "mergeQueue": {
+          "url": "https://github.test/example/repo/queue/main",
+          "entries": {
+            "totalCount": 2
+          },
+          "configuration": {
+            "maximumEntriesToBuild": 3
+          }
+        },
+        "mergeQueueEntry": null
+      }
+    }
+  }
+}

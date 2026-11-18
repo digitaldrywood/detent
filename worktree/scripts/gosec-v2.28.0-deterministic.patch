@@ -1,0 +1,36 @@
+diff --git a/taint/taint.go b/taint/taint.go
+index fab64cc..80f65e6 100644
+--- a/taint/taint.go
++++ b/taint/taint.go
+@@ -15,0 +16 @@ import (
++	"sort"
+@@ -30 +31 @@ const maxTaintDepth = 50
+-const maxCallerEdges = 32
++const maxCallerEdges = 4096
+@@ -950,0 +952,23 @@ func (a *Analyzer) isParameterTainted(param *ssa.Parameter, fn *ssa.Function, vi
++	inEdges := append([]*callgraph.Edge(nil), node.In...)
++	sort.SliceStable(inEdges, func(i, j int) bool {
++		left, right := inEdges[i], inEdges[j]
++		leftName, rightName := "", ""
++		if left.Caller != nil && left.Caller.Func != nil {
++			leftName = left.Caller.Func.String()
++		}
++		if right.Caller != nil && right.Caller.Func != nil {
++			rightName = right.Caller.Func.String()
++		}
++		if leftName != rightName {
++			return leftName < rightName
++		}
++		var leftPos, rightPos token.Pos
++		if left.Site != nil {
++			leftPos = left.Site.Pos()
++		}
++		if right.Site != nil {
++			rightPos = right.Site.Pos()
++		}
++		return leftPos < rightPos
++	})
++
+@@ -952 +976 @@ func (a *Analyzer) isParameterTainted(param *ssa.Parameter, fn *ssa.Function, vi
+-	for _, inEdge := range node.In {
++	for _, inEdge := range inEdges {

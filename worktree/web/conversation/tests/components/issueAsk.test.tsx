@@ -1,0 +1,248 @@
+import {
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import * as Effect from "effect/Effect";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+import { composerText, typeInComposer } from "./composerInput.ts";
+import { assistantMessage, detail } from "./builders.ts";
+import { useConversationSpeech } from "../../src/app/hooks/useConversationSpeech.ts";
+
+import fixture from "../../src/contracts/fixtures/conversation-private.json";
+import type {
+  Conversation,
+  ConversationListResponse,
+} from "../../src/contracts/conversation.ts";
+import {
+  IssueAskPanel,
+  useIssueAsk,
+} from "../../src/app/work/IssueAsk.tsx";
+import { FindingAskWorkspace } from "../../src/app/diagnostics/FindingAsk.tsx";
+import { BootstrapProject } from "../../src/contracts/conversation.ts";
+import * as Schema from "effect/Schema";
+
+const mock = vi.hoisted(() => ({
+  create: vi.fn(),
+  refresh: vi.fn(),
+  list: vi.fn(),
+  open: vi.fn(),
+  navigate: vi.fn(),
+}));
+const client = {
+  createConversation: mock.create,
+  refreshList: mock.refresh,
+  http: { listProjectConversations: mock.list },
+};
+vi.mock("@effect/atom-react", () => ({ useAtomSet: (atom: unknown) => atom }));
+vi.mock("../../src/app/client.ts", async (original) => ({
+  ...(await original<typeof import("../../src/app/client.ts")>()),
+  useClient: () => client,
+}));
+vi.mock("../../src/app/components/ChatWorkspace.tsx", () => ({
+  useWorkspacePanel: () => ({ openAsk: mock.open }),
+}));
+vi.mock("../../src/app/adapters/surfaces.ts", () => ({ useIssueSurfaces: () => ({}) }));
+vi.mock("../../src/app/components/RightPanel.tsx", () => ({
+  useRightPanelWorkspace: ({ ask }: { ask: React.ReactNode }) => ({ panel: ask, layoutControls: null, openAsk: mock.open }),
+}));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mock.navigate }));
+vi.mock("../../src/app/ChatRoutes.tsx", () => ({
+  ConversationView: ({ conversationId }: { conversationId: string }) => (
+    <div data-testid="selected-chat">{conversationId}</div>
+  ),
+}));
+
+const thread = (id: string, created_at: string): Conversation =>
+  ({
+    ...fixture,
+    id,
+    created_at,
+    subject_work_item_id: "wi_subject",
+  }) as Conversation;
+function View() {
+  const ask = useIssueAsk("project", "wi_subject");
+  return <IssueAskPanel ask={ask} projectId="project" identifier="#28" title="Renew the lease before the handoff completes" canWrite />;
+}
+afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  mock.list.mockImplementation(() =>
+    Effect.succeed({ conversations: [], next_cursor: null }),
+  );
+  mock.create.mockResolvedValue({
+    _tag: "Success",
+    success: { conversation: thread("conv_new", "2026-10-02T00:00:00Z") },
+  });
+  mock.refresh.mockResolvedValue(undefined);
+});
+
+it("shows suggestions for an empty question and sends the split prompt", async () => {
+  render(<View />);
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  const suggestions = within(screen.getByTestId("issue-ask-panel"));
+  const labels = [
+    "Why is this Blocked?",
+    "Summarize the history",
+    "What is left before it can start?",
+    "Split into smaller issues",
+  ];
+  expect(
+    suggestions.getAllByRole("button")
+      .filter((button) => labels.includes(button.textContent ?? ""))
+      .map((button) => button.textContent),
+  ).toEqual(labels);
+  const chip = suggestions.getByTestId("composer-context-attachment");
+  expect(chip.textContent).toBe("#28 Renew the lease before the handoff completes");
+  expect(chip.getAttribute("title")).toBe("Renew the lease before the handoff completes");
+  fireEvent.click(
+    suggestions.getByRole("button", { name: "Split into smaller issues" }),
+  );
+  await screen.findByTestId("selected-chat");
+  expect(mock.create).toHaveBeenCalledOnce();
+  expect(mock.create.mock.calls[0]?.[0]).toMatchObject({
+    projectId: "project",
+    subjectWorkItemId: "wi_subject",
+    firstMessage: {
+      text: "Use the split-issue skill to break this issue into smaller issues that can each land on their own. Wire up the dependencies so independent pieces can run in parallel, and show me the whole split as one proposal so I can confirm it once.",
+    },
+  });
+  expect(screen.queryByRole("button", { name: "Split into smaller issues" })).toBeNull();
+});
+
+it("keeps the question and create keys on retry and sends the subject with the first message", async () => {
+  mock.create.mockResolvedValueOnce({
+    _tag: "Failure",
+    failure: { message: "Try again" },
+  });
+  render(<View />);
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  const input = screen.getByRole("textbox", { name: "Ask message" });
+  await typeInComposer(input, "Why is this Blocked?");
+  fireEvent.submit(input.closest("form")!);
+  await screen.findByRole("alert");
+  expect(composerText(input)).toBe("Why is this Blocked?");
+  fireEvent.submit(input.closest("form")!);
+  await screen.findByTestId("selected-chat");
+  const [first, second] = mock.create.mock.calls.map((call) => call[0]);
+  expect(first).toEqual(second);
+  expect(second.subjectWorkItemId).toBe("wi_subject");
+  expect(second.firstMessage.text).toBe("Why is this Blocked?");
+  expect(mock.refresh).toHaveBeenCalledOnce();
+});
+
+it("sorts all subject pages newest first and opens the same thread in Chat", async () => {
+  const older = thread("conv_older", "2026-09-01T00:00:00Z");
+  const newer = thread("conv_newer", "2026-10-01T00:00:00Z");
+  mock.list.mockImplementation(({ cursor }: { cursor?: string }) =>
+    Effect.succeed({
+      conversations: cursor == null ? [older] : [newer],
+      next_cursor: cursor == null ? "second" : null,
+    } satisfies ConversationListResponse),
+  );
+  render(<View />);
+  await waitFor(() =>
+    expect(screen.getByTestId("selected-chat").textContent).toBe(newer.id),
+  );
+  const options = within(
+    screen.getByRole("combobox", { name: "Issue chats" }),
+  ).getAllByRole("option");
+  expect(
+    options.slice(1).map((option) => option.getAttribute("value")),
+  ).toEqual([newer.id, older.id]);
+  expect(mock.list.mock.calls[0]?.[0].subjectWorkItemId).toBe("wi_subject");
+  fireEvent.click(screen.getByRole("button", { name: "Open in Chat" }));
+  expect(mock.navigate).toHaveBeenCalledWith({
+    to: "/chat/c/$conversationId",
+    params: { conversationId: newer.id },
+  });
+});
+
+it("restores suggestions for a fresh question while keeping prior threads selectable", async () => {
+  mock.list.mockImplementation(() =>
+    Effect.succeed({
+      conversations: [thread("conv_old", "2026-09-01T00:00:00Z")],
+      next_cursor: null,
+    }),
+  );
+  render(<View />);
+  await screen.findByTestId("selected-chat");
+  expect(screen.queryByRole("button", { name: "Summarize the history" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "New question" }));
+  const panel = screen.getByTestId("issue-ask-panel");
+  for (const name of ["Why is this Blocked?", "Summarize the history", "What is left before it can start?", "Split into smaller issues"]) {
+    expect(within(panel).getByRole("button", { name })).toBeTruthy();
+  }
+  const picker = screen.getByRole("combobox", { name: "Issue chats" }) as HTMLSelectElement;
+  expect(picker.selectedOptions[0]?.textContent).toBe("Earlier questions");
+  expect(within(picker).queryByRole("option", { name: "New question" })).toBeNull();
+  expect(within(panel).getByTestId("composer-context-attachment").textContent).toBe("#28 Renew the lease before the handoff completes");
+  fireEvent.click(within(panel).getByRole("button", { name: "Summarize the history" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("selected-chat").textContent).toBe("conv_new"),
+  );
+  expect(mock.create.mock.calls[0]?.[0].firstMessage.text).toBe(
+    "Summarize the history",
+  );
+  expect(screen.queryByRole("button", { name: "Summarize the history" })).toBeNull();
+  expect(
+    within(screen.getByRole("combobox", { name: "Issue chats" })).getAllByRole(
+      "option",
+    ),
+  ).toHaveLength(3);
+  fireEvent.change(picker, { target: { value: "conv_old" } });
+  await waitFor(() => expect(screen.getByTestId("selected-chat").textContent).toBe("conv_old"));
+});
+
+it.each([false, true])("sends finding evidence only while attached and speaks a fast first reply (removed=%s)", async (removed) => {
+  localStorage.setItem("detent.chat.voice", "on");
+  const speak = vi.fn();
+  vi.stubGlobal("speechSynthesis", { speak, cancel: vi.fn() });
+  vi.stubGlobal("SpeechSynthesisUtterance", class {
+    constructor(public text: string) {}
+  });
+  const project = Schema.decodeUnknownSync(BootstrapProject)({ id: "prj_example", name: "Example project", can_write: true });
+  const finding = {
+    id: "finding_no_landing", class: "flow", severity: "attention",
+    summary: "No work has landed for thirty minutes despite candidates and a free slot.",
+    next_action: "Check scheduler admission and landing evidence.",
+    when: "2026-10-07T10:00:00Z", subject: { kind: "project", project_id: project.id },
+  } as const;
+  render(<FindingAskWorkspace finding={finding} project={project} focusRequest={1}>{() => null}</FindingAskWorkspace>);
+  const panel = screen.getByRole("region", { name: "Ask about this finding" });
+  for (const name of ["What is causing this?", "What should I check?", "How do I fix it?"]) {
+    expect(within(panel).getByRole("button", { name })).toBeTruthy();
+  }
+  expect(mock.open).toHaveBeenCalledOnce();
+  if (removed) fireEvent.click(within(panel).getByRole("button", { name: `Remove Example project ${finding.summary} context` }));
+  fireEvent.click(within(panel).getByRole("button", { name: "What is causing this?" }));
+  await waitFor(() => expect(mock.create).toHaveBeenCalledOnce());
+  const sent = mock.create.mock.calls[0]![0];
+  expect(sent.projectId).toBe("prj_example");
+  expect(sent.subjectWorkItemId).toBeUndefined();
+  if (removed) {
+    expect(sent.firstMessage.text).toBe("What is causing this?");
+    await waitFor(() => expect(mock.navigate).toHaveBeenCalled());
+  } else {
+    await screen.findByTestId("selected-chat");
+    expect(JSON.parse(sent.firstMessage.text.split("Attached diagnostic finding (data):\n")[1])).toEqual({
+      finding_id: "finding_no_landing", class: "flow", severity: "attention",
+      summary: "No work has landed for thirty minutes despite candidates and a free slot.",
+      next_action: "Check scheduler admission and landing evidence.",
+      time: "2026-10-07T10:00:00Z", resolved_at: null,
+      project: { id: "prj_example", name: "Example project" }, subject: { kind: "project", project_id: "prj_example" },
+    });
+  }
+  expect(mock.list).not.toHaveBeenCalled();
+  const reply = detail({ messages: [assistantMessage({ text: "Already finished.", delivery: "completed" })] });
+  const voice = renderHook(() => useConversationSpeech("conv_new", reply));
+  expect(speak.mock.calls.map(([utterance]) => utterance.text)).toEqual(["Already finished."]);
+  voice.unmount();
+  renderHook(() => useConversationSpeech("conv_new", reply));
+  expect(speak).toHaveBeenCalledOnce();
+});

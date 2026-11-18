@@ -1,0 +1,220 @@
+package hubserver
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
+
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func (s *Service) WorkItemPageMaintenanceFeature() hubmaintenance.Feature {
+	sources := s.newScheduledSourceMaintenance()
+	return hubmaintenance.Feature{Name: "work-item-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
+			return hubmaintenance.Outcome{}, err
+		}
+		classify := func(items int) (int, error) {
+			if !sources.owns(tenant) {
+				return 0, nil
+			}
+			return sources.step(ctx, tenant, items)
+		}
+		convert := func(items int) (int, error) { return s.convertPostgresStorage(ctx, tenant, items) }
+		pages := func(limit int) (int, int, bool, error) {
+			backfilled := false
+			for attempt := range limit {
+				worked, err := s.maintainWorkItemPage(ctx, tracker.OrganizationID(tenant.Organization), &backfilled)
+				if err != nil || !worked {
+					return attempt + 1, attempt, err == nil, err
+				}
+			}
+			return limit, limit, false, nil
+		}
+		return hubmaintenance.ShareItems(budget.Items, classify, convert, pages)
+	}}
+}
+
+func (s *Service) MaintainWorkItemPage(ctx context.Context, organization tracker.OrganizationID) (bool, error) {
+	return s.maintainWorkItemPage(ctx, organization, new(bool))
+}
+
+func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker.OrganizationID, backfilled *bool) (bool, error) {
+	if err := hubmaintenance.RequireAllowance(ctx, string(organization), hubmaintenance.ByteLimit); err != nil {
+		return false, err
+	}
+	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
+		return false, errors.New("maintenance requires byte-limited payload storage")
+	}
+	complete := *backfilled
+	backfill := func(w tenantstore.Writer) error {
+		if complete {
+			return nil
+		}
+		owner, ok := w.(viewstore.WorkItemPageBackfiller)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		var err error
+		complete, err = owner.BackfillWorkItemPages(ctx)
+		return err
+	}
+
+	ctx = detailbatch.Clear(ctx)
+	ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, nil)
+	ctx = context.WithValue(ctx, hubcontent.RunDetailContextKey{}, nil)
+	var candidate viewstore.PageCandidate
+	var item corestore.WorkItem
+	var comment corestore.Comment
+	var version eventstore.CollaborationVersion
+	var browserPath string
+	var relations corestore.RelationshipPage
+	missing := false
+	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+		reader, ok := r.(viewstore.WorkItemPageReader)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		var err error
+		candidate, err = reader.NextWorkItemPageCandidate(ctx)
+		if err != nil {
+			return err
+		}
+		project, err := r.Project(ctx, candidate.ProjectID)
+		if errors.Is(err, corestore.ErrNotFound) || err == nil && project.DeletedAt != nil {
+			missing = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if candidate.Kind == "relationships" {
+			if candidate.Cleaning {
+				return nil
+			}
+			relations, err = r.Relationships(ctx, candidate.ProjectID, candidate.WorkItemID, candidate.After, corestore.MaxPageSize)
+			return err
+		}
+		if candidate.Kind == "item" {
+			item, err = r.WorkItem(ctx, candidate.ProjectID, candidate.WorkItemID)
+			if err == nil {
+				organization, readErr := r.AccessOrganization(ctx)
+				if readErr != nil {
+					return readErr
+				}
+				browserPath = "/" + organization.Slug + "/" + project.Slug + "/issues/" + strconv.FormatInt(item.Number, 10)
+			}
+		} else {
+			comment, err = r.Comment(ctx, candidate.ProjectID, candidate.WorkItemID, candidate.RecordID)
+		}
+		if errors.Is(err, corestore.ErrNotFound) {
+			missing = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		revision := item.Revision
+		if candidate.Kind == "comment" {
+			revision = comment.Revision
+		}
+		version, err = r.CollaborationVersion(ctx, candidate.RecordID, revision)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) && candidate.Generation == 0 {
+		if complete {
+			return false, nil
+		}
+		if err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, backfill); err != nil {
+			return false, err
+		}
+		*backfilled = complete
+		return !complete, nil
+	}
+	if candidate.Generation != 0 {
+		cursorErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+			writer, ok := w.(viewstore.WorkItemPageWriter)
+			if !ok {
+				return hubapi.NativeWorkItemStorageUnavailable()
+			}
+			if err := backfill(w); err != nil {
+				return err
+			}
+			return writer.AdvanceWorkItemPageCursor(ctx, candidate)
+		})
+		if cursorErr == nil {
+			*backfilled = complete
+		}
+		if err != nil || cursorErr != nil {
+			return false, errors.Join(err, cursorErr)
+		}
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if candidate.Kind == "relationships" {
+		records := make([]viewstore.RelationshipPageRecord, 0, len(relations.Items))
+		for _, relation := range relations.Items {
+			browserURL := ""
+			if relation.OrganizationSlug != "" && relation.ProjectSlug != "" {
+				browserURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
+			}
+			records = append(records, viewstore.RelationshipPageRecord{Relationship: relation, WebURL: browserURL, Identifier: string(relation.RelatedProjectID) + "#" + strconv.Itoa(relation.Number)})
+		}
+		err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+			writer, ok := w.(viewstore.RelationshipPageWriter)
+			if !ok {
+				return hubapi.NativeWorkItemStorageUnavailable()
+			}
+			return writer.PublishRelationshipPage(ctx, candidate, records, relations.Next)
+		})
+		return err == nil, err
+	}
+	var itemPage *viewstore.ItemPageRecord
+	var commentPage *viewstore.CommentPageRecord
+	if !missing {
+		if candidate.Kind == "item" {
+			value, err := s.hydrateWorkItemRecord(ctx, item, version)
+			if err != nil {
+				return false, err
+			}
+			value.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: browserPath}).WebURL
+			if value.LinkedSource != nil {
+				value.LinkedSource.Snapshot = nil
+			}
+			itemPage = &viewstore.ItemPageRecord{Value: value, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: s.config.Clock()}
+		} else {
+			value, err := s.hydrateCommentRecord(ctx, comment, version)
+			if err != nil {
+				return false, err
+			}
+			commentPage = &viewstore.CommentPageRecord{Value: value, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: s.config.Clock()}
+		}
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		writer, ok := w.(viewstore.WorkItemPageWriter)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		return writer.PublishWorkItemPage(ctx, candidate, itemPage, commentPage)
+	})
+	if err != nil {
+		return false, err
+	}
+	if s.config.Logger != nil {
+		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project work item page", slog.String("organization_id", string(organization)), slog.String("kind", candidate.Kind), slog.Int64("generation", candidate.Generation), slog.Duration("projection_lag", s.config.Clock().Sub(candidate.SourceAt)))
+	}
+	return true, nil
+}
