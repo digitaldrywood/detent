@@ -44,7 +44,7 @@ func (e *nativeExecution) ClaimState(ctx context.Context) (executioncontract.Exe
 		e.mu.Unlock()
 		return executioncontract.ExecutionState{Override: 1}, nil
 	}
-	if outage && !e.scheduler.now().Before(e.completionOutageDeadline) && (pending || e.leaseValidity() <= 0) {
+	if outage && !e.scheduler.now().Before(e.completionOutageDeadline) && pending {
 		e.mu.Unlock()
 		return executioncontract.ExecutionState{Override: -1}, nil
 	}

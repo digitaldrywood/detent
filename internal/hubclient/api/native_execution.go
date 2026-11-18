@@ -44,7 +44,7 @@ func nativeEffectError(ctx context.Context) error {
 		return nil
 	}
 	cause := authority.cancellation()
-	if errors.Is(cause, runner.ErrOperatorStopped) || errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) {
+	if errors.Is(cause, runner.ErrOperatorStopped) {
 		return cause
 	}
 	return nil
