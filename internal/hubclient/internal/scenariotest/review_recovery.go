@@ -499,10 +499,12 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				cfg.ActiveStates = append(cfg.ActiveStates, "Rework")
 			}
 			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: completions, Runner: agent, Logger: logger}
-			handoff := scenariohooks.NewReviewDispatch(agent)
+			if test.stopped {
+				cfg.PollInterval = 0
+			}
 			if test.expiredHeartbeat || test.refusal == "source" {
 				cfg.OverloadRetryDelay, cfg.MaxRetryBackoff = time.Millisecond, time.Millisecond
-				dependencies.Runner = handoff
+				dependencies.Runner = scenariohooks.NewReviewDispatch(agent)
 			}
 			orch, err := orchestrator.New(cfg, dependencies)
 			if err != nil {
@@ -538,7 +540,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			defer stop()
 			ticker := time.NewTicker(20 * time.Millisecond)
 			defer ticker.Stop()
-			if test.expiredHeartbeat || test.refusal == "source" {
+			if handoff, ok := dependencies.Runner.(*scenariohooks.ReviewDispatch); ok {
 				req := handoff.Next(t, deadline)
 				provider.releaseRetry()
 				if test.refusal == "source" {
@@ -553,6 +555,9 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					t.Fatal("review dispatched another writable turn")
 				}
 				return
+			}
+			if test.stopped {
+				scenariohooks.WaitForDeferredReview(t, orch, issue.ID)
 			}
 			deferred := false
 			readGit := func(path string, args ...string) string {
