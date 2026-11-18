@@ -1,0 +1,162 @@
+package cloudentry
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form url.Values) (_ oauth.TokenResponse, resultErr error) {
+	if form.Get("grant_type") != "authorization_code" && form.Get("grant_type") != "refresh_token" {
+		return oauth.TokenResponse{}, ErrNoSession
+	}
+	now := s.config.Now()
+	var grant, challenge, redirect, resource, codeExpires string
+	var consumed sql.NullString
+	hash := apikey.HashToken(form.Get("code"))
+	if form.Get("grant_type") == "authorization_code" {
+		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT grant_id,challenge,redirect_uri,resource,code_expires_at,consumed_at FROM platform.oauth_requests WHERE code_hash=$1 AND client_id=$2`, hash, client).Scan(&grant, &challenge, &redirect, &resource, &codeExpires, &consumed)
+		if err != nil {
+			return oauth.TokenResponse{}, err
+		}
+		expiry, err := parseTime(codeExpires)
+		verifier := form.Get("code_verifier")
+		digest := oauthPKCE(verifier)
+		if err != nil || consumed.Valid || !expiry.After(now) || redirect != form.Get("redirect_uri") || resource != form.Get("resource") || !validOAuthVerifier(verifier) || digest != challenge {
+			return oauth.TokenResponse{}, ErrNoSession
+		}
+	} else {
+		hash = apikey.HashToken(form.Get("refresh_token"))
+		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT t.grant_id,t.expires_at FROM (
+			SELECT grant_id,expires_at FROM platform.oauth_refresh_tokens WHERE token_hash=$1
+			UNION ALL
+			SELECT grant_id,expires_at FROM platform.oauth_spent_refresh_tokens WHERE token_hash=$2
+		) t JOIN platform.oauth_grants g ON g.id=t.grant_id WHERE g.client_id=$3 AND g.resource=$4 AND g.revoked_at IS NULL`, hash, hash, client, form.Get("resource")).Scan(&grant, &codeExpires)
+		if err != nil {
+			return oauth.TokenResponse{}, err
+		}
+		expiry, err := parseTime(codeExpires)
+		if err != nil || !expiry.After(now) {
+			return oauth.TokenResponse{}, ErrNoSession
+		}
+	}
+	key, err := s.oauthKey(ctx, "id", grant, false)
+	if err != nil {
+		return oauth.TokenResponse{}, err
+	}
+	organization, err := s.readyOrganization(ctx, key.Organizations[0].OrganizationID)
+	if err != nil {
+		return oauth.TokenResponse{}, oauthCredentialError(err)
+	}
+	if _, err := s.keyClaims(ctx, key, organization, "POST", "/internal/v1/keys/catalog", nil); err != nil {
+		return oauth.TokenResponse{}, oauthCredentialError(err)
+	}
+	access, err := s.config.GenerateToken()
+	if err != nil {
+		return oauth.TokenResponse{}, err
+	}
+	access = oauth.AccessPrefix + access
+	refreshExpires := now.Add(oauth.RefreshLifetime)
+	refresh, err := s.config.GenerateToken()
+	if err != nil {
+		return oauth.TokenResponse{}, err
+	}
+	refresh = "oauth_refresh_" + refresh
+
+	tokens := platformstore.OAuthTokens{AccessHash: apikey.HashToken(access), RefreshHash: apikey.HashToken(refresh), AccessExpiresAt: now.Add(oauth.AccessLifetime), RefreshExpiresAt: refreshExpires}
+	repository := s.auth.store.db.postgres
+	if form.Get("grant_type") == "authorization_code" {
+		err = repository.ExchangeOAuthCode(ctx, tracker.OrganizationID(organization.ID), hash, client, form.Get("resource"), form.Get("redirect_uri"), form.Get("code_verifier"), tokens)
+	} else {
+		err = repository.RotateOAuthRefresh(ctx, tracker.OrganizationID(organization.ID), hash, client, form.Get("resource"), tokens)
+	}
+	if err != nil {
+		return oauth.TokenResponse{}, entryAuthError(err)
+	}
+	return oauth.TokenResponse{AccessToken: access, TokenType: "Bearer", ExpiresIn: int(oauth.AccessLifetime / time.Second), RefreshToken: refresh, Scope: oauth.Scope}, nil
+}
+
+func (s *Service) oauthKey(ctx context.Context, column, value string, requireAccess bool) (accessKey, error) {
+	if column != "id" && column != "access_hash" {
+		return accessKey{}, ErrNoSession
+	}
+	var k accessKey
+	var organization, resource, created string
+	var expires, hash sql.NullString
+	query := `SELECT g.id,c.name,g.owner_subject,g.owner_email,g.organization_id,g.permission,g.resource,g.created_at,g.access_hash,g.access_expires_at FROM platform.oauth_grants g JOIN platform.oauth_clients c ON c.id=g.client_id WHERE g.` + column + `=$1 AND g.revoked_at IS NULL`
+	args := []any{value}
+	query += ` AND (SELECT count(*) FROM platform.oauth_grants duplicate WHERE duplicate.` + column + `=$2)=1`
+	args = append(args, value)
+	err := s.auth.store.reader.QueryRowContext(ctx, query, args...).Scan(&k.ID, &k.Name, &k.Owner, &k.OwnerEmail, &organization, &k.Permission, &resource, &created, &hash, &expires)
+	if err != nil {
+		return k, err
+	}
+	if resource != s.config.PublicURL+"/mcp" {
+		return k, ErrNoSession
+	}
+	k.CreatedAt, err = parseTime(created)
+	if err != nil {
+		return k, ErrNoSession
+	}
+	if requireAccess {
+		if !expires.Valid || !hash.Valid {
+			return k, ErrNoSession
+		}
+		at, err := parseTime(expires.String)
+		if err != nil || !at.After(s.config.Now()) {
+			return k, ErrNoSession
+		}
+		k.ExpiresAt = &at
+	}
+	k.Hash = hash.String
+	k.Kind = "personal"
+	k.OAuth = true
+	k.AccessContext = "selected"
+	k.Organizations = []keyOrganization{{OrganizationID: organization, ProjectContext: apikey.ProjectContext{Access: "all"}}}
+	org, err := s.readyOrganization(ctx, organization)
+	if err != nil {
+		return k, oauthCredentialError(err)
+	}
+	if _, err = s.keyMembership(ctx, k.Owner, org); err != nil {
+		return k, oauthCredentialError(err)
+	}
+	return k, nil
+}
+
+func oauthCredentialError(err error) error {
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return err
+	}
+	var refusal *apikey.Refusal
+	if errors.Is(err, ErrOrganizationNotFound) || errors.Is(err, tenantauth.ErrDenied) || errors.As(err, &refusal) {
+		return errors.Join(ErrNoSession, err)
+	}
+	return err
+}
+
+func (s *Service) ActiveMCPKey(ctx context.Context, hash string) (accessKey, error) {
+	k, err := s.activeAccessKey(ctx, hash)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return k, err
+	}
+	return s.oauthKey(ctx, "access_hash", hash, true)
+}
+
+func (s *Service) recordCredentialUse(ctx context.Context, key accessKey, organization string) error {
+	if !key.OAuth {
+		return s.recordKeyUse(ctx, key.ID, organization)
+	}
+	_, err := s.auth.store.db.ExecContext(ctx, "UPDATE platform.oauth_grants SET last_used_at=$1 WHERE id=$2 AND revoked_at IS NULL", formatTime(s.config.Now()), key.ID)
+	return err
+}
+
+func oauthGrantID(id string) bool { return strings.HasPrefix(id, "oauth_grant_") }

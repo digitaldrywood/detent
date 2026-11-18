@@ -1,0 +1,4 @@
+DELETE /api/v1/tokens/:id
+POST /api/v1/tokens
+POST /api/v1/tokens/:id/rotate
+POST /api/v2/tokens/:id/grants

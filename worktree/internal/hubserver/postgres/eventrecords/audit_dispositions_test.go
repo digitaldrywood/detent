@@ -1,0 +1,186 @@
+package eventrecords_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestAuditDispositionWritesPreserveReadableSession(t *testing.T) {
+	t.Parallel()
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		pgstoretest.SeedRepository(t, repository, organization)
+		t.Run(string(organization), func(t *testing.T) {
+			fixture := pgstoretest.SeedHistory(t, repository, organization, "audit")
+			second := fixture.Evidence
+			second.Sequence, second.SourceKey = 0, nil
+			if err := repository.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
+				var err error
+				second, err = w.AppendEvidence(t.Context(), second)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			row := eventstore.AuditDisposition{Organization: organization, Project: fixture.Change.ProjectID, ChangeID: fixture.Change.ID, ReviewSequence: fixture.Evidence.Sequence, ActorID: "actor_first", RequestHash: "hash", Reference: eventstore.Reference("example/disposition", "digest", 1, 1), Disposition: securityaudit.Disposition{AuditRunID: 1, FindingID: "finding", Status: securityaudit.DispositionFalsePositive, RecordedAt: pgstoretest.HistoryAt()}}
+			write := func(input eventstore.AuditDisposition) (eventstore.AuditDisposition, error) {
+				var got eventstore.AuditDisposition
+				err := repository.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
+					var err error
+					got, err = w.(eventstore.AuditDispositionWriter).CreateAuditDisposition(t.Context(), input)
+					return err
+				})
+				return got, err
+			}
+			var first eventstore.AuditDisposition
+			for index := range 200 {
+				row.ReviewSequence = fixture.Evidence.Sequence
+				if index%2 == 0 {
+					row.ReviewSequence = second.Sequence
+				}
+				row.Disposition.RecordedAt = pgstoretest.HistoryAt().Add(time.Duration((199-index)/2) * time.Second)
+				row.RequestKey = fmt.Sprint(index)
+				got, err := write(row)
+				if err != nil {
+					t.Fatalf("write %d: %v", index, err)
+				}
+				if index == 0 {
+					first = got
+				}
+			}
+			for _, tc := range []struct {
+				name    string
+				actor   string
+				finding string
+			}{
+				{"same finding", "actor_first", "finding"},
+				{"other actor", "actor_second", "finding"},
+				{"other finding", "actor_second", "finding_second"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					overflow := row
+					overflow.ActorID, overflow.Disposition.FindingID, overflow.RequestKey = tc.actor, tc.finding, tc.name
+					if _, err := write(overflow); !errors.Is(err, corestore.ErrRevisionConflict) {
+						t.Errorf("overflow error = %v, want revision conflict", err)
+					}
+				})
+			}
+			replay, err := write(first)
+			if err != nil || replay.Disposition.ID != first.Disposition.ID {
+				t.Fatalf("replay = %v, %v", replay.Disposition.ID, err)
+			}
+			first.RequestHash = "changed"
+			if _, err := write(first); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Errorf("changed replay error = %v", err)
+			}
+			row.Disposition.AuditRunID = 2
+			row.RequestKey = "other-session"
+			if _, err := write(row); err != nil {
+				t.Fatalf("independent session: %v", err)
+			}
+			if err := repository.ReadRecords(t.Context(), organization, corestore.Serving, func(r eventstore.Reader) error {
+				reader, ok := r.(tenantstore.ClaimChangeRowsReader)
+				if !ok {
+					t.Fatal("missing batched claim change snapshot")
+				}
+				snapshot, err := reader.ClaimChangeRows(t.Context(), row.Project, []string{fixture.Change.ID})
+				if err != nil {
+					return err
+				}
+				if got := len(snapshot[fixture.Change.ID].AuditDispositions[1]); got != 200 {
+					t.Fatalf("snapshot dispositions=%d, want 200", got)
+				}
+				rows, err := r.(eventstore.AuditDispositionReader).AuditDispositions(t.Context(), row.Project, 1)
+				if err != nil {
+					return err
+				}
+				batch, err := r.(tenantstore.ClaimAuditDispositionRowsReader).ClaimAuditDispositionRows(t.Context(), row.Project, []int64{1, 2, 404})
+				if err != nil {
+					return err
+				}
+				if len(rows) != 200 || len(batch[2]) != 1 {
+					t.Fatal("disposition count differs from scalar")
+				}
+				if !rows[0].Disposition.RecordedAt.Equal(rows[1].Disposition.RecordedAt) || !rows[0].Disposition.RecordedAt.After(rows[2].Disposition.RecordedAt) {
+					t.Fatal("fixture must contain timestamp ties and reverse timestamp order")
+				}
+				for _, run := range []int64{1, 2} {
+					want := rows
+					if run == 2 {
+						want, err = r.(eventstore.AuditDispositionReader).AuditDispositions(t.Context(), row.Project, run)
+						if err != nil {
+							return err
+						}
+					}
+					if !reflect.DeepEqual(snapshot[fixture.Change.ID].AuditDispositions[run], want) {
+						t.Errorf("snapshot disposition slice differs from scalar for run %d", run)
+					}
+					if !reflect.DeepEqual(batch[run], want) {
+						t.Errorf("legacy batch disposition slice differs from scalar for run %d", run)
+					}
+				}
+				if empty, covered := batch[404]; !covered || len(empty) != 0 {
+					t.Fatal("empty legacy audit run was not queried")
+				}
+				return nil
+			}); err != nil {
+				t.Fatalf("read full session: %v", err)
+			}
+		})
+	}
+}
+
+func TestAuditDispositionConcurrentSessionBound(t *testing.T) {
+	t.Parallel()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	organization := tracker.OrganizationID("org_first")
+	pgstoretest.SeedRepository(t, repository, organization)
+	first := pgstoretest.SeedHistory(t, repository, organization, "first_audit")
+	second := pgstoretest.SeedHistory(t, repository, organization, "second_audit")
+	row := eventstore.AuditDisposition{Organization: organization, Project: first.Change.ProjectID, ChangeID: first.Change.ID, ReviewSequence: first.Evidence.Sequence, ActorID: "actor_first", RequestHash: "hash", Reference: eventstore.Reference("example/disposition", "digest", 1, 1), Disposition: securityaudit.Disposition{AuditRunID: 1, FindingID: "finding", Status: securityaudit.DispositionFalsePositive, RecordedAt: pgstoretest.HistoryAt()}}
+	if err := repository.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
+		for index := range 199 {
+			row.RequestKey = fmt.Sprint(index)
+			if _, err := w.(eventstore.AuditDispositionWriter).CreateAuditDisposition(t.Context(), row); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var competing *pgstoretest.RepositoryTask
+	if err := repository.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
+		row.RequestKey = "last"
+		if _, err := w.(eventstore.AuditDispositionWriter).CreateAuditDisposition(t.Context(), row); err != nil {
+			return err
+		}
+		competing = pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
+			return repository.WriteRecords(ctx, organization, corestore.Background, func(other eventstore.Writer) error {
+				input := row
+				input.ChangeID, input.ReviewSequence, input.ActorID, input.RequestKey = second.Change.ID, second.Evidence.Sequence, "actor_second", "overflow"
+				_, err := other.(eventstore.AuditDispositionWriter).CreateAuditDisposition(ctx, input)
+				return err
+			})
+		})
+		pgstoretest.WaitLeaseLock(t, admin, 1, competing)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := competing.Wait(t); !errors.Is(err, corestore.ErrRevisionConflict) {
+		t.Fatalf("competing write error = %v, want revision conflict", err)
+	}
+}

@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","model":"fable"}
+{"type":"assistant","message":{"id":"msg-missing","type":"message","role":"assistant","model":"fable","content":[{"type":"text","text":"no session"}],"usage":{"input_tokens":2,"output_tokens":1}}}
+{"type":"result","subtype":"success","usage":{"input_tokens":2,"output_tokens":1}}

@@ -1,0 +1,922 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/service"
+)
+
+var (
+	ErrConfigExists    = errors.New("global config already exists")
+	ErrProjectExists   = errors.New("project already exists")
+	ErrProjectNotFound = errors.New("project not found")
+)
+
+const (
+	configPathCommand     = "detent config path"
+	ghAuthLoginCommand    = `gh auth login --scopes "repo,read:org,project"`
+	portExampleCommand    = "detent --port 0"
+	promoteExampleCommand = "detent promote api --priority 10"
+)
+
+type HintedError struct {
+	Err      error
+	Message  string
+	Hint     string
+	Commands []string
+}
+
+func (e *HintedError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if strings.TrimSpace(e.Message) != "" {
+		return e.Message
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return ""
+}
+
+func (e *HintedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func HintFor(err error) (string, []string, bool) {
+	var hinted *HintedError
+	if !errors.As(err, &hinted) {
+		return "", nil, false
+	}
+	return hinted.Hint, append([]string(nil), hinted.Commands...), true
+}
+
+type Operation string
+
+const (
+	OperationInit           Operation = "init"
+	OperationAddProject     Operation = "add-project"
+	OperationPromoteProject Operation = "promote"
+	OperationRemoveProject  Operation = "remove-project"
+)
+
+const examplesFirstUsageTemplate = `Usage:{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+Aliases:
+  {{.NameAndAliases}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
+
+Available Commands:{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{.Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+Additional Commands:{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+Global Flags:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasHelpSubCommands}}
+
+Additional help topics:{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
+  {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
+`
+
+type Signal struct {
+	Operation Operation
+	ProjectID string
+	Project   globalconfig.Project
+}
+
+type configPathResult struct {
+	Path string `json:"path"`
+	Rule string `json:"rule"`
+}
+
+type projectPriorityResult struct {
+	Status   string `json:"status"`
+	Project  string `json:"project"`
+	Priority int    `json:"priority"`
+}
+
+type BootMode string
+
+const (
+	BootModeRunning    BootMode = "running"
+	BootModeOnboarding BootMode = "onboarding"
+)
+
+type BootConfig struct {
+	serviceStdout    *os.File
+	serviceStderr    *os.File
+	Mode             BootMode
+	Global           globalconfig.Config
+	ConfigPathRule   globalconfig.PathRule
+	Runtime          RuntimeSettings
+	LogLevel         *slog.LevelVar
+	WorkflowPath     string
+	Host             string
+	Port             *int
+	RuntimeDBPath    string
+	RuntimeLogPath   string
+	Isolated         *IsolatedRuntimeInfo
+	Version          string
+	Build            buildinfo.Info
+	Headless         bool
+	StdoutTTY        bool
+	Output           io.Writer
+	Shutdown         *ShutdownController
+	Restart          *RestartRequest
+	HardExit         func(int)
+	Runner           orchestrator.Runner
+	ConnectorFactory project.ConnectorFactory
+	Scheduling       orchestrator.SchedulingSource
+	StartupRecovery  StartupRecovery
+
+	remoteHeartbeatTicker remoterunner.Ticker
+}
+
+type IsolatedRuntimeInfo struct {
+	Home          string
+	ConfigPath    string
+	WorkflowPath  string
+	WorkspaceRoot string
+	DBPath        string
+	DBMode        string
+	TrackerMode   string
+	FixturePath   string
+	Demo          string
+	DemoClock     string
+}
+
+type BootFunc func(context.Context, BootConfig) error
+
+type StartupRecovery interface {
+	MarkHealthy(context.Context) error
+	HandleFailure(context.Context, error)
+}
+
+type StartupRecoveryFactory func(context.Context, BootConfig) (StartupRecovery, error)
+
+type SignalFunc func(context.Context, Signal) error
+
+type LoggerFunc func(RuntimeSettings, io.Writer, io.Writer, bool) *slog.LevelVar
+
+type CommandRunner func(context.Context, string, ...string) (string, error)
+
+type ProjectManager interface {
+	Add(context.Context, globalconfig.Project) error
+	Remove(context.Context, project.ID) error
+}
+
+type Option func(*options)
+
+type options struct {
+	resolveProjects   func(context.Context, globalconfig.Config) (globalconfig.Config, error)
+	readStartup       func(string) (globalconfig.Config, error)
+	resolvePath       func(string) (globalconfig.PathResolution, error)
+	read              func(string) (globalconfig.Config, error)
+	readProject       func(string, string) (globalconfig.Config, []string, error)
+	readDoctor        func(string) (globalconfig.Config, error)
+	readDoctorProject func(string, string) (globalconfig.Config, []string, error)
+	readOrDefault     func(string) (globalconfig.Config, error)
+	write             func(string, globalconfig.Config) error
+	boot              BootFunc
+	signal            SignalFunc
+	lookupEnv         func(string) string
+	ghAuthToken       func(context.Context) (string, error)
+	runCommand        CommandRunner
+	httpDo            func(*http.Request) (*http.Response, error)
+	configureLog      LoggerFunc
+	version           string
+	build             buildinfo.Info
+	stdoutTTY         func() bool
+	shutdown          *ShutdownController
+	restart           *RestartRequest
+	service           ServiceFactory
+	serviceInjected   bool
+	startupRecovery   StartupRecoveryFactory
+}
+
+func WithBootFunc(boot BootFunc) Option {
+	return func(opts *options) {
+		if boot != nil {
+			opts.boot = boot
+		}
+	}
+}
+
+func WithSignalFunc(signal SignalFunc) Option {
+	return func(opts *options) {
+		if signal != nil {
+			opts.signal = signal
+		}
+	}
+}
+
+func WithVersion(version string) Option {
+	return func(opts *options) {
+		opts.version = strings.TrimSpace(version)
+	}
+}
+
+func WithBuild(build buildinfo.Info) Option {
+	return func(opts *options) {
+		opts.build = build
+	}
+}
+
+func WithProjectManager(manager ProjectManager) Option {
+	return func(opts *options) {
+		opts.signal = ProjectManagerSignalFunc(manager)
+	}
+}
+
+func WithStdoutTTY(stdoutTTY func() bool) Option {
+	return func(opts *options) {
+		if stdoutTTY != nil {
+			opts.stdoutTTY = stdoutTTY
+		}
+	}
+}
+
+func WithCommandRunner(run CommandRunner) Option {
+	return func(opts *options) {
+		if run != nil {
+			opts.runCommand = run
+		}
+	}
+}
+
+func WithShutdownController(controller *ShutdownController) Option {
+	return func(opts *options) {
+		opts.shutdown = controller
+	}
+}
+
+func WithRestartRequest(restart *RestartRequest) Option {
+	return func(opts *options) {
+		opts.restart = restart
+	}
+}
+
+func WithLoggerFunc(configure LoggerFunc) Option {
+	return func(opts *options) {
+		opts.configureLog = configure
+	}
+}
+
+func WithServiceFactory(factory ServiceFactory) Option {
+	return func(opts *options) {
+		if factory != nil {
+			opts.service = factory
+			opts.serviceInjected = true
+		}
+	}
+}
+
+func WithStartupRecovery() Option {
+	return func(opts *options) {
+		opts.startupRecovery = newDefaultStartupRecovery
+	}
+}
+
+func ProjectManagerSignalFunc(manager ProjectManager) SignalFunc {
+	if manager == nil {
+		return noSignal
+	}
+
+	return func(ctx context.Context, signal Signal) error {
+		switch signal.Operation {
+		case OperationAddProject:
+			return manager.Add(ctx, signal.Project)
+		case OperationRemoveProject:
+			return manager.Remove(ctx, project.ID(signal.ProjectID))
+		default:
+			return nil
+		}
+	}
+}
+
+func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
+	opts := defaultOptions()
+	for _, opt := range optFns {
+		opt(&opts)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var configPath string
+	var env string
+	var logLevel string
+	var host string
+	var port int
+	var headless bool
+	var format string
+	cmd := &cobra.Command{
+		Use:   "detent",
+		Short: "Detent agent orchestrator",
+		Long: strings.TrimSpace(`Detent is an agent orchestrator for tracker-backed work queues.
+
+Output:
+  --format pretty prints human-readable output.
+  --format json prints machine-readable JSON.
+  DETENT_FORMAT can set the default format.
+  When neither is set, Detent prints pretty output on a TTY and JSON otherwise.
+
+JSON errors:
+  JSON-mode failures write one problem object to stderr.
+  Fields: type, code, title, detail, exit_code, suggested_fix, did_you_mean, docs_url.
+  Optional fields: suggested_fix, did_you_mean, docs_url.
+  Stable codes: general, validation, unknown_command, unknown_flag, github_auth,
+  config_exists, project_exists, project_not_found, doctor_failed, shutdown_forced,
+  shutdown_timeout.
+
+Exit codes:
+  0  success
+  1  general or unexpected failure
+  2  auth or GitHub token problem
+  3  validation, unknown command, or unknown flag
+  4  not found or config conflict`),
+		Example: strings.TrimSpace(`detent --config ~/.config/detent/global.yaml --headless
+detent --format json config path`),
+		Args:         suggestedNoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := OutputForCommand(cmd); err != nil {
+				return err
+			}
+			flags := runtimeFlags{
+				Env:      runtimeStringFlag{Value: env, Set: flagChanged(cmd, "env")},
+				LogLevel: runtimeStringFlag{Value: logLevel, Set: flagChanged(cmd, "log-level")},
+				Port:     runtimeIntFlag{Value: port, Set: flagChanged(cmd, "port")},
+			}
+			boot, err := resolveBootConfigWithRuntimeDeps(cmd.Context(), configPath, host, flags, opts, bootRuntimeDeps(opts), true)
+			if err != nil {
+				return err
+			}
+			if opts.lookupEnv(service.ManagerEnvironment) == string(service.ManagerScheduledTask) {
+				stdout, stderr, err := openScheduledTaskLogs(boot.Global.Path)
+				if err != nil {
+					return err
+				}
+				defer func() {
+					if err := errors.Join(stdout.Close(), stderr.Close()); err != nil {
+						slog.Warn("close service logs", "error", err)
+					}
+				}()
+				cmd.SetOut(stdout)
+				cmd.SetErr(stderr)
+				boot.serviceStdout, boot.serviceStderr = stdout, stderr
+			}
+			stdoutTTY := opts.stdoutTTY()
+			if opts.configureLog != nil {
+				boot.LogLevel = opts.configureLog(boot.Runtime, cmd.OutOrStdout(), cmd.ErrOrStderr(), stdoutTTY)
+			}
+			boot.Headless = headless
+			boot.StdoutTTY = stdoutTTY
+			boot.Output = cmd.OutOrStdout()
+			boot.Shutdown = opts.shutdown
+			boot.Restart = opts.restart
+			if !boot.Global.Client.Configured() {
+				slog.Warn(standaloneDeprecation, "hint", hubMigrationHint)
+			}
+			if !shouldLaunchTerminalDashboard(boot) {
+				slog.Info("resolved global config", "path", boot.Global.Path, "rule", boot.ConfigPathRule)
+				for _, warning := range boot.Runtime.Warnings {
+					slog.Warn(warning.Detail, "check", warning.Name, "hint", warning.Hint)
+				}
+			}
+			var recovery StartupRecovery
+			if opts.startupRecovery != nil && boot.Mode == BootModeRunning && !supervisesControllers(boot) {
+				recovery, err = opts.startupRecovery(cmd.Context(), boot)
+				if err != nil {
+					return fmt.Errorf("initialize startup recovery: %w", err)
+				}
+				boot.StartupRecovery = recovery
+			}
+			bootErr := opts.boot(cmd.Context(), boot)
+			if bootErr != nil && recovery != nil && (boot.Restart == nil || boot.Restart.control == nil || !boot.Restart.control.retired.Load()) {
+				recovery.HandleFailure(cmd.Context(), bootErr)
+			}
+			return bootErr
+		},
+	}
+	cmd.SetContext(withCommandOutputOptions(ctx, commandOutputOptions{
+		lookupEnv: opts.lookupEnv,
+		stdoutTTY: opts.stdoutTTY,
+	}))
+	cmd.PersistentFlags().StringVar(&configPath, "config", "", "path to global.yaml")
+	cmd.PersistentFlags().StringVar(&env, "env", "", "runtime environment")
+	cmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level")
+	cmd.PersistentFlags().StringVar(&host, "host", "", "web server host")
+	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
+	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
+	AddFormatFlag(cmd, &format)
+	cmd.AddCommand(
+		newLogsCommand(&configPath, opts),
+		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
+		newFixCommand(&configPath, opts),
+		newDevRuntimeCommand(&host, &port, opts),
+		newHubCommand(opts),
+		newCloudCommand(opts),
+		newArtifactCommand(opts.lookupEnv),
+		newAttachCommand(opts.lookupEnv, nil),
+		newValidateCommand(opts.lookupEnv, nil, installGoTestWrapper),
+		newBudgetCommand(&configPath, opts),
+		newAuditCommand(&configPath, &host, &port, opts),
+		newConfigCommand(&configPath, opts),
+		newExposureCommand(&configPath, opts),
+		newPromoteCommand(&configPath, opts),
+	)
+	cmd.SetHelpCommand(newHelpCommand(cmd, opts))
+	ConfigureExamplesFirstHelp(cmd)
+	ConfigureCommandSuggestions(cmd)
+	wrapHintedErrors(cmd, opts)
+
+	return cmd
+}
+
+func defaultOptions() options {
+	return options{
+		resolvePath: globalconfig.ResolvePath,
+		readStartup: func(path string) (globalconfig.Config, error) {
+			return readRunnerConfiguration(path)
+		},
+		read: func(path string) (globalconfig.Config, error) {
+			return readRunnerConfiguration(path)
+		},
+		readProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
+			return globalconfig.ReadProject(path, projectID)
+		},
+		readDoctor: func(path string) (globalconfig.Config, error) {
+			return readLocalConfigurationFile(context.Background(), path, globalconfig.WithMissingWorkflowFiles())
+		},
+		readDoctorProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
+			return globalconfig.ReadProject(path, projectID, globalconfig.WithMissingWorkflowFiles())
+		},
+		readOrDefault: func(path string) (globalconfig.Config, error) {
+			cfg, err := readLocalConfigurationFile(context.Background(), path, globalconfig.WithProjectPathLiterals())
+			if err != nil && errors.Is(err, os.ErrNotExist) {
+				return globalconfig.ReadOrDefault(path, globalconfig.WithProjectPathLiterals())
+			}
+			return cfg, err
+		},
+		write: func(path string, cfg globalconfig.Config) error {
+			return globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals())
+		},
+		boot:        defaultBoot,
+		signal:      noSignal,
+		lookupEnv:   os.Getenv,
+		ghAuthToken: defaultGHAuthToken,
+		runCommand:  defaultCommandRunner,
+		httpDo:      http.DefaultClient.Do,
+		stdoutTTY:   stdoutIsTTY,
+		service:     defaultServiceFactory,
+	}
+}
+
+func defaultCommandRunner(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- command runners receive internally selected executables and bypass a shell.
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return string(output), ctx.Err()
+	}
+	if err != nil {
+		if detail := strings.TrimSpace(string(output)); detail != "" {
+			return string(output), fmt.Errorf("%w: %s", err, detail)
+		}
+		return string(output), err
+	}
+	return string(output), nil
+}
+
+func newHelpCommand(root *cobra.Command, opts options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "help [command]",
+		Short: "Show help for a command",
+		Example: strings.TrimSpace(`detent help hub runner register
+detent --format json help`),
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := commandOutputFormat(cmd, opts)
+			if err != nil {
+				return err
+			}
+			if format == OutputFormatJSON {
+				return WriteJSON(cmd.OutOrStdout(), NewCommandCatalog(root))
+			}
+
+			target := root
+			if len(args) > 0 {
+				found, _, findErr := root.Find(args)
+				if findErr != nil {
+					return findErr
+				}
+				target = found
+			}
+			target.SetOut(cmd.OutOrStdout())
+			target.SetErr(cmd.ErrOrStderr())
+			return target.Help()
+		},
+	}
+}
+
+func ConfigureExamplesFirstHelp(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	cmd.SetUsageTemplate(examplesFirstUsageTemplate)
+	cmd.SetHelpFunc(examplesFirstHelp)
+	for _, child := range cmd.Commands() {
+		ConfigureExamplesFirstHelp(child)
+	}
+}
+
+func examplesFirstHelp(cmd *cobra.Command, _ []string) {
+	format, err := helpOutputFormat(cmd)
+	if err != nil {
+		cmd.PrintErrln(err)
+		return
+	}
+	if format == OutputFormatJSON {
+		if err := WriteJSON(cmd.OutOrStdout(), NewCommandCatalog(cmd.Root())); err != nil {
+			cmd.PrintErrln(err)
+		}
+		return
+	}
+	if err := writeExamplesFirstHelp(cmd.OutOrStdout(), cmd); err != nil {
+		cmd.PrintErrln(err)
+	}
+}
+
+func helpOutputFormat(cmd *cobra.Command) (OutputFormat, error) {
+	value, set := outputFormatFlagValue(cmd)
+	return ResolveOutputFormat(value, set, os.Getenv(outputFormatEnv), true)
+}
+
+func writeExamplesFirstHelp(out io.Writer, cmd *cobra.Command) error {
+	if strings.TrimSpace(cmd.Example) != "" {
+		if _, err := fmt.Fprintf(out, "Examples:\n%s\n\n", strings.TrimRight(cmd.Example, "\n")); err != nil {
+			return err
+		}
+	}
+
+	description := strings.TrimSpace(cmd.Long)
+	if description == "" {
+		description = strings.TrimSpace(cmd.Short)
+	}
+	if description != "" {
+		if _, err := fmt.Fprintf(out, "%s\n\n", description); err != nil {
+			return err
+		}
+	}
+
+	if cmd.Runnable() || cmd.HasSubCommands() {
+		_, err := fmt.Fprint(out, cmd.UsageString())
+		return err
+	}
+	return nil
+}
+
+func flagChanged(cmd *cobra.Command, name string) bool {
+	flag := cmd.Flags().Lookup(name)
+	if flag == nil {
+		flag = cmd.InheritedFlags().Lookup(name)
+	}
+	return flag != nil && flag.Changed
+}
+
+func noSignal(context.Context, Signal) error {
+	return nil
+}
+
+func stdoutIsTTY() bool {
+	return WriterIsTTY(os.Stdout)
+}
+
+func hintedError(cause error, message string, hint string, commands ...string) error {
+	return &HintedError{
+		Err:      cause,
+		Message:  message,
+		Hint:     strings.TrimSpace(hint),
+		Commands: append([]string(nil), commands...),
+	}
+}
+
+func exampleHint(command string) string {
+	return "e.g. " + command
+}
+
+func wrapHintedErrors(cmd *cobra.Command, opts options) {
+	if cmd == nil {
+		return
+	}
+	if cmd.RunE != nil {
+		runE := cmd.RunE
+		cmd.RunE = func(cmd *cobra.Command, args []string) error {
+			err := runE(cmd, args)
+			if err != nil {
+				if cmd.Root().SilenceErrors {
+					return err
+				}
+				if writeErr := writeErrorHint(cmd.ErrOrStderr(), err); writeErr != nil {
+					return errors.Join(err, writeErr)
+				}
+			}
+			return err
+		}
+	}
+	for _, child := range cmd.Commands() {
+		wrapHintedErrors(child, opts)
+	}
+}
+
+func writeErrorHint(out io.Writer, err error) error {
+	hint, _, ok := HintFor(err)
+	if !ok || strings.TrimSpace(hint) == "" {
+		return nil
+	}
+	_, writeErr := fmt.Fprintf(out, "Hint: %s\n", hint)
+	return writeErr
+}
+
+type projectEdit func(*globalconfig.Project) error
+
+func clearProjectPause(project *globalconfig.Project) {
+	if project == nil {
+		return
+	}
+	project.Paused = false
+	project.PausedReason = ""
+	project.PausedAt = ""
+	project.PausedUntilIssue = ""
+	project.PausedUntil = ""
+}
+
+func newConfigCommand(configPath *string, opts options) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "config",
+		Short:   "Inspect and migrate config settings",
+		Example: "detent config path",
+	}
+	cmd.AddCommand(newConfigPathCommand(configPath, opts), newConfigMigrateCommand())
+	return cmd
+}
+
+func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
+	return &cobra.Command{
+		Use:     "path",
+		Short:   "Print the resolved global config path",
+		Example: "detent --format json config path",
+		Args:    NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			resolution, err := resolveConfigPathResolution(*configPath, opts)
+			if err != nil {
+				return err
+			}
+			return out.Write(func(out io.Writer) error {
+				_, err := fmt.Fprintf(out, "path: %s\nrule: %s\n", resolution.Path, resolution.Rule)
+				return err
+			}, configPathResult{
+				Path: resolution.Path,
+				Rule: string(resolution.Rule),
+			})
+		},
+	}
+}
+
+func newPromoteCommand(configPath *string, opts options) *cobra.Command {
+	var priority int
+	cmd := &cobra.Command{
+		Use:     "promote PROJECT_ID",
+		Short:   "Promote a project priority",
+		Example: "detent promote api --priority 1",
+		Args:    ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if priority <= 0 {
+				return WrapValidation(hintedError(nil, "--priority must be positive", exampleHint(promoteExampleCommand), promoteExampleCommand))
+			}
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			updated, err := updateProject(cmd.Context(), *configPath, opts, OperationPromoteProject, args[0], func(project *globalconfig.Project) error {
+				project.Priority = priority
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			return out.Write(nil, projectPriorityResult{
+				Status:   "ok",
+				Project:  updated.ID,
+				Priority: updated.Priority,
+			})
+		},
+	}
+	cmd.Flags().IntVar(&priority, "priority", 1, "project priority rank")
+	return cmd
+}
+
+func updateProject(
+	ctx context.Context,
+	configPath string,
+	opts options,
+	operation Operation,
+	id string,
+	edit projectEdit,
+) (globalconfig.Project, error) {
+	path, err := resolveConfigPath(configPath, opts)
+	if err != nil {
+		return globalconfig.Project{}, err
+	}
+	cfg, err := opts.readOrDefault(path)
+	if err != nil {
+		return globalconfig.Project{}, err
+	}
+
+	id = strings.TrimSpace(id)
+	index := projectIndex(cfg.Projects, id)
+	if index < 0 {
+		return globalconfig.Project{}, projectNotFoundError(id, cfg.Projects)
+	}
+	if err := edit(&cfg.Projects[index]); err != nil {
+		return globalconfig.Project{}, err
+	}
+	var promotedPriority *int
+	if operation == OperationPromoteProject {
+		priority, applyErr := promoteHubProjectRank(ctx, cfg, id, cfg.Projects[index].Priority, opts.lookupEnv)
+		err = applyErr
+		promotedPriority = &priority
+	} else {
+		err = opts.write(path, cfg)
+	}
+	if err != nil {
+		return globalconfig.Project{}, err
+	}
+	cfg, err = opts.readOrDefault(path)
+	if err != nil {
+		return globalconfig.Project{}, err
+	}
+	index = projectIndex(cfg.Projects, id)
+	if index < 0 {
+		return globalconfig.Project{}, projectNotFoundError(id, cfg.Projects)
+	}
+	if promotedPriority != nil {
+		cfg.Projects[index].Priority = *promotedPriority
+	}
+
+	if err := opts.signal(ctx, Signal{
+		Operation: operation,
+		ProjectID: cfg.Projects[index].ID,
+		Project:   cfg.Projects[index],
+	}); err != nil {
+		return globalconfig.Project{}, err
+	}
+	return cfg.Projects[index], nil
+}
+
+func resolveConfigPath(path string, opts options) (string, error) {
+	resolution, err := resolveConfigPathResolution(path, opts)
+	if err != nil {
+		return "", err
+	}
+	return resolution.Path, nil
+}
+
+func resolveConfigPathResolution(path string, opts options) (globalconfig.PathResolution, error) {
+	if opts.resolvePath == nil {
+		opts.resolvePath = globalconfig.ResolvePath
+	}
+	return opts.resolvePath(path)
+}
+
+func projectIndex(projects []globalconfig.Project, id string) int {
+	id = strings.TrimSpace(id)
+	for index, project := range projects {
+		if strings.TrimSpace(project.ID) == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func projectNotFoundError(id string, projects []globalconfig.Project) error {
+	id = strings.TrimSpace(id)
+	ids := projectHintIDs(projects)
+	if len(ids) == 0 {
+		return hintedError(
+			ErrProjectNotFound,
+			fmt.Sprintf("project %q not found", id),
+			"no projects are configured; run detent hub runner register to enroll this runner",
+			"detent hub runner register --help",
+		)
+	}
+
+	hint := "available: " + strings.Join(ids, ", ")
+	if closest := closestProjectID(id, ids); closest != "" {
+		hint += fmt.Sprintf("\ndid you mean %q? see `%s`, then retry", closest, configPathCommand)
+	} else {
+		hint += fmt.Sprintf("\nsee `%s`, then retry", configPathCommand)
+	}
+	return hintedError(ErrProjectNotFound, fmt.Sprintf("project %q not found", id), hint, configPathCommand)
+}
+
+func projectHintIDs(projects []globalconfig.Project) []string {
+	ids := make([]string, 0, len(projects))
+	for _, project := range projects {
+		id := strings.TrimSpace(project.ID)
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func closestProjectID(target string, ids []string) string {
+	target = strings.TrimSpace(target)
+	bestID := ""
+	bestDistance := 0
+	for _, id := range ids {
+		distance := levenshteinDistance(target, id)
+		if bestID == "" || distance < bestDistance {
+			bestID = id
+			bestDistance = distance
+		}
+	}
+	return bestID
+}
+
+func levenshteinDistance(a string, b string) int {
+	ar := []rune(strings.ToLower(a))
+	br := []rune(strings.ToLower(b))
+	if len(ar) == 0 {
+		return len(br)
+	}
+	if len(br) == 0 {
+		return len(ar)
+	}
+
+	previous := make([]int, len(br)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i, ra := range ar {
+		current := make([]int, len(br)+1)
+		current[0] = i + 1
+		for j, rb := range br {
+			cost := 0
+			if ra != rb {
+				cost = 1
+			}
+			current[j+1] = minInt3(
+				current[j]+1,
+				previous[j+1]+1,
+				previous[j]+cost,
+			)
+		}
+		previous = current
+	}
+	return previous[len(br)]
+}
+
+func minInt3(a int, b int, c int) int {
+	min := a
+	if b < min {
+		min = b
+	}
+	if c < min {
+		min = c
+	}
+	return min
+}

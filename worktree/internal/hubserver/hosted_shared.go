@@ -1,0 +1,480 @@
+package hubserver
+
+import (
+	"bytes"
+	"context"
+	"crypto/subtle"
+	"errors"
+	"io"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessinvites"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/readableurl"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+const hostedSharedClaimsKey = "hosted_shared_claims"
+
+var errHostedOwnerAlreadyBootstrapped = errors.New("hosted organization already has an owner")
+
+func (s *Service) hostedShared() bool {
+	return s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil
+}
+
+func (s *Service) hostedBase() string {
+	if s.hostedShared() {
+		return "/organizations/" + s.config.Hosted.OrganizationID
+	}
+	return ""
+}
+
+func (s *Service) hostedPath(path string) string {
+	return s.hostedBase() + path
+}
+
+func (s *Service) hostedSignInPath() string {
+	if s.hostedShared() {
+		return "/organizations?switch=1"
+	}
+	return "/login"
+}
+
+var hostedSharedEntryRoutes = map[string]bool{
+	"/login": true, "/auth/oidc/start": true, "/auth/oidc/callback": true, "/invite": true, "/logout": true,
+	"/support": true, "/support/start": true, "/webhooks/stripe": true,
+	"/organization/switch": true, "/organization/create": true, "/organization/join": true,
+}
+
+func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		request := c.Request()
+		entry := s.config.Hosted.SharedEntry
+		if !cloudassert.CanonicalPath(request.URL) {
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
+		}
+		limit := hubapi.SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
+		body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
+		if err != nil {
+			return s.refusedAPIError(c, http.StatusBadRequest, "invalid_request", "Request body could not be read", hubapi.APIErrorResponse{Code: "invalid_request", Message: "Request body could not be read"})
+		}
+		if int64(len(body)) > limit {
+			return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", hubapi.APIErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
+		}
+		request.Body = io.NopCloser(bytes.NewReader(body))
+		claims, err := entry.Verifier().Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
+		if err != nil {
+			return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "entry_assertion_required", Message: "Requests must arrive through the authenticated shared entry"})
+		}
+		request.Header.Del(cloudassert.Header)
+		bearer := request.Header.Get(echo.HeaderAuthorization) != ""
+		if claims.Kind == cloudassert.KindBrowser && bearer || claims.Kind == cloudassert.KindMachine && !bearer {
+			return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "entry_assertion_required", Message: "Requests must arrive through the authenticated shared entry"})
+		}
+		request.Header.Del("Cookie")
+		organization := s.config.Hosted.OrganizationID
+		prefix := "/organizations/" + organization
+		path := request.URL.Path
+		switch {
+		case strings.HasPrefix(path, "/internal/"):
+		case path == prefix || strings.HasPrefix(path, prefix+"/"):
+			path = strings.TrimPrefix(path, prefix)
+			if path == "" {
+				path = "/"
+			}
+		case strings.HasPrefix(path, "/api/v2/organizations/"+organization+"/"):
+		case claims.OrganizationSlug != "" && len(strings.Split(strings.Trim(path, "/"), "/")) >= 2 && readableurl.Validate(strings.Split(strings.Trim(path, "/"), "/")[0]) == nil:
+			first := strings.Split(strings.Trim(path, "/"), "/")[0]
+			path = strings.TrimPrefix(path, "/"+first)
+			c.Set("readable_organization_slug", first)
+		default:
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
+		}
+		if path != request.URL.Path {
+			if strings.HasPrefix(path, "/organizations/") || strings.HasPrefix(path, "/internal/") || hostedSharedEntryRoutes[path] {
+				return s.nativeAPIError(c, hubapi.NativeNotFound())
+			}
+			request.URL.Path, request.URL.RawPath = path, ""
+		}
+		internal := strings.HasPrefix(path, "/internal/")
+		keyInternal := claims.Kind == cloudassert.KindKey && (path == "/internal/v1/keys/catalog" || path == "/internal/v1/keys/call")
+		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
+		}
+		healthProbe := claims.Kind == cloudassert.KindService && request.Method == http.MethodPost && path == "/internal/v1/health"
+		if !healthProbe {
+			if err := s.syncOrganizationSlug(request.Context(), claims.OrganizationSlug); err != nil {
+				return s.nativeAPIError(c, err)
+			}
+		}
+		c.Set(hostedSharedClaimsKey, claims)
+		if claims.Kind == cloudassert.KindKey {
+			if claims.Key == nil || bearer {
+				return c.NoContent(http.StatusUnauthorized)
+			}
+			audit := &hubscope.EntryKeyAudit{Claims: claims, Operation: request.Method + " " + c.Path(), Project: c.Param("project"), Resource: c.Param("item")}
+			if keyInternal {
+				audit.Operation = request.Method + " " + path
+			}
+			if audit.Resource == "" {
+				audit.Resource = audit.Project
+			}
+			request = request.WithContext(context.WithValue(request.Context(), hubscope.EntryKeyAuditContext{}, audit))
+			c.SetRequest(request)
+			if path != "/internal/v1/keys/call" {
+				if err := s.recordEntryAccessKeyAudit(request.Context(), audit, 0); err != nil {
+					return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
+				}
+			}
+			result := next(c)
+			status := c.Response().Status
+			if result != nil {
+				status = http.StatusInternalServerError
+				var failure *echo.HTTPError
+				if errors.As(result, &failure) {
+					status = failure.Code
+				}
+			}
+			auditCtx, cancelAudit := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
+			defer cancelAudit()
+			if err := s.recordEntryAccessKeyAudit(auditCtx, audit, status); err != nil {
+				s.config.Logger.Error("Key audit is unavailable", append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)
+				if c.Response().Committed || result != nil {
+					return result
+				}
+				return c.JSON(http.StatusInternalServerError, hubapi.APIErrorResponse{Code: "audit_unavailable", Message: "Key audit is unavailable"})
+			}
+			return result
+		}
+		return next(c)
+	}
+}
+
+func hostedSharedClaims(c echo.Context) (cloudassert.Claims, bool) {
+	claims, ok := c.Get(hostedSharedClaimsKey).(cloudassert.Claims)
+	return claims, ok
+}
+
+func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth.Session, string, error) {
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindBrowser {
+		return auth.Session{}, "", auth.ErrInvalidSession
+	}
+	return s.sharedAccessSession(ctx, c, claims)
+}
+
+func (s *Service) hostedSharedCSRF(c echo.Context) string {
+	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
+		return claims.CSRF
+	}
+	return ""
+}
+
+func (s *Service) hostedSharedCSRFValid(c echo.Context, value string) bool {
+	expected := s.hostedSharedCSRF(c)
+	return expected != "" && subtle.ConstantTimeCompare([]byte(value), []byte(expected)) == 1
+}
+
+func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
+	e.POST("/internal/v1/keys/catalog", s.entryKeyCatalog, s.operatorAuthority)
+	e.POST("/internal/v1/keys/call", s.entryKeyCall, s.entryKeyReadAuthority)
+	e.POST("/internal/v1/keys/admin", s.entryKeyAdmin)
+	e.POST("/internal/v1/keys/context", s.entryKeyContext)
+	e.POST("/internal/v1/keys/audit", s.entryKeyAudit)
+	e.POST("/internal/v1/github/repositories", s.hostedGitHubRepositories)
+	e.POST("/internal/v1/github/receipt", s.hostedGitHubReceipt)
+	e.POST("/internal/v1/github/webhook", s.hostedGitHubWebhook)
+	e.POST("/internal/v1/sessions/revoke", s.revokeHostedSharedSessions)
+	e.POST("/internal/v1/invitations/accept", s.acceptHostedSharedInvitation)
+	e.POST("/internal/v1/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
+	s.registerDailySummarySharedUnsubscribeRoute(e)
+	e.POST("/internal/v1/health", s.hostedSharedHealth)
+	e.POST("/internal/v1/platform/members", s.platformTenantMembers)
+	e.POST("/internal/v1/platform/runners", s.platformTenantRunners)
+	e.POST("/internal/v1/platform/projects", s.platformTenantProjects)
+	e.POST("/internal/v1/platform/usage", s.platformTenantUsage)
+	e.POST("/internal/v1/platform/users", s.hostedPlatformUsers)
+	s.registerPlatformCreditRoutes(e)
+	e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
+	e.POST("/internal/v1/billing/binding", s.hostedSharedBillingBinding)
+	e.POST("/internal/v1/billing/events", s.hostedSharedBillingEvent)
+}
+
+type hostedSharedBilling struct {
+	FreeOrganization bool      `json:"free_organization"`
+	Enabled          bool      `json:"enabled"`
+	AccountID        string    `json:"account_id,omitempty"`
+	Mode             string    `json:"mode,omitempty"`
+	CustomerID       string    `json:"customer_id,omitempty"`
+	Status           string    `json:"status"`
+	Plan             string    `json:"plan,omitempty"`
+	PriceLabel       string    `json:"price_label,omitempty"`
+	AccessUntil      time.Time `json:"access_until,omitzero"`
+	CheckoutPending  bool      `json:"checkout_pending"`
+}
+
+type hostedSharedBillingQuery struct {
+	Reconcile bool `json:"reconcile"`
+}
+
+func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
+	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
+	}
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancelRead()
+	cfg := s.hostedBillingConfig()
+	result := hostedSharedBilling{Status: "free"}
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(readCtx, nil, s.config.Clock()))
+	if err != nil {
+		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
+	}
+	result.FreeOrganization = entitlement.EffectiveBase.ID == "free"
+	for _, grant := range entitlement.Grants {
+		if grant.RevokedAt == nil && !grant.StartsAt.After(s.config.Clock()) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(s.config.Clock())) && grant.Plan.ID != "free" && (slices.Contains(grant.Scope, "projects") || slices.Contains(grant.Scope, "native_execution")) {
+			result.FreeOrganization = false
+		}
+	}
+	if cfg != nil {
+		result.Enabled, result.AccountID, result.Mode = true, cfg.AccountID, cfg.CreditMode()
+		binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
+		if err != nil && !errors.Is(err, hostedplans.ErrBillingUnbound) {
+			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
+		}
+		result.CustomerID = binding.CustomerID
+		var query hostedSharedBillingQuery
+		if err := hubapi.DecodeAPIJSON(c, &query); err != nil {
+			return s.invalidAPIRequest(c, err)
+		}
+		if query.Reconcile && binding.CustomerID != "" && s.billing != nil {
+			s.billing.mu.Lock()
+			reconcileErr := s.billing.reconcile(ctx)
+			s.billing.mu.Unlock()
+			if reconcileErr != nil {
+				s.logStripeFailure(ctx, reconcileErr)
+				return c.JSON(http.StatusServiceUnavailable, hubapi.APIErrorResponse{Code: "billing_unavailable", Message: "Billing could not be reconciled"})
+			}
+		}
+		checkoutCtx, cancelCheckout := context.WithTimeout(ctx, hubapi.ReadTimeout)
+		defer cancelCheckout()
+		if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(checkoutCtx, func(reader tenantstore.Reader) error {
+			account, err := reader.BillingAccount(checkoutCtx)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err == nil {
+				result.CheckoutPending = account.Checkout.ExpiresAt.After(s.config.Clock())
+			}
+			return err
+		})); err != nil {
+			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
+		}
+		state, err := hubapi.FeatureResult(s.database.plansService().ReadBilling(ctx))
+		if err != nil {
+			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
+		}
+		result.Status, result.AccessUntil = state.Status, state.AccessUntil
+		result.Plan = state.Plan.ID
+		for _, price := range cfg.Prices {
+			if price.PriceID == state.Snapshot.PriceID {
+				result.PriceLabel = price.Label
+				break
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+type hostedSharedBillingEventRequest struct {
+	EventID    string `json:"event_id"`
+	EventType  string `json:"event_type"`
+	CustomerID string `json:"customer_id"`
+}
+
+func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
+	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
+	}
+	cfg := s.hostedBillingConfig()
+	var request hostedSharedBillingEventRequest
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedplans.SafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
+		return s.invalidAPIRequest(c, errors.New("invalid billing event"))
+	}
+	binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(c.Request().Context(), cfg))
+	if err != nil && !errors.Is(err, hostedplans.ErrBillingUnbound) {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
+	}
+	if err != nil || binding.CustomerID != request.CustomerID {
+		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", hubapi.APIErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
+	}
+	err = hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
+		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: request.EventID, Type: request.EventType, ReceivedAt: s.config.Clock().UTC()})
+		return err
+	}))
+	if err != nil {
+		return s.internalAPIError(c, "billing_unavailable", "Billing event could not be recorded", err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) hostedSharedHealth(c echo.Context) error {
+	response := MigrationHealth{SchemaVersion: s.database.schemaVersion, SchemaFingerprint: s.database.schemaFingerprint}
+	if !s.ready.Load() || s.database.health(c.Request().Context()) != nil {
+		return c.JSON(http.StatusServiceUnavailable, response)
+	}
+	response.SchemaFactsComplete = true
+	return c.JSON(http.StatusOK, response)
+}
+
+type hostedSharedOwner struct {
+	OrganizationName string `json:"organization_name"`
+}
+
+func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
+	}
+	var request hostedSharedOwner
+	name := ""
+	if err := hubapi.DecodeAPIJSON(c, &request); err == nil {
+		name = strings.TrimSpace(request.OrganizationName)
+	}
+	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 {
+		return s.invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
+	}
+	ctx := c.Request().Context()
+	provider, err := s.hostedProviderOrganization(ctx)
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
+	}
+	if err != nil || provider == "" {
+		return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", hubapi.APIErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
+	}
+	membership, err := s.hostedMembership(ctx, &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider})
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
+	}
+	if err != nil || membership.Role.Slug != "owner" {
+		return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", hubapi.APIErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
+	}
+	if s.config.TenantRepository == nil {
+		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", hubapi.NativeRunEventStorageUnavailable())
+	}
+	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}
+	var prepared accessMemberPreparation
+	var members []accessstore.Member
+	err = s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		var err error
+		members, err = r.AccessMembers(ctx, "", 2)
+		return err
+	})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if len(members) > 0 {
+		if len(members) == 1 && members[0].UserID == claims.Subject && members[0].Role == "owner" && members[0].Active {
+			return c.NoContent(http.StatusNoContent)
+		}
+		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", hubapi.APIErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+	}
+	prepared, err = s.prepareAccessMember(ctx, identity)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
+			return err
+		}
+		members, err := w.AccessMembers(ctx, "", 2)
+		if err != nil {
+			return err
+		}
+		if len(members) > 0 {
+			if len(members) == 1 && members[0].UserID == claims.Subject && members[0].Role == "owner" && members[0].Active {
+				return nil
+			}
+			return errHostedOwnerAlreadyBootstrapped
+		}
+		if err := s.storeAccessMember(ctx, w, identity, membership, prepared); err != nil {
+			return err
+		}
+		if err := w.DeleteAccessMemberReservation(ctx, strings.ToLower(claims.Email)); err != nil {
+			return err
+		}
+		return w.UpdateAccessOrganizationName(ctx, name)
+	})
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return s.nativeAPIError(c, err)
+	}
+	if errors.Is(err, errHostedOwnerAlreadyBootstrapped) {
+		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", hubapi.APIErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+	}
+	if err != nil {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+type hostedSharedRevocation struct {
+	Bindings []string `json:"bindings"`
+}
+
+func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
+	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
+	}
+	var request hostedSharedRevocation
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil || len(request.Bindings) == 0 || len(request.Bindings) > 100 {
+		return s.invalidAPIRequest(c, errors.New("invalid revocation"))
+	}
+	ctx := c.Request().Context()
+	now := hubapi.FormatHubTime(s.config.Clock())
+	for _, binding := range request.Bindings {
+		if len(binding) != 64 {
+			return s.invalidAPIRequest(c, errors.New("invalid binding"))
+		}
+		if err := s.revokeHostedSharedBinding(ctx, binding, now); err != nil {
+			return s.internalAPIError(c, "revocation_unavailable", "Sessions could not be revoked", err)
+		}
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now string) error {
+	at, err := hubapi.ParseTimeValue(now)
+	if err != nil {
+		return err
+	}
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		ended, active, err := w.EndAccessSession(ctx, binding, at)
+		if err != nil || !active || ended.SupportActor == "" {
+			return err
+		}
+		_, err = w.RecordAccessAudit(ctx, accessstore.SessionAudit(ended, "session_ended", "/logout", at))
+		return err
+	})
+}
+
+func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
+	claims, ok := hostedSharedClaims(c)
+	return s.accessInvitesService().AcceptHTTP(c, claims, ok, accessinvites.HTTPOptions{Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) }, Invalid: s.invalidAPIRequest, Refuse: func(c echo.Context, status int, code, message string, response any) error {
+		return s.refusedAPIError(c, status, code, message, response)
+	}})
+}

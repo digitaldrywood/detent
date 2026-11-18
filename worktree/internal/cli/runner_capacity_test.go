@@ -1,0 +1,560 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestRunnerCapacityOwner(t *testing.T) {
+	for _, scenario := range []string{"apply and reload", "remote runner live reload", "stale configuration", "concurrent configuration", "concurrent replay", "concurrent machine", "different identity", "different selected path", "different machine", "immutable configuration"} {
+		t.Run(scenario, func(t *testing.T) {
+			concurrent := strings.HasPrefix(scenario, "concurrent ")
+			root := t.TempDir()
+			if err := os.Chmod(root, 0700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "global.yaml")
+			identityPath := filepath.Join(root, "identity.json")
+			file, err := runnerauth.Initialize(identityPath, "http://127.0.0.1:1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_test"
+			file.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+			file.Identity.Operations = []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}
+			file.Identity.ExpiresAt = time.Now().Add(time.Hour)
+			if err := runnerauth.Save(identityPath, file); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := globalconfig.DefaultAt(path, globalconfig.WithProjectPathLiterals())
+			if err != nil {
+				t.Fatal(err)
+			}
+			providerPath := filepath.Join(root, "provider.json")
+			provider := []byte(`{"external_producer":"private-provider-config","max_concurrent":2}`)
+			if err := os.WriteFile(providerPath, provider, 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg.Global.MaxConcurrentAgents = 2
+			cfg.Client = globalconfig.HubClient{URL: file.HubURL, IdentityFile: identityPath, OrganizationID: "org_test", NativeProjects: map[string]string{"native": "prj_test"}, Capacity: 2, ProviderCapacityFile: providerPath}
+			cfg.APIToken = "private-api-credential"
+			if concurrent {
+				workflow := filepath.Join(root, "WORKFLOW.md")
+				if err := os.WriteFile(workflow, []byte("# Workflow\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				cfg.Projects = []globalconfig.Project{{ID: "native", Workflow: workflow, Workdir: root, Weight: 1}}
+			}
+			if err := globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err = globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "remote runner live reload" {
+				assertRemoteRunnerLiveReload(t, cfg, file, identityPath)
+				return
+			}
+			state := newGlobalConfigState(cfg)
+			owner := runnerCapacityOwner(cfg, state.get)
+			before := owner(t.Context(), nil)
+			if before == nil || !before.Manageable || before.RuntimeLimit != 2 {
+				t.Fatalf("before=%+v", before)
+			}
+			request := &runnerauth.CapacityRequest{ExpectedConfigRevision: before.Revision, Capacity: 6, Backend: "codex"}
+			original, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "stale configuration":
+				if err := os.WriteFile(path, append(original, []byte("\n# operator changed configuration\n")...), 0600); err != nil {
+					t.Fatal(err)
+				}
+				original, err = os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "different identity":
+				file.Identity.OrganizationID = "org_other"
+				if err := runnerauth.Save(identityPath, file); err != nil {
+					t.Fatal(err)
+				}
+			case "different machine":
+				cfg.Client.MachineID = string(runnerauth.NewBinding().MachineID)
+				if err := globalconfig.Write(path, cfg); err != nil {
+					t.Fatal(err)
+				}
+				original, err = os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "immutable configuration":
+				if err := os.Chmod(path, 0400); err != nil {
+					t.Fatal(err)
+				}
+			case "different selected path":
+				other := cfg
+				other.Path = filepath.Join(root, "other.yaml")
+				state.set(other)
+			}
+			var result *runnerauth.CapacityConfig
+			if concurrent {
+				observed := make(chan struct{})
+				resume := make(chan struct{})
+				done := make(chan struct{})
+				release := sync.OnceFunc(func() { close(resume) })
+				defer func() {
+					release()
+					<-done
+				}()
+				ctx := &capacityMutationContext{deadline: t.Context().Deadline, done: t.Context().Done, err: t.Context().Err, value: t.Context().Value, beforeErr: func() {
+					close(observed)
+					<-resume
+				}}
+				completed := make(chan *runnerauth.CapacityConfig, 1)
+				go func() {
+					defer close(done)
+					completed <- owner(ctx, request)
+				}()
+				<-observed
+				cfg.APIToken = "private-updated-api-credential"
+				cfg.GitHubToken = "private-updated-github-credential"
+				cfg.WorkspaceRoot = filepath.Join(root, "updated-workspaces")
+				cfg.Global.Memory.MaxAgentRSSBytes = 16 << 30
+				switch scenario {
+				case "concurrent replay":
+					cfg.Global.MaxConcurrentAgents, cfg.Client.Capacity = 6, 6
+				case "concurrent machine":
+					cfg.Client.MachineID = string(runnerauth.NewBinding().MachineID)
+				}
+				if err := globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
+					t.Fatal(err)
+				}
+				saved, err := globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if saved.APIToken != cfg.APIToken || saved.GitHubToken != cfg.GitHubToken || saved.WorkspaceRoot != cfg.WorkspaceRoot || saved.Global.Memory.MaxAgentRSSBytes != cfg.Global.Memory.MaxAgentRSSBytes {
+					t.Fatal("concurrent edit was not saved before capacity resumed")
+				}
+				original, err = os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				release()
+				result = <-completed
+			} else {
+				result = owner(t.Context(), request)
+			}
+			updated, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario != "apply and reload" {
+				if string(original) != string(updated) {
+					t.Fatal("changed configuration without current selected authority")
+				}
+				if scenario == "immutable configuration" && (result == nil || result.Manageable || result.Constraint == "") {
+					t.Fatalf("immutable result=%+v", result)
+				}
+				if (scenario == "stale configuration" || scenario == "concurrent configuration") && (result == nil || result.Constraint == "" || result.LocalLimit != 2 || result.ClientLimit != 2) {
+					t.Fatalf("stale result=%+v", result)
+				}
+				if scenario == "concurrent machine" && result != nil {
+					t.Fatalf("changed enrollment remained manageable: %+v", result)
+				}
+				if scenario == "concurrent replay" && (result == nil || result.LocalLimit != 6 || result.ClientLimit != 6 || result.RuntimeLimit != 2 || result.Constraint != "Waiting for the existing configuration reload to apply the saved limits.") {
+					t.Fatalf("concurrent replay=%+v", result)
+				}
+				if scenario == "stale configuration" || scenario == "concurrent configuration" || scenario == "immutable configuration" {
+					observed := owner(t.Context(), nil)
+					if observed == nil || observed.Constraint != result.Constraint || observed.Manageable != result.Manageable {
+						t.Fatalf("application failure lost before heartbeat: result=%+v observed=%+v", result, observed)
+					}
+					if err := os.Chmod(path, 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, append(original, []byte("\n# corrected operator configuration\n")...), 0600); err != nil {
+						t.Fatal(err)
+					}
+					observed = owner(t.Context(), nil)
+					if observed == nil || observed.Constraint != "" || !observed.Manageable {
+						t.Fatalf("old failure attributed to new configuration: observed=%+v", observed)
+					}
+					request.ExpectedConfigRevision = observed.Revision
+					beforeRetry, err := globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+					if err != nil {
+						t.Fatal(err)
+					}
+					applied := owner(t.Context(), request)
+					if applied == nil || applied.LocalLimit != 6 || applied.ClientLimit != 6 || !applied.Manageable || applied.Constraint != "Waiting for the existing configuration reload to apply the saved limits." {
+						t.Fatalf("corrected request did not apply: %+v", applied)
+					}
+					beforeRetry.Global.MaxConcurrentAgents, beforeRetry.Client.Capacity = 6, 6
+					afterRetry, err := globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+					if err != nil || capacityConfigContent(t, afterRetry) != capacityConfigContent(t, beforeRetry) {
+						t.Fatal("corrected capacity request changed unrelated settings")
+					}
+				}
+				return
+			}
+			if result == nil || result.Constraint == "" || result.RuntimeLimit != 2 {
+				t.Fatalf("premature runtime success=%+v", result)
+			}
+			saved, err := globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.Global.MaxConcurrentAgents != 6 || saved.Client.Capacity != 6 {
+				t.Fatalf("saved capacity=%+v", saved.Client)
+			}
+			observed := owner(t.Context(), nil)
+			if observed == nil || result.Revision != observed.Revision || result.LocalLimit != 6 || result.ClientLimit != 6 || result.RuntimeLimit != 2 {
+				t.Fatalf("saved evidence=%+v observed=%+v", result, observed)
+			}
+			saved.Global.MaxConcurrentAgents, saved.Client.Capacity = 2, 2
+			if capacityConfigContent(t, saved) != capacityConfigContent(t, cfg) {
+				t.Fatal("capacity edit changed unrelated settings")
+			}
+			providerAfter, err := os.ReadFile(providerPath)
+			if err != nil || string(providerAfter) != string(provider) {
+				t.Fatal("forged the external provider report")
+			}
+			saved, err = globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate, err := buildGlobalDispatchPools(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate := scheduler.ProjectCandidate{ID: "capacity-test"}
+			var slots []scheduler.Slot
+			for range 2 {
+				slot, ok, err := gate.TryAcquire(t.Context(), candidate, scheduler.SlotRequest{State: "implement", Host: "local", Weight: 1}, time.Now())
+				if err != nil || !ok {
+					t.Fatalf("initial acquisition=%t error=%v", ok, err)
+				}
+				slots = append(slots, slot)
+			}
+			t.Cleanup(func() {
+				for _, slot := range slots {
+					if err := gate.Release(slot); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			if err := applyGlobalRuntimeConfig(gate, nil, saved); err != nil {
+				t.Fatal(err)
+			}
+			for range 4 {
+				slot, ok, err := gate.TryAcquire(t.Context(), candidate, scheduler.SlotRequest{State: "implement", Host: "local", Weight: 1}, time.Now())
+				if err != nil || !ok {
+					t.Fatalf("additional acquisition=%t error=%v", ok, err)
+				}
+				slots = append(slots, slot)
+			}
+			if snapshot := gate.PoolSnapshots(); len(snapshot) != 1 || snapshot[0].Capacity != 6 || snapshot[0].Used != 6 {
+				t.Fatalf("reload slots=%+v", snapshot)
+			}
+			state.set(saved)
+			result = owner(t.Context(), request)
+			if result == nil || result.RuntimeLimit != 6 || result.Constraint != "" {
+				t.Fatalf("applied=%+v", result)
+			}
+			repeated, err := os.ReadFile(path)
+			if err != nil || string(repeated) != string(updated) {
+				t.Fatal("idempotent request rewrote configuration")
+			}
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), "private-") || strings.Contains(string(encoded), root) {
+				t.Fatalf("private configuration escaped: %s", encoded)
+			}
+		})
+	}
+}
+
+func assertRemoteRunnerLiveReload(t *testing.T, cfg globalconfig.Config, file runnerauth.File, identityPath string) {
+	t.Helper()
+	file.Identity.ExpiresAt = time.Now().Add(48 * time.Hour)
+	if err := runnerauth.Save(identityPath, file); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readRunnerConfiguration(cfg.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := buildGlobalDispatchPools(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	level := &slog.LevelVar{}
+	manager := &globalReloadManager{}
+	registry := project.NewRegistry()
+	runtime := remoterunner.NewConfigOwner(cfg, func(next globalconfig.Config) error { return applyGlobalRuntimeConfig(gate, level, next) })
+	runtime.Attach(manager, func(projects []globalconfig.Project) { syncGlobalDispatchProjects(gate, projects, registry) })
+	ctx, cancel := context.WithCancel(t.Context())
+	done := startGlobalConfigWatcher(ctx, cfg, manager, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, nil, func(r *globalConfigReloader) { r.applyConfiguration = runtime.ApplyFile })
+	if done == nil {
+		cancel()
+		t.Fatal("reload owner did not start")
+	}
+	defer func() { cancel(); waitGlobalConfigWatcher(done) }()
+	owner := runnerCapacityOwner(cfg, runtime.Current)
+	now := time.Now()
+	reported := 0
+	transport := readinessRoundTripper(func(req *http.Request) (*http.Response, error) {
+		response := httptest.NewRecorder()
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case req.URL.Path == "/api/v2/capabilities":
+			_ = json.NewEncoder(response).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerCapacityCapability}})
+		case strings.HasSuffix(req.URL.Path, "/heartbeat"):
+			var body struct {
+				Capacity int `json:"capacity"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				return nil, err
+			}
+			reported = body.Capacity
+			_ = json.NewEncoder(response).Encode(runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Example", State: "active", CapacityLimit: 20, ProjectIDs: file.Identity.ProjectIDs}.Normalized()})
+		case strings.HasSuffix(req.URL.Path, "/projects/prj_test"):
+			_ = json.NewEncoder(response).Encode(tracker.NativeProject{Profile: "native"})
+		default:
+			return nil, fmt.Errorf("unexpected Hub request: %s", req.URL.Path)
+		}
+		return response.Result(), nil
+	})
+	client, err := hubclient.New(hubclient.Config{URL: file.HubURL, IdentityFile: identityPath, HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"native": "prj_test"},
+		Machine:           hubclient.Machine{ID: file.Identity.MachineID, Hostname: "example", Version: "test", Capacity: 2},
+		HeartbeatInterval: time.Second, LeaseTTL: time.Minute, Now: func() time.Time { return now }, CapacityConfiguration: owner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCapacity := func(want int) {
+		t.Helper()
+		testenv.WaitUntil(t, ctx, func() error {
+			report := owner(ctx, nil)
+			if report == nil || report.RuntimeLimit != want || report.Constraint != "" {
+				return fmt.Errorf("capacity not applied: %+v", report)
+			}
+			return nil
+		})
+		if snapshots := gate.PoolSnapshots(); len(snapshots) != 1 || snapshots[0].Capacity != want {
+			t.Fatalf("dispatch pools = %+v", snapshots)
+		}
+		now = now.Add(2 * time.Second)
+		if err := source.Heartbeat(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if reported != want {
+			t.Fatalf("heartbeat capacity = %d, want %d", reported, want)
+		}
+	}
+	assertCapacity(2)
+	for _, capacity := range []int{6, 1} {
+		report := owner(ctx, nil)
+		result := owner(ctx, &runnerauth.CapacityRequest{ExpectedConfigRevision: report.Revision, Capacity: capacity, Backend: "codex"})
+		if result == nil || result.LocalLimit != capacity {
+			t.Fatalf("capacity save = %+v", result)
+		}
+		assertCapacity(capacity)
+	}
+	routed := runtime.Current()
+	routed.Projects = []globalconfig.Project{{ID: "native", Weight: 1, Paused: true}}
+	routed.Client.NativeProjects = map[string]string{"native": "prj_test"}
+	if err := runtime.ApplyProjects(ctx, routed); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := readRunnerConfiguration(cfg.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved.Global.MaxConcurrentAgents, saved.Client.Capacity, saved.LogLevel = 4, 4, "debug"
+	saved.Client.NativeProjects = nil
+	if err := globalconfig.Write(cfg.Path, saved); err != nil {
+		t.Fatal(err)
+	}
+	assertCapacity(4)
+	if level.Level() != slog.LevelDebug {
+		t.Fatalf("log level = %s", level.Level())
+	}
+	if current := runtime.Current(); len(current.Projects) != 1 || current.Projects[0].ID != "native" || current.Client.NativeProjects["native"] != "prj_test" {
+		t.Fatalf("file reload lost Hub routing: %+v", current.Projects)
+	}
+	routed.Projects[0].Paused = false
+	if err := runtime.ApplyProjects(ctx, routed); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.Current().Global.MaxConcurrentAgents; got != 4 {
+		t.Fatalf("Hub refresh reverted reloaded capacity: %d", got)
+	}
+	assertCapacity(4)
+	saved.Global.AgentPools = []globalconfig.AgentPool{{Name: "dedicated", MaxConcurrentAgents: 2}}
+	if _, err := runtime.ApplyFile(ctx, saved); err != nil {
+		t.Fatal(err)
+	}
+	routed.Projects[0].Pool = "dedicated"
+	if err := runtime.ApplyProjects(ctx, routed); err != nil {
+		t.Fatal(err)
+	}
+	if got := gate.PoolSnapshotFor("native").Name; got != "dedicated" {
+		t.Fatalf("Hub project pool = %s", got)
+	}
+	if _, err := runtime.ApplyFile(ctx, saved); err != nil {
+		t.Fatal(err)
+	}
+	if got := gate.PoolSnapshotFor("native").Name; got != "dedicated" {
+		t.Fatalf("reloaded project pool = %s", got)
+	}
+	routed.Projects[0].Pool = "default"
+	if err := runtime.ApplyProjects(ctx, routed); err != nil {
+		t.Fatal(err)
+	}
+	if got := gate.PoolSnapshotFor("native").Name; got != "default" {
+		t.Fatalf("refreshed project pool = %s", got)
+	}
+}
+
+type capacityMutationContext struct {
+	deadline  func() (time.Time, bool)
+	done      func() <-chan struct{}
+	err       func() error
+	value     func(any) any
+	once      sync.Once
+	beforeErr func()
+}
+
+func (c *capacityMutationContext) Err() error {
+	c.once.Do(c.beforeErr)
+	return c.err()
+}
+
+func (c *capacityMutationContext) Deadline() (time.Time, bool) {
+	return c.deadline()
+}
+
+func (c *capacityMutationContext) Done() <-chan struct{} {
+	return c.done()
+}
+
+func (c *capacityMutationContext) Value(key any) any {
+	return c.value(key)
+}
+
+// Compare all persisted settings; the parser also records whether implicit
+// update defaults were made explicit by a write, which is not a setting change.
+func capacityConfigContent(t *testing.T, cfg globalconfig.Config) string {
+	t.Helper()
+	raw, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestRunnerStorageConstraint(t *testing.T) {
+	for _, tt := range []struct {
+		name                     string
+		bytes                    int
+		cacheFree, workspaceFree uint64
+		probeError               bool
+		want                     string
+	}{
+		{name: "below target", bytes: 100, cacheFree: 50 << 30, workspaceFree: 50 << 30},
+		{name: "recent cache growth", bytes: 2048, cacheFree: 50 << 30, workspaceFree: 50 << 30},
+		{name: "cache disk pressure", bytes: 100, cacheFree: 1 << 30, workspaceFree: 50 << 30, want: "reserve"},
+		{name: "workspace disk pressure", bytes: 100, cacheFree: 50 << 30, workspaceFree: 1 << 30, want: "reserve"},
+		{name: "disk observation failed", bytes: 100, probeError: true, want: "unavailable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, workspace := t.TempDir(), t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, "00"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			entry := filepath.Join(root, "00", strings.Repeat("0", 64)+"-d")
+			contents := []byte(strings.Repeat("x", tt.bytes))
+			if err := os.WriteFile(entry, contents, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "README"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+			if err := os.Chtimes(entry, now, now); err != nil {
+				t.Fatal(err)
+			}
+			policy := toolcache.Policy{MaxBytes: 1024}
+			if _, err := toolcache.TrimWithReport(t.Context(), root, policy, now); err != nil {
+				t.Fatal(err)
+			}
+			cfg := globalconfig.Config{WorkspaceRoot: workspace}
+			cfg.Global.Cache = policy
+			paths := toolcache.Paths{Build: root}
+			probe := func(path string) (uint64, uint64, error) {
+				if tt.probeError {
+					return 0, 0, errors.New("unavailable")
+				}
+				free := tt.cacheFree
+				if path == workspace {
+					free = tt.workspaceFree
+				}
+				return free, 1 << 40, nil
+			}
+			got := runnerStorageConstraintForPaths(cfg, paths, probe)
+			if (tt.want == "" && got != "") || (tt.want != "" && !strings.Contains(got, tt.want)) {
+				t.Fatalf("constraint=%q want %q", got, tt.want)
+			}
+			retained, err := os.ReadFile(entry)
+			if err != nil || string(retained) != string(contents) {
+				t.Fatalf("recent output was changed: %v", err)
+			}
+			if tt.name == "recent cache growth" {
+				if _, err := toolcache.TrimWithReport(t.Context(), root, policy, now.Add(49*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(entry); !os.IsNotExist(err) {
+					t.Fatalf("old output was not safely expired: %v", err)
+				}
+				if got := runnerStorageConstraintForPaths(cfg, paths, probe); got != "" {
+					t.Fatalf("capacity did not recover after safe expiry: %s", got)
+				}
+			}
+		})
+	}
+}

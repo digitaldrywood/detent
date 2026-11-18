@@ -1,0 +1,120 @@
+package hubserver
+
+import (
+	"context"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
+)
+
+func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, issue tracker.NativeIssue, request tracker.Transition) (*leasestore.RecordedRecovery, error) {
+	if request.BlockerAttemptID == "" || request.PolicyID == "" {
+		return nil, tracker.ErrStaleFencingToken
+	}
+	snapshot, err := s.readNativeRecoveryAttemptSnapshot(ctx, scope, string(issue.WorkItemID), row.ID, request.BlockerAttemptID)
+	if err != nil {
+		return nil, err
+	}
+	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.Clock())
+	if err != nil {
+		return nil, err
+	}
+	var lane eventstore.Event
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(eventstore.WorkflowTransitionReader)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		bound, err := r.LeasePolicy(ctx, attempt.LeaseID)
+		if err != nil {
+			return err
+		}
+		current, err := r.ProjectPolicy(ctx, scope.Project)
+		if err != nil {
+			return err
+		}
+		if bound.ProjectID != scope.Project || bound.PolicyID != attempt.PolicyID || request.PolicyID != bound.PolicyID && request.PolicyID != current.PolicyID {
+			return tracker.ErrStaleFencingToken
+		}
+		lane, err = reader.LatestWorkflowTransition(ctx, scope.Project, issue.WorkItemID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	report, err := content.Event(ctx, snapshot.Event)
+	if err != nil {
+		return nil, err
+	}
+	transition, err := content.Event(ctx, lane)
+	if err != nil {
+		return nil, err
+	}
+	_, prior, valid := tracker.RecordedNativeBlockers(issue, []tracker.NativeAttempt{attempt}, []tracker.CollaborationEvent{report, transition})
+	if !valid || prior != request.State || request.LeaseID != attempt.LeaseID || request.FencingToken != attempt.FencingToken {
+		return nil, tracker.ErrStaleFencingToken
+	}
+	disposition := attempt.Disposition
+	if disposition.HumanAction || len(disposition.BlockerEvidence) == 0 {
+		return nil, corestore.ErrRevisionConflict
+	}
+	instance := disposition.ReasonCode == "" || disposition.ReasonCode == "instance_limitation"
+	for _, blocker := range disposition.BlockerEvidence {
+		instance = instance && blocker.Owner == workpad.BlockerOwnerInstance
+	}
+	refs := workpad.IssueDependencyRefs(&workpad.Signal{Status: disposition.Status, ReasonCode: disposition.ReasonCode, Blockers: disposition.BlockerEvidence}, string(scope.Project))
+	if !instance && len(refs) == 0 || len(refs) > corestore.MaxPageSize {
+		return nil, corestore.ErrRevisionConflict
+	}
+	prepared := &leasestore.RecordedRecovery{ProjectID: scope.Project, WorkItemID: issue.WorkItemID, Attempt: snapshot.Attempt, ReportEventID: snapshot.Event.ID, ReportSequence: snapshot.Event.Sequence, ReportRevision: max(snapshot.Event.EventRevision, snapshot.Attempt.WorkItemRevision), WorkflowEventID: lane.ID, WorkflowSequence: lane.Sequence, WorkflowObjectKey: lane.PayloadObjectKey, DependencyNumbers: []int64{}}
+	for _, ref := range refs {
+		number, err := strconv.ParseInt(strings.TrimPrefix(ref, string(scope.Project)+"#"), 10, 64)
+		if err != nil || number <= 0 {
+			return nil, corestore.ErrRevisionConflict
+		}
+		prepared.DependencyNumbers = append(prepared.DependencyNumbers, number)
+	}
+	return prepared, nil
+}
+
+func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, recovery leasestore.RecordedRecovery) error {
+	now := s.config.Clock().UTC()
+	credential, err := w.AccessCredential(ctx, scope.Credential.ID)
+	if err != nil {
+		return err
+	}
+	if credential.OrganizationID != scope.Organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.Credential.Hash, now) {
+		return hubscope.RunnerUnauthorized()
+	}
+	identity, err := w.RunnerIdentityByCredential(ctx, credential.ID)
+	if err != nil {
+		return err
+	}
+	if !runnerIdentityMatchesHeldLease(identity, scope.Organization, scope.Credential.Runner.RunnerID, credential.ID, scope.Credential.Runner.MachineID, now) || identity.State != "active" || !slices.Contains(identity.Operations, runnerauth.Claim) || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
+		return tracker.ErrMachineNotFound
+	}
+	allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return tracker.ErrMachineNotFound
+	}
+	writer, ok := w.(leasestore.RecordedRecoveryWriter)
+	if !ok {
+		return hubapi.NativeWorkItemStorageUnavailable()
+	}
+	recovery.Now = now
+	return writer.AuthorizeRecordedRecovery(ctx, recovery)
+}

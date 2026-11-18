@@ -1,0 +1,500 @@
+package hubserver
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Claims) (hubapi.APICredential, int, error) {
+	return s.entryAccessKeyCredential(ctx, claims)
+}
+
+func (s *Service) auditEntryKey(ctx context.Context, _ hostedExecer, audit *hubscope.EntryKeyAudit, status int) error {
+	return s.recordEntryAccessKeyAudit(ctx, audit, status)
+}
+
+func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition, error) {
+	if s.config.TenantRepository == nil {
+		return (hostedOperatorExecutor{s}).ListTools(ctx)
+	}
+	definitions, err := nativeOperatorExecutor{service: s}.ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	projects, err := (hubProjectExecutor{service: s}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fleet, err := (hubFleetExecutor{service: s}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	definitions = append(definitions, projects...)
+	definitions = append(definitions, fleet...)
+	workspace, err := (workspaceOperatorExecutor{server: s}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, definition := range workspace {
+		if entryKeyWorkspaceTool(definition.Name) {
+			definitions = append(definitions, definition)
+		}
+	}
+
+	contextTools, err := (hostedContextExecutor{service: s}).listTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	definitions = append(definitions, contextTools...)
+	if catalog, err := operatorCatalog(ctx); err == nil && catalog.credential.HostedRole != "account" {
+		for _, definition := range operatortool.ThreadCatalog() {
+			required := apikey.ScopeRead
+			if !definition.Annotations.ReadOnly {
+				required = apikey.ScopeWrite
+			}
+			if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, Action: definition.Name}); err == nil {
+				definitions = append(definitions, definition)
+			}
+		}
+	}
+	changes, err := (hubOperatorExecutor{service: s}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	definitions = append(definitions, changes...)
+
+	if s.administration != nil {
+		administration, err := s.administrationCatalog(ctx)
+		if err != nil {
+			return nil, err
+		}
+		definitions = append(definitions, administration...)
+	}
+	definitions = append(definitions, s.entryKeyBillingTools(ctx)...)
+	supported := make([]operatortool.Definition, 0)
+	seen := make(map[string]bool)
+	for _, definition := range definitions {
+		if entryKeyToolSupported(definition.Name) && !seen[definition.Name] {
+			seen[definition.Name] = true
+			supported = append(supported, definition)
+		}
+	}
+	return supported, nil
+}
+
+func (s *Service) entryKeyBillingTools(ctx context.Context) []operatortool.Definition {
+	definitions := []operatortool.Definition{}
+	for _, definition := range operatortool.BillingCatalog() {
+		if !entryKeyToolSupported(definition.Name) {
+			continue
+		}
+		kind := "billing"
+		switch definition.Name {
+		case operatortool.HostedPlan:
+			kind = "plan"
+		case operatortool.HostedUsage:
+			kind = ""
+		}
+		if _, err := s.catalogBillingCredential(ctx, kind, !definition.Annotations.ReadOnly); err != nil {
+			continue
+		}
+		if (definition.Name == operatortool.CreditCheckout || definition.Name == operatortool.CreditAutoFund) && !s.creditAvailable() {
+			continue
+		}
+		if cfg := s.hostedBillingConfig(); definition.Name == operatortool.CreditCheckout && cfg != nil && cfg.CheckoutDisabled {
+			continue
+		}
+		if !definition.Annotations.ReadOnly && s.hostedBillingConfig() == nil {
+			continue
+		}
+		definitions = append(definitions, definition)
+	}
+	return definitions
+}
+
+func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool, error) {
+	if s.config.TenantRepository == nil {
+		definitions, err := s.entryKeyTools(ctx)
+		if err != nil {
+			return false, err
+		}
+		return entryKeyHasDefinition(definitions, name), nil
+	}
+	if entryKeyWorkspaceTool(name) {
+		definitions, err := (workspaceOperatorExecutor{server: s}).ListTools(ctx)
+		return entryKeyHasDefinition(definitions, name), err
+	}
+	if operatortool.IsAttachmentTool(name) {
+		required := apikey.ScopeWrite
+		if name == operatortool.ReadAttachment || name == operatortool.ReadAttachmentMetadata {
+			required = apikey.ScopeRead
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, ResourceKind: "work_item", Action: name})
+		return err == nil, hubscope.OperatorAuthorizationError(err)
+	}
+	if !entryKeyToolSupported(name) {
+		return false, nil
+	}
+	if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+		return false, err
+	}
+	catalog, err := operatorCatalog(ctx)
+	if err != nil {
+		return false, err
+	}
+	if operatortool.IsAdministration(name) {
+		if s.administration == nil {
+			return false, nil
+		}
+		definitions, err := s.administrationCatalog(ctx)
+		return entryKeyHasDefinition(definitions, name), err
+	}
+	if hubFleetTool(name) {
+		definitions, err := (hubFleetExecutor{service: s}).ListTools(ctx)
+		return entryKeyHasDefinition(definitions, name), err
+	}
+	if definition, ok := operatortool.Lookup(name); ok && (definition.Meta.Toolset == "projects" || definition.Meta.Toolset == "local_projects") {
+		definitions, err := (hubProjectExecutor{service: s}).ListTools(ctx)
+		return entryKeyHasDefinition(definitions, name), err
+	}
+	if _, ok := operatortool.ChangeDefinition(name); ok {
+		definitions, err := (hubOperatorExecutor{service: s}).ListTools(ctx)
+		return entryKeyHasDefinition(definitions, name), err
+	}
+
+	switch name {
+	case operatortool.ExplainItem, operatortool.BoardState, operatortool.Dashboard, operatortool.WorkBoard:
+		return catalog.credential.HostedRole != "account", nil
+	case operatortool.BillingUsage, operatortool.HostedPlan, operatortool.HostedUsage, operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
+		return entryKeyHasDefinition(s.entryKeyBillingTools(ctx), name), nil
+	case operatortool.BoardReceipt, operatortool.BoardSession, operatortool.WorkList, operatortool.WorkItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings:
+		_, found := entryKeyDefinition(operatortool.WorkReadCatalog(), name)
+		return found && catalog.credential.HostedRole != "account", nil
+	case operatortool.StopRun, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.VerifyFix, operatortool.EditComment, operatortool.RestoreItem, operatortool.TransferItem, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.SetDependency:
+		definition, found := entryKeyDefinition(operatortool.CommandCatalog(), name)
+		if !found {
+			return false, nil
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: projectToolScope(name, definition.Annotations.ReadOnly), ResourceKind: "work_item", Action: name})
+		return err == nil, hubscope.OperatorAuthorizationError(err)
+	case operatortool.AppUpdates, operatortool.AppBootstrapPayload:
+		if s.config.Hosted == nil || s.database == nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || hubscope.OperatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+			return false, nil
+		}
+		_, found := entryKeyDefinition(operatortool.HostedContextCatalog(), name)
+		if !found {
+			return false, nil
+		}
+		requirement := operatortool.Requirement{Scope: apikey.ScopeRead}
+		if name == operatortool.AppUpdates {
+			requirement.ResourceKind = "runners"
+			allowed, err := s.appAllRunnerGrants(ctx, catalog.credential)
+			if err != nil {
+				return false, hubscope.OperatorAuthorizationError(err)
+			}
+			if !allowed {
+				return false, nil
+			}
+		}
+		_, err := s.authorizeCatalog(ctx, requirement)
+		return err == nil, hubscope.OperatorAuthorizationError(err)
+	case "list_threads", "get_thread", "create_thread", "post_to_thread", "resolve_thread":
+		if catalog.credential.HostedRole == "account" {
+			return false, nil
+		}
+		if _, found := entryKeyDefinition(operatortool.ThreadCatalog(), name); !found {
+			return false, nil
+		}
+		required := apikey.ScopeRead
+		if name != "list_threads" && name != "get_thread" {
+			required = apikey.ScopeWrite
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, Action: name})
+		return err == nil, hubscope.OperatorAuthorizationError(err)
+	case operatortool.ListComments:
+		if _, found := operatortool.Lookup(name); !found {
+			return false, nil
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ResourceKind: "comment", Action: name})
+		return err == nil, hubscope.OperatorAuthorizationError(err)
+	default:
+		return false, nil
+	}
+}
+
+func entryKeyToolSupported(name string) bool {
+	if operatortool.IsAdministration(name) {
+		return true
+	}
+	if hubFleetTool(name) {
+		return true
+	}
+	if definition, ok := operatortool.Lookup(name); ok && (definition.Meta.Toolset == "projects" || definition.Meta.Toolset == "local_projects") {
+		return name != "repository_freshness" && name != "revoke_project_policy"
+	}
+	switch name {
+	case operatortool.GetAttemptDiff, operatortool.GetWorkItemDiff, operatortool.GetNativeRun, operatortool.ChangeViewedFiles, operatortool.ViewChangeFile, operatortool.ApproveChangeReviewPolicy, operatortool.GetChange, operatortool.GetChangeVersion, operatortool.DiscussChange, operatortool.ListWorkItemPullRequests, operatortool.GetChangeReviewPolicy, operatortool.ArtifactServices, operatortool.ArtifactReferences, operatortool.GetArtifactReference, operatortool.ArtifactAccess, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BillingUsage, operatortool.HostedPlan, operatortool.HostedUsage, operatortool.AssociateReleasePick, operatortool.PublishReleasePick, operatortool.BindArtifactService:
+		return true
+	}
+
+	if entryKeyWorkspaceTool(name) || operatortool.IsAttachmentTool(name) {
+		return true
+	}
+	switch name {
+	case operatortool.Reports, operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerHost, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity:
+		return true
+	case operatortool.BoardState, operatortool.Dashboard, operatortool.WorkBoard, operatortool.StopRun, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.VerifyFix:
+		return true
+	case operatortool.OrganizationSession, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationEdit, operatortool.InvitationResend, operatortool.MemberRole, operatortool.MemberGrant:
+		return true
+	case operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings, operatortool.BoardSessionHistory, operatortool.ExplainItem, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate, operatortool.TransferItem:
+		return true
+	case operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
+		return true
+	case "set_project_icon", "set_organization_logo", "approve_project_policy", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", "save_onboarding", operatortool.GetOrganizationModelSelection, operatortool.UpdateOrganizationModelSelection, operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.Activity:
+		return true
+	case operatortool.EditComment, operatortool.RestoreItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity:
+		return true
+	case "list_projects", "get_native_project", "get_project_policy", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.SetDependency, operatortool.ListComments, operatortool.ListChanges, operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange, "list_threads", "get_thread", "create_thread", "post_to_thread", "resolve_thread":
+		return true
+	default:
+		return false
+	}
+}
+
+func entryKeyDefinition(definitions []operatortool.Definition, name string) (operatortool.Definition, bool) {
+	for _, definition := range definitions {
+		if definition.Name == name {
+			return definition, true
+		}
+	}
+	return operatortool.Definition{}, false
+}
+
+func entryKeyHasDefinition(definitions []operatortool.Definition, name string) bool {
+	_, found := entryKeyDefinition(definitions, name)
+	return found
+}
+
+func (s *Service) entryKeyCatalog(c echo.Context) error {
+	definitions, err := s.entryKeyTools(c.Request().Context())
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, definitions)
+}
+
+func (s *Service) entryKeyAdmin(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
+	defer cancel()
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" || claims.Role != "owner" && claims.Role != "admin" {
+		return s.hostedJSONError(c, http.StatusForbidden, "Organization administrator service access is required")
+	}
+	member, err := s.activeAccessMember(ctx, claims.Subject)
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
+	}
+	role := member.Role
+	if err != nil || role != "owner" && role != "admin" {
+		return s.hostedJSONError(c, http.StatusForbidden, "Active organization administrator membership is required")
+	}
+	return c.NoContent(http.StatusOK)
+}
+
+func (s *Service) entryKeyCall(c echo.Context) error {
+	var call struct {
+		Name         string          `json:"name"`
+		Arguments    json.RawMessage `json:"arguments"`
+		ConnectionID string          `json:"connection_id"`
+		ClientName   string          `json:"client_name,omitempty"`
+	}
+	if err := hubapi.DecodeAPIJSON(c, &call); err != nil {
+		return s.invalidAPIRequest(c, err)
+	}
+	if audit := hubscope.EntryKeyAuditFrom(c.Request().Context()); audit != nil {
+		audit.Operation = call.Name
+	}
+	if call.ConnectionID == "" || len(call.ConnectionID) > 256 || len(call.ClientName) > 256 {
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+	}
+	if call.ClientName == "" {
+		call.ClientName = "shared-entry"
+	}
+	ctx := operatortool.BindConnection(c.Request().Context(), call.ConnectionID, call.ClientName)
+	if call.Name != operatortool.WorkList {
+		if err := (hostedOperatorExecutor{s}).OpenConnection(ctx); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	credential, err := operatorRequestCredential(c)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	definition, found := operatortool.Lookup(call.Name)
+	if !found {
+		return s.refusedAPIError(c, http.StatusForbidden, "tool_unavailable", "This tool is unavailable in the target organization", apikey.Refusal{Code: "tool_unavailable", Message: "This tool is unavailable in the target organization"})
+	}
+	permission := projectToolScope(call.Name, definition.Annotations.ReadOnly)
+	if operatortool.IsAdministration(call.Name) {
+		permission = operatortool.AdministrationScope(call.Name)
+	}
+	if !hubscope.HostedKeyAllows(credential.HostedKeyScope, permission) {
+		return s.refusedAPIError(c, http.StatusForbidden, "key_permission_denied", "The key permission does not allow this call", apikey.Refusal{Code: "key_permission_denied", Message: "The key permission does not allow this call"})
+	}
+	if !hubscope.HostedRoleAllows(credential.HostedRole, permission, call.Name) {
+		return s.refusedAPIError(c, http.StatusForbidden, "role_denied", "The current organization role does not allow this call", apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
+	}
+	var selector struct {
+		ProjectID  string `json:"project_id"`
+		Identifier string `json:"identifier"`
+		Reference  string `json:"reference"`
+	}
+	if json.Unmarshal(call.Arguments, &selector) != nil {
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+	}
+	resource := selector.Identifier
+	if resource == "" {
+		resource = selector.Reference
+	}
+	if audit := hubscope.EntryKeyAuditFrom(ctx); audit != nil {
+		audit.Project, audit.Resource = selector.ProjectID, resource
+	}
+	if selector.ProjectID != "" && !credential.EntryKey.Allows(selector.ProjectID) {
+		return s.refusedAPIError(c, http.StatusForbidden, "key_project_denied", "The project is outside this key's access context", apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
+	}
+	available, err := s.entryKeyToolAvailable(ctx, call.Name)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if !available {
+		return s.refusedAPIError(c, http.StatusForbidden, "tool_unavailable", "The target organization's role or plan does not provide this tool", apikey.Refusal{Code: "tool_unavailable", Message: "The target organization's role or plan does not provide this tool"})
+	}
+	if audit := hubscope.EntryKeyAuditFrom(ctx); audit != nil {
+		if err := s.auditEntryKey(ctx, nil, audit, 0); err != nil {
+			return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
+		}
+	}
+	result, err := (hostedOperatorExecutor{s}).Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
+	if err != nil {
+		var allowance *operatortool.AllowanceError
+		if errors.As(err, &allowance) {
+			return s.refusedAPIError(c, http.StatusTooManyRequests, allowance.Code, allowance.Message, allowance)
+		}
+		var conflict *operatortool.ConflictError
+		if errors.As(err, &conflict) && conflict.Code != "revision_conflict" {
+			return s.refusedAPIError(c, http.StatusConflict, conflict.Code, conflict.Message, conflict)
+		}
+		if errors.Is(err, mutation.ErrConflict) {
+			var revision tracker.Revision
+			if conflict != nil {
+				revision = tracker.Revision(conflict.CurrentRevision)
+			}
+			return s.nativeAPIError(c, hubapi.NativeConflict(revision))
+		}
+		var request *operatortool.RequestError
+		if errors.As(err, &request) {
+			return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, hubapi.APIErrorResponse{Code: request.Code, Message: request.Message})
+		}
+		if errors.Is(err, operatortool.ErrInvalidArguments) {
+			return s.invalidAPIRequest(c, err)
+		}
+		if errors.Is(err, chat.ErrActionNotFound) {
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
+		}
+		var refusal *apikey.Refusal
+		if errors.As(err, &refusal) {
+			return s.nativeAPIError(c, refusal)
+		}
+		return s.nativeAPIError(c, err)
+	}
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSON, result.Content)
+}
+
+func (s *Service) entryKeyProjects(c echo.Context) error {
+	credential, _, err := s.authenticateAPIRequest(c)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	projects, err := s.hostedReadableProjects(c.Request().Context(), credential)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, projects)
+}
+
+func (s *Service) entryKeyAudit(c echo.Context) error {
+	var event struct {
+		KeyID string `json:"key_id"`
+		Owner string `json:"owner"`
+		Event string `json:"event"`
+	}
+	if err := hubapi.DecodeAPIJSON(c, &event); err != nil {
+		return s.invalidAPIRequest(c, err)
+	}
+	if len(event.KeyID) > 256 || event.Owner == "" || len(event.Owner) > 256 || event.Event == "" || len(event.Event) > 128 {
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+	}
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService {
+		return s.hostedJSONError(c, http.StatusForbidden, "Shared service access is required to record key audit events")
+	}
+	now := s.config.Clock()
+	ctx := c.Request().Context()
+	err := s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		_, err := w.RecordAccessAudit(ctx, accessstore.Audit{OrganizationID: s.accessOrganization(), SessionID: event.KeyID, ActualActor: event.Owner, EffectiveUser: event.Owner, Event: event.Event, Route: claims.Path, StartedAt: claims.IssuedAt, ExpiresAt: claims.ExpiresAt, RecordedAt: now, RecordedAtNS: now.UnixNano(), KeyID: event.KeyID, KeyOwner: event.Owner})
+		return err
+	})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) entryKeyContext(c echo.Context) error {
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" {
+		return s.hostedJSONError(c, http.StatusForbidden, "Shared service identity is required to read key context")
+	}
+	member, err := s.activeAccessMember(c.Request().Context(), claims.Subject)
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
+	}
+	local := member.Role
+	if err != nil || !auth.ValidOrganizationRole(local) || !auth.ValidOrganizationRole(claims.Role) {
+		return s.hostedJSONError(c, http.StatusForbidden, "Active organization membership and a valid role are required")
+	}
+	credential := hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: hubapi.LesserHostedRole(local, claims.Role)}
+	projects, err := s.hostedReadableProjects(c.Request().Context(), credential)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, struct {
+		Role     string                `json:"role"`
+		Projects []appBootstrapProject `json:"projects"`
+	}{credential.HostedRole, projects})
+}
+
+func entryKeyWorkspaceTool(name string) bool {
+	if name == operatortool.ActionResult || name == operatortool.ConnectionInfo {
+		return true
+	}
+	_, err := operatortool.WorkspaceDefinition(name)
+	return err == nil
+}

@@ -1,0 +1,198 @@
+package hubserver
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnersession"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+type preparedValidatorReview struct {
+	attempt  leasestore.Attempt
+	event    eventstore.Event
+	session  runnersession.Record
+	change   eventstore.Change
+	issue    corestore.WorkItem
+	evidence validatorReviewEvidence
+}
+
+func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, source eventstore.Version, request tracker.ReviewChange) (*preparedValidatorReview, tracker.MachineID, error) {
+	if scope.Credential.Scope != hubapi.APIScopeWorker || request.Validator == nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
+		machine, err := validateValidatorReviewEvidence(scope, change, version, request, validatorReviewEvidence{})
+		return nil, machine, err
+	}
+	resultID := int64(0)
+	for _, result := range []*gate.ValidatorResult{request.Validator, request.ImplementationReview} {
+		if result != nil {
+			resultID = result.SessionID
+		}
+	}
+	if request.SecurityAudit != nil {
+		resultID = request.SecurityAudit.SessionID
+	}
+	if source.ImplementingSessionID < 0 || source.SourceObjectKey == "" || source.ImplementingMachineID == "" {
+		return nil, "", hubapi.NativePublicInvalid("worker review requires recorded source and review sessions")
+	}
+	p := &preparedValidatorReview{}
+	var rows []eventstore.Evidence
+	var itemVersion eventstore.CollaborationVersion
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		attempt, approved, err := s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), false)
+		if err != nil {
+			return fmt.Errorf("read review authority: %w", err)
+		}
+		p.attempt = attempt
+		if resultID <= 0 {
+			if _, err := validateValidatorReviewEvidence(scope, change, version, request, validatorReviewEvidence{}); err != nil {
+				return err
+			}
+			return hubapi.NativePublicInvalid("worker review requires a recorded review session")
+		}
+		p.change, err = r.Change(ctx, change.ID)
+		if err != nil {
+			return fmt.Errorf("read review change: %w", err)
+		}
+		p.issue, err = r.WorkItem(ctx, scope.Project, change.WorkItemID)
+		if err != nil {
+			return fmt.Errorf("read review issue: %w", err)
+		}
+		itemVersion, err = r.CollaborationVersion(ctx, string(change.WorkItemID), p.issue.Revision)
+		if err != nil {
+			return fmt.Errorf("read review issue version: %w", err)
+		}
+		p.event, err = r.LatestRunEvent(ctx, scope.Project, p.attempt.ID)
+		if err != nil {
+			return fmt.Errorf("read review event: %w", err)
+		}
+		reader, ok := r.(runnersession.Reader)
+		if !ok {
+			return hubapi.NativeRunEventStorageUnavailable()
+		}
+		p.session, err = reader.RunnerSession(ctx, scope.Project, resultID)
+		if err != nil {
+			return fmt.Errorf("read review session: %w", err)
+		}
+		if p.session.AttemptID != p.attempt.ID && p.session.ID == source.ImplementingSessionID && source.ImplementingMachineID == string(scope.Credential.Runner.MachineID) {
+			if request.SecurityAudit != nil {
+				return securityAuditRejection("security audit must come from a session separate from the implementing session under its active execution authority", "execution_session")
+			}
+			refusal := hubapi.NativeInvalid("validator review must come from a session separate from the implementing session under its active execution authority")
+			if request.Validator != nil && request.ImplementationReview == nil {
+				return nativeRejection(refusal, "acceptance_validation", "validator.session_id")
+			}
+			return refusal
+		}
+		if p.session.AttemptID != p.attempt.ID || p.session.IssueID != string(change.WorkItemID) || p.session.PolicyID != approved.PolicyID || p.session.CompletedAt == nil || p.session.FinalState != "completed" {
+			return tracker.ErrStaleFencingToken
+		}
+		if request.SecurityAudit != nil && p.session.Role != "security_audit" {
+			return securityAuditRejection("security audit requires a recorded audit session", "execution_session")
+		}
+		reviews, ok := r.(eventstore.ValidatorReviewReader)
+		if !ok {
+			return hubapi.NativeRunEventStorageUnavailable()
+		}
+		var complete bool
+		rows, complete, err = reviews.ValidatorReviewEvidence(ctx, change.ID, version.ID, p.change.EvidenceSequence, scope.Credential.Runner.MachineID, resultID)
+		if err != nil {
+			return fmt.Errorf("read review evidence: %w", err)
+		}
+		if !complete {
+			return hubapi.NativeRunEventStorageUnavailable()
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	session, err := s.readRunnerSessionPayload(ctx, p.session)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := s.verifyRunnerSessionFinalization(ctx, scope, p.session, session); err != nil {
+		if errors.Is(err, runnersession.ErrFinalizationIncomplete) {
+			return nil, "", hubapi.NativePublicInvalid("session finalization is incomplete")
+		}
+		return nil, "", err
+	}
+	p.evidence.issue, err = s.hydrateWorkItemRecord(ctx, p.issue, itemVersion)
+	if err != nil {
+		return nil, "", err
+	}
+	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	event, err := content.Event(ctx, p.event)
+	if err != nil {
+		return nil, "", err
+	}
+	if event.Data.Run == nil || event.Data.Run.AttemptID != p.attempt.ID || event.Data.Run.Sequence != p.attempt.Sequence || event.Data.Run.MachineID != scope.Credential.Runner.MachineID {
+		return nil, "", tracker.ErrStaleFencingToken
+	}
+	p.evidence.current = *event.Data.Run
+	p.evidence.sourceSession, p.evidence.sourceMachine = source.ImplementingSessionID, source.ImplementingMachineID
+	for _, row := range rows {
+		if row.OrganizationID != scope.Organization || row.ChangeID != change.ID || row.Kind != "review" || row.VersionID == nil || *row.VersionID != version.ID || row.Sequence > p.change.EvidenceSequence {
+			return nil, "", eventstore.ErrInvalidRecord
+		}
+		raw, err := content.Evidence(ctx, row)
+		if err != nil {
+			return nil, "", err
+		}
+		review, err := eventstore.DecodeChangeReview(row, raw)
+		if err != nil {
+			return nil, "", err
+		}
+		p.evidence.reviews = append(p.evidence.reviews, review)
+	}
+	if request.SecurityAudit != nil {
+		p.evidence.auditDispositions, p.evidence.auditDispositionRows, err = s.prepareValidatorAuditDispositions(ctx, scope, change.ID, request.SecurityAudit.Run)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	machine, err := validateValidatorReviewEvidence(scope, change, version, request, p.evidence)
+	return p, machine, err
+}
+
+func (s *Service) lockValidatorReviewRecord(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.ReviewChange, p *preparedValidatorReview, held heldRunnerSessionAuthority, current eventstore.Change) error {
+	if p == nil {
+		return nil
+	}
+	attempt, item, _, err := s.runnerSessionFenceHeld(ctx, w, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), true, &held)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(attempt, p.attempt) {
+		return corestore.ErrRevisionConflict
+	}
+	if current.Revision != p.change.Revision || current.EvidenceSequence != p.change.EvidenceSequence || !reflect.DeepEqual(current.CurrentVersionID, p.change.CurrentVersionID) {
+		return corestore.ErrRevisionConflict
+	}
+	if item.Revision != p.issue.Revision {
+		return corestore.ErrRevisionConflict
+	}
+	reader, ok := w.(runnersession.Reader)
+	if !ok {
+		return hubapi.NativeRunEventStorageUnavailable()
+	}
+	session, err := reader.RunnerSession(ctx, scope.Project, p.session.ID)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(session, p.session) {
+		return corestore.ErrRevisionConflict
+	}
+	if request.SecurityAudit != nil {
+		return lockValidatorAuditDispositions(ctx, w, scope, request.SecurityAudit.Run.ID, p.evidence.auditDispositionRows)
+	}
+	return nil
+}

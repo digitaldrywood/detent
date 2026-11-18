@@ -1,0 +1,90 @@
+-- name: ReadSummaryUsage :many
+WITH usage AS (
+ SELECT u.organization_id,u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,'USD'::text AS currency
+ FROM report_usage_current u
+ WHERE u.organization_id=sqlc.arg(organization_id) AND u.project_id=sqlc.arg(project_id) AND u.period<sqlc.arg(end_at)
+ AND (u.period>=sqlc.arg(start_at) OR EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=u.organization_id AND a.id=u.attempt_id AND i.project_id=u.project_id AND i.native_id=ANY(sqlc.arg(lifetime_ids)::text[])))
+ UNION ALL
+ SELECT u.organization_id,u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency
+ FROM attempt_usage u
+ WHERE u.organization_id=sqlc.arg(organization_id) AND u.project_id=sqlc.arg(project_id) AND u.period<sqlc.arg(end_at)
+ AND (u.period>=sqlc.arg(start_at) OR EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=u.organization_id AND a.id=u.attempt_id AND i.project_id=u.project_id AND i.native_id=ANY(sqlc.arg(lifetime_ids)::text[])))
+ AND NOT EXISTS(SELECT 1 FROM report_usage_current c WHERE c.organization_id=u.organization_id AND c.attempt_id=u.attempt_id)
+)
+SELECT i.native_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency
+FROM usage u JOIN native_attempts a ON a.organization_id=u.organization_id AND a.id=u.attempt_id
+JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id AND i.project_id=u.project_id
+WHERE (sqlc.arg(principal)::text='' OR i.actor_principal_id=sqlc.arg(principal)) AND upper(u.currency)='USD'
+ORDER BY u.period,u.attempt_id,u.provider,u.model LIMIT 100001;
+
+-- name: ReadCompletionCosts :many
+WITH requested AS MATERIALIZED (
+ SELECT p.project_id,p.work_item_id
+ FROM ROWS FROM(unnest(sqlc.arg(project_ids)::text[]),unnest(sqlc.arg(work_item_ids)::text[])) AS p(project_id,work_item_id)
+), items AS MATERIALIZED (
+ SELECT i.project_id,i.native_id AS work_item_id,i.id
+ FROM requested r CROSS JOIN LATERAL (
+  SELECT i.project_id,i.native_id,i.id,i.actor_principal_id FROM issues i
+  WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=r.project_id AND i.native_id=r.work_item_id LIMIT 1
+ ) i
+ WHERE sqlc.arg(principal)::text='' OR i.actor_principal_id=sqlc.arg(principal)
+), attempts AS MATERIALIZED (
+ SELECT i.project_id,i.work_item_id,a.id AS attempt_id
+ FROM items i CROSS JOIN LATERAL (
+  SELECT a.id FROM native_attempts a
+  WHERE a.organization_id=sqlc.arg(organization_id) AND a.issue_id=i.id
+  ORDER BY a.started_at,a.id LIMIT 50001
+ ) a
+ LIMIT 50001
+), source_rows AS MATERIALIZED (
+ SELECT a.project_id,a.work_item_id,a.attempt_id,c.source_key,c.revision,
+ u.revision AS projected_revision,u.complete,u.period,u.cost_estimate,
+ c.project_id=a.project_id AND u.project_id=a.project_id AND u.attempt_id=a.attempt_id AS scoped
+ FROM attempts a CROSS JOIN LATERAL (
+  SELECT c.source_key,c.project_id,c.revision FROM cost_sources c
+  WHERE c.organization_id=sqlc.arg(organization_id) AND c.resource_id=a.attempt_id AND c.bucket='runner_api'
+  ORDER BY c.source_key LIMIT 100001
+ ) c
+ LEFT JOIN report_usage_current u ON u.organization_id=sqlc.arg(organization_id) AND u.source_key=c.source_key
+ LIMIT 100001
+), source_costs AS MATERIALIZED (
+ SELECT attempt_id,count(*) AS source_count,
+ bool_and(coalesce(complete AND projected_revision=revision AND scoped,false)) AS complete,
+ coalesce(sum(cost_estimate) FILTER(WHERE scoped AND period<sqlc.arg(current_to)::timestamptz),0)::double precision AS cost,
+ coalesce(sum(cost_estimate) FILTER(WHERE scoped AND period<sqlc.arg(prior_to)::timestamptz),0)::double precision AS prior_cost
+ FROM source_rows GROUP BY attempt_id
+), import_attempts AS MATERIALIZED (
+ SELECT a.* FROM attempts a LEFT JOIN source_costs c ON c.attempt_id=a.attempt_id WHERE c.attempt_id IS NULL
+), import_rows AS MATERIALIZED (
+ SELECT a.attempt_id,a.project_id=u.project_id AS scoped,u.period,u.cost_estimate,u.currency
+ FROM import_attempts a CROSS JOIN LATERAL (
+  SELECT u.project_id,u.period,u.cost_estimate,u.currency FROM attempt_usage u
+  WHERE u.organization_id=sqlc.arg(organization_id) AND u.attempt_id=a.attempt_id
+  ORDER BY u.period,u.provider,u.model LIMIT 100001
+ ) u
+ LIMIT 100001
+), import_costs AS MATERIALIZED (
+ SELECT attempt_id,count(*) AS actual,
+ bool_and(scoped AND upper(currency)='USD') AS scoped,
+ coalesce(sum(cost_estimate) FILTER(WHERE scoped AND upper(currency)='USD' AND period<sqlc.arg(current_to)::timestamptz),0)::double precision AS cost,
+ coalesce(sum(cost_estimate) FILTER(WHERE scoped AND upper(currency)='USD' AND period<sqlc.arg(prior_to)::timestamptz),0)::double precision AS prior_cost
+ FROM import_rows GROUP BY attempt_id
+), attempt_costs AS MATERIALIZED (
+ SELECT a.project_id,a.work_item_id,
+ CASE WHEN c.attempt_id IS NOT NULL THEN c.cost ELSE coalesce(u.cost,0) END AS cost,
+ CASE WHEN c.attempt_id IS NOT NULL THEN c.prior_cost ELSE coalesce(u.prior_cost,0) END AS prior_cost,
+ CASE WHEN c.attempt_id IS NOT NULL THEN c.complete ELSE coalesce(u.scoped AND u.actual=v.row_count AND v.row_count>0,false) END AS complete
+ FROM attempts a LEFT JOIN source_costs c ON c.attempt_id=a.attempt_id
+ LEFT JOIN import_costs u ON u.attempt_id=a.attempt_id
+ LEFT JOIN report_usage_import_coverage v ON v.organization_id=sqlc.arg(organization_id) AND v.attempt_id=a.attempt_id
+), totals AS MATERIALIZED (
+ SELECT project_id,work_item_id,sum(cost)::double precision AS cost,sum(prior_cost)::double precision AS prior_cost,bool_and(complete) AS complete
+ FROM attempt_costs GROUP BY project_id,work_item_id
+), limits AS MATERIALIZED (
+ SELECT (SELECT count(*) FROM attempts)>50000 OR (SELECT count(*) FROM source_rows)>100000 OR (SELECT count(*) FROM import_rows)>100000 AS exceeded
+)
+SELECT i.project_id,i.work_item_id,
+ coalesce(t.cost,0)::double precision AS cost,coalesce(t.prior_cost,0)::double precision AS prior_cost,
+ coalesce(t.complete,true)::boolean AS complete,(SELECT exceeded FROM limits)::boolean AS exceeded
+FROM items i LEFT JOIN totals t ON t.project_id=i.project_id AND t.work_item_id=i.work_item_id
+ORDER BY i.project_id,i.work_item_id;

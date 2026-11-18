@@ -1,0 +1,323 @@
+import { projectSettingsPath } from "../settings/projectSettings.ts";
+import { hubPath } from "../../runtime/basePath.ts";
+import { billingLabel, ProviderUsage } from "./ProviderUsage.tsx";
+import React from "react";
+
+import { Button } from "../../components/ui/button.tsx";
+import { Radio, RadioGroup } from "../../components/ui/radio-group.tsx";
+import { Badge } from "../../components/ui/badge.tsx";
+import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
+import { RunnerRemoval } from "./RunnerRemoval.tsx";
+import { runnerUpdateFailed } from "./runnerPresentation.ts";
+import type { FleetRunner, RunnerRouting, SuggestedLimit } from "../../contracts/account.ts";
+import { HostLoad, type LoadHostHistory } from "./HostLoad.tsx";
+import { SuggestedLimitBox } from "./SuggestedLimit.tsx";
+import { cn } from "../../lib/utils.ts";
+import { NativeSelect } from "../account/controls.tsx";
+import { PathValue } from "../account/controls.tsx";
+import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
+import { AccountError } from "../account/api.ts";
+import { RunnerProblems } from "./RunnerProblems.tsx";
+import { formatRelativeTime } from "./format.ts";
+import { parseRunnerWindow, serializeRunnerWindow, type RunnerHours } from "./runnerSchedule.ts";
+import { reportsSandbox, runnerAccessOptions, spriteSandboxUnavailableReason } from "./runnerAccess.ts";
+import { RunnerCapacity } from "./RunnerCapacity.tsx";
+
+export interface RunnerProject {
+  readonly id: string;
+  readonly name: string;
+}
+
+const control = "w-full min-w-0 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const dayRanges = days.flatMap((from) => days.map((until) => `${from}-${until}`));
+const takingWork = [["active", "Active", "Takes new work"], ["draining", "Draining", "Finishes what it has"], ["disabled", "Disabled", "Takes nothing"]] as const;
+
+function Section({ title, children }: { readonly title: string; readonly children: React.ReactNode }): React.ReactElement {
+  return <section aria-label={title} className="min-w-0 space-y-3"><h3 className="text-sm font-medium">{title}</h3>{children}</section>;
+}
+
+function runnerRouting(runner: FleetRunner): RunnerRouting {
+  return runner.routing ?? {
+    display_name: runner.display_name, state: runner.state, capacity_limit: runner.capacity_limit,
+    project_ids: [], tags: [],
+    isolation_tier: runner.isolation_tier ?? "sandbox", host_services: [],
+    availability: runner.availability ?? { timezone: "", windows: [], hard_deadline: "" },
+  };
+}
+
+export function RunnerDetailPage({ runner, projects, editable, now, onClose, onSave, onReload, onRemove, currentVersion, suggestion, loadHostHistory }: {
+  readonly currentVersion?: string;
+  readonly onRemove?: (runner: FleetRunner) => Promise<void>;
+  readonly runner: FleetRunner;
+  readonly projects: readonly RunnerProject[];
+  readonly editable: boolean;
+  readonly now?: number;
+  readonly onClose: () => void;
+  readonly onSave?: (runner: FleetRunner, routing: RunnerRouting) => Promise<void>;
+  readonly onReload?: () => Promise<void>;
+  readonly suggestion?: SuggestedLimit;
+  readonly loadHostHistory?: LoadHostHistory;
+}): React.ReactElement {
+  const [removeOpen, setRemoveOpen] = React.useState(false);
+  const [saved, setSaved] = React.useState(false);
+  const canEdit = editable && runner.routing !== undefined && onSave !== undefined;
+  const savedRouting = runnerRouting(runner);
+  const [editableDraft, setDraft] = React.useState(() => runnerRouting(runner));
+  const draft = canEdit ? editableDraft : savedRouting;
+  const [editingRunner, setEditingRunner] = React.useState(runner);
+  const [total, setTotal] = React.useState(String(draft.capacity_limit));
+  const [projectLimits, setProjectLimits] = React.useState<Record<string, string>>(() => Object.fromEntries(Object.entries(draft.project_capacity_limits ?? {}).map(([id, limit]) => [id, String(limit)])));
+  const previousCanEdit = React.useRef(canEdit);
+  const reloading = React.useRef(false);
+  const [hours, setHours] = React.useState<readonly RunnerHours[]>(() => draft.availability.windows.map(parseRunnerWindow));
+  const [scheduled, setScheduled] = React.useState(draft.availability.windows.length > 0);
+  const [tag, setTag] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const spriteSandboxBlocked = Boolean(runner.sprite) && !reportsSandbox(runner.backend_isolation);
+  const knownIds = new Set(projects.map((project) => project.id));
+  const unknownIds = [...new Set([...savedRouting.project_ids, ...draft.project_ids])].filter((id) => !knownIds.has(id));
+  const choices = [...projects, ...unknownIds.map((id) => ({ id, name: "Unavailable project" }))];
+  const timezoneOptions = React.useMemo(() => [...new Set(["", "UTC", draft.availability.timezone, ...Intl.supportedValuesOf("timeZone")])], [draft.availability.timezone]);
+
+  function resetDraft(): void {
+    const next = runnerRouting(runner);
+    setEditingRunner(runner);
+    setDraft(next);
+    setTotal(String(next.capacity_limit));
+    setProjectLimits(Object.fromEntries(Object.entries(next.project_capacity_limits ?? {}).map(([id, limit]) => [id, String(limit)])));
+    setHours(next.availability.windows.map(parseRunnerWindow));
+    setScheduled(next.availability.windows.length > 0);
+    setTag("");
+  }
+  React.useEffect(() => {
+    const wasEditable = previousCanEdit.current;
+    previousCanEdit.current = canEdit;
+    if (canEdit && wasEditable && !reloading.current) return;
+    reloading.current = false;
+    resetDraft();
+  }, [runner.id, runner.revision, canEdit]);
+
+  function update(next: Partial<RunnerRouting>): void {
+    setDraft((current) => ({ ...current, ...next }));
+  }
+  function toggleProject(id: string, checked: boolean): void {
+    update({ project_ids: checked ? [...new Set([...draft.project_ids, id])] : draft.project_ids.filter((value) => value !== id) });
+    if (!checked) setProjectLimits((current) => { const next = { ...current }; delete next[id]; return next; });
+  }
+  function addTags(): readonly string[] {
+    const tags = [...new Set([...draft.tags, ...tag.split(/[\s,]+/).filter(Boolean)])];
+    update({ tags });
+    setTag("");
+    return tags;
+  }
+  function changeHours(index: number, next: Partial<RunnerHours>): void {
+    setHours((current) => current.map((row, i) => i === index ? { ...row, ...next } : row));
+  }
+  async function submit(isolationTier = draft.isolation_tier): Promise<void> {
+    if (!canEdit || saving || onSave === undefined) return;
+    if (runner.revision !== editingRunner.revision) {
+      setError("This runner changed while you were editing. Review the latest settings before saving.");
+      return;
+    }
+    const valid = (value: string) => /^\d+$/.test(value) && Number(value) <= 10000;
+    const allowedLimits = Object.entries(projectLimits).filter(([id]) => draft.scope === "organization" || draft.project_ids.includes(id));
+    if (!valid(total) || allowedLimits.some(([, value]) => value !== "" && !valid(value))) {
+      setError("Enter whole numbers from 0 to 10000. Total runner slots is required; an empty project maximum inherits the total.");
+      return;
+    }
+    const limits = Object.fromEntries(allowedLimits.filter(([, value]) => value !== "").map(([id, value]) => [id, Number(value)]));
+    const savedLimits = draft.project_capacity_limits ?? {};
+    const limitsChanged = Object.keys(limits).length !== Object.keys(savedLimits).length || Object.entries(limits).some(([id, value]) => savedLimits[id] !== value);
+    const next: RunnerRouting = {
+      ...draft, isolation_tier: isolationTier, tags: addTags(), host_services: draft.host_services.map((value) => value.trim()).filter(Boolean),
+      capacity_limit: Number(total),
+      ...(limitsChanged ? { project_capacity_limits: limits } : {}),
+      availability: { ...draft.availability, windows: scheduled ? hours.map(serializeRunnerWindow) : [], hard_deadline: scheduled ? draft.availability.hard_deadline : "" },
+    };
+    setSaving(true);
+    setSaved(false);
+    setError("");
+    try {
+      reloading.current = true;
+      await onSave(editingRunner, next);
+      setSaved(true);
+    } catch (cause) {
+      reloading.current = false;
+      if (cause instanceof AccountError && cause.isConflict && onReload !== undefined) {
+        try {
+          reloading.current = true;
+          await onReload();
+          setError("This runner changed while you were editing. Its settings have been reloaded. Review them and save again.");
+        } catch (reloadCause) {
+          reloading.current = false;
+          setError(`This runner changed while you were editing. Could not reload it: ${reloadCause instanceof Error ? reloadCause.message : "Try again."}`);
+        }
+      } else setError(cause instanceof Error ? cause.message : "Runner settings could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <article aria-label={runner.display_name} className="min-w-0">
+      {removeOpen && onRemove ? <RunnerRemoval runner={runner} onRemove={onRemove} onClose={() => setRemoveOpen(false)} /> : null}
+      <form className="min-w-0 space-y-7" onInvalid={() => setError("Check the highlighted fields. Slot counts must be whole numbers from 0 to 10000; total runner slots is required.")} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <header className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="flex min-w-0 items-center gap-2.5 text-xl font-semibold tracking-tight"><RunnerStatusDot runner={runner} /><span className="break-words">{runner.display_name}</span></h2>
+            <div className="flex items-center gap-2">
+              {onRemove ? <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => setRemoveOpen(true)}>Remove runner</Button> : null}
+              {canEdit ? <Button type="submit" size="sm" disabled={saving || (scheduled && hours.length === 0)}>{saving ? "Saving…" : "Save runner"}</Button> : null}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs text-muted-foreground">
+            <span>{runner.hostname} · {runner.os} {runner.architecture} · {runner.sprite ? "Fly Sprite" : "Own machine"}</span>
+            <Badge variant="outline" size="sm">{runner.has_heartbeat !== false && runner.version?.trim() || "Version unknown"}</Badge>
+            {runnerUpdateFailed(runner) ? <Badge variant="warning" size="sm">Update failed</Badge> : null}
+            {runner.has_heartbeat !== false && runner.version && currentVersion ? <Badge variant={runner.version.replace(/^v/, "") === currentVersion.replace(/^v/, "") ? "success" : "warning"} size="sm">{runner.version.replace(/^v/, "") === currentVersion.replace(/^v/, "") ? "same as the Hub" : `Hub is ${currentVersion}`}</Badge> : null}
+            <span>Last check-in <time dateTime={runner.last_heartbeat_at} title={runner.last_heartbeat_at}>{formatRelativeTime(runner.last_heartbeat_at, now)}</time></span>
+          </div>
+          {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : saved ? <p role="status" className="text-sm text-success-foreground">Runner saved</p> : null}
+          {runner.revision !== editingRunner.revision ? <Button type="button" variant="outline" disabled={saving} onClick={() => { resetDraft(); setError("Latest settings loaded. Review them before saving."); }}>Review latest settings</Button> : null}
+        </header>
+        <div className="min-w-0 space-y-7 text-sm">
+            {runner.claim_refusal_reason || runnerUpdateFailed(runner) || runner.sprite?.wake_failed || (runner.sprite && !runner.sprite.can_wake) || runner.problems?.length ? <Section title="Needs attention">
+            {runner.claim_refusal_reason || runnerUpdateFailed(runner) ? <div role="alert" data-testid="host-update" className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
+              <p>Runner update needed</p><PathValue value={RUNNER_UPGRADE_COMMAND} />
+            </div> : null}
+            {runner.sprite?.wake_failed || (runner.sprite && !runner.sprite.can_wake) ? <p role="alert" className="text-warning-foreground">{runner.sprite.wake_failed ? "The Hub could not wake this Sprite. Check the Sprite and its project’s Sprites token." : "No Sprites token is set for an accessible project; the Hub cannot wake this Sprite."}</p> : null}
+            <RunnerProblems runner={runner} projects={projects} alert />
+            {runner.problems?.some((problem) => problem.code === "tier_unavailable") && canEdit ? runnerAccessOptions.filter(({ tier }) => tier !== savedRouting.isolation_tier && Object.keys(runner.backend_isolation ?? {}).length > 0 && Object.values(runner.backend_isolation ?? {}).every((tiers) => tiers.includes(tier))).map(({ tier, label }) => (
+              <Button key={tier} type="button" variant="outline" size="sm" disabled={saving} onClick={() => void submit(tier)}>Switch to {label}</Button>
+            )) : null}
+            </Section> : null}
+            {!canEdit ? <p role="status" className="text-sm text-muted-foreground">{runner.edit_refusal_reason || "Runner changes need manage_runner on every allowed project and every project with running work; ask an owner or admin."}</p> : null}
+            <fieldset disabled={saving} className="min-w-0 space-y-7">
+              <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+              <Section title="Taking work">
+                {canEdit ? (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    {takingWork.map(([state, name, hint]) => (
+                      <label key={state} className={cn("flex cursor-pointer items-start gap-2 rounded-lg border p-3", draft.state === state ? "border-primary bg-primary/5" : "border-border")}>
+                        <input type="radio" name="state" value={state} checked={draft.state === state} onChange={() => update({ state })} className="mt-1" />
+                        <span><span className="block font-medium">{name}</span><span className="text-xs text-muted-foreground">{hint}</span></span>
+                      </label>
+                    ))}
+                  </div>
+                ) : <p>{takingWork.find(([state]) => state === draft.state)?.slice(1).join(" · ") ?? draft.state}</p>}
+              </Section>
+              <Section title="Capacity">
+                {canEdit ? (
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="runner-jobs" className="min-w-0 flex-1">Total runner slots</label>
+                    <Button aria-label="Decrease total runner slots" type="button" size="icon-sm" variant="outline" disabled={!total || Number(total) <= 0} onClick={() => setTotal(String(Math.max(0, Number(total) - 1)))}>−</Button>
+                    <input id="runner-jobs" className={cn(control, "w-24 text-center")} type="number" min={0} max={10000} step={1} required value={total} onChange={(event) => setTotal(event.target.value)} aria-describedby="runner-capacity-help" />
+                    <Button aria-label="Increase total runner slots" type="button" size="icon-sm" variant="outline" disabled={!total || Number(total) >= 10000} onClick={() => setTotal(String(Math.min(10000, Number(total) + 1)))}>+</Button>
+                  </div>
+                ) : <p>Total runner slots: {draft.capacity_limit}</p>}
+                <p id="runner-capacity-help" className="text-xs text-muted-foreground">0 stops new work. Lowering below usage lets existing jobs finish. Runners on the same machine share its total ceiling; changing this runner does not change sibling grants or the shared machine ceiling.</p>
+                <RunnerCapacity runner={runner} detailed />
+                {suggestion ? <SuggestedLimitBox suggestion={suggestion} draftLimit={canEdit ? Number(total) : draft.capacity_limit} {...(canEdit ? { onUse: (limit: number) => setTotal(String(limit)) } : {})} /> : null}
+              </Section>
+              <Section title="Maximum slots per project">
+                <p id="runner-project-capacity-help" className="text-xs text-muted-foreground">Maxima are not reservations. Empty inherits the total runner capacity; 0 stops new work for that project. Lowering below usage lets existing jobs finish.</p>
+                <div className="divide-y divide-border/50 rounded-lg border border-border/60">
+                  {projects.filter((project) => draft.scope === "organization" || draft.project_ids.includes(project.id)).map((project) => {
+                    const capacity = runner.capacity_configuration?.projects?.[project.id];
+                    return <div key={project.id} className="min-w-0 space-y-2 p-3">
+                      {canEdit ? <label className="block break-words">{project.name} maximum slots<input className={cn(control, "mt-1")} type="number" min={0} max={10000} step={1} placeholder="Inherit total" aria-describedby="runner-project-capacity-help" value={projectLimits[project.id] ?? ""} onChange={(event) => setProjectLimits((current) => ({ ...current, [project.id]: event.target.value }))} /></label> : <p className="break-words">{project.name} maximum slots: {draft.project_capacity_limits?.[project.id] ?? "Inherited total"}</p>}
+                      <p className="text-xs text-muted-foreground">{capacity?.used ?? "Unknown"} slots in use · effective maximum {capacity?.effective ?? "unknown"}</p>
+                    </div>;
+                  })}
+                </div>
+              </Section>
+              </div>
+              {loadHostHistory ? <HostLoad runnerId={runner.id} load={loadHostHistory} timezone={(runner.routing ?? runner).availability?.timezone || "UTC"} /> : null}
+            <Section title="Running work"><ul className="divide-y divide-border/50 rounded-lg border border-border/60 bg-card/40">{runner.leases.map((lease) => <li key={lease.lease_id} className="break-words px-3 py-2.5"><span className="font-medium">#{lease.work_item_id}</span> {lease.title}</li>)}</ul>{runner.leases.length === 0 ? <p className="text-muted-foreground">No running work</p> : null}</Section>
+
+              <Section title="Allowed projects">
+                {canEdit ? <NativeSelect aria-label="Runner scope" disabled={runner.can_edit_projects !== true && !(runner.can_convert_scope === true && savedRouting.scope !== "organization")} value={draft.scope ?? "projects"} onValueChange={(value) => update({ scope: value as "organization" | "projects", project_ids: value === "organization" ? [] : draft.project_ids })} options={[{ value: "organization", label: "All projects" }, { value: "projects", label: "Selected projects" }]} /> : null}
+                {draft.scope === "organization" ? <div className="space-y-2">
+                  <p>All current and future projects</p>
+                  <p className="text-xs text-muted-foreground">Conversion keeps this runner’s identity, provider logins and running work. Project rank overrides are kept. Each additional repository policy needs approval before it can run here.</p>
+                  {choices.filter((project) => savedRouting.scope === "organization" || !savedRouting.project_ids.includes(project.id)).map((project) => <p key={project.id} className="text-xs">
+                    <a className="text-primary underline underline-offset-2" href={hubPath(projectSettingsPath(project, "workflow"))}>Review policy for {project.name}</a>
+                  </p>)}
+                </div> : null}
+                <div className="divide-y divide-border/50 rounded-lg border border-border/60">
+                  {choices.filter((project) => draft.scope === "organization" || canEdit || draft.project_ids.includes(project.id)).map((project) => (
+                    <div key={project.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 p-3">
+                      {canEdit && draft.scope !== "organization" ? <>
+                        <label className="flex min-w-0 items-center gap-2"><input type="checkbox" disabled={runner.can_edit_projects !== true} checked={draft.project_ids.includes(project.id)} onChange={(event) => toggleProject(project.id, event.target.checked)} /><span className="break-all">{project.name}</span></label>
+                      </> : <><span className="break-all">{project.name}</span></>}
+                      {runner.project_checkouts?.[project.id] ? <div className="space-y-1 text-xs text-muted-foreground">
+                        <p>{({ ready: "Checkout ready", missing: "Checkout unavailable", setup_failed: "Checkout setup failed", preparing: "Preparing checkout" } as Record<string, string>)[runner.project_checkouts[project.id]!.status] ?? "Preparing checkout"}</p>
+
+                        {runner.project_checkouts[project.id]!.fix_command ? <PathValue value={runner.project_checkouts[project.id]!.fix_command!} /> : null}
+                        {runner.project_checkouts[project.id]!.status === "missing" ? <p>The runner retries automatically after repository access is fixed.</p> : null}
+                      </div> : null}
+                    </div>
+                  ))}
+                </div>
+                {!canEdit && runner.routing === undefined ? <p className="text-xs text-muted-foreground">Project access is not reported.</p> : null}
+              </Section>
+            <Section title="Provider accounts"><ul className="space-y-2 text-xs text-muted-foreground">{runner.provider_capacity.map((capacity) => <li key={`${capacity.backend}-${capacity.account_alias}`} className="min-w-0 space-y-2 rounded-lg border border-border/60 bg-card/40 p-3">{capacity.provider} · {capacity.backend} · {billingLabel(capacity)} · {capacity.account_alias} · {capacity.availability} · {capacity.state} · {capacity.used} of {capacity.max_concurrent}<ProviderUsage capacity={capacity} now={now} /></li>)}</ul></Section>
+              <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+              <Section title="Agent access">
+                {canEdit ? <RadioGroup className="grid sm:grid-cols-2" aria-label="Agent access" value={draft.isolation_tier} onValueChange={(value) => update({ isolation_tier: String(value) })}>{runnerAccessOptions.map(({ tier, label, hint }) => (
+                  <label key={tier} className={cn("flex cursor-pointer items-start gap-2 rounded-lg border p-3", draft.isolation_tier === tier ? "border-primary bg-primary/5" : "border-border")}>
+                    <Radio value={tier} disabled={spriteSandboxBlocked && tier === "sandbox"} aria-labelledby={`runner-access-${tier}`} aria-describedby={`runner-access-${tier}-hint`} className="mt-1" />
+                    <span><span id={`runner-access-${tier}`} className="block font-medium">{label}</span><span id={`runner-access-${tier}-hint`} className="text-xs text-muted-foreground">{spriteSandboxBlocked && tier === "sandbox" ? spriteSandboxUnavailableReason : hint}</span></span>
+                  </label>
+                ))}</RadioGroup> : <p>{runnerAccessOptions.find(({ tier }) => tier === draft.isolation_tier)?.label ?? draft.isolation_tier}</p>}
+                <p className="text-xs text-muted-foreground">Changes apply on the runner’s next configuration refresh; no re-enrollment is needed.</p>
+                {canEdit ? <label className="block">Host services the sandbox may reach<textarea className={cn(control, "mt-1")} rows={2} value={draft.host_services.join("\n")} onChange={(event) => update({ host_services: event.target.value.split("\n") })} placeholder="tcp:127.0.0.1:8080" /></label> : <div><p>Host services the sandbox may reach</p>{runner.routing === undefined ? <p className="text-muted-foreground">Host services are not reported.</p> : <ul className="text-muted-foreground">{draft.host_services.map((value) => <li key={value} className="break-all">{value}</li>)}</ul>}</div>}
+              </Section>
+                <div className="min-w-0 space-y-6">
+              <Section title="Tags">
+                <div className="flex flex-wrap gap-2">
+                  {draft.tags.map((value) => (
+                    <span key={value} className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted px-2 py-1 text-xs">
+                      <span className="break-all">{value}</span>
+                      {canEdit ? <button type="button" aria-label={`Remove tag ${value}`} onClick={() => update({ tags: draft.tags.filter((old) => old !== value) })} className="rounded-full px-1 focus-visible:outline-2 focus-visible:outline-ring">×</button> : null}
+                    </span>
+                  ))}
+                </div>
+                {canEdit ? <div className="flex gap-2"><input aria-label="Add tag" className={control} value={tag} onChange={(event) => setTag(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addTags(); } }} /><Button type="button" variant="outline" onClick={addTags}>Add</Button></div> : draft.tags.length === 0 ? <p className="text-muted-foreground">{runner.routing === undefined ? "Tags are not reported." : "No tags"}</p> : null}
+                <p className="text-xs text-muted-foreground">Repository policy can require tags. Tags pick from allowed runners; they never grant a project.</p>
+              </Section>
+              <Section title="Schedule">
+                {canEdit ? (
+                  <select aria-label="Availability" className={control} value={scheduled ? "hours" : "always"} onChange={(event) => { const only = event.target.value === "hours"; setScheduled(only); if (only && hours.length === 0) setHours([{ days: "Mon-Fri", from: "09:00", until: "17:00" }]); }}>
+                    <option value="always">Always available</option><option value="hours">Only during these hours</option>
+                  </select>
+                ) : <p>{scheduled ? "Only during these hours" : "Always available"}</p>}
+                {scheduled ? <>
+                  {canEdit ? <>
+                    <div className="space-y-3">{hours.map((row, index) => (
+                      <div key={index} className="grid grid-cols-2 gap-2 rounded-lg border border-border/60 p-3">
+                        <label className="col-span-2">Day range<select aria-label={`Day range ${index + 1}`} className={control} value={row.days} onChange={(event) => changeHours(index, { days: event.target.value })}>{dayRanges.map((range) => <option key={range}>{range}</option>)}</select></label>
+                        <label>From<input aria-label={`From ${index + 1}`} className={control} type="time" required value={row.from} onChange={(event) => changeHours(index, { from: event.target.value })} /></label>
+                        <label>Until<input aria-label={`Until ${index + 1}`} className={control} required pattern="([01][0-9]|2[0-3]):[0-5][0-9]|24:00" placeholder="17:00" value={row.until} onChange={(event) => changeHours(index, { until: event.target.value })} /></label>
+                        <Button className="col-span-2 w-fit" type="button" variant="ghost" size="sm" aria-label={`Remove hours ${index + 1}`} onClick={() => setHours((current) => current.filter((_, i) => i !== index))}>Remove hours</Button>
+                      </div>
+                    ))}</div>
+                    <Button type="button" variant="outline" size="sm" disabled={hours.length >= 64} onClick={() => setHours((current) => [...current, { days: "Mon-Fri", from: "09:00", until: "17:00" }])}>Add hours</Button>
+                  </> : <ul className="space-y-1">{draft.availability.windows.map((value, index) => <li key={index}>{value}</li>)}</ul>}
+                  {canEdit ? <label className="block">Time zone<select className={control} value={draft.availability.timezone} onChange={(event) => update({ availability: { ...draft.availability, timezone: event.target.value } })}>{timezoneOptions.map((zone) => <option key={zone} value={zone}>{zone || "Runner's local time zone"}</option>)}</select></label> : <p className="text-muted-foreground">{draft.availability.timezone || "Runner's local time zone"}</p>}
+                  {canEdit ? <label className="block">Stop running work <input aria-label="Stop running work after hours end" className={cn(control, "my-1")} value={draft.availability.hard_deadline} placeholder="30m" onChange={(event) => update({ availability: { ...draft.availability, hard_deadline: event.target.value } })} /> after hours end</label> : draft.availability.hard_deadline ? <p>Stop running work {draft.availability.hard_deadline} after hours end</p> : null}
+                </> : null}
+
+              </Section>
+
+                </div>
+              </div>
+            </fieldset>
+          <div className="flex justify-end"><Button type="button" variant="outline" disabled={saving} onClick={onClose}>Back to Runners</Button></div>
+        </div>
+      </form>
+    </article>
+  );
+}

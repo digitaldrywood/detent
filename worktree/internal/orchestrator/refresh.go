@@ -1,0 +1,127 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+type RefreshResponse struct {
+	RequestID   string                         `json:"request_id,omitempty"`
+	Status      telemetry.RefreshAttemptStatus `json:"status,omitempty"`
+	Queued      bool                           `json:"queued"`
+	Coalesced   bool                           `json:"coalesced"`
+	Refused     bool                           `json:"refused"`
+	RequestedAt time.Time                      `json:"requested_at"`
+	LastError   string                         `json:"last_error,omitempty"`
+	LastErrorAt *time.Time                     `json:"last_error_at,omitempty"`
+	RetryAt     *time.Time                     `json:"retry_at,omitempty"`
+	Operations  []string                       `json:"operations"`
+}
+
+type manualRefreshRequest struct {
+	id          string
+	requestedAt time.Time
+	operations  []string
+}
+
+type targetedRefreshRequest struct {
+	manualRefreshRequest
+	target connector.ReconcileTarget
+}
+
+func (o *Orchestrator) RequestRefresh(ctx context.Context) (RefreshResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	requestedAt := time.Now().UTC()
+	response := RefreshResponse{
+		RequestID:   o.nextManualRefreshID(requestedAt),
+		Status:      telemetry.RefreshAttemptStatusInProgress,
+		Queued:      true,
+		RequestedAt: requestedAt,
+		Operations:  []string{"poll", "reconcile"},
+	}
+
+	select {
+	case <-ctx.Done():
+		return RefreshResponse{}, ctx.Err()
+	case <-o.done:
+		return RefreshResponse{}, ErrStopped
+	default:
+	}
+
+	select {
+	case <-ctx.Done():
+		return RefreshResponse{}, ctx.Err()
+	case <-o.done:
+		return RefreshResponse{}, ErrStopped
+	case o.refreshes <- manualRefreshRequest{
+		id:          response.RequestID,
+		requestedAt: response.RequestedAt,
+		operations:  append([]string(nil), response.Operations...),
+	}:
+		return response, nil
+	default:
+		response.Coalesced = true
+		response.Status = telemetry.RefreshAttemptStatusCoalesced
+		return response, nil
+	}
+}
+
+func (o *Orchestrator) RequestTargetedRefresh(ctx context.Context, target connector.ReconcileTarget) (RefreshResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	requestedAt := time.Now().UTC()
+	operation := "targeted_reconcile"
+	if scope := strings.TrimSpace(target.Scope); scope != "" {
+		operation += ":" + scope
+	}
+	response := RefreshResponse{
+		RequestID:   o.nextManualRefreshID(requestedAt),
+		Status:      telemetry.RefreshAttemptStatusInProgress,
+		Queued:      true,
+		RequestedAt: requestedAt,
+		Operations:  []string{operation},
+	}
+	request := targetedRefreshRequest{
+		manualRefreshRequest: manualRefreshRequest{
+			id:          response.RequestID,
+			requestedAt: response.RequestedAt,
+			operations:  append([]string(nil), response.Operations...),
+		},
+		target: target,
+	}
+
+	select {
+	case <-ctx.Done():
+		return RefreshResponse{}, ctx.Err()
+	case <-o.done:
+		return RefreshResponse{}, ErrStopped
+	default:
+	}
+
+	select {
+	case <-ctx.Done():
+		return RefreshResponse{}, ctx.Err()
+	case <-o.done:
+		return RefreshResponse{}, ErrStopped
+	case o.reconciles <- request:
+		return response, nil
+	default:
+		response.Coalesced = true
+		response.Status = telemetry.RefreshAttemptStatusCoalesced
+		return response, nil
+	}
+}
+
+func (o *Orchestrator) nextManualRefreshID(requestedAt time.Time) string {
+	return fmt.Sprintf("manual-%d-%d", requestedAt.UnixNano(), o.refreshSeq.Add(1))
+}

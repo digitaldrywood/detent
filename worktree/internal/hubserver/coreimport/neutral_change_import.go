@@ -1,0 +1,244 @@
+package coreimport
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/changeattribution"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func validateCoreNeutralChangeImport(bundle *neutralimport.Bundle) error {
+	return neutralimport.ValidateCoreTables(bundle, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
+}
+
+func coreNeutralPayload(row neutralimport.Row) (string, error) {
+	var key sql.NullString
+	if err := row.Decode(map[string]any{"payload_object_key": &key}); err != nil {
+		return "", err
+	}
+	if key.Valid && key.String != "" {
+		return key.String, nil
+	}
+	var raw string
+	if err := row.Decode(map[string]any{"record_json": &raw}); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+func hydrateCoreNeutralVersion(ctx context.Context, source *neutralimport.Index, input CoreChangeImportSource, value *tracker.ChangeVersion) error {
+	change, err := source.One(ctx, "change_requests", map[string]string{"id": value.ChangeID, "organization_id": string(input.OrganizationID)}, []string{"id"})
+	if err != nil {
+		return err
+	}
+	var project string
+	if err := change.Decode(map[string]any{"project_id": &project}); err != nil {
+		return err
+	}
+	row, err := source.One(ctx, "policy_revisions", map[string]string{"scope": string(input.OrganizationID) + "/" + project, "policy_id": value.PolicyID}, []string{"scope", "policy_id"})
+	if err != nil {
+		return err
+	}
+	var metadata string
+	if err := row.Decode(map[string]any{"metadata_json": &metadata}); err != nil {
+		return err
+	}
+	raw, err := resolveCoreNeutralJSON(ctx, source, input.OrganizationID, input.SourceObjects, []byte(metadata))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, &value.Policy); err != nil {
+		return err
+	}
+	if err := value.Policy.Validate(); err != nil {
+		return err
+	}
+	if value.Policy.ID != value.PolicyID {
+		return errors.New("version policy reference mismatch")
+	}
+	if value.ReviewPolicy.PolicyID == "" {
+		value.ReviewPolicy.PolicyID = value.PolicyID
+	}
+	if value.ReviewPolicy.RequiredChecks == nil && len(value.Checks) > 0 {
+		value.ReviewPolicy.RequiredChecks = make([]tracker.ChangeCheckSpec, len(value.Checks))
+		for index, check := range value.Checks {
+			value.ReviewPolicy.RequiredChecks[index] = check.ChangeCheckSpec
+		}
+	}
+	if value.Validation == nil {
+		return nil
+	}
+	slots := make(map[string][]changeattribution.Slot)
+	changeattribution.CommandSlots(slots, "validation", value.Validation)
+	if err := source.Each(ctx, "change_finding_attributions", map[string]string{"version_id": value.ID, "record_id": value.ID}, []string{"role", "position"}, func(row neutralimport.Row) error {
+		var role, attribution string
+		var position int
+		var evidence failureattribution.Evidence
+		if err := row.Decode(map[string]any{"role": &role, "position": &position, "attribution": &attribution, "base_sha": &evidence.BaseSHA, "head_sha": &evidence.HeadSHA, "command": &evidence.Command, "diagnostic": &evidence.Diagnostic, "head_output_digest": &evidence.HeadOutputDigest, "base_output_digest": &evidence.BaseOutputDigest, "base_exit_code": &evidence.BaseExitCode}); err != nil {
+			return err
+		}
+		list := slots[role]
+		if position < -1 || position+1 >= len(list) {
+			return errors.New("finding attribution position is invalid")
+		}
+		slot := list[position+1]
+		if position >= 0 {
+			var proof *failureattribution.Evidence
+			if evidence.BaseSHA != "" {
+				proof = &evidence
+			}
+			if !failureattribution.Valid(attribution, proof, evidence.BaseSHA, evidence.HeadSHA) {
+				return errors.New("stored finding attribution evidence is invalid")
+			}
+		}
+		*slot.Value = attribution
+		if slot.Evidence != nil {
+			*slot.Evidence = nil
+			if evidence.BaseSHA != "" {
+				*slot.Evidence = &evidence
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("read finding attributions: %w", err)
+	}
+	commands := map[string][]gate.CommandResult{"validation": {*value.Validation}}
+	if err := source.Each(ctx, "change_command_outputs", map[string]string{"version_id": value.ID, "review_id": value.ID}, []string{"role", "position"}, func(row neutralimport.Row) error {
+		var role, organization string
+		var position int
+		ref := hubcontent.ContentReference()
+		if err := row.Decode(map[string]any{"role": &role, "position": &position, "organization_id": &organization, "object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize}); err != nil {
+			return err
+		}
+		list := commands[role]
+		if position < 0 || position >= len(list) || organization != string(input.OrganizationID) {
+			return errors.New("command output reference mismatch")
+		}
+		raw, err := readCoreNeutralArchive(ctx, source, input.OrganizationID, input.SourceObjects, ref)
+		if err != nil {
+			return err
+		}
+		list[position].Output = string(raw)
+		return nil
+	}); err != nil {
+		return err
+	}
+	*value.Validation = commands["validation"][0]
+	return nil
+}
+
+func readCoreNeutralArchive(ctx context.Context, source *neutralimport.Index, organization tracker.OrganizationID, objects attachment.DetailStore, ref attachment.ArchiveReference) ([]byte, error) {
+	if ref.Validate(string(organization)) != nil {
+		return nil, artifact.ErrIntegrity
+	}
+	raw, err := objects.ReadDetail(ctx, string(organization), ref)
+	if err == nil && int64(len(raw)) == ref.UncompressedSize {
+		return raw, nil
+	}
+	raw, err = readCoreNeutralObject(ctx, source, organization, objects, ref.Key)
+	if err != nil {
+		return nil, err
+	}
+	prepared, _, err := attachment.PrepareArchive(string(organization), ref.SchemaVersion, bytes.NewReader(raw))
+	if err != nil || prepared != ref {
+		return nil, errors.Join(artifact.ErrIntegrity, err)
+	}
+	return raw, nil
+}
+
+func readCoreQualityLanding(ctx context.Context, source *neutralimport.Index, input CoreChangeImportSource, changeID, versionID string) (*tracker.ChangeLanding, error) {
+	row, err := source.One(ctx, "quality_landings", map[string]string{"version_id": versionID, "change_id": changeID}, []string{"version_id"})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var encoded string
+	var projected sql.NullString
+	if err := row.Decode(map[string]any{"record_json": &encoded, "landed_at": &projected}); err != nil {
+		return nil, err
+	}
+	raw, err := readCoreChangePayload(ctx, source, input, encoded)
+	if err != nil {
+		return nil, err
+	}
+	var landing tracker.ChangeLanding
+	if json.Unmarshal(raw, &landing) != nil || landing.VersionID != versionID || landing.HeadSHA == "" || landing.MergeSHA == "" || landing.BaseRef == "" || landing.LandedAt.IsZero() {
+		return nil, eventstore.ErrInvalidRecord
+	}
+	versionRow, err := source.One(ctx, "change_versions", map[string]string{"id": versionID, "change_id": changeID}, []string{"id"})
+	if err != nil {
+		return nil, err
+	}
+	versionEncoded, err := coreNeutralPayload(versionRow)
+	if err != nil {
+		return nil, err
+	}
+	versionRaw, err := readCoreChangePayload(ctx, source, input, versionEncoded)
+	if err != nil {
+		return nil, err
+	}
+	var version tracker.ChangeVersion
+	if json.Unmarshal(versionRaw, &version) != nil || version.ID != versionID || version.ChangeID != changeID || version.HeadSHA != landing.HeadSHA {
+		return nil, eventstore.ErrInvalidRecord
+	}
+	if projected.Valid {
+		at, err := hubapi.ParseTimeValue(projected.String)
+		if err != nil || !at.Equal(landing.LandedAt) {
+			return nil, eventstore.ErrInvalidRecord
+		}
+	}
+	return &landing, nil
+}
+
+func validateCoreQualityLandings(ctx context.Context, source *neutralimport.Index, input CoreChangeImportSource) error {
+	var after []string
+	for {
+		rows, err := source.Bundle().Page(ctx, "quality_landings", after, 100)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, row := range rows {
+			var versionID string
+			if err := row.Decode(map[string]any{"version_id": &versionID}); err != nil {
+				return err
+			}
+			version, err := source.One(ctx, "change_versions", map[string]string{"id": versionID}, []string{"id"})
+			if err != nil {
+				return err
+			}
+			var changeID string
+			if err := version.Decode(map[string]any{"change_id": &changeID}); err != nil {
+				return err
+			}
+			if _, err := source.One(ctx, "change_requests", map[string]string{"id": changeID, "organization_id": string(input.OrganizationID)}, []string{"id"}); err != nil {
+				return err
+			}
+			landing, err := readCoreQualityLanding(ctx, source, input, changeID, versionID)
+			if err != nil {
+				return err
+			}
+			if landing == nil {
+				return eventstore.ErrInvalidRecord
+			}
+		}
+		after = rows[len(rows)-1].Key
+	}
+}

@@ -1,0 +1,172 @@
+package hubserver
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestHostedBillingResultLimits(t *testing.T) {
+	t.Parallel()
+	for _, deployment := range []string{"shared", "dedicated"} {
+		for _, test := range []struct {
+			name      string
+			model     string
+			oversized bool
+		}{
+			{name: "normal", model: "example-model"},
+			{name: "oversized", model: strings.Repeat("x", 300<<10), oversized: true},
+		} {
+			t.Run(deployment+"/"+test.name, func(t *testing.T) {
+				t.Parallel()
+				f, ctx := newHostedKeyMCPFixture(t, deployment, "owner")
+				now := f.service.config.Clock().UTC()
+				db := hostedPostgresAdmin(t, f.service)
+				organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
+				issue := seedAnalyticsTestWorkItem(t, f.service, organization, f.project, "billing-usage", 1, "Usage fixture", "Todo", now.Add(-time.Minute))
+				seedAnalyticsTestAttempt(t, db, f.service, hubscope.NativeScope{Organization: organization, Project: f.project}, issue.WorkItemID, "attempt_usage_fixture", "succeeded", now.Add(-time.Minute), now, tracker.NativeRunData{})
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO attempt_usage
+ (attempt_id, organization_id, project_id, period, provider, model, input, cached_input, output, cost_estimate, currency, updated_at)
+ SELECT 'attempt_usage_fixture', $1, $2, $3, 'example-provider', CASE WHEN $6 THEN n::text || '-' || substr($4, n*512+1, 512) ELSE $4 END, 100, 0, 0, 0, 'USD', $5 FROM generate_series(0, CASE WHEN $6 THEN (length($4)-1)/512 ELSE 0 END) n`, organization, f.project, usagePeriod(now), test.model, now, test.oversized); err != nil {
+					t.Fatal(err)
+				}
+				result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, operatortool.Call{
+					Name: operatortool.HostedUsage, Arguments: json.RawMessage(`{"range":"24h"}`),
+				})
+				if test.oversized {
+					var sizeError *operatortool.ResultTooLargeError
+					if !errors.Is(err, operatortool.ErrResultTooLarge) || !errors.As(err, &sizeError) {
+						t.Fatalf("oversized billing report error = %v, want typed size error", err)
+					}
+					if sizeError.SizeBytes <= 300<<10 || sizeError.LimitBytes != operatortool.MaxResultBytes || len(result.Content) != 0 {
+						t.Fatalf("oversized billing report size = %+v, content bytes = %d", sizeError, len(result.Content))
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				var response struct {
+					Report usageReport `json:"report"`
+				}
+				if err := json.Unmarshal(result.Content, &response); err != nil {
+					t.Fatal(err)
+				}
+				if len(response.Report.Breakdown.ByModel) != 1 || response.Report.Breakdown.ByModel[0].Model != test.model {
+					t.Fatal("billing report lost the stored model")
+				}
+			})
+		}
+	}
+}
+
+// Provider response loss is resumable only through the application's existing
+// checkout intent/key; concurrent callers must not invent a new purchase.
+func TestBillingCommandResponseLoss(t *testing.T) {
+	t.Parallel()
+	f, provider := newHostedCustomerFixture(t)
+	loss := &billingResponseLossProvider{hostedCustomerProvider: provider, sessions: make(map[string]billing.Session)}
+	f.service.config.Hosted.Billing.Provider = loss
+	var credential hubapi.APICredential
+	f.service.echo.GET("/billing-command-fixture", func(c echo.Context) error {
+		var err error
+		credential, err = f.service.hostedBillingOwner(c.Request().Context(), c)
+		return err
+	})
+	requireNativeStatus(t, f.page(t, "owner", "/billing-command-fixture"), http.StatusOK)
+	authorize := func(context.Context) (hubapi.APICredential, error) { return credential, nil }
+	if _, err := f.service.checkoutBilling(t.Context(), authorize, "price_fixture", "lost-response"); err == nil {
+		t.Fatal("fixture did not lose response")
+	}
+	first := loss.keys[0]
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			result, err := f.service.checkoutBilling(t.Context(), authorize, "price_fixture", "lost-response")
+			if err != nil || result.ID != "cs_test_fixture" {
+				t.Errorf("retry=%+v %v", result, err)
+			}
+		})
+	}
+	wg.Wait()
+	if len(provider.checkouts) != 1 || len(loss.keys) != 2 || loss.keys[1] != first {
+		t.Fatal("response loss replaced provider key")
+	}
+}
+
+type billingResponseLossProvider struct {
+	*hostedCustomerProvider
+	sessions map[string]billing.Session
+	keys     []string
+}
+
+func (p *billingResponseLossProvider) Checkout(ctx context.Context, request billing.CheckoutRequest) (billing.Session, error) {
+	p.keys = append(p.keys, request.IdempotencyKey)
+	if session, ok := p.sessions[request.IdempotencyKey]; ok {
+		return session, nil
+	}
+	session, err := p.hostedCustomerProvider.Checkout(ctx, request)
+	if err != nil {
+		return session, err
+	}
+	p.sessions[request.IdempotencyKey] = session
+	return billing.Session{}, errors.New("credential-sensitive-value-sentinel: response lost after provider effect")
+}
+
+func TestBillingStatusCreditCursor(t *testing.T) {
+	t.Parallel()
+	for _, deployment := range []string{"shared", "dedicated"} {
+		t.Run(deployment, func(t *testing.T) {
+			f, ctx := newOperatorKeyFixture(t, deployment, "owner")
+			d := f.service.database
+			d.aiCreditMode = billing.ModeTest
+			if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES($1,'test',123)`, d.hostedOrganization); err != nil {
+				t.Fatal(err)
+			}
+			for index := range 3 {
+				if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES($1,'test',$2,123,'purchase',$3)`, d.hostedOrganization, fmt.Sprintf("purchase-%d", index), time.UnixMicro(int64(index+1)).UTC()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cursor := ""
+			for index := range 3 {
+				args, err := json.Marshal(creditPageRequest{Limit: 1, Cursor: cursor})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, operatortool.Call{Name: operatortool.BillingStatus, Arguments: args})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var read struct {
+					Billing hostedBillingView `json:"billing"`
+				}
+				if err := json.Unmarshal(result.Content, &read); err != nil {
+					t.Fatal(err)
+				}
+				credits := read.Billing.AICredits
+				if credits == nil || credits.TotalRows != 3 || len(credits.History) != 1 || credits.History[0].At.UnixMicro() != int64(3-index) {
+					t.Fatalf("billing=%+v", read)
+				}
+				if (credits.NextCursor == "") != (index == 2) {
+					t.Fatalf("cursor=%s index=%d", credits.NextCursor, index)
+				}
+				cursor = credits.NextCursor
+			}
+		})
+	}
+}

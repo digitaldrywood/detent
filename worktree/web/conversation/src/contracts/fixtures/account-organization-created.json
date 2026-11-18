@@ -1,0 +1,8 @@
+{
+  "organization": {
+    "id": "org_newco",
+    "name": "Newco",
+    "public_url": "https://new.example.org"
+  },
+  "next": "/auth/oidc/start"
+}

@@ -1,0 +1,7 @@
+{
+  "componentsDir": "internal/web/ui/components",
+  "utilsDir": "internal/web/ui/utils",
+  "moduleName": "github.com/digitaldrywood/detent",
+  "jsDir": "static/js/templui",
+  "jsPublicPath": "/static/js/templui"
+}

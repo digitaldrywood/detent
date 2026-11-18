@@ -1,0 +1,127 @@
+package workpath
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+const LegacyScratchRelativePath = ".detent/worker-tmp"
+
+const WorkerScratchBaseName = "detent-worker-scratch"
+
+// WorkerScratchRoot is the per-workspace parent of attempt scratch. It lives
+// under the OS temp root rather than the workspace so that compiler and test
+// churn never lands in a file-watched home tree. Workspaces are grouped by
+// their parent directory so retention can sweep scratch of removed workspaces.
+func WorkerScratchRoot(workspacePath string) string {
+	workspacePath = BestEffortCanonicalPath(workspacePath)
+	return filepath.Join(WorkerScratchGroup(filepath.Dir(workspacePath)), filepath.Base(workspacePath))
+}
+
+// WorkerScratchRoots lists the external scratch roots a workspace may own:
+// the current per-user root and the root under the base an earlier runner
+// shared between users.
+func WorkerScratchRoots(workspacePath string) []string {
+	workspacePath = BestEffortCanonicalPath(workspacePath)
+	roots := []string{WorkerScratchRoot(workspacePath)}
+	if shared := filepath.Join(WorkerScratchGroupIn(SharedWorkerScratchBase(), filepath.Dir(workspacePath)), filepath.Base(workspacePath)); shared != roots[0] {
+		roots = append(roots, shared)
+	}
+	return roots
+}
+
+// WorkerScratchParent returns the directory that owns scratchPath: the
+// external scratch root, the root under the base an earlier runner shared
+// between users, or the legacy in-workspace scratch directory for attempts
+// started before scratch moved out of the workspace.
+func WorkerScratchParent(workspacePath string, scratchPath string) (string, bool) {
+	scratchPath = filepath.Clean(scratchPath)
+	for _, parent := range append(WorkerScratchRoots(workspacePath), filepath.Join(workspacePath, filepath.FromSlash(LegacyScratchRelativePath))) {
+		if scratchPath == parent || PathWithin(parent, scratchPath) {
+			return parent, true
+		}
+	}
+	return "", false
+}
+
+func WorkerScratchGroup(workspaceParent string) string {
+	return WorkerScratchGroupIn(WorkerScratchBase(), workspaceParent)
+}
+
+func WorkerScratchGroupIn(base string, workspaceParent string) string {
+	sum := sha256.Sum256([]byte(BestEffortCanonicalPath(workspaceParent)))
+	return filepath.Join(base, hex.EncodeToString(sum[:8]))
+}
+
+func WorkerScratchBase() string {
+	base := SharedWorkerScratchBase()
+	if uid := os.Getuid(); uid >= 0 {
+		base += "-" + strconv.Itoa(uid)
+	}
+	return base
+}
+
+func SharedWorkerScratchBase() string {
+	return filepath.Join(BestEffortCanonicalPath(os.TempDir()), WorkerScratchBaseName)
+}
+
+func BestEffortCanonicalPath(path string) string {
+	if canonical, err := CanonicalExistingPath(path); err == nil {
+		return canonical
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(path)
+}
+
+func PathWithin(root string, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+func CanonicalExistingPath(path string) (string, error) {
+	expanded, err := ExpandPath(path)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(expanded) == "" {
+		return "", errors.New("path is required")
+	}
+	abs, err := filepath.Abs(expanded)
+	if err != nil {
+		return "", fmt.Errorf("absolute path: %w", err)
+	}
+	canonical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", &os.PathError{Op: "canonicalize", Path: abs, Err: err}
+	}
+	return filepath.Clean(canonical), nil
+}
+
+func ExpandPath(path string) (string, error) {
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return home, nil
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	}
+	return path, nil
+}

@@ -1,0 +1,310 @@
+package leasestore
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+var ErrLocalAttemptCoverageUnknown = errors.New("local attempt history coverage is not recorded")
+
+var ErrAttemptConflict = fmt.Errorf("attempt identity or sequence has changed: %w", mutation.ErrConflict)
+
+type FenceError struct {
+	Check string
+}
+
+func (e *FenceError) Error() string {
+	return tracker.ErrStaleFencingToken.Error()
+}
+
+func (e *FenceError) Unwrap() error {
+	return tracker.ErrStaleFencingToken
+}
+
+type Repository interface {
+	ReadLeases(context.Context, tracker.OrganizationID, corestore.Workload, func(Reader) error) error
+	WriteLeases(context.Context, tracker.OrganizationID, corestore.Workload, func(Writer) error) error
+}
+
+type Reader interface {
+	AttemptDiffBodyReferenced(context.Context, tracker.ProjectID, string) (bool, bool, error)
+	Machine(context.Context, string) (Machine, error)
+	Lease(context.Context, string) (Lease, error)
+	LeaseBySession(context.Context, string) (Lease, error)
+	ActiveLeaseForIssue(context.Context, int64) (Lease, error)
+	Attempt(context.Context, string) (Attempt, error)
+	LocalAttemptMatches(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64) ([]string, error)
+	LatestAttempt(context.Context, int64) (Attempt, error)
+	LeaseLossCandidate(context.Context, int64, bool) (Attempt, error)
+	AttemptPage(context.Context, int64, AttemptCursor, int) (AttemptPage, error)
+	AttemptDiff(context.Context, tracker.ProjectID, string, tracker.DiffGeneration) (AttemptDiff, error)
+	LatestAttemptDiff(context.Context, tracker.ProjectID, string, string) (AttemptDiff, error)
+	LatestWorkItemAttemptDiff(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (AttemptDiff, error)
+	LatestAttemptDiffSequence(context.Context, string, string, string) (int64, error)
+	Usage(context.Context, string) (int64, error)
+}
+
+type CheckpointAttemptReader interface {
+	SourceCheckpointAttempt(context.Context, int64) (Attempt, error)
+	SourceCheckpointAttempts(context.Context, int64, int) ([]Attempt, error)
+	CheckpointAttemptPage(context.Context, int64, AttemptCursor, int) (AttemptPage, error)
+}
+
+type Writer interface {
+	ClaimFactsWriter
+	IndexAttemptDiffBodies(context.Context, tracker.ProjectID, string, []string) error
+	Reader
+	LockMachine(context.Context, string) (Machine, error)
+	RegisterMachine(context.Context, Machine) error
+	HeartbeatMachine(context.Context, Machine, time.Time) error
+	UpdateMachineSpriteWake(context.Context, SpriteWake) error
+	Claim(context.Context, Claim) (Lease, error)
+	AdvanceLeaseWorkItemRevision(context.Context, Fence, int64, int64, int64) error
+	Renew(context.Context, Fence, time.Duration) (Lease, error)
+	RenewWithLandingCapacity(context.Context, Fence, time.Duration, int64) (Lease, error)
+	Release(context.Context, Fence, string) (Lease, error)
+	Expire(context.Context, Fence) (Lease, error)
+	ExpireWithCancellation(context.Context, Fence, *AttemptCancellation) (Lease, error)
+	RecordAttempt(context.Context, AttemptEvent) (Attempt, error)
+	RecordAttemptEvent(context.Context, AttemptEvent) (Attempt, bool, error)
+	SetAttemptRuntimeHeartbeat(context.Context, string, int64, *time.Time, ...bool) error
+	CreateAttemptDiff(context.Context, AttemptDiff) error
+	LockAttemptDiffGeneration(context.Context, string, string, string, string, string) (int64, error)
+}
+
+type UnreleasedIssueLeaseReader interface {
+	HasUnreleasedIssueLease(context.Context, int64) (bool, error)
+}
+
+type UnreleasedIssueLeaseLocker interface {
+	LockUnreleasedIssueLease(context.Context, int64) (Lease, error)
+}
+
+type FencedLeaseLocker interface {
+	LockLease(context.Context, string) (Lease, error)
+}
+
+type Machine struct {
+	OrganizationID     tracker.OrganizationID
+	ID                 string
+	Hostname           string
+	DisplayName        string
+	Capacity           int64
+	Version            string
+	SpriteName         string
+	SpriteWokenAt      *time.Time
+	SpriteWakeFailedAt *time.Time
+}
+
+type SpriteWake struct {
+	MachineID  string
+	RunnerID   string
+	Name       string
+	WokenAt    *time.Time
+	FailedAt   *time.Time
+	ObservedAt time.Time
+}
+
+type MachineRegistrationWriter interface {
+	RegisterOwnedMachine(context.Context, Machine, string) error
+}
+
+type Fence struct {
+	LeaseID      string
+	FencingToken int64
+}
+
+type AttemptCancellation struct {
+	Attempt AttemptEvent
+	History eventstore.Event
+}
+
+type Claim struct {
+	PreviousAttemptCancellation *AttemptCancellation
+	IssueID                     int64
+	ExpectedRevision            int64
+	MachineID                   string
+	SessionID                   string
+	LeaseID                     string
+	TTL                         time.Duration
+	LandingCapacity             int64
+	RunnerID                    string `json:"-"`
+}
+
+type Lease struct {
+	OrganizationID   tracker.OrganizationID
+	LeaseID          string
+	FencingToken     int64
+	IssueID          int64
+	MachineID        string
+	SessionID        string
+	WorkItemRevision int64
+	LandingCapacity  int64
+	AcquiredAt       time.Time
+	RenewedAt        time.Time
+	ExpiresAt        time.Time
+	ReleasedAt       *time.Time
+	ReleaseReason    string
+	ProjectID        *tracker.ProjectID `json:"-"`
+	RunnerID         *string            `json:"-"`
+	IsolationTier    *string            `json:"-"`
+}
+
+type Attempt struct {
+	LocalAttemptID            int64 `json:"-"`
+	LocalAttemptIDRecorded    bool  `json:"-"`
+	ClaimDisposition          *string
+	RuntimeHeartbeatAt        *time.Time
+	WorkerCleanupRequired     *bool `json:"-"`
+	RuntimeSummarySequence    int64
+	CleanupAcknowledgedAt     *time.Time
+	OrganizationID            tracker.OrganizationID
+	ID                        string
+	IssueID                   int64
+	LeaseID                   string
+	FencingToken              int64
+	RunID                     string
+	Sequence                  int64
+	Status                    string
+	WorkItemRevision          int64
+	DispatchGeneration        int64
+	PayloadObjectKey          string
+	CheckpointObjectKey       *string
+	CheckpointPreservesSource *bool `json:"-"`
+	ArtifactsObjectKey        *string
+	FailureSequence           *int64          `json:"-"`
+	IdentitySequence          int64           `json:"-"`
+	Identity                  AttemptIdentity `json:"-"`
+	StartedAt                 time.Time
+	UpdatedAt                 time.Time
+}
+
+type AttemptCursor struct {
+	IssueID      int64
+	BeforeFence  int64
+	AfterFence   int64
+	ThroughFence int64
+	Oldest       bool
+}
+
+type AttemptPage struct {
+	Items []Attempt
+	Next  AttemptCursor
+}
+
+type AttemptDiff struct {
+	OrganizationID  tracker.OrganizationID
+	ID              string
+	AttemptID       string
+	IssueID         int64
+	ProjectID       tracker.ProjectID
+	WorkItemID      tracker.NativeWorkItemID
+	Generation      tracker.DiffGeneration
+	Producer        tracker.DiffProducer
+	BaseSHA         string
+	HeadSHA         string
+	FileCount       int
+	PatchBytes      int64
+	PostedBytes     int64
+	Truncated       bool
+	ManifestExpired bool
+	ArchiveID       string
+	CreatedAt       time.Time
+}
+
+type AttemptEvent struct {
+	HumanActionStatus         *string                     `json:"-"`
+	LocalAttemptID            int64                       `json:"-"`
+	RuntimeHeartbeatAt        *time.Time                  `json:"-"`
+	WorkerCleanupRequired     *bool                       `json:"-"`
+	RuntimeOrdered            bool                        `json:"-"`
+	CheckpointPreservesSource *bool                       `json:"-"`
+	CheckpointReference       attachment.ArchiveReference `json:"-"`
+	Termination               bool                        `json:"termination,omitempty"`
+	PayloadReference          attachment.ArchiveReference `json:"-"`
+	Usage                     []tracker.NativeUsage       `json:"-"`
+	Failure                   *AttemptFailure             `json:"-"`
+	Identity                  AttemptIdentity             `json:"-"`
+	ID                        string
+	Fence                     Fence
+	RunID                     string
+	Sequence                  int64
+	Status                    string
+	DispatchGeneration        int64
+	StartedAt                 time.Time
+	PayloadObjectKey          string
+	CheckpointObjectKey       *string
+	ArtifactsObjectKey        *string
+	UsageCorrection           bool
+}
+
+type CheckpointSourceCandidate struct {
+	AttemptID  string
+	ProjectID  tracker.ProjectID
+	WorkItemID tracker.NativeWorkItemID
+}
+
+type CheckpointSourcePage struct {
+	Candidate *CheckpointSourceCandidate
+	Next      string
+}
+
+type CheckpointSourceReader interface {
+	UnclassifiedCheckpointSource(context.Context, string, int) (CheckpointSourcePage, error)
+}
+
+type CheckpointSourceFact struct {
+	AttemptID           string
+	IssueID             int64
+	Sequence            int64
+	CheckpointObjectKey string
+	PreservesSource     bool
+}
+
+type CheckpointSourceWriter interface {
+	SetCheckpointSource(context.Context, CheckpointSourceFact) error
+}
+
+const MaxAttemptFailureExampleBytes = 4096
+
+type AttemptFailure struct {
+	Example           string
+	Class             string
+	LandingObservedAt *time.Time
+}
+
+type AttemptFailureRow struct {
+	AttemptID string
+	Status    string
+	Recorded  bool
+	Failure   AttemptFailure
+	StartedAt time.Time
+	UpdatedAt time.Time
+}
+
+type AttemptFailureReader interface {
+	AttemptFailures(context.Context, int64, int) ([]AttemptFailureRow, error)
+}
+
+type AttemptFailureFact struct {
+	AttemptID string
+	IssueID   int64
+	Sequence  int64
+	Failure   AttemptFailure
+}
+
+type AttemptFailureWriter interface {
+	SetAttemptFailure(context.Context, AttemptFailureFact) error
+}
+
+type AttemptReceiptReader interface {
+	AttemptReceiptSequences(context.Context, string, []int64) ([]int64, error)
+}

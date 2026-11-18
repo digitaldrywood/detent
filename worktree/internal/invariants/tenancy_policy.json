@@ -1,0 +1,931 @@
+{
+  "test_support": [
+    "internal/cloudentry/internal/entryfixture",
+    "internal/cloudentry/internal/harness",
+    "internal/hubclient/internal/scenariotest",
+    "internal/hubclient/internal/testsupport",
+    "internal/hubserver/changefiles/sourcetest",
+    "internal/hubserver/hubtest",
+    "internal/hubserver/integration/hubfixture",
+    "internal/hubserver/postgres/pgstoretest",
+    "internal/hubserver/runneradvice/advicetest",
+    "internal/testenv/pgtest",
+    "internal/workspace/internal/commandtest",
+    "internal/workspace/internal/gitfixture"
+  ],
+  "exceptions": {
+    "cmd/detent/restart_posix.go": {
+      "process:syscall.Exec": 1
+    },
+    "internal/antigravity/backend.go": {
+      "import:os/exec": 1
+    },
+    "internal/antigravity/process.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/artifact/capture.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/buildinfo/buildinfo.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/claudecode/backend.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/claudecode/billing.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/claudecode/isolation.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/claudecode/process.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/cli/cli.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/controller_process.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/cli/dev_runtime.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/cli/doctor.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 5
+    },
+    "internal/cli/doctor/doctor_invariants.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/doctor/doctor_workflow_source.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/doctor/doctor_worktrees.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/doctor_environment.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/doctor_landing_credential.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/hub_client.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/hub_coordinator_codex.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/local_worker.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/cli/remote_runner.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/cli/runner.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/cli/runner_checkout.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/runner_checkout_refresh.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/runner_isolation.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/runner_projects.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/runner_service_user.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/runtime.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 2
+    },
+    "internal/cli/service.go": {
+      "import:os/exec": 1
+    },
+    "internal/cli/ssh_runner.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/cli/validate.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/cli/worker_processes.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/codex/appserver.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/codex/conversation_control.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/codex/release_audit.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/codex/transport.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/gobudget/wrapper.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/gotestreceipt/session.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/gotestreceipt/wrapper.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/hubclient/api/repositories.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/hubclient/api/runner_sessions.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/hubclient/dispatch/native_scheduler.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/hubclient/nativechange/native_usage.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/hubserver/database_backend.go": {
+      "pool:postgres.Open": 1
+    },
+    "internal/opencode/backend.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/opencode/process.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/orchestrator/heartbeat.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/orchestrator/lane_revocation.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/orchestrator/orchestrator.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/orchestrator/state.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/orchestrator/stop_recorded_run.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/orchestrator/stop_run.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/pgtransport/pools.go": {
+      "pool:pgxpool.NewWithConfig": 2
+    },
+    "internal/piagent/backend.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/piagent/process.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/procgroup/environment.go": {
+      "import:os/exec": 1
+    },
+    "internal/procgroup/identity.go": {
+      "import:os/exec": 1
+    },
+    "internal/procgroup/process_group_other.go": {
+      "import:os/exec": 1
+    },
+    "internal/procgroup/process_group_unix.go": {
+      "import:os/exec": 1
+    },
+    "internal/procgroup/process_group_windows.go": {
+      "import:os/exec": 1
+    },
+    "internal/procgroup/rss_unix.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/procgroup/sandbox_capabilities_linux.go": {
+      "import:os/exec": 1
+    },
+    "internal/procgroup/sandbox_capabilities_other.go": {
+      "import:os/exec": 1
+    },
+    "internal/procgroup/start_other.go": {
+      "import:os/exec": 1
+    },
+    "internal/procstart/procstart_other.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/project/runner_setup.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/project/workflow_source.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/releaseaudit/bundle.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/releaseaudit/sandbox.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/releaseaudit/sandbox_cgroup_linux.go": {
+      "import:os/exec": 1
+    },
+    "internal/releaseaudit/sandbox_cgroup_other.go": {
+      "import:os/exec": 1
+    },
+    "internal/releaseaudit/source.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/releaseprovenance/signature.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 2
+    },
+    "internal/runner/agent.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/checkpoint.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 2
+    },
+    "internal/runner/dependency_reasons.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/execution.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/failure_attribution.go": {
+      "import:os/exec": 1
+    },
+    "internal/runner/go_budget.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/progress_check.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/recoveryfingerprint/fingerprint.go": {
+      "import:os/exec": 1
+    },
+    "internal/runner/security_audit.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/sleep.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/runner/ssh_callbacks.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/ssh_workspace.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/runner/types.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/usage_execution.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/validation_process.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/runner/worker_github.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 2
+    },
+    "internal/service/service.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/shell/command_other.go": {
+      "import:os/exec": 1
+    },
+    "internal/shell/command_windows.go": {
+      "import:os/exec": 1
+    },
+    "internal/shell/shell.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/tmuxstatus/status.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 2
+    },
+    "internal/toolcache/cache.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/tracker/native.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/tui/model.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 3
+    },
+    "internal/update/preflight.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/update/update.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 4
+    },
+    "internal/update/worker_artifacts.go": {
+      "import:os/exec": 1
+    },
+    "internal/workspace/changesource/capture.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/workspace/checkpoint.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/workspace/checkpoint/state.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/workspace/checkpoint_helpers.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/workspace/diffstat.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/workspace/filesystem.go": {
+      "import:os/exec": 1
+    },
+    "internal/workspace/gitexec/git.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 2
+    },
+    "internal/workspace/go_test_receipts.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/workspace/hook.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/workspace/hookproc/process_unix.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/workspace/hookproc/process_windows.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/workspace/landing_incorporation.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/workspace/local_progress.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 2
+    },
+    "internal/workspace/merge.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/workspace/signing/policy.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/workspace/validation.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/workspace/validation_inputs.go": {
+      "import:os/exec": 1
+    },
+    "internal/workspace/workspace.go": {
+      "import:os/exec": 1
+    },
+    "internal/workspaceexec/exec.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "internal/workspacefiles/files.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/workspacegit/git.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/workspacerunner/worktree.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/workspaceterminal/pty_other.go": {
+      "import:os/exec": 1
+    },
+    "internal/workspaceterminal/pty_unix.go": {
+      "import:os/exec": 1
+    },
+    "internal/workspaceterminal/sandbox_darwin.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "internal/workspaceterminal/sandbox_other.go": {
+      "import:os/exec": 1
+    },
+    "internal/workspaceterminal/terminal.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "tools/checklock/main.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1
+    },
+    "tools/cifailure/main.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "tools/cifailure/release_audit.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "tools/invariantcheck/main.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "tools/releasenotes/main.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    },
+    "tools/scalesoak/main.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 2
+    },
+    "tools/testgate/main.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1
+    }
+  },
+  "debt": {
+    "internal/cloudentry/billing.go": {
+      "timer:time.NewTicker": 1
+    },
+    "internal/cloudentry/provisioning.go": {
+      "timer:time.After": 1,
+      "timer:time.NewTicker": 1
+    },
+    "internal/cloudentry/runtime_config.go": {
+      "timer:time.NewTimer": 1
+    },
+    "internal/cloudentry/storage_backend.go": {
+      "pool:pgxpool.NewWithConfig": 1
+    },
+    "internal/cloudentry/tenant/launcher.go": {
+      "import:os/exec": 1,
+      "process:exec.CommandContext": 1,
+      "timer:time.After": 1,
+      "timer:time.NewTicker": 1
+    },
+    "internal/hubserver/access_administration.go": {
+      "organization:accessOrganization": 8
+    },
+    "internal/hubserver/access_audit.go": {
+      "organization:accessOrganization": 5
+    },
+    "internal/hubserver/access_credentials.go": {
+      "organization:accessOrganization": 5
+    },
+    "internal/hubserver/access_directory_seam.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/access_invitation_commands.go": {
+      "organization:accessOrganization": 16
+    },
+    "internal/hubserver/access_invitations.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/access_members_seam.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/access_receipts_seam.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/access_records.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:accessOrganization": 1,
+      "organization:localOrganization": 1
+    },
+    "internal/hubserver/access_secrets.go": {
+      "organization:accessOrganization": 2
+    },
+    "internal/hubserver/account_commands.go": {
+      "organization:Hosted.OrganizationID": 4,
+      "organization:accessOrganization": 2
+    },
+    "internal/hubserver/account_receipts.go": {
+      "organization:accessOrganization": 9
+    },
+    "internal/hubserver/activity_seam.go": {
+      "organization:appOrganizationID": 2
+    },
+    "internal/hubserver/administration_commands.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:accessOrganization": 4
+    },
+    "internal/hubserver/ai_credit_commands.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/app_ui.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:appOrganizationID": 2
+    },
+    "internal/hubserver/artifact_catalog.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/board_projection_records.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/change_columns.go": {
+      "organization:appOrganizationID": 2
+    },
+    "internal/hubserver/change_content.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/changes.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/conversation_coordinator.go": {
+      "timer:time.After": 2,
+      "timer:time.NewTicker": 1,
+      "timer:time.NewTimer": 1
+    },
+    "internal/hubserver/conversation_coordinator_reads.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/conversation_seam.go": {
+      "organization:appOrganizationID": 1,
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/conversations/host.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/conversations/http.go": {
+      "timer:time.NewTicker": 2
+    },
+    "internal/hubserver/conversations/lifecycle_postgres.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/conversations/service.go": {
+      "timer:time.NewTicker": 1
+    },
+    "internal/hubserver/conversations/worker_postgres.go": {
+      "timer:time.NewTimer": 1
+    },
+    "internal/hubserver/conversations/worker_router.go": {
+      "timer:time.NewTicker": 1
+    },
+    "internal/hubserver/credential_commands.go": {
+      "organization:accessOrganization": 3
+    },
+    "internal/hubserver/credential_maintenance.go": {
+      "organization:accessOrganization": 4
+    },
+    "internal/hubserver/credits_seam.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:hostedOrganization": 3
+    },
+    "internal/hubserver/daily_summary_seam.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/database.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/entry_key_board_read.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/entry_keys.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:accessOrganization": 2
+    },
+    "internal/hubserver/github_batch_worker.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/github_outbound_seam.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/github_reconciliation_records.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/github_webhook_seam.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/hosted_account_api.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/hosted_admin.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:accessOrganization": 3
+    },
+    "internal/hubserver/hosted_artifacts.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/hosted_auth.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/hosted_billing_api.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:hostedOrganization": 7
+    },
+    "internal/hubserver/hosted_billing_ui.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:hostedOrganization": 2
+    },
+    "internal/hubserver/hosted_billing_worker.go": {
+      "organization:hostedOrganization": 1,
+      "timer:time.NewTicker": 1
+    },
+    "internal/hubserver/hosted_config.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/hosted_context.go": {
+      "organization:Hosted.OrganizationID": 3
+    },
+    "internal/hubserver/hosted_diagnostics_tenant.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/hosted_fleet_tenant.go": {
+      "organization:appOrganizationID": 5
+    },
+    "internal/hubserver/hosted_github_seam.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/hosted_login.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:accessOrganization": 8
+    },
+    "internal/hubserver/hosted_operator_keys.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/hosted_org_api.go": {
+      "organization:Hosted.OrganizationID": 2,
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/hosted_plans_seam.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/hosted_reports_filters.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/hosted_reports_tracking.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/hosted_shared.go": {
+      "organization:Hosted.OrganizationID": 3,
+      "organization:accessOrganization": 2,
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/hosted_ui.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:accessOrganization": 1,
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/hosted_usage_api.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:accessOrganization": 2,
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/hostedplans/allowances.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/hostedplans/billing_config.go": {
+      "organization:hostedOrganization": 7
+    },
+    "internal/hubserver/hostedplans/billing_records.go": {
+      "organization:hostedOrganization": 5
+    },
+    "internal/hubserver/hostedplans/billing_state.go": {
+      "organization:hostedOrganization": 2
+    },
+    "internal/hubserver/hostedplans/plan_api.go": {
+      "organization:hostedOrganization": 5
+    },
+    "internal/hubserver/hostedplans/plans.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/hostedplans/runtime_publication.go": {
+      "organization:hostedOrganization": 3
+    },
+    "internal/hubserver/hostedplans/runtime_records.go": {
+      "organization:hostedOrganization": 7
+    },
+    "internal/hubserver/hostedplans/service.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/hubauth/operator.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/hubauth/operator_checks.go": {
+      "organization:Hosted.OrganizationID": 2
+    },
+    "internal/hubserver/hubauth/organization.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/hubauth/request.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/hubauth_seam.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/internal/hubdeps/deps.go": {
+      "timer:time.NewTimer": 1
+    },
+    "internal/hubserver/issue_email.go": {
+      "organization:accessOrganization": 8,
+      "timer:time.NewTicker": 1
+    },
+    "internal/hubserver/issue_notification_api.go": {
+      "organization:accessOrganization": 3
+    },
+    "internal/hubserver/local_app.go": {
+      "organization:Hosted.OrganizationID": 1,
+      "organization:appOrganizationID": 1,
+      "organization:localOrganization": 6
+    },
+    "internal/hubserver/model_selection.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/native_board.go": {
+      "organization:appOrganizationID": 2
+    },
+    "internal/hubserver/native_dispatch_wait.go": {
+      "timer:time.NewTimer": 1
+    },
+    "internal/hubserver/native_projects.go": {
+      "organization:hostedOrganization": 2
+    },
+    "internal/hubserver/native_retention.go": {
+      "organization:appOrganizationID": 3
+    },
+    "internal/hubserver/native_storage_archive.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/native_work_search_index.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/operator_administration.go": {
+      "organization:Hosted.OrganizationID": 6,
+      "organization:accessOrganization": 5
+    },
+    "internal/hubserver/operator_analytics.go": {
+      "organization:Hosted.OrganizationID": 2
+    },
+    "internal/hubserver/operator_billing.go": {
+      "organization:Hosted.OrganizationID": 2,
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/operator_catalog.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/operator_model_selection.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/platform_tenant.go": {
+      "organization:accessOrganization": 2
+    },
+    "internal/hubserver/policy.go": {
+      "organization:hostedOrganization": 2
+    },
+    "internal/hubserver/postgres/lifecycle.go": {
+      "pool:pgxpool.NewWithConfig": 1,
+      "pool:stdlib.OpenDB": 1
+    },
+    "internal/hubserver/postgres_app_ui.go": {
+      "organization:Hosted.OrganizationID": 5
+    },
+    "internal/hubserver/project_action_dispatch.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/project_actions.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/project_rank.go": {
+      "organization:appOrganizationID": 2
+    },
+    "internal/hubserver/project_record_participants.go": {
+      "organization:Hosted.OrganizationID": 2
+    },
+    "internal/hubserver/readable_url_records.go": {
+      "organization:appOrganizationID": 5
+    },
+    "internal/hubserver/readable_urls.go": {
+      "organization:appOrganizationID": 6
+    },
+    "internal/hubserver/release_feed_seam.go": {
+      "organization:accessOrganization": 1,
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/report_detail_postgres.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/report_productivity_postgres.go": {
+      "organization:Hosted.OrganizationID": 5
+    },
+    "internal/hubserver/reportstore/runner_capacity.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/hubserver/request_metrics_seam.go": {
+      "organization:hostedOrganization": 1
+    },
+    "internal/hubserver/run_details.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/runneradvice/recommendation.go": {
+      "import:github.com/digitaldrywood/detent/internal/procgroup": 1
+    },
+    "internal/hubserver/scheduled_source_maintenance.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/service.go": {
+      "organization:Hosted.OrganizationID": 3,
+      "organization:appOrganizationID": 1,
+      "organization:hostedOrganization": 2,
+      "organization:localOrganization": 1,
+      "timer:time.NewTicker": 1
+    },
+    "internal/hubserver/team_threads_seam.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/usage_costs_seam.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/validation_seam.go": {
+      "organization:Hosted.OrganizationID": 1
+    },
+    "internal/hubserver/work_board.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/work_item_read_seam.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/work_view_records.go": {
+      "organization:appOrganizationID": 2
+    },
+    "internal/hubserver/workspace_relay_http.go": {
+      "timer:time.NewTicker": 1
+    },
+    "internal/hubserver/workspace_relay_tickets.go": {
+      "organization:appOrganizationID": 1
+    },
+    "internal/hubserver/workspace_seam.go": {
+      "organization:accessOrganization": 1
+    },
+    "internal/hubserver/workspace_service.go": {
+      "timer:time.NewTimer": 1
+    }
+  }
+}

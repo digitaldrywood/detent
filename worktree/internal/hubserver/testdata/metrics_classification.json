@@ -1,0 +1,41 @@
+{
+  "goose_db_version": {
+    "ownership": "platform",
+    "scope": "SQLite catalog and migration bookkeeping",
+    "inline_payloads": []
+  },
+  "request_days": {
+    "ownership": "organization-owned",
+    "scope": "tenant.organization (database binding)",
+    "inline_payloads": []
+  },
+  "request_hours": {
+    "ownership": "organization-owned",
+    "scope": "tenant.organization (database binding)",
+    "inline_payloads": [
+      "histogram"
+    ]
+  },
+  "request_minutes": {
+    "ownership": "organization-owned",
+    "scope": "tenant.organization (database binding)",
+    "inline_payloads": [
+      "histogram"
+    ]
+  },
+  "sqlite_schema": {
+    "ownership": "platform",
+    "scope": "SQLite catalog and migration bookkeeping",
+    "inline_payloads": []
+  },
+  "sqlite_sequence": {
+    "ownership": "platform",
+    "scope": "SQLite catalog and migration bookkeeping",
+    "inline_payloads": []
+  },
+  "tenant": {
+    "ownership": "organization-owned",
+    "scope": "tenant.organization (database binding)",
+    "inline_payloads": []
+  }
+}

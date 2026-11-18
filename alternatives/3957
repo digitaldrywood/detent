@@ -1,0 +1,128 @@
+package runnerupdate
+
+import (
+	"context"
+	"net/http"
+	"strings"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerenroll"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/update"
+)
+
+func EffectiveTarget(ctx context.Context, r tenantstore.Reader, id, defaultVersion string) (string, bool, error) {
+	owner, ok := r.(runnerstore.UpdateTargetReader)
+	if !ok {
+		return defaultVersion, false, nil
+	}
+	organization, err := owner.RunnerUpdateTarget(ctx, "")
+	if err != nil {
+		return "", false, err
+	}
+	if organization.Version != "" {
+		return organization.Version, true, nil
+	}
+	runner, err := owner.RunnerUpdateTarget(ctx, id)
+	if err != nil {
+		return "", false, err
+	}
+	if runner.Version != "" {
+		return runner.Version, true, nil
+	}
+	return defaultVersion, false, nil
+}
+
+func OfferAllowed(ctx context.Context, r tenantstore.Reader, id string, request *runnerauth.UpdateRequest) (bool, error) {
+	if request == nil {
+		return false, nil
+	}
+	target, held, err := EffectiveTarget(ctx, r, id, request.Version)
+	if err != nil {
+		return false, err
+	}
+	if held && strings.TrimPrefix(request.Version, "v") != strings.TrimPrefix(target, "v") {
+		return false, nil
+	}
+	if owner, ok := r.(runnerstore.UpdateTargetReader); ok {
+		failed, err := owner.RunnerVersionFailed(ctx, strings.TrimPrefix(request.Version, "v"))
+		if err != nil {
+			return false, err
+		}
+		if failed {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (s *Service) SetTarget(ctx context.Context, scope hubapi.Scope, id string, target runnerstore.UpdateTarget) error {
+	target.Version = strings.TrimPrefix(strings.TrimSpace(target.Version), "v")
+	if target.Revision < 0 {
+		return hubapi.PublicInvalid("valid target revision required")
+	}
+	if target.Version != "" {
+		if _, err := update.CompareVersions(target.Version, target.Version); err != nil {
+			return hubapi.PublicInvalid("valid release version required")
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancel()
+	return s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := scope.Authorize(ctx, w, true); err != nil {
+			return err
+		}
+		owner, ok := w.(runnerstore.UpdateTargetWriter)
+		if !ok {
+			return hubapi.RunEventStorageUnavailable()
+		}
+		return owner.SetRunnerUpdateTarget(ctx, id, target)
+	})
+}
+
+func (s *httpRoutes) setRunnerTarget(c echo.Context) error {
+	credential, ok := s.deps.Credential(c)
+	if !ok || credential.Runner.RunnerID != "" {
+		return s.deps.Error(c, runnerenroll.Unauthorized())
+	}
+	var target runnerstore.UpdateTarget
+	if err := hubapi.DecodeJSON(c, &target); err != nil {
+		return s.deps.Invalid(c, err)
+	}
+	if err := s.deps.Service().SetTarget(c.Request().Context(), s.scope(c, credential), c.Param("runner"), target); err != nil {
+		return s.deps.Error(c, err)
+	}
+	return c.JSON(http.StatusOK, runnerstore.UpdateTarget{Version: target.Version, Revision: target.Revision + 1})
+}
+
+func (s *httpRoutes) getRunnerTarget(c echo.Context) error {
+	credential, ok := s.deps.Credential(c)
+	if !ok {
+		return s.deps.Error(c, runnerenroll.Unauthorized())
+	}
+	scope := s.scope(c, credential)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
+	defer cancel()
+	var target runnerstore.UpdateTarget
+	err := s.deps.Service().deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := scope.Authorize(ctx, r, false); err != nil {
+			return err
+		}
+		owner, ok := r.(runnerstore.UpdateTargetReader)
+		if !ok {
+			return hubapi.RunEventStorageUnavailable()
+		}
+		var err error
+		target, err = owner.RunnerUpdateTarget(ctx, c.Param("runner"))
+		return err
+	})
+	if err != nil {
+		return s.deps.Error(c, err)
+	}
+	return c.JSON(http.StatusOK, target)
+}

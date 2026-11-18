@@ -1,0 +1,367 @@
+package hubserver
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
+	t.Parallel()
+	repository, _ := projectRecordPostgresWithAdmin(t, 7)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			service := accountPreferencesPostgresFixture(t, repository).service
+			service.config.Hosted.OrganizationID = string(org)
+			service.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
+			service.config.SecretKeys = secretTestKeys(t, "1", "1")
+			service.database.hostedOrganization = org
+			service.config.Clock = func() time.Time { return now }
+			content := eventstore.NewContent(service.config.RunDetails)
+			descriptor := hubTestPolicy()
+			policy, err := content.PrepareProjectPolicy(t.Context(), org, descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy.ProjectID, policy.ApprovedBy, policy.ApprovedAt = "project_example", "principal", now
+			var project projectstore.Record
+			claims := cloudassert.Claims{Kind: cloudassert.KindBrowser, Audience: string(org), Subject: "user_example", ProviderOrganization: "provider_" + string(org), ProviderSession: "session_example", SessionCreatedAt: now, SessionExpiresAt: now.Add(time.Hour), AccessExpiresAt: now.Add(time.Hour), Email: "member@example.test", Role: "admin", Binding: "binding_example"}
+			service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+				return func(c echo.Context) error {
+					c.Set(hostedSharedClaimsKey, claims)
+					return next(c)
+				}
+			})
+			envelope, err := service.config.SecretKeys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", Slug: "example-" + string(org), CreatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: claims.ProviderOrganization}); err != nil {
+					return err
+				}
+				var err error
+				project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project_example", Name: "Example", Profile: "native"}, States: nativeFixtureStates()})
+				if err != nil {
+					return err
+				}
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "principal", Name: "Example", Hash: "principal_hash", Scope: "operator", NativeOnly: true, ProjectAccess: "selected", Kind: "personal", CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: claims.Subject, Email: claims.Email, MembershipID: "membership_example", Role: "admin", Active: true, PrincipalID: "principal", CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: org, Hash: claims.Binding, Email: claims.Email, Subject: claims.Subject, ProviderOrganizationID: claims.ProviderOrganization, SessionID: claims.ProviderSession, IdentityCreatedAt: now, IdentityExpiresAt: claims.SessionExpiresAt, CreatedAt: now, ExpiresAt: claims.SessionExpiresAt}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: claims.Subject, ProjectID: "project_example", CanWrite: true}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: "principal", ProjectID: "project_example"}); err != nil {
+					return err
+				}
+				if err := w.ApproveProjectPolicy(t.Context(), policy, ""); err != nil {
+					return err
+				}
+				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			records := []viewstore.BoardRecord{}
+			for index := range 2 {
+				id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
+				changeID, versionID := fmt.Sprintf("change_%03d", index), fmt.Sprintf("version_%03d", index)
+				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project.Core.ID, WorkItemID: id, Number: index + 1, Revision: 1}, Title: "Example", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "principal"}, CreatedAt: now, UpdatedAt: now}
+				raw, _ := json.Marshal(issue)
+				collaboration, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project.Core.ID, WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, _ = json.Marshal(tracker.ChangeRequest{ID: changeID, OrganizationID: org, ProjectID: project.Core.ID, WorkItemID: id, LinkedIssues: []tracker.NativeWorkItemID{id}, Title: "Example", Revision: 1, CurrentVersion: versionID, CreatedAt: now, UpdatedAt: now})
+				change, err := content.PrepareChange(t.Context(), org, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := changeTestInput()
+				input.PolicyID = descriptor.ID
+				raw, _ = json.Marshal(tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, ChangeVersionInput: input, Policy: descriptor, Actor: issue.Actor, CreatedAt: now})
+				version, err := content.PrepareVersion(t.Context(), org, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, _ = json.Marshal(tracker.ChangeReview{ID: "review_" + changeID, VersionID: versionID, Decision: "approved", Actor: issue.Actor, CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{Run: securityaudit.Run{ID: int64(index + 1)}}})
+				evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: changeID, Kind: "review"}, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				card := tracker.NativeBoardCard{Issue: issue, Change: &tracker.NativeBoardChange{ID: changeID, Title: "Example", Status: "draft"}}
+				payload, err := viewstore.NewContent(service.config.RunDetails).PrepareBoard(t.Context(), card)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project.Core.ID, NativeID: id, Number: int64(index + 1), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State})
+					if err != nil {
+						return err
+					}
+					if _, err := w.CreateCollaborationVersion(t.Context(), collaboration); err != nil {
+						return err
+					}
+					if _, err := w.CreateChange(t.Context(), change); err != nil {
+						return err
+					}
+					if _, err := w.CreateVersion(t.Context(), version); err != nil {
+						return err
+					}
+					if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: project.Core.ID, WorkItemID: id, ChangeID: changeID, CreatedAt: now}); err != nil {
+						return err
+					}
+					if _, err := w.AppendEvidence(t.Context(), evidence); err != nil {
+						return err
+					}
+					board := viewstore.BoardRecord{OrganizationID: org, ProjectID: project.Core.ID, WorkItemID: id, SourceRevision: item.Revision, SourceEventSequence: item.EventSequence, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%03d", index)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, Payload: payload,
+						PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: issue.Number, Actor: issue.Actor, Change: card.Change, ChangePrincipalID: issue.Actor.PrincipalID}}
+					records = append(records, board)
+					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: project.Core.ID, WorkItemID: id, ExpectedRevision: item.Revision, ExpectedEventSequence: item.EventSequence, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &board})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			scope := hubscope.NativeScope{Organization: org, Project: project.Core.ID, Credential: hubapi.APICredential{ID: "principal", Hash: "principal_hash", SessionHash: claims.Binding, Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: claims.Role, HostedMembership: "membership_example"}}
+			barrier := &boardSessionBarrier{firstInside: make(chan struct{}), secondDone: make(chan struct{})}
+			t.Cleanup(barrier.release)
+			tenantRepository := service.config.TenantRepository
+			service.config.TenantRepository = boardSessionRepository{Repository: tenantRepository, barrier: barrier}
+			if err := repository.ReadRequest(t.Context(), org, func(ctx context.Context) error {
+				prepared := service.hydrateBoardRecords(ctx, scope, records)
+				ctx = context.WithValue(ctx, boardRecordWorkerContextKey{}, func(ctx context.Context) (context.Context, func()) {
+					barrier.workers.Add(1)
+					return context.WithValue(ctx, boardSessionWorkerKey{}, true), barrier.release
+				})
+				preparation := service.prepareBoardPage(ctx, scope, records, now, true, prepared)
+				defer preparation.close()
+				for index := range records {
+					card, err := preparation.card(ctx, index)
+					if err != nil {
+						return err
+					}
+					if card.Issue.OrganizationID != org || card.Change == nil || card.Change.Status == "" {
+						return fmt.Errorf("incomplete fallback card for tenant %s", org)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Errorf("shared-request card preparation: %v", err)
+			}
+			service.config.TenantRepository = tenantRepository
+			if got := barrier.workers.Load(); got != 2 {
+				t.Errorf("instrumented card workers=%d, want 2", got)
+			}
+			if got := barrier.calls.Load(); got != 0 {
+				t.Errorf("card workers made %d session database calls; overlapping open results=%t", got, barrier.overlap.Load())
+			}
+			t.Logf("tenant=%s instrumented_workers=%d worker_session_calls=%d overlapping_open_results=%t", org, barrier.workers.Load(), barrier.calls.Load(), barrier.overlap.Load())
+			start := make(chan struct{})
+			results := make(chan *httptest.ResponseRecorder, 20)
+			var workers sync.WaitGroup
+			for range 20 {
+				workers.Go(func() {
+					<-start
+					request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, fmt.Sprintf("/api/v2/organizations/%s/projects/project_example/work-items?include=board", org), nil)
+					response := httptest.NewRecorder()
+					service.Handler().ServeHTTP(response, request)
+					results <- response
+				})
+			}
+			close(start)
+			workers.Wait()
+			close(results)
+			for response := range results {
+				if response.Code != http.StatusOK {
+					t.Errorf("browser work list status=%d body=%s", response.Code, response.Body.String())
+					continue
+				}
+				var page tracker.NativeIssuePage
+				if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Cards) != 2 {
+					t.Fatalf("board cards=%d, want 2", len(page.Cards))
+				}
+				for _, card := range page.Cards {
+					if card.Issue.OrganizationID != org || card.Change == nil || card.Change.Status == "" {
+						t.Fatalf("incomplete or wrong-tenant card: %+v", card)
+					}
+				}
+			}
+		})
+	}
+	t.Run("member session cutoff fences board delivery", func(t *testing.T) {
+		organizations := []tracker.OrganizationID{"org_first", "org_second"}
+		cutoff, observed := now.Add(time.Second), now.Add(2*time.Second)
+		check := func(org tracker.OrganizationID, bindings []string, want []bool) {
+			t.Helper()
+			subjects := make([]viewstore.BoardDeliverySubject, len(bindings))
+			for index, binding := range bindings {
+				subjects[index] = viewstore.BoardDeliverySubject{CredentialID: "principal", CredentialHash: "principal_hash", UserID: "user_example", MembershipID: "membership_example", SessionHash: binding}
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				state, err := r.(viewstore.BoardDeliveryReader).BoardDeliveryState(t.Context(), "project_example", subjects, observed)
+				if err != nil {
+					return err
+				}
+				if !state.ProjectLive || len(state.Access) != len(want) {
+					t.Fatalf("board delivery lost fixture authority: tenant=%s state=%+v", org, state)
+				}
+				for index, access := range state.Access {
+					if access.Live != want[index] || access.MemberPrincipalID != "principal" || !access.ExpiresAt.After(observed) {
+						t.Fatalf("board delivery session authority: tenant=%s binding=%s live=%t want=%t access=%+v", org, bindings[index], access.Live, want[index], access)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, org := range organizations {
+			check(org, []string{"binding_example"}, []bool{true})
+		}
+		for index, org := range organizations {
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.RevokeAccessMember(t.Context(), "user_example", cutoff)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			check(org, []string{"binding_example"}, []bool{false})
+			if index == 0 {
+				check(organizations[1], []string{"binding_example"}, []bool{true})
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(t.Context(), "user_example")
+				if err != nil {
+					return err
+				}
+				member.Active, member.UpdatedAt = true, observed
+				if err := w.UpdateAccessMember(t.Context(), member); err != nil {
+					return err
+				}
+				for _, session := range []struct {
+					binding string
+					issued  time.Time
+				}{{"binding_equal", cutoff}, {"binding_fresh", cutoff.Add(time.Microsecond)}} {
+					if err := w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: org, Hash: session.binding, Email: "member@example.test", Subject: "user_example", ProviderOrganizationID: "provider_" + string(org), SessionID: session.binding, IdentityCreatedAt: session.issued, IdentityExpiresAt: now.Add(time.Hour), CreatedAt: observed, ExpiresAt: now.Add(time.Hour)}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			check(org, []string{"binding_example", "binding_equal", "binding_fresh"}, []bool{false, false, true})
+			if index == 0 {
+				check(organizations[1], []string{"binding_example"}, []bool{true})
+			}
+		}
+	})
+}
+
+type boardSessionWorkerKey struct{}
+
+type boardSessionBarrier struct {
+	firstInside chan struct{}
+	secondDone  chan struct{}
+	finish      sync.Once
+	workers     atomic.Int32
+	calls       atomic.Int32
+	overlap     atomic.Bool
+}
+
+func (b *boardSessionBarrier) release() { b.finish.Do(func() { close(b.secondDone) }) }
+
+type boardSessionRepository struct {
+	tenantstore.Repository
+	barrier *boardSessionBarrier
+}
+
+func (r boardSessionRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	if worker, _ := ctx.Value(boardSessionWorkerKey{}).(bool); !worker {
+		return r.Repository.ReadTenant(ctx, org, workload, read)
+	}
+	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
+		audit, ok := reader.(eventstore.AuditDispositionReader)
+		if !ok {
+			return fmt.Errorf("fixture reader lacks audit dispositions")
+		}
+		return read(boardSessionReader{Reader: reader, AuditDispositionReader: audit, barrier: r.barrier})
+	})
+}
+
+type boardSessionReader struct {
+	tenantstore.Reader
+	eventstore.AuditDispositionReader
+	barrier *boardSessionBarrier
+}
+
+func (r boardSessionReader) AuthorizeAccess(ctx context.Context, authority accessstore.Authority, now time.Time) (accessstore.Member, error) {
+	b := r.barrier
+	switch b.calls.Add(1) {
+	case 1:
+		var held sync.Once
+		ctx = postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, query string) {
+			if !strings.Contains(query, "FROM hosted_sessions") {
+				return
+			}
+			held.Do(func() {
+				close(b.firstInside)
+				select {
+				case <-b.secondDone:
+				case <-ctx.Done():
+				}
+			})
+		})
+	case 2:
+		defer b.release()
+		select {
+		case <-b.firstInside:
+		case <-b.secondDone:
+			return accessstore.Member{}, fmt.Errorf("first card worker ended before opening its session query")
+		case <-ctx.Done():
+			return accessstore.Member{}, ctx.Err()
+		}
+		row, err := r.Reader.AuthorizeAccess(ctx, authority, now)
+		b.overlap.Store(errors.Is(err, pgtransport.ErrOpenResults))
+		return row, err
+	}
+	return r.Reader.AuthorizeAccess(ctx, authority, now)
+}
