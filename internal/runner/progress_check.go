@@ -101,7 +101,7 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	if err != nil {
 		return progresscheck.Decision{}, err
 	}
-	defer releaseWorkspace()
+	defer releaseWorkspace(&returnErr)
 	root := info.Path
 	var scratch string
 	if root == "" {
@@ -192,7 +192,7 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	}}).Decide(ctx, evidence)
 }
 
-func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence progresscheck.Request) (workspace.Info, func(), error) {
+func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence progresscheck.Request) (workspace.Info, func(*error), error) {
 	backend := r.workspaceSnapshot()
 	issue := workspaceIssue(r.projectID, req.Issue)
 	issue.ReviewVersionID = "progress-" + evidence.SourceSHA
@@ -211,7 +211,7 @@ func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence
 		}
 	}
 	if issue.Source == nil || issue.Source.Version.Source == nil {
-		return workspace.Info{}, func() {}, nil
+		return workspace.Info{}, func(*error) {}, nil
 	}
 	release := func() {}
 	if usage, ok := backend.(workspace.Usage); ok {
@@ -220,6 +220,11 @@ func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence
 		if err != nil {
 			return workspace.Info{}, nil, err
 		}
+	}
+	ctx, stopHooks := r.withWorkspaceHooks(ctx)
+	finish := func(primary *error) {
+		defer release()
+		stopHooks(primary)
 	}
 	info, err := backend.Create(ctx, issue)
 	if err == nil && evidence.SourceSHA != "" {
@@ -246,10 +251,10 @@ func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence
 		}
 	}
 	if err != nil {
-		release()
+		finish(&err)
 		return workspace.Info{}, nil, fmt.Errorf("prepare progress workspace: %w", err)
 	}
-	return info, release, nil
+	return info, finish, nil
 }
 
 func progressReadTools(execution Execution, evidence progresscheck.Request, retrieved func(string) bool) ([]AgentTool, AgentToolHandler) {

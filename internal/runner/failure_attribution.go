@@ -62,7 +62,7 @@ func failureEvidence(err error, step string) tracker.FailureEvidence {
 	if errors.As(err, &hook) {
 		evidence.Step = hook.Hook
 		evidence.ExitCode = &hook.ExitCode
-		evidence.OutputTail = hook.Output
+		evidence.OutputTail = tracker.WorkspaceResourceMessage(WorkspaceResourceClass(hook))
 	}
 	if errors.As(err, &validation) {
 		code := validation.Result.ExitCode

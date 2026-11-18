@@ -595,6 +595,9 @@ func incorporatedSourceDelta(ctx context.Context, path, sourceBase, base, head s
 }
 
 func (l *LocalGit) removeLandingWorktree(ctx context.Context, workspacePath, staging string) error {
+	if err := l.uses.stopHooks(ctx, staging); err != nil {
+		return err
+	}
 	registered, err := l.landingWorktreeRegistered(ctx, staging)
 	if err != nil {
 		return err

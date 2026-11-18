@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 
+	"github.com/digitaldrywood/detent/internal/procstart"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
@@ -61,10 +62,106 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	// constrained by one aggregate wall-clock deadline.
 	ctx = withWorkspaceProcessScanBudget(ctx, max(2*grace, minimumWorkspaceProcessScanTimeout), context.WithTimeout)
 	scan := ReapProcessScanner
-	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
+	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil && ctx.Value(hookOwnerKey{}) == nil {
 		scan = Scanner(source)
 	}
-	return reapProcesses(ctx, path, grace, scan, syscall.Kill)
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return reapProcesses(ctx, path, grace, scan, syscall.Kill)
+	}
+	return reapVerifiedProcesses(ctx, path, grace, scan, procstart.Identity, processEnvironment, syscall.Kill)
+}
+
+func reapVerifiedProcesses(ctx context.Context, path string, grace time.Duration, scan Scanner, identity func(int) (string, error), environment func(int) ([]string, error), signal workspaceProcessSignaler) (int, error) {
+	starts := map[int]string{}
+	owner, _ := ctx.Value(hookOwnerKey{}).(string)
+	confirmed := map[int]bool{}
+	sameProcess := func(pid int) (bool, error) {
+		current, err := identity(pid)
+		if errors.Is(err, procstart.ErrNotRunning) {
+			return false, nil
+		}
+		return err == nil && starts[pid] != "" && current == starts[pid], err
+	}
+	stillOwned := func(pid int) (bool, error) {
+		if starts[pid] == "" {
+			return false, nil
+		}
+		env, err := environment(pid)
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+			return false, nil
+		}
+		if err != nil {
+			return false, scratchProcessInspectionError(ctx, pid, "workspace ownership", err, func(context.Context) (bool, error) { return sameProcess(pid) })
+		}
+		if !hookSignalAllowed(owner, path, env) {
+			return false, nil
+		}
+		return sameProcess(pid)
+	}
+	verified := func(ctx context.Context, path string) ([]int, error) {
+		candidates, err := ScanOwned(ctx, path, scan)
+		var fresh bool
+		for _, pid := range candidates {
+			if _, seen := starts[pid]; seen {
+				continue
+			}
+			start, inspectErr := identity(pid)
+			if errors.Is(inspectErr, procstart.ErrNotRunning) {
+				continue
+			}
+			if inspectErr != nil {
+				err = errors.Join(err, inspectErr)
+				continue
+			}
+			starts[pid] = start
+			fresh = true
+		}
+		if fresh && owner == "" {
+			verified, verifyErr := ScanOwned(ctx, path, scan)
+			candidates = verified
+			err = errors.Join(err, verifyErr)
+		}
+		var owned []int
+		for _, pid := range candidates {
+			check := stillOwned
+			if confirmed[pid] {
+				check = sameProcess
+			}
+			ok, inspectErr := check(pid)
+			err = errors.Join(err, inspectErr)
+			if ok {
+				confirmed[pid] = true
+				owned = append(owned, pid)
+			}
+		}
+		return owned, err
+	}
+	guardedSignal := func(pid int, sig syscall.Signal) error {
+		send := signal
+		if ctx.Value(lifetimeKey{}) != nil {
+			process, err := os.FindProcess(pid)
+			if err != nil {
+				return err
+			}
+			defer process.Release()
+			send = func(_ int, signal syscall.Signal) error {
+				err := process.Signal(signal)
+				if errors.Is(err, os.ErrProcessDone) {
+					return syscall.ESRCH
+				}
+				return err
+			}
+		}
+		ok, err := stillOwned(pid)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return syscall.ESRCH
+		}
+		return send(pid, sig)
+	}
+	return reapProcesses(ctx, path, grace, verified, guardedSignal)
 }
 
 var ReapProcessScanner Scanner = ProcessIDs
@@ -140,28 +237,36 @@ func reapProcessesWithWait(
 	}
 
 	reaped := make(map[int]struct{}, len(pids))
-	termErr := signalWorkspaceProcesses(pids, syscall.SIGTERM, signal, reaped)
-	survivors, err := wait(ctx, path, grace, scan)
-	if err != nil {
-		return len(reaped), errors.Join(termErr, err)
+	signalErr := signalWorkspaceProcesses(pids, syscall.SIGTERM, signal, reaped)
+	killed := map[int]struct{}{}
+	for {
+		survivors, err := wait(ctx, path, grace, scan)
+		if err != nil || len(survivors) == 0 || signalErr != nil {
+			return len(reaped), errors.Join(signalErr, err)
+		}
+		var newcomers, escalate []int
+		for _, pid := range survivors {
+			_, termSent := reaped[pid]
+			_, killSent := killed[pid]
+			if killSent || !termSent && len(killed) > 0 {
+				return len(reaped), fmt.Errorf("workspace processes remained after SIGKILL: pid=%d", pid)
+			}
+			if termSent {
+				escalate = append(escalate, pid)
+			} else {
+				newcomers = append(newcomers, pid)
+			}
+		}
+		if len(newcomers) > 0 {
+			if _, bounded := ctx.Deadline(); !bounded {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, minimumWorkspaceProcessScanTimeout)
+				defer cancel()
+			}
+			signalErr = signalWorkspaceProcesses(newcomers, syscall.SIGTERM, signal, reaped)
+		}
+		signalErr = errors.Join(signalErr, signalWorkspaceProcesses(escalate, syscall.SIGKILL, signal, killed))
 	}
-	if len(survivors) == 0 {
-		return len(reaped), termErr
-	}
-
-	killErr := signalWorkspaceProcesses(survivors, syscall.SIGKILL, signal, reaped)
-	survivors, waitErr := wait(ctx, path, grace, scan)
-	if waitErr != nil {
-		return len(reaped), errors.Join(termErr, killErr, waitErr)
-	}
-	if len(survivors) > 0 {
-		return len(reaped), errors.Join(
-			termErr,
-			killErr,
-			fmt.Errorf("workspace processes remained after SIGKILL: pids=%v", survivors),
-		)
-	}
-	return len(reaped), errors.Join(termErr, killErr)
 }
 
 func signalWorkspaceProcesses(
@@ -212,6 +317,9 @@ func waitForWorkspaceProcesses(
 }
 
 func ProcessIDs(ctx context.Context, path string) ([]int, error) {
+	if lifetime, ok := ctx.Value(lifetimeKey{}).(*Lifetime); ok {
+		return lifetime.candidates(ctx)
+	}
 	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
 		return source(ctx, path)
 	}

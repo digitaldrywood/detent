@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -1329,7 +1330,7 @@ type Queued struct {
 	WorkspaceDestroyCount int        `json:"workspace_destroy_count,omitempty"`
 }
 
-const WorkspaceDiskExhaustionMessage = "host disk full: no space left on device"
+const WorkspaceDiskExhaustionMessage = tracker.WorkspaceDiskExhaustionMessage
 
 const (
 	QueueStateRetrying         = "retrying"
