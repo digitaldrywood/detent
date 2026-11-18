@@ -117,6 +117,8 @@ func TestMalformedRegistryPageFailsBeforeDispatch(t *testing.T) {
 func TestLeadFeatureServesEveryTenantEveryTickWhileRotationAdvances(t *testing.T) {
 	for _, tenants := range []int{2, TenantLimit} {
 		t.Run(fmt.Sprint(tenants), func(t *testing.T) {
+			type tickKey struct{}
+			var scopeCount, tick int
 			var mu sync.Mutex
 			visits := make(map[string]map[string]int)
 			step := func(name string, lead bool) Feature {
@@ -125,6 +127,9 @@ func TestLeadFeatureServesEveryTenantEveryTickWhileRotationAdvances(t *testing.T
 					bytes = ByteLimit / TenantLimit
 				}
 				return Feature{Name: name, Bytes: bytes, Lead: lead, Step: func(ctx context.Context, tenant Tenant, budget Budget) (Outcome, error) {
+					if ctx.Value(tickKey{}) != tick {
+						return Outcome{}, fmt.Errorf("%s received scope %v for tick %d", name, ctx.Value(tickKey{}), tick)
+					}
 					if err := RequireTenant(ctx, tenant); err != nil {
 						return Outcome{}, err
 					}
@@ -143,12 +148,15 @@ func TestLeadFeatureServesEveryTenantEveryTickWhileRotationAdvances(t *testing.T
 					return Outcome{Progress: true, Items: budget.Items}, nil
 				}}
 			}
-			scheduler, err := New(registry(tenants), []Feature{step("billing", false), step("board", true), step("metrics", false)})
+			scheduler, err := NewScoped(registry(tenants), []Feature{step("billing", false), step("board", true), step("metrics", false)}, func(ctx context.Context) context.Context {
+				scopeCount++
+				return context.WithValue(ctx, tickKey{}, scopeCount)
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			const ticks = 6
-			for range ticks {
+			for tick = 1; tick <= ticks; tick++ {
 				if err := scheduler.Tick(t.Context()); err != nil {
 					t.Fatal(err)
 				}

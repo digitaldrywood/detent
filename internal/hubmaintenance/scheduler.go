@@ -47,6 +47,7 @@ type Feature struct {
 }
 
 type Scheduler struct {
+	tickContext func(context.Context) context.Context
 	registry    Registry
 	features    []Feature
 	leads       []Feature
@@ -59,6 +60,10 @@ type Scheduler struct {
 }
 
 func New(registry Registry, features []Feature) (*Scheduler, error) {
+	return NewScoped(registry, features, nil)
+}
+
+func NewScoped(registry Registry, features []Feature, tickContext func(context.Context) context.Context) (*Scheduler, error) {
 	if registry == nil || len(features) == 0 || len(features) > 16 {
 		return nil, errors.New("maintenance requires a registry and bounded feature families")
 	}
@@ -69,7 +74,7 @@ func New(registry Registry, features []Feature) (*Scheduler, error) {
 		}
 		names[feature.Name] = true
 	}
-	scheduler := &Scheduler{registry: registry, wait: waitForWake}
+	scheduler := &Scheduler{registry: registry, wait: waitForWake, tickContext: tickContext}
 	for _, feature := range features {
 		if feature.Lead {
 			scheduler.leads = append(scheduler.leads, feature)
@@ -123,6 +128,9 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return errors.New("maintenance tick already running")
 	}
 	defer s.active.Store(false)
+	if s.tickContext != nil {
+		ctx = s.tickContext(ctx)
+	}
 	envelope := tickEnvelope{bytes: ByteLimit, items: make(map[string]int)}
 	leads := tickEnvelope{bytes: ByteLimit, items: envelope.items}
 	var failure error
