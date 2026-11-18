@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -22,10 +21,8 @@ func (l *Lifetime) darwinWriters(ctx context.Context, target int) ([]int, error)
 	if target > 0 {
 		selector, value = "-p", strconv.Itoa(self)+","+strconv.Itoa(target)
 	}
-	cmd := exec.CommandContext(ctx, "lsof", "-nP", "-w", "-a", selector, value, "-d", "4,"+readerFD, "-F0pfaitn")
-	data, err := workspaceScanOutput(ctx, cmd)
-	var exited *exec.ExitError
-	if err != nil && !(errors.As(err, &exited) && exited.ExitCode() == 1 && ctx.Err() == nil) {
+	data, err := lsofOutput(ctx, "-O", "-nP", "-w", "-a", selector, value, "-d", "4,"+readerFD, "-F0pfaitn")
+	if err != nil && !(lsofNoMatches(err) && ctx.Err() == nil) {
 		return nil, fmt.Errorf("list hook descriptors: %w", err)
 	}
 

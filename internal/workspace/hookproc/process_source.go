@@ -5,8 +5,6 @@ import (
 	"errors"
 	"slices"
 	"strings"
-
-	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 type ProcessSource func(context.Context, string) ([]int, error)
@@ -29,7 +27,7 @@ func (l *Lifetime) Reap(ctx context.Context, path, owner string) (int, error) {
 	if owner == "" {
 		return 0, errors.New("hook owner is required")
 	}
-	n, err := ReapProcesses(l.withOwner(ctx, owner), path, procgroup.DefaultTerminationGrace)
+	n, err := ReapProcesses(l.withOwner(ctx, owner), path, defaultProcessTerminationGrace)
 	return n, errors.Join(err, l.verifyWriterExits())
 }
 
