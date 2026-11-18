@@ -613,14 +613,17 @@ func (s *session) BoardView(ctx context.Context, selection viewstore.BoardViewSe
 	if selection.ClosedAfter != nil {
 		after, identifier = selection.ClosedAfter.ClosedAt, selection.ClosedAfter.Identifier
 	}
-	rows, err := s.db.Query(ctx, boardviewsql.Statement(selection.Reporter != ""), s.organization, selection.ProjectStrings(), selection.AllowedStrings(), selection.Reporter, selection.Archived,
+	batch := new(pgx.Batch)
+	batch.Queue("SET LOCAL plan_cache_mode = force_generic_plan")
+	batch.Queue(boardviewsql.Statement(selection.Reporter != ""), s.organization, selection.ProjectStrings(), selection.AllowedStrings(), selection.Reporter, selection.Archived,
 		selection.CredentialID, selection.PrincipalID, selection.UserID, selection.ClosedPage+1, selection.ItemStrings(), len(selection.Items) > 0,
-		selection.LanePreset, after, identifier, selection.ClosedAfter != nil, append([]string{}, selection.IncludeLanes...), append([]string{}, selection.ExcludeLanes...))
-	if err != nil {
-		return result, mapError(ctx, err)
-	}
-	result, err = boardviewsql.Scan(rows)
-	return result, mapError(ctx, err)
+		selection.LanePreset, after, identifier, selection.ClosedAfter != nil, append([]string{}, selection.IncludeLanes...), append([]string{}, selection.ExcludeLanes...)).Query(func(rows pgx.Rows) error {
+		var err error
+		result, err = boardviewsql.Scan(rows)
+		return err
+	})
+	err := s.readBoardModelBatch(ctx, batch)
+	return result, err
 }
 
 func (s *session) boardSearchPage(ctx context.Context, f viewstore.BoardSelection, typed bool) ([]viewstore.BoardRecord, error) {

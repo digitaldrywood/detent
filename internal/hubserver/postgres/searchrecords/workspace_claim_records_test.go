@@ -430,7 +430,7 @@ SELECT organization_id,project_id,native_id,'queue-list','Todo',$1||lpad(number:
 				if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
 					return err
 				}
-				if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", sample.args[0]); err != nil {
+				if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", sample.args[0].(pgx.NamedArgs)["org"]); err != nil {
 					return err
 				}
 				var raw []byte

@@ -40,7 +40,7 @@ func TestExplicitConnectionAuthority(t *testing.T) {
 	}{
 		{"explicit", "", true, "verify-full"},
 		{"direct TLS", "&sslnegotiation=direct&sslrootcert=system", true, "verify-full"},
-		{"cached mode overridden", "&default_query_exec_mode=cache_statement&statement_cache_capacity=200", true, "verify-full"},
+		{"exec mode overridden", "&default_query_exec_mode=exec&statement_cache_capacity=200", true, "verify-full"},
 		{"passfile", "&passfile=/example/credentials", false, "verify-full"},
 		{"service", "&service=example", false, "verify-full"},
 		{"session options", "&options=-c%20role%3Dother", false, "verify-full"},
@@ -65,7 +65,7 @@ func TestExplicitConnectionAuthority(t *testing.T) {
 				}
 				return
 			}
-			if config.ConnConfig.DefaultQueryExecMode != pgx.QueryExecModeExec || config.ConnConfig.StatementCacheCapacity != 0 || config.ConnConfig.DescriptionCacheCapacity != 0 {
+			if config.ConnConfig.DefaultQueryExecMode != pgx.QueryExecModeCacheStatement || config.ConnConfig.StatementCacheCapacity != 128 || config.ConnConfig.DescriptionCacheCapacity != 0 {
 				t.Fatal("native execution is not enforced")
 			}
 			if config.ConnConfig.Password != "fixture" || config.ConnConfig.User != "example" || config.ConnConfig.Port != 6432 {

@@ -832,7 +832,7 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 		if _, err := s.db.Exec(ctx, `DELETE FROM `+table.name+` WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
 			return mapError(ctx, err)
 		}
-		if err := s.insertRunnerCurrentRows(ctx, table.name, table.columns, table.rows); err != nil {
+		if err := s.insertRunnerCurrentRows(ctx, table); err != nil {
 			return err
 		}
 	}
@@ -921,32 +921,16 @@ func mergeRunnerObservationComponents(current runnerObservationHead, row runners
 	return diagnostics, runtime, nil
 }
 
-func (s *session) insertRunnerCurrentRows(ctx context.Context, table, columns string, rows [][]any) error {
+func (s *session) insertRunnerCurrentRows(ctx context.Context, table runnerReportRows) error {
 	const maxRows = 500
-	for offset := 0; offset < len(rows); offset += maxRows {
-		end := min(len(rows), offset+maxRows)
-		var query strings.Builder
-		query.WriteString("INSERT INTO ")
-		query.WriteString(table)
-		query.WriteString(" (")
-		query.WriteString(columns)
-		query.WriteString(") VALUES ")
-		args := make([]any, 0, (end-offset)*len(rows[offset]))
-		for index, row := range rows[offset:end] {
-			if index != 0 {
-				query.WriteByte(',')
-			}
-			query.WriteByte('(')
-			for valueIndex, value := range row {
-				if valueIndex != 0 {
-					query.WriteByte(',')
-				}
-				fmt.Fprintf(&query, "$%d", len(args)+1)
-				args = append(args, value)
-			}
-			query.WriteByte(')')
+	for offset := 0; offset < len(table.rows); offset += maxRows {
+		chunk := table
+		chunk.rows = table.rows[offset:min(len(table.rows), offset+maxRows)]
+		input, args, err := chunk.input(nil)
+		if err != nil {
+			return err
 		}
-		if _, err := s.db.Exec(ctx, query.String(), args...); err != nil {
+		if _, err := s.db.Exec(ctx, "INSERT INTO "+table.name+" ("+table.columns+") "+input, args...); err != nil {
 			return mapError(ctx, err)
 		}
 	}
@@ -1229,7 +1213,7 @@ func (s *session) ReplaceRunnerProviderReports(ctx context.Context, runnerID str
 		return mapError(ctx, err)
 	}
 	for _, table := range tables {
-		if err := s.insertRunnerCurrentRows(ctx, table.name, table.columns, table.rows); err != nil {
+		if err := s.insertRunnerCurrentRows(ctx, table); err != nil {
 			return err
 		}
 	}
@@ -1459,17 +1443,15 @@ func (s *session) ReplaceRunnerBackendIsolation(ctx context.Context, runnerID st
 		backends = append(backends, backend)
 	}
 	sort.Strings(backends)
-	values := make([]string, 0, len(backends))
-	args := []any{s.organization, runnerID}
+	reportRows := runnerReportRows{columns: "backend,tiers", types: "text,text[]"}
 	for _, backend := range backends {
-		args = append(args, backend, report[backend])
-		values = append(values, fmt.Sprintf("($%d::text,$%d::text[])", len(args)-1, len(args)))
+		reportRows.rows = append(reportRows.rows, []any{backend, report[backend]})
 	}
-	incoming := `SELECT NULL::text AS backend,NULL::text[] AS tiers WHERE false`
-	if len(values) > 0 {
-		incoming = `VALUES ` + strings.Join(values, ",")
+	incoming, args, err := reportRows.input([]any{s.organization, runnerID})
+	if err != nil {
+		return err
 	}
-	_, err := s.db.Exec(ctx, `WITH incoming(backend,tiers) AS (`+incoming+`), removed AS (
+	_, err = s.db.Exec(ctx, `WITH incoming(backend,tiers) AS (`+incoming+`), removed AS (
  DELETE FROM runner_backend_isolations WHERE organization_id=$1 AND runner_id=$2 AND backend NOT IN (SELECT backend FROM incoming)
 ) INSERT INTO runner_backend_isolations(organization_id,runner_id,backend,tiers)
  SELECT $1,$2,backend,tiers FROM incoming

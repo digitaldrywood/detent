@@ -1,16 +1,21 @@
 package pgtransport
 
 import (
+	"errors"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type transactionRows struct {
 	pgx.Rows
-	tx *Transaction
+	tx       *Transaction
+	retry    func() (pgx.Rows, error)
+	retryErr error
 }
 
 func (r *transactionRows) Close() {
+	r.retry = nil
 	r.Rows.Close()
 	if r.tx.rows == r {
 		r.tx.rows = nil
@@ -18,10 +23,30 @@ func (r *transactionRows) Close() {
 }
 func (r *transactionRows) Next() bool {
 	next := r.Rows.Next()
+	retry := r.retry
+	r.retry = nil
+	var serverErr *pgconn.PgError
+	if !next && retry != nil && errors.As(r.Rows.Err(), &serverErr) && serverErr.Code == "0A000" && serverErr.Routine == "RevalidateCachedQuery" {
+		r.Close()
+		rows, err := retry()
+		if err != nil {
+			r.retryErr = err
+			return false
+		}
+		r.Rows = rows
+		next = r.Rows.Next()
+	}
 	if !next {
 		r.Close()
 	}
 	return next
+}
+
+func (r *transactionRows) Err() error {
+	if r.retryErr != nil {
+		return r.retryErr
+	}
+	return r.Rows.Err()
 }
 
 type transactionRow struct{ rows pgx.Rows }

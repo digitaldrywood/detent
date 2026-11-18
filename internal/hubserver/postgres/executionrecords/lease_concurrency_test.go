@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"net"
 	"os"
 	"reflect"
@@ -541,9 +542,10 @@ func TestLeaseMutationStatementBudget(t *testing.T) {
 
 type leaseWireConn struct {
 	net.Conn
-	exchanges *atomic.Int64
-	pending   []byte
-	startup   bool
+	preparation pgtest.PrepareExchanges
+	exchanges   *atomic.Int64
+	pending     []byte
+	startup     bool
 }
 
 func (c *leaseWireConn) Write(value []byte) (int, error) {
@@ -569,7 +571,7 @@ func (c *leaseWireConn) Write(value []byte) (int, error) {
 		if len(c.pending) < size {
 			break
 		}
-		if c.pending[0] == 'S' || c.pending[0] == 'Q' {
+		if coldPrepare := c.preparation.ColdSync(c.pending[:size]); !coldPrepare && (c.pending[0] == 'S' || c.pending[0] == 'Q') {
 			c.exchanges.Add(1)
 		}
 		c.pending = c.pending[size:]

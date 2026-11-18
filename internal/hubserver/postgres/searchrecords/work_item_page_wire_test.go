@@ -3,6 +3,7 @@ package searchrecords_test
 import (
 	"context"
 	"encoding/binary"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"net"
 	"sync"
 	"testing"
@@ -46,9 +47,10 @@ func (c *pageWireCounts) checkout() (int, int) {
 
 type pageWireConn struct {
 	net.Conn
-	counts  *pageWireCounts
-	pending []byte
-	startup bool
+	preparation pgtest.PrepareExchanges
+	counts      *pageWireCounts
+	pending     []byte
+	startup     bool
 }
 
 func (c *pageWireConn) Write(data []byte) (int, error) {
@@ -75,13 +77,17 @@ func (c *pageWireConn) Write(data []byte) (int, error) {
 			break
 		}
 		c.counts.mu.Lock()
+		coldPrepare := c.preparation.ColdSync(c.pending[:size])
 		switch c.pending[0] {
-		case 'P':
+		case 'E':
 			c.counts.statements++
 		case 'Q':
 			c.counts.statements++
 			c.counts.exchanges++
 		case 'S':
+			if coldPrepare {
+				break
+			}
 			c.counts.exchanges++
 		}
 		c.counts.mu.Unlock()

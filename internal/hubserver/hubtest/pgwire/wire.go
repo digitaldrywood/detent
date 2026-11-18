@@ -27,6 +27,7 @@ type Wire struct {
 
 type wireConn struct {
 	net.Conn
+	preparation       pgtest.PrepareExchanges
 	wire              *Wire
 	frontend, backend []byte
 	startup           bool
@@ -59,8 +60,9 @@ func (c *wireConn) Write(value []byte) (int, error) {
 		if len(c.frontend) < size {
 			break
 		}
+		coldPrepare := c.preparation.ColdSync(c.frontend[:size])
 		c.wire.mu.Lock()
-		if c.wire.enabled {
+		if c.wire.enabled && !coldPrepare {
 			switch c.frontend[0] {
 			case 'S':
 				c.wire.exchanges++
