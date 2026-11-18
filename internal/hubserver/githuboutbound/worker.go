@@ -81,14 +81,18 @@ func (w *Worker) run(ctx context.Context) {
 				break
 			}
 		}
-		if worked {
+		var until time.Duration
+		if !next.IsZero() {
+			until = next.Sub(w.service.deps.Now())
+		}
+		if worked || !next.IsZero() && until <= 0 {
 			interval = base
 		} else if interval < time.Minute {
 			interval = min(2*interval, time.Minute)
 		}
 		delay := wait()
-		if !next.IsZero() {
-			delay = min(delay, max(0, next.Sub(w.service.deps.Now())))
+		if until > 0 {
+			delay = min(delay, until)
 		}
 		timer.Reset(delay)
 	}

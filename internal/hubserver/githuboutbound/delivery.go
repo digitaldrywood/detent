@@ -23,16 +23,21 @@ func (s *Service) processNext(ctx context.Context) (bool, time.Time, error) {
 	if s.deps.Backend == nil || s.deps.Repository == nil {
 		return false, time.Time{}, s.deps.Disabled
 	}
+	var deadline time.Time
 	if probe, ok := s.deps.Repository.(interface {
 		GitHubOutboundDeadline(context.Context, tracker.OrganizationID) (time.Time, error)
 	}); ok {
-		deadline, err := probe.GitHubOutboundDeadline(ctx, s.deps.Organization)
+		var err error
+		deadline, err = probe.GitHubOutboundDeadline(ctx, s.deps.Organization)
 		if err != nil || deadline.IsZero() || deadline.After(s.deps.Now()) {
 			return false, deadline, err
 		}
 	}
 	worked, err := s.claimAndDeliver(ctx)
-	return worked, time.Time{}, err
+	if worked {
+		deadline = time.Time{}
+	}
+	return worked, deadline, err
 }
 
 func (s *Service) claimAndDeliver(ctx context.Context) (bool, error) {

@@ -58,7 +58,8 @@ func TestOutboxStepStopsAfterOneDeliveryOrRejection(t *testing.T) {
 
 func TestOutboundIdleStatements(t *testing.T) {
 	wire := &pgwire.Wire{}
-	repo := hubtest.Repository(t, hubtest.WithPoolConfig(func(config *pgxpool.Config) {
+	admin := hubtest.Database(t)
+	repo := hubtest.RepositoryOn(t, admin, hubtest.WithPoolConfig(func(config *pgxpool.Config) {
 		dial := config.ConnConfig.DialFunc
 		config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
 			conn, err := dial(ctx, network, address)
@@ -197,5 +198,61 @@ func TestOutboundIdleStatements(t *testing.T) {
 			t.Fatal(err)
 		}
 		checkDeadline(row.NextAttemptAt)
+	})
+	t.Run("rollback releases a due row at fast cadence", func(t *testing.T) {
+		d := deps
+		org := organizations[1]
+		d.Organization = org
+		d.OutboxPollInterval = time.Second
+		d.Jitter = func() float64 { return 1 }
+		backend := &recordingOutboxBackend{}
+		d.Backend = backend
+		ticks := make(chan time.Time, 1)
+		waits := make(chan time.Duration, 1)
+		d.NewTimer = func(time.Duration) Timer {
+			return Timer{Ticks: ticks, Reset: func(delay time.Duration) { waits <- delay }, Stop: func() {}}
+		}
+		worker := NewWorker(New(d))
+		worker.Start(t.Context())
+		defer worker.Stop()
+		tick := func() time.Duration {
+			ticks <- now
+			return <-waits
+		}
+		for range 5 {
+			tick()
+		}
+		if delay := tick(); delay != time.Minute {
+			t.Fatalf("idle worker did not reach maximum poll interval: %s", delay)
+		}
+		payload, err := eventstore.NewContent(d.Details).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org}, []byte(`{"body":"example"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "item", Key: "locked", Repository: "example-org/example-project", IssueNumber: 1, Kind: "workpad", CreatedAt: now, Payload: payload}
+		if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), row, nil)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := admin.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		var id int64
+		if err := tx.QueryRowContext(t.Context(), "SELECT id FROM github_outbound WHERE organization_id=$1 AND command_key=$2 FOR UPDATE", org, row.Key).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if delay := tick(); delay != d.OutboxPollInterval || len(backend.deliveredKeys) != 0 {
+			t.Errorf("locked due row: next poll=%s deliveries=%v", delay, backend.deliveredKeys)
+		}
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		tick()
+		if len(backend.deliveredKeys) != 1 || backend.deliveredKeys[0] != row.Key {
+			t.Fatalf("deliveries after rollback=%v", backend.deliveredKeys)
+		}
 	})
 }
