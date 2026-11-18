@@ -419,6 +419,56 @@ func TestActivityIssueRead(t *testing.T) {
 					t.Fatalf("work=%+v", row)
 				}
 			}
+			if tt.name == "custom terminal in window with no attempts included" {
+				t.Run("as-of sequence order and history sentinel", func(t *testing.T) {
+					item := ids[0]
+					var issueID int64
+					if err := f.admin.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", scope.organization, scope.project, item).Scan(&issueID); err != nil {
+						t.Fatal(err)
+					}
+					_, err := f.admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+ SELECT organization_id,project_id,work_item_id,id||'_history_'||n,1000+n,type,schema_version,actor_kind,actor_principal_id,from_state,to_state,
+ CASE WHEN n<=48 THEN $4::timestamptz-n*interval '1 second' ELSE $4::timestamptz+interval '1 hour' END,
+ payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events CROSS JOIN generate_series(1,2000) AS history(n)
+ WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='workflow.transitioned'`, scope.organization, scope.project, item, now)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
+						t.Fatal(err)
+					}
+					for _, test := range []struct {
+						cutoff      time.Time
+						newest      int64
+						transitions int
+						clipped     bool
+					}{
+						{now, 1048, 49, false},
+						{now.Add(time.Hour), 3000, 50, true},
+					} {
+						capture := &runtimeHistoryTraceCapture{}
+						ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
+						var snapshot activitystore.Snapshot
+						if err := reader.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+							var err error
+							snapshot, err = r.(activitystore.Reader).ActivitySnapshot(ctx, activitystore.Filter{Projects: []tracker.ProjectID{scope.project}, From: base, To: now, Now: test.cutoff, Limit: activitystore.IssuePopulationLimit})
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						var sequences []int64
+						for _, event := range snapshot.Transitions {
+							if event.IssueID == issueID {
+								sequences = append(sequences, event.Sequence)
+							}
+						}
+						if len(sequences) != test.transitions || sequences[0] != test.newest || sequences[1] != test.newest-1 || snapshot.Created[issueID] == test.clipped || snapshot.IssuesPartial != test.clipped {
+							t.Fatalf("cutoff=%v sequences=%v created=%v partial=%v", test.cutoff, sequences, snapshot.Created[issueID], snapshot.IssuesPartial)
+						}
+						assertActivityIssueOwnerStatements(t, pool, scope.organization, capture, true, true)
+					}
+				})
+			}
 		})
 	}
 }
