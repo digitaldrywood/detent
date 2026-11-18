@@ -28,8 +28,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -598,52 +600,15 @@ func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.
 	}
 }
 
-type countedProjectReads struct {
-	tenantstore.Repository
-	transactions int
-	projects     int
-	models       int
-	active       int
-}
-
-func (r *countedProjectReads) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	r.transactions++
-	r.active++
-	defer func() { r.active-- }()
-	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error { return read(countedProjectReader{Reader: reader, owner: r}) })
-}
-
-type countedProjectReader struct {
-	tenantstore.Reader
-	owner *countedProjectReads
-}
-
-func (r countedProjectReader) ProjectRecord(ctx context.Context, project tracker.ProjectID) (projectstore.Record, error) {
-	r.owner.projects++
-	return r.Reader.ProjectRecord(ctx, project)
-}
-
-func (r countedProjectReader) IntegrationPage(ctx context.Context, project tracker.ProjectID) (projectstore.Integration, error) {
-	reader, ok := r.Reader.(projectstore.IntegrationPageReader)
-	if !ok {
-		return projectstore.Integration{}, errors.New("integration page reader unavailable")
-	}
-	return reader.IntegrationPage(ctx, project)
-}
-
-func (r countedProjectReader) OrganizationModels(ctx context.Context) (policystore.OrganizationModels, error) {
-	r.owner.models++
-	return r.Reader.OrganizationModels(ctx)
-}
-
 func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
-	counted := &countedProjectReads{Repository: repository}
-	accessCounted := &countedProjectReads{Repository: repository}
+	trace := &pgstoretest.ProjectWorkflowTrace{}
+	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { config.ConnConfig.Tracer = trace })
+	counted := &pgstoretest.ProjectReadCounts{Repository: repository}
+	accessCounted := &pgstoretest.ProjectReadCounts{Repository: repository}
 	now := time.Now().UTC()
 	details := &memoryRunDetails{beforeRead: func(context.Context) error {
-		if counted.active != 0 || accessCounted.active != 0 {
+		if counted.Active != 0 || accessCounted.Active != 0 {
 			return errors.New("archive read inside tenant transaction")
 		}
 		return nil
@@ -675,22 +640,33 @@ func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 				t.Fatal(err)
 			}
 			base := "/api/v2/organizations/" + string(org) + "/projects/"
+			scope := hubscope.NativeScope{Organization: org, Project: project, Credential: hubapi.APICredential{ID: credential, Hash: apikey.HashToken(token)}}
+			before, rows, revisions := trace.Calls.Load(), trace.Rows.Load(), trace.Revisions.Load()
+			if _, err := service.readAuthorizedProjectRecord(t.Context(), scope, false, false); err != nil {
+				t.Fatal(err)
+			}
+			if calls := trace.Revisions.Load() - revisions; calls != 1 {
+				t.Errorf("identity admission used %d revision statements, want 1", calls)
+			}
+			if calls := trace.Calls.Load() - before; calls != 0 {
+				t.Errorf("identity admission hydrated workflow %d times, %d rows", calls, trace.Rows.Load()-rows)
+			}
 			read := func(id tracker.ProjectID) tracker.NativeProject {
 				t.Helper()
-				counted.transactions, counted.projects, counted.models = 0, 0, 0
-				accessCounted.transactions, accessCounted.projects, accessCounted.models = 0, 0, 0
+				counted.Transactions, counted.Projects, counted.Models = 0, 0, 0
+				accessCounted.Transactions, accessCounted.Projects, accessCounted.Models = 0, 0, 0
 				response := performHubAPIRequest(t, service, http.MethodGet, base+string(id), token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
-				transactions := counted.transactions + accessCounted.transactions
-				t.Logf("project GET: tenant admissions=%d project reads=%d model reads=%d", transactions, counted.projects+accessCounted.projects, counted.models+accessCounted.models)
-				projects := counted.projects + accessCounted.projects
+				transactions := counted.Transactions + accessCounted.Transactions
+				t.Logf("project GET: tenant admissions=%d project reads=%d model reads=%d", transactions, counted.Projects+accessCounted.Projects, counted.Models+accessCounted.Models)
+				projects := counted.Projects + accessCounted.Projects
 				if transactions != 3 || projects != 1 {
 					t.Errorf("project GET used %d tenant admissions and %d project reads; want 3 and 1", transactions, projects)
 				}
-				if accessCounted.transactions != 1 || accessCounted.projects != 1 {
-					t.Errorf("project authorization owner used %d admissions and %d project reads; want 1 and 1", accessCounted.transactions, accessCounted.projects)
+				if accessCounted.Transactions != 1 || accessCounted.Projects != 1 {
+					t.Errorf("project authorization owner used %d admissions and %d project reads; want 1 and 1", accessCounted.Transactions, accessCounted.Projects)
 				}
-				if models := counted.models + accessCounted.models; models != 1 {
+				if models := counted.Models + accessCounted.Models; models != 1 {
 					t.Errorf("model reads=%d, want 1", models)
 				}
 				var got tracker.NativeProject
@@ -753,14 +729,14 @@ func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 			details.beforeRead = func(context.Context) error { return errors.New("archive unavailable") }
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+string(project), token, nil), http.StatusInternalServerError)
 			details.beforeRead = originalRead
-			counted.models, accessCounted.models = 0, 0
+			counted.Models, accessCounted.Models = 0, 0
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+string(project)+"/integration", token, nil), http.StatusOK)
-			if counted.models+accessCounted.models != 0 {
+			if counted.Models+accessCounted.Models != 0 {
 				t.Fatal("integration route read organization models")
 			}
 
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+"hidden_"+string(project), token, nil), http.StatusNotFound)
-			if counted.models+accessCounted.models != 0 {
+			if counted.Models+accessCounted.Models != 0 {
 				t.Fatal("denied project read organization models")
 			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

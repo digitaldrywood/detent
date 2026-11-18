@@ -3,9 +3,10 @@ package hubserver
 import (
 	"context"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -75,8 +76,8 @@ func (w accessCommandFaultWriter) AccessTenant(ctx context.Context) (accessstore
 func (w accessCommandFaultWriter) AccessInvitation(ctx context.Context, id string) (accessstore.Invitation, error) {
 	return w.reader.AccessInvitation(ctx, id)
 }
-func (w accessCommandFaultWriter) ProjectRecord(ctx context.Context, id tracker.ProjectID) (projectstore.Record, error) {
-	return w.reader.ProjectRecord(ctx, id)
+func (w accessCommandFaultWriter) ProjectVersion(ctx context.Context, id tracker.ProjectID) (projectstore.Version, error) {
+	return w.reader.ProjectVersion(ctx, id)
 }
 func (w accessCommandFaultWriter) AccessProjectGrant(ctx context.Context, user string, id tracker.ProjectID, role string) (accessstore.ProjectGrant, error) {
 	return w.reader.AccessProjectGrant(ctx, user, id, role)
@@ -107,11 +108,11 @@ func (r accessCommandFaultReader) AccessInvitation(ctx context.Context, id strin
 	return r.Reader.AccessInvitation(ctx, id)
 }
 
-func (r accessCommandFaultReader) ProjectRecord(ctx context.Context, id tracker.ProjectID) (projectstore.Record, error) {
+func (r accessCommandFaultReader) ProjectVersion(ctx context.Context, id tracker.ProjectID) (projectstore.Version, error) {
 	if err := r.fault.lookup("project"); err != nil {
-		return projectstore.Record{}, err
+		return projectstore.Version{}, err
 	}
-	return r.Reader.ProjectRecord(ctx, id)
+	return r.Reader.ProjectVersion(ctx, id)
 }
 
 func (r accessCommandFaultReader) AccessProjectGrant(ctx context.Context, user string, id tracker.ProjectID, role string) (accessstore.ProjectGrant, error) {

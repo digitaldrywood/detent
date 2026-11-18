@@ -29,7 +29,7 @@ import (
 func seedArchiveIssues(t *testing.T, service *Service, scope hubscope.NativeScope, count int, state string) []tracker.NativeIssue {
 	t.Helper()
 	seedNativeFixturePolicy(t, service, string(scope.Organization)+"/"+string(scope.Project))
-	project, err := service.readTenantProjectRecord(t.Context(), scope)
+	project, err := service.readProjectRecord(t.Context(), scope)
 	if err != nil {
 		t.Fatal(err)
 	}

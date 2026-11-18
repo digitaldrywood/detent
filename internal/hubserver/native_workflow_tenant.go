@@ -194,7 +194,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				issue.LinkedSource.Status, issue.LinkedSource.Snapshot = "complete", &snapshot
 			}
 		}
-		project, err := s.readTenantProjectRecord(ctx, scope)
+		project, err := s.readProjectRecord(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -765,16 +765,6 @@ func (s *Service) humanWorkflowReceipt(ctx context.Context, scope hubscope.Nativ
 		return receipt, false, hubapi.NativeConflict(0)
 	}
 	return receipt, true, nil
-}
-
-func (s *Service) readTenantProjectRecord(ctx context.Context, scope hubscope.NativeScope) (projectstore.Record, error) {
-	var project projectstore.Record
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		project, err = r.ProjectRecord(ctx, scope.Project)
-		return err
-	})
-	return project, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, scope hubscope.NativeScope, issue *tracker.NativeIssue, project *projectstore.Record, previousState string, request tracker.Transition, stopState, workflowLabel *string) (policystore.Revision, bool, error) {

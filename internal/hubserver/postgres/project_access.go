@@ -110,7 +110,7 @@ func (s *session) InitializeProjectAccess(ctx context.Context, project tracker.P
 	if err := s.lockHostedOrganization(ctx); err != nil {
 		return err
 	}
-	if _, err := s.ProjectRecord(ctx, project); err != nil {
+	if _, err := s.ProjectVersion(ctx, project); err != nil {
 		return err
 	}
 	if _, err := s.AccessCredential(ctx, credential); err != nil {

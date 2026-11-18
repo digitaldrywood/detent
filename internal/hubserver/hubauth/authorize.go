@@ -19,7 +19,7 @@ func (s *Authenticator) Authorize(ctx context.Context, r accessstore.Reader, sco
 		if !ok {
 			return accessstore.ErrDenied
 		}
-		project, err := reader.ProjectRecord(ctx, scope.Project)
+		project, err := reader.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

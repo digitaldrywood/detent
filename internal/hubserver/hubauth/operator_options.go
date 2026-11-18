@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -68,14 +67,12 @@ func (s *Authenticator) AuthorizeProject(ctx context.Context, input Input, write
 	}
 	return s.read(ctx, input.Organization, func(r tenantstore.Reader) error { return s.Authorize(ctx, r, input, write) })
 }
-func (s *Authenticator) ReadProject(ctx context.Context, input Input) (projectstore.Record, error) {
-	var result projectstore.Record
+func (s *Authenticator) RequireActiveProject(ctx context.Context, input Input) error {
 	err := s.deps.Repository.ReadTenant(ctx, input.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		result, err = r.ProjectRecord(ctx, input.Project)
+		_, err := r.ProjectVersion(ctx, input.Project)
 		return err
 	})
-	return result, RecordError(err)
+	return RecordError(err)
 }
 func RecordError(err error) error {
 	if errors.Is(err, corestore.ErrNotFound) {

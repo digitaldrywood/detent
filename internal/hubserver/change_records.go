@@ -1454,7 +1454,7 @@ func (s *Service) loadChangeExternalRecord(ctx context.Context, scope hubscope.N
 		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(itemRecord.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
-		project, err := r.ProjectRecord(ctx, scope.Project)
+		project, err := r.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

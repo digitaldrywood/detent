@@ -156,7 +156,7 @@ func (h *HTTPHarness) nativeOptions(c echo.Context) hubauth.NativeOptions {
 				if err := a.Authorize(ctx, r, input, write); err != nil {
 					return err
 				}
-				_, err := r.ProjectRecord(ctx, input.Project)
+				_, err := r.ProjectVersion(ctx, input.Project)
 				return hubauth.RecordError(err)
 			})
 		},

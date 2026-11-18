@@ -428,7 +428,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			if test.bind {
 				f.service.config.ReconcileBackend = &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_example", Owner: "example-org", Name: "example-project", UpdatedAt: time.Now().UTC()}}}}}
-				project, err := f.service.readTenantProjectRecord(t.Context(), analyticsTestScope(t, f))
+				project, err := f.service.readProjectRecord(t.Context(), analyticsTestScope(t, f))
 				integration := projectIntegrationRecord(project)
 				if err != nil {
 					t.Fatal(err)
@@ -978,7 +978,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					t.Fatalf("next history page = %+v", nextPage)
 				}
 			}
-			project, err := f.service.readTenantProjectRecord(t.Context(), analyticsTestScope(t, f))
+			project, err := f.service.readProjectRecord(t.Context(), analyticsTestScope(t, f))
 			wantStates := nativeFixtureStates()
 			if test.initial {
 				wantStates = original.Workflow.States

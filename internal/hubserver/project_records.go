@@ -97,48 +97,61 @@ func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope hubscop
 			return err
 		}
 		var err error
+		if !includeModels {
+			_, err = r.ProjectVersion(ctx, scope.Project)
+			return err
+		}
 		result.Record, err = r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		if includeModels {
-			if owner, ok := r.(projectstore.PageReader); ok {
-				page, ready, err := owner.ProjectPage(ctx, result.Record)
-				if err != nil {
-					return err
-				}
-				if ready {
-					result.Page = &page
-					return nil
-				}
-			}
-			row, err := r.OrganizationModels(ctx)
+		if owner, ok := r.(projectstore.PageReader); ok {
+			page, ready, err := owner.ProjectPage(ctx, result.Record)
 			if err != nil {
 				return err
 			}
-			result.organizationModels = &row
+			if ready {
+				result.Page = &page
+				return nil
+			}
 		}
+		row, err := r.OrganizationModels(ctx)
+		if err != nil {
+			return err
+		}
+		result.organizationModels = &row
 		return nil
 	})
 	return result, hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) readProjectRecord(ctx context.Context, scope hubscope.NativeScope) (projectstore.Record, error) {
-	var result projectstore.Record
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+func readProject[T any](ctx context.Context, repository tenantstore.Repository, scope hubscope.NativeScope, read func(tenantstore.Reader, context.Context, tracker.ProjectID) (T, error)) (T, error) {
+	var result T
+	err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		result, err = r.ProjectRecord(ctx, scope.Project)
+		result, err = read(r, ctx, scope.Project)
 		return err
 	})
 	return result, hubapi.ProjectRecordError(err)
 }
 
+func (s *Service) readProjectMetadata(ctx context.Context, scope hubscope.NativeScope) (projectstore.Metadata, error) {
+	return readProject(ctx, s.config.TenantRepository, scope, tenantstore.Reader.ProjectMetadata)
+}
+
+func (s *Service) readProjectRecord(ctx context.Context, scope hubscope.NativeScope) (projectstore.Record, error) {
+	return readProject(ctx, s.config.TenantRepository, scope, tenantstore.Reader.ProjectRecord)
+}
+
 func (s *Service) projectRecordWorkflow(ctx context.Context, record projectstore.Record) (string, error) {
-	if record.Settings.WorkflowKey == "" {
+	return s.projectWorkflowMarkdown(ctx, record.Settings)
+}
+
+func (s *Service) projectWorkflowMarkdown(ctx context.Context, v projectstore.Settings) (string, error) {
+	if v.WorkflowKey == "" {
 		return "", nil
 	}
-	v := record.Settings
-	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{OrganizationID: record.Core.OrganizationID, PayloadObjectKey: v.WorkflowKey, PayloadSHA256: v.WorkflowSHA256, PayloadBytes: v.WorkflowBytes, PayloadContentBytes: v.WorkflowContentBytes})
+	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{OrganizationID: v.OrganizationID, PayloadObjectKey: v.WorkflowKey, PayloadSHA256: v.WorkflowSHA256, PayloadBytes: v.WorkflowBytes, PayloadContentBytes: v.WorkflowContentBytes})
 	if err != nil {
 		return "", err
 	}
@@ -170,7 +183,7 @@ func (s *Service) projectRecordNative(ctx context.Context, record projectstore.R
 	if record.Page != nil {
 		effective = record.Page.Model
 	} else {
-		selection, readErr := s.projectRecordModel(ctx, record, models...)
+		selection, readErr := s.projectRecordModel(ctx, record.Settings, models...)
 		if readErr != nil {
 			return project, readErr
 		}
@@ -374,16 +387,16 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope hubsco
 				return nil, replayErr
 			}
 			if errors.Is(err, corestore.ErrRevisionConflict) {
-				fresh, readErr := s.readProjectRecord(ctx, scope)
+				fresh, readErr := readProject(ctx, s.config.TenantRepository, scope, tenantstore.Reader.ProjectVersion)
 				if readErr != nil {
 					return nil, readErr
 				}
-				revision := fresh.Settings.Revision
+				revision := fresh.SettingsRevision
 				switch input.(type) {
 				case cloudModelSelectionRequest:
-					revision = fresh.Settings.ModelRevision
+					revision = fresh.ModelRevision
 				case cloudContentSettingsRequest:
-					revision = fresh.Core.ContentSettingsRevision
+					revision = fresh.ContentSettingsRevision
 				}
 				return nil, hubapi.NativeConflict(tracker.Revision(revision))
 			}

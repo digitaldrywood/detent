@@ -276,7 +276,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 	})
 	t.Run("options read only the readable projects", func(t *testing.T) {
 		secret := hubscope.NativeScope{Organization: scope.Organization, Project: "prj_rpt_secret"}
-		project, err := f.service.readTenantProjectRecord(t.Context(), scope)
+		project, err := f.service.readProjectRecord(t.Context(), scope)
 		if err != nil {
 			t.Fatal(err)
 		}

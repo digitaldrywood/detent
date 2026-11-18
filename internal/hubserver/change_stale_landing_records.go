@@ -82,7 +82,7 @@ func staleLandingTarget(project tracker.NativeProject, current string) string {
 }
 
 func (s *Service) prepareStaleLandingRoutes(ctx context.Context, scope hubscope.NativeScope, approval hubrecords.ChangeVersionApproval, now time.Time) (*staleLandingRoutes, error) {
-	project, err := s.readTenantProjectRecord(ctx, scope)
+	project, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
 		return nil, err
 	}

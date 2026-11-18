@@ -24,7 +24,7 @@ func (s *Service) getCloudContentSettings(c echo.Context) error {
 	if s.config.TenantRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
-	record, err := s.readProjectRecord(ctx, scope)
+	record, err := s.readProjectMetadata(ctx, scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

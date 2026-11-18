@@ -1724,7 +1724,7 @@ func importCoreHistoricalWorkItems(ctx context.Context, target *postgres.Reposit
 		}
 		var projectProfile, projectRepository string
 		if err := target.ReadTenant(ctx, source.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			project, err := r.ProjectRecord(ctx, mapping.TargetProjectID)
+			project, err := r.ProjectMetadata(ctx, mapping.TargetProjectID)
 			if err != nil {
 				return err
 			}

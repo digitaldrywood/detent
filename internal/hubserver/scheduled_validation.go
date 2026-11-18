@@ -64,7 +64,7 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope hubscope.
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		project, err := r.ProjectRecord(ctx, scope.Project)
+		project, err := r.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

@@ -29,7 +29,7 @@ func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		states[1].OperatorOnly = org == "org_second"
 		err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := pgstoretest.SeedCoreOrganization(ctx, w, org); err != nil {
+			if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: time.Now().UTC()}); err != nil {
 				return err
 			}
 			record, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "shared", Name: "Example", Profile: "native", RequireDependencies: true}, States: states})
@@ -89,6 +89,20 @@ func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			want := int64(1 - pass)
 			verify(readScope, org, records[org], want)
+		}
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		full, routes := trace.Calls.Load(), trace.Routes.Load()
+		err := traced.ReadTenant(readScope, org, corestore.Serving, func(r tenantstore.Reader) error {
+			route, err := r.ProjectRoute(readScope, "shared")
+			want := projectstore.Route{Profile: "native", ProjectSlug: "example", OrganizationSlug: strings.ReplaceAll(string(org), "_", "-")}
+			if err == nil && route != want {
+				t.Errorf("%s route = %+v, want %+v", org, route, want)
+			}
+			return err
+		})
+		if err != nil || trace.Calls.Load() != full || trace.Routes.Load()-routes != 1 {
+			t.Fatalf("%s route full reads=%d route reads=%d err=%v", org, trace.Calls.Load()-full, trace.Routes.Load()-routes, err)
 		}
 	}
 	verify(traced.WithProjectWorkflows(ctx), "org_first", records["org_first"], 1)

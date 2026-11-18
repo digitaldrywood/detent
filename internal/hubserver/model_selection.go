@@ -35,11 +35,11 @@ func (s *Service) getCloudModelSelection(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, value)
 	}
-	record, err := s.readProjectRecord(c.Request().Context(), scope)
+	record, err := s.readProjectMetadata(c.Request().Context(), scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	value, err := s.projectRecordModel(c.Request().Context(), record)
+	value, err := s.projectRecordModel(c.Request().Context(), record.Settings)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

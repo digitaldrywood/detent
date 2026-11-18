@@ -67,7 +67,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 	projects := operatorProjectPage{Projects: []tracker.NativeProject{}}
 	if request.ProjectID != "" {
 		scope.Project = tracker.ProjectID(request.ProjectID)
-		record, err := s.readTenantProjectRecord(ctx, scope)
+		record, err := s.readProjectRecord(ctx, scope)
 		if err != nil {
 			return operatortool.Result{}, hubapi.SafeWorkReadError(fmt.Errorf("read project record: %w", err))
 		}

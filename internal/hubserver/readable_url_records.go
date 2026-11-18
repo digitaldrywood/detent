@@ -36,14 +36,14 @@ func (s *Service) readableRecordReference(ctx context.Context, scope hubscope.Na
 		if !owned {
 			return corestore.ErrNotFound
 		}
-		project, err := r.ProjectBySlug(ctx, parts[1])
+		projectID, _, err := r.ProjectAddressBySlug(ctx, parts[1])
 		if err != nil {
 			return err
 		}
-		if project.Core.DeletedAt != nil || scope.Project != "" && scope.Project != project.Core.ID {
+		if scope.Project != "" && scope.Project != projectID {
 			return corestore.ErrNotFound
 		}
-		scope.Project = project.Core.ID
+		scope.Project = projectID
 		if authorize {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
@@ -203,15 +203,12 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 		number = parsed
 	}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		project, err := r.ProjectBySlug(ctx, parts[0])
+		id, canonical, err := r.ProjectAddressBySlug(ctx, parts[0])
 		if err != nil {
 			return err
 		}
-		if project.Core.DeletedAt != nil {
-			return corestore.ErrNotFound
-		}
-		scope.Project = project.Core.ID
-		projectSlug = project.Core.Slug
+		scope.Project = id
+		projectSlug = canonical
 		return nil
 	})
 	if err != nil {

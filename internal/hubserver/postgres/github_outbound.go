@@ -151,7 +151,7 @@ func (r *Repository) ImportCoreGitHubOutbound(ctx context.Context, row projectst
 		if _, err := s.LockWorkItem(ctx, row.ProjectID, row.WorkItemID); err != nil {
 			return err
 		}
-		project, err := s.ProjectRecord(ctx, row.ProjectID)
+		project, err := s.ProjectMetadata(ctx, row.ProjectID)
 		if err != nil {
 			return err
 		}

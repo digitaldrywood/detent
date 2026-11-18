@@ -79,7 +79,7 @@ func (s *session) NextProjectPage(ctx context.Context, after tracker.ProjectID) 
 	if c.Ready {
 		return c, nil
 	}
-	c.Record, err = s.ProjectRecord(ctx, c.ProjectID)
+	c.Record, err = s.ProjectMetadata(ctx, c.ProjectID)
 	if err != nil {
 		return c, err
 	}

@@ -619,7 +619,7 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope h
 	if raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, options.OperationID, request.IdempotencyKey, hash); found || err != nil {
 		return raw, err
 	}
-	project, err := s.readProjectRecord(ctx, scope)
+	project, err := s.readProjectMetadata(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -666,7 +666,7 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope h
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		latest, err := w.ProjectRecord(ctx, scope.Project)
+		latest, err := w.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

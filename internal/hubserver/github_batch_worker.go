@@ -72,7 +72,7 @@ func (s *Service) advanceGitHubBatch(ctx context.Context, scope hubscope.NativeS
 func (s *Service) gitHubIntegrationScope(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID) (hubscope.NativeScope, error) {
 	scope := hubscope.NativeScope{IntegrationOwned: true, Organization: organization, Project: project, Credential: hubapi.APICredential{ID: "github", Scope: hubapi.APIScopeAdmin}, SourceActor: nativeIntegrationActor("github")}
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
-		p, err := r.ProjectRecord(ctx, project)
+		p, err := r.ProjectMetadata(ctx, project)
 		if err != nil {
 			return err
 		}

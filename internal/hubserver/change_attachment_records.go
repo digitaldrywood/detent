@@ -17,7 +17,7 @@ import (
 )
 
 func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string, locked bool) ([]string, error) {
-	project, err := r.ProjectRecord(ctx, scope.Project)
+	project, err := r.ProjectMetadata(ctx, scope.Project)
 	if err != nil {
 		return nil, err
 	}

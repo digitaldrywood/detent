@@ -167,7 +167,7 @@ func (s *Service) PublishRecord(ctx context.Context, scope hubapi.Scope, request
 		if err := s.deps.RequireFeature(ctx, w, "collaboration", now); err != nil {
 			return err
 		}
-		project, err := w.ProjectRecord(ctx, scope.Project)
+		project, err := w.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

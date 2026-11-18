@@ -44,10 +44,10 @@ func RefreshLimited() error {
 }
 
 func (s *Service) RepositoryBinding(ctx context.Context, scope hubapi.Scope) (*Connector, int64, bool, error) {
-	var project projectstore.Record
+	var project projectstore.Metadata
 	if err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		project, err = r.ProjectRecord(ctx, scope.Project)
+		project, err = r.ProjectMetadata(ctx, scope.Project)
 		return err
 	}); err != nil {
 		return nil, 0, false, err
@@ -134,7 +134,7 @@ func (s *Service) ChangeViewSource(ctx context.Context, scope hubapi.Scope, item
 			if err := s.deps.AuthorizeItem(ctx, r, tracker.NativeWorkItemID(item)); err != nil {
 				return err
 			}
-			project, err := r.ProjectRecord(ctx, scope.Project)
+			project, err := r.ProjectMetadata(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -315,7 +315,7 @@ func (s *Service) requestHydration(ctx context.Context, scope hubapi.Scope, item
 		if err := s.deps.AuthorizeItem(ctx, w, tracker.NativeWorkItemID(item)); err != nil {
 			return err
 		}
-		project, err := w.ProjectRecord(ctx, scope.Project)
+		project, err := w.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

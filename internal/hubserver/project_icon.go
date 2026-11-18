@@ -107,7 +107,7 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope hubscope.Nati
 		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 			return err
 		}
-		latest, err := w.ProjectRecord(ctx, scope.Project)
+		latest, err := w.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

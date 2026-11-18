@@ -63,12 +63,12 @@ func (s *Service) bindCheckout(ctx context.Context, scope hubapi.Scope, operatio
 		value.Revision++
 	}
 	return s.deps.Mutate(ctx, scope, operation, request.Mutation, request, value, func(w tenantstore.Writer) error {
-		latest, err := w.ProjectRecord(ctx, scope.Project)
+		version, err := w.ProjectVersion(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		if latest.Settings.Revision != current.Settings.Revision {
-			return hubapi.Conflict(tracker.Revision(latest.Settings.Revision))
+		if version.SettingsRevision != current.Settings.Revision {
+			return hubapi.Conflict(tracker.Revision(version.SettingsRevision))
 		}
 		if !changed {
 			return nil
@@ -129,12 +129,12 @@ func (s *Service) bindGitHub(ctx context.Context, scope hubapi.Scope, operation 
 		if err := s.deps.RequireFeature(ctx, w, "github_integration", s.deps.Now()); err != nil {
 			return err
 		}
-		latest, err := w.ProjectRecord(ctx, scope.Project)
+		version, err := w.ProjectVersion(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		if latest.Settings.Revision != current.Settings.Revision {
-			return hubapi.Conflict(tracker.Revision(latest.Settings.Revision))
+		if version.SettingsRevision != current.Settings.Revision {
+			return hubapi.Conflict(tracker.Revision(version.SettingsRevision))
 		}
 		if err := w.RequireProjectIdle(ctx, scope.Project, s.deps.Now()); err != nil {
 			return err

@@ -21,7 +21,7 @@ func (s *Service) projectOnboardingRecord(ctx context.Context, scope hubscope.Na
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	result := onboarding.Project{Runners: []runnerauth.Eligibility{}, Artifacts: []artifact.Binding{}}
-	var project projectstore.Record
+	var project projectstore.Metadata
 	var records []runnerstore.FleetRecord
 	var leases []runnerstore.FleetLease
 	var urgent runnerstore.UrgentUpdate
@@ -38,7 +38,7 @@ func (s *Service) projectOnboardingRecord(ctx context.Context, scope hubscope.Na
 			return errors.New("project onboarding reader unavailable")
 		}
 		var err error
-		project, err = r.ProjectRecord(ctx, scope.Project)
+		project, err = r.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

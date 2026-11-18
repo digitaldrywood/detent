@@ -38,8 +38,7 @@ func (a hubChangeApplication) authorized(ctx context.Context, args operatortool.
 	if err := a.service.requireHostedProject(ctx, nil, scope, write); err != nil {
 		return scope, operatortool.ErrAccessDenied
 	}
-	project, err := a.service.readProjectRecord(ctx, scope)
-	if err != nil || project.Core.DeletedAt != nil {
+	if err := a.service.requestAuth().RequireActiveProject(ctx, a.service.authInput(scope)); err != nil {
 		return scope, operatortool.ErrAccessDenied
 	}
 	if args.ItemID != "" {

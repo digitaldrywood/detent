@@ -98,8 +98,8 @@ func (s *Service) writeBudgetOverride(c echo.Context, clear bool) error {
 	return c.JSONBlob(http.StatusOK, result)
 }
 
-func (s *Service) budgetOverridePolicy(ctx context.Context, record projectstore.Record, now time.Time) (postgres.BudgetOverridePolicy, error) {
-	markdown, err := s.projectRecordWorkflow(ctx, record)
+func (s *Service) budgetOverridePolicy(ctx context.Context, record projectstore.Metadata, now time.Time) (postgres.BudgetOverridePolicy, error) {
+	markdown, err := s.projectWorkflowMarkdown(ctx, record.Settings)
 	if err != nil {
 		return postgres.BudgetOverridePolicy{}, err
 	}
@@ -132,14 +132,14 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope hubscope.Nati
 		return raw, err
 	}
 	now := s.config.Clock().UTC().Truncate(time.Microsecond)
-	var record projectstore.Record
+	var record projectstore.Metadata
 	var previous postgres.BudgetOverride
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
 		var err error
-		record, err = r.ProjectRecord(ctx, scope.Project)
+		record, err = r.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

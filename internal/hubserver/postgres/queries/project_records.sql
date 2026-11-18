@@ -16,6 +16,12 @@ SELECT p.slug,s.revision,p.content_settings_revision,s.model_revision
 FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
 WHERE p.organization_id=sqlc.arg(organization_id) AND p.id=sqlc.arg(id) AND p.deleted_at IS NULL;
 
+-- name: BoundProjectRoute :one
+SELECT p.profile,p.slug AS project_slug,o.slug AS organization_slug
+FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
+JOIN public.organizations o ON o.organization_id=p.organization_id
+WHERE p.organization_id=sqlc.arg(organization_id) AND p.id=sqlc.arg(id) AND p.deleted_at IS NULL;
+
 -- name: ActiveProjectAddressBySlug :one
 SELECT p.id,p.slug
 FROM project_slugs a JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id

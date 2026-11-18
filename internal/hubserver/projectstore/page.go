@@ -25,7 +25,7 @@ func (c PageCandidate) PolicyID() string {
 }
 
 type PageCandidate struct {
-	Record    Record
+	Record    Metadata
 	Models    policystore.OrganizationModels
 	Policy    *policystore.Revision
 	ProjectID tracker.ProjectID

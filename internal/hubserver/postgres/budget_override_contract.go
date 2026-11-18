@@ -105,11 +105,11 @@ func (s *session) SetBudgetOverride(ctx context.Context, override BudgetOverride
 	if _, err := s.queries.LockActiveProject(ctx, pgquery.LockActiveProjectParams{OrganizationID: s.organization, ID: override.ProjectID}); err != nil {
 		return BudgetOverride{}, mapError(ctx, err)
 	}
-	project, err := s.ProjectRecord(ctx, override.ProjectID)
+	version, err := s.ProjectVersion(ctx, override.ProjectID)
 	if err != nil {
 		return BudgetOverride{}, err
 	}
-	if project.Settings.Revision != policy.SettingsRevision {
+	if version.SettingsRevision != policy.SettingsRevision {
 		return BudgetOverride{}, corestore.ErrRevisionConflict
 	}
 	current, err := s.queries.CurrentBudgetOverride(ctx, pgquery.CurrentBudgetOverrideParams{OrganizationID: s.organization, ProjectID: override.ProjectID})

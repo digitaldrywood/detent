@@ -187,7 +187,7 @@ func testProjectPagePublication(t *testing.T, service *Service, f nativeFixture)
 	var candidate projectstore.PageCandidate
 	if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
-		candidate.Record, err = r.ProjectRecord(t.Context(), f.project.ID)
+		candidate.Record, err = r.ProjectMetadata(t.Context(), f.project.ID)
 		if err != nil {
 			return err
 		}

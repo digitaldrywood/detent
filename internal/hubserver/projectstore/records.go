@@ -47,6 +47,12 @@ type Settings struct {
 	ModelContentBytes         int64
 }
 
+type Route struct {
+	Profile          string
+	ProjectSlug      string
+	OrganizationSlug string
+}
+
 type Version struct {
 	Slug                    string
 	SettingsRevision        int64
@@ -71,6 +77,7 @@ type Reader interface {
 	ProjectOnboardingProgress(context.Context, tracker.ProjectID) (onboarding.Progress, error)
 	ProjectAllowanceUsage(context.Context, int64) (int64, error)
 	ProjectMetadata(context.Context, tracker.ProjectID) (Metadata, error)
+	ProjectRoute(context.Context, tracker.ProjectID) (Route, error)
 	ProjectVersion(context.Context, tracker.ProjectID) (Version, error)
 	ProjectRecord(context.Context, tracker.ProjectID) (Record, error)
 	ProjectAddressBySlug(context.Context, string) (tracker.ProjectID, string, error)

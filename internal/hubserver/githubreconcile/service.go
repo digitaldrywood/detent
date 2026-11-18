@@ -233,7 +233,7 @@ func (s *Service) retryAt(now time.Time, attempts int64) time.Time {
 }
 
 func (s *Service) refreshOrigin(ctx context.Context, r tenantstore.Reader, row projectstore.GitHubPullRequestRefresh) (bool, bool, error) {
-	project, err := r.ProjectRecord(ctx, row.ProjectID)
+	project, err := r.ProjectMetadata(ctx, row.ProjectID)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return false, false, nil
 	}

@@ -36,7 +36,7 @@ type preparedRunnerDependencies struct {
 	changes   []preparedRunnerDependency
 }
 
-func normalizeRunnerDependencyDisposition(data *tracker.NativeRunData, project projectstore.Record) {
+func normalizeRunnerDependencyDisposition(data *tracker.NativeRunData, project projectstore.Metadata) {
 	if data.Disposition == nil {
 		return
 	}

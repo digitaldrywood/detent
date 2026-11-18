@@ -26,7 +26,7 @@ import (
 func configureHumanWorkflowProject(t *testing.T, service *Service, organization tracker.OrganizationID, project tracker.ProjectID) {
 	t.Helper()
 	scope := hubscope.NativeScope{Organization: organization, Project: project}
-	original, err := service.readTenantProjectRecord(t.Context(), scope)
+	original, err := service.readProjectRecord(t.Context(), scope)
 	if err != nil {
 		t.Fatal(err)
 	}

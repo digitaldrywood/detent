@@ -134,7 +134,7 @@ type placementIssueSource struct {
 }
 
 type placementSource struct {
-	project           projectstore.Record
+	project           projectstore.Metadata
 	policy            policystore.Revision
 	policyFound       bool
 	models            policystore.OrganizationModels
@@ -155,7 +155,7 @@ func (s *Service) readPlacementSource(ctx context.Context, scope hubscope.Native
 	}
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		source.project, err = r.ProjectRecord(ctx, scope.Project)
+		source.project, err = r.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -317,7 +317,7 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope h
 	}
 	result.Requirements = descriptor.Requirements
 	workflow.Config.Plan.Enabled = descriptor.Gates.PlanEnabled
-	selection, err := s.projectRecordModel(ctx, source.project, source.models)
+	selection, err := s.projectRecordModel(ctx, source.project.Settings, source.models)
 	if err != nil {
 		return result, err
 	}

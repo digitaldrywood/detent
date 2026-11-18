@@ -124,22 +124,22 @@ func projectIntegrationChanges(current projectstore.Record, request updateProjec
 	return request.States != nil || request.WorkflowMarkdown != nil || (!preserve && request.Intake != current.Settings.Intake) || request.Projection != current.Settings.Projection || request.RepositoryEnabled != current.Settings.RepositoryEnabled
 }
 
-func (s *Service) projectRecordModel(ctx context.Context, record projectstore.Record, models ...policystore.OrganizationModels) (cloudModelSelection, error) {
+func (s *Service) projectRecordModel(ctx context.Context, settings projectstore.Settings, models ...policystore.OrganizationModels) (cloudModelSelection, error) {
 	var inherited cloudModelSelection
 	var err error
 	if len(models) > 0 {
-		inherited, err = s.organizationModelsFromRecord(ctx, record.Core.OrganizationID, models[0])
+		inherited, err = s.organizationModelsFromRecord(ctx, settings.OrganizationID, models[0])
 	} else {
-		inherited, err = s.readOrganizationModels(ctx, record.Core.OrganizationID)
+		inherited, err = s.readOrganizationModels(ctx, settings.OrganizationID)
 	}
 	if err != nil {
 		return cloudModelSelection{}, err
 	}
-	result := cloudModelSelection{Revision: tracker.Revision(record.Settings.ModelRevision)}
+	result := cloudModelSelection{Revision: tracker.Revision(settings.ModelRevision)}
 	var override workflowconfig.ModelSelection
-	if record.Settings.ModelKey != "" {
-		v := record.Settings
-		raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{OrganizationID: record.Core.OrganizationID, PayloadObjectKey: v.ModelKey, PayloadSHA256: v.ModelSHA256, PayloadBytes: v.ModelBytes, PayloadContentBytes: v.ModelContentBytes})
+	if settings.ModelKey != "" {
+		v := settings
+		raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{OrganizationID: settings.OrganizationID, PayloadObjectKey: v.ModelKey, PayloadSHA256: v.ModelSHA256, PayloadBytes: v.ModelBytes, PayloadContentBytes: v.ModelContentBytes})
 		if err != nil {
 			return result, err
 		}
@@ -188,12 +188,12 @@ func (s *Service) projectRecordSlugSettings(c echo.Context, scope hubscope.Nativ
 	if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	current, err := s.readProjectRecord(ctx, scope)
+	current, err := readProject(ctx, s.config.TenantRepository, scope, tenantstore.Reader.ProjectVersion)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if c.Request().Method == http.MethodGet {
-		return c.JSON(http.StatusOK, map[string]string{"slug": current.Core.Slug})
+		return c.JSON(http.StatusOK, map[string]string{"slug": current.Slug})
 	}
 	if scope.Credential.HostedRole != "owner" && scope.Credential.HostedRole != "admin" {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())

@@ -276,20 +276,14 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		organizationID := tracker.OrganizationID(s.config.Hosted.OrganizationID)
-		var project projectstore.Record
-		err = s.config.TenantRepository.ReadTenant(c.Request().Context(), organizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			project, err = r.ProjectRecord(c.Request().Context(), tracker.ProjectID(parts[1]))
+		project := tracker.ProjectID(parts[1])
+		ctx := c.Request().Context()
+		err = s.config.TenantRepository.ReadTenant(ctx, organizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.ProjectVersion(ctx, project)
 			if errors.Is(err, corestore.ErrNotFound) {
-				project, err = r.ProjectBySlug(c.Request().Context(), parts[1])
+				project, _, err = r.ProjectAddressBySlug(ctx, parts[1])
 			}
-			if err != nil {
-				return err
-			}
-			if project.Core.DeletedAt != nil {
-				return corestore.ErrNotFound
-			}
-			return nil
+			return err
 		})
 		if err != nil {
 			if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
@@ -297,7 +291,7 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 			}
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
-		scope := hubscope.NativeScope{Organization: organizationID, Project: project.Core.ID, Credential: credential}
+		scope := hubscope.NativeScope{Organization: organizationID, Project: project, Credential: credential}
 		if err := s.authorizeProjectRecord(c.Request().Context(), scope, false); err != nil {
 			if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return s.nativeAPIError(c, classified)
