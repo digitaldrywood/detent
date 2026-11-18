@@ -20,7 +20,7 @@ func runHookCommand(ctx context.Context, command string, hooks Hooks, info Info,
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	issue.hookOwner.Attach(cmd)
+	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
 	if err := procgroup.Start(cmd); err != nil {
 		return output.Bytes(), errors.Join(ctx.Err(), err)
 	}
