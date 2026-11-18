@@ -29,6 +29,7 @@ import (
 )
 
 type RunnerState struct {
+	syncVersions         *runnerauth.SyncVersions
 	problems             []runnerauth.Problem
 	settingsRejected     bool
 	configurations       map[tracker.ProjectID]runnerauth.ProjectConfiguration

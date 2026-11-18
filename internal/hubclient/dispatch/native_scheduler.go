@@ -534,7 +534,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	} else if !source.NativeClient().ClaimHint() {
 		return nil, nil
 	} else {
-		if s.client.Enrolled() {
+		if s.client.Enrolled() && (s.providerReports != nil || request.CandidateReady != nil || request.NativeLandingBatch || !source.NativeClient().RunnerSyncActive()) {
 			file, loadErr := runnerauth.Load(s.client.IdentityFile())
 			if loadErr != nil {
 				return nil, schedulingError(loadErr)

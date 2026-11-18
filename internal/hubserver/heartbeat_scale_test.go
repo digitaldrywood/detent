@@ -185,11 +185,16 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		for index, attempt := range attempts {
+			if index == 0 {
+				attempt.WorkerCleanupRequired = nil
+			}
 			if _, err := w.RecordAttempt(t.Context(), attempt); err != nil {
 				return fmt.Errorf("record scale attempt %d: %w", index, err)
 			}
-			if _, err := w.AppendEvent(t.Context(), events[index]); err != nil {
-				return err
+			if index != 0 {
+				if _, err := w.AppendEvent(t.Context(), events[index]); err != nil {
+					return err
+				}
 			}
 			if _, err := w.Release(t.Context(), attempt.Fence, "example"); err != nil {
 				return err
@@ -210,49 +215,76 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 	path := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/%s/heartbeat", organization, project, f.bindings[0].MachineID)
 	var heartbeat, claimState, callback, db time.Duration
 	var count, released int
-	result := testing.Benchmark(func(b *testing.B) {
-		heartbeat, claimState, callback, db, count, released = 0, 0, 0, 0, 0, 0
-		for b.Loop() {
-			started := time.Now()
-			timing := &requestTiming{}
-			request := newHubAPIRequest(t, http.MethodPost, path, f.tokens[0], nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 4, Version: "test", OS: "linux", Architecture: "amd64"})
-			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
-			requireNativeStatus(t, response, http.StatusOK)
-			found := false
-			for _, span := range timing.NamedSpans() {
-				if span.Name == "pg_callback" {
-					callback += span.Duration
-					found = true
-				}
+	const samples = 20
+	for range samples {
+		started := time.Now()
+		timing := &requestTiming{}
+		request := newHubAPIRequest(t, http.MethodPost, path, f.tokens[0], nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 4, Version: "test", OS: "linux", Architecture: "amd64"})
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+		requireNativeStatus(t, response, http.StatusOK)
+		found := false
+		for _, span := range timing.NamedSpans() {
+			if span.Name == "pg_callback" {
+				callback += span.Duration
+				found = true
 			}
-			if !found {
-				t.Fatal("missing PostgreSQL transaction callback timing")
-			}
-			db += time.Duration(timing.DB.Load())
-			var snapshot runnerauth.RoutingSnapshot
-			decodeHubResponse(t, response, &snapshot)
-			if snapshot.RunnerID != f.bindings[0].RunnerID {
-				t.Fatalf("heartbeat routing = %+v", snapshot)
-			}
-			heartbeat += time.Since(started)
-			started = time.Now()
-			registrationPath := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/register", organization, project)
-			response = performHubAPIRequest(t, f.service, http.MethodPost, registrationPath, f.tokens[0], map[string]any{"id": f.bindings[0].MachineID, "hostname": "example", "display_name": "Example", "capacity": 4, "version": "test", "os": "linux", "architecture": "amd64"})
-			requireNativeStatus(t, response, http.StatusOK)
-			decodeHubResponse(t, response, &snapshot)
-			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) > releasedExecutionsPageSize {
-				t.Fatalf("released executions = %+v", snapshot.ClaimState)
-			}
-			released += len(snapshot.ClaimState.ReleasedExecutions)
-			claimState += time.Since(started)
-			count++
 		}
-	})
+		if !found {
+			t.Fatal("missing PostgreSQL transaction callback timing")
+		}
+		db += time.Duration(timing.DB.Load())
+		var snapshot runnerauth.RoutingSnapshot
+		decodeHubResponse(t, response, &snapshot)
+		if snapshot.RunnerID != f.bindings[0].RunnerID {
+			t.Fatalf("heartbeat routing = %+v", snapshot)
+		}
+		heartbeat += time.Since(started)
+		started = time.Now()
+		registrationPath := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/register", organization, project)
+		response = performHubAPIRequest(t, f.service, http.MethodPost, registrationPath, f.tokens[0], map[string]any{"id": f.bindings[0].MachineID, "hostname": "example", "display_name": "Example", "capacity": 4, "version": "test", "os": "linux", "architecture": "amd64"})
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &snapshot)
+		if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) > releasedExecutionsPageSize {
+			t.Fatalf("released executions = %+v", snapshot.ClaimState)
+		}
+		released += len(snapshot.ClaimState.ReleasedExecutions)
+		claimState += time.Since(started)
+		count++
+	}
 	if released == 0 {
 		t.Fatal("registration did not return seeded released executions")
 	}
-	t.Logf("benchmark=%s issues=1500 nonterminal=50 released=300 runners=3 projects=4 heartbeat_mean_ms=%.3f registration_mean_ms=%.3f pg_callback_mean_ms=%.3f db_mean_ms=%.3f", result.String(), float64(heartbeat)/float64(count)/1e6, float64(claimState)/float64(count)/1e6, float64(callback)/float64(count)/1e6, float64(db)/float64(count)/1e6)
+	t.Logf("samples=%d issues=1500 nonterminal=50 released=300 runners=3 projects=4 heartbeat_mean_ms=%.3f registration_mean_ms=%.3f pg_callback_mean_ms=%.3f db_mean_ms=%.3f", samples, float64(heartbeat)/float64(count)/1e6, float64(claimState)/float64(count)/1e6, float64(callback)/float64(count)/1e6, float64(db)/float64(count)/1e6)
+	syncPath := fmt.Sprintf("/api/v2/organizations/%s/runners/%s/sync", organization, f.bindings[0].RunnerID)
+	syncRequest := runnerauth.SyncRequest{MachineID: f.bindings[0].MachineID, Report: &runnerauth.MachineReport{DisplayName: "Example", Capacity: 4, Version: "test", OS: "linux", Architecture: "amd64", ProtocolMajor: 2}}
+	initial := performHubAPIRequest(t, f.service, http.MethodPost, syncPath, f.tokens[0], syncRequest)
+	requireNativeStatus(t, initial, http.StatusOK)
+	var baseline runnerauth.SyncResponse
+	decodeHubResponse(t, initial, &baseline)
+	if baseline.Versions == nil {
+		t.Fatal("initial sync omitted versions")
+	}
+	syncRequest.Versions = *baseline.Versions
+	var syncDB time.Duration
+	for range samples {
+		timing := new(requestTiming)
+		request := newHubAPIRequest(t, http.MethodPost, syncPath, f.tokens[0], syncRequest)
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+		requireNativeStatus(t, response, http.StatusOK)
+		var delta runnerauth.SyncResponse
+		decodeHubResponse(t, response, &delta)
+		if !delta.NoChange {
+			t.Fatalf("unexpected idle delta: %s", response.Body)
+		}
+		if delta.Versions != nil {
+			syncRequest.Versions = *delta.Versions
+		}
+		syncDB += time.Duration(timing.DB.Load())
+	}
+	t.Logf("idle control traffic, four projects at 30s: heartbeat requests/min=8 db_ms/min=%.3f; machine sync requests/min=2 db_ms/min=%.3f; samples=%d", 8*float64(db)/float64(count)/1e6, 2*float64(syncDB)/float64(samples)/1e6, samples)
+
 }
 
 func TestHeartbeatResponseReaderSnapshot(t *testing.T) {

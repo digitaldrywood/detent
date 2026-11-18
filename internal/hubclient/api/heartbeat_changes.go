@@ -16,18 +16,20 @@ import (
 )
 
 type heartbeatProject struct {
-	mu          sync.Mutex
-	changes     *runnerauth.HeartbeatChanges
-	cursor      string
-	refresh     bool
-	loaded      bool
-	freed       bool
-	items       map[tracker.NativeWorkItemID]tracker.NativeIssue
-	pending     map[tracker.NativeWorkItemID]runnerauth.HeartbeatItem
-	approval    policy.Approval
-	approvalErr error
-	approvalSet bool
-	approvalRev uint64
+	observationMu     sync.Mutex
+	observationDigest string
+	mu                sync.Mutex
+	changes           *runnerauth.HeartbeatChanges
+	cursor            string
+	refresh           bool
+	loaded            bool
+	freed             bool
+	items             map[tracker.NativeWorkItemID]tracker.NativeIssue
+	pending           map[tracker.NativeWorkItemID]runnerauth.HeartbeatItem
+	approval          policy.Approval
+	approvalErr       error
+	approvalSet       bool
+	approvalRev       uint64
 }
 
 func (c *Client) forgetHeartbeatItems(path string) {

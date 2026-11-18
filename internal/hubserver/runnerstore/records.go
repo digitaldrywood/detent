@@ -60,6 +60,7 @@ type Enrollment struct {
 }
 
 type Identity struct {
+	SyncReportDigest      string
 	OrganizationID        tracker.OrganizationID
 	RunnerID              string
 	MachineID             tracker.MachineID

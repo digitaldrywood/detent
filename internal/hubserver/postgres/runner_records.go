@@ -198,7 +198,7 @@ func (s *session) runnerIdentityRow(ctx context.Context, predicate string, value
 	return scanRunnerIdentity(ctx, s.db.QueryRow(ctx, query, s.organization, value))
 }
 
-const runnerIdentitySelect = `SELECT organization_id,runner_id,machine_id,token_id,enrollment_id,scope,state,revision,tags,machine_use,isolation_tier,host_services,availability_timezone,availability_hard_deadline,operations,display_name,capacity_limit,reported_capacity,os,architecture,created_at,expires_at,last_heartbeat_at,removed_at,capacity_config_revision,capacity_config_local_limit,capacity_config_client_limit,capacity_config_runtime_limit,capacity_config_manageable,capacity_config_constraint,capacity_config_observed_at,capacity_request_revision,capacity_request_limit,capacity_request_backend FROM runner_identities WHERE organization_id=$1 AND `
+const runnerIdentitySelect = `SELECT organization_id,runner_id,machine_id,token_id,enrollment_id,scope,state,revision,tags,machine_use,isolation_tier,host_services,availability_timezone,availability_hard_deadline,operations,display_name,capacity_limit,reported_capacity,os,architecture,created_at,expires_at,last_heartbeat_at,removed_at,capacity_config_revision,capacity_config_local_limit,capacity_config_client_limit,capacity_config_runtime_limit,capacity_config_manageable,capacity_config_constraint,capacity_config_observed_at,capacity_request_revision,capacity_request_limit,capacity_request_backend,sync_report_digest FROM runner_identities WHERE organization_id=$1 AND `
 
 func scanRunnerIdentity(ctx context.Context, result pgx.Row) (runnerstore.Identity, error) {
 	var row runnerstore.Identity
@@ -211,7 +211,7 @@ func scanRunnerIdentity(ctx context.Context, result pgx.Row) (runnerstore.Identi
 	var capacityManageable pgtype.Bool
 	var capacityObserved pgtype.Timestamptz
 	var application runnerauth.CapacityRequest
-	err := result.Scan(&row.OrganizationID, &row.RunnerID, &machineID, &row.TokenID, &row.EnrollmentID, &row.Scope, &row.State, &row.Revision, &tags, &row.MachineUse, &row.IsolationTier, &hostServices, &row.Availability.Timezone, &row.Availability.HardDeadline, &operations, &row.DisplayName, &row.CapacityLimit, &row.ReportedCapacity, &row.OS, &row.Architecture, &row.CreatedAt, &row.ExpiresAt, &row.LastHeartbeatAt, &removedAt, &capacityRevision, &capacityLocal, &capacityClient, &capacityRuntime, &capacityManageable, &capacityConstraint, &capacityObserved, &application.ExpectedConfigRevision, &application.Capacity, &application.Backend)
+	err := result.Scan(&row.OrganizationID, &row.RunnerID, &machineID, &row.TokenID, &row.EnrollmentID, &row.Scope, &row.State, &row.Revision, &tags, &row.MachineUse, &row.IsolationTier, &hostServices, &row.Availability.Timezone, &row.Availability.HardDeadline, &operations, &row.DisplayName, &row.CapacityLimit, &row.ReportedCapacity, &row.OS, &row.Architecture, &row.CreatedAt, &row.ExpiresAt, &row.LastHeartbeatAt, &removedAt, &capacityRevision, &capacityLocal, &capacityClient, &capacityRuntime, &capacityManageable, &capacityConstraint, &capacityObserved, &application.ExpectedConfigRevision, &application.Capacity, &application.Backend, &row.SyncReportDigest)
 	if err != nil {
 		return runnerstore.Identity{}, mapError(ctx, err)
 	}
@@ -1308,7 +1308,7 @@ func (s *session) UpdateRunnerIdentity(ctx context.Context, row runnerstore.Iden
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
 	}
-	result, err := s.db.Exec(ctx, `UPDATE runner_identities SET display_name=$3,capacity_limit=$4,reported_capacity=$5,os=$6,architecture=$7,last_heartbeat_at=$8,expires_at=$9 WHERE organization_id=$1 AND runner_id=$2 AND removed_at IS NULL`, row.OrganizationID, row.RunnerID, row.DisplayName, row.CapacityLimit, row.ReportedCapacity, row.OS, row.Architecture, row.LastHeartbeatAt, row.ExpiresAt)
+	result, err := s.db.Exec(ctx, `UPDATE runner_identities SET display_name=$3,capacity_limit=$4,reported_capacity=$5,os=$6,architecture=$7,last_heartbeat_at=$8,expires_at=$9,sync_report_digest=$10 WHERE organization_id=$1 AND runner_id=$2 AND removed_at IS NULL`, row.OrganizationID, row.RunnerID, row.DisplayName, row.CapacityLimit, row.ReportedCapacity, row.OS, row.Architecture, row.LastHeartbeatAt, row.ExpiresAt, row.SyncReportDigest)
 	return updateOwned(ctx, result, err)
 }
 

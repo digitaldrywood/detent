@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -16,13 +15,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func authenticatedRunner(c echo.Context) (hubapi.APICredential, error) {
@@ -210,30 +205,7 @@ func (s *Service) revokeRunnerIdentityTenant(ctx context.Context, w tenantstore.
 	return s.applyRunnerTenantUsage(ctx, w, now, resource, true, false)
 }
 
-type nativeMachineHeartbeatRequest struct {
-	HostMetrics           json.RawMessage                     `json:"host_metrics,omitempty"`
-	ChangeCursor          *string                             `json:"change_cursor,omitempty"`
-	Admission             *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
-	SpriteName            string                              `json:"sprite_name,omitempty"`
-	Update                *runnerauth.UpdateObservation       `json:"update,omitempty"`
-	CapacityConfig        *runnerauth.CapacityConfig          `json:"capacity_configuration,omitempty"`
-	ProjectConfiguration  *runnerauth.ProjectConfiguration    `json:"project_configuration,omitempty"`
-	LocalChecks           *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
-	Problems              []runnerauth.Problem                `json:"problems"`
-	ProtocolMajor         int                                 `json:"protocol_major,omitempty"`
-	SettingsRejected      bool                                `json:"settings_rejected,omitempty"`
-	BackendIsolation      isolation.Report                    `json:"backend_isolation,omitempty"`
-	ProviderReports       []providercapacity.Report           `json:"provider_reports,omitempty"`
-	DisplayName           string                              `json:"display_name"`
-	Capacity              int                                 `json:"capacity"`
-	Version               string                              `json:"version"`
-	OS                    string                              `json:"os,omitempty"`
-	Architecture          string                              `json:"architecture,omitempty"`
-	WorkspaceCapabilities *workspacesession.Capabilities      `json:"workspace_capabilities,omitempty"`
-	WorkspaceIsolation    string                              `json:"workspace_isolation,omitempty"`
-	Skills                *[]skills.ProviderSkill             `json:"skills,omitempty"`
-	CheckoutRepository    *string                             `json:"checkout_repository,omitempty"`
-}
+type nativeMachineHeartbeatRequest = runnerauth.MachineReport
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request nativeMachineHeartbeatRequest

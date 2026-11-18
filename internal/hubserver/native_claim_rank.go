@@ -267,7 +267,7 @@ func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, compet
 	var descriptor *policy.Descriptor
 	var resolver *runner.BoardIdentityResolver
 	for _, rows := range plans {
-		plan, err := s.hydrateNativeClaimPlan(ctx, competitor.scope, competitor.request, now, rows, descriptor)
+		plan, err := s.hydrateSelectedClaimCandidate(ctx, competitor.scope, competitor.request, now, rows, descriptor)
 		if errors.Is(err, ErrNoClaimableWork) {
 			continue
 		}
@@ -369,17 +369,26 @@ func nativeClaimRankProviderSupported(resolver *runner.BoardIdentityResolver, pl
 	if candidate := nativeClaimProviderCandidate(request, plan.Item.NativeID); candidate != nil && int64(candidate.Revision) == plan.Item.Revision {
 		requirement = candidate.Requirement
 	} else {
-		issue := plan.Issue
-		identity, err := resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
+		var err error
+		requirement, err = nativeClaimProviderRequirement(resolver, plan)
 		if err != nil {
 			return false
 		}
-		requirement = providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
 	}
 	if requirement.Validate() != nil {
 		return false
 	}
 	return slices.ContainsFunc(reports, func(report providercapacity.Report) bool { return report.Supports(requirement) })
+}
+
+func nativeClaimProviderRequirement(resolver *runner.BoardIdentityResolver, plan hubrecords.NativeClaimPlan) (providercapacity.Requirement, error) {
+	issue := plan.Issue
+	identity, err := resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
+	if err != nil {
+		return providercapacity.Requirement{}, err
+	}
+	requirement := providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
+	return requirement, requirement.Validate()
 }
 
 func (s *Service) nativeClaimForeignLandingAvailable(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (bool, string, error) {
