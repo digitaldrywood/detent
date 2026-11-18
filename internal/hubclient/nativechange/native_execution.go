@@ -72,8 +72,8 @@ type nativeExecution struct {
 	lastDiff *tracker.AttemptDiffRequest
 	// storedSeq is the run event sequence whose diff the hub last stored, so
 	// the finish can tell its final diff was received.
-	storedSeq   int64
-	pendingDiff *tracker.AttemptDiffRequest
+	storedSeq      int64
+	generationDiff *tracker.AttemptDiffRequest
 	// worktreeState is the last checkpoint's worktree state. Only a clean or
 	// unpushed worktree is settled; dirty work takes the ordinary path.
 	worktreeState            string
@@ -555,7 +555,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 		if err := api.MutationEffectError(ctx); err != nil {
 			return err
 		}
-		if e.storedSeq == finish && e.lastDiff != nil && e.worktreeHead != "" && e.lastDiff.HeadSHA != e.worktreeHead {
+		if frozen := e.diffForSequence(finish); frozen != nil && e.worktreeHead != "" && frozen.HeadSHA != e.worktreeHead {
 			if err := e.append(ctx, "run.observed", "", nil, true); err != nil {
 				return err
 			}
@@ -918,6 +918,16 @@ func (e *nativeExecution) captureDiff(ctx context.Context) error {
 	return nil
 }
 
+func (e *nativeExecution) diffForSequence(sequence int64) *tracker.AttemptDiffRequest {
+	if e.generationDiff != nil && e.generationDiff.Generation.Seq == sequence {
+		return e.generationDiff
+	}
+	if e.storedSeq == sequence {
+		return e.lastDiff
+	}
+	return nil
+}
+
 // postDiff stores the worktree's diff for the event about to be appended. The
 // producer tuple is this execution's own lease, because the attempt is still
 // running and its lease is therefore the producer; the generation is the run
@@ -929,28 +939,28 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 	if err := api.MutationEffectError(ctx); err != nil {
 		return err
 	}
-	if e.pendingDiff == nil || e.pendingDiff.Generation.Seq != sequence {
+	if e.generationDiff == nil || e.generationDiff.Generation.Seq != sequence {
 		if err := e.captureDiff(ctx); err != nil {
 			return err
 		}
 		request := *e.lastDiff
 		request.Producer = tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: e.data.AttemptID, LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken}
 		request.Generation = tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: sequence}
-		e.pendingDiff = &request
+		e.generationDiff = &request
+		e.lastDiff = e.generationDiff
 	}
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {
 			return e.executionError(ctx, err)
 		}
 	}
-	if _, err := e.claim.source.NativeClient().PostAttemptDiff(ctx, e.data.AttemptID, *e.pendingDiff); err != nil {
+	if _, err := e.claim.source.NativeClient().PostAttemptDiff(ctx, e.data.AttemptID, *e.generationDiff); err != nil {
 		err = e.executionError(ctx, err)
 		if !nativeTransportUnavailable(err) {
-			e.pendingDiff = nil
+			e.generationDiff = nil
 		}
 		return err
 	}
-	e.lastDiff, e.pendingDiff = e.pendingDiff, nil
 	e.storedSeq = sequence
 	return nil
 }

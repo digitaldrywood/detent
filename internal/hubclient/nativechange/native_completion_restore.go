@@ -24,11 +24,15 @@ func (e *nativeExecution) completionSnapshot() checkpoint.State {
 	if e.change != nil {
 		landing = e.change.Landing
 	}
+	generation := e.generationDiff
+	if generation != nil && generation == e.lastDiff && generation.Generation.Seq == e.storedSeq {
+		generation = nil
+	}
 	return nativeCompletionState{
 		Settled:     e.settled,
 		Publication: e.publication, Observations: e.observations,
 		Lease: e.claim.lease, Data: e.data, Pending: e.pending, Rejected: e.rejected,
-		Diff: e.lastDiff, StoredSeq: e.storedSeq,
+		Diff: e.lastDiff, GenerationDiff: generation, StoredSeq: e.storedSeq,
 		WorktreeState: e.worktreeState, WorktreeHead: e.worktreeHead,
 		Repository: e.repository, ConversationContinuation: e.conversationContinuation,
 		SourceRequired: e.sourceRequired, RetainedSource: e.retainedSource,
