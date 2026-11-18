@@ -30,12 +30,14 @@ func TestReplaceBinaryVersionStart(t *testing.T) {
 		denyExec    bool
 		missingFile bool
 		wrongCommit bool
+		maxStarts   int
 		wantErr     error
 		wantStarts  int
 		wantWaits   int
 	}{
 		{name: "writer released", holdWriter: true, release: true, wantStarts: 2, wantWaits: 1},
 		{name: "persistent writer", holdWriter: true, wantErr: syscall.ETXTBSY, wantStarts: 3, wantWaits: 2},
+		{name: "two-start bound", holdWriter: true, maxStarts: 2, wantErr: syscall.ETXTBSY, wantStarts: 2, wantWaits: 1},
 		{name: "cancel during wait", holdWriter: true, cancel: true, wantErr: context.Canceled, wantStarts: 1, wantWaits: 1},
 		{name: "permission denied", denyExec: true, wantErr: syscall.EACCES, wantStarts: 1},
 		{name: "candidate exits unsuccessfully", missingFile: true, wantStarts: 1},
@@ -92,25 +94,30 @@ func TestReplaceBinaryVersionStart(t *testing.T) {
 						}
 					}
 					return output, err
-				}, func(ctx context.Context, delay time.Duration) bool {
-					waits++
-					if tt.release {
-						closeWriter()
-					}
-					if tt.cancel {
-						cancel()
-						return waitForUpdateCheck(ctx, delay)
-					}
-					return true
 				})
 			}, "1.2.4", testUpdatedCommit)
-			probe := candidateIdentityPreflight(verify, func(_ context.Context, path string) error {
+			maxStarts := candidateVersionMaxStarts
+			if tt.maxStarts != 0 {
+				maxStarts = tt.maxStarts
+			}
+			wait := func(ctx context.Context, delay time.Duration) bool {
+				waits++
+				if tt.release {
+					closeWriter()
+				}
+				if tt.cancel {
+					cancel()
+					return waitForUpdateCheck(ctx, delay)
+				}
+				return true
+			}
+			probe := candidateIdentityPreflightWith(verify, func(_ context.Context, path string) error {
 				protocolChecks++
 				if path != staged {
 					t.Fatalf("protocol check on %q, want %q", path, staged)
 				}
 				return nil
-			})
+			}, maxStarts, wait)
 			err = ReplaceBinary(ctx, Replacement{
 				Target: target, Binary: candidate, Verify: verify,
 				Preflight: func(ctx context.Context, path string) error {
@@ -171,6 +178,60 @@ func TestReplaceBinaryVersionStart(t *testing.T) {
 			entries, err := os.ReadDir(dir)
 			if err != nil || len(entries) != 1 || entries[0].Name() != "detent" {
 				t.Errorf("after staging cleanup: entries %v, error %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestInstalledVersionStartsOnce(t *testing.T) {
+	for _, phase := range []string{"startup recovery", "post-install"} {
+		t.Run(phase, func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(dir, "detent")
+			worker, err := os.ReadFile("/bin/true")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, worker, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			starts := 0
+			installed := func(ctx context.Context, path string) (string, error) {
+				if path != target {
+					t.Fatalf("installed probe path = %q, want %q", path, target)
+				}
+				writer, err := os.OpenFile(path, os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := writer.Close(); err != nil {
+						t.Error(err)
+					}
+				}()
+				return verifyBinaryVersionWith(ctx, path, func(cmd *exec.Cmd) ([]byte, error) {
+					starts++
+					return cmd.CombinedOutput()
+				})
+			}
+			switch phase {
+			case "startup recovery":
+				recovery := newTestStartupRecovery(t, StartupRecoveryConfig{
+					StatePath: filepath.Join(dir, "recovery.json"), CurrentVersion: "1.2.3",
+					CurrentCommit: testPreviousCommit, BinaryVerifier: installed,
+				})
+				recovery.state.PendingUpdate = &PendingUpdate{
+					FromVersion: "1.2.3", ToVersion: "1.2.4", FromCommit: testPreviousCommit, ExecutablePath: target,
+				}
+				err = recovery.MarkHealthy(t.Context())
+			case "post-install":
+				err = ReplaceBinary(t.Context(), Replacement{
+					Target: target, Binary: worker, Verify: binaryIdentityVerifier(installed, "1.2.4", testUpdatedCommit),
+				})
+			}
+			if !errors.Is(err, syscall.ETXTBSY) || starts != 1 {
+				t.Errorf("installed probe: %d starts, error %v, want one start and ETXTBSY", starts, err)
 			}
 		})
 	}

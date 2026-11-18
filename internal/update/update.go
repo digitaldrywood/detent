@@ -1328,27 +1328,25 @@ func startProcess(ctx context.Context, command string, args []string) error {
 	return exec.CommandContext(ctx, command, args...).Start() // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
 }
 
+type busyVersionStart struct{ *os.PathError }
+
+func (e busyVersionStart) Unwrap() error { return e.PathError }
+
 func verifyBinaryVersion(ctx context.Context, path string) (string, error) {
-	return verifyBinaryVersionWith(ctx, path, (*exec.Cmd).CombinedOutput, waitForUpdateCheck)
+	return verifyBinaryVersionWith(ctx, path, (*exec.Cmd).CombinedOutput)
 }
 
-func verifyBinaryVersionWith(ctx context.Context, path string, run func(*exec.Cmd) ([]byte, error), wait func(context.Context, time.Duration) bool) (string, error) {
-	const maxStarts = 3
-	for attempt := 1; ; attempt++ {
-		cmd := ReleaseCommand(ctx, path, "version")
-		output, err := run(cmd)
-		if err == nil {
-			return string(output), nil
-		}
-		startErr, ok := errors.AsType[*os.PathError](err)
-		if attempt == maxStarts || runtime.GOOS != "linux" || cmd.Process != nil || !ok ||
-			startErr.Op != "fork/exec" || startErr.Path != path || !errors.Is(startErr.Err, syscall.ETXTBSY) {
-			return string(output), fmt.Errorf("verify %s version: %w: %s", path, err, strings.TrimSpace(string(output)))
-		}
-		if !wait(ctx, 20*time.Millisecond) || ctx.Err() != nil {
-			return "", fmt.Errorf("wait to verify %s version: %w", path, ctx.Err())
-		}
+func verifyBinaryVersionWith(ctx context.Context, path string, run func(*exec.Cmd) ([]byte, error)) (string, error) {
+	cmd := ReleaseCommand(ctx, path, "version")
+	output, err := run(cmd)
+	if err == nil {
+		return string(output), nil
 	}
+	if startErr, ok := errors.AsType[*os.PathError](err); ok && runtime.GOOS == "linux" && cmd.Process == nil &&
+		startErr.Op == "fork/exec" && startErr.Path == path && errors.Is(startErr.Err, syscall.ETXTBSY) {
+		err = busyVersionStart{startErr}
+	}
+	return string(output), fmt.Errorf("verify %s version: %w: %s", path, err, strings.TrimSpace(string(output)))
 }
 
 func binaryIdentityVerifier(verifier BinaryVerifier, expectedVersion string, expectedCommit string) BinaryVerifier {
@@ -1374,10 +1372,26 @@ func binaryIdentityVerifier(verifier BinaryVerifier, expectedVersion string, exp
 	}
 }
 
+const candidateVersionMaxStarts = 3
+
 func candidateIdentityPreflight(verifier BinaryVerifier, next BinaryPreflight) BinaryPreflight {
+	return candidateIdentityPreflightWith(verifier, next, candidateVersionMaxStarts, waitForUpdateCheck)
+}
+
+func candidateIdentityPreflightWith(verifier BinaryVerifier, next BinaryPreflight, maxStarts int, wait func(context.Context, time.Duration) bool) BinaryPreflight {
 	return func(ctx context.Context, path string) error {
-		if _, err := verifier(ctx, path); err != nil {
-			return fmt.Errorf("candidate binary identity: %w", err)
+		for attempt := 1; ; attempt++ {
+			_, err := verifier(ctx, path)
+			if err == nil {
+				break
+			}
+			busy, ok := errors.AsType[busyVersionStart](err)
+			if attempt >= maxStarts || !ok || busy.Path != path {
+				return fmt.Errorf("candidate binary identity: %w", err)
+			}
+			if !wait(ctx, 20*time.Millisecond) || ctx.Err() != nil {
+				return fmt.Errorf("wait to verify %s version: %w", path, ctx.Err())
+			}
 		}
 		if next != nil {
 			return next(ctx, path)
