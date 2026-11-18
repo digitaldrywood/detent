@@ -120,7 +120,7 @@ func TestPublishAgentActivityContent(t *testing.T) {
 				return nil
 			}}
 			at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
-			err := publishAgentActivity(req, 1156, tt.update, at)
+			err := publishAgentActivity(t.Context(), req, 1156, tt.update, at)
 			if err != nil {
 				t.Fatalf("publishAgentActivity() error = %v", err)
 			}

@@ -4,95 +4,80 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
-func TestObserveAgentRSS(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		rssBytes   uint64
-		readErr    error
-		wantBreach bool
-		wantUpdate bool
+func TestRunAgentBackendTurnMemoryPolling(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		rss         uint64
+		readErr     error
+		outage      bool
+		wantSamples int
 	}{
-		{name: "below ceiling", rssBytes: 511, wantUpdate: true},
-		{name: "at ceiling", rssBytes: 512, wantUpdate: true},
-		{name: "above ceiling", rssBytes: 513, wantBreach: true, wantUpdate: true},
-		{name: "read failure is fail open", readErr: errors.New("rss unavailable")},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var updates []AgentUpdate
-			request := AgentTurnRequest{
-				MaxRSSBytes: 512,
-				TempDir:     "attempt-scratch",
-				processRSS: func(context.Context, procgroup.Identity) (uint64, error) {
-					return tt.rssBytes, tt.readErr
-				},
-			}
-			err := observeAgentRSS(t.Context(), request, procgroup.Identity{PID: 1899}, func(_ context.Context, update AgentUpdate) error {
-				if update.workerScratchPath != request.TempDir {
-					t.Fatalf("RSS update lost worker scratch ownership: %q", update.workerScratchPath)
+		{"below ceiling", 511, nil, false, 1},
+		{"at ceiling", 512, nil, false, 1},
+		{"above ceiling", 513, nil, false, 1},
+		{"read failure", 0, errors.New("rss unavailable"), false, 0},
+		{"registration outage", 511, nil, true, 2},
+		{"above ceiling during outage", 513, nil, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				sessions := &memoryProcessStore{offline: tc.outage}
+				observeProcess := (&Runner{store: sessions}).workerProcessObserver(1, "")
+				identity := procgroup.Identity{PID: 1899, StartedAt: time.Now()}
+				backend := terminalWorkerAgentBackend{identity: identity}
+				restored := make(chan struct{})
+				if tc.outage {
+					backend.registered = restored
 				}
-				updates = append(updates, update)
-				return nil
+				request := AgentTurnRequest{MaxRSSBytes: 512, TempDir: "attempt-scratch", processRSS: func(context.Context, procgroup.Identity) (uint64, error) { return tc.rss, tc.readErr }}
+				samples := 0
+				result, err, cleanup := runAgentBackendTurnWithToolsUsingLimit(t.Context(), backend, request, nil, nil, func(ctx context.Context, u AgentUpdate) error {
+					if u.Type == AgentUpdateResourceUsage {
+						samples++
+						if u.WorkerProcess != identity || u.RSSBytes != tc.rss || u.RSSCeilingBytes != 512 || u.workerScratchPath != request.TempDir {
+							t.Errorf("incorrect RSS observation: %+v", u)
+						}
+					}
+					err := observeProcess(ctx, u, u.workerScratchPath)
+					if sessions.calls == 3 {
+						close(restored)
+					}
+					return err
+				}, nil)
+				if cleanup != nil || samples != tc.wantSamples {
+					t.Fatalf("samples=%d want=%d cleanup=%v", samples, tc.wantSamples, cleanup)
+				}
+				if tc.rss > request.MaxRSSBytes {
+					var breach *SessionMemoryCeilingError
+					if !errors.Is(err, ErrSessionMemoryCeilingExceeded) || !errors.As(err, &breach) || breach.RSSBytes != tc.rss || breach.CeilingBytes != 512 {
+						t.Fatalf("memory breach = %v", err)
+					}
+				} else if err != nil || result.TurnID == "" {
+					t.Fatalf("turn=%q error=%v", result.TurnID, err)
+				}
 			})
-			if got := errors.Is(err, ErrSessionMemoryCeilingExceeded); got != tt.wantBreach {
-				t.Fatalf("observeAgentRSS() error = %v, breach = %v, want %v", err, got, tt.wantBreach)
-			}
-			if got := len(updates) == 1; got != tt.wantUpdate {
-				t.Fatalf("updates = %#v, present = %v, want %v", updates, got, tt.wantUpdate)
-			}
-			if tt.wantUpdate && (updates[0].RSSBytes != tt.rssBytes || updates[0].RSSCeilingBytes != 512) {
-				t.Fatalf("resource update = %#v, want RSS %d and ceiling 512", updates[0], tt.rssBytes)
-			}
 		})
 	}
 }
 
-func TestRunAgentBackendTurnStopsOnInitialMemoryBreach(t *testing.T) {
-	t.Parallel()
-
-	backend := processStartingAgentBackend{identity: procgroup.Identity{PID: 1899}}
-	_, err, cleanupErr := runAgentBackendTurnWithToolsUsingLimit(
-		t.Context(),
-		backend,
-		AgentTurnRequest{
-			MaxRSSBytes: 512,
-			processRSS: func(context.Context, procgroup.Identity) (uint64, error) {
-				return 513, nil
-			},
-		},
-		nil,
-		nil,
-		nil,
-		nil,
-	)
-	if !errors.Is(err, ErrSessionMemoryCeilingExceeded) {
-		t.Fatalf("runAgentBackendTurnWithToolsUsingLimit() error = %v, want memory ceiling", err)
-	}
-	var memoryErr *SessionMemoryCeilingError
-	if !errors.As(err, &memoryErr) || memoryErr.RSSBytes != 513 || memoryErr.CeilingBytes != 512 {
-		t.Fatalf("memory error = %#v, want RSS 513 and ceiling 512", memoryErr)
-	}
-	if cleanupErr != nil {
-		t.Fatalf("cleanup error = %v, want nil", cleanupErr)
-	}
+type memoryProcessStore struct {
+	SessionStore
+	offline bool
+	calls   int
 }
 
-type processStartingAgentBackend struct {
-	identity procgroup.Identity
-}
-
-func (b processStartingAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
-	if onUpdate == nil {
-		return AgentTurnResult{}, nil
+func (s *memoryProcessStore) UpdateSessionWorkerProcess(context.Context, int64, store.WorkerProcessRegistration) error {
+	s.calls++
+	if s.offline && s.calls <= 2 {
+		return transport.ErrUnavailable
 	}
-	return AgentTurnResult{}, onUpdate(AgentUpdate{Type: AgentUpdateProcessStarted, WorkerProcess: b.identity})
+	return nil
 }
