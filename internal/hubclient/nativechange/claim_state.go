@@ -29,7 +29,8 @@ func (e *nativeExecution) ClaimState(ctx context.Context) (executioncontract.Exe
 	// The controller owns bounded finalization after the turn ends. Its
 	// turn-end heartbeat cannot expire a live publication or review.
 	outage := !e.completionOutageDeadline.IsZero()
-	if observation != nil && observation.Phase == "completed" && (controller || localWorker) && !outage {
+	retainedChange := e.completionOwner.Load() && e.settled && e.change != nil && e.change.VersionID != "" && e.data.Outcome == ""
+	if observation != nil && observation.Phase == "completed" && (controller || localWorker || retainedChange) && !outage {
 		e.mu.Unlock()
 		return executioncontract.ExecutionState{Override: 1}, nil
 	}

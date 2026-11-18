@@ -124,14 +124,14 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	t.Parallel()
 	for _, test := range []struct {
-		name, stage, verdict     string
-		refusal                  string
-		publicationField         string
-		finalizationFault        string
-		committedFinalization    bool
-		legacySourceFinalization bool
-		restore, malformed       bool
-		hostHandoff, stopped     bool
+		name, stage, verdict                 string
+		refusal                              string
+		publicationField                     string
+		finalizationFault                    string
+		committedFinalization                bool
+		legacySourceFinalization             bool
+		restore, malformed, expiredHeartbeat bool
+		hostHandoff, stopped                 bool
 	}{
 		{name: "healthy"},
 		{name: "legacy source finalization", legacySourceFinalization: true},
@@ -139,6 +139,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 		{name: "source usage acknowledgement", stage: "source", finalizationFault: "usage", committedFinalization: true},
 		{name: "tool-directed host publication handoff", hostHandoff: true},
 		{name: "source", stage: "source", restore: true},
+		{name: "deferred review after worker heartbeat expires", stage: "source", expiredHeartbeat: true},
 		{name: "security", stage: "security"},
 		{name: "security reviewer version", stage: "security", publicationField: "run.reviewer_version"},
 		{name: "security reviewer digest", stage: "security", publicationField: "run.reviewer_digest"},
@@ -494,10 +495,15 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				t.Fatal(err)
 			}
 			cfg := orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review", "Merging", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false)}}
-			if test.hostHandoff {
+			if test.hostHandoff || test.refusal == "source" {
 				cfg.ActiveStates = append(cfg.ActiveStates, "Rework")
 			}
 			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: completions, Runner: agent, Logger: logger}
+			handoff := scenariohooks.NewReviewDispatch(agent)
+			if test.expiredHeartbeat || test.refusal == "source" {
+				cfg.OverloadRetryDelay, cfg.MaxRetryBackoff = time.Millisecond, time.Millisecond
+				dependencies.Runner = handoff
+			}
 			orch, err := orchestrator.New(cfg, dependencies)
 			if err != nil {
 				t.Fatal(err)
@@ -519,24 +525,35 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				return stop
 			}
 			stopOrchestrator := start(orch)
-			publishedSource := func() *runner.NativeChange {
+			publishedSource := func() *runner.NativeChange { return scenariohooks.PublishedVersion(t, h.admin, current.WorkItemID) }
+			freshScheduler := func() *Scheduler {
 				t.Helper()
-				detail, err := h.admin.CurrentChange(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				restored, err := newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: fixtureSchedulerMachine(h.scheduler), HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
 				if err != nil {
 					t.Fatal(err)
 				}
-				for _, version := range detail.Versions {
-					if version.ID == detail.Change.CurrentVersion {
-						return &runner.NativeChange{ChangeID: detail.Change.ID, VersionID: version.ID, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}
-					}
-				}
-				t.Fatal("deferred review has no current published source")
-				return nil
+				return restored
 			}
 			deadline, stop := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			defer stop()
 			ticker := time.NewTicker(20 * time.Millisecond)
 			defer ticker.Stop()
+			if test.expiredHeartbeat || test.refusal == "source" {
+				req := handoff.Next(t, deadline)
+				provider.releaseRetry()
+				if test.refusal == "source" {
+					change := publishedSource()
+					capture := scenariohooks.ReplacementSource(t, source, change.BaseSHA)
+					replacement := h.publishCaptured(t, current.WorkItemID, change.ChangeID, capture.Source.HeadSHA, &capture, change.VersionID, change.BaseSHA)
+					handoff.CheckReplacement(t, deadline, req, h.admin, replacement, h.scheduler, SetSchedulerNow)
+					return
+				}
+				handoff.CheckRestored(t, req, freshScheduler(), h.admin, SetSchedulerNow)
+				if provider.writableCalls != 1 {
+					t.Fatal("review dispatched another writable turn")
+				}
+				return
+			}
 			deferred := false
 			readGit := func(path string, args ...string) string {
 				t.Helper()
@@ -637,29 +654,11 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						}
 						return
 					}
-					if !deferred && test.refusal != "" {
+					if !deferred && test.refusal == "lease" {
 						owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 						change := publishedSource()
-						if test.refusal == "lease" {
-							if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
-								t.Fatal(err)
-							}
-						} else {
-							if err := os.WriteFile(filepath.Join(source, "replacement.txt"), []byte("replacement source\n"), 0o600); err != nil {
-								t.Fatal(err)
-							}
-							nativeChangeGit(t, source, "add", "replacement.txt")
-							nativeChangeGit(t, source, "commit", "-m", "replacement source")
-							output, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "HEAD").Output()
-							if err != nil {
-								t.Fatal(err)
-							}
-							head := strings.TrimSpace(string(output))
-							capture, err := workspace.CaptureChangeSource(t.Context(), source, change.BaseSHA, head)
-							if err != nil {
-								t.Fatal(err)
-							}
-							h.publishCaptured(t, current.WorkItemID, change.ChangeID, head, &capture, change.VersionID, change.BaseSHA)
+						if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
+							t.Fatal(err)
 						}
 						stopOrchestrator()
 						provider.releaseRetry()
@@ -737,11 +736,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					}
 					if !deferred && test.restore {
 						stopOrchestrator()
-						machine := fixtureSchedulerMachine(h.scheduler)
-						h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
-						if err != nil {
-							t.Fatal(err)
-						}
+						h.scheduler = freshScheduler()
 						dependencies.Scheduling = h.scheduler
 						orch, err = orchestrator.New(cfg, dependencies)
 						if err != nil {
