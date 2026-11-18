@@ -4941,6 +4941,7 @@ type RunnerIdentity struct {
 	CapacityRequestRevision    string
 	CapacityRequestLimit       int32
 	CapacityRequestBackend     string
+	SyncReportDigest           string
 }
 
 type RunnerIdentityEvent struct {

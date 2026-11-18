@@ -51,6 +51,10 @@ type nativeClaimCandidateScan struct {
 var errClaimHostSlotTaken = fmt.Errorf("runner host slot taken: %w", ErrNoClaimableWork)
 
 func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, ttl time.Duration) (leasestore.Lease, error) {
+	return s.selectNativeClaim(ctx, scope, request, ttl, false)
+}
+
+func (s *Service) selectNativeClaim(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, ttl time.Duration, resolveProvider bool) (leasestore.Lease, error) {
 	if s.config.TenantRepository == nil || s.config.NativeRunEvents == nil || scope.Credential.Runner.RunnerID == "" {
 		return leasestore.Lease{}, hubapi.NativeRunEventStorageUnavailable()
 	}
@@ -102,7 +106,7 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 				}
 			}
 			rows.Placement = placement
-			plan, err := s.hydrateNativeClaimPlan(ctx, scope, request, now, rows, descriptor)
+			plan, err := s.hydrateSelectedClaimCandidate(ctx, scope, request, now, rows, descriptor)
 			if errors.Is(err, ErrNoClaimableWork) {
 				position = claimCandidateCursor(candidate)
 				continue
@@ -125,6 +129,19 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 			}
 			candidateRequest := request
 			candidateRequest.WorkItemID = candidate.WorkItemID
+			if resolveProvider && slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability) {
+				resolver, err := s.nativeClaimRankResolver(ctx, scope, plan)
+				if err != nil {
+					return leasestore.Lease{}, err
+				}
+				requirement, err := nativeClaimProviderRequirement(resolver, plan)
+				if err != nil {
+					s.config.Logger.InfoContext(ctx, "native claim candidate skipped", "project_id", scope.Project, "work_item_id", candidate.WorkItemID, "reason", "provider_incompatible")
+					position = claimCandidateCursor(candidate)
+					continue
+				}
+				candidateRequest.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: candidate.WorkItemID, Revision: tracker.Revision(plan.Item.Revision), Requirement: requirement}}
+			}
 			outranked, err := s.nativeClaimOutranked(ctx, scope, candidateRequest, plan, now)
 			if err != nil {
 				return leasestore.Lease{}, err
@@ -1506,6 +1523,17 @@ func validateClaimSnapshotPolicy(scope hubscope.NativeScope, plan hubrecords.Nat
 	return nil
 }
 
+var errUnreadableClaimCandidate = errors.New("unreadable claim candidate")
+
+func (s *Service) hydrateSelectedClaimCandidate(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, rows hubrecords.NativeClaimPlan, descriptor *policy.Descriptor) (hubrecords.NativeClaimPlan, error) {
+	plan, err := s.hydrateNativeClaimPlan(ctx, scope, request, now, rows, descriptor)
+	if errors.Is(err, errUnreadableClaimCandidate) {
+		s.config.Logger.WarnContext(ctx, "native claim candidate skipped", "organization_id", scope.Organization, "project_id", scope.Project, "work_item_id", rows.Candidate.WorkItemID, "reason", "unreadable_candidate")
+		return plan, ErrNoClaimableWork
+	}
+	return plan, err
+}
+
 func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, plan hubrecords.NativeClaimPlan, descriptor *policy.Descriptor) (hubrecords.NativeClaimPlan, error) {
 	if !plan.SnapshotLoaded {
 		return plan, hubapi.NativeRunEventStorageUnavailable()
@@ -1549,11 +1577,14 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope hubscope.Nat
 		return hubrecords.NativeClaimPlan{}, errNativeClaimPlanRefused
 	}
 	raw, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).CollaborationVersion(ctx, plan.Version)
+	if errors.Is(err, artifact.ErrIntegrity) || errors.Is(err, artifact.ErrMissing) {
+		return hubrecords.NativeClaimPlan{}, fmt.Errorf("%w: %w", errUnreadableClaimCandidate, err)
+	}
 	if err != nil {
 		return hubrecords.NativeClaimPlan{}, err
 	}
 	if err := json.Unmarshal(raw, &plan.Issue); err != nil || plan.Issue.OrganizationID != plan.Item.OrganizationID || plan.Issue.ProjectID != plan.Item.ProjectID || plan.Issue.WorkItemID != plan.Item.NativeID || int64(plan.Issue.Revision) != plan.Item.Revision || int64(plan.Issue.Number) != plan.Item.Number || plan.Issue.Title != plan.Item.Title || plan.Issue.Archived != plan.Item.Archived || plan.Issue.Actor.Kind != hubapi.ValueOrEmpty(plan.Item.ActorKind) || plan.Issue.Actor.PrincipalID != hubapi.ValueOrEmpty(plan.Item.ActorPrincipalID) {
-		return hubrecords.NativeClaimPlan{}, corestore.ErrRevisionConflict
+		return hubrecords.NativeClaimPlan{}, fmt.Errorf("%w: %w", errUnreadableClaimCandidate, corestore.ErrRevisionConflict)
 	}
 
 	if nativeClaimDispatchSatisfied(plan) {
