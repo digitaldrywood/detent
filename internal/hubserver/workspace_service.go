@@ -3,12 +3,12 @@ package hubserver
 import (
 	"context"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/jitter"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
@@ -121,7 +121,7 @@ func (w *workspaceService) maintain(ctx context.Context) {
 		if spread <= 0 {
 			return w.sweepInterval
 		}
-		return w.sweepInterval - spread/2 + time.Duration(rand.Int64N(int64(spread)))
+		return w.sweepInterval - spread/2 + jitter.Offset(spread)
 	}
 	timer := time.NewTimer(next())
 	defer timer.Stop()

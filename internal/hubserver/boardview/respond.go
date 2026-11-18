@@ -14,7 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/requesttiming"
 )
 
-var gzipWriters = sync.Pool{New: func() any { return gzip.NewWriter(nil) }}
+var gzipWriters sync.Pool
 
 func acceptedCodings(header string) (gzipped, identity bool) {
 	quality := map[string]float64{}
@@ -59,8 +59,12 @@ func Respond(w http.ResponseWriter, r *http.Request, status int, value any) erro
 	payload := body.Bytes()
 	if gzipped {
 		var compressed bytes.Buffer
-		writer := gzipWriters.Get().(*gzip.Writer)
-		writer.Reset(&compressed)
+		writer, ok := gzipWriters.Get().(*gzip.Writer)
+		if ok {
+			writer.Reset(&compressed)
+		} else {
+			writer = gzip.NewWriter(&compressed)
+		}
 		_, err := writer.Write(payload)
 		if err == nil {
 			err = writer.Close()

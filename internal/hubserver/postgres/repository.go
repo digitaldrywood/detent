@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/jitter"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgcore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -121,7 +121,7 @@ func (r *Repository) internalWrite(ctx context.Context, organization tracker.Org
 			return err
 		}
 		delay := time.Duration(10<<(attempt-1)) * time.Millisecond
-		delay = delay/2 + rand.N(delay/2+1)
+		delay = delay/2 + jitter.Offset(delay/2+1)
 		wait, cancel := context.WithTimeout(ctx, delay)
 		<-wait.Done()
 		cancel()

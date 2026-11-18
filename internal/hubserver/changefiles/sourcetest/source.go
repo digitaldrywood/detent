@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -53,47 +54,49 @@ func Source(t *testing.T, input *tracker.ChangeVersionInput, content ...[]byte) 
 func Checkout(t *testing.T, input *tracker.ChangeVersionInput, content ...[]byte) ([]byte, string) {
 	t.Helper()
 	directory := t.TempDir()
-	git := func(args ...string) string {
+	ctx := t.Context()
+	git := func(command *exec.Cmd) string {
 		t.Helper()
-		command := exec.CommandContext(t.Context(), "git", append([]string{"-C", directory, "-c", "user.name=Source Fixture", "-c", "user.email=source@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=" + os.DevNull}, args...)...)
+		command.Dir = directory
+		command.Args = slices.Insert(command.Args, 1, "-c", "user.name=Source Fixture", "-c", "user.email=source@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath="+os.DevNull)
 		output, err := command.CombinedOutput()
 		if err != nil {
-			t.Fatalf("source fixture git %v: %s: %v", args, output, err)
+			t.Fatalf("source fixture git %v: %s: %v", command.Args, output, err)
 		}
 		return string(output)
 	}
-	git("init", "-b", "main", "--object-format=sha1", "--template=")
+	git(exec.CommandContext(ctx, "git", "init", "-b", "main", "--object-format=sha1", "--template="))
 	path := filepath.Join(directory, "source.txt")
 	if err := os.WriteFile(path, []byte("base source\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	git("add", "source.txt")
-	git("commit", "-m", "base")
-	base := strings.TrimSpace(git("rev-parse", "HEAD"))
+	git(exec.CommandContext(ctx, "git", "add", "source.txt"))
+	git(exec.CommandContext(ctx, "git", "commit", "-m", "base"))
+	base := strings.TrimSpace(git(exec.CommandContext(ctx, "git", "rev-parse", "HEAD")))
 	data := []byte(input.HeadSHA + "\n")
 	if len(content) > 0 && content[0] != nil {
 		data = content[0]
 		if err := os.WriteFile(path, append(bytes.Clone(data), []byte("draft source\n")...), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		git("add", "source.txt")
-		git("commit", "-m", "source draft")
+		git(exec.CommandContext(ctx, "git", "add", "source.txt"))
+		git(exec.CommandContext(ctx, "git", "commit", "-m", "source draft"))
 	}
 	if len(content) == 0 || content[0] != nil {
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		git("add", "source.txt")
+		git(exec.CommandContext(ctx, "git", "add", "source.txt"))
 	}
-	git("commit", "--allow-empty", "-m", "reviewed source")
-	head := strings.TrimSpace(git("rev-parse", "HEAD"))
+	git(exec.CommandContext(ctx, "git", "commit", "--allow-empty", "-m", "reviewed source"))
+	head := strings.TrimSpace(git(exec.CommandContext(ctx, "git", "rev-parse", "HEAD")))
 	bundlePath := filepath.Join(directory, "source.bundle")
-	git("bundle", "create", bundlePath, "HEAD", "^"+base)
+	git(exec.CommandContext(ctx, "git", "bundle", "create", "source.bundle", "HEAD", "^HEAD^{/^base$}"))
 	bundle, err := os.ReadFile(bundlePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	diff := git("diff", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", base, head, "--")
+	diff := git(exec.CommandContext(ctx, "git", "diff", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", "HEAD^{/^base$}", "HEAD", "--"))
 	input.BaseSHA, input.HeadSHA, input.MergeBaseSHA = base, head, base
 	input.Source = &tracker.ChangeSource{
 		Format: "git-bundle", BaseSHA: base, HeadSHA: head,
