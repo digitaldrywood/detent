@@ -473,12 +473,12 @@ func (s *session) ReadAttemptFacts(ctx context.Context, query reportstore.Attemp
 	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,a.id,coalesce(r.runner_id,''),coalesce(r.display_name,''),CASE WHEN lost.ended_at<$5 THEN 'interrupted' ELSE coalesce(nullif(f.run_status,''),'running') END,a.started_at,CASE WHEN lost.ended_at<$5 THEN greatest(lost.ended_at,coalesce(f.recorded_at,a.started_at)) ELSE coalesce(f.recorded_at,a.started_at) END,coalesce(f.role,''),coalesce(f.model,''),coalesce(f.effort,''),f.event_id IS NOT NULL,coalesce(f.failed,false),coalesce(f.failure_class,''),coalesce(f.failure_kind,''),coalesce(f.landing_receipt,false),coalesce(f.landed,false),coalesce(f.landing_change_id,''),coalesce(f.duration_seconds,0),coalesce(f.event_id,'')
 FROM unnest($15::text[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM native_attempts a WHERE a.organization_id=$1 AND a.id=candidate.id LIMIT 1) a
 CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=a.organization_id AND i.id=a.issue_id LIMIT 1) i
-LEFT JOIN LATERAL (SELECT * FROM report_attempt_facts af WHERE af.organization_id=a.organization_id AND af.attempt_id=a.id LIMIT 1) af ON true
-LEFT JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=af.organization_id AND e.id=af.outcome_event_id LIMIT 1) outcome ON true
-LEFT JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=af.organization_id AND e.id=af.latest_event_id LIMIT 1) latest ON true
-LEFT JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=af.organization_id AND e.id=af.first_event_id LIMIT 1) first ON true
-LEFT JOIN LATERAL(SELECT CASE WHEN outcome.recorded_at<$5 THEN outcome.id WHEN latest.recorded_at<$5 THEN latest.id WHEN first.recorded_at<$5 THEN first.id END AS id) chosen ON true
-LEFT JOIN LATERAL(SELECT rf.*,e.recorded_at FROM collaboration_events e JOIN report_event_facts rf ON rf.organization_id=e.organization_id AND rf.event_id=e.id WHERE e.organization_id=a.organization_id AND e.id=chosen.id LIMIT 1) f ON true
+LEFT JOIN LATERAL(SELECT rf.*,e.recorded_at FROM (SELECT * FROM report_attempt_facts af WHERE af.organization_id=a.organization_id AND af.attempt_id=a.id LIMIT 1) af
+ CROSS JOIN LATERAL (SELECT CASE WHEN (SELECT o.recorded_at FROM collaboration_events o WHERE o.organization_id=af.organization_id AND o.id=af.outcome_event_id LIMIT 1)<$5 THEN af.outcome_event_id
+  WHEN (SELECT o.recorded_at FROM collaboration_events o WHERE o.organization_id=af.organization_id AND o.id=af.latest_event_id LIMIT 1)<$5 THEN af.latest_event_id
+  WHEN (SELECT o.recorded_at FROM collaboration_events o WHERE o.organization_id=af.organization_id AND o.id=af.first_event_id LIMIT 1)<$5 THEN af.first_event_id END AS id) chosen
+ CROSS JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=a.organization_id AND e.id=chosen.id LIMIT 1) e
+ CROSS JOIN LATERAL (SELECT rf.* FROM report_event_facts rf WHERE rf.organization_id=a.organization_id AND rf.event_id=e.id LIMIT 1) rf) f ON true
 LEFT JOIN LATERAL (SELECT * FROM leases l WHERE l.organization_id=a.organization_id AND l.lease_id=a.lease_id LIMIT 1) l ON true
 LEFT JOIN LATERAL(SELECT CASE WHEN coalesce(nullif(f.run_status,''),'running')='running' AND (l.released_at IS NOT NULL OR l.expires_at<=$14) THEN least(coalesce(l.released_at,l.expires_at),l.expires_at) END AS ended_at) lost ON true
 LEFT JOIN LATERAL (SELECT * FROM runner_lease_assignments la WHERE la.organization_id=a.organization_id AND la.lease_id=a.lease_id LIMIT 1) la ON true
