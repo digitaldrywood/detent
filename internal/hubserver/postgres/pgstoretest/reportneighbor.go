@@ -32,7 +32,7 @@ func FreezeReportPlanner(t testing.TB, db *sql.DB, relations []string) {
 	for _, relation := range relations {
 		statements = append(statements, "ALTER TABLE "+relation+" SET (autovacuum_enabled=false, toast.autovacuum_enabled=false)")
 	}
-	statements = append(statements, "VACUUM (FREEZE) "+joined, "VACUUM (ANALYZE) "+joined, `DO $$DECLARE lagging text; BEGIN SELECT string_agg(relname||' '||relallvisible||'/'||relpages,',') INTO lagging FROM pg_class WHERE oid=ANY(string_to_array('`+joined+`',',')::regclass[]) AND relallvisible<relpages; IF lagging IS NOT NULL THEN RAISE EXCEPTION 'planner inputs not all-visible after VACUUM: %', lagging; END IF; END$$`)
+	statements = append(statements, "VACUUM (FREEZE, INDEX_CLEANUP ON) "+joined, "VACUUM (ANALYZE) "+joined, `DO $$DECLARE lagging text; BEGIN SELECT string_agg(relname||' '||relallvisible||'/'||relpages,',') INTO lagging FROM pg_class WHERE oid=ANY(string_to_array('`+joined+`',',')::regclass[]) AND relallvisible<relpages; IF lagging IS NOT NULL THEN RAISE EXCEPTION 'planner inputs not all-visible after VACUUM: %', lagging; END IF; END$$`)
 	for _, statement := range statements {
 		if _, err := db.ExecContext(t.Context(), statement); err != nil {
 			t.Fatal(err)
