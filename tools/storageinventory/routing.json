@@ -2767,8 +2767,6 @@
           "session.AccessMemberReservation:SQL": 1,
           "session.AccessMemberSeatCounts:QueryRow": 2,
           "session.AccessMemberSeatCounts:SQL": 2,
-          "session.AccessOrganization:QueryRow": 1,
-          "session.AccessOrganization:SQL": 1,
           "session.AccessProjectGrant:QueryRow": 2,
           "session.AccessProjectGrant:SQL": 2,
           "session.AccessPublicNames:Query": 1,
@@ -3424,49 +3422,13 @@
       "disposition": "target-adapter",
       "families": [
         "access",
-        "activity",
-        "billing",
-        "board",
-        "collaboration",
-        "core",
-        "event",
-        "lease",
-        "policy",
-        "source",
-        "workspace"
+        "collaboration"
       ],
       "inventory": {
         "operations": {
-          "session.AttachmentObjectExists:QueryRow": 2,
-          "session.AttachmentObjectExists:SQL": 2
+          "session.lookups:QueryRow": 1
         },
-        "tables": [
-          "hub/attachments",
-          "hub/change_evidence",
-          "hub/change_landing_receipts",
-          "hub/change_requests",
-          "hub/change_versions",
-          "hub/collaboration_events",
-          "hub/collaboration_versions",
-          "hub/github_import_records",
-          "hub/health_findings",
-          "hub/hosted_audit",
-          "hub/hosted_billing_audit",
-          "hub/hosted_billing_retired",
-          "hub/hosted_plan_audit",
-          "hub/issues",
-          "hub/linked_issue_sources",
-          "hub/native_attempts",
-          "hub/native_board_deltas",
-          "hub/native_board_items",
-          "hub/native_commands",
-          "hub/native_comments",
-          "hub/onboarding_issue_intake",
-          "hub/policy_revisions",
-          "hub/project_actions",
-          "hub/projects",
-          "hub/team_thread_posts"
-        ]
+        "tables": []
       }
     },
     "internal/hubserver/postgres/attachment_records.go": {
@@ -18495,6 +18457,56 @@
         ]
       }
     },
+    "internal/hubserver/postgres/rowlookup/reader.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "access",
+        "activity",
+        "billing",
+        "board",
+        "collaboration",
+        "core",
+        "event",
+        "lease",
+        "policy",
+        "source",
+        "workspace"
+      ],
+      "inventory": {
+        "operations": {
+          "Reader.AccessOrganization:SQL": 1,
+          "Reader.AttachmentObjectExists:SQL": 2
+        },
+        "tables": [
+          "hub/attachments",
+          "hub/change_evidence",
+          "hub/change_landing_receipts",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/collaboration_events",
+          "hub/collaboration_versions",
+          "hub/github_import_records",
+          "hub/health_findings",
+          "hub/hosted_audit",
+          "hub/hosted_billing_audit",
+          "hub/hosted_billing_retired",
+          "hub/hosted_plan_audit",
+          "hub/issues",
+          "hub/linked_issue_sources",
+          "hub/native_attempts",
+          "hub/native_board_deltas",
+          "hub/native_board_items",
+          "hub/native_commands",
+          "hub/native_comments",
+          "hub/onboarding_issue_intake",
+          "hub/organizations",
+          "hub/policy_revisions",
+          "hub/project_actions",
+          "hub/projects",
+          "hub/team_thread_posts"
+        ]
+      }
+    },
     "internal/hubserver/postgres/runner_admission_decisions.go": {
       "disposition": "target-adapter",
       "families": [
@@ -20414,12 +20426,13 @@
       "inventory": {
         "operations": {
           "Pools.BeginBatch:Exec": 2,
-          "Pools.BeginBatch:SQL": 1,
+          "Pools.ReadRow:QueryRow": 1,
           "Transaction.Commit:Exec": 1,
           "Transaction.Exec:Exec": 1,
           "Transaction.Query:Query": 1,
           "Transaction.QueryRow:Query": 1,
-          "Transaction.Rollback:Exec": 1
+          "Transaction.Rollback:Exec": 1,
+          "bindTenant:SQL": 1
         },
         "tables": []
       }
