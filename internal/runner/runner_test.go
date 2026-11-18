@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/runner/internal/gitfixture"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -7956,27 +7957,7 @@ func initRunnerSourceRepo(t *testing.T) string {
 
 func runRunnerGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-
-	ctx := testenv.WaitContext(t, t.Context())
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	procgroup.Configure(ctx, cmd)
-	outputFile, err := os.CreateTemp(t.TempDir(), "git-output-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd.Stdout, cmd.Stderr = outputFile, outputFile
-	runErr := cmd.Run()
-	if err := outputFile.Close(); err != nil {
-		t.Fatal(err)
-	}
-	output, err := os.ReadFile(outputFile.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runErr != nil {
-		t.Fatalf("git %s failed: %v\n%s", strings.Join(cmd.Args[1:], " "), runErr, output)
-	}
-	return string(output)
+	return gitfixture.Git(t, dir, args...)
 }
 
 func containsRunnerString(values []string, want string) bool {

@@ -1660,34 +1660,33 @@ func recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace wo
 }
 
 func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backend, issue *workspace.Issue, nativeLanding bool) {
-	if req.Execution != nil && !nativeLanding && issue.Source != nil {
-		previous := req.Execution.Recovery().SourceAttempt()
-		if previous != nil && previous.Checkpoint != nil && !previous.Checkpoint.UncertainForgeEffect() && previous.Checkpoint.HeadSHA != issue.Source.Version.HeadSHA && previous.Finalization != nil {
-			f, v := previous.Finalization, issue.Source.Version
-			if ref := f.SourceVersion; ref != nil && ref.ChangeID == v.ChangeID && ref.VersionID == v.ID && ref.HeadSHA == v.HeadSHA && f.ChangeID == ref.ChangeID && f.HeadSHA == ref.HeadSHA {
-				clean := previous.Checkpoint.WorktreeState == "clean"
-				empty := f.Settled && f.Changed && f.VersionID == "" && f.Files == 0 && (clean || previous.Checkpoint.WorktreeState == "unpushed")
-				if clean && f.VersionID == ref.VersionID || empty {
-					issue.Checkpoint, issue.FreshCheckout = nil, true
-					return
-				}
+	if req.Execution == nil || nativeLanding {
+		return
+	}
+	recovery := req.Execution.Recovery()
+	previous := recovery.SourceAttempt()
+	if issue.Source != nil && previous != nil && previous.Checkpoint != nil && !previous.Checkpoint.UncertainForgeEffect() && previous.Checkpoint.HeadSHA != issue.Source.Version.HeadSHA && previous.Finalization != nil {
+		f, v := previous.Finalization, issue.Source.Version
+		if ref := f.SourceVersion; ref != nil && ref.ChangeID == v.ChangeID && ref.VersionID == v.ID && ref.HeadSHA == v.HeadSHA && f.ChangeID == ref.ChangeID && f.HeadSHA == ref.HeadSHA {
+			clean := previous.Checkpoint.WorktreeState == "clean"
+			empty := f.Settled && f.Changed && f.VersionID == "" && f.Files == 0 && (clean || previous.Checkpoint.WorktreeState == "unpushed")
+			if clean && f.VersionID == ref.VersionID || empty {
+				issue.Checkpoint, issue.FreshCheckout = nil, true
+				return
 			}
 		}
 	}
-	if req.Execution != nil && !nativeLanding {
-		previous := req.Execution.Recovery().SourceAttempt()
-		refreshCheckpoint := previous != nil && previous.Checkpoint != nil && (previous.Checkpoint.WorktreeState == "dirty" || previous.Checkpoint.Resume == "fresh_checkout")
-		if issue.RequireCheckpoint || issue.NativeRework && refreshCheckpoint || !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
-			issue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), issue.Source)
-		}
-		if issue.NativeRework && refreshCheckpoint && issue.Checkpoint != nil {
-			issue.FreshCheckout = true
-		}
-		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil && cleanLocalCheckpoint(previous.Checkpoint) {
-			issue.FreshCheckout = true
-			if issue.Source == nil {
-				issue.BaseRef = previous.Checkpoint.HeadSHA
-			}
+	refreshCheckpoint := previous != nil && previous.Checkpoint != nil && (previous.Checkpoint.WorktreeState == "dirty" || previous.Checkpoint.Resume == "fresh_checkout")
+	issue.Checkpoint = nativeRestorableCheckpoint(recovery, issue.Source)
+	if issue.NativeRework && refreshCheckpoint && issue.Checkpoint != nil {
+		issue.FreshCheckout = true
+	} else if issue.Checkpoint != nil && !issue.RequireCheckpoint && sameMachineWorkspaceRetained(runWorkspace, recovery, *issue) {
+		issue.RetainedCheckpoint, issue.Checkpoint = issue.Checkpoint, nil
+	}
+	if previous != nil && cleanLocalCheckpoint(previous.Checkpoint) {
+		issue.FreshCheckout = true
+		if issue.Source == nil {
+			issue.BaseRef = previous.Checkpoint.HeadSHA
 		}
 	}
 }
