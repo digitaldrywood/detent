@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-const dirtyOverlayLimit = 256
+const (
+	dirtyOverlayLimit    = 256
+	arrayRowElementLimit = 256
+)
 
 type boardViewColumn struct {
 	name, kind string
@@ -85,7 +88,7 @@ func boardViewArrayRow(kind, source string, slots map[string]string) string {
 	for slot, field := range slots {
 		values[slot] = "array_agg(a." + field + ")"
 	}
-	return boardViewRow(kind, "NULL", "NULL", values) + " FROM (" + source + ") a HAVING count(*)>0"
+	return boardViewRow(kind, "NULL", "NULL", values) + " FROM (SELECT s.*,(row_number() OVER ()-1)/" + strconv.Itoa(arrayRowElementLimit) + " AS batch FROM (" + source + ") s) a GROUP BY a.batch"
 }
 
 const boardViewLinked = ` FROM linked c JOIN native_board_items x ON x.organization_id=$1 AND x.project_id=c.project_id AND x.work_item_id=c.work_item_id`
