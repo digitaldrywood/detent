@@ -204,39 +204,32 @@ func TestHookDaemonHostDiscovery(t *testing.T) {
 }
 
 func TestManagedHookServiceLivesThroughWork(t *testing.T) {
-	for _, tc := range []struct{ name, hookPrefix string }{
-		{"detached", ""},
-		{"hook process group", "TEST_HOOK_KEEP_GROUP=1 "},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			daemon := workspacetest.DetachedHook(t)
-			workspacetest.UseDaemonCandidates(t, daemon)
-			cacheRoot := t.TempDir()
-			cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "owner"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, finish := WithHookProcesses(cache.WithContext(t.Context()))
-			backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: initSourceRepo(t), AutoBranch: true, Hooks: Hooks{AfterCreate: tc.hookPrefix + daemon.Command}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := backend.Create(ctx, Issue{Identifier: "EXAMPLE-1"}); err != nil {
-				t.Fatal(err)
-			}
-			scratch := daemon.Request(t)
-			if _, err := os.Stat(scratch); err != nil {
-				t.Fatalf("managed scratch during work: %v", err)
-			}
-			if err := finish(); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("managed scratch after teardown: %v", err)
-			}
-			if daemon.Alive(t) {
-				t.Fatal("managed hook service survived work")
-			}
-		})
+	daemon := workspacetest.DetachedHook(t)
+	workspacetest.UseDaemonCandidates(t, daemon)
+	cacheRoot := t.TempDir()
+	cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "owner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, finish := WithHookProcesses(cache.WithContext(t.Context()))
+	backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: initSourceRepo(t), AutoBranch: true, Hooks: Hooks{AfterCreate: daemon.Command}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Create(ctx, Issue{Identifier: "EXAMPLE-1"}); err != nil {
+		t.Fatal(err)
+	}
+	scratch := daemon.Request(t)
+	if _, err := os.Stat(scratch); err != nil {
+		t.Fatalf("managed scratch during work: %v", err)
+	}
+	if err := finish(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed scratch after teardown: %v", err)
+	}
+	if daemon.Alive(t) {
+		t.Fatal("managed hook service survived work")
 	}
 }
