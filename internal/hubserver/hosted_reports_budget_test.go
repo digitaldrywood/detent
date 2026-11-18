@@ -81,10 +81,8 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 	freezeReportPlannerInputs(t, admin)
 	statementCounts := map[string]int{}
 	for _, test := range []struct {
-		name      string
-		rangeName string
-		hour      int
-		days      int
+		name, rangeName string
+		hour, days      int
 	}{
 		{"30d/midnight", "30d", 0, 30},
 		{"30d/daytime", "30d", 10, 29},
@@ -92,9 +90,12 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 		{"90d/daytime", "90d", 10, 89},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			skipReportsRedesignLeaf(t)
+			if reportsRedesignLeaf(t.Name()) {
+				statementCounts[test.name] = -1
+				t.Skip(reportsRedesignSkipReason)
+			}
 			f.service.config.Clock = func() time.Time { return now.Add(time.Duration(test.hour) * time.Hour) }
-			timing, statements := newReportStatementTrace()
+			timing, statements := newReportStatementTrace(true)
 			ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), hubapi.ReadTimeout)
 			defer cancel()
 			request := httptest.NewRequest(http.MethodGet, browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+test.rangeName, nil).WithContext(ctx)
@@ -120,8 +121,11 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 			statementCounts[test.name] = len(captured)
 			reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "reports", "issues", "collaboration_events", "native_attempts", "change_requests", "report_escape_facts")
 		})
+		if statementCounts[test.name] == 0 {
+			t.Errorf("missing report statement measurement for %s", test.name)
+		}
 	}
-	if len(statementCounts) > 0 && (statementCounts["30d/midnight"] == 0 || statementCounts["90d/midnight"] != statementCounts["30d/midnight"] || statementCounts["90d/daytime"] != statementCounts["30d/daytime"]) {
+	if statementCounts["30d/midnight"] == 0 || statementCounts["90d/midnight"] != statementCounts["30d/midnight"] || statementCounts["90d/daytime"] != statementCounts["30d/daytime"] {
 		t.Errorf("report statements grow with the window: %v", statementCounts)
 	}
 }

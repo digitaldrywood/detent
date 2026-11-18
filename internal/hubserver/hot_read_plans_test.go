@@ -31,20 +31,26 @@ type tracedStatement struct {
 	args  []any
 }
 
-func skipReportsRedesignLeaf(t *testing.T) {
-	t.Helper()
-	suite, leaf, _ := strings.Cut(t.Name(), "/")
+const reportsRedesignSkipReason = "temporarily skipped by the owner's order on 2026-11-18 until issue 1538 lands the Reports read redesign"
+
+func reportsRedesignLeaf(name string) bool {
+	suite, leaf, _ := strings.Cut(name, "/")
 	leaves := map[string][]string{
 		"TestHotReadQueryPlans":          {"reports", "reports_filtered_by_issue", "reports_filtered_by_attempt", "report_filter_options", "reports_all_projects_over_a_custom_range"},
 		"TestReportsLongRangeReadBudget": {"30d/midnight", "30d/daytime", "90d/midnight", "90d/daytime"},
 		"TestAnalyticsReportPlans":       {"attempt_payloads/24h", "attempt_payloads/7d", "attempt_payloads/30d", "source_volume/24h", "source_volume/7d", "source_volume/30d"},
 	}
-	if slices.Contains(leaves[suite], leaf) {
-		t.Skip("temporarily skipped by the owner's order on 2026-11-18 until issue 1538 lands the Reports read redesign")
+	return slices.Contains(leaves[suite], leaf)
+}
+
+func skipReportsRedesignLeaf(t *testing.T) {
+	t.Helper()
+	if reportsRedesignLeaf(t.Name()) {
+		t.Skip(reportsRedesignSkipReason)
 	}
 }
 
-func newReportStatementTrace() (*requestTiming, func() []tracedStatement) {
+func newReportStatementTrace(preserveNames bool) (*requestTiming, func() []tracedStatement) {
 	var mu sync.Mutex
 	var statements []tracedStatement
 	timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
@@ -54,7 +60,7 @@ func newReportStatementTrace() (*requestTiming, func() []tracedStatement) {
 		values := make([]any, len(args))
 		for i, arg := range args {
 			values[i] = arg.Value
-			if arg.Name != "" {
+			if preserveNames && arg.Name != "" {
 				values[i] = sql.Named(arg.Name, arg.Value)
 			}
 		}
@@ -94,8 +100,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, read := range []struct {
-		name string
-		path string
+		name, path string
 	}{
 		{"activity", organization + "/activity"},
 		{"newest issue history", project + "/work-items/" + item + "/history?direction=newest&view=timeline&limit=100"},
@@ -113,7 +118,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 	} {
 		t.Run(read.name, func(t *testing.T) {
 			skipReportsRedesignLeaf(t)
-			timing, statements := newReportStatementTrace()
+			timing, statements := newReportStatementTrace(false)
 			ctx := testenv.WaitContext(t, withRequestTiming(t.Context(), timing))
 			request := httptest.NewRequest(http.MethodGet, f.server.URL+read.path, nil).WithContext(ctx)
 			request.AddCookie(f.cookies["owner"])
@@ -166,7 +171,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 			for _, window := range []string{"24h", "7d", "30d"} {
 				t.Run(window, func(t *testing.T) {
 					skipReportsRedesignLeaf(t)
-					timing, statements := newReportStatementTrace()
+					timing, statements := newReportStatementTrace(false)
 					ctx := testenv.WaitContext(t, withRequestTiming(t.Context(), timing))
 					request := httptest.NewRequest(http.MethodGet, browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+window, nil).WithContext(ctx)
 					request.AddCookie(f.cookies["owner"])
