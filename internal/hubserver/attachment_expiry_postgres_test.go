@@ -84,9 +84,10 @@ func TestPostgresAttachmentExpiryPreservesReferencesAndTenantQuota(t *testing.T)
 				}
 			}
 			service.config.TenantRepository = repository
+			limit := 0
 			call := func(kind, id string, finish bool, want int) *httptest.ResponseRecorder {
 				t.Helper()
-				request := httptest.NewRequest(http.MethodPost, "/internal/v1/attachments/expired", strings.NewReader(fmt.Sprintf(`{"id":%q}`, id)))
+				request := httptest.NewRequest(http.MethodPost, "/internal/v1/attachments/expired", strings.NewReader(fmt.Sprintf(`{"id":%q,"limit":%d}`, id, limit)))
 				request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 				response := httptest.NewRecorder()
 				c := service.echo.NewContext(request, response)
@@ -108,10 +109,14 @@ func TestPostgresAttachmentExpiryPreservesReferencesAndTenantQuota(t *testing.T)
 			}
 			call("user", "", false, http.StatusNotFound)
 			var expired []attachment.Metadata
-			decodeHubResponse(t, call(cloudassert.KindService, "", false, http.StatusOK), &expired)
-			if len(expired) != 0 {
-				t.Fatalf("first batch exceeded 100 referenced candidates: %d deletions", len(expired))
+			for _, limit = range []int{1, 99} {
+				var page attachment.ExpiryPage
+				decodeHubResponse(t, call(cloudassert.KindService, "", false, http.StatusOK), &page)
+				if page.Examined != limit || len(page.Records) != 0 {
+					t.Fatalf("limit %d examined %d referenced candidates and expired %d", limit, page.Examined, len(page.Records))
+				}
 			}
+			limit = 0
 			referenced := false
 			service.config.TenantRepository = &attachmentReadCounter{Repository: repository, beforeWrite: func() error {
 				if referenced {

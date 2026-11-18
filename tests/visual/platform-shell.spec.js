@@ -128,7 +128,7 @@ for (const theme of ["light", "dark"]) {
         await expect(heading).toBeVisible();
         await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(theme);
         if (path === "health") {
-          await expect(page.getByRole("alert", { name: "Service health" })).toContainText("1 of 1 tenant Hubs running");
+          await expect(page.getByRole("alert", { name: "Service health" })).toContainText("Shared Hub running.");
           await expect(page.getByRole("table", { name: "Tenant Hubs" })).toContainText("Running");
         } else {
           await expect(page.getByRole("alert")).toHaveCount(0);

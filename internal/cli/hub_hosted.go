@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/cli/conversationconfig"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -34,7 +35,7 @@ type hostedFileConfig struct {
 	EventQuota               int64                           `yaml:"event_quota"`
 	Directory                []hostedplans.HostedDestination `yaml:"directory"`
 	SharedEntry              *hostedSharedEntryFileConfig    `yaml:"shared_entry"`
-	Conversation             *hostedConversationFileConfig   `yaml:"conversation"`
+	Conversation             *conversationconfig.Section     `yaml:"conversation"`
 	Usage                    *hostedUsageFileConfig          `yaml:"usage"`
 	Workspaces               *hostedWorkspaceFileConfig      `yaml:"workspaces"`
 	Postgres                 *hubPostgresFileConfig          `yaml:"postgres"`
@@ -151,6 +152,10 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hoste
 }
 
 func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hostedplans.HostedConfig, error) {
+	return parseHostedConfigWithBilling(reader, lookupEnv, lookupEnv)
+}
+
+func parseHostedConfigWithBilling(reader io.Reader, lookupEnv, lookupBilling func(string) string) (*hostedplans.HostedConfig, error) {
 	decoder := yaml.NewDecoder(io.LimitReader(reader, 128*1024))
 	decoder.KnownFields(true)
 	var config hostedFileConfig
@@ -192,7 +197,7 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hosted
 	}
 	var billingConfig *hostedplans.HostedBillingConfig
 	if config.Billing != nil {
-		billingConfig, err = readHostedBillingConfig(config.Billing, lookupEnv)
+		billingConfig, err = readHostedBillingConfig(config.Billing, lookupBilling)
 		if err != nil {
 			return nil, err
 		}

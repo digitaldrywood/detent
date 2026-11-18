@@ -133,3 +133,45 @@ func TestRequestMetricsPostgres(t *testing.T) {
 		})
 	}
 }
+
+type flushPageStore struct {
+	metricsstore.Repository
+	writes []int
+}
+
+func (s *flushPageStore) MergeRequestMetrics(_ context.Context, _ tracker.OrganizationID, _ time.Time, rows []metricsstore.Metric) error {
+	s.writes = append(s.writes, len(rows))
+	return nil
+}
+
+func TestMetricFlushPageLeavesRemainingKeysForLater(t *testing.T) {
+	for _, test := range []struct{ limit, keys, want int }{{8, 7, 1}, {32, 12, 5}, {64, 19, 10}} {
+		t.Run(fmt.Sprint(test.limit), func(t *testing.T) {
+			store := &flushPageStore{}
+			service, err := New(Deps{Repository: store, Organization: "org_example"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now().UTC()
+			for i := range test.keys {
+				service.Record(at, "/items", "runner", fmt.Sprint(i), 200, time.Millisecond)
+			}
+			for remaining := test.keys; remaining > 0; remaining -= test.want {
+				if err := service.FlushPage(t.Context(), at, test.limit); err != nil {
+					t.Fatal(err)
+				}
+				if n := store.writes[len(store.writes)-1]; n != min(remaining, test.want) {
+					t.Fatalf("page merged %d keys, want %d", n, min(remaining, test.want))
+				}
+			}
+			if len(service.pending) != 0 {
+				t.Fatalf("%d keys left after drain", len(service.pending))
+			}
+			service.usage = &BillingOwner{Plans: func() *BillingPlan { t.Fatal("clean view retirement called billing maintenance"); return nil }}
+			if err := service.Drain(t.Context(), at); err != nil {
+				t.Fatal(err)
+			}
+
+		})
+	}
+}

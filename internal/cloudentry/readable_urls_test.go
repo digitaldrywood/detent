@@ -1,6 +1,7 @@
 package cloudentry
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -169,6 +172,62 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	if issue.WebURL != testPublicURL+"/second-name/alpha-secret-project/issues/1" {
 		t.Fatalf("edited URL=%q", issue.WebURL)
 	}
+	t.Run("registration-only upgrade", func(t *testing.T) {
+		key := createTestAccessKey(t, alice, "global", nil, "", "read")
+		cfg := f.service.config
+		cfg.Storage.PostgresDSN = cfg.Storage.PostgresPool.Config().ConnString()
+		cfg.Storage.PostgresPool = nil
+		cfg.SharedHub = &SharedHubConfig{
+			Postgres:  *f.fixtures["org_alpha"].Config.Postgres,
+			Configure: func(TenantSpec) ([]byte, error) { return nil, nil },
+			TenantConfig: func(_ []byte, spec TenantSpec) (hubserver.Config, error) {
+				settings := f.fixtures[spec.Organization.ID].Config
+				hosted := *settings.Hosted
+				authority := *hosted.SharedEntry
+				authority.ResolveKey = spec.ResolveKey
+				hosted.SharedEntry = &authority
+				settings.Hosted = &hosted
+				return settings, nil
+			},
+			runMaintenance: func(_ *hubmaintenance.Scheduler, ctx context.Context, _ func(error)) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		}
+		upgraded, err := Open(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := upgraded.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		visitor := newBrowser(t, upgraded.Handler())
+		visitor.Jar = alice.Jar
+		old, _ := visitor.Get("/alpha/alpha-secret-project/issues/1")
+		if old.StatusCode != http.StatusPermanentRedirect || old.Header.Get("Location") != "/second-name/alpha-secret-project/issues/1" {
+			t.Fatalf("old issue URL after upgrade = %d %q", old.StatusCode, old.Header.Get("Location"))
+		}
+		for _, tc := range []struct{ id, want string }{{"org_alpha", "Alpha secret project"}, {"org_beta", "Beta secret project"}} {
+			client := newBrowser(t, upgraded.Handler())
+			response := attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, map[string]string{"Authorization": "Bearer " + key.Token, "X-Detent-Organization": tc.id})
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), tc.want) {
+				t.Fatalf("pre-upgrade key on %s returned %d", tc.id, response.Code)
+			}
+		}
+		f.provider.Users["user_staff"] = "staff@example.test"
+		staff := newBrowser(t, upgraded.Handler())
+		staff.Login("/auth/oidc/start", "user_staff:")
+		status, raw := staff.Get("/api/cloud/platform/health")
+		var health struct {
+			Hubs []platformTenantHealth `json:"tenant_hubs"`
+		}
+		decodeJSON(t, raw, &health)
+		if status.StatusCode != http.StatusOK || len(health.Hubs) != 1 || !health.Hubs[0].Running || health.Hubs[0].ID != "shared" {
+			t.Fatalf("shared health = %d %s", status.StatusCode, raw)
+		}
+	})
 	for _, state := range []string{"requested", "allocating", "failed", "disabled", "deleting", "deleted"} {
 		t.Run(state, func(t *testing.T) {
 			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state=$1,managed=true WHERE id=$2", state, "org_alpha"); err != nil {

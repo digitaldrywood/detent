@@ -19,6 +19,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubwebhook"
 )
 
 type githubRoutes struct {
@@ -30,7 +32,7 @@ type githubRoutes struct {
 }
 
 func (s *Service) Initialize(ctx context.Context) error {
-	if len(s.deps.Secret) == 0 {
+	if len(s.deps.Secret) == 0 || s.deps.Accept != nil {
 		return nil
 	}
 	organizations, err := s.deps.List(ctx)
@@ -60,7 +62,7 @@ func (s *Service) Initialize(ctx context.Context) error {
 }
 
 func (s *Service) Refresh(ctx context.Context, organization tenant.Organization) error {
-	if len(s.deps.Secret) == 0 {
+	if len(s.deps.Secret) == 0 || s.deps.Accept != nil {
 		return nil
 	}
 	routes := &s.githubRoutes
@@ -131,68 +133,28 @@ func (s *Service) Webhook(c echo.Context) error {
 	}
 	deliveryID := strings.TrimSpace(request.Header.Get("X-GitHub-Delivery"))
 	eventType := strings.TrimSpace(request.Header.Get("X-GitHub-Event"))
-	if deliveryID == "" || eventType == "" {
+	if deliveryID == "" || len(deliveryID) > 256 || eventType == "" || len(eventType) > 100 {
 		return fail(http.StatusBadRequest, "invalid_headers", "GitHub webhook delivery and event headers are required")
 	}
-	var metadata struct {
-		Repository struct {
-			FullName string `json:"full_name"`
-		} `json:"repository"`
-	}
-	if err := json.Unmarshal(payload, &metadata); err != nil {
+	_, repository, err := githubwebhook.ParsePayload(payload, eventType)
+	if err != nil {
 		return fail(http.StatusBadRequest, "invalid_payload", "GitHub webhook payload is invalid")
 	}
-	repository := strings.ToLower(metadata.Repository.FullName)
-	s.githubRoutes.mu.Lock()
-	ids := make([]string, 0, len(s.githubRoutes.byRepository[repository]))
-	for id := range s.githubRoutes.byRepository[repository] {
-		ids = append(ids, id)
+	delivery := Delivery{ID: deliveryID, Event: eventType, Repository: repository, HookID: request.Header.Get("X-GitHub-Hook-ID"), InstallationTarget: request.Header.Get("X-GitHub-Hook-Installation-Target-ID"), UserAgent: request.UserAgent()}
+	ctx, cancel := context.WithTimeout(request.Context(), tenant.CallTimeout)
+	defer cancel()
+	var duplicate bool
+	if s.deps.Accept != nil {
+		duplicate, err = s.deps.Accept(ctx, delivery, payload)
+	} else {
+		duplicate, err = s.deliverRegistered(ctx, delivery, payload)
 	}
-	unavailable := len(s.githubRoutes.unavailable) != 0
-	s.githubRoutes.mu.Unlock()
-	if unavailable {
-		return fail(http.StatusServiceUnavailable, "tenant_unavailable", "GitHub repository routing is temporarily unavailable")
+	if errors.Is(err, corestore.ErrRevisionConflict) {
+		return fail(http.StatusConflict, "delivery_conflict", "The delivery ID already belongs to another event")
 	}
-	query := url.Values{
-		"delivery_id": {deliveryID}, "event_type": {eventType},
-		"hook_id":             {request.Header.Get("X-GitHub-Hook-ID")},
-		"installation_target": {request.Header.Get("X-GitHub-Hook-Installation-Target-ID")},
-		"user_agent":          {request.Header.Get("User-Agent")},
-	}
-	path := "/internal/v1/github/webhook?" + query.Encode()
-	duplicate := len(ids) != 0
-	var deliveryErr error
-	for _, id := range ids {
-		organization, err := s.deps.ReadyOrganization(request.Context(), id)
-		if errors.Is(err, s.deps.OrganizationNotFound) {
-			continue
-		}
-		if err != nil {
-			deliveryErr = errors.Join(deliveryErr, err)
-			continue
-		}
-		claims, err := s.deps.Claims(organization, cloudassert.KindService, http.MethodPost, path, payload)
-		if err != nil {
-			deliveryErr = errors.Join(deliveryErr, err)
-			continue
-		}
-		status, raw, err := s.deps.SignedCall(request.Context(), organization, claims, payload, "")
-		if err != nil || status != http.StatusAccepted {
-			deliveryErr = errors.Join(deliveryErr, fmt.Errorf("tenant %s GitHub webhook returned %d", id, status), err)
-			continue
-		}
-		var result struct {
-			Duplicate bool `json:"duplicate"`
-		}
-		if err := json.Unmarshal(raw, &result); err != nil {
-			deliveryErr = errors.Join(deliveryErr, err)
-			continue
-		}
-		duplicate = duplicate && result.Duplicate
-	}
-	if deliveryErr != nil {
-		s.deps.Logger.Warn("deliver hosted GitHub webhook", "delivery_id", deliveryID, "error", deliveryErr)
-		return fail(http.StatusServiceUnavailable, "tenant_unavailable", "GitHub webhook delivery could not reach every matching organization")
+	if err != nil {
+		s.deps.Logger.Warn("accept hosted GitHub webhook", "error", err)
+		return fail(http.StatusServiceUnavailable, "tenant_unavailable", "GitHub webhook delivery is temporarily unavailable")
 	}
 	return c.JSON(http.StatusAccepted, struct {
 		DeliveryID string `json:"delivery_id"`
@@ -200,7 +162,79 @@ func (s *Service) Webhook(c echo.Context) error {
 	}{deliveryID, duplicate})
 }
 
+type Delivery struct {
+	ID, Event, Repository, HookID, InstallationTarget, UserAgent, BindingProject string
+}
+
+func (s *Service) deliverRegistered(ctx context.Context, delivery Delivery, payload []byte) (bool, error) {
+	s.githubRoutes.mu.Lock()
+	ids := make([]string, 0, len(s.githubRoutes.byRepository[delivery.Repository]))
+	for id := range s.githubRoutes.byRepository[delivery.Repository] {
+		ids = append(ids, id)
+	}
+	unavailable := len(s.githubRoutes.unavailable) != 0
+	s.githubRoutes.mu.Unlock()
+	if unavailable {
+		return false, errors.New("GitHub repository routing unavailable")
+	}
+	duplicate := len(ids) != 0
+	var failure error
+	for _, id := range ids {
+		org, err := s.deps.ReadyOrganization(ctx, id)
+		if errors.Is(err, s.deps.OrganizationNotFound) {
+			continue
+		}
+		if err == nil {
+			var repeated bool
+			repeated, err = s.send(ctx, org, delivery, payload, false)
+			duplicate = duplicate && repeated
+		}
+		failure = errors.Join(failure, err)
+	}
+	return duplicate, failure
+}
+
+func (s *Service) Deliver(ctx context.Context, org tenant.Organization, delivery Delivery, payload []byte) error {
+	_, err := s.send(ctx, org, delivery, payload, true)
+	return err
+}
+
+func (s *Service) send(ctx context.Context, org tenant.Organization, delivery Delivery, payload []byte, deferred bool) (bool, error) {
+	query := url.Values{"delivery_id": {delivery.ID}, "event_type": {delivery.Event}}
+	if deferred {
+		query.Set("binding_project", delivery.BindingProject)
+		query.Set("defer_processing", "1")
+	} else {
+		query.Set("hook_id", delivery.HookID)
+		query.Set("installation_target", delivery.InstallationTarget)
+		query.Set("user_agent", delivery.UserAgent)
+	}
+	claims, err := s.deps.Claims(org, cloudassert.KindService, http.MethodPost, "/internal/v1/github/webhook?"+query.Encode(), payload)
+	if err != nil {
+		return false, err
+	}
+	status, raw, err := s.deps.SignedCall(ctx, org, claims, payload, "")
+	if deferred && status == http.StatusNoContent && err == nil {
+		return false, nil
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, fmt.Errorf("GitHub webhook transport failed for organization %s", org.ID)
+	}
+	if status != http.StatusAccepted {
+		return false, fmt.Errorf("tenant %s GitHub webhook returned %d", org.ID, status)
+	}
+	var result struct {
+		Duplicate bool `json:"duplicate"`
+	}
+	err = json.Unmarshal(raw, &result)
+	return result.Duplicate, err
+}
+
 type Deps struct {
+	Accept               func(context.Context, Delivery, []byte) (bool, error)
 	Secret               []byte
 	Logger               *slog.Logger
 	List                 func(context.Context) ([]tenant.Organization, error)

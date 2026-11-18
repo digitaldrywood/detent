@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -50,6 +51,8 @@ type Config struct {
 	TenantRepository            tenantstore.Repository
 	ChangeVersionAuthority      ChangeVersionAuthority
 	BillingRepository           tenantstore.Repository
+	ClaimBillingReconciliation  func(context.Context) (bool, error)
+	RecordBillingSchedule       func(context.Context, int64) error
 	AccessRepository            tenantstore.Repository
 	ProjectParticipants         tenantstore.ProjectParticipants
 	ConversationDispatch        tenantstore.DispatchRequests
@@ -101,6 +104,8 @@ type Config struct {
 	ReconcileInterval          time.Duration
 	FullRepairInterval         time.Duration
 
+	runtimeHost                *HostedRuntime
+	runtimeTenant              tracker.OrganizationID
 	hostedBindingMigration     bool
 	validateDatabaseFilesystem func(string) error
 	deps                       hubdeps.Deps

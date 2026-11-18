@@ -62,8 +62,11 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 		}); err != nil {
 			return fmt.Errorf("create restart conversation: %w", err)
 		}
-		for range conversationLifecycleBatchSize + 1 {
+		for index := range conversationLifecycleBatchSize + 1 {
 			message := conversationMessageToStore(f.project.OrganizationID, conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: restartID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "Example interrupted response", Delivery: conversation.DeliverySending, Actor: conversation.Actor{Kind: conversation.ActorRunner}, CreatedAt: now, UpdatedAt: now})
+			if index == 0 {
+				message.UpdatedAt = now.Add(time.Second)
+			}
 			if _, err := writer.CreateMessage(t.Context(), message); err != nil {
 				return fmt.Errorf("create restart message: %w", err)
 			}
@@ -115,6 +118,40 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	}); err != nil {
 		t.Fatalf("seed PostgreSQL lifecycle records: %v", err)
 	}
+
+	t.Run("hosted recovery leaves current messages and respects the child budget", func(t *testing.T) {
+		before := now.Add(time.Second)
+		f.service.config.runtimeHost = &HostedRuntime{startedAt: before}
+		defer func() { f.service.config.runtimeHost = nil }()
+		hosted := &conversationService{Server: f.service.conversationServer()}
+		if err := hosted.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		after := ""
+		const limit = 32
+		for step := 0; ; step++ {
+			if step > conversationLifecycleBatchSize/limit+5 {
+				t.Fatal("restart normalization did not finish")
+			}
+			next, done, used, err := hosted.RecoverPage(t.Context(), f.project.OrganizationID, after, before, limit)
+			if err != nil || used > limit {
+				t.Fatalf("restart page used %d of %d: %v", used, limit, err)
+			}
+			if done {
+				break
+			}
+			after = next
+		}
+		if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Background, func(reader tenantstore.Reader) error {
+			outstanding, err := reader.FilteredMessages(t.Context(), conversationstore.MessageFilter{ConversationID: restartID, Deliveries: []conversation.Delivery{conversation.DeliverySending}, Limit: 2})
+			if err == nil && (len(outstanding.Items) != 1 || !outstanding.Items[0].UpdatedAt.Equal(before)) {
+				return fmt.Errorf("restart normalization changed a message at the host start boundary or left pre-restart work: %d outstanding", len(outstanding.Items))
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	staleWake, cancelWake := conversationSubscribe(f.service.conversations.Broker, staleID)
 	defer cancelWake()

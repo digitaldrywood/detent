@@ -208,10 +208,18 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 // seconds, so the table is only ever a handful of rows; the sweep is here so
 // that stays true on a hub nobody restarts.
 func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time) error {
-	organization := tracker.OrganizationID(w.server.appOrganizationID())
 	w.relay.mu.Lock()
-	after := w.relay.ticketSweepAfter
+	cursor := w.relay.ticketSweep
 	w.relay.mu.Unlock()
+	_, err := w.sweepTicketPage(ctx, &cursor, now, hubmaintenance.ItemLimit)
+	w.relay.mu.Lock()
+	w.relay.ticketSweep = cursor
+	w.relay.mu.Unlock()
+	return err
+}
+
+func (w *workspaceService) sweepTicketPage(ctx context.Context, cursor *postgres.MaintenanceCursor, now time.Time, limit int) (int, error) {
+	organization := tracker.OrganizationID(w.server.appOrganizationID())
 	var page []postgres.RelayTicket
 	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.RelayActionReader)
@@ -219,17 +227,15 @@ func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time)
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		page, err = owner.RelayTicketPage(ctx, after, hubmaintenance.ItemLimit)
+		page, err = owner.RelayTicketPage(ctx, cursor.Key, limit)
 		return err
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(page) == 0 {
-		w.relay.mu.Lock()
-		w.relay.ticketSweepAfter = ""
-		w.relay.mu.Unlock()
-		return nil
+		cursor.Key = ""
+		return 0, nil
 	}
 	cutoff := now.Add(-workspacesession.TicketLifetime)
 	for _, ticket := range page {
@@ -241,12 +247,10 @@ func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time)
 				}
 				return owner.DeleteExpiredRelayTicket(ctx, ticket.Digest, now, cutoff)
 			}); err != nil {
-				return err
+				return len(page), err
 			}
 		}
-		w.relay.mu.Lock()
-		w.relay.ticketSweepAfter = ticket.Digest
-		w.relay.mu.Unlock()
+		cursor.Key = ticket.Digest
 	}
-	return nil
+	return len(page), nil
 }

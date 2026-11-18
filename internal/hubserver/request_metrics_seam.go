@@ -35,11 +35,16 @@ func (d *database) metricsBillingOwner() *requestmetrics.BillingOwner {
 		return &requestmetrics.BillingPlan{WindowSeconds: p.WindowSeconds, RetentionWindows: p.RetentionWindows}
 	}}
 }
-func (d *database) openRequestMetrics(ctx context.Context, org tracker.OrganizationID) (*tenantRequestMetrics, error) {
-	if d.postgres == nil || org == "" {
+func (s *Service) openRequestMetrics() (*tenantRequestMetrics, error) {
+	tenant := s.MaintenanceTenant()
+	if s.database.postgres == nil || tenant.Organization == "" {
 		return nil, ErrHostedDatabaseBinding
 	}
-	return requestmetrics.New(requestmetrics.Deps{Repository: d.postgres, Organization: org})
+	deps := requestmetrics.Deps{Repository: s.database.postgres, Organization: tracker.OrganizationID(tenant.Organization), Generation: tenant.Generation}
+	if s.config.runtimeHost != nil {
+		deps.RunnerWindows = &s.config.runtimeHost.runnerWindows
+	}
+	return requestmetrics.New(deps)
 }
 func (s *Service) requestMetricsHTTP() *requestmetrics.HTTP {
 	return requestmetrics.NewHTTP(requestmetrics.HTTPDeps{RequestTimeout: s.requestTimeout, Collector: s.requestMetrics, Repository: s.config.TenantRepository, Now: s.config.Clock, Logger: s.config.Logger, Echo: s.echo, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, err) }, Refuse: func(c echo.Context, status int, code, reason string, body any) error {

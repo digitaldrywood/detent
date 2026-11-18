@@ -1,0 +1,20 @@
+[Unit]
+Description=Detent hosted Cloud entry and shared Hub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=detent-hub
+Group=detent-hub
+StateDirectory=detent-hub
+StateDirectoryMode=0700
+UMask=0077
+EnvironmentFile=/etc/detent-hub/cloud.env
+EnvironmentFile=/etc/detent-hub/attachments.env
+ExecStart=/opt/detent-hub/detent cloud serve --entry-config /etc/detent-hub/cloud.yaml
+Restart=on-failure
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

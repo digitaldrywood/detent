@@ -3,6 +3,7 @@ package githubwebhook
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -80,7 +81,7 @@ func TestGitHubWebhookRetryJitter(t *testing.T) {
 		}
 		if err := service.deps.Repository.ReadTenant(t.Context(), "org", corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			row, err = r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), row.DeliveryID)
+			row, err = r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), row.DeliveryID, "")
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -89,5 +90,68 @@ func TestGitHubWebhookRetryJitter(t *testing.T) {
 			t.Fatalf("attempt=%d next=%v want attempt=%d next=%v", row.Attempts, row.NextAttemptAt, attempt+1, now.Add(test.delay))
 		}
 		*now = now.Add(2 * time.Minute)
+	}
+}
+
+func TestDeferredWebhookProcessesEachAcceptedProject(t *testing.T) {
+	s, _ := retryFixture(t)
+	row, _ := retryEdit(t, s)
+	var applied []tracker.ProjectID
+	integrate := s.deps.Integration
+	s.deps.Integration = func(ctx context.Context, org tracker.OrganizationID, project tracker.ProjectID) (Integration, error) {
+		applied = append(applied, project)
+		return integrate(ctx, org, project)
+	}
+	store := func(project tracker.ProjectID) {
+		t.Helper()
+		row.BindingProject = project
+		row.EventType = "push"
+		if err := s.deps.Repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
+			owner := w.(projectstore.GitHubIntakeWriter)
+			created, err := owner.CreateGitHubWebhook(t.Context(), row)
+			if err != nil || !created {
+				t.Fatalf("create receipt for %s: created=%t err=%v", project, created, err)
+			}
+			created, err = owner.CreateGitHubWebhook(t.Context(), row)
+			if created {
+				t.Fatalf("duplicate receipt for %s", project)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store("second")
+	store("first")
+	for range 3 {
+		if err := s.Maintain(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	slices.Sort(applied)
+	if !slices.Equal(applied, []tracker.ProjectID{"first", "second"}) {
+		t.Fatalf("applied projects %v", applied)
+	}
+	applied = nil
+	row.DeliveryID = "before-rebinding"
+	store("first")
+	for _, repository := range []string{"example-org/replacement", row.Repository} {
+		if err := s.deps.Repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(t.Context(), "first")
+			if err != nil {
+				return err
+			}
+			project.Settings.Repository = repository
+			_, err = w.UpdateProjectRecord(t.Context(), project)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Maintain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("applied old receipt after repository rebinding to %v", applied)
 	}
 }

@@ -535,3 +535,64 @@ func TestCapacityPaidPlanChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestBusyCheckoutKeepsBillingReconciliationDue(t *testing.T) {
+	service := &Service{billing: new(hostedBillingWorker)}
+	service.config.Hosted = &hostedplans.HostedConfig{}
+	service.config.ClaimBillingReconciliation = func(context.Context) (bool, error) {
+		t.Fatal("busy checkout advanced billing due time")
+		return false, nil
+	}
+	service.billing.mu.Lock()
+	defer service.billing.mu.Unlock()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := service.maintainHostedBilling(ctx, 8); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled step returned %v", err)
+	}
+	if used, err := service.maintainHostedBilling(t.Context(), 8); used != 0 || err != nil {
+		t.Fatalf("busy checkout charged %d items, err %v", used, err)
+	}
+}
+
+func TestSharedBillingHonorsItemLimit(t *testing.T) {
+	f, provider := newHostedBillingFixture(t)
+	service := f.service
+
+	at := service.config.Clock()
+	service.config.Clock = func() time.Time { return at }
+	org := service.database.hostedOrganization
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		for i := range 9 {
+			if _, err := w.CreateBillingEvent(t.Context(), billingstore.Event{OrganizationID: org, ID: fmt.Sprintf("evt_example%d", i), Type: "customer.subscription.updated", ReceivedAt: at}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		advance        time.Duration
+		fail           bool
+		calls, pending int
+	}{
+		{0, false, 1, 6}, {time.Minute, true, 2, 6}, {time.Minute, false, 3, 3},
+	} {
+		at = at.Add(step.advance)
+		provider.fail = step.fail
+		err := runSharedMaintenanceTestStep(t, service, "billing-reconciliation")
+		if (err != nil) != step.fail || provider.calls != step.calls {
+			t.Fatalf("after %v calls %d want %d error %v", step.advance, provider.calls, step.calls, err)
+		}
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			remaining, err := r.UnprocessedBillingEvents(t.Context(), 20)
+			if err == nil && len(remaining) != step.pending {
+				return fmt.Errorf("got %d unprocessed events, want %d", len(remaining), step.pending)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

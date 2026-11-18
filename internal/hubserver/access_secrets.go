@@ -115,6 +115,22 @@ func (s *Service) removeAccessProjectSecret(ctx context.Context, scope hubscope.
 }
 
 func (s *Service) checkAccessSecretKeys(ctx context.Context) error {
+	if s.config.runtimeHost != nil {
+		return s.accessRead(ctx, s.config.runtimeTenant, func(r tenantstore.Reader) error {
+			secret, err := r.AccessSecret(ctx, "", accessstore.NativeCursorKeyKind)
+			if errors.Is(err, corestore.ErrNotFound) {
+				page, err := r.AccessSecrets(ctx, "", "", 1)
+				if err != nil || len(page) == 0 {
+					return err
+				}
+				return accessstore.VerifySecret(s.config.SecretKeys, page[0])
+			}
+			if err != nil {
+				return err
+			}
+			return accessstore.VerifySecret(s.config.SecretKeys, secret)
+		})
+	}
 	return accessstore.VerifyTenantSecrets(ctx, func(ctx context.Context, read func(accessstore.Reader) error) error {
 		return s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error { return read(r) })
 	}, s.config.SecretKeys)

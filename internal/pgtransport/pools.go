@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,7 +16,20 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type Pools struct{ reader, writer *pgxpool.Pool }
+type Pools struct {
+	reader, writer   *pgxpool.Pool
+	generation       int64
+	transactionLimit time.Duration
+	organization     tracker.OrganizationID
+	closed           atomic.Bool
+}
+
+func (p *Pools) ForOrganization(organization tracker.OrganizationID, generation int64, transactionLimit time.Duration) (*Pools, error) {
+	if transactionLimit < time.Millisecond || generation < 1 || strings.TrimSpace(string(organization)) == "" || p.organization != "" || p.closed.Load() {
+		return nil, ErrTenantRequired
+	}
+	return &Pools{reader: p.reader, writer: p.writer, organization: organization, generation: generation, transactionLimit: transactionLimit}, nil
+}
 
 func Configure(config *pgxpool.Config) {
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
@@ -68,6 +83,9 @@ func Open(ctx context.Context, readerConfig, writerConfig *pgxpool.Config) (*Poo
 }
 
 func (p *Pools) Close() {
+	if p.closed.Swap(true) || p.organization != "" {
+		return
+	}
 	p.reader.Close()
 	if p.writer != p.reader {
 		p.writer.Close()

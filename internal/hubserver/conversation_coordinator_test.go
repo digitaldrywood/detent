@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -893,6 +894,39 @@ func TestConversationCoordinatorCancel(t *testing.T) {
 
 func TestConversationCoordinatorStop(t *testing.T) {
 	t.Parallel()
+	t.Run("hosted cancellation joins the backend", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			service := &Service{config: Config{runtimeHost: &HostedRuntime{}}}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			c := newConversationCoordinator(service, nil).(*conversationTurnCoordinator)
+			c.turns["example"] = &coordinatorTurn{cancel: cancel}
+			backend := newFakeCoordinatorBackend()
+			release := make(chan struct{})
+			var unlock sync.Once
+			releaseBackend := func() { unlock.Do(func() { close(release) }) }
+			defer releaseBackend()
+			backend.setRun(func(ctx context.Context, _ int, _ runner.AgentToolHandler, _ runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+				<-ctx.Done()
+				<-release
+				return runner.AgentTurnResult{}, ctx.Err()
+			})
+			c.wg.Go(func() { _, _ = c.callBackend(ctx, backend, runner.AgentTurnRequest{}, nil) })
+			<-backend.started
+			stopped := make(chan struct{})
+			go func() { c.Stop(); close(stopped) }()
+			<-ctx.Done()
+			synctest.Wait()
+			select {
+			case <-stopped:
+				t.Fatal("hosted coordinator returned with the backend still running")
+			default:
+			}
+			releaseBackend()
+			<-stopped
+		})
+	})
+
 	for _, test := range []struct {
 		name              string
 		finish            bool

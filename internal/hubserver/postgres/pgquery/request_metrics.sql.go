@@ -15,17 +15,18 @@ import (
 const expireRequestDays = `-- name: ExpireRequestDays :execrows
 WITH expired AS (SELECT x.organization_id,x.day,x.route,x.caller_kind,x.status_class FROM request_days x
 WHERE x.organization_id=$1 AND x.day<$2
-ORDER BY day,route,caller_kind,status_class LIMIT 200 FOR UPDATE SKIP LOCKED)
+ORDER BY day,route,caller_kind,status_class LIMIT $3::int FOR UPDATE SKIP LOCKED)
 DELETE FROM request_days t USING expired e WHERE t.organization_id=e.organization_id AND t.day=e.day AND t.route=e.route AND t.caller_kind=e.caller_kind AND t.status_class=e.status_class
 `
 
 type ExpireRequestDaysParams struct {
 	OrganizationID tracker.OrganizationID
 	Cutoff         time.Time
+	BatchLimit     int32
 }
 
 func (q *Queries) ExpireRequestDays(ctx context.Context, arg ExpireRequestDaysParams) (int64, error) {
-	result, err := q.db.Exec(ctx, expireRequestDays, arg.OrganizationID, arg.Cutoff)
+	result, err := q.db.Exec(ctx, expireRequestDays, arg.OrganizationID, arg.Cutoff, arg.BatchLimit)
 	if err != nil {
 		return 0, err
 	}
@@ -35,17 +36,18 @@ func (q *Queries) ExpireRequestDays(ctx context.Context, arg ExpireRequestDaysPa
 const expireRequestHours = `-- name: ExpireRequestHours :execrows
 WITH expired AS (SELECT x.organization_id,x.hour,x.route,x.status_class FROM request_hours x
 WHERE x.organization_id=$1 AND x.hour<$2
-ORDER BY hour,route,status_class LIMIT 200 FOR UPDATE SKIP LOCKED)
+ORDER BY hour,route,status_class LIMIT $3::int FOR UPDATE SKIP LOCKED)
 DELETE FROM request_hours t USING expired e WHERE t.organization_id=e.organization_id AND t.hour=e.hour AND t.route=e.route AND t.status_class=e.status_class
 `
 
 type ExpireRequestHoursParams struct {
 	OrganizationID tracker.OrganizationID
 	Cutoff         time.Time
+	BatchLimit     int32
 }
 
 func (q *Queries) ExpireRequestHours(ctx context.Context, arg ExpireRequestHoursParams) (int64, error) {
-	result, err := q.db.Exec(ctx, expireRequestHours, arg.OrganizationID, arg.Cutoff)
+	result, err := q.db.Exec(ctx, expireRequestHours, arg.OrganizationID, arg.Cutoff, arg.BatchLimit)
 	if err != nil {
 		return 0, err
 	}

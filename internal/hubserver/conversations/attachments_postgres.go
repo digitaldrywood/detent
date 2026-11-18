@@ -389,9 +389,14 @@ func loadCommandAttachmentsPG(ctx context.Context, reader tenantstore.Reader, sc
 }
 
 func (c *ConversationService) sweepAttachmentsPG(ctx context.Context) (int, error) {
+	_, removed, err := c.SweepAttachmentPage(ctx, conversationAttachmentSweepBatch)
+	return removed, err
+}
+
+func (c *ConversationService) SweepAttachmentPage(ctx context.Context, limit int) (int, int, error) {
 	organization, err := c.LifecycleOrganization()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	now := c.Server.config().Now().UTC()
 	var candidates []conversationstore.Attachment
@@ -401,10 +406,10 @@ func (c *ConversationService) sweepAttachmentsPG(ctx context.Context) (int, erro
 			return ConversationContentUnavailable()
 		}
 		var err error
-		candidates, err = owner.ExpiredConversationAttachments(ctx, now, conversationAttachmentSweepBatch)
+		candidates, err = owner.ExpiredConversationAttachments(ctx, now, limit)
 		return err
 	}); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	swept := 0
 	for _, candidate := range candidates {
@@ -441,11 +446,11 @@ func (c *ConversationService) sweepAttachmentsPG(ctx context.Context) (int, erro
 			return nil
 		})
 		if err != nil {
-			return swept, err
+			return len(candidates), swept, err
 		}
 		if removed {
 			swept++
 		}
 	}
-	return swept, nil
+	return len(candidates), swept, nil
 }

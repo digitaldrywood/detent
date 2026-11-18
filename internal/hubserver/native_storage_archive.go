@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -46,6 +47,11 @@ func (s *Service) archiveClosedNativeIssues(ctx context.Context, now time.Time) 
 }
 
 func (s *Service) archiveClosedNativeIssuesTenant(ctx context.Context, organization tracker.OrganizationID, now time.Time) error {
+	err := s.archiveNativeIssuePage(ctx, organization, now, 4, issueStorageArchiveBatch)
+	return errors.Join(err, s.retireStorageArchiveSections(ctx, organization, now))
+}
+
+func (s *Service) archiveNativeIssuePage(ctx context.Context, organization tracker.OrganizationID, now time.Time, candidatesLimit, snapshotLimit int) error {
 	if organization == "" {
 		return errors.New("issue storage archives require an organization")
 	}
@@ -62,7 +68,7 @@ func (s *Service) archiveClosedNativeIssuesTenant(ctx context.Context, organizat
 		if err != nil {
 			return err
 		}
-		candidates, err = owner.StorageArchiveCandidates(ctx, before, after, 4)
+		candidates, err = owner.StorageArchiveCandidates(ctx, before, after, candidatesLimit)
 		return err
 	})
 	if err != nil {
@@ -94,7 +100,7 @@ func (s *Service) archiveClosedNativeIssuesTenant(ctx context.Context, organizat
 			failures = errors.Join(failures, err)
 			break
 		}
-		err := s.publishStorageArchive(ctx, organization, candidate.Stamp, now)
+		err := s.publishStorageArchivePage(ctx, organization, candidate.Stamp, now, snapshotLimit)
 		failures = errors.Join(failures, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return failures
@@ -109,7 +115,7 @@ func (s *Service) archiveClosedNativeIssuesTenant(ctx context.Context, organizat
 			return errors.Join(failures, err)
 		}
 	}
-	return errors.Join(failures, s.retireStorageArchiveSections(ctx, organization, now))
+	return failures
 }
 
 func (s *Service) uploadStorageArchiveDocument(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, uploader string, document attachmentstore.StorageArchiveDocument, now time.Time) (attachmentstore.ArchiveRecord, error) {
@@ -119,6 +125,9 @@ func (s *Service) uploadStorageArchiveDocument(ctx context.Context, organization
 	}
 	if len(raw) > attachment.MaxSectionBytes {
 		return attachmentstore.ArchiveRecord{}, attachment.ErrTooLarge
+	}
+	if err := hubmaintenance.ReserveArchiveWrite(ctx, string(organization), int64(len(raw))); err != nil {
+		return attachmentstore.ArchiveRecord{}, err
 	}
 	ref, data, err := attachment.PrepareArchive(string(organization), 2, bytes.NewReader(raw))
 	if err != nil {
@@ -131,6 +140,10 @@ func (s *Service) uploadStorageArchiveDocument(ctx context.Context, organization
 }
 
 func (s *Service) publishStorageArchive(ctx context.Context, organization tracker.OrganizationID, stamp attachmentstore.StorageArchiveStamp, now time.Time) error {
+	return s.publishStorageArchivePage(ctx, organization, stamp, now, issueStorageArchiveBatch)
+}
+
+func (s *Service) publishStorageArchivePage(ctx context.Context, organization tracker.OrganizationID, stamp attachmentstore.StorageArchiveStamp, now time.Time, limit int) error {
 	var snapshot attachmentstore.StorageArchiveSnapshot
 	var uploader string
 	var uploaderErr error
@@ -141,7 +154,7 @@ func (s *Service) publishStorageArchive(ctx context.Context, organization tracke
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		snapshot, err = owner.StorageArchiveSnapshot(ctx, stamp, before, issueStorageArchiveBatch)
+		snapshot, err = owner.StorageArchiveSnapshot(ctx, stamp, before, limit)
 		if err != nil {
 			return err
 		}
@@ -302,6 +315,10 @@ func (s *Service) publishStorageArchive(ctx context.Context, organization tracke
 }
 
 func (s *Service) retireStorageArchiveSections(ctx context.Context, organization tracker.OrganizationID, now time.Time) error {
+	return s.retireStorageArchivePage(ctx, organization, now, 4, issueStorageArchiveBatch)
+}
+
+func (s *Service) retireStorageArchivePage(ctx context.Context, organization tracker.OrganizationID, now time.Time, sections, limit int) error {
 	var after attachmentstore.StorageArchiveRetirementCursor
 	var page attachmentstore.StorageArchiveRetirementPage
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
@@ -314,7 +331,7 @@ func (s *Service) retireStorageArchiveSections(ctx context.Context, organization
 		if err != nil {
 			return err
 		}
-		page, err = owner.StorageArchiveRetirements(ctx, after, 4)
+		page, err = owner.StorageArchiveRetirements(ctx, after, sections)
 		return err
 	})
 	if err != nil {
@@ -336,7 +353,7 @@ func (s *Service) retireStorageArchiveSections(ctx context.Context, organization
 			return err
 		})
 	}
-	remaining, processedSections := issueStorageArchiveBatch, 0
+	remaining, processedSections := limit, 0
 	for _, section := range page.Items {
 		if remaining == 0 {
 			break

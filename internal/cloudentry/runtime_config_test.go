@@ -64,7 +64,7 @@ func TestCloudReloadSignupAllowlist(t *testing.T) {
 	f := newEntryFixture(t)
 	launcher := &silentLauncher{running: map[string]bool{"org_alpha": true, "org_beta": true}}
 	f.service.config.Allocation = &AllocationConfig{
-		TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5,
+		TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxConcurrent: 1, RetryLimit: 5,
 		Launcher: launcher, AllowedEmails: []string{"alice@example.test"},
 	}
 	f.service.config.ConfigureRuntime = func(update hostedplans.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
@@ -184,7 +184,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		}
 	}
 	entitlementFixture(t, f, token)
-	allocation := &AllocationConfig{TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5, Launcher: &ExecLauncher{}, EntitlementAdminToken: []byte(token)}
+	allocation := &AllocationConfig{TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxConcurrent: 1, RetryLimit: 5, Launcher: &processLauncher{}, EntitlementAdminToken: []byte(token)}
 	f.service.config.Allocation = allocation
 	f.service.config.ConfigureRuntime = func(update hostedplans.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
 		return func(TenantSpec) ([]byte, error) { return json.Marshal(update) }

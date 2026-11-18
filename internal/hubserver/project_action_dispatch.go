@@ -57,10 +57,23 @@ const actionRunDispatchGrace = time.Second
 // and a timer per run would be one goroutine per row for a deadline the tick
 // already visits.
 func (w *workspaceService) dispatchQueuedActionRuns(ctx context.Context) {
-	organization := tracker.OrganizationID(w.server.appOrganizationID())
 	w.relay.mu.Lock()
-	after := w.relay.actionDispatchAfter
+	cursor := w.relay.actionDispatch
 	w.relay.mu.Unlock()
+	if _, err := w.dispatchActionPage(ctx, &cursor, actionRunDispatchBatch); err != nil {
+		w.logger.Warn("action_run.dispatch_failed", "error", err)
+	}
+	w.relay.mu.Lock()
+	w.relay.actionDispatch = cursor
+	w.relay.mu.Unlock()
+}
+
+func (w *workspaceService) dispatchActionPage(ctx context.Context, cursor *postgres.MaintenanceCursor, limit int) (int, error) {
+	var after *postgres.ActionRunCursor
+	if cursor.Key != "" {
+		after = &postgres.ActionRunCursor{CreatedAt: cursor.At, ID: cursor.Key}
+	}
+	organization := tracker.OrganizationID(w.server.appOrganizationID())
 	var page []postgres.ActionRunDispatchRow
 	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.RelayActionReader)
@@ -68,24 +81,19 @@ func (w *workspaceService) dispatchQueuedActionRuns(ctx context.Context) {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		page, err = owner.DispatchableActionRunPage(ctx, w.now().Add(-actionRunDispatchGrace), after, actionRunDispatchBatch)
+		page, err = owner.DispatchableActionRunPage(ctx, w.now().Add(-actionRunDispatchGrace), after, limit)
 		return err
 	})
 	if err != nil {
-		w.logger.Warn("action_run.dispatch_failed", "error", err)
-		return
+		return 0, err
 	}
 	if len(page) == 0 {
-		w.relay.mu.Lock()
-		w.relay.actionDispatchAfter = nil
-		w.relay.mu.Unlock()
-		return
+		cursor.At, cursor.Key = time.Time{}, ""
+		return 0, nil
 	}
 	for _, entry := range page {
 		row := entry.ProjectActionRun
-		w.relay.mu.Lock()
-		w.relay.actionDispatchAfter = &postgres.ActionRunCursor{CreatedAt: row.CreatedAt, ID: row.ID}
-		w.relay.mu.Unlock()
+		cursor.At, cursor.Key = row.CreatedAt, row.ID
 		if !entry.WorkspaceReadOnly && (entry.WorkspaceState == workspacesession.StateReady || entry.WorkspaceState == workspacesession.StateIdle) {
 			run, err := w.server.actionRunRecord(ctx, row, false)
 			if err != nil {
@@ -95,6 +103,7 @@ func (w *workspaceService) dispatchQueuedActionRuns(ctx context.Context) {
 			w.dispatchActionRun(ctx, run)
 		}
 	}
+	return len(page), nil
 }
 
 // dispatchActionRun claims one queued run for the hub and sends its run frame

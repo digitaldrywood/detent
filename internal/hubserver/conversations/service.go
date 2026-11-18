@@ -152,17 +152,12 @@ func NewConversationService(server *Server, cfg ConversationConfig) *Conversatio
 	if cfg.UsageSink == nil {
 		cfg.UsageSink = server.deps.UsageSink
 	}
-	settleContext, settleCancel := context.WithCancel(context.Background())
-	ticker := time.NewTicker(conversationSettleInterval)
 	service := &ConversationService{
-		Server:           server,
-		Store:            NewConversationStore(nil),
-		Broker:           server.deps.Broker,
-		Config:           cfg,
-		Logger:           server.deps.Logger.With("component", "conversation"),
-		SettleCancel:     settleCancel,
-		SettleTicks:      ticker.C,
-		StopSettleTicker: ticker.Stop,
+		Server: server,
+		Store:  NewConversationStore(nil),
+		Broker: server.deps.Broker,
+		Config: cfg,
+		Logger: server.deps.Logger.With("component", "conversation"),
 	}
 	service.Store.ResolveWorkItems = server.deps.ResolveWorkItems
 	service.Store.Contents = server.deps.Contents(cfg.ArchiveContents)
@@ -170,7 +165,14 @@ func NewConversationService(server *Server, cfg ConversationConfig) *Conversatio
 	service.Controls = server.deps.NewControls(service)
 	service.Settle = make(chan struct{})
 	service.Settled = make(chan struct{})
-	go service.SettleLoop(settleContext)
+	if server.deps.SharedMaintenance {
+		close(service.Settled)
+	} else {
+		settleContext, settleCancel := context.WithCancel(context.Background())
+		ticker := time.NewTicker(conversationSettleInterval)
+		service.SettleCancel, service.SettleTicks, service.StopSettleTicker = settleCancel, ticker.C, ticker.Stop
+		go service.SettleLoop(settleContext)
+	}
 	return service
 }
 
@@ -185,26 +187,32 @@ func (c *ConversationService) Committed(record ConversationRecord) {
 	c.Controls.Wake(record.ID)
 }
 
-func (c *ConversationService) wakeCoordinator(ctx context.Context, id string) error {
+func (c *ConversationService) wakeCoordinator(ctx context.Context, id string, limit int) (int, error) {
+	used := 0
 	if err := ctx.Err(); err != nil {
-		return err
+		return used, err
 	}
 	if coordinator, ok := c.Coordinator.(CommandDeliverer); ok {
-		if err := coordinator.DeliverCoordinatorCommands(ctx, id); err != nil {
-			return err
+		var err error
+		used, err = coordinator.DeliverCoordinatorCommands(ctx, id, limit)
+		if err != nil {
+			return used, err
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return used, err
 	}
 	c.Coordinator.Wake(id)
-	return nil
+	return used, nil
 }
 
 func (c *ConversationService) Start(ctx context.Context) error {
 	organization, err := c.LifecycleOrganization()
 	if err != nil {
 		return err
+	}
+	if c.Server.deps.SharedMaintenance {
+		return nil
 	}
 	now := c.Server.config().Now()
 	summary, err := c.normalizeAfterRestartPG(ctx, organization, now)

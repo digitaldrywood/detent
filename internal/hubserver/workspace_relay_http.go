@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
@@ -213,13 +215,18 @@ func (w *workspaceService) servePerson(c echo.Context, scope hubscope.NativeScop
 	}
 	w.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
+	var helpers sync.WaitGroup
+	defer helpers.Wait()
 	defer cancel()
-	go connection.WriteLoop(socketCtx)
-	go w.watchPersonAuthority(socketCtx, c, scope, record, connection)
-	go func() {
-		<-connection.Done
-		cancel()
-	}()
+	helpers.Go(func() { connection.WriteLoop(socketCtx) })
+	helpers.Go(func() { w.watchPersonAuthority(socketCtx, c, scope, record, connection) })
+	helpers.Go(func() {
+		select {
+		case <-connection.Done:
+			cancel()
+		case <-socketCtx.Done():
+		}
+	})
 	w.readPerson(socketCtx, connection, record)
 	connection.Close("client_closed")
 	w.relay.detachPerson(ctx, connection, w.now())
@@ -1010,12 +1017,17 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 	}
 	service.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
+	var helpers sync.WaitGroup
+	defer helpers.Wait()
 	defer cancel()
-	go connection.WriteLoop(socketCtx)
-	go func() {
-		<-connection.Done
-		cancel()
-	}()
+	helpers.Go(func() { connection.WriteLoop(socketCtx) })
+	helpers.Go(func() {
+		select {
+		case <-connection.Done:
+			cancel()
+		case <-socketCtx.Done():
+		}
+	})
 	service.readRunner(socketCtx, connection)
 	connection.Close("runner_closed")
 	// detachRunner fails whatever runs this connection was still serving, so a
@@ -1539,6 +1551,11 @@ func (w *workspaceService) prepareRelayOutput(ctx context.Context, organization 
 		content.Mu.Lock()
 		content.Completion = true
 		content.Mu.Unlock()
+		if content.Call != nil {
+			if err := hubmaintenance.ReserveArchiveWrite(ctx, string(organization), int64(len(data))); err != nil {
+				return attachment.ArchiveReference{}, err
+			}
+		}
 	}
 	return prepareMeteredContent(outputCtx, string(organization), data, false)
 }

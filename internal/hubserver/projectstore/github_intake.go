@@ -10,18 +10,19 @@ import (
 
 type GitHubWebhook struct {
 	DeliveryID, Repository, EventType, Action, Digest, Status string
-	AfterProject                                              tracker.ProjectID
+	AfterProject, BindingProject                              tracker.ProjectID
 	Payload                                                   eventstore.Receipt
 	ReceivedAt, ExpiresAt, NextAttemptAt                      time.Time
 	Attempts                                                  int64
 }
 
 type GitHubIntakeReader interface {
+	GitHubWebhookAuthorized(context.Context, GitHubWebhook) (bool, error)
 	LatestGitHubWebhookReceipt(context.Context) (time.Time, error)
 	NextGitHubIntake(context.Context, time.Time) (tracker.ProjectID, error)
-	GitHubWebhook(context.Context, string) (GitHubWebhook, error)
+	GitHubWebhook(context.Context, string, tracker.ProjectID) (GitHubWebhook, error)
 	NextGitHubWebhook(context.Context, time.Time) (GitHubWebhook, error)
-	GitHubWebhookProjects(context.Context, string, tracker.ProjectID, int) ([]tracker.ProjectID, error)
+	GitHubWebhookProjects(context.Context, GitHubWebhook, int) ([]tracker.ProjectID, error)
 }
 
 type GitHubIntakeWriter interface {

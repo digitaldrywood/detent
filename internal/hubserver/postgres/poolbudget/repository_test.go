@@ -1,4 +1,4 @@
-package postgres_test
+package poolbudget_test
 
 import (
 	"context"
@@ -9,12 +9,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -268,3 +267,5 @@ func TestRepositoryReadCommittedAndReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMain(m *testing.M) { pgstoretest.Main(m) }

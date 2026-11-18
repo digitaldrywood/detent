@@ -6,8 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -174,39 +175,8 @@ func (s *nativeUsageEnvelopeStore) ReadDetail(ctx context.Context, organization 
 	return value, err
 }
 
-const usageRefreshRows = 100
-
 func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
-	type cursor struct {
-		mu           sync.Mutex
-		generation   int64
-		sourcesAfter string
-		sourceTurn   bool
-		afterProject tracker.ProjectID
-		afterAttempt string
-	}
-	var mu sync.Mutex
-	cursors := map[string]*cursor{}
-	return hubmaintenance.Feature{Name: "usage", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, selected hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
-		if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-			return hubmaintenance.Outcome{}, err
-		}
-		mu.Lock()
-		current := cursors[selected.Organization]
-		if current == nil {
-			current = new(cursor)
-			cursors[selected.Organization] = current
-		}
-		mu.Unlock()
-		current.mu.Lock()
-		defer current.mu.Unlock()
-		if current.generation != selected.Generation {
-			current.generation = selected.Generation
-			current.sourcesAfter = ""
-			current.sourceTurn = false
-			current.afterProject = ""
-			current.afterAttempt = ""
-		}
+	return s.projectionFeature("usage", hubmaintenance.ByteLimit, func(ctx context.Context, selected hubmaintenance.Tenant, budget hubmaintenance.Budget, current *postgres.MaintenanceCursor) (hubmaintenance.Outcome, error) {
 		organization := tracker.OrganizationID(selected.Organization)
 		refresh := func() (hubmaintenance.Outcome, error) {
 			owner, ok := s.config.TenantRepository.(interface {
@@ -215,20 +185,20 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 			if !ok {
 				return hubmaintenance.Outcome{}, hubapi.NativeRunEventStorageUnavailable()
 			}
-			next, count, err := owner.RefreshReportUsagePage(ctx, organization, hubmaintenance.LimitDetails(s.runDetailStore()), current.sourcesAfter, usageRefreshRows)
+			next, count, err := owner.RefreshReportUsagePage(ctx, organization, hubmaintenance.LimitDetails(s.runDetailStore()), current.Kind, budget.Items)
 			if err == nil {
-				current.sourcesAfter = next
+				current.Kind = next
 				if count == 0 {
-					current.sourcesAfter = ""
+					current.Kind = ""
 				}
 			}
-			return hubmaintenance.Outcome{Progress: count > 0, Items: 1}, err
+			return hubmaintenance.Outcome{Progress: count > 0, Items: max(1, count)}, err
 		}
-		if current.sourceTurn {
-			current.sourceTurn = false
+		if current.ID != 0 {
+			current.ID = 0
 			return refresh()
 		}
-		current.sourceTurn = true
+		current.ID = 1
 		read := func(afterProject tracker.ProjectID, afterAttempt string) (reportstore.PendingUsageAttempt, error) {
 			var pending reportstore.PendingUsageAttempt
 			err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
@@ -243,19 +213,19 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 			return pending, err
 		}
 		idle := hubmaintenance.Outcome{Items: 1}
-		pending, err := read(current.afterProject, current.afterAttempt)
-		if errors.Is(err, corestore.ErrNotFound) && (current.afterProject != "" || current.afterAttempt != "") {
+		pending, err := read(tracker.ProjectID(current.Project), current.Key)
+		if errors.Is(err, corestore.ErrNotFound) && (current.Project != "" || current.Key != "") {
 			pending, err = read("", "")
 		}
 		if errors.Is(err, corestore.ErrNotFound) {
-			current.afterProject, current.afterAttempt = "", ""
-			current.sourceTurn = false
+			current.Project, current.Key = "", ""
+			current.ID = 0
 			return refresh()
 		}
 		if err != nil {
 			return idle, err
 		}
-		current.afterProject, current.afterAttempt = pending.ProjectID, pending.AttemptID
+		current.Project, current.Key = string(pending.ProjectID), pending.AttemptID
 		owner, ok := s.config.TenantRepository.(interface {
 			RefreshAttemptReportUsage(context.Context, tracker.OrganizationID, string, int) (bool, error)
 		})
@@ -264,7 +234,7 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 		}
 		return hubmaintenance.RefreshThenReplay(budget.Items,
 			func() (bool, error) {
-				return owner.RefreshAttemptReportUsage(ctx, organization, pending.AttemptID, usageRefreshRows)
+				return owner.RefreshAttemptReportUsage(ctx, organization, pending.AttemptID, 1)
 			},
 			func(limit int) ([]eventstore.Event, error) {
 				var events []eventstore.Event
@@ -280,7 +250,7 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 				return events, err
 			},
 			func(event eventstore.Event) (bool, error) { return s.replayNativeUsageEvent(ctx, event) })
-	}}
+	})
 }
 
 func (s *Service) replayNativeUsageEvent(ctx context.Context, event eventstore.Event) (bool, error) {

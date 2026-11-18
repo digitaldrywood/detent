@@ -292,7 +292,7 @@ export const PlatformHealth = Schema.Struct({
   }))),
   admission: Schema.optional(
     Schema.Struct({
-      tenants: Schema.Number,
+      tenants: Schema.optional(Schema.Number),
       max_tenants: Schema.Number,
       allocating: Schema.Number,
       max_concurrent: Schema.Number,

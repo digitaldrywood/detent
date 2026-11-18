@@ -50,6 +50,20 @@ func (m *scheduledSourceMaintenance) step(ctx context.Context, tenant hubmainten
 	if !ok {
 		return 0, hubapi.NativeWorkItemStorageUnavailable()
 	}
+	if s.config.runtimeHost != nil {
+		org := tracker.OrganizationID(tenant.Organization)
+		cursor, err := s.database.postgres.MaintenanceCursor(ctx, org, tenant.Generation, "scheduled-sources")
+		if err != nil {
+			return 0, err
+		}
+		after := postgres.ScheduledSourceCursor{ProjectID: tracker.ProjectID(cursor.Project), RecordID: cursor.Key}
+		used, next, err := owner.BackfillScheduledSourcesAfter(ctx, org, eventstore.NewContent(hubmaintenance.LimitDetails(s.runDetailStore())), min(items, corestore.MaxPageSize), after)
+		if next != after {
+			cursor.Project, cursor.Key = string(next.ProjectID), next.RecordID
+			err = errors.Join(err, s.database.postgres.SetMaintenanceCursor(ctx, org, tenant.Generation, "scheduled-sources", cursor))
+		}
+		return used, err
+	}
 	value, _ := m.states.LoadOrStore(tenant.Organization, &scheduledSourceState{})
 	current, ok := value.(*scheduledSourceState)
 	if !ok {

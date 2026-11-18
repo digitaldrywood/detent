@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -86,20 +87,26 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 }
 
 func (s *Service) boardFeature(name string, bytes int64, dirtyOnly bool) hubmaintenance.Feature {
-	var sweep tracker.NativeWorkItemID
-	return hubmaintenance.Feature{Name: name, Bytes: bytes, Lead: dirtyOnly, Step: func(ctx context.Context, selected hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
-		if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-			return hubmaintenance.Outcome{}, err
-		}
-		var dirty tracker.NativeWorkItemID
-		cursor := &sweep
-		if dirtyOnly {
-			cursor = &dirty
-		}
+	run := func(ctx context.Context, selected hubmaintenance.Tenant, budget hubmaintenance.Budget, cursor *tracker.NativeWorkItemID) (hubmaintenance.Outcome, error) {
 		return hubmaintenance.Drain(ctx, min(budget.Items, boardMaintenanceBatch), cursor, func(after tracker.NativeWorkItemID, attempted []tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, bool, error) {
 			return s.maintainBudgetedBoardRecord(ctx, tracker.OrganizationID(selected.Organization), bytes, dirtyOnly, after, attempted...)
 		})
-	}}
+	}
+	if dirtyOnly {
+		return hubmaintenance.Feature{Name: name, Bytes: bytes, Lead: true, Step: func(ctx context.Context, t hubmaintenance.Tenant, b hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+			if err := hubmaintenance.RequireTenant(ctx, t); err != nil {
+				return hubmaintenance.Outcome{}, err
+			}
+			var dirty tracker.NativeWorkItemID
+			return run(ctx, t, b, &dirty)
+		}}
+	}
+	return s.projectionFeature(name, bytes, func(ctx context.Context, t hubmaintenance.Tenant, b hubmaintenance.Budget, c *postgres.MaintenanceCursor) (hubmaintenance.Outcome, error) {
+		cursor := tracker.NativeWorkItemID(c.Key)
+		out, err := run(ctx, t, b, &cursor)
+		c.Key = string(cursor)
+		return out, err
+	})
 }
 
 func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {

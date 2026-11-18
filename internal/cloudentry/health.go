@@ -42,7 +42,7 @@ func (s *Service) checkTenant(ctx context.Context, organization Organization) er
 }
 
 func (s *Service) waitForTenantReadiness(ctx context.Context) error {
-	if s.config.Allocation == nil {
+	if s.config.Allocation == nil || s.sharedHub != nil {
 		return nil
 	}
 	organizations, err := s.registry.List(ctx)
@@ -102,55 +102,74 @@ func (s *Service) tenantHealth(ctx context.Context, organizations []Organization
 	return rows
 }
 
+type hubSchemaHealth struct {
+	hubserver.MigrationHealth
+	applicable bool
+	running    bool
+}
+
+func (s *Service) hubHealth(ctx context.Context) (hubSchemaHealth, error) {
+	if host := s.sharedHub; host != nil {
+		health, err := host.runtime.Health(ctx)
+		return hubSchemaHealth{MigrationHealth: health, applicable: true, running: err == nil}, err
+	}
+	organizations, err := s.registry.List(ctx)
+	if err != nil {
+		return hubSchemaHealth{}, err
+	}
+	factsComplete := true
+	var migration hubserver.MigrationHealth
+	hubApplicable := false
+	readyOrganizations := 0
+	for _, organization := range organizations {
+		switch organization.State {
+		case "ready":
+			hubApplicable = true
+			readyOrganizations++
+		case "requested", "allocating":
+			hubApplicable = true
+			factsComplete = false
+		case "failed", "disabled", "deleting", "deleted":
+		default:
+			hubApplicable = true
+			factsComplete = false
+		}
+	}
+	rows := s.tenantHealth(ctx, organizations)
+	running := 0
+	var hubFingerprint string
+	for _, row := range rows {
+		if row.Running {
+			running++
+		}
+		migration.SchemaVersion = max(migration.SchemaVersion, row.migration.SchemaVersion)
+		migration.MigrationsRunning = migration.MigrationsRunning || row.migration.MigrationsRunning
+		factsComplete = factsComplete && row.schemaKnown
+		if row.schemaKnown {
+			if hubFingerprint == "" {
+				hubFingerprint = row.schemaSet
+			} else if hubFingerprint != row.schemaSet {
+				factsComplete = false
+			}
+		}
+	}
+	migration.SchemaFingerprint = hubFingerprint
+	factsComplete = factsComplete && len(rows) == readyOrganizations
+	migration.SchemaFactsComplete = factsComplete
+	return hubSchemaHealth{MigrationHealth: migration, applicable: hubApplicable, running: running == len(rows)}, nil
+}
+
 func (s *Service) health(c echo.Context) error {
 	ctx := context.WithValue(c.Request().Context(), entryHealthReadKey{}, true)
-	organizations, err := s.registry.List(ctx)
+	hub, err := s.hubHealth(ctx)
+	factsComplete := hub.SchemaFactsComplete
 	status, code := "unavailable", http.StatusServiceUnavailable
-	var migration hubserver.MigrationHealth
 	var registrySchema, authSchema, platformSchema int64
 	var registryFingerprint, authFingerprint, platformFingerprint string
 	registryApplicable, authApplicable := s.config.Storage.Backend != "postgres", s.config.Storage.Backend != "postgres"
 	platformApplicable := s.config.Storage.Backend == "postgres"
-	hubApplicable := false
-	readyOrganizations := 0
-	var factsComplete bool
 	if err == nil && s.auth.store.db.PingContext(ctx) == nil {
-		factsComplete = true
-		for _, organization := range organizations {
-			switch organization.State {
-			case "ready":
-				hubApplicable = true
-				readyOrganizations++
-			case "requested", "allocating":
-				hubApplicable = true
-				factsComplete = false
-			case "failed", "disabled", "deleting", "deleted":
-			default:
-				hubApplicable = true
-				factsComplete = false
-			}
-		}
-		rows := s.tenantHealth(ctx, organizations)
-		running := 0
-		var hubFingerprint string
-		for _, row := range rows {
-			if row.Running {
-				running++
-			}
-			migration.SchemaVersion = max(migration.SchemaVersion, row.migration.SchemaVersion)
-			migration.MigrationsRunning = migration.MigrationsRunning || row.migration.MigrationsRunning
-			factsComplete = factsComplete && row.schemaKnown
-			if row.schemaKnown {
-				if hubFingerprint == "" {
-					hubFingerprint = row.schemaSet
-				} else if hubFingerprint != row.schemaSet {
-					factsComplete = false
-				}
-			}
-		}
-		migration.SchemaFingerprint = hubFingerprint
-		factsComplete = factsComplete && len(rows) == readyOrganizations
-		if running == len(rows) {
+		if hub.running {
 			status, code = "ok", http.StatusOK
 		}
 		if registryApplicable {
@@ -193,5 +212,5 @@ func (s *Service) health(c echo.Context) error {
 		Status                    string `json:"status"`
 		Version                   string `json:"version"`
 		Commit                    string `json:"commit"`
-	}{migration, hubApplicable, registrySchema, registryFingerprint, registryApplicable, authSchema, authFingerprint, authApplicable, platformSchema, platformFingerprint, platformApplicable, factsComplete, status, s.config.Build.Version, s.config.Build.Commit})
+	}{hub.MigrationHealth, hub.applicable, registrySchema, registryFingerprint, registryApplicable, authSchema, authFingerprint, authApplicable, platformSchema, platformFingerprint, platformApplicable, factsComplete, status, s.config.Build.Version, s.config.Build.Commit})
 }

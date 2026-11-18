@@ -1,4 +1,4 @@
-package hubserver
+package healthprojection
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -21,20 +22,20 @@ import (
 
 var errHealthOutsideExaminedScope = errors.New("health finding is outside examined scope")
 
-type healthEvaluationScope struct {
-	retiredSubjects map[healthSubject]bool
-	observedAt      time.Time
-	fingerprints    map[string]bool
-	projects        map[tracker.ProjectID]bool
-	runners         map[string]bool
-	complete        bool
+type Scope struct {
+	RetiredSubjects map[healthsignals.Subject]bool
+	ObservedAt      time.Time
+	Fingerprints    map[string]bool
+	Projects        map[tracker.ProjectID]bool
+	Runners         map[string]bool
+	Complete        bool
 }
 
-func (scope healthEvaluationScope) coversFinding(finding healthFinding) bool {
-	if scope.fingerprints != nil && !scope.fingerprints[finding.Fingerprint] {
+func (scope Scope) coversFinding(finding healthsignals.Finding) bool {
+	if scope.Fingerprints != nil && !scope.Fingerprints[finding.Fingerprint] {
 		return false
 	}
-	if scope.complete {
+	if scope.Complete {
 		return true
 	}
 	if finding.Subject.ID == "" {
@@ -42,9 +43,9 @@ func (scope healthEvaluationScope) coversFinding(finding healthFinding) bool {
 	}
 	switch finding.Subject.Kind {
 	case "runner":
-		return scope.runners[finding.Subject.ID]
+		return scope.Runners[finding.Subject.ID]
 	case "project":
-		if !scope.projects[tracker.ProjectID(finding.Subject.ID)] {
+		if !scope.Projects[tracker.ProjectID(finding.Subject.ID)] {
 			return false
 		}
 	case "work_item":
@@ -55,25 +56,25 @@ func (scope healthEvaluationScope) coversFinding(finding healthFinding) bool {
 		return false
 	}
 	for _, project := range finding.Projects {
-		if !scope.projects[tracker.ProjectID(project)] {
+		if !scope.Projects[tracker.ProjectID(project)] {
 			return false
 		}
 	}
 	return true
 }
 
-func (scope healthEvaluationScope) coversRecord(ctx context.Context, reader postgres.HealthReader, organization tracker.OrganizationID, row postgres.HealthRecord) (bool, error) {
-	if scope.fingerprints != nil && !scope.fingerprints[row.Fingerprint] {
+func (scope Scope) CoversRecord(ctx context.Context, reader postgres.HealthReader, organization tracker.OrganizationID, row postgres.HealthRecord) (bool, error) {
+	if scope.Fingerprints != nil && !scope.Fingerprints[row.Fingerprint] {
 		return false, nil
 	}
-	if scope.complete {
+	if scope.Complete {
 		return true, nil
 	}
 	if row.SubjectID == "" {
 		return false, nil
 	}
-	if scope.retiredSubjects[healthSubject{Kind: row.SubjectKind, ID: row.SubjectID}] {
-		if scope.observedAt.IsZero() {
+	if scope.RetiredSubjects[healthsignals.Subject{Kind: row.SubjectKind, ID: row.SubjectID}] {
+		if scope.ObservedAt.IsZero() {
 			return false, corestore.ErrInvalidPage
 		}
 		owner, ok := reader.(tenantstore.Reader)
@@ -111,15 +112,15 @@ func (scope healthEvaluationScope) coversRecord(ctx context.Context, reader post
 			if err != nil {
 				return false, err
 			}
-			return runner.RemovedAt != nil || !runner.ExpiresAt.After(scope.observedAt) || !credential.Valid(credential.Hash, scope.observedAt) || credential.Scope != "worker" || credential.Kind != "service", nil
+			return runner.RemovedAt != nil || !runner.ExpiresAt.After(scope.ObservedAt) || !credential.Valid(credential.Hash, scope.ObservedAt) || credential.Scope != "worker" || credential.Kind != "service", nil
 		}
 	}
 
 	switch row.SubjectKind {
 	case "runner":
-		return scope.runners[row.SubjectID], nil
+		return scope.Runners[row.SubjectID], nil
 	case "project":
-		if !scope.projects[tracker.ProjectID(row.SubjectID)] {
+		if !scope.Projects[tracker.ProjectID(row.SubjectID)] {
 			return false, nil
 		}
 	case "work_item":
@@ -135,7 +136,7 @@ func (scope healthEvaluationScope) coversRecord(ctx context.Context, reader post
 		}
 		for _, link := range links {
 			hasProject = true
-			if !scope.projects[link.ProjectID] {
+			if !scope.Projects[link.ProjectID] {
 				return false, nil
 			}
 		}
@@ -146,49 +147,45 @@ func (scope healthEvaluationScope) coversRecord(ctx context.Context, reader post
 	}
 }
 
-func (s *Service) publishHealthEvaluation(ctx context.Context, organization tracker.OrganizationID, at time.Time, findings []healthFinding) error {
-	return s.publishHealthEvaluationScope(ctx, organization, at, findings, healthEvaluationScope{complete: true})
-}
-
-func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization tracker.OrganizationID, at time.Time, findings []healthFinding, scope healthEvaluationScope) error {
-	if !scope.complete && len(scope.projects) == 0 && len(scope.runners) == 0 {
+func (s *Service) Publish(ctx context.Context, organization tracker.OrganizationID, at time.Time, findings []healthsignals.Finding, scope Scope) error {
+	if !scope.Complete && len(scope.Projects) == 0 && len(scope.Runners) == 0 {
 		return corestore.ErrInvalidPage
 	}
-	if scope.fingerprints != nil {
-		if scope.complete || len(scope.fingerprints) == 0 || len(scope.fingerprints) > healthReadLimit {
+	if scope.Fingerprints != nil {
+		if scope.Complete || len(scope.Fingerprints) == 0 || len(scope.Fingerprints) > healthsignals.ReadLimit {
 			return corestore.ErrInvalidPage
 		}
-		for fingerprint, examined := range scope.fingerprints {
+		for fingerprint, examined := range scope.Fingerprints {
 			if fingerprint == "" || !examined {
 				return corestore.ErrInvalidPage
 			}
 		}
 	}
-	for project, examined := range scope.projects {
+	for project, examined := range scope.Projects {
 		if project == "" || !examined {
 			return corestore.ErrInvalidPage
 		}
 	}
-	for runner, examined := range scope.runners {
+	for runner, examined := range scope.Runners {
 		if runner == "" || !examined {
 			return corestore.ErrInvalidPage
 		}
 	}
-	if s.database == nil || s.database.postgres == nil {
+	if s.Postgres == nil {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
-	details := s.runDetailStore()
+	details := s.Details
 	if len(findings) > 0 && details == nil {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
-	if scope.fingerprints != nil {
+	if scope.Fingerprints != nil {
 		if err := hubmaintenance.RequireAllowance(ctx, string(organization), hubmaintenance.ByteLimit); err != nil {
 			return err
 		}
 		details = hubmaintenance.LimitDetails(details)
 	}
-	if len(findings) > healthReadLimit {
-		return errHealthReadLimit
+	if len(findings) > healthsignals.ReadLimit {
+		return healthsignals.ErrReadLimit
 	}
 	seen := make(map[string]bool, len(findings))
 	for _, finding := range findings {
@@ -200,9 +197,9 @@ func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization
 		}
 		seen[finding.Fingerprint] = true
 	}
-	if !scope.complete && len(findings) != 0 {
-		err := s.database.postgres.ReadHealth(ctx, organization, corestore.Background, func(r postgres.HealthReader) error {
-			cutoff := at.Add(-healthReopenWindow)
+	if !scope.Complete && len(findings) != 0 {
+		err := s.Postgres.ReadHealth(ctx, organization, corestore.Background, func(r postgres.HealthReader) error {
+			cutoff := at.Add(-healthsignals.ReopenWindow)
 			for _, finding := range findings {
 				row, err := r.RecentHealthFingerprint(ctx, postgres.RecentHealthFingerprintInput{OrganizationID: organization, Fingerprint: finding.Fingerprint, ResolvedAt: &cutoff})
 				if errors.Is(err, corestore.ErrNotFound) {
@@ -211,7 +208,7 @@ func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization
 				if err != nil {
 					return err
 				}
-				covered, err := scope.coversRecord(ctx, r, organization, row)
+				covered, err := scope.CoversRecord(ctx, r, organization, row)
 				if err != nil {
 					return err
 				}
@@ -238,9 +235,9 @@ func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization
 			return err
 		}
 	}
-	if scope.fingerprints != nil {
-		keys := make([]string, 0, len(scope.fingerprints))
-		for fingerprint := range scope.fingerprints {
+	if scope.Fingerprints != nil {
+		keys := make([]string, 0, len(scope.Fingerprints))
+		for fingerprint := range scope.Fingerprints {
 			keys = append(keys, fingerprint)
 		}
 		slices.Sort(keys)
@@ -249,9 +246,9 @@ func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization
 				continue
 			}
 			var row postgres.HealthRecord
-			err := s.database.postgres.ReadHealth(ctx, organization, corestore.Background, func(reader postgres.HealthReader) error {
+			err := s.Postgres.ReadHealth(ctx, organization, corestore.Background, func(reader postgres.HealthReader) error {
 				var err error
-				row, err = reader.RecentHealthFingerprint(ctx, postgres.RecentHealthFingerprintInput{OrganizationID: organization, Fingerprint: fingerprint, ResolvedAt: new(at.Add(-healthReopenWindow))})
+				row, err = reader.RecentHealthFingerprint(ctx, postgres.RecentHealthFingerprintInput{OrganizationID: organization, Fingerprint: fingerprint, ResolvedAt: new(at.Add(-healthsignals.ReopenWindow))})
 				return err
 			})
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -263,17 +260,17 @@ func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization
 			if row.ResolvedAt != nil || row.LastSeenAt.After(at) {
 				continue
 			}
-			if err := s.resolveHealthRecord(ctx, organization, at, row, scope); err != nil {
+			if err := s.Resolve(ctx, organization, at, row, scope); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 	after := ""
-	for remaining := healthReadLimit; ; {
+	for remaining := healthsignals.ReadLimit; ; {
 		pageLimit := min(remaining+1, 200)
 		var rows []postgres.HealthRecord
-		err := s.database.postgres.ReadHealth(ctx, organization, corestore.Background, func(r postgres.HealthReader) error {
+		err := s.Postgres.ReadHealth(ctx, organization, corestore.Background, func(r postgres.HealthReader) error {
 			var err error
 			rows, err = r.HealthEvaluationRecords(ctx, postgres.HealthEvaluationRecordsInput{OrganizationID: organization, ID: after, Limit: int32(pageLimit)})
 			return err
@@ -285,7 +282,7 @@ func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization
 			break
 		}
 		if len(rows) > remaining {
-			return errHealthReadLimit
+			return healthsignals.ErrReadLimit
 		}
 		remaining -= len(rows)
 		after = rows[len(rows)-1].ID
@@ -293,7 +290,7 @@ func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization
 			if seen[row.Fingerprint] || row.LastSeenAt.After(at) {
 				continue
 			}
-			if err := s.resolveHealthRecord(ctx, organization, at, row, scope); err != nil {
+			if err := s.Resolve(ctx, organization, at, row, scope); err != nil {
 				return err
 			}
 		}
@@ -301,17 +298,17 @@ func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization
 			break
 		}
 	}
-	if !scope.complete {
+	if !scope.Complete {
 		return nil
 	}
-	return s.database.postgres.WriteHealth(ctx, organization, corestore.Background, func(w postgres.HealthWriter) error {
+	return s.Postgres.WriteHealth(ctx, organization, corestore.Background, func(w postgres.HealthWriter) error {
 		return w.PutHealthTick(ctx, postgres.PutHealthTickInput{OrganizationID: organization, LastTickAt: at})
 	})
 }
 
-func (s *Service) publishHealthFinding(ctx context.Context, organization tracker.OrganizationID, at time.Time, finding healthFinding, ref attachment.ArchiveReference, scope healthEvaluationScope) error {
-	return s.database.postgres.WriteHealth(ctx, organization, corestore.Background, func(w postgres.HealthWriter) error {
-		cutoff := at.Add(-healthReopenWindow)
+func (s *Service) publishHealthFinding(ctx context.Context, organization tracker.OrganizationID, at time.Time, finding healthsignals.Finding, ref attachment.ArchiveReference, scope Scope) error {
+	return s.Postgres.WriteHealth(ctx, organization, corestore.Background, func(w postgres.HealthWriter) error {
+		cutoff := at.Add(-healthsignals.ReopenWindow)
 		row, err := w.RecentHealthFingerprint(ctx, postgres.RecentHealthFingerprintInput{OrganizationID: organization, Fingerprint: finding.Fingerprint, ResolvedAt: &cutoff})
 		created := errors.Is(err, corestore.ErrNotFound)
 		if err != nil && !created {
@@ -333,7 +330,7 @@ func (s *Service) publishHealthFinding(ctx context.Context, organization tracker
 			return err
 		}
 		if !created {
-			covered, err := scope.coversRecord(ctx, w, organization, row)
+			covered, err := scope.CoversRecord(ctx, w, organization, row)
 			if err != nil {
 				return err
 			}
@@ -353,34 +350,34 @@ func (s *Service) publishHealthFinding(ctx context.Context, organization tracker
 			}
 		}
 		if created && row.Severity == "attention" {
-			return enqueueSlackHealthRecord(ctx, w, organization, row, "opened", at)
+			return s.enqueueSlackHealthRecord(ctx, w, organization, row, "opened", at)
 		}
 		return nil
 	})
 }
 
-func (s *Service) resolveHealthRecord(ctx context.Context, organization tracker.OrganizationID, at time.Time, row postgres.HealthRecord, scope healthEvaluationScope) error {
-	if !scope.complete {
+func (s *Service) Resolve(ctx context.Context, organization tracker.OrganizationID, at time.Time, row postgres.HealthRecord, scope Scope) error {
+	if !scope.Complete {
 		switch row.SubjectKind {
 		case "project":
-			if !scope.projects[tracker.ProjectID(row.SubjectID)] {
+			if !scope.Projects[tracker.ProjectID(row.SubjectID)] {
 				return nil
 			}
 		case "work_item":
 		case "runner":
-			if !scope.runners[row.SubjectID] {
+			if !scope.Runners[row.SubjectID] {
 				return nil
 			}
 		default:
 			return nil
 		}
 	}
-	err := s.database.postgres.WriteHealth(ctx, organization, corestore.Background, func(w postgres.HealthWriter) error {
+	err := s.Postgres.WriteHealth(ctx, organization, corestore.Background, func(w postgres.HealthWriter) error {
 		updated, err := w.UpdateHealthRecord(ctx, postgres.UpdateHealthRecordInput{OrganizationID: organization, ID: row.ID, ExpectedRevision: row.Revision, LastSeenAt: row.LastSeenAt, ResolvedAt: &at, Severity: row.Severity, Summary: row.Summary, NextAction: row.NextAction, EvidenceObjectKey: row.EvidenceObjectKey, EvidenceSha256: row.EvidenceSha256, EvidenceBytes: row.EvidenceBytes, EvidenceContentBytes: row.EvidenceContentBytes})
 		if err != nil {
 			return err
 		}
-		covered, err := scope.coversRecord(ctx, w, organization, updated)
+		covered, err := scope.CoversRecord(ctx, w, organization, updated)
 		if err != nil {
 			return err
 		}
@@ -388,7 +385,7 @@ func (s *Service) resolveHealthRecord(ctx context.Context, organization tracker.
 			return errHealthOutsideExaminedScope
 		}
 		if row.Severity == "attention" {
-			return enqueueSlackHealthRecord(ctx, w, organization, updated, "resolved", at)
+			return s.enqueueSlackHealthRecord(ctx, w, organization, updated, "resolved", at)
 		}
 		return nil
 	})
@@ -398,7 +395,7 @@ func (s *Service) resolveHealthRecord(ctx context.Context, organization tracker.
 	return err
 }
 
-func enqueueSlackHealthRecord(ctx context.Context, owner postgres.HealthWriter, organization tracker.OrganizationID, row postgres.HealthRecord, event string, at time.Time) error {
+func (s *Service) enqueueSlackHealthRecord(ctx context.Context, owner postgres.HealthWriter, organization tracker.OrganizationID, row postgres.HealthRecord, event string, at time.Time) error {
 	slack, ok := owner.(postgres.SlackWriter)
 	if !ok {
 		return hubapi.NativeWorkItemStorageUnavailable()
@@ -410,7 +407,7 @@ func enqueueSlackHealthRecord(ctx context.Context, owner postgres.HealthWriter, 
 	if err != nil {
 		return err
 	}
-	_, err = slack.AccessSecret(ctx, "", slackWebhookSecret)
+	_, err = slack.AccessSecret(ctx, "", s.SlackWebhookSecret)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return nil
 	}

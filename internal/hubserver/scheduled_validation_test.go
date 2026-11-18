@@ -15,6 +15,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthprojection"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -110,11 +112,11 @@ func TestHealthScheduledReporterHistory(t *testing.T) {
 					t.Fatalf("editing an old comment refreshed scheduled evidence: got=%+v want=%+v", observed, before)
 				}
 			}
-			scheduled := healthScheduledHistory(read(t, now))
+			scheduled := healthprojection.ScheduledHistory(read(t, now))
 			if !scheduled.LastReport.Equal(base.Add(step.wantLast)) || step.wantGreen < 0 && !scheduled.LastGreen.IsZero() || step.wantGreen >= 0 && !scheduled.LastGreen.Equal(base.Add(step.wantGreen)) {
 				t.Fatalf("scheduled history=%+v", scheduled)
 			}
-			finding, active := deadManFinding(now, healthProject{ID: string(f.project.ID), Scheduled: scheduled})
+			finding, active := healthsignals.DeadManFinding(now, healthProject{ID: string(f.project.ID), Scheduled: scheduled})
 			if active != step.wantSilent || active && finding.Evidence.Counts["scheduled_silent"] != 1 {
 				t.Fatalf("active=%v finding=%+v", active, finding)
 			}

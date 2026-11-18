@@ -5,10 +5,15 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 )
 
 func (s *Service) tenantCaller() *tenantcall.Client {
-	return tenantcall.New(tenantcall.Deps{Issuer: s.config.Issuer, SigningKey: s.config.SigningKey, Now: s.config.Now, Transport: s.config.Transport})
+	return tenantcall.New(tenantcall.Deps{Issuer: s.config.Issuer, SigningKey: s.config.SigningKey, Now: s.config.Now, Transport: s.config.Transport,
+		Background: func(ctx context.Context) bool {
+			return s.sharedHub != nil && entryWorkload(ctx) == corestore.Background
+		},
+	})
 }
 
 func (s *Service) claims(organization Organization, kind, method, path string, body []byte) (cloudassert.Claims, error) {

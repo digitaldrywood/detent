@@ -119,14 +119,14 @@ func TestGitHubWebhookReplayRetryAndTenantIsolation(t *testing.T) {
 		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			owner := r.(projectstore.GitHubIntakeReader)
-			pending, err := owner.GitHubWebhook(t.Context(), "first")
+			pending, err := owner.GitHubWebhook(t.Context(), "first", "")
 			if err != nil {
 				return err
 			}
 			if pending.Payload.PayloadObjectKey == "" || pending.AfterProject != "project_one" {
 				t.Fatalf("pending recovery lost: %+v", pending)
 			}
-			completed, err := owner.GitHubWebhook(t.Context(), "second")
+			completed, err := owner.GitHubWebhook(t.Context(), "second", "")
 			if err != nil {
 				return err
 			}
@@ -140,7 +140,7 @@ func TestGitHubWebhookReplayRetryAndTenantIsolation(t *testing.T) {
 		original := make(map[string]projectstore.GitHubWebhook)
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			for _, id := range []string{"first", "second"} {
-				row, err := r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), id)
+				row, err := r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), id, "")
 				if err != nil {
 					return err
 				}
@@ -217,7 +217,7 @@ func TestGitHubWebhookReplayRetryAndTenantIsolation(t *testing.T) {
 		latestByOrganization[org] = latest
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			for _, id := range []string{"first", "second"} {
-				row, err := r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), id)
+				row, err := r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), id, "")
 				if err != nil {
 					return err
 				}

@@ -30,6 +30,11 @@ const OrphanTTL = conversation.AttachmentTTL
 var ErrInvalid = errors.New("invalid attachment")
 var ErrTooLarge = errors.New("attachment exceeds 20 MiB")
 
+type ExpiryPage struct {
+	Examined int        `json:"examined"`
+	Records  []Metadata `json:"records"`
+}
+
 type Metadata struct {
 	Reference           string            `json:"reference,omitempty"`
 	ReferencedBy        []SourceReference `json:"referenced_by,omitempty"`

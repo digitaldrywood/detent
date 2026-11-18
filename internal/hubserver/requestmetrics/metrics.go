@@ -95,7 +95,9 @@ type Service struct {
 	mu             sync.Mutex
 	flushMu        sync.Mutex
 	pending        map[Key]Latency
-	runners        map[string]*RunnerWindow
+	sharedWindows  *RunnerWindows
+	generation     int64
+	localWindows   tenantRunnerWindows
 	routesOnce     sync.Once
 	routes         map[string]bool
 }
@@ -113,14 +115,52 @@ func (m *Service) Record(now time.Time, route, kind, caller string, status int, 
 }
 
 func (m *Service) Flush(ctx context.Context, now time.Time) error {
+	return m.flush(ctx, now, 0)
+}
+
+func (m *Service) HasPending() bool {
+	if !m.flushMu.TryLock() {
+		return true
+	}
+	defer m.flushMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.pending) > 0 || m.BillingPending != nil
+}
+
+func (m *Service) FlushPage(ctx context.Context, now time.Time, limit int) error {
+	if limit < 6 {
+		return metricsstore.ErrInvalidMetric
+	}
+	if m.sharedWindows != nil {
+		m.sharedWindows.expire(now)
+	}
+	return m.flush(ctx, now, limit)
+}
+
+func (m *Service) flush(ctx context.Context, now time.Time, limit int) error {
 	m.flushMu.Lock()
 	defer m.flushMu.Unlock()
+	if limit > 0 && m.BillingPending != nil {
+		return m.FlushBilling(ctx, now)
+	}
 	if err := m.FlushBilling(ctx, now); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	pending, owner := m.pending, m.usage
-	m.pending = make(map[Key]Latency)
+	if limit == 0 {
+		m.pending = make(map[Key]Latency)
+	} else {
+		pending = make(map[Key]Latency)
+		for k, v := range m.pending {
+			pending[k] = v
+			delete(m.pending, k)
+			if len(pending) == limit/6 {
+				break
+			}
+		}
+	}
 	m.mu.Unlock()
 	latencies := make(map[Key]Latency)
 	for key, value := range pending {
@@ -138,7 +178,11 @@ func (m *Service) Flush(ctx context.Context, now time.Time) error {
 	}
 	if err == nil {
 		if owner != nil {
-			err = m.WriteUsage(ctx, owner, now, usagePending)
+			if limit == 0 {
+				err = m.WriteUsage(ctx, owner, now, usagePending)
+			} else {
+				err = m.writeUsageWindows(ctx, owner, now, usagePending, min(4, limit/6))
+			}
 		} else {
 			clear(usagePending)
 		}
@@ -177,16 +221,87 @@ func RunnerExempt(method, route string) bool {
 
 type RunnerBudgetContext struct{}
 
-func (m *Service) Admit(now time.Time, runner, route string, capacity int, projects []string) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	minute := now.Unix() / 60 * 60
-	w := m.runners[runner]
-	if w == nil {
-		w = &RunnerWindow{}
-		m.runners[runner] = w
+type minuteWindows[K comparable, V any] struct {
+	minute  int64
+	buckets [3]map[K]*V
+}
+
+func (b *minuteWindows[K, V]) advance(now time.Time) {
+	minute := now.Unix() / 60
+	if minute <= b.minute {
+		return
 	}
-	if w.Minute != minute {
+	elapsed := min(minute-b.minute, int64(len(b.buckets)))
+	copy(b.buckets[elapsed:], b.buckets[:])
+	clear(b.buckets[:elapsed])
+	b.minute = minute
+}
+
+func (b *minuteWindows[K, V]) lookup(key K, record bool) *V {
+	if v := b.buckets[0][key]; v != nil {
+		return v
+	}
+	var v *V
+	for _, bucket := range b.buckets[1:] {
+		if v = bucket[key]; v != nil {
+			if record {
+				delete(bucket, key)
+			}
+			break
+		}
+	}
+	if record {
+		if v == nil {
+			v = new(V)
+		}
+		if b.buckets[0] == nil {
+			b.buckets[0] = make(map[K]*V)
+		}
+		b.buckets[0][key] = v
+	}
+	return v
+}
+
+type tenantRunnerWindows struct {
+	mu      sync.Mutex
+	runners minuteWindows[string, RunnerWindow]
+}
+
+type windowScope struct {
+	organization tracker.OrganizationID
+	generation   int64
+}
+
+type RunnerWindows struct {
+	mu      sync.Mutex
+	tenants minuteWindows[windowScope, tenantRunnerWindows]
+}
+
+func (w *RunnerWindows) expire(now time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.tenants.advance(now)
+}
+
+func (m *Service) runnerWindows(now time.Time, record bool) *tenantRunnerWindows {
+	w := m.sharedWindows
+	if w == nil {
+		return &m.localWindows
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.tenants.advance(now)
+	return w.tenants.lookup(windowScope{m.Organization, m.generation}, record)
+}
+
+func (m *Service) Admit(now time.Time, runner, route string, capacity int, projects []string) int {
+	group := m.runnerWindows(now, true)
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	group.runners.advance(now)
+	w := group.runners.lookup(runner, true)
+	minute := now.Unix() / 60 * 60
+	if w.Minute != minute || w.Routes == nil {
 		w.Minute = minute
 		w.Count = 0
 		w.ReceiptCount = 0
@@ -221,15 +336,19 @@ func (m *Service) Admit(now time.Time, runner, route string, capacity int, proje
 }
 
 func (m *Service) Findings(now time.Time) []healthsignals.Finding {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	findings := []healthsignals.Finding{}
-	for id, w := range m.runners {
-		if now.Sub(w.ExcessAt) <= 2*time.Minute {
-			findings = append(findings, healthsignals.NewFinding("runner_request_budget", "instance", "runner", id, fmt.Sprintf("Runner exceeded its request budget (%d/%d per minute). Top routes: %s", w.ExcessCount, w.ExcessBudget, strings.Join(w.ExcessRoutes, ", ")), "The runner operator checks polling and read volume on the named routes.", w.Projects, healthsignals.Evidence{Counts: map[string]int{"requests": w.ExcessCount, "budget": w.ExcessBudget}, Signatures: w.ExcessRoutes}))
-		}
-		if now.Unix()/60*60 > w.Minute+120 {
-			delete(m.runners, id)
+	group := m.runnerWindows(now, false)
+	if group == nil {
+		return findings
+	}
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	group.runners.advance(now)
+	for _, bucket := range group.runners.buckets {
+		for id, w := range bucket {
+			if now.Sub(w.ExcessAt) <= 2*time.Minute {
+				findings = append(findings, healthsignals.NewFinding("runner_request_budget", "instance", "runner", id, fmt.Sprintf("Runner exceeded its request budget (%d/%d per minute). Top routes: %s", w.ExcessCount, w.ExcessBudget, strings.Join(w.ExcessRoutes, ", ")), "The runner operator checks polling and read volume on the named routes.", w.Projects, healthsignals.Evidence{Counts: map[string]int{"requests": w.ExcessCount, "budget": w.ExcessBudget}, Signatures: w.ExcessRoutes}))
+			}
 		}
 	}
 	return findings

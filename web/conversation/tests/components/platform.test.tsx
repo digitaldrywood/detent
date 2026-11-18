@@ -658,6 +658,16 @@ describe("platform console", () => {
     expect(within(table).getByText("1 hours")).toBeTruthy();
   });
 
+  it("shows shared Hub health without a tenant link or tenant-slot limit", async () => {
+    const value = { ...health, tenant_hubs: [{ ...health.tenant_hubs[0]!, id: "shared", name: "Shared Hub", running: true }],
+      tenants: { expected: 1, running: 1 }, admission: { ...health.admission, tenants: undefined, max_tenants: 0 } };
+    await renderPlatform(fakeApi({ platformHealth: vi.fn(async () => value) }), "/platform/health");
+    const panel = await screen.findByRole("alert", { name: "Service health" });
+    expect(panel.textContent).toContain("Shared Hub running.");
+    expect(screen.queryByRole("link", { name: "Shared Hub" })).toBeNull();
+    expect(screen.queryByRole("meter", { name: "Tenant slots" })).toBeNull();
+  });
+
   it.each([
     ["Free disk", 121, "Above floor"],
     ["Free disk", 120, "Near limit"],

@@ -75,6 +75,13 @@ func charge(ctx context.Context, organization string, bytes int64) error {
 	return nil
 }
 
+func ReserveBytes(ctx context.Context, tenant Tenant, bytes int64) error {
+	if err := RequireTenant(ctx, tenant); err != nil {
+		return err
+	}
+	return charge(ctx, tenant.Organization, bytes)
+}
+
 type Details struct{ store attachment.DetailStore }
 
 func LimitDetails(store attachment.DetailStore) *Details {
@@ -156,4 +163,46 @@ func (s *Details) StoreDetail(ctx context.Context, organization string, raw []by
 		return attachment.ArchiveReference{}, artifact.ErrIntegrity
 	}
 	return ref, storeError(err)
+}
+
+func ReserveArchiveWrite(ctx context.Context, organization string, plainBytes int64) error {
+	if _, ok := ctx.Value(budgetKey{}).(*byteBudget); !ok {
+		return nil
+	}
+	if plainBytes < 0 || plainBytes > attachment.MaxArchiveBytes {
+		return artifact.ErrIntegrity
+	}
+	compressedLimit := plainBytes + plainBytes/100 + 1024
+	return charge(ctx, organization, 3*(plainBytes+compressedLimit))
+}
+
+type archiveContents struct{ attachment.ArchiveContentStore }
+
+func LimitArchiveContents(store attachment.ArchiveContentStore) attachment.ArchiveContentStore {
+	if store == nil {
+		return nil
+	}
+	if _, limited := store.(archiveContents); limited {
+		return store
+	}
+	return archiveContents{store}
+}
+
+func (s archiveContents) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if _, bounded := ctx.Value(budgetKey{}).(*byteBudget); bounded {
+		if err := ref.Validate(organization); err != nil {
+			return nil, err
+		}
+		if err := charge(ctx, organization, ref.CompressedSize+ref.UncompressedSize); err != nil {
+			return nil, err
+		}
+	}
+	return s.ArchiveContentStore.ReadContent(ctx, organization, ref)
+}
+
+func (s archiveContents) PublishContent(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	if err := ReserveArchiveWrite(ctx, organization, int64(len(content))); err != nil {
+		return attachment.ArchiveReference{}, err
+	}
+	return s.ArchiveContentStore.PublishContent(ctx, organization, content)
 }

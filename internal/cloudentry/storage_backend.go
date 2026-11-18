@@ -182,17 +182,13 @@ func (d *entryDatabase) PingContext(ctx context.Context) error {
 	return d.postgres.Ping(ctx)
 }
 
-type entryWorkloadKey struct{}
 type entryHealthReadKey struct{}
 
 func entryWorkload(ctx context.Context) corestore.Workload {
-	if workload, ok := ctx.Value(entryWorkloadKey{}).(corestore.Workload); ok {
-		return workload
-	}
-	return corestore.Serving
+	return corestore.ContextWorkload(ctx)
 }
 func entryBackground(ctx context.Context) context.Context {
-	return context.WithValue(ctx, entryWorkloadKey{}, corestore.Background)
+	return corestore.WithBackgroundWork(ctx)
 }
 
 func (d *entryDatabase) entryNow() time.Time    { return d.clock() }

@@ -13,35 +13,56 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) ProjectPageMaintenanceFeature() hubmaintenance.Feature {
-	type cursor struct {
-		generation int64
-		after      tracker.ProjectID
-	}
+func (s *Service) projectionFeature(name string, bytes int64, step func(context.Context, hubmaintenance.Tenant, hubmaintenance.Budget, *postgres.MaintenanceCursor) (hubmaintenance.Outcome, error)) hubmaintenance.Feature {
 	var mu sync.Mutex
-	cursors := make(map[string]cursor)
-	return hubmaintenance.Feature{Name: "project-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
-		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
+	type localCursor struct {
+		generation int64
+		cursor     postgres.MaintenanceCursor
+	}
+	local := make(map[string]localCursor)
+	return hubmaintenance.Feature{Name: name, Bytes: bytes, Step: func(ctx context.Context, t hubmaintenance.Tenant, b hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+		if err := hubmaintenance.RequireTenant(ctx, t); err != nil {
 			return hubmaintenance.Outcome{}, err
 		}
-		mu.Lock()
-		current := cursors[tenant.Organization]
-		mu.Unlock()
-		if current.generation != tenant.Generation {
-			current = cursor{generation: tenant.Generation}
+		if s.config.runtimeHost != nil {
+			org := tracker.OrganizationID(t.Organization)
+			prior, err := s.database.postgres.MaintenanceCursor(ctx, org, t.Generation, name)
+			if err != nil {
+				return hubmaintenance.Outcome{}, err
+			}
+			cursor := prior
+			outcome, err := step(ctx, t, b, &cursor)
+			if cursor != prior {
+				err = errors.Join(err, s.database.postgres.SetMaintenanceCursor(ctx, org, t.Generation, name, cursor))
+			}
+			return outcome, err
 		}
-		next, worked, err := s.MaintainProjectPage(ctx, tracker.OrganizationID(tenant.Organization), current.after)
-		current.after = next
 		mu.Lock()
-		cursors[tenant.Organization] = current
+		current := local[t.Organization]
 		mu.Unlock()
-		return hubmaintenance.Outcome{Progress: worked, Items: 1}, err
+		if current.generation != t.Generation {
+			current = localCursor{generation: t.Generation}
+		}
+		outcome, err := step(ctx, t, b, &current.cursor)
+		mu.Lock()
+		local[t.Organization] = current
+		mu.Unlock()
+		return outcome, err
 	}}
+}
+
+func (s *Service) ProjectPageMaintenanceFeature() hubmaintenance.Feature {
+	return s.projectionFeature("project-pages", hubmaintenance.ByteLimit, func(ctx context.Context, t hubmaintenance.Tenant, _ hubmaintenance.Budget, c *postgres.MaintenanceCursor) (hubmaintenance.Outcome, error) {
+		next, worked, err := s.MaintainProjectPage(ctx, tracker.OrganizationID(t.Organization), tracker.ProjectID(c.Project))
+		c.Project = string(next)
+		return hubmaintenance.Outcome{Progress: worked, Items: 1}, err
+	})
 }
 
 func (s *Service) MaintainProjectPage(ctx context.Context, org tracker.OrganizationID, after tracker.ProjectID) (tracker.ProjectID, bool, error) {

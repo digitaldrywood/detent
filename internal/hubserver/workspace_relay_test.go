@@ -2619,10 +2619,39 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			}
 		}
 		for index, service := range services {
-			service.dispatchQueuedActionRuns(t.Context())
-			if err := service.sweepRelayTickets(t.Context(), service.now()); err != nil {
-				t.Fatal(err)
+			var cursor postgres.MaintenanceCursor
+			used, err := service.dispatchActionPage(t.Context(), &cursor, 1)
+			if used != 1 || err != nil {
+				t.Fatalf("dispatch page used %d of one: %v", used, err)
 			}
+			assertCounts(index, actionRunDispatchBatch, 1, 0, hubmaintenance.ItemLimit+1)
+			if used, err := service.dispatchActionPage(t.Context(), &cursor, actionRunDispatchBatch-1); err != nil || used != actionRunDispatchBatch-1 {
+				t.Fatalf("dispatch continuation used %d: %v", used, err)
+			}
+			for _, limit := range []int{1, hubmaintenance.ItemLimit - 1} {
+				cold := &Service{database: service.server.database, config: service.server.config}
+				cold.workspaces = newWorkspaceService(cold, service.config)
+				var selected hubmaintenance.Feature
+				for _, feature := range cold.sessionMaintenanceFeatures() {
+					if feature.Name == "workspace-tickets" {
+						selected = feature
+						break
+					}
+				}
+				if selected.Step == nil {
+					t.Fatal("workspace ticket maintenance is missing")
+				}
+				tenant := cold.MaintenanceTenant()
+				budget := hubmaintenance.Budget{Items: limit, Bytes: selected.Bytes}
+				outcome, err := selected.Step(budget.Context(t.Context(), tenant), tenant, budget)
+				if err != nil || outcome.Items != limit {
+					t.Fatalf("ticket page used %d of %d: %v", outcome.Items, limit, err)
+				}
+				if limit == 1 {
+					assertCounts(index, 1, actionRunDispatchBatch, 0, hubmaintenance.ItemLimit)
+				}
+			}
+
 			for tenant := range services {
 				if tenant <= index {
 					assertCounts(tenant, 1, actionRunDispatchBatch, 0, 1)

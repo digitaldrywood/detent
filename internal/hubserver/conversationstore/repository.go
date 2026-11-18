@@ -196,8 +196,9 @@ type PendingConversation struct {
 }
 
 type PendingConversationPage struct {
-	Items []PendingConversation
-	Next  string
+	Examined int
+	Items    []PendingConversation
+	Next     string
 }
 
 type MessagePage struct {
@@ -206,6 +207,7 @@ type MessagePage struct {
 }
 
 type MessageFilter struct {
+	UpdatedBefore    time.Time
 	OperatorActionID string
 	OperatorResult   string
 	Oldest           bool
@@ -248,8 +250,8 @@ type Reader interface {
 	Question(context.Context, string, string) (Question, error)
 	Questions(context.Context, string, string, int) ([]Question, error)
 	OutstandingQuestions(context.Context, string, string, string, string, int) (QuestionPage, error)
-	RestartQuestions(context.Context, string, string, int) (QuestionPage, error)
-	PendingCommands(context.Context, string, string, int) (CommandPage, error)
+	RestartQuestions(context.Context, string, string, time.Time, int) (QuestionPage, error)
+	PendingCommands(context.Context, string, string, time.Time, int) (CommandPage, error)
 	PendingCoordinatorCommands(context.Context, string, string, int) (CommandPage, error)
 	Command(context.Context, string, string) (Command, bool, error)
 	TurnBatch(context.Context, string, string) (int64, bool, error)

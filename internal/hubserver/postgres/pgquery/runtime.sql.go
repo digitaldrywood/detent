@@ -13,6 +13,57 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const beginBillingReconciliation = `-- name: BeginBillingReconciliation :execrows
+UPDATE platform.organizations SET billing_next_due_at=$1::timestamptz + COALESCE(billing_reconcile_seconds,60) * interval '1 second'
+WHERE id=$2::text AND generation=$3::bigint AND state='ready'
+AND (billing_next_due_at<=$1::timestamptz
+    OR (billing_reconcile_seconds IS NULL AND billing_next_due_at IS NULL
+        AND EXISTS(SELECT 1 FROM platform.billing_customers b WHERE b.organization_id=platform.organizations.id)))
+`
+
+type BeginBillingReconciliationParams struct {
+	NowAt          time.Time
+	OrganizationID string
+	Generation     int64
+}
+
+func (q *Queries) BeginBillingReconciliation(ctx context.Context, arg BeginBillingReconciliationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, beginBillingReconciliation, arg.NowAt, arg.OrganizationID, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const configureBillingSchedule = `-- name: ConfigureBillingSchedule :exec
+UPDATE platform.organizations SET
+    billing_next_due_at=CASE
+        WHEN $1::integer=0 THEN NULL
+        WHEN billing_reconcile_seconds IS NULL AND billing_next_due_at>$2::timestamptz
+            THEN $2::timestamptz + $1::integer * interval '1 second'
+        ELSE $2::timestamptz END,
+    billing_reconcile_seconds=$1::integer
+WHERE id=$3::text AND generation=$4::bigint AND state IN ('ready','allocating')
+AND billing_reconcile_seconds IS DISTINCT FROM $1::integer
+`
+
+type ConfigureBillingScheduleParams struct {
+	Seconds        int32
+	NowAt          time.Time
+	OrganizationID string
+	Generation     int64
+}
+
+func (q *Queries) ConfigureBillingSchedule(ctx context.Context, arg ConfigureBillingScheduleParams) error {
+	_, err := q.db.Exec(ctx, configureBillingSchedule,
+		arg.Seconds,
+		arg.NowAt,
+		arg.OrganizationID,
+		arg.Generation,
+	)
+	return err
+}
+
 const currentRuntime = `-- name: CurrentRuntime :one
 SELECT r.organization_id, r.id, r.local_published, r.binding_id, r.customer_owned, r.object_key, r.sha256, r.compressed_bytes, r.content_bytes, r.codec, r.format_version, r.kind, r.retention FROM public.hosted_runtime_heads h
 JOIN public.hosted_runtime_revisions staged ON staged.organization_id=h.organization_id AND staged.id=h.prepared_id
@@ -69,6 +120,44 @@ type DeleteRuntimeFeaturesParams struct {
 func (q *Queries) DeleteRuntimeFeatures(ctx context.Context, arg DeleteRuntimeFeaturesParams) error {
 	_, err := q.db.Exec(ctx, deleteRuntimeFeatures, arg.OrganizationID, arg.Ids, arg.Versions)
 	return err
+}
+
+const dueBillingTenants = `-- name: DueBillingTenants :many
+SELECT due.id,due.generation FROM (
+    SELECT id,generation FROM platform.organizations
+    WHERE state='ready' AND billing_next_due_at<=$1::timestamptz
+    ORDER BY billing_next_due_at,id LIMIT $2::integer
+) due ORDER BY due.id
+`
+
+type DueBillingTenantsParams struct {
+	NowAt     time.Time
+	PageLimit int32
+}
+
+type DueBillingTenantsRow struct {
+	ID         string
+	Generation int64
+}
+
+func (q *Queries) DueBillingTenants(ctx context.Context, arg DueBillingTenantsParams) ([]DueBillingTenantsRow, error) {
+	rows, err := q.db.Query(ctx, dueBillingTenants, arg.NowAt, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DueBillingTenantsRow{}
+	for rows.Next() {
+		var i DueBillingTenantsRow
+		if err := rows.Scan(&i.ID, &i.Generation); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const entryRuntime = `-- name: EntryRuntime :one
@@ -257,6 +346,48 @@ func (q *Queries) InsertRuntimeRevision(ctx context.Context, arg InsertRuntimeRe
 		arg.Retention,
 	)
 	return err
+}
+
+const legacyBillingSchedulePage = `-- name: LegacyBillingSchedulePage :many
+WITH bindings AS MATERIALIZED (
+    SELECT organization_id FROM platform.billing_customers
+    WHERE organization_id>$1::text
+    ORDER BY organization_id,mode,account_id,customer_id LIMIT $2::integer
+)
+SELECT o.id,o.generation,(o.state='ready' AND o.billing_reconcile_seconds IS NULL AND o.billing_next_due_at IS NULL)::boolean AS needs_discovery
+FROM bindings b JOIN platform.organizations o ON o.id=b.organization_id
+ORDER BY o.id
+`
+
+type LegacyBillingSchedulePageParams struct {
+	AfterID   string
+	PageLimit int32
+}
+
+type LegacyBillingSchedulePageRow struct {
+	ID             string
+	Generation     int64
+	NeedsDiscovery bool
+}
+
+func (q *Queries) LegacyBillingSchedulePage(ctx context.Context, arg LegacyBillingSchedulePageParams) ([]LegacyBillingSchedulePageRow, error) {
+	rows, err := q.db.Query(ctx, legacyBillingSchedulePage, arg.AfterID, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LegacyBillingSchedulePageRow{}
+	for rows.Next() {
+		var i LegacyBillingSchedulePageRow
+		if err := rows.Scan(&i.ID, &i.Generation, &i.NeedsDiscovery); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockRuntimeHead = `-- name: LockRuntimeHead :one

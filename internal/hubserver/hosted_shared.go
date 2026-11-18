@@ -116,6 +116,10 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
+		if claims.Background {
+			request = request.WithContext(corestore.WithBackgroundWork(request.Context()))
+			c.SetRequest(request)
+		}
 		healthProbe := claims.Kind == cloudassert.KindService && request.Method == http.MethodPost && path == "/internal/v1/health"
 		if !healthProbe {
 			if err := s.syncOrganizationSlug(request.Context(), claims.OrganizationSlug); err != nil {

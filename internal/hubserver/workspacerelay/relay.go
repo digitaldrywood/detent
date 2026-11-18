@@ -1,9 +1,11 @@
 package workspacerelay
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"sync"
 	"time"
 
@@ -31,6 +33,7 @@ type Relay struct {
 	deps        Deps
 	mu          sync.Mutex
 	rooms       map[string]*Room
+	detached    list.List
 	memory      int64
 	stopped     bool
 	attachments uint64
@@ -97,18 +100,19 @@ type TerminalStream struct {
 }
 
 type Stream struct {
-	ID           string
-	Channel      string
-	ConnectionID string
-	HubOwned     bool
-	PrincipalID  string
-	SessionID    string
-	toRunner     int64
-	toPerson     int64
-	buffer       []BufferedFrame
-	bufferBytes  int64
-	ackedThrough int64
-	detachedAt   time.Time
+	ID            string
+	Channel       string
+	ConnectionID  string
+	HubOwned      bool
+	PrincipalID   string
+	SessionID     string
+	toRunner      int64
+	toPerson      int64
+	buffer        []BufferedFrame
+	bufferBytes   int64
+	ackedThrough  int64
+	detachedAt    time.Time
+	detachedEntry *list.Element
 }
 
 type Outbound struct {
@@ -183,6 +187,7 @@ func (r *Relay) Stop(ctx context.Context) {
 		recorded = append(recorded, room.takeTerminalRecordings(nil)...)
 	}
 	r.rooms = map[string]*Room{}
+	r.detached.Init()
 	r.memory = 0
 	r.mu.Unlock()
 	r.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
@@ -229,6 +234,8 @@ func (r *Relay) CloseWorkspace(ctx context.Context, workspaceID, reason string) 
 		r.memory -= stream.bufferBytes
 	}
 	for _, stream := range room.detached {
+		r.detached.Remove(stream.detachedEntry)
+		stream.detachedEntry = nil
 		r.memory -= stream.bufferBytes
 	}
 	if r.memory < 0 {
@@ -244,41 +251,73 @@ func (r *Relay) CloseWorkspace(ctx context.Context, workspaceID, reason string) 
 	}
 }
 
-func (r *Relay) Sweep(ctx context.Context, now time.Time) {
-	type expiry struct {
-		room   *Room
-		stream *Stream
-	}
+type detachedStream struct {
+	room   *Room
+	stream *Stream
+}
+
+func (r *Relay) Active() bool {
 	r.mu.Lock()
-	expired := []expiry{}
-	orphaned := []*ExecRun{}
-	recorded := []*TerminalStream{}
-	for _, room := range r.rooms {
-		for id, stream := range room.detached {
-			if now.Sub(stream.detachedAt) < workspacesession.ResumeWindow {
-				continue
-			}
-			delete(room.detached, id)
-			r.memory -= stream.bufferBytes
-			orphaned = append(orphaned, room.takeExecRuns(func(streamID string) bool { return streamID == id })...)
-			recorded = append(recorded, room.takeTerminalRecordings(func(streamID string) bool { return streamID == id })...)
-			expired = append(expired, expiry{room: room, stream: stream})
+	defer r.mu.Unlock()
+	return len(r.rooms) > 0
+}
+
+func (r *Relay) Sweep(ctx context.Context, now time.Time) {
+	r.SweepPage(ctx, now, math.MaxInt)
+}
+
+func (r *Relay) SweepPage(ctx context.Context, now time.Time, limit int) int {
+	r.mu.Lock()
+	type closeFrame struct {
+		runner *Connection
+		frame  workspacesession.Frame
+	}
+	var frames []closeFrame
+	var orphaned []*ExecRun
+	var recordings []*TerminalStream
+	used := 0
+	for used < limit {
+		first := r.detached.Front()
+		if first == nil {
+			break
+		}
+		entry := first.Value.(detachedStream)
+		room, stream := entry.room, entry.stream
+		if now.Sub(stream.detachedAt) < workspacesession.ResumeWindow {
+			break
+		}
+		used++
+		r.detached.Remove(first)
+		stream.detachedEntry = nil
+		delete(room.detached, stream.ID)
+		r.memory -= stream.bufferBytes
+		if run := room.execRuns[stream.ID]; run != nil {
+			orphaned = append(orphaned, run)
+			delete(room.execRuns, stream.ID)
+		}
+		if recording := room.terminals[stream.ID]; recording != nil {
+			recordings = append(recordings, recording)
+			delete(room.terminals, stream.ID)
+		}
+		if room.Runner != nil {
+			frames = append(frames, closeFrame{room.Runner, workspacesession.Frame{Channel: stream.Channel, Stream: stream.ID, Type: workspacesession.TypeClose}})
+		} else {
+			r.pruneRoom(room)
 		}
 	}
-	if r.memory < 0 {
-		r.memory = 0
-	}
-	runners := map[*Room]*Connection{}
-	for _, item := range expired {
-		runners[item.room] = item.room.Runner
-	}
+	r.memory = max(0, r.memory)
 	r.mu.Unlock()
 	r.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
-	r.finishTerminalRecordings(ctx, recorded)
-	for _, item := range expired {
-		if runner := runners[item.room]; runner != nil {
-			runner.Send(workspacesession.Frame{Channel: item.stream.Channel, Stream: item.stream.ID, Type: workspacesession.TypeClose})
-		}
+	r.finishTerminalRecordings(ctx, recordings)
+	for _, close := range frames {
+		close.runner.Send(close.frame)
+	}
+	return used
+}
+
+func (r *Relay) pruneRoom(room *Room) {
+	if len(room.people) == 0 && room.Runner == nil && len(room.detached) == 0 {
+		delete(r.rooms, room.WorkspaceID)
 	}
 }
 
@@ -321,14 +360,13 @@ func (r *Relay) DetachPerson(ctx context.Context, connection *Connection, now ti
 		}
 		stream.detachedAt = now
 		room.detached[id] = stream
+		stream.detachedEntry = r.detached.PushBack(detachedStream{room, stream})
 	}
 	orphaned := room.takeExecRuns(func(id string) bool {
 		owner, _, err := workspacesession.ParseStreamID(id)
 		return err == nil && owner == connection.ID
 	})
-	if len(room.people) == 0 && room.Runner == nil && len(room.detached) == 0 {
-		delete(r.rooms, connection.WorkspaceID)
-	}
+	r.pruneRoom(room)
 	r.mu.Unlock()
 	r.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
 	if runner != nil {
@@ -366,9 +404,7 @@ func (r *Relay) DetachRunner(ctx context.Context, connection *Connection) bool {
 		orphaned = room.takeExecRuns(nil)
 		recorded = room.takeTerminalRecordings(nil)
 	}
-	if len(room.people) == 0 && room.Runner == nil && len(room.detached) == 0 {
-		delete(r.rooms, connection.WorkspaceID)
-	}
+	r.pruneRoom(room)
 	r.mu.Unlock()
 	r.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
 	r.finishTerminalRecordings(ctx, recorded)
@@ -497,6 +533,10 @@ func (r *Relay) CloseStream(ctx context.Context, workspaceID, id string) {
 			continue
 		}
 		delete(set, id)
+		if stream.detachedEntry != nil {
+			r.detached.Remove(stream.detachedEntry)
+			stream.detachedEntry = nil
+		}
 		if owner := room.people[stream.ConnectionID]; owner != nil && owner.streams > 0 {
 			owner.streams--
 		}
@@ -507,6 +547,7 @@ func (r *Relay) CloseStream(ctx context.Context, workspaceID, id string) {
 	}
 	orphaned := room.takeExecRuns(func(streamID string) bool { return streamID == id })
 	recorded := room.takeTerminalRecordings(func(streamID string) bool { return streamID == id })
+	r.pruneRoom(room)
 	r.mu.Unlock()
 	r.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
 	r.finishTerminalRecordings(ctx, recorded)
@@ -545,6 +586,8 @@ func (r *Relay) ResumeStream(connection *Connection, id string, lastSeq int64, n
 		return nil, nil, workspacesession.CodeStreamLimit
 	}
 	delete(room.detached, id)
+	r.detached.Remove(stream.detachedEntry)
+	stream.detachedEntry = nil
 	stream.ConnectionID = connection.ID
 	stream.detachedAt = time.Time{}
 	r.releaseThrough(stream, lastSeq)

@@ -190,12 +190,13 @@ func (s *session) StorageArchiveSnapshot(ctx context.Context, stamp attachmentst
 	if result.Previous != nil {
 		through = result.Previous.ThroughHistory
 	}
-	result.History, err = s.HistoryEvents(ctx, stamp.ProjectID, stamp.WorkItemID, through, storageArchiveHistoryBatch)
+	historyLimit := min(storageArchiveHistoryBatch, limit)
+	result.History, err = s.HistoryEvents(ctx, stamp.ProjectID, stamp.WorkItemID, through, historyLimit)
 	if err != nil {
 		return result, err
 	}
 	result.ThroughHistory = stamp.EventSequence
-	if len(result.History) == storageArchiveHistoryBatch {
+	if len(result.History) == historyLimit {
 		result.ThroughHistory = result.History[len(result.History)-1].Sequence
 	}
 

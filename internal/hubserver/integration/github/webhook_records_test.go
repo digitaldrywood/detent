@@ -162,7 +162,7 @@ func TestGitHubWebhookCursorRecoveryKeepsObservation(t *testing.T) {
 			if err := f.repository.WriteTenant(t.Context(), webhookRecordOrganization, corestore.Serving, func(w tenantstore.Writer) error {
 				var err error
 				owner := w.(projectstore.GitHubIntakeWriter)
-				row, err = owner.GitHubWebhook(t.Context(), "delivery")
+				row, err = owner.GitHubWebhook(t.Context(), "delivery", "")
 				if err != nil {
 					return err
 				}
@@ -175,7 +175,7 @@ func TestGitHubWebhookCursorRecoveryKeepsObservation(t *testing.T) {
 			*f.now = f.now.Add(time.Hour)
 			f.send(t, test.event, test.action)
 			if err := f.repository.ReadTenant(t.Context(), webhookRecordOrganization, corestore.Serving, func(r tenantstore.Reader) error {
-				cursor, err := r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), row.DeliveryID)
+				cursor, err := r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), row.DeliveryID, "")
 				if err != nil {
 					return err
 				}
