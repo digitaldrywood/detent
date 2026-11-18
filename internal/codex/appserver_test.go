@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	hubtransport "github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -1753,7 +1754,7 @@ func TestAppServerStreamTurnResetsTimeoutAfterActivity(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				process := store.WorkerProcessIdentity{PID: 123, StartedAt: time.Now()}
+				process := procgroup.Identity{PID: 123, StartedAt: time.Now()}
 				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 				defer cancel()
 				var observation runnersession.WorkerObservation
@@ -1761,7 +1762,7 @@ func TestAppServerStreamTurnResetsTimeoutAfterActivity(t *testing.T) {
 				err = server.streamTurn(ctx, transport, "thread-1", "turn-1", tc.turn, tc.stall, nil, nil, func(update Update) error {
 					identity := process
 					if update.Type == UpdateTurnCompleted {
-						identity = store.WorkerProcessIdentity{}
+						identity = procgroup.Identity{}
 					}
 					return observation.Report(ctx, 1, identity, "", "", func(_ context.Context, _ int64, registration store.WorkerProcessRegistration) error {
 						if update.Type != UpdateTurnCompleted {
