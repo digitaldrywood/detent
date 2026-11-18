@@ -48,14 +48,36 @@ func WithInput(ctx context.Context, dir string, env []string, fileOutput bool, i
 	return withInputCommand(ctx, dir, env, fileOutput, input, RunCommand, args...)
 }
 
-func withInputCommand(ctx context.Context, dir string, env []string, fileOutput bool, input string, run func(context.Context, *exec.Cmd) error, args ...string) (string, error) {
-	gitArgs := append([]string{"git", "-C", dir}, args...)
+func commandWithInput(ctx context.Context, dir, input string, args []string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git")
-	cmd.Args = gitArgs
+	cmd.Args = append([]string{"git", "-C", dir}, args...)
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}
 	cmd.WaitDelay = WaitDelay
+	return cmd
+}
+
+func OutputWithExactEnv(ctx context.Context, dir string, env []string, input string, args ...string) ([]byte, error) {
+	cmd := commandWithInput(ctx, dir, input, args)
+	cmd.Env = append([]string{}, env...)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil, exitErr
+		}
+		return nil, errors.New("git command could not run")
+	}
+	return output.Bytes(), nil
+}
+
+func withInputCommand(ctx context.Context, dir string, env []string, fileOutput bool, input string, run func(context.Context, *exec.Cmd) error, args ...string) (string, error) {
+	cmd := commandWithInput(ctx, dir, input, args)
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
 	}
@@ -108,7 +130,7 @@ func withInputCommand(ctx context.Context, dir string, env []string, fileOutput 
 
 	return "", &CommandError{
 		Command:  "git",
-		Args:     gitArgs[1:],
+		Args:     cmd.Args[1:],
 		ExitCode: exitCode,
 		Output:   string(output),
 		Err:      err,

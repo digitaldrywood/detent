@@ -42,14 +42,31 @@ var hostPaths = sync.OnceValues(func() (Paths, error) {
 	return paths, err
 })
 
+func goCommand(ctx context.Context, env []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "go")
+	cmd.Dir = os.TempDir()
+	cmd.Env = env
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
+func ToolTags(ctx context.Context, env []string) ([]string, error) {
+	cmd := goCommand(ctx, env)
+	cmd.Args = append(cmd.Args, "list", "-f", `{{join context.ToolTags " "}}`, "unsafe")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(out)), nil
+}
+
 func resolve(ctx context.Context) (Paths, error) {
 	paths := Paths{Build: os.Getenv("GOCACHE"), Modules: os.Getenv("GOMODCACHE")}
 	if paths.Build != "" && paths.Modules != "" {
 		return paths, nil
 	}
-	cmd := exec.CommandContext(ctx, "go", "env", "-json", "GOCACHE", "GOMODCACHE")
-	cmd.Dir = os.TempDir()
-	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	cmd := goCommand(ctx, append(os.Environ(), "GOTOOLCHAIN=local"))
+	cmd.Args = append(cmd.Args, "env", "-json", "GOCACHE", "GOMODCACHE")
 	if output, err := cmd.Output(); err == nil {
 		var discovered Paths
 		if json.Unmarshal(output, &discovered) == nil {
