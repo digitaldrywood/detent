@@ -2262,14 +2262,11 @@ func ReapWorkerArtifactProcesses(ctx context.Context, root string, path string, 
 		return 0, err
 	}
 	if _, ok := workpath.WorkerScratchParent(root, path); ok {
-		return ReapProcesses(ctx, root, grace)
+		return ReapProcesses(ctx, path, grace)
 	}
 	path, err = validateWorkspacePath(root, path)
 	if err != nil {
 		return 0, err
-	}
-	if path == filepath.Join(root, ".detent", "tmp") {
-		path = root
 	}
 	return ReapProcesses(ctx, path, grace)
 }
