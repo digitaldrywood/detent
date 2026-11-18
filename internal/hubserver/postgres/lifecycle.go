@@ -77,6 +77,7 @@ func nativeConfig(connection pgtransport.Connection, role string) (*pgxpool.Conf
 }
 
 func openPool(connection pgtransport.Connection, role string) (*sql.DB, error) {
+	connection.DefaultQueryExecMode = "exec"
 	config, err := nativeConfig(connection, role)
 	if err != nil {
 		return nil, err

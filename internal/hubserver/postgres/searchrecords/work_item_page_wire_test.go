@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 )
 
 type pageWireCounts struct {
@@ -45,6 +46,7 @@ func (c *pageWireCounts) checkout() (int, int) {
 }
 
 type pageWireConn struct {
+	trace pgtest.FrontendTrace
 	net.Conn
 	counts  *pageWireCounts
 	pending []byte
@@ -75,15 +77,9 @@ func (c *pageWireConn) Write(data []byte) (int, error) {
 			break
 		}
 		c.counts.mu.Lock()
-		switch c.pending[0] {
-		case 'P':
-			c.counts.statements++
-		case 'Q':
-			c.counts.statements++
-			c.counts.exchanges++
-		case 'S':
-			c.counts.exchanges++
-		}
+		cost := c.trace.Count(c.pending[:size])
+		c.counts.statements += cost.Statements
+		c.counts.exchanges += cost.ExecutionExchanges
 		c.counts.mu.Unlock()
 		c.pending = c.pending[size:]
 	}

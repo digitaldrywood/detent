@@ -52,6 +52,7 @@ type providerWireCounts struct {
 }
 
 type providerWireConn struct {
+	trace pgtest.FrontendTrace
 	net.Conn
 	counts  *providerWireCounts
 	pending []byte
@@ -76,15 +77,9 @@ func (c *providerWireConn) Write(value []byte) (int, error) {
 		if c.startup {
 			c.startup = false
 		} else {
-			switch c.pending[0] {
-			case 'E':
-				c.counts.statements.Add(1)
-			case 'S':
-				c.counts.exchanges.Add(1)
-			case 'Q':
-				c.counts.statements.Add(1)
-				c.counts.exchanges.Add(1)
-			}
+			cost := c.trace.Count(c.pending[:size])
+			c.counts.statements.Add(int64(cost.Statements))
+			c.counts.exchanges.Add(int64(cost.ExecutionExchanges))
 		}
 		c.pending = c.pending[size:]
 	}

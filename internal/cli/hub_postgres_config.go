@@ -22,6 +22,7 @@ type hubPostgresFileConfig struct {
 	User                  string `yaml:"user"`
 	PasswordEnv           string `yaml:"password_env"`
 	SSLMode               string `yaml:"sslmode"`
+	DefaultQueryExecMode  string `yaml:"default_query_exec_mode,omitempty"`
 	MaxConnections        int    `yaml:"max_connections"`
 	ServingConnections    int    `yaml:"serving_connections"`
 	BackgroundConnections int    `yaml:"background_connections"`
@@ -35,7 +36,7 @@ func (c *hubPostgresFileConfig) runtime(lookupEnv func(string) string) (*postgre
 		return nil, errors.New("postgres runtime configuration is incomplete or invalid")
 	}
 	return &postgres.Config{
-		Connection: pgtransport.Connection{Host: c.Host, Port: uint16(c.Port), Database: c.Database, User: c.User, Password: lookupEnv(c.PasswordEnv), SSLMode: c.SSLMode},
+		Connection: pgtransport.Connection{Host: c.Host, Port: uint16(c.Port), Database: c.Database, User: c.User, Password: lookupEnv(c.PasswordEnv), SSLMode: c.SSLMode, DefaultQueryExecMode: c.DefaultQueryExecMode},
 		Pool:       postgres.PoolConfig{MaxConnections: c.MaxConnections, ServingConnections: c.ServingConnections, BackgroundConnections: c.BackgroundConnections},
 	}, nil
 }
@@ -69,9 +70,7 @@ func readHubServeConfig(path string, lookupEnv func(string) string) (_ *hostedpl
 	}
 	fields := document.Content[0].Content
 	if len(fields) == 2 && fields[0].Kind == yaml.ScalarNode && fields[0].Value == "postgres" {
-		var config struct {
-			Postgres *hubPostgresFileConfig `yaml:"postgres"`
-		}
+		var config hostedFileConfig
 		decoder := yaml.NewDecoder(bytes.NewReader(data))
 		decoder.KnownFields(true)
 		if err := decoder.Decode(&config); err != nil {

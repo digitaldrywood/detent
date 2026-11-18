@@ -106,7 +106,7 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 			details.beforeRead = func(context.Context) error { objects++; return nil }
 			f.use(measured)
 			durations := make([]time.Duration, 0, samples)
-			for range samples {
+			for sample := range samples {
 				started := time.Now()
 				wire.Reset()
 				response := f.request(t, fixture)
@@ -121,6 +121,13 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 					t.Errorf("workflow state flags or ordered transitions changed: %+v", result.States)
 				}
 				t.Logf("tenant=%s size=%d statements=%d exchanges=%d objects=%d", organization, size, statements, exchanges, objects)
+				wantPrepares := 0
+				if organization == "org_first" && size == 2 && sample == 0 {
+					wantPrepares = 6
+				}
+				if got := wire.FirstPrepareExchanges(); got != wantPrepares {
+					t.Errorf("first-use preparation exchanges=%d, want %d", got, wantPrepares)
+				}
 				if statements != 21 || exchanges != 15 {
 					t.Errorf("wire budget: statements=%d exchanges=%d", statements, exchanges)
 				}

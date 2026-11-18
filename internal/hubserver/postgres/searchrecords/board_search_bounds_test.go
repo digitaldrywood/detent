@@ -274,13 +274,37 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 		if !timedOut(err) || errors.Is(err, searchstore.ErrBusy) {
 			t.Fatalf("caller deadline error=%v, want a timeout that is not a busy search", err)
 		}
+		queryCtx, cancelQuery := context.WithCancel(ctx)
+		backend := make(chan uint32, 1)
 		finished := make(chan error, 1)
 		go func() {
-			finished <- patient.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.BoardPage(ctx, selection); return err })
+			defer close(finished)
+			defer close(backend)
+			finished <- patient.ReadTenant(queryCtx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+				backend <- trace.conn.PgConn().PID()
+				_, err := r.BoardPage(queryCtx, selection)
+				return err
+			})
 		}()
+		defer func() {
+			cancelQuery()
+			<-finished
+		}()
+		pid, ok := <-backend
+		if !ok {
+			t.Fatalf("search transaction did not start: %v", <-finished)
+		}
 		testenv.WaitUntil(t, ctx, func() error {
+			select {
+			case err := <-finished:
+				t.Fatalf("search ended before administrative cancellation: %v", err)
+			default:
+			}
 			var cancelled bool
-			if err := blocker.QueryRowContext(ctx, `SELECT coalesce(bool_or(pg_cancel_backend(pid)),false) FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%FROM native_work_item_search%'`).Scan(&cancelled); err != nil {
+			if err := blocker.QueryRowContext(ctx, `SELECT coalesce(bool_or(pg_cancel_backend(pid)),false)
+FROM pg_locks
+WHERE pid=$1 AND relation='native_work_item_search'::regclass AND NOT granted
+AND pg_backend_pid()=ANY(pg_blocking_pids(pid))`, pid).Scan(&cancelled); err != nil {
 				return err
 			}
 			if !cancelled {

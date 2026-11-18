@@ -182,6 +182,35 @@ func TestBoardViewReturnsLinksInBoundedRows(t *testing.T) {
 	}
 }
 
+func TestBoardPreparedStatementReuse(t *testing.T) {
+	t.Parallel()
+	admin := pgstoretest.Template.Database(t)
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
+	tx := pgstoretest.TenantTx(t, runtime, pool, "org_example")
+	query := boardviewsql.Statement(false)
+	args := []any{"org_example", []string{"prj_example"}, []string{"prj_example"}, "", false, "credential", "principal", "member", 2, []string{}, false, viewstore.LanesOpen, nil, "", false, []string{}, []string{}}
+	var first time.Time
+	for i := 1; i <= 2; i++ {
+		rows, err := tx.Query(t.Context(), query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := boardviewsql.Scan(rows); err != nil {
+			t.Fatal(err)
+		}
+		var prepared time.Time
+		var uses int
+		if err := tx.QueryRow(t.Context(), `SELECT prepare_time,generic_plans+custom_plans FROM pg_prepared_statements WHERE statement=$1`, query).Scan(&prepared, &uses); err != nil {
+			t.Fatal(err)
+		}
+		if uses != i || i > 1 && !first.Equal(prepared) {
+			t.Fatalf("board execution %d used plan prepared at %s (%d uses, first prepared at %s)", i, prepared, uses, first)
+		}
+		first = prepared
+	}
+}
+
 type boardViewAggregatedRow struct {
 	kind     string
 	elements int

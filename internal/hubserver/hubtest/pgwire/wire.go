@@ -18,14 +18,15 @@ import (
 )
 
 type Wire struct {
-	mu                    sync.Mutex
-	enabled               bool
-	exchanges, statements int
-	Delay                 time.Duration
-	PingEveryAcquire      bool
+	mu                                  sync.Mutex
+	enabled                             bool
+	exchanges, statements, preparations int
+	Delay                               time.Duration
+	PingEveryAcquire                    bool
 }
 
 type wireConn struct {
+	trace pgtest.FrontendTrace
 	net.Conn
 	wire              *Wire
 	frontend, backend []byte
@@ -59,17 +60,12 @@ func (c *wireConn) Write(value []byte) (int, error) {
 		if len(c.frontend) < size {
 			break
 		}
+		cost := c.trace.Count(c.frontend[:size])
 		c.wire.mu.Lock()
 		if c.wire.enabled {
-			switch c.frontend[0] {
-			case 'S':
-				c.wire.exchanges++
-			case 'Q':
-				c.wire.exchanges++
-				c.wire.statements++
-			case 'E':
-				c.wire.statements++
-			}
+			c.wire.exchanges += cost.ExecutionExchanges
+			c.wire.preparations += cost.FirstPrepareExchanges
+			c.wire.statements += cost.Statements
 		}
 		c.wire.mu.Unlock()
 		c.frontend = c.frontend[size:]
@@ -103,8 +99,13 @@ func (c *wireConn) Read(value []byte) (int, error) {
 func (w *Wire) Reset() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.exchanges, w.statements = 0, 0
+	w.exchanges, w.statements, w.preparations = 0, 0, 0
 	w.enabled = true
+}
+func (w *Wire) FirstPrepareExchanges() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.preparations
 }
 func (w *Wire) Stop() (int, int) {
 	w.mu.Lock()

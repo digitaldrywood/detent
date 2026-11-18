@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 )
 
 type heartbeatWire struct {
@@ -23,6 +23,7 @@ type heartbeatWire struct {
 	statements, exchanges, transactions int
 }
 type heartbeatConn struct {
+	trace pgtest.FrontendTrace
 	net.Conn
 	wire    *heartbeatWire
 	pending []byte
@@ -48,19 +49,10 @@ func (c *heartbeatConn) Write(value []byte) (int, error) {
 			c.startup = false
 		} else {
 			c.wire.Lock()
-			switch c.pending[0] {
-			case 'P':
-				if len(c.pending) > 6 && strings.HasPrefix(string(c.pending[6:]), "BEGIN ") {
-					c.wire.transactions++
-				}
-			case 'E':
-				c.wire.statements++
-			case 'S':
-				c.wire.exchanges++
-			case 'Q':
-				c.wire.statements++
-				c.wire.exchanges++
-			}
+			cost := c.trace.Count(c.pending[:size])
+			c.wire.statements += cost.Statements
+			c.wire.exchanges += cost.ExecutionExchanges
+			c.wire.transactions += cost.Transactions
 			c.wire.Unlock()
 		}
 		c.pending = c.pending[size:]

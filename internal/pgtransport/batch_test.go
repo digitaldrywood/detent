@@ -91,40 +91,58 @@ func TestInitialWorkOneExchange(t *testing.T) {
 		}
 		return &countedConn{Conn: conn, counts: counts, startup: true}, nil
 	}
-	pools := openPools(t, config, nil)
-	for _, tenant := range []tracker.OrganizationID{"first", "second"} {
-		counts.reset()
-		work := &pgx.Batch{}
-		work.Queue(`SELECT tenant FROM protected WHERE id=$1`, "same")
-		work.Queue(`SELECT count(*) FROM protected`)
-		tx, results, err := pools.BeginBatch(t.Context(), pgtransport.Scope{Organization: tenant}, pgtransport.Options{ReadOnly: true}, work)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(t.Context())
-		var got string
-		var rows int
-		if err := results.QueryRow().Scan(&got); err != nil {
-			t.Fatal(err)
-		}
-		if err := results.QueryRow().Scan(&rows); err != nil {
-			t.Fatal(err)
-		}
-		if err := results.Close(); err != nil {
-			t.Fatal(err)
-		}
-		syncs, queries, parses, executes := counts.counts()
-		if got != string(tenant) || rows != 1 || syncs != 1 || queries != 0 || parses != 4 || executes != 4 {
-			t.Fatalf("tenant=%s rows=%d Sync=%d Q=%d Parse=%d Execute=%d", got, rows, syncs, queries, parses, executes)
-		}
-		if err := tx.Commit(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		syncs, queries, _, _ = counts.counts()
-		if syncs+queries != 2 {
-			t.Fatalf("full exchanges=%d", syncs+queries)
-		}
-		t.Logf("tenant=%s BEGIN+bind+two protected reads: statements=4 exchanges=1; including COMMIT: statements=5 exchanges=2", tenant)
+	for _, name := range []string{"first connection", "second connection"} {
+		t.Run(name, func(t *testing.T) {
+			pools := openPools(t, config, nil)
+			const all = `SELECT count(*) FROM protected`
+			const ids = `SELECT count(id) FROM protected`
+			for _, test := range []struct {
+				name          string
+				tenant        tracker.OrganizationID
+				countSQL      string
+				syncs, parses int
+			}{
+				{"cold batch", "first", all, 2, 4},
+				{"warm batch", "second", all, 1, 0},
+				{"one new statement", "first", ids, 2, 1},
+				{"reused new statement", "second", ids, 1, 0},
+				{"reused original batch", "first", all, 1, 0},
+			} {
+				tenant := test.tenant
+				counts.reset()
+				work := &pgx.Batch{}
+				work.Queue(`SELECT tenant FROM protected WHERE id=$1`, "same")
+				work.Queue(test.countSQL)
+				tx, results, err := pools.BeginBatch(t.Context(), pgtransport.Scope{Organization: tenant}, pgtransport.Options{ReadOnly: true}, work)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(t.Context())
+				var got string
+				var rows int
+				if err := results.QueryRow().Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+				if err := results.QueryRow().Scan(&rows); err != nil {
+					t.Fatal(err)
+				}
+				if err := results.Close(); err != nil {
+					t.Fatal(err)
+				}
+				syncs, queries, parses, executes := counts.counts()
+				t.Logf("%s: exchanges=%d parses=%d executions=%d", test.name, syncs+queries, parses, executes)
+				if got != string(tenant) || rows != 1 || syncs != test.syncs || queries != 0 || parses != test.parses || executes != 4 {
+					t.Fatalf("%s: tenant=%s rows=%d Sync=%d Q=%d Parse=%d Execute=%d", test.name, got, rows, syncs, queries, parses, executes)
+				}
+				if err := tx.Commit(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				syncs, queries, _, _ = counts.counts()
+				if syncs+queries != test.syncs+1 {
+					t.Fatalf("%s: full exchanges=%d, want %d", test.name, syncs+queries, test.syncs+1)
+				}
+			}
+		})
 	}
 }
 func TestCancellationDuringProtectedRead(t *testing.T) {

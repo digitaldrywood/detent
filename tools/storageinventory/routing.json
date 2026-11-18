@@ -20390,7 +20390,7 @@
       ],
       "inventory": {
         "operations": {
-          "ParseConnection:Query": 2
+          "ParseConnection:Query": 1
         },
         "tables": []
       }

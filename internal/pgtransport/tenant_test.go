@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/goleak"
 
@@ -120,6 +121,86 @@ func TestTenantBinding(t *testing.T) {
 		t.Fatalf("unbound rows=%d err=%v", count, err)
 	}
 }
+func TestTenantPreparedPlan(t *testing.T) {
+	for _, mode := range []string{"direct", "pooler"} {
+		t.Run(mode, func(t *testing.T) {
+			_, config := fixture(t)
+			if mode == "pooler" {
+				config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+			}
+			pools := openPools(t, config, nil)
+			const read = `SELECT pg_backend_pid(), array_agg(tenant ORDER BY tenant) FROM protected WHERE id=$1`
+			var backend int
+			for i, tenant := range []string{"first", "second", "first"} {
+				tx, err := pools.Begin(t.Context(), pgtransport.Scope{Organization: tracker.OrganizationID(tenant)}, pgtransport.Options{ReadOnly: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(t.Context())
+				if _, err := tx.Exec(t.Context(), "SET LOCAL plan_cache_mode=force_generic_plan"); err != nil {
+					t.Fatal(err)
+				}
+				var pid int
+				var tenants []string
+				if err := tx.QueryRow(t.Context(), read, "same").Scan(&pid, &tenants); err != nil {
+					t.Fatal(err)
+				}
+				if len(tenants) != 1 || tenants[0] != tenant || i > 0 && pid != backend {
+					t.Fatalf("tenant %s saw %v on backend %d (previous %d)", tenant, tenants, pid, backend)
+				}
+				backend = pid
+				var executions int
+				if err := tx.QueryRow(t.Context(), `SELECT coalesce(sum(generic_plans),0)::int FROM pg_prepared_statements WHERE statement=$1`, read).Scan(&executions); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "direct" && executions != i+1 || mode == "pooler" && executions != 0 {
+					t.Fatalf("generic plan uses=%d after %d calls", executions, i+1)
+				}
+				if err := tx.Commit(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestReadAfterColumnTypeChange(t *testing.T) {
+	admin, config := fixture(t)
+	pools := openPools(t, config, nil)
+	const read = `SELECT pg_backend_pid(), id FROM protected WHERE tenant=$1`
+	readCommitted := func() int {
+		t.Helper()
+		tx := begin(t, pools, pgtransport.Options{ReadOnly: true})
+		var pid int
+		var id string
+		if err := tx.QueryRow(t.Context(), read, "first").Scan(&pid, &id); err != nil || id != "same" {
+			t.Fatalf("id=%q err=%v", id, err)
+		}
+		if err := tx.Commit(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		return pid
+	}
+	before := readCommitted()
+	if _, err := admin.ExecContext(t.Context(), `ALTER TABLE protected ALTER COLUMN id TYPE varchar(20)`); err != nil {
+		t.Fatal(err)
+	}
+	tx := begin(t, pools, pgtransport.Options{ReadOnly: true})
+	var pid int
+	var id string
+	err := tx.QueryRow(t.Context(), read, "first").Scan(&pid, &id)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "0A000" || pgErr.Message != "cached plan must not change result type" {
+		t.Fatalf("first read after type change: %v", err)
+	}
+	if err := tx.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if after := readCommitted(); after != before {
+		t.Fatalf("read used backend %d after invalidation, want %d", after, before)
+	}
+}
+
 func TestCommitRejectsAbortedTransaction(t *testing.T) {
 	_, config := fixture(t)
 	pools := openPools(t, config, nil)

@@ -40,7 +40,9 @@ func TestExplicitConnectionAuthority(t *testing.T) {
 	}{
 		{"explicit", "", true, "verify-full"},
 		{"direct TLS", "&sslnegotiation=direct&sslrootcert=system", true, "verify-full"},
-		{"cached mode overridden", "&default_query_exec_mode=cache_statement&statement_cache_capacity=200", true, "verify-full"},
+		{"fixed cache bound", "&default_query_exec_mode=cache_statement&statement_cache_capacity=200", true, "verify-full"},
+		{"pooler", "&default_query_exec_mode=exec", true, "verify-full"},
+		{"invalid execution mode", "&default_query_exec_mode=simple_protocol", false, "verify-full"},
 		{"passfile", "&passfile=/example/credentials", false, "verify-full"},
 		{"service", "&service=example", false, "verify-full"},
 		{"session options", "&options=-c%20role%3Dother", false, "verify-full"},
@@ -65,7 +67,11 @@ func TestExplicitConnectionAuthority(t *testing.T) {
 				}
 				return
 			}
-			if config.ConnConfig.DefaultQueryExecMode != pgx.QueryExecModeExec || config.ConnConfig.StatementCacheCapacity != 0 || config.ConnConfig.DescriptionCacheCapacity != 0 {
+			mode, capacity := pgx.QueryExecModeCacheStatement, 256
+			if test.name == "pooler" {
+				mode, capacity = pgx.QueryExecModeExec, 0
+			}
+			if config.ConnConfig.DefaultQueryExecMode != mode || config.ConnConfig.StatementCacheCapacity != capacity || config.ConnConfig.DescriptionCacheCapacity != 0 {
 				t.Fatal("native execution is not enforced")
 			}
 			if config.ConnConfig.Password != "fixture" || config.ConnConfig.User != "example" || config.ConnConfig.Port != 6432 {

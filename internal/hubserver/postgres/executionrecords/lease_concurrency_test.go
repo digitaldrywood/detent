@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -540,6 +541,7 @@ func TestLeaseMutationStatementBudget(t *testing.T) {
 }
 
 type leaseWireConn struct {
+	trace pgtest.FrontendTrace
 	net.Conn
 	exchanges *atomic.Int64
 	pending   []byte
@@ -569,9 +571,8 @@ func (c *leaseWireConn) Write(value []byte) (int, error) {
 		if len(c.pending) < size {
 			break
 		}
-		if c.pending[0] == 'S' || c.pending[0] == 'Q' {
-			c.exchanges.Add(1)
-		}
+		cost := c.trace.Count(c.pending[:size])
+		c.exchanges.Add(int64(cost.ExecutionExchanges))
 		c.pending = c.pending[size:]
 	}
 	return n, err

@@ -12,12 +12,13 @@ import (
 )
 
 type Connection struct {
-	Host     string
-	Port     uint16
-	Database string
-	User     string
-	Password string
-	SSLMode  string
+	Host                 string
+	Port                 uint16
+	Database             string
+	User                 string
+	Password             string
+	SSLMode              string
+	DefaultQueryExecMode string
 }
 
 var ErrConnectionConfig = errors.New("PostgreSQL requires explicit connection settings without credential discovery")
@@ -34,6 +35,9 @@ func (c Connection) PoolConfig() (*pgxpool.Config, error) {
 	}
 	u := &url.URL{Scheme: "postgres", Host: net.JoinHostPort(c.Host, strconv.Itoa(int(c.Port))), Path: "/" + c.Database, User: url.UserPassword(c.User, c.Password)}
 	query := url.Values{"sslmode": {c.SSLMode}, "passfile": {os.DevNull}, "sslcert": {""}, "sslkey": {""}, "sslrootcert": {""}}
+	if c.DefaultQueryExecMode != "" {
+		query.Set("default_query_exec_mode", c.DefaultQueryExecMode)
+	}
 	if strings.HasPrefix(c.Host, "/") {
 		u.Host = net.JoinHostPort("127.0.0.1", strconv.Itoa(int(c.Port)))
 		query.Set("host", c.Host)
@@ -53,15 +57,16 @@ func ParseConnection(dsn string) (Connection, error) {
 		return Connection{}, ErrConnectionConfig
 	}
 	password, _ := u.User.Password()
+	query := u.Query()
 	host := u.Hostname()
-	if socket := u.Query().Get("host"); socket != "" {
+	if socket := query.Get("host"); socket != "" {
 		host = socket
 	}
-	mode := u.Query().Get("sslmode")
+	mode := query.Get("sslmode")
 	if mode == "" {
 		mode = "disable"
 	}
-	return Connection{Host: host, Port: uint16(port), User: u.User.Username(), Password: password, Database: strings.TrimPrefix(u.Path, "/"), SSLMode: mode}, nil
+	return Connection{Host: host, Port: uint16(port), User: u.User.Username(), Password: password, Database: strings.TrimPrefix(u.Path, "/"), SSLMode: mode, DefaultQueryExecMode: query.Get("default_query_exec_mode")}, nil
 }
 
 func ParsePoolConfig(dsn string) (*pgxpool.Config, error) {
@@ -92,6 +97,11 @@ func ParsePoolConfig(dsn string) (*pgxpool.Config, error) {
 		if !allowed[key] || len(values) != 1 {
 			return nil, ErrConnectionConfig
 		}
+	}
+	switch query.Get("default_query_exec_mode") {
+	case "", "exec", "cache_statement":
+	default:
+		return nil, ErrConnectionConfig
 	}
 	if file := query.Get("passfile"); file != "" && file != os.DevNull {
 		return nil, ErrConnectionConfig

@@ -66,8 +66,8 @@ func TestCloudTenantConfigurationSelectsPostgresRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "private-database-password") || !strings.Contains(string(raw), "password_env: TENANT_DATABASE_PASSWORD") {
-		t.Fatalf("generated hosted configuration contains an invalid secret reference: %s", raw)
+	if strings.Contains(string(raw), "private-database-password") || strings.Contains(string(raw), "default_query_exec_mode") || !strings.Contains(string(raw), "password_env: TENANT_DATABASE_PASSWORD") {
+		t.Fatalf("generated hosted configuration has unexpected PostgreSQL settings: %s", raw)
 	}
 	values := map[string]string{"WORKOS_API_KEY": "workos-fixture", "TENANT_DATABASE_PASSWORD": "private-database-password"}
 	hosted, err := parseHostedConfig(bytes.NewReader(raw), func(name string) string { return values[name] })

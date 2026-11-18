@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 )
 
 type attemptWireCounts struct {
@@ -20,6 +21,7 @@ type attemptWireCounts struct {
 }
 
 type attemptWireConn struct {
+	trace pgtest.FrontendTrace
 	net.Conn
 	counts  *attemptWireCounts
 	pending []byte
@@ -43,15 +45,9 @@ func (c *attemptWireConn) Write(value []byte) (int, error) {
 		if len(c.pending) < size {
 			break
 		}
-		switch c.pending[0] {
-		case 'S':
-			c.counts.exchanges.Add(1)
-		case 'Q':
-			c.counts.exchanges.Add(1)
-			c.counts.statements.Add(1)
-		case 'E':
-			c.counts.statements.Add(1)
-		}
+		cost := c.trace.Count(c.pending[:size])
+		c.counts.statements.Add(int64(cost.Statements))
+		c.counts.exchanges.Add(int64(cost.ExecutionExchanges))
 		c.pending = c.pending[size:]
 	}
 	return n, err
