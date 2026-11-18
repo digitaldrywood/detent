@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/labstack/echo/v4"
@@ -23,8 +24,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -35,7 +38,10 @@ import (
 
 func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing.T) {
 	t.Parallel()
-	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	admin := hubtest.Database(t)
+	repository := hubtest.RepositoryOn(t, admin, hubtest.WithMaxConnections(3), hubtest.WithPoolConfig(func(config *pgxpool.Config) {
+		config.ConnConfig.Tracer = runtimeHistoryTrace{}
+	}))
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	base := now.Add(-time.Hour)
 	observed := now
@@ -329,7 +335,48 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 	if !interrupted {
 		t.Fatal("expired running attempt did not report interruption")
 	}
+	eventWork := func(org tracker.OrganizationID) float64 {
+		t.Helper()
+		reader := &Service{database: service.database, config: service.config}
+		reader.config.Hosted = &HostedConfig{OrganizationID: string(org), Provider: provider}
+		capture := &runtimeHistoryTraceCapture{}
+		ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
+		report, err := reader.readActivityReport(ctx, credential, operatortool.ActivityRequest{ProjectID: "project_1", Limit: 100}, window)
+		if err != nil || len(report.Finished) != 2 {
+			t.Fatalf("%s activity finished=%d error=%v", org, len(report.Finished), err)
+		}
+		var work float64
+		for _, statement := range capture.statements {
+			if !strings.Contains(statement.query, "collaboration_events") {
+				continue
+			}
+			raw, err := pgstoretest.ExplainReportPlan(ctx, admin, string(org), pgstoretest.ReportStatement{Query: statement.query, Args: statement.args})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var plans []struct{ Plan pgstoretest.SearchPlanNode }
+			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+				t.Fatalf("activity event plan=%s error=%v", raw, err)
+			}
+			work += plans[0].Plan.RelationWork("collaboration_events")
+		}
+		if work == 0 {
+			t.Fatal("no Activity event reads observed")
+		}
+		return work
+	}
+	firstBefore, secondBefore := eventWork("org_first"), eventWork("org_second")
 	assertActivityRunLookupBounded(t, admin)
+	for _, test := range []struct {
+		organization tracker.OrganizationID
+		before       float64
+	}{{"org_first", firstBefore}, {"org_second", secondBefore}} {
+		after := eventWork(test.organization)
+		t.Logf("%s Activity event rows before and after adding 8000 events to org_first: %.0f -> %.0f", test.organization, test.before, after)
+		if after > pgstoretest.ReportRequestBudgets["activity"].Ceiling(2) {
+			t.Errorf("two-issue Activity request examined %.0f event rows", after)
+		}
+	}
 	assertActivityRunLookupFailsClosed(t, admin)
 }
 
