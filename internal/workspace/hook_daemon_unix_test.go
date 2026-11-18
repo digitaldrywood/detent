@@ -5,7 +5,9 @@ package workspace
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -74,6 +76,90 @@ func TestHookDaemonWorkspaceTeardown(t *testing.T) {
 			}
 			if daemon.Alive(t) {
 				t.Fatal("detached service still holds its lock after teardown")
+			}
+		})
+	}
+}
+
+func TestCheckoutRemovalPreservesForeignProcesses(t *testing.T) {
+	for _, kind := range []string{"filesystem", "local git"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			useRealProcessScan(t, root)
+			service := workspacetest.DetachedHook(t)
+			hooks := Hooks{AfterCreate: service.Command}
+			var backend interface {
+				IssueCleaner
+				Create(context.Context, Issue) (Info, error)
+			}
+			var err error
+			if kind == "filesystem" {
+				backend, err = NewFilesystem(FilesystemOptions{Root: root, Hooks: hooks})
+			} else {
+				backend, err = NewLocalGit(LocalGitOptions{Root: root, SourceRoot: initSourceRepo(t), AutoBranch: true, Hooks: hooks})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, finish := WithHookProcesses(t.Context())
+			t.Cleanup(func() {
+				if err := finish(); err != nil {
+					t.Error(err)
+				}
+			})
+			issue := Issue{Identifier: "EXAMPLE-1"}
+			info, err := backend.Create(ctx, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind == "local git" {
+				issue.Terminal = true
+				issue.LandedHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			}
+			other := workspacetest.DetachedHook(t)
+			otherBackend, err := NewFilesystem(FilesystemOptions{Root: root, Hooks: Hooks{AfterCreate: "TEST_HOOK_CWD=" + shellQuote(info.Path) + " " + other.Command}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherCtx, stopOther := WithHookProcesses(t.Context())
+			t.Cleanup(func() {
+				if err := stopOther(); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := otherBackend.Create(otherCtx, Issue{Identifier: "EXAMPLE-2"}); err != nil {
+				t.Fatal(err)
+			}
+			shell := exec.Command("sh", "-c", `read -r reply && test "$reply" = alive`)
+			shell.Dir = info.Path
+			shell.Env = []string{"PATH=/usr/bin:/bin"}
+			input, err := shell.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := shell.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				input.Close()
+				if shell.ProcessState == nil {
+					_ = shell.Wait()
+				}
+			})
+			result, err := backend.CleanupIssue(ctx, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Worktrees != 1 || service.Alive(t) {
+				t.Fatalf("retirement = %+v, service alive = %t", result, service.Alive(t))
+			}
+			if _, err := os.Stat(info.Path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("workspace after removal: %v", err)
+			}
+			other.Request(t)
+			_, writeErr := io.WriteString(input, "alive\n")
+			if err := errors.Join(writeErr, shell.Wait()); err != nil {
+				t.Fatalf("unmarked shell in retired checkout: %v", err)
 			}
 		})
 	}
