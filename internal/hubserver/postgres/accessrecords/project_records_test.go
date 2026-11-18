@@ -1,6 +1,7 @@
 package accessrecords_test
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -21,11 +22,12 @@ import (
 
 func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
 	admin := pgstoretest.Template.Database(t)
-	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
 	records := make(map[tracker.OrganizationID]projectstore.Record)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		states[1].OperatorOnly = org == "org_second"
 		err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := pgstoretest.SeedCoreOrganization(ctx, w, org); err != nil {
 				return err
@@ -49,6 +51,47 @@ func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	trace := &pgstoretest.ProjectWorkflowTrace{}
+	traced, err := postgres.NewRepository(ctx, pgstoretest.TracedFeaturePool(t, pool, trace), pgstoretest.SmallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := traced.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	readScope := traced.WithProjectWorkflows(ctx)
+	verify := func(scope context.Context, org tracker.OrganizationID, want projectstore.Record, hydrations int64) {
+		t.Helper()
+		before, rows, metas := trace.Calls.Load(), trace.Rows.Load(), trace.Metadata.Load()
+		if err := traced.ReadTenant(scope, org, corestore.Background, func(r tenantstore.Reader) error {
+			got, err := r.ProjectRecord(scope, "shared")
+			if err != nil {
+				return err
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s workflow = %+v, want %+v", org, got, want)
+			}
+			got.States[0].Transitions[0] = "modified by caller"
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if hydrations == 0 && trace.Metadata.Load()-metas != 1 {
+			t.Errorf("%s unchanged workflow used %d metadata statements, want 1", org, trace.Metadata.Load()-metas)
+		}
+		if calls := trace.Calls.Load() - before; calls != hydrations {
+			t.Errorf("%s full workflow statements = %d (%d rows), want %d", org, calls, trace.Rows.Load()-rows, hydrations)
+		}
+	}
+	for pass := range 2 {
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			want := int64(1 - pass)
+			verify(readScope, org, records[org], want)
+		}
+	}
+	verify(traced.WithProjectWorkflows(ctx), "org_first", records["org_first"], 1)
 	first := records["org_first"]
 	first.Core.Name = "Updated"
 	first.Core.Slug = "updated"
@@ -64,7 +107,10 @@ func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
 	if first.Settings.Revision != 2 || first.Core.ContentSettingsRevision != 0 || first.Settings.ArchiveCompletedAfterDays == nil || *first.Settings.ArchiveCompletedAfterDays != 12 {
 		t.Fatalf("updated record=%+v", first)
 	}
-	err := repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+	verify(readScope, "org_first", first, 1)
+	verify(readScope, "org_first", first, 0)
+	verify(readScope, "org_second", records["org_second"], 0)
+	err = repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.UpdateProjectRecord(ctx, records["org_first"])
 		return err
 	})

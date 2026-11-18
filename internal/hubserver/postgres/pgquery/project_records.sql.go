@@ -13,6 +13,100 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const activeProjectAddressBySlug = `-- name: ActiveProjectAddressBySlug :one
+SELECT p.id,p.slug
+FROM project_slugs a JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id
+JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
+WHERE a.organization_id=$1 AND a.slug=$2 AND p.deleted_at IS NULL
+`
+
+type ActiveProjectAddressBySlugParams struct {
+	OrganizationID tracker.OrganizationID
+	Slug           string
+}
+
+type ActiveProjectAddressBySlugRow struct {
+	ID   tracker.ProjectID
+	Slug string
+}
+
+func (q *Queries) ActiveProjectAddressBySlug(ctx context.Context, arg ActiveProjectAddressBySlugParams) (ActiveProjectAddressBySlugRow, error) {
+	row := q.db.QueryRow(ctx, activeProjectAddressBySlug, arg.OrganizationID, arg.Slug)
+	var i ActiveProjectAddressBySlugRow
+	err := row.Scan(&i.ID, &i.Slug)
+	return i, err
+}
+
+const boundProjectMetadata = `-- name: BoundProjectMetadata :one
+SELECT p.organization_id, p.id, p.name, p.slug, p.profile, p.require_dependencies, p.scheduling_rank, p.content_settings_revision, p.workflow_source, p.workflow_source_revision, p.workflow_object_key, p.states_object_key, p.model_selection_object_key, p.created_at, p.deleted_at, p.duplicate_source_sequence,s.organization_id, s.project_id, s.revision, s.require_visual_attachments, s.model_revision, s.model_key, s.model_sha256, s.model_bytes, s.model_content_bytes, s.intake, s.projection, s.repository_enabled, s.repository, s.checkout_repository, s.aging_enabled, s.duplicate_challenge, s.archive_completed_after_days, s.archive_cancelled_after_days, s.workflow_key, s.workflow_sha256, s.workflow_bytes, s.workflow_content_bytes, s.icon_kind, s.icon_name, s.icon_color, s.icon_emoji, s.icon_image_key, s.icon_image_sha256, s.page_source_at, s.github_reconciliation_initialized
+FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
+WHERE p.organization_id=$1 AND p.id=$2 AND p.deleted_at IS NULL
+`
+
+type BoundProjectMetadataParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             tracker.ProjectID
+}
+
+type BoundProjectMetadataRow struct {
+	Project        Project
+	ProjectSetting ProjectSetting
+}
+
+func (q *Queries) BoundProjectMetadata(ctx context.Context, arg BoundProjectMetadataParams) (BoundProjectMetadataRow, error) {
+	row := q.db.QueryRow(ctx, boundProjectMetadata, arg.OrganizationID, arg.ID)
+	var i BoundProjectMetadataRow
+	err := row.Scan(
+		&i.Project.OrganizationID,
+		&i.Project.ID,
+		&i.Project.Name,
+		&i.Project.Slug,
+		&i.Project.Profile,
+		&i.Project.RequireDependencies,
+		&i.Project.SchedulingRank,
+		&i.Project.ContentSettingsRevision,
+		&i.Project.WorkflowSource,
+		&i.Project.WorkflowSourceRevision,
+		&i.Project.WorkflowObjectKey,
+		&i.Project.StatesObjectKey,
+		&i.Project.ModelSelectionObjectKey,
+		&i.Project.CreatedAt,
+		&i.Project.DeletedAt,
+		&i.Project.DuplicateSourceSequence,
+		&i.ProjectSetting.OrganizationID,
+		&i.ProjectSetting.ProjectID,
+		&i.ProjectSetting.Revision,
+		&i.ProjectSetting.RequireVisualAttachments,
+		&i.ProjectSetting.ModelRevision,
+		&i.ProjectSetting.ModelKey,
+		&i.ProjectSetting.ModelSha256,
+		&i.ProjectSetting.ModelBytes,
+		&i.ProjectSetting.ModelContentBytes,
+		&i.ProjectSetting.Intake,
+		&i.ProjectSetting.Projection,
+		&i.ProjectSetting.RepositoryEnabled,
+		&i.ProjectSetting.Repository,
+		&i.ProjectSetting.CheckoutRepository,
+		&i.ProjectSetting.AgingEnabled,
+		&i.ProjectSetting.DuplicateChallenge,
+		&i.ProjectSetting.ArchiveCompletedAfterDays,
+		&i.ProjectSetting.ArchiveCancelledAfterDays,
+		&i.ProjectSetting.WorkflowKey,
+		&i.ProjectSetting.WorkflowSha256,
+		&i.ProjectSetting.WorkflowBytes,
+		&i.ProjectSetting.WorkflowContentBytes,
+		&i.ProjectSetting.IconKind,
+		&i.ProjectSetting.IconName,
+		&i.ProjectSetting.IconColor,
+		&i.ProjectSetting.IconEmoji,
+		&i.ProjectSetting.IconImageKey,
+		&i.ProjectSetting.IconImageSha256,
+		&i.ProjectSetting.PageSourceAt,
+		&i.ProjectSetting.GithubReconciliationInitialized,
+	)
+	return i, err
+}
+
 const boundProjectRecord = `-- name: BoundProjectRecord :many
 SELECT p.organization_id, p.id, p.name, p.slug, p.profile, p.require_dependencies, p.scheduling_rank, p.content_settings_revision, p.workflow_source, p.workflow_source_revision, p.workflow_object_key, p.states_object_key, p.model_selection_object_key, p.created_at, p.deleted_at, p.duplicate_source_sequence,s.organization_id, s.project_id, s.revision, s.require_visual_attachments, s.model_revision, s.model_key, s.model_sha256, s.model_bytes, s.model_content_bytes, s.intake, s.projection, s.repository_enabled, s.repository, s.checkout_repository, s.aging_enabled, s.duplicate_challenge, s.archive_completed_after_days, s.archive_cancelled_after_days, s.workflow_key, s.workflow_sha256, s.workflow_bytes, s.workflow_content_bytes, s.icon_kind, s.icon_name, s.icon_color, s.icon_emoji, s.icon_image_key, s.icon_image_sha256, s.page_source_at, s.github_reconciliation_initialized,w.name AS state_name,COALESCE(w.terminal,false)::boolean AS state_terminal,COALESCE(w.dispatchable,false)::boolean AS state_dispatchable,COALESCE(w.operator_only,false)::boolean AS state_operator_only,t.target_name
 FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
@@ -107,6 +201,36 @@ func (q *Queries) BoundProjectRecord(ctx context.Context, arg BoundProjectRecord
 		return nil, err
 	}
 	return items, nil
+}
+
+const boundProjectVersion = `-- name: BoundProjectVersion :one
+SELECT p.slug,s.revision,p.content_settings_revision,s.model_revision
+FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
+WHERE p.organization_id=$1 AND p.id=$2 AND p.deleted_at IS NULL
+`
+
+type BoundProjectVersionParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             tracker.ProjectID
+}
+
+type BoundProjectVersionRow struct {
+	Slug                    string
+	Revision                int64
+	ContentSettingsRevision int64
+	ModelRevision           int64
+}
+
+func (q *Queries) BoundProjectVersion(ctx context.Context, arg BoundProjectVersionParams) (BoundProjectVersionRow, error) {
+	row := q.db.QueryRow(ctx, boundProjectVersion, arg.OrganizationID, arg.ID)
+	var i BoundProjectVersionRow
+	err := row.Scan(
+		&i.Slug,
+		&i.Revision,
+		&i.ContentSettingsRevision,
+		&i.ModelRevision,
+	)
+	return i, err
 }
 
 const createProjectSettings = `-- name: CreateProjectSettings :exec

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/projectreads"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -26,7 +28,8 @@ func (r *Repository) ReadBoardRequest(ctx context.Context, organization tracker.
 		return err
 	}
 	defer release()
-	s := &session{organization: organization, readOnly: true, searchBudget: r.searchBudget, projectGrants: map[projectAccessKey]accessstore.ProjectGrant{}, tokenGrants: map[projectAccessKey]accessstore.TokenGrant{}, projectRows: map[tracker.ProjectID][]pgquery.BoundProjectRecordRow{}, credentials: map[string]accessstore.Credential{}, members: map[string]accessstore.Member{}}
+	s := &session{projectReads: projectreads.New(ctx, r.pool, true), organization: organization, readOnly: true, searchBudget: r.searchBudget, projectGrants: map[projectAccessKey]accessstore.ProjectGrant{}, tokenGrants: map[projectAccessKey]accessstore.TokenGrant{}, credentials: map[string]accessstore.Credential{}, members: map[string]accessstore.Member{}}
+	s.projectReads.BeginSnapshot()
 	batch := &pgx.Batch{}
 	credential := accessstore.Credential{}
 	batch.Queue(`SELECT organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at,rotated_at,revoked_at,expires_at,last_used_at,hosted_user_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind FROM api_tokens WHERE organization_id=$1 AND id=$2`, organization, credentialID).QueryRow(func(row pgx.Row) error {

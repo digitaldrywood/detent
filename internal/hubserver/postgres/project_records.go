@@ -19,51 +19,22 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func projectSettings(row pgquery.ProjectSetting) projectstore.Settings {
-	result := projectstore.Settings{Icon: projecticon.Icon{Kind: row.IconKind, Name: row.IconName, Color: row.IconColor, Emoji: row.IconEmoji, ImageKey: row.IconImageKey, ImageSHA256: row.IconImageSha256}, OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, Revision: row.Revision, Intake: row.Intake, Projection: row.Projection, RepositoryEnabled: row.RepositoryEnabled, Repository: row.Repository, CheckoutRepository: row.CheckoutRepository, AgingEnabled: row.AgingEnabled, DuplicateChallenge: row.DuplicateChallenge, WorkflowKey: row.WorkflowKey, WorkflowSHA256: row.WorkflowSha256, WorkflowBytes: row.WorkflowBytes, WorkflowContentBytes: row.WorkflowContentBytes, RequireVisualAttachments: row.RequireVisualAttachments, ModelRevision: row.ModelRevision, ModelKey: row.ModelKey, ModelSHA256: row.ModelSha256, ModelBytes: row.ModelBytes, ModelContentBytes: row.ModelContentBytes}
-	if row.ArchiveCompletedAfterDays.Valid {
-		result.ArchiveCompletedAfterDays = new(row.ArchiveCompletedAfterDays.Int64)
-	}
-	if row.ArchiveCancelledAfterDays.Valid {
-		result.ArchiveCancelledAfterDays = new(row.ArchiveCancelledAfterDays.Int64)
-	}
-	return result
-}
-
 func (s *session) ProjectRecord(ctx context.Context, id tracker.ProjectID) (projectstore.Record, error) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
-	rows, found := s.projectRows[id]
-	if !found {
-		var err error
-		rows, err = s.queries.BoundProjectRecord(ctx, pgquery.BoundProjectRecordParams{OrganizationID: s.organization, ID: id})
-		if err != nil {
-			return projectstore.Record{}, mapError(ctx, err)
-		}
-		if s.projectRows != nil {
-			s.projectRows[id] = rows
-		}
-	}
-	if len(rows) == 0 {
-		return projectstore.Record{}, corestore.ErrNotFound
-	}
-	result := projectstore.Record{Core: project(rows[0].Project), Settings: projectSettings(rows[0].ProjectSetting), States: []tracker.NativeState{}}
-	positions := make(map[string]int)
-	for _, row := range rows {
-		if row.StateName == nil {
-			continue
-		}
-		i, found := positions[*row.StateName]
-		if !found {
-			i = len(result.States)
-			positions[*row.StateName] = i
-			result.States = append(result.States, tracker.NativeState{Name: *row.StateName, Terminal: row.StateTerminal, Dispatchable: row.StateDispatchable, OperatorOnly: row.StateOperatorOnly, Transitions: []string{}})
-		}
-		if row.TargetName != nil {
-			result.States[i].Transitions = append(result.States[i].Transitions, *row.TargetName)
-		}
-	}
-	return result, nil
+	return s.projectReads.Record(ctx, s.queries, s.organization, id)
+}
+
+func (s *session) ProjectVersion(ctx context.Context, id tracker.ProjectID) (projectstore.Version, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	return s.projectReads.Version(ctx, s.queries, s.organization, id)
+}
+
+func (s *session) ProjectMetadata(ctx context.Context, id tracker.ProjectID) (projectstore.Metadata, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	return s.projectReads.Metadata(ctx, s.queries, s.organization, id)
 }
 
 func (s *session) GitHubRepositoryBindings(ctx context.Context, after tracker.ProjectID, limit int) ([]projectstore.GitHubRepositoryBinding, error) {
@@ -93,6 +64,11 @@ ORDER BY p.id LIMIT $3`, s.organization, after, limit+1)
 func (s *session) ProjectSlugOwner(ctx context.Context, slug string) (tracker.ProjectID, error) {
 	id, err := s.queries.ResolveProjectSlug(ctx, pgquery.ResolveProjectSlugParams{OrganizationID: s.organization, Slug: slug})
 	return id, mapError(ctx, err)
+}
+
+func (s *session) ProjectAddressBySlug(ctx context.Context, slug string) (tracker.ProjectID, string, error) {
+	row, err := s.queries.ActiveProjectAddressBySlug(ctx, pgquery.ActiveProjectAddressBySlugParams{OrganizationID: s.organization, Slug: slug})
+	return row.ID, row.Slug, mapError(ctx, err)
 }
 
 func (s *session) ProjectBySlug(ctx context.Context, slug string) (projectstore.Record, error) {
@@ -366,11 +342,11 @@ func (s *session) UpdateProjectSlug(ctx context.Context, id tracker.ProjectID, e
 	if _, err := s.queries.LockActiveProject(ctx, pgquery.LockActiveProjectParams{OrganizationID: s.organization, ID: id}); err != nil {
 		return mapError(ctx, err)
 	}
-	record, err := s.ProjectRecord(ctx, id)
+	version, err := s.ProjectVersion(ctx, id)
 	if err != nil {
 		return err
 	}
-	if record.Core.Slug != expected {
+	if version.Slug != expected {
 		return corestore.ErrRevisionConflict
 	}
 	if err := s.reserveProjectSlug(ctx, id, slug); err != nil {

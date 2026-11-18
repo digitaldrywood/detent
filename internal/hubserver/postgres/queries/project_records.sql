@@ -6,6 +6,22 @@ LEFT JOIN project_workflow_transitions t ON t.organization_id=w.organization_id 
 WHERE p.organization_id=sqlc.arg(organization_id) AND p.id=sqlc.arg(id) AND p.deleted_at IS NULL
 ORDER BY w.board_rank,t.transition_rank;
 
+-- name: BoundProjectMetadata :one
+SELECT sqlc.embed(p),sqlc.embed(s)
+FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
+WHERE p.organization_id=sqlc.arg(organization_id) AND p.id=sqlc.arg(id) AND p.deleted_at IS NULL;
+
+-- name: BoundProjectVersion :one
+SELECT p.slug,s.revision,p.content_settings_revision,s.model_revision
+FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
+WHERE p.organization_id=sqlc.arg(organization_id) AND p.id=sqlc.arg(id) AND p.deleted_at IS NULL;
+
+-- name: ActiveProjectAddressBySlug :one
+SELECT p.id,p.slug
+FROM project_slugs a JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id
+JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
+WHERE a.organization_id=sqlc.arg(organization_id) AND a.slug=sqlc.arg(slug) AND p.deleted_at IS NULL;
+
 -- name: ResolveProjectSlug :one
 SELECT project_id FROM project_slugs WHERE organization_id=$1 AND slug=$2;
 

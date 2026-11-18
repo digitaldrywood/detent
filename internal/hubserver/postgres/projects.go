@@ -4,6 +4,8 @@ import (
 	"context"
 	"slices"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/projectreads"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -153,22 +155,4 @@ func (s *session) Projects(ctx context.Context, after tracker.ProjectID, limit i
 	return records, nil
 }
 
-func project(row pgquery.Project) corestore.Project {
-	return corestore.Project{
-		OrganizationID:          row.OrganizationID,
-		ID:                      row.ID,
-		Name:                    row.Name,
-		Slug:                    row.Slug,
-		Profile:                 row.Profile,
-		RequireDependencies:     row.RequireDependencies,
-		SchedulingRank:          row.SchedulingRank,
-		ContentSettingsRevision: row.ContentSettingsRevision,
-		WorkflowSource:          row.WorkflowSource,
-		WorkflowSourceRevision:  row.WorkflowSourceRevision,
-		WorkflowObjectKey:       row.WorkflowObjectKey,
-		StatesObjectKey:         row.StatesObjectKey,
-		ModelSelectionObjectKey: row.ModelSelectionObjectKey,
-		CreatedAt:               row.CreatedAt,
-		DeletedAt:               row.DeletedAt,
-	}
-}
+func project(row pgquery.Project) corestore.Project { return projectreads.Core(row) }
