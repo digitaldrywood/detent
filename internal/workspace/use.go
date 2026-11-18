@@ -2,7 +2,8 @@ package workspace
 
 import (
 	"context"
-	"sync"
+
+	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 )
 
 // Usage serializes a worker's workspace lifetime with background removal.
@@ -11,44 +12,11 @@ type Usage interface {
 	Use(context.Context, Issue) (func(), error)
 }
 
-type workspaceUses struct {
-	hooks map[string]map[*hookOwner]struct{}
-	mu    sync.Mutex
-	paths map[string]chan struct{}
-}
+type workspaceUses = hookproc.Registry
+type HookExitUnverifiedError = hookproc.HookExitUnverifiedError
 
-func (u *workspaceUses) permit(key string) chan struct{} {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.paths == nil {
-		u.paths = make(map[string]chan struct{})
-	}
-	permit := u.paths[key]
-	if permit == nil {
-		permit = make(chan struct{}, 1)
-		u.paths[key] = permit
-	}
-	return permit
-}
-
-func (u *workspaceUses) use(ctx context.Context, key string) (func(), error) {
-	permit := u.permit(key)
-	select {
-	case permit <- struct{}{}:
-		return func() { <-permit }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (u *workspaceUses) cleanup(key string) (func(), bool) {
-	permit := u.permit(key)
-	select {
-	case permit <- struct{}{}:
-		return func() { <-permit }, true
-	default:
-		return nil, false
-	}
+func WithHookProcesses(ctx context.Context) (context.Context, func() error) {
+	return hookproc.WithHookProcesses(ctx)
 }
 
 func (l *LocalGit) Use(ctx context.Context, issue Issue) (func(), error) {
@@ -56,7 +24,7 @@ func (l *LocalGit) Use(ctx context.Context, issue Issue) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	return l.uses.use(ctx, info.Path)
+	return l.uses.Use(ctx, info.Path)
 }
 
 func (f *Filesystem) Use(ctx context.Context, issue Issue) (func(), error) {
@@ -64,5 +32,5 @@ func (f *Filesystem) Use(ctx context.Context, issue Issue) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	return f.uses.use(ctx, info.Path)
+	return f.uses.Use(ctx, info.Path)
 }

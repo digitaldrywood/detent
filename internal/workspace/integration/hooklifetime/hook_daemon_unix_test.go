@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package workspace
+package hooklifetime_test
 
 import (
 	"context"
@@ -13,9 +13,13 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
+	"github.com/digitaldrywood/detent/internal/workspace/internal/gitfixture"
 	"github.com/digitaldrywood/detent/internal/workspace/workspacetest"
 )
+
+func TestMain(m *testing.M) { os.Exit(gitfixture.RunTests(m)) }
 
 func TestDetachedHookHelper(t *testing.T) { workspacetest.RunDetachedHook(t) }
 
@@ -28,22 +32,25 @@ func TestHookDaemonWorkspaceTeardown(t *testing.T) {
 			if mode == "failed creation quarantine" {
 				hook += "; echo evidence > evidence; exit 19"
 			}
-			source := initSourceRepo(t)
-			backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: source, AutoBranch: true, Hooks: Hooks{AfterCreate: hook}})
+			opts := workspace.LocalGitOptions{Root: t.TempDir(), SourceRoot: gitfixture.SourceRepo(t), AutoBranch: true, Hooks: workspace.Hooks{AfterCreate: hook}}
+			if mode == "failed removal hook" {
+				opts.Hooks.BeforeRemove = "exit 21"
+			}
+			backend, err := workspace.NewLocalGit(opts)
 			if err != nil {
 				t.Fatal(err)
 			}
 			ctx := t.Context()
-			issue := Issue{Identifier: "EXAMPLE-1"}
+			issue := workspace.Issue{Identifier: "EXAMPLE-1"}
 			info, err := backend.Create(ctx, issue)
 			switch mode {
 			case "failed creation quarantine":
-				var failure *HookError
+				var failure *workspace.HookError
 				if !errors.As(err, &failure) || failure.ExitCode != 19 {
 					t.Fatalf("create error = %v", err)
 				}
-				entries, _ := filepath.Glob(filepath.Join(backend.root, ".detent", "quarantine", "*", "evidence"))
-				if len(entries) != 1 || readFile(t, entries[0]) != "evidence\n" {
+				entries, _ := filepath.Glob(filepath.Join(opts.Root, ".detent", "quarantine", "*", "evidence"))
+				if len(entries) != 1 || gitfixture.ReadFile(t, entries[0]) != "evidence\n" {
 					t.Fatalf("quarantine evidence %v after %v", entries, err)
 				}
 			default:
@@ -51,19 +58,21 @@ func TestHookDaemonWorkspaceTeardown(t *testing.T) {
 					t.Fatalf("service failed to start: %v", err)
 				}
 				if mode == "remove" || mode == "failed removal hook" {
-					if mode == "failed removal hook" {
-						backend.hooks.BeforeRemove = "exit 21"
-					}
 					issue.Terminal = true
-					issue.LandedHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+					issue.LandedHeadSHA = strings.TrimSpace(gitfixture.Git(t, info.Path, "rev-parse", "HEAD"))
 					_, err = backend.CleanupIssue(ctx, issue)
 				} else {
-					backend.hooks.AfterCreate = ""
+					opts.Hooks.AfterCreate = ""
+					var next workspace.Backend
+					next, err = workspace.ReconfigureBackend(backend, workspace.KindLocalGit, opts)
+					if err != nil {
+						t.Fatal(err)
+					}
 					issue.FreshCheckout = true
-					_, err = backend.Create(ctx, issue)
+					_, err = next.Create(ctx, issue)
 				}
 				if mode == "failed removal hook" {
-					var failure *HookError
+					var failure *workspace.HookError
 					if !errors.As(err, &failure) || failure.ExitCode != 21 {
 						t.Fatalf("removal failure = %v", err)
 					}
@@ -85,59 +94,59 @@ func TestCheckoutRemovalPreservesForeignProcesses(t *testing.T) {
 	for _, kind := range []string{"filesystem", "local git"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
-			useRealProcessScan(t, root)
+
 			service := workspacetest.DetachedHook(t)
-			hooks := Hooks{AfterCreate: service.Command}
+			hooks := workspace.Hooks{AfterCreate: service.Command}
 			var backend interface {
-				IssueCleaner
-				Create(context.Context, Issue) (Info, error)
+				workspace.IssueCleaner
+				Create(context.Context, workspace.Issue) (workspace.Info, error)
 			}
 			var err error
 			if kind == "filesystem" {
-				backend, err = NewFilesystem(FilesystemOptions{Root: root, Hooks: hooks})
+				backend, err = workspace.NewFilesystem(workspace.FilesystemOptions{Root: root, Hooks: hooks})
 			} else {
-				backend, err = NewLocalGit(LocalGitOptions{Root: root, SourceRoot: initSourceRepo(t), AutoBranch: true, Hooks: hooks})
+				backend, err = workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: gitfixture.SourceRepo(t), AutoBranch: true, Hooks: hooks})
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, finish := WithHookProcesses(t.Context())
+			ctx, finish := workspace.WithHookProcesses(t.Context())
 			t.Cleanup(func() {
 				if err := finish(); err != nil {
 					t.Error(err)
 				}
 			})
-			issue := Issue{Identifier: "EXAMPLE-1"}
+			issue := workspace.Issue{Identifier: "EXAMPLE-1"}
 			info, err := backend.Create(ctx, issue)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if kind == "local git" {
 				issue.Terminal = true
-				issue.LandedHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+				issue.LandedHeadSHA = strings.TrimSpace(gitfixture.Git(t, info.Path, "rev-parse", "HEAD"))
 			}
 			other := workspacetest.DetachedHook(t)
-			scratch, err := PrepareWorkerScratch(t.Context(), info.Path)
+			scratch, err := workspace.PrepareWorkerScratch(t.Context(), info.Path)
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				if err := CleanupWorkerScratch(info.Path, scratch); err != nil {
+				if err := workspace.CleanupWorkerScratch(info.Path, scratch); err != nil {
 					t.Error(err)
 				}
 			})
-			otherCommand := "unset DETENT_HOOK_OWNER DETENT_WORKSPACE; TEST_HOOK_CWD=" + shellQuote(info.Path) + " DETENT_WORKER_SCRATCH=" + shellQuote(scratch) + " " + other.Command
-			otherBackend, err := NewFilesystem(FilesystemOptions{Root: root, Hooks: Hooks{AfterCreate: otherCommand}})
+			otherCommand := "unset DETENT_HOOK_OWNER DETENT_WORKSPACE; TEST_HOOK_CWD=" + workspacetest.ShellQuote(info.Path) + " DETENT_WORKER_SCRATCH=" + workspacetest.ShellQuote(scratch) + " " + other.Command
+			otherBackend, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: root, Hooks: workspace.Hooks{AfterCreate: otherCommand}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			otherCtx, stopOther := WithHookProcesses(t.Context())
+			otherCtx, stopOther := workspace.WithHookProcesses(t.Context())
 			t.Cleanup(func() {
 				if err := stopOther(); err != nil {
 					t.Error(err)
 				}
 			})
-			if _, err := otherBackend.Create(otherCtx, Issue{Identifier: "EXAMPLE-2"}); err != nil {
+			if _, err := otherBackend.Create(otherCtx, workspace.Issue{Identifier: "EXAMPLE-2"}); err != nil {
 				t.Fatal(err)
 			}
 			shell := exec.Command("sh", "-c", `read -r reply && test "$reply" = alive`)
@@ -179,13 +188,13 @@ func TestHookOwnershipSurvivesMissingWorkspace(t *testing.T) {
 	first := workspacetest.DetachedHook(t)
 	second := workspacetest.DetachedHook(t)
 	workspacetest.UseDaemonCandidates(t, first, second)
-	fs, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), Hooks: Hooks{AfterCreate: "TEST_HOOK_IGNORE_TERM=1 " + first.Command, BeforeRun: second.Command}})
+	fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: "TEST_HOOK_IGNORE_TERM=1 " + first.Command, BeforeRun: second.Command}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue := Issue{Identifier: "EXAMPLE-1"}
-	firstCtx, stopFirst := WithHookProcesses(t.Context())
-	secondCtx, stopSecond := WithHookProcesses(t.Context())
+	issue := workspace.Issue{Identifier: "EXAMPLE-1"}
+	firstCtx, stopFirst := workspace.WithHookProcesses(t.Context())
+	secondCtx, stopSecond := workspace.WithHookProcesses(t.Context())
 	info, err := fs.Create(firstCtx, issue)
 	if err != nil {
 		t.Fatal(err)
@@ -214,12 +223,12 @@ func TestHookCleanupRetainsOwnerAfterInspectionFailure(t *testing.T) {
 	daemon := workspacetest.DetachedHook(t)
 	workspacetest.UseDaemonCandidates(t, daemon)
 	ctx, cancel := context.WithCancel(t.Context())
-	attempt, finish := WithHookProcesses(ctx)
-	fs, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), Hooks: Hooks{AfterCreate: "echo setup > evidence; " + daemon.Command, BeforeRemove: "echo stopping > removed"}})
+	attempt, finish := workspace.WithHookProcesses(ctx)
+	fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: "echo setup > evidence; " + daemon.Command, BeforeRemove: "echo stopping > removed"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue := Issue{Identifier: "EXAMPLE-1"}
+	issue := workspace.Issue{Identifier: "EXAMPLE-1"}
 	scan := hookproc.ReapProcessScanner
 	t.Cleanup(func() { hookproc.ReapProcessScanner = scan })
 	hookproc.ReapProcessScanner = func(context.Context, string) ([]int, error) { return nil, nil }
@@ -227,7 +236,7 @@ func TestHookCleanupRetainsOwnerAfterInspectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fs.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+	if _, err := fs.CleanupIssue(t.Context(), issue); !errors.Is(err, workspace.ErrWorkspacePreserved) {
 		t.Fatalf("cleanup while hooks are in use = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(info.Path, "removed")); !errors.Is(err, os.ErrNotExist) {
@@ -248,7 +257,7 @@ func TestHookCleanupRetainsOwnerAfterInspectionFailure(t *testing.T) {
 	if _, err := fs.CleanupIssue(t.Context(), issue); err == nil {
 		t.Fatalf("removal discarded failed hook ownership: %v", err)
 	}
-	if got := readFile(t, filepath.Join(info.Path, "evidence")); got != "setup\n" {
+	if got := gitfixture.ReadFile(t, filepath.Join(info.Path, "evidence")); got != "setup\n" {
 		t.Fatalf("retained evidence = %q", got)
 	}
 	hookproc.ReapProcessScanner = scan
@@ -271,7 +280,7 @@ func TestObservedHookDropsDescriptor(t *testing.T) {
 		{"another writer captured", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			attempt, finish := WithHookProcesses(t.Context())
+			attempt, finish := workspace.WithHookProcesses(t.Context())
 			t.Cleanup(func() {
 				if err := finish(); err != nil {
 					t.Errorf("cleanup after fixture exit: %v", err)
@@ -288,13 +297,13 @@ func TestObservedHookDropsDescriptor(t *testing.T) {
 				workspacetest.UseDaemonCandidates(t, other)
 				hook += " && " + other.Command
 			}
-			fs, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), Hooks: Hooks{
+			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{
 				AfterCreate: hook,
 			}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			issue := Issue{Identifier: "EXAMPLE-1"}
+			issue := workspace.Issue{Identifier: "EXAMPLE-1"}
 			info, err := fs.Create(attempt, issue)
 			if err != nil {
 				t.Fatal(err)
@@ -307,7 +316,7 @@ func TestObservedHookDropsDescriptor(t *testing.T) {
 				}
 				return
 			}
-			var unverified *HookExitUnverifiedError
+			var unverified *workspace.HookExitUnverifiedError
 			if !errors.As(err, &unverified) || !daemon.Alive(t) {
 				t.Fatalf("unverified service exit: cleanup = %v, alive = %t", err, daemon.Alive(t))
 			}
@@ -328,21 +337,21 @@ func TestHookDaemonHostDiscovery(t *testing.T) {
 		{"cleared environment", "unset DETENT_HOOK_OWNER DETENT_WORKSPACE; "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			attempt, finish := WithHookProcesses(t.Context())
+			attempt, finish := workspace.WithHookProcesses(t.Context())
 			t.Cleanup(func() {
 				if err := finish(); err != nil {
 					t.Error(err)
 				}
 			})
 			daemon := workspacetest.DetachedHook(t)
-			fs, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), Hooks: Hooks{AfterCreate: tc.hookPrefix + daemon.Command}})
+			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: tc.hookPrefix + daemon.Command}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			prior := hookproc.ReapProcessScanner
 			hookproc.ReapProcessScanner = hookproc.ProcessIDs
 			t.Cleanup(func() { hookproc.ReapProcessScanner = prior })
-			info, err := fs.Create(attempt, Issue{Identifier: "EXAMPLE-1"})
+			info, err := fs.Create(attempt, workspace.Issue{Identifier: "EXAMPLE-1"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -373,12 +382,12 @@ func TestManagedHookServiceLivesThroughWork(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, finish := WithHookProcesses(cache.WithContext(t.Context()))
-			backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: initSourceRepo(t), AutoBranch: true, Hooks: Hooks{AfterCreate: tc.hookPrefix + daemon.Command}})
+			ctx, finish := workspace.WithHookProcesses(cache.WithContext(t.Context()))
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: t.TempDir(), SourceRoot: gitfixture.SourceRepo(t), AutoBranch: true, Hooks: workspace.Hooks{AfterCreate: tc.hookPrefix + daemon.Command}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := backend.Create(ctx, Issue{Identifier: "EXAMPLE-1"}); err != nil {
+			if _, err := backend.Create(ctx, workspace.Issue{Identifier: "EXAMPLE-1"}); err != nil {
 				t.Fatal(err)
 			}
 			scratch := daemon.Request(t)

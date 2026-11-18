@@ -1,4 +1,4 @@
-package workspace
+package hookproc
 
 import (
 	"context"
@@ -6,13 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os/exec"
 	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 )
 
 type HookExitUnverifiedError struct {
@@ -25,21 +24,63 @@ func (e *HookExitUnverifiedError) Error() string {
 
 func (e *HookExitUnverifiedError) Unwrap() error { return e.Err }
 
+var ErrWorkspacePreserved = errors.New("workspace retained for recovery")
+
+type Registry struct {
+	hooks map[string]map[*Owner]struct{}
+	mu    sync.Mutex
+	paths map[string]chan struct{}
+}
+
+func (u *Registry) permit(key string) chan struct{} {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.paths == nil {
+		u.paths = make(map[string]chan struct{})
+	}
+	permit := u.paths[key]
+	if permit == nil {
+		permit = make(chan struct{}, 1)
+		u.paths[key] = permit
+	}
+	return permit
+}
+
+func (u *Registry) Use(ctx context.Context, key string) (func(), error) {
+	permit := u.permit(key)
+	select {
+	case permit <- struct{}{}:
+		return func() { <-permit }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (u *Registry) TryCleanup(key string) (func(), bool) {
+	permit := u.permit(key)
+	select {
+	case permit <- struct{}{}:
+		return func() { <-permit }, true
+	default:
+		return nil, false
+	}
+}
+
 type hookLifetime struct {
 	mu        sync.Mutex
-	processes map[*hookOwner]struct{}
+	processes map[*Owner]struct{}
 	finished  atomic.Bool
 }
 
 type hookLifetimeKey struct{}
 
-type hookOwner struct {
+type Owner struct {
 	mu         sync.Mutex
 	running    bool
 	closed     bool
-	descriptor *hookproc.Lifetime
+	descriptor *Lifetime
 	finish     func(context.Context) error
-	uses       *workspaceUses
+	uses       *Registry
 	path       string
 	token      string
 	lifetime   *hookLifetime
@@ -62,23 +103,23 @@ func WithHookProcesses(ctx context.Context) (context.Context, func() error) {
 	}
 }
 
-func (u *workspaceUses) hookOwner(ctx context.Context, path string) (*hookOwner, error) {
+func (u *Registry) Start(ctx context.Context, path string) (*Owner, error) {
 	if u == nil || (runtime.GOOS != "darwin" && runtime.GOOS != "linux") {
 		return nil, nil
 	}
 	lifetime, _ := ctx.Value(hookLifetimeKey{}).(*hookLifetime)
-	descriptor, err := hookproc.NewLifetime()
+	descriptor, err := NewLifetime()
 	if err != nil {
 		return nil, fmt.Errorf("open hook lifetime: %w", err)
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	owner := &hookOwner{uses: u, path: path, token: rand.Text(), lifetime: lifetime, descriptor: descriptor, running: true}
+	owner := &Owner{uses: u, path: path, token: rand.Text(), lifetime: lifetime, descriptor: descriptor, running: true}
 	if u.hooks == nil {
-		u.hooks = make(map[string]map[*hookOwner]struct{})
+		u.hooks = make(map[string]map[*Owner]struct{})
 	}
 	if u.hooks[path] == nil {
-		u.hooks[path] = make(map[*hookOwner]struct{})
+		u.hooks[path] = make(map[*Owner]struct{})
 	}
 	u.hooks[path][owner] = struct{}{}
 	if lifetime != nil {
@@ -89,7 +130,7 @@ func (u *workspaceUses) hookOwner(ctx context.Context, path string) (*hookOwner,
 			return nil, errors.Join(ErrWorkspacePreserved, descriptor.Close())
 		}
 		if lifetime.processes == nil {
-			lifetime.processes = make(map[*hookOwner]struct{})
+			lifetime.processes = make(map[*Owner]struct{})
 		}
 		lifetime.processes[owner] = struct{}{}
 		lifetime.mu.Unlock()
@@ -97,7 +138,7 @@ func (u *workspaceUses) hookOwner(ctx context.Context, path string) (*hookOwner,
 	return owner, nil
 }
 
-func (u *workspaceUses) removableHooks(ctx context.Context, path string) ([]*hookOwner, error) {
+func (u *Registry) removable(ctx context.Context, path string) ([]*Owner, error) {
 	if u == nil {
 		return nil, nil
 	}
@@ -112,8 +153,8 @@ func (u *workspaceUses) removableHooks(ctx context.Context, path string) ([]*hoo
 	return slices.Collect(maps.Keys(u.hooks[path])), nil
 }
 
-func (u *workspaceUses) reapHooks(ctx context.Context, path string) (int, error) {
-	owners, err := u.removableHooks(ctx, path)
+func (u *Registry) Reap(ctx context.Context, path string) (int, error) {
+	owners, err := u.removable(ctx, path)
 	if err != nil {
 		return 0, err
 	}
@@ -127,12 +168,12 @@ func (u *workspaceUses) reapHooks(ctx context.Context, path string) (int, error)
 	return total, result
 }
 
-func (u *workspaceUses) stopHooks(ctx context.Context, path string) error {
-	_, err := u.reapHooks(ctx, path)
+func (u *Registry) Stop(ctx context.Context, path string) error {
+	_, err := u.Reap(ctx, path)
 	return err
 }
 
-func (o *hookOwner) commandFinished(ctx context.Context, commandErr error) error {
+func (o *Owner) CommandFinished(ctx context.Context, commandErr error) error {
 	if o == nil {
 		return nil
 	}
@@ -158,13 +199,13 @@ func (o *hookOwner) commandFinished(ctx context.Context, commandErr error) error
 	return o.release(cleanup)
 }
 
-func (o *hookOwner) stop(ctx context.Context) (int, error) {
+func (o *Owner) stop(ctx context.Context) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.stopLocked(ctx)
 }
 
-func (o *hookOwner) stopLocked(ctx context.Context) (int, error) {
+func (o *Owner) stopLocked(ctx context.Context) (int, error) {
 	if o.closed {
 		return 0, nil
 	}
@@ -183,7 +224,7 @@ func (o *hookOwner) stopLocked(ctx context.Context) (int, error) {
 	return count, o.release(cleanup)
 }
 
-func (o *hookOwner) release(ctx context.Context) error {
+func (o *Owner) release(ctx context.Context) error {
 	if o.finish != nil {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
@@ -209,3 +250,18 @@ func (o *hookOwner) release(ctx context.Context) error {
 	}
 	return nil
 }
+
+func (u *Registry) CheckRemoval(ctx context.Context, path string) error {
+	_, err := u.removable(ctx, path)
+	return err
+}
+
+func (o *Owner) Token() string { return o.token }
+
+func (o *Owner) Attach(cmd *exec.Cmd) {
+	if o != nil {
+		o.descriptor.Attach(cmd)
+	}
+}
+
+func (o *Owner) OnExit(finish func(context.Context) error) { o.finish = finish }

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -72,7 +73,7 @@ var (
 	ErrMergeWorkerDurationExceeded     = errors.New("merge worker duration exceeded")
 	ErrModelPermitUnavailable          = errors.New("provider model permit unavailable")
 	ErrAgentTurnCleanup                = errors.New("agent turn cleanup failed")
-	ErrWorkerProcessReap               = errors.New("worker process reap failed")
+	ErrWorkerProcessReap               = runworkspace.ErrWorkerProcessReap
 	ErrWorkspacePreparation            = errors.New("workspace preparation failed")
 	ErrWorkspaceBranchHeld             = errors.New("workspace branch held by worktree")
 	ErrAgentResumeUnsupported          = errors.New("agent backend does not support resume verification")
