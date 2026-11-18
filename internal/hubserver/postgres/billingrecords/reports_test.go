@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportcheckpoints"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -1621,7 +1622,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		ctx := t.Context()
 		at := now.Add(time.Hour)
 		window := reportstore.OverviewQuery{Projects: []tracker.ProjectID{project}, From: now.Add(-time.Minute), Split: now, To: now.Add(2 * time.Minute), Limit: 10}
-		read := func() ([]reportstore.OpenFact, []reportstore.LandingFact) {
+		readOrg := func(organization tracker.OrganizationID) ([]reportstore.OpenFact, []reportstore.LandingFact) {
 			var open []reportstore.OpenFact
 			var landings []reportstore.LandingFact
 			if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -1636,7 +1637,8 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 			}
 			return open, landings
 		}
-		oracle := func(item tracker.NativeWorkItemID) *time.Time {
+		read := func() ([]reportstore.OpenFact, []reportstore.LandingFact) { return readOrg(organization) }
+		oracleOrg := func(organization tracker.OrganizationID, item tracker.NativeWorkItemID) *time.Time {
 			var first *time.Time
 			if err := admin.QueryRowContext(ctx, `SELECT min(e.recorded_at) FROM collaboration_events e JOIN project_workflow_states started ON started.organization_id=e.organization_id AND started.project_id=e.project_id AND started.name=e.to_state
 WHERE e.organization_id=$1 AND e.project_id=$2 AND e.work_item_id=$3 AND e.type='workflow.transitioned' AND e.recorded_at<=$4 AND started.dispatchable AND NOT started.terminal AND e.to_state NOT IN ('Backlog','Triage','Blocked','Human Review')`, organization, project, item, at).Scan(&first); err != nil {
@@ -1647,14 +1649,14 @@ WHERE e.organization_id=$1 AND e.project_id=$2 AND e.work_item_id=$3 AND e.type=
 			}
 			return first
 		}
-		check := func(name string, wantLandings []reportstore.LandingFact) []reportstore.LandingFact {
+		checkOrg := func(organization tracker.OrganizationID, name string, wantLandings []reportstore.LandingFact) []reportstore.LandingFact {
 			t.Helper()
-			open, landings := read()
+			open, landings := readOrg(organization)
 			if len(open) == 0 {
 				t.Fatalf("%s: no open facts", name)
 			}
 			for _, fact := range open {
-				want := oracle(fact.WorkItemID)
+				want := oracleOrg(organization, fact.WorkItemID)
 				if fact.FirstWorkedPartial || (want == nil) != (fact.FirstWorkedAt == nil) || (want != nil && !want.Equal(*fact.FirstWorkedAt)) {
 					t.Fatalf("%s: first worked for %s = %v partial=%t, want %v", name, fact.WorkItemID, fact.FirstWorkedAt, fact.FirstWorkedPartial, want)
 				}
@@ -1663,6 +1665,10 @@ WHERE e.organization_id=$1 AND e.project_id=$2 AND e.work_item_id=$3 AND e.type=
 				t.Fatalf("%s: landings = %+v, want exact %+v", name, landings, wantLandings)
 			}
 			return landings
+		}
+		check := func(name string, wantLandings []reportstore.LandingFact) []reportstore.LandingFact {
+			t.Helper()
+			return checkOrg(organization, name, wantLandings)
 		}
 		exact := check("before refresh", nil)
 		if len(exact) == 0 || exact[0].Attempts == 0 {
@@ -1702,6 +1708,118 @@ WHERE e.organization_id=$1 AND e.project_id=$2 AND e.work_item_id=$3 AND e.type=
 		check("stale landing checkpoint uses the exact read", exact)
 		pgstoretest.RefreshReportCheckpoints(t, repository, organization)
 		check("refreshed landing checkpoint", exact)
+		landingOracle := func(name string) {
+			t.Helper()
+			_, landings := read()
+			var attempts *int
+			var complete bool
+			if err := admin.QueryRowContext(ctx, `SELECT t.success_attempts,t.success_complete FROM change_requests c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
+CROSS JOIN LATERAL (`+reportcheckpoints.Tries("i", "c", reportcheckpoints.AttemptRows)+`) t WHERE c.organization_id=$1 AND c.id='change_report'`, organization).Scan(&attempts, &complete); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if attempts != nil {
+				want = *attempts
+			}
+			for _, landing := range landings {
+				if landing.ChangeID == "change_report" {
+					if landing.Attempts != want || landing.Complete != complete {
+						t.Fatalf("%s: landing tries = %d complete=%t, want %d complete=%t", name, landing.Attempts, landing.Complete, want, complete)
+					}
+					return
+				}
+			}
+			t.Fatalf("%s: change_report missing from %+v", name, landings)
+		}
+		execute := func(statement string, args ...any) {
+			t.Helper()
+			if _, err := admin.ExecContext(ctx, statement, args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		const copiedEvent = `WITH issue_event AS (UPDATE issues i SET event_sequence=i.event_sequence+1 FROM collaboration_events e WHERE e.organization_id=$1 AND e.id=$2 AND i.organization_id=e.organization_id AND i.project_id=e.project_id AND i.native_id=e.work_item_id RETURNING i.event_sequence)%s
+INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,project_sequence,type,schema_version,actor_kind,actor_principal_id,actor_envelope_known,actor_via_key,actor_display_name,actor_agent,event_revision,run_id,attempt_id,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,push_known)
+SELECT e.organization_id,e.project_id,e.work_item_id,$3,(SELECT event_sequence FROM issue_event),%s,e.type,e.schema_version,e.actor_kind,e.actor_principal_id,e.actor_envelope_known,e.actor_via_key,e.actor_display_name,e.actor_agent,e.event_revision,e.run_id,e.attempt_id,e.from_state,e.to_state,coalesce($4,e.recorded_at),e.payload_object_key,e.payload_sha256,e.payload_bytes,e.payload_content_bytes,e.push_known
+FROM collaboration_events e WHERE e.organization_id=$1 AND e.id=$2`
+		var landedEvent string
+		if err := admin.QueryRowContext(ctx, `SELECT e.id FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=$1 AND f.landed AND f.landing_change_id='change_report' AND e.attempt_id<>'' ORDER BY e.sequence DESC LIMIT 1`, organization).Scan(&landedEvent); err != nil {
+			t.Fatal(err)
+		}
+		execute(fmt.Sprintf(copiedEvent, ", advanced AS (UPDATE project_event_cursors SET sequence=sequence+1 WHERE organization_id=$1 AND project_id=$5 RETURNING sequence)", "(SELECT sequence FROM advanced)"), organization, landedEvent, "report_checkpoint_replayed", nil, project)
+		landingOracle("event without facts in the tail")
+		pgstoretest.RefreshReportCheckpoints(t, repository, organization)
+		landingOracle("event without facts folded")
+		execute(`INSERT INTO report_event_facts(organization_id,event_id,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds)
+SELECT organization_id,$3,run_sequence,run_status,'implement',model,effort,failed,failure_class,failure_kind,false,false,'',rework_class,rework_kind,duration_seconds FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`, organization, landedEvent, "report_checkpoint_replayed")
+		landingOracle("facts attached to an existing event")
+		pgstoretest.RefreshReportCheckpoints(t, repository, organization)
+		landingOracle("attached facts folded")
+		execute(`INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at)
+SELECT organization_id,'report_checkpoint_early_lease',id,'report_machine','report_checkpoint_early_session',1,$3,$3,$3::timestamptz+interval '1 hour',$3::timestamptz+interval '1 second' FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id='wi_report_bug'`, organization, project, now.Add(-time.Hour))
+		execute(`INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) SELECT organization_id,'report_checkpoint_early_run',issue_id FROM leases WHERE organization_id=$1 AND lease_id='report_checkpoint_early_lease'`, organization)
+		execute(`INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,started_at_submicro_ns,updated_at)
+SELECT organization_id,$2,'report_checkpoint_early_attempt',issue_id,lease_id,fencing_token,'report_checkpoint_early_run',1,'failed',work_item_revision,1,'fixture/analytics',$3,0,$3 FROM leases WHERE organization_id=$1 AND lease_id='report_checkpoint_early_lease'`, organization, project, now.Add(-time.Hour))
+		landingOracle("earlier attempt without an issue event")
+		pgstoretest.RefreshReportCheckpoints(t, repository, organization)
+		landingOracle("earlier attempt folded")
+		execute(fmt.Sprintf(copiedEvent, "", "0"), organization, "report_checkpoint_late_0", "report_checkpoint_legacy", now.Add(-3*time.Hour))
+		check("legacy event after the legacy backfill", nil)
+		pgstoretest.RefreshReportCheckpoints(t, repository, organization)
+		check("legacy event folded", nil)
+		for _, statement := range []string{
+			`DELETE FROM native_attempts WHERE organization_id=$1 AND id='report_checkpoint_early_attempt'`,
+			`DELETE FROM native_attempt_runs WHERE organization_id=$1 AND run_id='report_checkpoint_early_run'`,
+			`DELETE FROM leases WHERE organization_id=$1 AND lease_id='report_checkpoint_early_lease'`,
+			`DELETE FROM report_event_facts WHERE organization_id=$1 AND event_id='report_checkpoint_replayed'`,
+			`DELETE FROM report_checkpoint_cursors WHERE organization_id=$1`,
+			`DELETE FROM report_issue_state_entries WHERE organization_id=$1`,
+			`DELETE FROM report_landing_attempts WHERE organization_id=$1`,
+			`DELETE FROM report_issue_checkpoints WHERE organization_id=$1`,
+		} {
+			execute(statement, organization)
+		}
+		pgstoretest.RefreshReportCheckpoints(t, repository, organization)
+		check("rebuilt after the source cases", exact)
+		second := tracker.OrganizationID("org_reports_second")
+		if err := repository.WriteTenant(ctx, second, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: second, Name: "Example", CreatedAt: now}); err != nil {
+				return err
+			}
+			_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: second, ID: project, Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Done", Terminal: true}}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		execute(`INSERT INTO issues(id,organization_id,project_id,native_id,number,title,issue_type,workflow_state_name,actor_kind,actor_principal_id,created_at)
+SELECT public.allocate_core_record_id('public.issues_id_seq'::regclass,101),$1,$2,'wi_report_bug',1,'Example bug','bug','Todo',$3,$4,$5`, second, project, actorKind, actorID, now.Add(-time.Hour))
+		for index, value := range []tracker.CollaborationEvent{
+			{AggregateID: "wi_report_bug", Type: "issue.created", RecordedAt: now.Add(-time.Hour)},
+			{AggregateID: "wi_report_bug", Type: "workflow.transitioned", RecordedAt: now.Add(-50 * time.Minute), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Todo"}},
+		} {
+			value.ID, value.OrganizationID, value.ProjectID, value.Actor, value.SchemaVersion = fmt.Sprintf("report_second_event_%d", index), second, project, pgstoretest.HistoryActor(), 1
+			event, err := content.PrepareEvent(ctx, second, pgstoretest.HistoryJSON(t, value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(ctx, second, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(ctx, event); return err }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		entries := func(organization tracker.OrganizationID) string {
+			var summary string
+			if err := admin.QueryRowContext(ctx, `SELECT count(*)||' '||coalesce(min(first_entered_at)::text,'') FROM report_issue_state_entries WHERE organization_id=$1`, organization).Scan(&summary); err != nil {
+				t.Fatal(err)
+			}
+			return summary
+		}
+		firstEntries := entries(organization)
+		checkOrg(second, "second organization before its refresh", nil)
+		pgstoretest.RefreshReportCheckpoints(t, repository, second)
+		checkOrg(second, "second organization refreshed", nil)
+		check("first organization beside the second", exact)
+		if got := entries(organization); got != firstEntries || entries(second) == firstEntries {
+			t.Fatalf("checkpoint entries crossed organizations: first %q -> %q, second %q", firstEntries, got, entries(second))
+		}
 	})
 	t.Run("lifetime shipped spend includes earlier periods only for selected work", func(t *testing.T) {
 		ctx := t.Context()
