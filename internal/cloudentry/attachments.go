@@ -22,8 +22,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry/attachmentsweep"
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var errAttachmentReadAudit = errors.New("attachment read audit unavailable")
@@ -548,24 +552,42 @@ func (s *Service) removeAttachment(ctx context.Context, organization Organizatio
 	return nil
 }
 
-func (s *Service) sweepAttachments(ctx context.Context) {
-	if s.attachments == nil || s.config.Now().Before(s.attachmentSweepAt) {
-		return
-	}
-	s.attachmentSweepAt = s.config.Now().Add(time.Hour)
-	organizations, err := s.registry.List(ctx)
+func (s *Service) sweepAttachments(ctx context.Context, after string) string {
+	organizations, err := s.registry.store.db.postgres.Organizations(ctx, corestore.Background, tracker.OrganizationID(after), hubmaintenance.TenantLimit)
 	if err != nil {
-		s.config.Logger.Warn("attachment retention registry unavailable")
-		return
+		if ctx.Err() == nil {
+			s.config.Logger.WarnContext(ctx, "attachment retention registry unavailable", "error", err)
+		}
+		return after
 	}
 	for _, organization := range organizations {
-		if organization.State != "ready" {
-			continue
+		if ctx.Err() != nil {
+			return after
 		}
-		if err := s.sweepOrganizationAttachments(ctx, organization); err != nil {
-			s.config.Logger.Warn("attachment retention failed", "organization", organization.ID)
+		if organization.State == "ready" {
+			if err := s.sweepOrganizationAttachments(ctx, retentionOrganization(organization)); err != nil && ctx.Err() == nil {
+				s.config.Logger.WarnContext(ctx, "attachment retention failed", "organization", organization.ID)
+			}
 		}
+		after = string(organization.ID)
 	}
+	if len(organizations) == hubmaintenance.TenantLimit {
+		return after
+	}
+	return ""
+}
+
+func retentionOrganization(row platformstore.Organization) Organization {
+	org := Organization{
+		ID: string(row.ID), ProviderID: row.ProviderID, Slug: row.Slug, Name: row.Name,
+		State: row.State, Endpoint: row.Endpoint, Generation: row.Generation, Managed: row.Managed,
+		CheckoutPrice: row.CheckoutPrice, CreatorSubject: row.CreatorSubject, CreatorEmail: row.CreatorEmail,
+		Step: row.Step, Attempts: int(row.Attempts), ErrorCode: row.ErrorCode, ErrorDetail: row.ErrorDetail, UpdatedAt: row.UpdatedAt,
+	}
+	if row.NextAttemptAt != nil {
+		org.NextAttemptAt = formatTime(*row.NextAttemptAt)
+	}
+	return org
 }
 
 func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization Organization) error {

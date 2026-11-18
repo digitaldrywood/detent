@@ -104,12 +104,13 @@ func (s *Service) startAllocator(parent context.Context) {
 	s.stopAllocator = cancel
 	s.allocatorDone = make(chan struct{})
 	s.wake = make(chan struct{}, 1)
-	organizations, err := s.registry.List(ctx)
-	if err == nil {
-		for _, organization := range organizations {
-			if allocation != nil && organization.Managed && organization.State == "ready" {
-				if err := allocation.Launcher.Start(ctx, s.tenantSpec(organization)); err != nil {
-					s.config.Logger.Warn("tenant Hub could not start", "organization", organization.ID)
+	if allocation != nil {
+		if organizations, err := s.registry.List(ctx); err == nil {
+			for _, organization := range organizations {
+				if organization.Managed && organization.State == "ready" {
+					if err := allocation.Launcher.Start(ctx, s.tenantSpec(organization)); err != nil {
+						s.config.Logger.Warn("tenant Hub could not start", "organization", organization.ID)
+					}
 				}
 			}
 		}
@@ -118,15 +119,16 @@ func (s *Service) startAllocator(parent context.Context) {
 		defer close(s.allocatorDone)
 		ticker := time.NewTicker(allocationpoll.BaseInterval)
 		defer ticker.Stop()
+		var sweep func(context.Context, string) string
+		if s.attachments != nil {
+			sweep = s.sweepAttachments
+		}
 		allocationpoll.Run(ctx, s.wake, ticker, s.config.Now, func(after *platformstore.AllocationCandidate) (bool, time.Time) {
-			var worked bool
-			var next time.Time
-			if allocation != nil {
-				worked, next = s.provisionDue(ctx, after)
+			if allocation == nil {
+				return false, time.Time{}
 			}
-			s.sweepAttachments(ctx)
-			return worked, next
-		})
+			return s.provisionDue(ctx, after)
+		}, sweep)
 	}()
 }
 

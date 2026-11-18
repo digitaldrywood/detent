@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -54,11 +55,11 @@ func TestRegistryMappingAndGenerations(t *testing.T) {
 			}
 		})
 	}
-	page, err := r.Organizations(t.Context(), "", 1)
+	page, err := r.Organizations(t.Context(), corestore.Background, "", 1)
 	if err != nil || len(page) != 1 || page[0].ID != "org_first" {
 		t.Fatalf("first page: %+v %v", page, err)
 	}
-	page, err = r.Organizations(t.Context(), page[0].ID, 1)
+	page, err = r.Organizations(t.Context(), corestore.Background, page[0].ID, 1)
 	if err != nil || len(page) != 1 || page[0].ID != "org_second" {
 		t.Fatalf("second page: %+v %v", page, err)
 	}
@@ -211,6 +212,32 @@ func TestOrganizationReadsUseOneStatement(t *testing.T) {
 		if count := calls.Load() - before; count != 1 {
 			t.Fatalf("provider read used %d statements", count)
 		}
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO platform.organizations(id,name,state,endpoint,generation,created_at,updated_at)
+SELECT 'org_scale_'||lpad(n::text,5,'0'),'Example','ready','unix:/example/tenant.sock',1,now(),now() FROM generate_series(1,9998) n`); err != nil {
+		t.Fatal(err)
+	}
+	var after tracker.OrganizationID
+	total := 0
+	for {
+		before := calls.Load()
+		page, err := r.Organizations(t.Context(), corestore.Background, after, hubmaintenance.TenantLimit)
+		if err != nil || len(page) > hubmaintenance.TenantLimit || calls.Load()-before != 1 {
+			t.Fatalf("retention page size=%d statements=%d err=%v", len(page), calls.Load()-before, err)
+		}
+		for _, org := range page {
+			if org.ID <= after {
+				t.Fatalf("page returned %q after %q", org.ID, after)
+			}
+			after = org.ID
+		}
+		total += len(page)
+		if len(page) < hubmaintenance.TenantLimit {
+			break
+		}
+	}
+	if total != 10000 {
+		t.Fatalf("paged %d organizations", total)
 	}
 }
 

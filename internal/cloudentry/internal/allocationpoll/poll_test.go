@@ -38,6 +38,68 @@ func TestWakeContinuesPageAndTimerHonorsRetry(t *testing.T) {
 				cancel()
 				return false, time.Time{}
 			}
-		})
+		}, nil)
+	})
+}
+
+func TestAllocationWakeDuringAttachmentRetention(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		ticker := time.NewTicker(BaseInterval)
+		defer ticker.Stop()
+		wake := make(chan struct{}, 1)
+		done := make(chan struct{})
+		release := make(chan struct{}, 1)
+		clock := time.Now()
+		turns := 0
+		var pages []string
+		go func() {
+			defer close(done)
+			Run(ctx, wake, ticker, func() time.Time { return clock }, func(*platformstore.AllocationCandidate) (bool, time.Time) {
+				turns++
+				return false, time.Time{}
+			}, func(ctx context.Context, after string) string {
+				pages = append(pages, after)
+				<-release
+				if after == "" {
+					return "next-tenant"
+				}
+				return ""
+			})
+		}()
+		defer func() { cancel(); close(release); <-done }()
+		synctest.Wait()
+		wake <- struct{}{}
+		synctest.Wait()
+		if turns != 2 || len(pages) != 1 {
+			t.Fatalf("while the first retention page is held: allocation turns=%d retention pages=%v", turns, pages)
+		}
+		release <- struct{}{}
+		synctest.Wait()
+		wake <- struct{}{}
+		synctest.Wait()
+		if turns != 3 || len(pages) != 2 || pages[1] != "next-tenant" {
+			t.Fatalf("after releasing the first page: allocation turns=%d retention pages=%v", turns, pages)
+		}
+		release <- struct{}{}
+		synctest.Wait()
+		wake <- struct{}{}
+		synctest.Wait()
+		if turns != 4 || len(pages) != 2 {
+			t.Fatalf("completed sweep restarted before the next hour: turns=%d pages=%q", turns, pages)
+		}
+		clock = clock.Add(time.Hour)
+		wake <- struct{}{}
+		synctest.Wait()
+		if turns != 5 || len(pages) != 3 || pages[2] != "" {
+			t.Fatalf("next hourly sweep: turns=%d pages=%q", turns, pages)
+		}
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("allocator shutdown returned with retention still running")
+		default:
+		}
 	})
 }

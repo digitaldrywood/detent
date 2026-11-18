@@ -124,25 +124,24 @@ func (c Config) validate() error {
 }
 
 type Service struct {
-	notifications     *platformNotifications
-	runtime           atomic.Pointer[entryRuntime]
-	allowlist         atomic.Pointer[signupAllowlist]
-	reloadMu          sync.Mutex
-	keyMCP            *mcp.HTTPHandler
-	administration    *operatoradmin.Executor
-	config            Config
-	registry          *Registry
-	auth              *authStore
-	echo              *echo.Echo
-	secure            bool
-	transports        sync.Map
-	mutationMu        sync.Mutex
-	verified          sessionVerifications
-	refreshes         keylock.Mutex
-	attachments       attachment.Storage
-	attachmentLocks   attachmentLocks
-	attachmentSweepAt time.Time
-	githubWebhooks    *webhooks.Service
+	notifications   *platformNotifications
+	runtime         atomic.Pointer[entryRuntime]
+	allowlist       atomic.Pointer[signupAllowlist]
+	reloadMu        sync.Mutex
+	keyMCP          *mcp.HTTPHandler
+	administration  *operatoradmin.Executor
+	config          Config
+	registry        *Registry
+	auth            *authStore
+	echo            *echo.Echo
+	secure          bool
+	transports      sync.Map
+	mutationMu      sync.Mutex
+	verified        sessionVerifications
+	refreshes       keylock.Mutex
+	attachments     attachment.Storage
+	attachmentLocks attachmentLocks
+	githubWebhooks  *webhooks.Service
 
 	stopAuthReseal    context.CancelFunc
 	authResealDone    chan struct{}

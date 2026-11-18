@@ -99,12 +99,12 @@ func (r *Repository) ByProvider(ctx context.Context, provider string) (Organizat
 	return o, err
 }
 
-func (r *Repository) Organizations(ctx context.Context, after tracker.OrganizationID, limit int) ([]Organization, error) {
+func (r *Repository) Organizations(ctx context.Context, workload corestore.Workload, after tracker.OrganizationID, limit int) ([]Organization, error) {
 	if limit < 1 || limit > corestore.MaxPageSize {
 		return nil, ErrInvalid
 	}
 	result := []Organization{}
-	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
+	err := r.read(ctx, workload, func(tx pgquery.DBTX) error {
 		rows, err := tx.Query(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id>$1 ORDER BY id LIMIT $2`, after, limit)
 		if err != nil {
 			return err
