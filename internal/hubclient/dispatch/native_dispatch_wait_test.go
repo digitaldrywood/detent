@@ -2,15 +2,20 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeDispatchWaitReconnects(t *testing.T) {
@@ -123,4 +128,79 @@ func TestNativeDispatchWaitReconnects(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestMachineSyncSharesProjectWaits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		var group sync.WaitGroup
+		defer func() { cancel(); group.Wait() }()
+		path := filepath.Join(t.TempDir(), "private", "identity.json")
+		file, err := runnerauth.Initialize(path, "https://hub.example.test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		file.Identity.OrganizationID = "org_example"
+		file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+		if err := runnerauth.Save(path, file); err != nil {
+			t.Fatal(err)
+		}
+		var requests atomic.Int64
+		release := make(chan struct{})
+		client, err := newTestClient(t, Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+			response := httptest.NewRecorder()
+			if strings.HasSuffix(r.URL.Path, "/capabilities") {
+				response.WriteString(`{"features":["native_runner_sync"]}`)
+				return response.Result(), nil
+			}
+			if r.Method != http.MethodPost || r.URL.Path != "/api/v2/organizations/org_example/runners/"+file.Identity.RunnerID+"/sync" {
+				return nil, fmt.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			}
+			var req runnerauth.SyncRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				return nil, err
+			}
+			n := requests.Add(1)
+			if req.MachineID != file.Identity.MachineID {
+				t.Errorf("wrong machine %q", req.MachineID)
+			}
+			if n == 1 {
+				response.WriteString(`{"versions":{"cursor":"initial"}}`)
+			} else {
+				if req.WaitSeconds < 24 || req.WaitSeconds > 30 || req.Versions.Cursor != "initial" {
+					t.Errorf("unexpected poll %+v", req)
+				}
+				select {
+				case <-release:
+					response.WriteString(`{"no_change":true}`)
+				case <-r.Context().Done():
+					return nil, r.Context().Err()
+				}
+			}
+			return response.Result(), nil
+		})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := &Scheduler{machine: Machine{ID: file.Identity.MachineID}, nativeProjects: map[string]*NativeConnector{}}
+		for _, project := range []string{"prj_one", "prj_two", "prj_three"} {
+			native, err := client.Native(file.Identity.OrganizationID, tracker.ProjectID(project))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.nativeProjects[project] = fixtureConnector(native)
+		}
+		for project := range s.nativeProjects {
+			wake := make(chan struct{}, 1)
+			group.Go(func() { s.WaitCandidateChanges(ctx, project, wake) })
+		}
+		synctest.Wait()
+		for i := int64(0); i < 10; i++ {
+			if got := requests.Load(); got != 2+i {
+				t.Fatalf("after %d intervals got %d exchanges", i, got)
+			}
+			release <- struct{}{}
+			synctest.Wait()
+		}
+	})
 }

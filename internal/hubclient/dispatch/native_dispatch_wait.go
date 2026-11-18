@@ -14,6 +14,14 @@ func (s *Scheduler) WaitCandidateChanges(ctx context.Context, project string, wa
 	if source == nil {
 		return
 	}
+	client := source.NativeClient()
+	if client.Transport().Enrolled() {
+		supported, err := client.HubFeature(ctx, tracker.NativeRunnerSyncCapability)
+		if err == nil && supported {
+			s.waitMachineSync(ctx, client, wake)
+			return
+		}
+	}
 	var cursor string
 	backoff := time.Second
 	timer := time.NewTimer(0)

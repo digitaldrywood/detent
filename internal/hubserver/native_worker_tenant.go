@@ -194,24 +194,30 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if request.LandingCapacity < 0 {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing capacity must be non-negative"))
-	}
-	ttl, err := apiTTL(request.TTLSeconds)
-	if err != nil {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Lease TTL is invalid"))
-	}
-	scope := hubscope.NativeRequestScope(c)
-	landing, err := s.prepareNativeLandingRenewal(c.Request().Context(), scope, c.Param("lease"), request.LandingCapacity)
+	lease, err := s.renewRunnerLease(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("lease"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	return c.JSON(http.StatusOK, lease)
+}
+func (s *Service) renewRunnerLease(ctx context.Context, scope hubscope.NativeScope, leaseID string, request tracker.NativeLeaseMutation) (tracker.NativeLease, error) {
+	if request.LandingCapacity < 0 {
+		return tracker.NativeLease{}, hubapi.NativePublicInvalid("Landing capacity must be non-negative")
+	}
+	ttl, err := apiTTL(request.TTLSeconds)
+	if err != nil {
+		return tracker.NativeLease{}, hubapi.NativePublicInvalid("Lease TTL is invalid")
+	}
+	landing, err := s.prepareNativeLandingRenewal(ctx, scope, leaseID, request.LandingCapacity)
+	if err != nil {
+		return tracker.NativeLease{}, err
+	}
 	var lease leasestore.Lease
 	var details NativeLeaseResponseDetails
-	err = s.renewNativeLeaseWrite(c.Request().Context(), scope, tracker.LeaseID(c.Param("lease")), func(legacySelectorChecked bool) error {
-		return s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.renewNativeLeaseWrite(ctx, scope, tracker.LeaseID(leaseID), func(legacySelectorChecked bool) error {
+		return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			reader := s.nativeLeaseReader(w, scope)
-			current, err := reader.Lease(c.Request().Context(), c.Param("lease"))
+			current, err := reader.Lease(ctx, leaseID)
 			if err != nil {
 				return err
 			}
@@ -222,50 +228,53 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 				if current.RunnerID != nil && *current.RunnerID != scope.Credential.Runner.RunnerID {
 					return tracker.ErrMachineNotFound
 				}
-				if err := lockRunnerCredential(c.Request().Context(), w, scope); err != nil {
+				if err := lockRunnerCredential(ctx, w, scope); err != nil {
 					return err
 				}
-				if err := w.LockWorkItemProject(c.Request().Context(), scope.Project); err != nil {
+				if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 					return err
 				}
 				reader = s.nativeLeaseReader(w, scope)
 			}
-			if _, err := reader.RunnerForLease(c.Request().Context(), c.Param("lease")); err != nil {
+			if _, err := reader.RunnerForLease(ctx, leaseID); err != nil {
 				return err
 			}
-			current, err = reader.Lease(c.Request().Context(), c.Param("lease"))
+			current, err = reader.Lease(ctx, leaseID)
 			if err != nil {
 				return err
 			}
 			authority := NativeLeaseAuthority{Scope: scope, Lease: current, Request: request, Operation: "renew", LegacySelectorChecked: legacySelectorChecked}
-			if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(c.Request().Context(), reader, &authority); err != nil {
+			if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(ctx, reader, &authority); err != nil {
 				return err
 			}
 			landingCapacity := int64(request.LandingCapacity)
 			if current.LandingCapacity > 0 && (landingCapacity == 0 || landingCapacity > current.LandingCapacity) {
 				landingCapacity = current.LandingCapacity
 			}
-			landingCapacity, err = s.reserveNativeLandingRenewal(c.Request().Context(), w, scope, landing, current, landingCapacity)
+			landingCapacity, err = s.reserveNativeLandingRenewal(ctx, w, scope, landing, current, landingCapacity)
 			if err != nil {
 				return err
 			}
-			lease, err = w.RenewWithLandingCapacity(c.Request().Context(), leasestore.Fence{LeaseID: c.Param("lease"), FencingToken: int64(request.FencingToken)}, ttl, landingCapacity)
+			lease, err = w.RenewWithLandingCapacity(ctx, leasestore.Fence{LeaseID: leaseID, FencingToken: int64(request.FencingToken)}, ttl, landingCapacity)
 			if err != nil {
 				return err
 			}
 			authority.Lease = lease
-			if err := s.config.NativeRunEvents.ApplyNativeLeaseMutation(c.Request().Context(), w, authority); err != nil {
+			if err := s.config.NativeRunEvents.ApplyNativeLeaseMutation(ctx, w, authority); err != nil {
 				return err
 			}
 			reader.lease = &lease
-			details, err = s.nativeLeaseResponseDetails(c.Request().Context(), reader, scope, lease)
+			details, err = s.nativeLeaseResponseDetails(ctx, reader, scope, lease)
 			return err
 		})
 	})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return tracker.NativeLease{}, err
 	}
-	return s.writeNativeLeaseResponse(c, lease, details)
+	if details.WorkItemID == "" {
+		return tracker.NativeLease{}, corestore.ErrNotFound
+	}
+	return s.nativeLeaseResponse(lease, details), nil
 }
 
 func (s *Service) renewNativeLeaseWrite(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID, write func(legacySelectorChecked bool) error) error {
@@ -642,8 +651,12 @@ func (s *Service) writeNativeLeaseResponse(c echo.Context, lease leasestore.Leas
 	if details.WorkItemID == "" {
 		return s.nativeAPIError(c, corestore.ErrNotFound)
 	}
-	return c.JSON(http.StatusOK, tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: details.IsolationPolicy,
+	return c.JSON(http.StatusOK, s.nativeLeaseResponse(lease, details))
+}
+
+func (s *Service) nativeLeaseResponse(lease leasestore.Lease, details NativeLeaseResponseDetails) tracker.NativeLease {
+	return tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: details.IsolationPolicy,
 		ProviderReservation: details.ProviderReservation, ServerTime: s.config.Clock().UTC(), PolicyID: details.PolicyID,
 		ID: tracker.LeaseID(lease.LeaseID), WorkItemID: details.WorkItemID, MachineID: tracker.MachineID(lease.MachineID), SessionID: lease.SessionID,
-		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
+		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt}
 }

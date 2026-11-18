@@ -335,7 +335,22 @@ func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (
 			return result, ErrNoClaimableWork
 		}
 	}
-	err := c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &result)
+	var err error
+	if request.WorkItemID == "" && len(request.ProviderCandidates) == 0 && c.client.supportsRunnerSync() {
+		var response runnerauth.SyncResponse
+		response, err = c.SyncRunner(ctx, runnerauth.SyncRequest{Claim: &runnerauth.SyncClaim{SessionID: request.SessionID, TTLSeconds: request.TTLSeconds, Projects: map[tracker.ProjectID]tracker.NativeClaim{c.project: request}}})
+		if err == nil {
+			if response.Lease == nil {
+				return result, ErrNoClaimableWork
+			}
+			if response.LeaseProject != c.project || response.Lease.SessionID != request.SessionID || response.Lease.MachineID != request.MachineID {
+				return result, errors.New("unexpected lease in runner sync response")
+			}
+			result = *response.Lease
+		}
+	} else {
+		err = c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &result)
+	}
 	if err == nil && c.client.runner != nil && result.IsolationPolicy == nil {
 		return result, errors.Join(fmt.Errorf("%w: runner claim isolation policy is unavailable", orchestrator.ErrSchedulingUnavailable), c.Release(context.WithoutCancel(ctx), result, "work_item_hydration_failed"))
 	}

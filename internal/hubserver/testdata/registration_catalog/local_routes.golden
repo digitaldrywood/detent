@@ -216,6 +216,7 @@ POST /api/v2/organizations/:organization/runner-enrollments
 POST /api/v2/organizations/:organization/runner-enrollments/redeem
 POST /api/v2/organizations/:organization/runners/:runner/renew
 POST /api/v2/organizations/:organization/runners/:runner/rotate
+POST /api/v2/organizations/:organization/runners/:runner/sync
 POST /api/v2/organizations/:organization/runners/:runner/update/apply
 POST /api/v2/organizations/:organization/threads
 POST /api/v2/organizations/:organization/threads/:thread/posts
