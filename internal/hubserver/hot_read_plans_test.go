@@ -35,7 +35,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 	f := newUsageHostedFixture(t)
 	admin := hostedPostgresAdmin(t, f.service)
 	installReportsBudgetTrace(t, f.service)
-	seedProductionProject(t, f.service, hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}, productionProjectShape{issues: 594, attempts: 469, usage: 262, leases: 1682, comments: 7000})
+	seedProductionProject(t, f.service, hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}, productionProjectShape{issues: 594, attempts: 469, usage: 262, current: 131, leases: 1682, comments: 7000})
 	seedRetainedReportHistory(t, admin, "org_browser_preview", 10)
 	freezeReportPlannerInputs(t, admin)
 	t.Run("rules reject injected unindexed reads", func(t *testing.T) {
@@ -231,7 +231,7 @@ var retainedReportHistoryKeys = []struct {
 	{"collaboration_events", map[string]string{"id": "suffix", "work_item_id": "suffix", "aggregate_id": "suffix", "attempt_id": "suffix", "change_id": "suffix", "version_id": "suffix", "run_id": "suffix", "lease_id": "suffix"}},
 	{"change_requests", map[string]string{"id": "suffix", "work_item_id": "suffix", "current_version_id": "suffix", "landed_version_id": "suffix"}},
 	{"change_versions", map[string]string{"id": "suffix", "change_id": "suffix", "run_id": "suffix", "attempt_id": "suffix", "work_item_id": "suffix"}},
-	{"attempt_usage", map[string]string{"attempt_id": "suffix"}},
+	{"attempt_usage", map[string]string{"attempt_id": "suffix"}}, {"cost_sources", map[string]string{"source_key": "suffix", "resource_id": "suffix"}}, {"report_usage_current", map[string]string{"source_key": "suffix", "attempt_id": "suffix"}},
 }
 
 func seedRetainedReportHistory(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, copies int) {
@@ -279,8 +279,8 @@ func seedRetainedReportHistory(t *testing.T, admin *sql.DB, organization tracker
 }
 
 type productionProjectShape struct {
-	issues, attempts, usage, leases, comments int
-	days, attemptDays                         int
+	issues, attempts, usage, current, leases, comments int
+	days, attemptDays                                  int
 }
 
 func seedProductionProject(t *testing.T, s *Service, scope hubscope.NativeScope, shape productionProjectShape) {
@@ -410,7 +410,7 @@ func seedProductionProject(t *testing.T, s *Service, scope hubscope.NativeScope,
 	}
 	for index := range shape.usage {
 		attempt := fmt.Sprintf("attempt_shaped_%d", index*shape.attempts/shape.usage)
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at)SELECT organization_id,project_id,id,date_trunc('hour',started_at),'openai','gpt-6-astra',100000,40000,8000,0.25,'USD',updated_at FROM native_attempts WHERE organization_id=$1 AND project_id=$2 AND id=$3`, scope.Organization, scope.Project, attempt); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `WITH usage AS (INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at)SELECT organization_id,project_id,id,date_trunc('hour',started_at),'openai','gpt-6-astra',100000,40000,8000,0.25,'USD',updated_at FROM native_attempts WHERE organization_id=$1 AND project_id=$2 AND id=$3 RETURNING *), source AS (INSERT INTO cost_sources(organization_id,source_key,project_id,provider,provider_account,resource_id,bucket,metric,period_start,period_end,revision,attribution_hash,payload_hash,amount_micros,currency,voided)SELECT organization_id,'source_'||attempt_id,project_id,provider,'example',attempt_id,'runner_api','tokens',to_char(period,'YYYY-MM-DD"T"HH24'),to_char(period+interval '1 hour','YYYY-MM-DD"T"HH24'),1,'example','example',250000,currency,false FROM usage WHERE $4 RETURNING source_key,resource_id) INSERT INTO report_usage_current(organization_id,source_key,revision,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,complete,currency)SELECT u.organization_id,s.source_key,1,u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,true,u.currency FROM usage u JOIN source s ON s.resource_id=u.attempt_id`, scope.Organization, scope.Project, attempt, index < shape.current); err != nil {
 			t.Fatal(err)
 		}
 	}
