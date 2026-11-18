@@ -1637,7 +1637,7 @@ func appendReworkPreparation(prompt string, preparation workspace.MergePrepareRe
 
 // recoverRunChangeSource recovers the reviewed Change source a native run
 // continues from and records it on the workspace issue.
-func (r *Runner) recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace workspace.Backend, workspaceIssue *workspace.Issue, nativeLanding, sourceRecovery bool) error {
+func recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace workspace.Backend, workspaceIssue *workspace.Issue, nativeLanding, sourceRecovery bool) error {
 	source, ok := req.Execution.(ChangeSourceExecution)
 	if !ok || !workspaceIssue.NativeRework && !nativeLanding && !sourceRecovery && req.Execution.Recovery().SourceVersionID == "" && req.Execution.Recovery().Change == nil {
 		return nil
@@ -1652,17 +1652,11 @@ func (r *Runner) recoverRunChangeSource(ctx context.Context, req RunRequest, run
 		}
 	}
 
-	recovered, recoverErr := source.RecoverChangeSource(ctx)
-	if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, false) {
-		return fmt.Errorf("%w: recover native Change source: %w", ErrNativeRecoveryRequired, recoverErr)
-	}
-	if recoverErr != nil {
-		r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", recoverErr)
-	}
-	if recovered.Version.ID != "" {
+	recovered, err := source.RecoverChangeSource(ctx)
+	if err == nil && recovered.Version.ID != "" {
 		workspaceIssue.Source = &recovered
 	}
-	return nil
+	return err
 }
 
 func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backend, issue *workspace.Issue, nativeLanding bool) {
@@ -1683,7 +1677,7 @@ func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backen
 	if req.Execution != nil && !nativeLanding {
 		previous := req.Execution.Recovery().SourceAttempt()
 		refreshCheckpoint := previous != nil && previous.Checkpoint != nil && (previous.Checkpoint.WorktreeState == "dirty" || previous.Checkpoint.Resume == "fresh_checkout")
-		if issue.NativeRework && refreshCheckpoint || !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
+		if issue.RequireCheckpoint || issue.NativeRework && refreshCheckpoint || !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
 			issue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), issue.Source)
 		}
 		if issue.NativeRework && refreshCheckpoint && issue.Checkpoint != nil {
@@ -1851,14 +1845,19 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework || repairResume)
-	if err := r.recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery); err != nil {
-		return RunResult{}, err
-	}
+	sourceErr := recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery)
+	workspaceIssue.RequireCheckpoint = sourceErr != nil
 	if reviewRecovery != nil && !repairResume && workspaceIssue.Source != nil {
 		workspaceIssue.ReviewVersionID = workspaceIssue.Source.Version.ID
 		workspaceIssue.PullRequestHeadSHA = workspaceIssue.Source.Version.HeadSHA
 	}
 	restoreRunWorkspaceCheckpoint(req, runWorkspace, &workspaceIssue, nativeLanding)
+	if sourceErr != nil {
+		if !checkpointRefCoversChangeSource(sourceErr, workspaceIssue.Checkpoint, nativeLanding, false) {
+			return RunResult{}, fmt.Errorf("%w: recover native Change source: %w", ErrNativeRecoveryRequired, sourceErr)
+		}
+		r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", sourceErr)
+	}
 	var landingTarget NativeLandingTarget
 	if nativeLanding {
 		initialTarget, initialErr := landing.LandingTarget(ctx)
@@ -1934,6 +1933,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	defer stopHooks(&returnErr)
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
+		if sourceErr != nil && errors.Is(err, workspace.ErrCheckpointUnsafe) {
+			return RunResult{}, errors.Join(sourceErr, err)
+		}
 		sourceRecovery := workspaceIssue.NativeRework || workspaceIssue.Source != nil && workspaceIssue.Source.Transferred
 		if sourceRecovery && errors.Is(err, workspace.ErrMergeResolutionInvalid) {
 			return RunResult{}, fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, err)

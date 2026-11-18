@@ -25,7 +25,7 @@ func (l *LocalGit) RestoreCheckpointForFinalization(ctx context.Context, origina
 	issue.Identifier += "-finalization-" + checkpoint.CommitSHA
 	issue.BranchName = ""
 	issue.Source = nil
-	issue.Checkpoint, issue.requireCheckpoint = &checkpoint, true
+	issue.Checkpoint, issue.RequireCheckpoint = &checkpoint, true
 	info, err := l.Create(ctx, issue)
 	if err != nil {
 		return Info{}, issue, err
