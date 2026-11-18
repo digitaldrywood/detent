@@ -79,6 +79,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 		}
 	}
 
+	pgstoretest.SeedNeighborReportRows(t, admin, string(scope.Organization), 50)
 	freezeReportPlannerInputs(t, admin)
 	statementCounts := map[string]int{}
 	for _, test := range []struct {

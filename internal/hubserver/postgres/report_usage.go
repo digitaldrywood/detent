@@ -23,6 +23,12 @@ import (
 
 var _ reportstore.UsageReader = (*session)(nil)
 
+func (s *session) hasCostSources(ctx context.Context) (bool, error) {
+	var known bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cost_sources WHERE organization_id=$1)`, s.organization).Scan(&known)
+	return known, mapError(ctx, err)
+}
+
 func (s *session) ReadReportUsage(ctx context.Context, query reportstore.OverviewQuery) ([]reportstore.UsageFact, error) {
 	if query.Limit < 1 || query.Limit > 100000 {
 		return nil, errors.New("invalid report usage limit")
@@ -76,15 +82,23 @@ func (s *session) readAttemptUsageRows(ctx context.Context, query reportstore.Ov
 		projects[i] = string(attempts[i].ProjectID)
 		owners[ids[i]] = &attempts[i]
 	}
-	const usage = `SELECT u.* FROM (
+	current, err := s.hasCostSources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	usage := `SELECT u.* FROM (
+ SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency,'attempt' AS source_kind,u.usage_origin AS source_key
+ FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) AND u.period>=$3 AND u.period<$4`
+	if current {
+		usage += `
+ AND coalesce((SELECT false FROM report_usage_current unknown WHERE unknown.organization_id=u.organization_id AND unknown.attempt_id=u.attempt_id AND unknown.provider=u.provider AND unknown.model=u.model AND unknown.usage_kind IS NULL LIMIT 1),true)
+ UNION ALL
  SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,coalesce(u.currency,c.currency) AS currency,'current' AS source_kind,u.source_key AS source_key
  FROM report_usage_current u CROSS JOIN LATERAL (SELECT c.currency FROM cost_sources c WHERE c.organization_id=u.organization_id AND c.source_key=u.source_key LIMIT 1) c
  WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) AND u.period>=$3 AND u.period<$4
- AND (u.usage_kind IS DISTINCT FROM 'cumulative' OR coalesce((SELECT false FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model LIMIT 1),true))
- UNION ALL
- SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency,'attempt' AS source_kind,u.usage_origin AS source_key
- FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) AND u.period>=$3 AND u.period<$4
- AND coalesce((SELECT false FROM report_usage_current unknown WHERE unknown.organization_id=u.organization_id AND unknown.attempt_id=u.attempt_id AND unknown.provider=u.provider AND unknown.model=u.model AND unknown.usage_kind IS NULL LIMIT 1),true)
+ AND (u.usage_kind IS DISTINCT FROM 'cumulative' OR coalesce((SELECT false FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model LIMIT 1),true))`
+	}
+	usage += `
  ) u WHERE upper(u.currency)='USD' AND (u.attempt_id,u.project_id) IN (SELECT s.attempt_id,s.project_id FROM ROWS FROM (unnest($2::text[]),unnest($5::text[])) AS s(attempt_id,project_id))`
 	const order = "period,attempt_id,provider,model,source_kind,source_key,currency"
 	pages := reportFactPages(usage, order, query.Limit)
@@ -230,6 +244,13 @@ func (s *session) readAttemptUsageCoverage(ctx context.Context, ids []string) (b
 	if len(ids) == 0 {
 		return true, nil
 	}
+	current, err := s.hasCostSources(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !current {
+		return s.readImportedUsageCoverage(ctx, ids, true)
+	}
 	const sources = `SELECT c.source_key,c.resource_id,c.revision FROM cost_sources c WHERE c.organization_id=$1 AND c.bucket='runner_api' AND c.resource_id=ANY($2::text[])`
 	rows, err := s.db.Query(ctx, "WITH "+reportFactPages(sources, "resource_id,source_key", 100000)+`
  SELECT c.resource_id,u.complete AND u.revision=c.revision AND a.usage_pending_sequence=0 AND (u.usage_kind IS NOT NULL OR NOT EXISTS(SELECT 1 FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model AND active.usage_sequence>0)) FROM report_page c CROSS JOIN LATERAL (SELECT a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=c.resource_id LIMIT 1) a LEFT JOIN report_usage_current u ON u.organization_id=$1 AND u.source_key=c.source_key`, s.organization, ids)
@@ -265,14 +286,18 @@ func (s *session) readAttemptUsageCoverage(ctx context.Context, ids []string) (b
 	if len(missing) == 0 {
 		return complete, nil
 	}
+	return s.readImportedUsageCoverage(ctx, missing, complete)
+}
+
+func (s *session) readImportedUsageCoverage(ctx context.Context, missing []string, complete bool) (bool, error) {
 	const facts = `SELECT u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[])`
-	rows, err = s.db.Query(ctx, "WITH "+reportFactPages(facts, "attempt_id,period,provider,model,currency,usage_origin", 100000)+`, counted AS (SELECT f.attempt_id,count(*) AS actual,count(*) FILTER(WHERE f.usage_origin='import') AS historical FROM report_page f GROUP BY f.attempt_id)
+	rows, err := s.db.Query(ctx, "WITH "+reportFactPages(facts, "attempt_id,period,provider,model,currency,usage_origin", 100000)+`, counted AS (SELECT f.attempt_id,count(*) AS actual,count(*) FILTER(WHERE f.usage_origin='import') AS historical FROM report_page f GROUP BY f.attempt_id)
  SELECT f.attempt_id,f.actual,f.historical,coalesce(c.row_count,0),a.usage_pending_sequence FROM counted f CROSS JOIN LATERAL (SELECT a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=f.attempt_id LIMIT 1) a LEFT JOIN report_usage_import_coverage c ON c.organization_id=$1 AND c.attempt_id=f.attempt_id`, s.organization, missing)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
 	imported := map[string]bool{}
-	count = 0
+	count := 0
 	for rows.Next() {
 		var id string
 		var actual, historical, expected, pending int
