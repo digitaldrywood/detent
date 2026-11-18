@@ -319,7 +319,7 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential hubapi.
 	if current.Role == "owner" && credential.HostedRole != "owner" {
 		return operatortool.ErrAccessDenied
 	}
-	audit, err := s.prepareAccessAudit(ctx, credential.Hosted, "action", "DELETE "+hostedOrganizationBase+"/members/invitations/:invitation", "", http.StatusNoContent)
+	audit, recordAudit, err := s.prepareAccessAudit(ctx, credential.Hosted, "action", "DELETE "+hostedOrganizationBase+"/members/invitations/:invitation", "", http.StatusNoContent)
 	if err != nil {
 		return err
 	}
@@ -340,8 +340,8 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential hubapi.
 		if _, err := w.DeleteAccessInvitation(ctx, id); err != nil {
 			return err
 		}
-		if audit != nil {
-			_, err := w.RecordAccessAudit(ctx, *audit)
+		if recordAudit {
+			_, err := w.RecordAccessAudit(ctx, audit)
 			return err
 		}
 		return nil

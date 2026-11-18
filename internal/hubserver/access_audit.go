@@ -19,17 +19,17 @@ import (
 )
 
 func (s *Service) recordAccessAudit(ctx context.Context, identity *auth.HostedIdentity, event, route, project string, status int) error {
-	row, err := s.prepareAccessAudit(ctx, identity, event, route, project, status)
-	if err != nil || row == nil {
+	row, record, err := s.prepareAccessAudit(ctx, identity, event, route, project, status)
+	if err != nil || !record {
 		return err
 	}
-	return s.accessWrite(ctx, row.OrganizationID, func(w tenantstore.Writer) error { _, err := w.RecordAccessAudit(ctx, *row); return err })
+	return s.accessWrite(ctx, row.OrganizationID, func(w tenantstore.Writer) error { _, err := w.RecordAccessAudit(ctx, row); return err })
 }
 
-func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions) (*accessstore.Audit, error) {
+func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions) (accessstore.Audit, bool, error) {
 	identity := scope.Credential.Hosted
 	if identity == nil {
-		return nil, nil
+		return accessstore.Audit{}, false, nil
 	}
 	actor := scope.Actor()
 	metadata, ok := mutation.FromContext(ctx)
@@ -39,7 +39,7 @@ func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope hubsco
 	case actor.ViaKey != "":
 		metadata = mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.Organization), ProjectID: string(scope.Project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: hubapi.NewID("api")}
 	default:
-		return nil, nil
+		return accessstore.Audit{}, false, nil
 	}
 	route := metadata.Action
 	switch metadata.Source {
@@ -47,20 +47,20 @@ func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope hubsco
 		route = "mcp " + route
 	case "api":
 	default:
-		return nil, nil
+		return accessstore.Audit{}, false, nil
 	}
 	return s.prepareAccessAudit(mutation.WithContext(ctx, metadata), identity, "action", route, string(scope.Project), http.StatusOK)
 }
 
-func (s *Service) prepareAccessAudit(ctx context.Context, identity *auth.HostedIdentity, event, route, project string, status int) (*accessstore.Audit, error) {
+func (s *Service) prepareAccessAudit(ctx context.Context, identity *auth.HostedIdentity, event, route, project string, status int) (accessstore.Audit, bool, error) {
 	if identity == nil {
-		return nil, nil
+		return accessstore.Audit{}, false, nil
 	}
 	if _, ok := mutation.FromContext(ctx); !ok && status < http.StatusBadRequest {
 		switch event {
 		case "billing_viewed", "billing_exported":
 			if identity.SupportActor == "" {
-				return nil, nil
+				return accessstore.Audit{}, false, nil
 			}
 		case "action", "administration":
 			method, _, _ := strings.Cut(route, " ")
@@ -68,7 +68,7 @@ func (s *Service) prepareAccessAudit(ctx context.Context, identity *auth.HostedI
 			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 			default:
 				if identity.SupportActor == "" {
-					return nil, nil
+					return accessstore.Audit{}, false, nil
 				}
 			}
 		}
@@ -91,29 +91,29 @@ func (s *Service) prepareAccessAudit(ctx context.Context, identity *auth.HostedI
 			Outcome string `json:"outcome"`
 		}{m, event})
 		if err != nil {
-			return nil, err
+			return accessstore.Audit{}, false, err
 		}
 		store := s.runDetailStore()
 		if store == nil {
-			return nil, artifact.ErrStorage
+			return accessstore.Audit{}, false, artifact.ErrStorage
 		}
 		ref, err := store.StoreDetail(ctx, string(row.OrganizationID), raw)
 		if err != nil {
-			return nil, err
+			return accessstore.Audit{}, false, err
 		}
 		if ref.Validate(string(row.OrganizationID)) != nil || ref.BindingID != "" || ref.CustomerOwned || ref.SchemaVersion != 1 || ref.UncompressedSize != int64(len(raw)) {
-			return nil, artifact.ErrIntegrity
+			return accessstore.Audit{}, false, artifact.ErrIntegrity
 		}
 		verified, err := store.ReadDetail(ctx, string(row.OrganizationID), ref)
 		if err != nil {
-			return nil, err
+			return accessstore.Audit{}, false, err
 		}
 		if !bytes.Equal(verified, raw) {
-			return nil, artifact.ErrIntegrity
+			return accessstore.Audit{}, false, artifact.ErrIntegrity
 		}
 		row.Mutation = &ref
 	}
-	return &row, nil
+	return row, true, nil
 }
 
 func (s *Service) logoutAccessSession(ctx context.Context, hash string, identity *auth.HostedIdentity) (operatortool.SignOutResult, error) {

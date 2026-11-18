@@ -267,7 +267,7 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope hubsco
 	if err != nil {
 		return nil, err
 	}
-	mutationAudit, err := s.prepareWorkItemMutationAudit(ctx, scope, options)
+	mutationAudit, recordAudit, err := s.prepareWorkItemMutationAudit(ctx, scope, options)
 	if err != nil {
 		return nil, err
 	}
@@ -343,8 +343,8 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope hubsco
 		if err != nil {
 			return err
 		}
-		if mutationAudit != nil {
-			if _, err := w.RecordAccessAudit(ctx, *mutationAudit); err != nil {
+		if recordAudit {
+			if _, err := w.RecordAccessAudit(ctx, mutationAudit); err != nil {
 				return err
 			}
 		}

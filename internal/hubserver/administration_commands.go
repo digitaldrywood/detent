@@ -121,7 +121,7 @@ func (s *Service) removeHostedMemberFor(ctx context.Context, credential hubapi.A
 		return err
 	}
 	scope := hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}
-	audit, err := s.prepareAccessAudit(ctx, credential.Hosted, "action", "DELETE "+hostedOrganizationBase+"/members/:member", "", http.StatusNoContent)
+	audit, recordAudit, err := s.prepareAccessAudit(ctx, credential.Hosted, "action", "DELETE "+hostedOrganizationBase+"/members/:member", "", http.StatusNoContent)
 	if err != nil {
 		return err
 	}
@@ -132,8 +132,8 @@ func (s *Service) removeHostedMemberFor(ctx context.Context, credential hubapi.A
 		if err := w.RevokeAccessMember(ctx, member.UserID, s.config.Clock()); err != nil {
 			return err
 		}
-		if audit != nil {
-			_, err := w.RecordAccessAudit(ctx, *audit)
+		if recordAudit {
+			_, err := w.RecordAccessAudit(ctx, audit)
 			return err
 		}
 		return nil
