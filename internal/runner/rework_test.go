@@ -330,6 +330,15 @@ func (e *reworkReviewExecution) RecordValidator(_ context.Context, result gate.V
 	return nil
 }
 
+func newReworkWorkspace(t *testing.T, source, root string) *workspace.LocalGit {
+	t.Helper()
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: root, SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return backend
+}
+
 func TestDirtyCheckpointReworkMakesProgress(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -352,10 +361,7 @@ func TestDirtyCheckpointReworkMakesProgress(t *testing.T) {
 			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
 			runRunnerGit(t, source, "remote", "add", "origin", remote)
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
-			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
-			if err != nil {
-				t.Fatal(err)
-			}
+			backend := newReworkWorkspace(t, source, filepath.Join(t.TempDir(), "workspaces"))
 			issue := connector.Issue{ID: "work", Identifier: "example#1", State: "Rework"}
 			ownedIssue := workspaceIssue("default", issue)
 			info, err := backend.Create(t.Context(), ownedIssue)
@@ -363,15 +369,11 @@ func TestDirtyCheckpointReworkMakesProgress(t *testing.T) {
 				t.Fatal(err)
 			}
 			base := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
-			if err := os.WriteFile(filepath.Join(info.Path, "checkpoint.md"), []byte("recorded work\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeLocalProgressFile(t, info.Path, "checkpoint.md", "recorded work\n")
 			if test.staged {
 				runRunnerGit(t, info.Path, "add", "checkpoint.md")
 			}
-			if err := os.WriteFile(filepath.Join(info.Path, "unstaged.md"), []byte("retained work\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeLocalProgressFile(t, info.Path, "unstaged.md", "retained work\n")
 			ref, pushed, err := backend.PushCheckpointRef(t.Context(), info, ownedIssue, workspace.CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
 			if err != nil || !pushed {
 				t.Fatalf("publish fixture: %+v, %v", ref, err)
@@ -478,6 +480,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		authorityLost            bool
 		resolvedPause            bool
 		checkpointRetry          string
+		missingBundle            bool
 		pausedLaterConflict      bool
 		failedFinalGate          bool
 		lateConflict             bool
@@ -491,6 +494,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "resolved source"},
 		{name: "resolved pause integrates target before validation with two remaining picks", resolvedPause: true},
 		{name: "Todo retry starts from current source", resolvedPause: true, checkpointRetry: "Todo"},
+		{name: "Todo retry requires unavailable Change source", resolvedPause: true, checkpointRetry: "Todo", missingBundle: true},
 		{name: "In Progress retry starts from current source", resolvedPause: true, checkpointRetry: "In Progress"},
 		{name: "Rework retry restores paused checkpoint before validation", resolvedPause: true, checkpointRetry: "Rework"},
 		{name: "resolved pause preserves later replay conflict", resolvedPause: true, pausedLaterConflict: true},
@@ -551,10 +555,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
 			runRunnerGit(t, source, "remote", "add", "origin", remote)
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
-			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
-			if err != nil {
-				t.Fatal(err)
-			}
+			backend := newReworkWorkspace(t, source, filepath.Join(t.TempDir(), "workspaces"))
 			issue := connector.Issue{ID: "native", Identifier: "native#141", State: "Rework"}
 			if test.normal {
 				issue.State = "In Progress"
@@ -595,7 +596,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			if test.resolvedPause {
 				ownedIssue := workspaceIssue("default", issue)
 				ownedIssue.NativeRework = true
-				prepared, err := backend.(workspace.ReworkPreparer).PrepareRework(t.Context(), info, ownedIssue, workspace.MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
+				prepared, err := backend.PrepareRework(t.Context(), info, ownedIssue, workspace.MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
 				if err != nil || prepared.Status != workspace.MergePrepareStatusConflict {
 					t.Fatalf("pause original replay: %+v, %v", prepared, err)
 				}
@@ -649,11 +650,8 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					}
 					runRunnerGit(t, source, "config", "gpg.ssh.program", program)
 				}
-				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if report := backend.(*workspace.LocalGit).CommitReport(); report.Signing != "ssh" {
+				backend = newReworkWorkspace(t, source, filepath.Dir(info.Path))
+				if report := backend.CommitReport(); report.Signing != "ssh" {
 					t.Fatalf("signing fixture was not captured at startup: %+v", report)
 				}
 			}
@@ -669,20 +667,18 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			if test.signingFail {
 				agent.signer = ""
 				agent.afterStage = func() {
-					if err := os.WriteFile(signingUnavailable, nil, 0o600); err != nil {
-						t.Fatal(err)
-					}
+					writeLocalProgressFile(t, filepath.Dir(signingUnavailable), filepath.Base(signingUnavailable), "")
 				}
 			}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
 			if test.checkpointRetry != "" {
 				ownedIssue := workspaceIssue("default", issue)
 				ownedIssue.NativeRework = true
-				checkpoint, pushed, err := backend.(workspace.CheckpointRefPublisher).PushCheckpointRef(t.Context(), info, ownedIssue, workspace.CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
+				checkpoint, pushed, err := backend.PushCheckpointRef(t.Context(), info, ownedIssue, workspace.CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
 				if err != nil || !pushed {
 					t.Fatalf("publish paused checkpoint: %+v, %v", checkpoint, err)
 				}
-				local, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, ownedIssue)
+				local, err := backend.RecoveryState(t.Context(), info, ownedIssue)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -696,14 +692,15 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, source, "clone", remote, clone)
 				runRunnerGit(t, clone, "config", "user.name", "Test")
 				runRunnerGit(t, clone, "config", "user.email", "test@example.com")
-				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "retry-workspaces"), SourceRoot: clone, AutoBranch: true})
-				if err != nil {
-					t.Fatal(err)
-				}
+				backend = newReworkWorkspace(t, clone, filepath.Join(t.TempDir(), "retry-workspaces"))
 				issue.State = test.checkpointRetry
 			}
 			request := RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}
-			if test.resolvedPause {
+			bundleErr := fmt.Errorf("%w: Change bundle unavailable", ErrNativeRecoveryRequired)
+			if test.missingBundle {
+				execution.recovery.Change = &tracker.NativeChangeReference{ChangeID: "change_current", VersionID: "version_current", HeadSHA: original}
+				request.Execution = &reworkReviewExecution{reworkArtifactsExecution: *execution, recoverError: bundleErr}
+			} else if test.resolvedPause {
 				request.Execution = &reworkValidationExecution{execution}
 			}
 			if test.reviewResume != "" {
@@ -831,10 +828,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, freshSource, "config", "user.name", "Test User")
 				runRunnerGit(t, freshSource, "config", "user.email", "test@example.com")
 				runRunnerGit(t, freshSource, "config", "commit.gpgsign", "false")
-				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "fresh-workspaces"), SourceRoot: freshSource, AutoBranch: true})
-				if err != nil {
-					t.Fatal(err)
-				}
+				backend = newReworkWorkspace(t, freshSource, filepath.Join(t.TempDir(), "fresh-workspaces"))
 				switch test.feedback {
 				case "change":
 					owner.recovery.ChangeDetail.Discussion = []tracker.ChangeDiscussion{{ID: "feedback_current", VersionID: version.ID, Body: "The host evidence is available; independently review it without changing source.", Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, CreatedAt: time.Unix(300, 0)}}
@@ -933,7 +927,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 
 			prepareConflict := (test.refusal == workspace.LandRefusalConflict || test.baseRefresh) && !test.historical && test.laterRefusal == ""
 			if test.refusal != "" {
-				local, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, workspaceIssue("default", issue))
+				local, err := backend.RecoveryState(t.Context(), info, workspaceIssue("default", issue))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1014,6 +1008,12 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				r.store = &fakeSessionStore{sessionID: 2, resumeState: store.AgentResumeState{DetentSessionID: 1, ProviderThreadID: "source-thread", ProviderSessionID: "source-session", RequestedModel: "provider_default", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode}}
 			}
 			_, err = r.Run(t.Context(), request)
+			if test.missingBundle {
+				if !errors.Is(err, bundleErr) || agent.calls != 0 {
+					t.Fatalf("unavailable Change at %s: err=%v, provider calls=%d at %q (repository HEAD %s)", original, err, agent.calls, agent.beforeHead, target)
+				}
+				return
+			}
 			if freshRetry {
 				if err != nil || agent.beforeHead != target {
 					t.Fatalf("provider started at %q, want current source %s: %v", agent.beforeHead, target, err)

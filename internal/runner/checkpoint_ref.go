@@ -70,8 +70,8 @@ func nativeRestorableCheckpoint(recovery tracker.NativeRecovery, current *worksp
 // checkpointRefCoversChangeSource lets a non-landing run restore the newest
 // git checkpoint when the Hub cannot return the Change source, instead of
 // refusing work that the project repository still holds.
-func checkpointRefCoversChangeSource(err error, recovery tracker.NativeRecovery, landing, fresh bool) bool {
-	return !landing && !fresh && errors.Is(err, ErrNativeRecoveryRequired) && nativeRestorableCheckpoint(recovery, nil) != nil
+func checkpointRefCoversChangeSource(err error, checkpoint *workspace.CheckpointRef, landing, fresh bool) bool {
+	return !landing && !fresh && errors.Is(err, ErrNativeRecoveryRequired) && checkpoint != nil
 }
 
 func newCheckpointRefs(backend workspace.Backend, execution Execution, info workspace.Info, issue workspace.Issue, state *workspace.RecoveryState) *checkpointRefs {

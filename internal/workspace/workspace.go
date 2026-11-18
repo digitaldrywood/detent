@@ -242,7 +242,7 @@ type Issue struct {
 	ReleaseDelivery         *tracker.ReleaseDelivery
 	Source                  *ChangeSource
 	Checkpoint              *CheckpointRef
-	requireCheckpoint       bool
+	RequireCheckpoint       bool
 	Landing                 *LandOptions
 	NoChangeNeeded          bool
 	NativeRework            bool
@@ -688,7 +688,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err != nil {
 			return Info{}, err
 		}
-		if checkpoint.Transaction != nil && !issue.NativeRework && !issue.requireCheckpoint && checkpoint.Ref == CheckpointRefName(issue) {
+		if checkpoint.Transaction != nil && !issue.NativeRework && !issue.RequireCheckpoint && checkpoint.Ref == CheckpointRefName(issue) {
 			issue.Checkpoint, issue.FreshCheckout = nil, true
 		} else if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
 			return Info{}, err
