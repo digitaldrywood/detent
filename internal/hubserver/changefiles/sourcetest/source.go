@@ -72,7 +72,9 @@ func Checkout(t *testing.T, input *tracker.ChangeVersionInput, content ...[]byte
 	}
 	git(exec.CommandContext(ctx, "git", "add", "source.txt"))
 	git(exec.CommandContext(ctx, "git", "commit", "-m", "base"))
-	base := strings.TrimSpace(git(exec.CommandContext(ctx, "git", "rev-parse", "HEAD")))
+	const baseRef = "refs/fixture/base"
+	git(exec.CommandContext(ctx, "git", "update-ref", baseRef, "HEAD"))
+	base := strings.TrimSpace(git(exec.CommandContext(ctx, "git", "rev-parse", baseRef)))
 	data := []byte(input.HeadSHA + "\n")
 	if len(content) > 0 && content[0] != nil {
 		data = content[0]
@@ -91,12 +93,13 @@ func Checkout(t *testing.T, input *tracker.ChangeVersionInput, content ...[]byte
 	git(exec.CommandContext(ctx, "git", "commit", "--allow-empty", "-m", "reviewed source"))
 	head := strings.TrimSpace(git(exec.CommandContext(ctx, "git", "rev-parse", "HEAD")))
 	bundlePath := filepath.Join(directory, "source.bundle")
-	git(exec.CommandContext(ctx, "git", "bundle", "create", "source.bundle", "HEAD", "^HEAD^{/^base$}"))
+	git(exec.CommandContext(ctx, "git", "bundle", "create", "source.bundle", "HEAD", "^"+baseRef))
 	bundle, err := os.ReadFile(bundlePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	diff := git(exec.CommandContext(ctx, "git", "diff", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", "HEAD^{/^base$}", "HEAD", "--"))
+	diff := git(exec.CommandContext(ctx, "git", "diff", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", baseRef, "HEAD", "--"))
+	git(exec.CommandContext(ctx, "git", "update-ref", "-d", baseRef))
 	input.BaseSHA, input.HeadSHA, input.MergeBaseSHA = base, head, base
 	input.Source = &tracker.ChangeSource{
 		Format: "git-bundle", BaseSHA: base, HeadSHA: head,
