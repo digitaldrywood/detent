@@ -122,7 +122,7 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	info.Created = created
 	if created {
 		if err := f.runHook(ctx, "after_create", f.hooks.AfterCreate, info, issue); err != nil {
-			if stopErr := f.uses.stopHooks(ctx, info.Path); stopErr != nil {
+			if stopErr := f.uses.Stop(ctx, info.Path); stopErr != nil {
 				f.logger.Warn("workspace hook cleanup incomplete", "error", stopErr)
 				return Info{}, err
 			}
@@ -146,7 +146,7 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 		return CleanupResult{}, err
 	}
 	result := CleanupResult{}
-	release, ok := f.uses.cleanup(info.Path)
+	release, ok := f.uses.TryCleanup(info.Path)
 	if !ok {
 		return result, fmt.Errorf("%w: workspace in use", ErrWorkspacePreserved)
 	}
@@ -159,7 +159,7 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 		return CleanupResult{}, err
 	}
 	if !exists {
-		return result, f.uses.stopHooks(ctx, info.Path)
+		return result, f.uses.Stop(ctx, info.Path)
 	}
 	if err := f.checkPreservedWorkspace(info); err != nil {
 		return result, err
@@ -167,11 +167,11 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
-	if _, err := f.uses.removableHooks(ctx, info.Path); err != nil {
+	if err := f.uses.CheckRemoval(ctx, info.Path); err != nil {
 		return result, err
 	}
 	hookErr := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue)
-	result.Processes, err = f.uses.reapHooks(ctx, info.Path)
+	result.Processes, err = f.uses.Reap(ctx, info.Path)
 	if hookErr != nil || err != nil {
 		return result, errors.Join(hookErr, err)
 	}
@@ -414,13 +414,13 @@ func (f *Filesystem) runHook(ctx context.Context, name string, command string, i
 
 	f.logger.Info("running filesystem workspace hook", slog.String("hook", name), slog.String("path", info.Path), slog.String("command", command))
 
-	owner, ownerErr := f.uses.hookOwner(ctx, info.Path)
+	owner, ownerErr := f.uses.Start(ctx, info.Path)
 	if ownerErr != nil {
 		return ownerErr
 	}
 	issue.hookOwner = owner
 	output, err := runHookCommand(hookCtx, command, f.hooks, info, issue)
-	err = errors.Join(err, owner.commandFinished(ctx, err))
+	err = errors.Join(err, owner.CommandFinished(ctx, err))
 	if err == nil {
 		return nil
 	}

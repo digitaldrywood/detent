@@ -111,10 +111,10 @@ func TestIndependentFailureReviewResume(t *testing.T) {
 			owner := &independentReviewExecution{
 				reworkReviewExecution: &reworkReviewExecution{
 					reworkArtifactsExecution: reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: recovery}},
-					source:                   *current,
 				},
 				receipts: retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}},
 			}
+			owner.Source = *current
 			input := NativeValidation{Version: &version, Diff: &connector.ValidationDiff{Repository: version.Repository, BaseSHA: base, HeadSHA: head, Digest: "fixture-diff"}}
 			receipt, err := validationStepBinding(owner, input, "review")
 			if err != nil {

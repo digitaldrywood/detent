@@ -26,38 +26,13 @@ func TestWorkspacePreparationRetriesIssueWithoutPausingProject(t *testing.T) {
 		err      error
 		postTurn bool
 	}{
-		{
-			name:     "owned process cleanup deadline",
-			err:      errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded),
-			postTurn: true,
-		},
-		{
-			name:     "owned process signal failure",
-			err:      errors.Join(runpkg.ErrWorkerProcessReap, errors.New("owned process remained alive")),
-			postTurn: true,
-		},
-		{
-			name: "dangling gitdir",
-			err:  fmt.Errorf("%w: create workspace: dangling gitdir", runpkg.ErrWorkspacePreparation),
-		},
-		{
-			name: "stale clean recovery",
-			err:  fmt.Errorf("%w: create workspace: recover stale clean workspace", runpkg.ErrWorkspacePreparation),
-		},
-		{
-			name: "after_create database timeout",
-			err:  fmt.Errorf("%w: create workspace: after_create: workspace db: postgresql://127.0.0.1:5432: timeout: context deadline exceeded", runpkg.ErrWorkspacePreparation),
-		},
-		{
-			name:     "native rebase metadata after resolution",
-			err:      fmt.Errorf("%w: finalize native rework: packed-refs.lock: operation not permitted", runpkg.ErrWorkspacePreparation),
-			postTurn: true,
-		},
-		{
-			name:     "native rebase signer infrastructure",
-			err:      fmt.Errorf("%w: finalize native rework: gpg failed to sign the data", runpkg.ErrWorkspacePreparation),
-			postTurn: true,
-		},
+		{"owned process cleanup deadline", errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded), true},
+		{"owned process signal failure", errors.Join(runpkg.ErrWorkerProcessReap, errors.New("owned process remained alive")), true},
+		{"dangling gitdir", fmt.Errorf("%w: create workspace: dangling gitdir", runpkg.ErrWorkspacePreparation), false},
+		{"stale clean recovery", fmt.Errorf("%w: create workspace: recover stale clean workspace", runpkg.ErrWorkspacePreparation), false},
+		{"after_create database timeout", fmt.Errorf("%w: create workspace: after_create: workspace db: postgresql://127.0.0.1:5432: timeout: context deadline exceeded", runpkg.ErrWorkspacePreparation), false},
+		{"native rebase metadata after resolution", fmt.Errorf("%w: finalize native rework: packed-refs.lock: operation not permitted", runpkg.ErrWorkspacePreparation), true},
+		{"native rebase signer infrastructure", fmt.Errorf("%w: finalize native rework: gpg failed to sign the data", runpkg.ErrWorkspacePreparation), true},
 	}
 
 	for _, tt := range tests {

@@ -1,11 +1,15 @@
 //go:build darwin || linux
 
-package runner
+package hooklifetime_test
 
 import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runner/runnertest"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -16,30 +20,35 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace/workspacetest"
 )
 
-func TestDetachedHookHelper(t *testing.T) { workspacetest.RunDetachedHook(t) }
-
 type hookTestWorkspace struct {
 	*workspace.Filesystem
-	created func()
+	created func(workspace.Issue)
 }
 
 func (w hookTestWorkspace) Create(ctx context.Context, issue workspace.Issue) (workspace.Info, error) {
 	info, err := w.Filesystem.Create(ctx, issue)
 	if err == nil {
-		w.created()
+		w.created(issue)
 	}
 	return info, err
 }
 
-type hookServiceBackend struct {
-	AgentBackend
-	work func()
+type serviceAgent func(runner.AgentUpdateHandler) error
+
+func (a serviceAgent) RunTurn(ctx context.Context, req runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	return runner.AgentTurnResult{}, a(update)
 }
 
-func (b hookServiceBackend) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
-	b.work()
-	return b.AgentBackend.RunTurn(ctx, req, update)
+type leaseExecution struct{ validateErr error }
+
+func (e *leaseExecution) Guard(ctx context.Context) (context.Context, func(), error) {
+	return ctx, func() {}, e.validateErr
 }
+func (e *leaseExecution) Validate(context.Context) error                             { return e.validateErr }
+func (*leaseExecution) Start(context.Context, tracker.NativeExecutionIdentity) error { return nil }
+func (*leaseExecution) Checkpoint(context.Context, tracker.NativeCheckpoint) error   { return nil }
+func (*leaseExecution) Finish(context.Context, string) error                         { return nil }
+func (*leaseExecution) Recovery() tracker.NativeRecovery                             { return tracker.NativeRecovery{} }
 
 func TestRunTeardownStopsDetachedHook(t *testing.T) {
 	for _, mode := range []string{"success", "cancellation", "drain", "lease loss", "lease loss with incomplete cleanup"} {
@@ -52,33 +61,40 @@ func TestRunTeardownStopsDetachedHook(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
-			ex := &testExecution{}
+			ex := &leaseExecution{}
 			scan := hookproc.ReapProcessScanner
 			cleanupFailure := errors.New("fixture ownership unavailable")
-			agent := AgentBackend(&fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "result", Delta: "Complete"}}})
-			if mode == "cancellation" {
-				agent = &cancelingCodexClient{cancel: func() { cancel(context.Canceled) }}
-			}
-			backend := hookTestWorkspace{fs, func() {
+			var created workspace.Issue
+			served := false
+			agent := serviceAgent(func(update runner.AgentUpdateHandler) error {
+				daemon.Request(t)
+				served = true
+				if mode == "cancellation" {
+					cancel(context.Canceled)
+					return context.Canceled
+				}
+				return update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ItemID: "result", Delta: "Complete"})
+			})
+			backend := hookTestWorkspace{fs, func(issue workspace.Issue) {
+				created = issue
 				if !daemon.Alive(t) {
 					t.Fatal("service exited during after_create")
 				}
 				switch mode {
 				case "drain":
-					cancel(NewCancellationCause(context.Canceled, "runner_update"))
+					cancel(runner.NewCancellationCause(context.Canceled, "runner_update"))
 				case "lease loss", "lease loss with incomplete cleanup":
 					if mode == "lease loss with incomplete cleanup" {
 						hookproc.ReapProcessScanner = func(context.Context, string) ([]int, error) { return nil, cleanupFailure }
 					}
-					ex.validateErr = ErrExecutionAuthorityUnavailable
+					ex.validateErr = runner.ErrExecutionAuthorityUnavailable
 				}
 			}}
-			served := false
-			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: backend, Workflow: config.Workflow{Prompt: "Work"}, AgentBackend: hookServiceBackend{agent, func() { daemon.Request(t); served = true }}})
+			r, err := runner.NewRunner(runner.Dependencies{ProcessSource: func(context.Context, string) ([]int, error) { return nil, nil }, Workspace: backend, Workflow: config.Workflow{Prompt: "Work"}, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}
-			req := RunRequest{Issue: connector.Issue{ID: "example", Identifier: "example/repository#1"}}
+			req := runner.RunRequest{Issue: connector.Issue{ID: "example", Identifier: "example/repository#1"}}
 			if mode == "lease loss" || mode == "lease loss with incomplete cleanup" {
 				req.Execution = ex
 			}
@@ -86,7 +102,7 @@ func TestRunTeardownStopsDetachedHook(t *testing.T) {
 			var want error
 			switch mode {
 			case "lease loss", "lease loss with incomplete cleanup":
-				want = ErrExecutionAuthorityUnavailable
+				want = runner.ErrExecutionAuthorityUnavailable
 			case "drain", "cancellation":
 				want = context.Canceled
 			}
@@ -98,11 +114,11 @@ func TestRunTeardownStopsDetachedHook(t *testing.T) {
 			}
 			if mode == "lease loss with incomplete cleanup" {
 				var unverified *workspace.HookExitUnverifiedError
-				if !daemon.Alive(t) || !errors.As(err, &unverified) || !errors.Is(err, cleanupFailure) || errors.Is(err, ErrWorkerProcessReap) {
+				if !daemon.Alive(t) || !errors.As(err, &unverified) || !errors.Is(err, cleanupFailure) || errors.Is(err, runner.ErrWorkerProcessReap) {
 					t.Fatal("incomplete cleanup changed the primary failure or lost the service")
 				}
 				hookproc.ReapProcessScanner = scan
-				if _, err := fs.CleanupIssue(t.Context(), workspaceIssue(r.projectID, req.Issue)); err != nil {
+				if _, err := fs.CleanupIssue(t.Context(), created); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -156,12 +172,8 @@ func TestProgressHookStopsBeforeCheckoutRelease(t *testing.T) {
 				}
 				released = true
 			}}
-			r, err := NewRunner(Dependencies{Workspace: backend, ProcessSource: emptyProcessSource, AgentBackend: &fakeCodexClient{}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			execution := &progressSourceExecution{source: workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", Source: &tracker.ChangeSource{}}}}}
-			_, finish, err := r.progressWorkspace(t.Context(), RunRequest{Issue: connector.Issue{ID: "example", Identifier: "EXAMPLE-1"}, Execution: execution}, progresscheck.Request{SourceSHA: "head"})
+			source := runnertest.RecoveredSource{Source: workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", Source: &tracker.ChangeSource{}}}}}
+			_, finish, err := runworkspace.PrepareProgress(t.Context(), backend, workspace.Issue{ID: "example", Identifier: "EXAMPLE-1"}, source, progresscheck.Request{SourceSHA: "head"})
 			if finish != nil {
 				service.Request(t)
 				finish(&err)
