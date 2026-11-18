@@ -44,37 +44,16 @@ WHERE stored.sha256=excluded.sha256 AND stored.content=excluded.content`, s.orga
 
 func (s *session) reclaimDetailObjects(ctx context.Context, cutoff time.Time, after string, limit int) (string, int, error) {
 	var keys []string
-	rows, err := s.db.Query(ctx, `SELECT object_key FROM hub_detail_objects WHERE organization_id=$1 AND object_key>$2 ORDER BY object_key LIMIT $3`, s.organization, after, limit)
+	err := s.db.QueryRow(ctx, `SELECT ARRAY(SELECT object_key FROM hub_detail_objects WHERE organization_id=$1 AND object_key>$2 AND created_at<$3 ORDER BY object_key LIMIT $4 FOR UPDATE)`, s.organization, after, cutoff, limit).Scan(&keys)
+	if err != nil || len(keys) == 0 {
+		return "", 0, mapError(ctx, err)
+	}
+	tag, err := s.db.Exec(ctx, `DELETE FROM hub_detail_objects WHERE organization_id=$1 AND created_at<$3 AND object_key IN (
+ SELECT c.key FROM unnest($2::text[]) AS c(key) WHERE NOT (`+attachmentReferenced+`))`, s.organization, keys, cutoff)
 	if err != nil {
 		return "", 0, mapError(ctx, err)
 	}
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			rows.Close()
-			return "", 0, mapError(ctx, err)
-		}
-		keys = append(keys, key)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return "", 0, mapError(ctx, err)
-	}
-	reclaimed := 0
-	for _, key := range keys {
-		referenced, err := s.AttachmentObjectExists(ctx, "", key)
-		if err != nil || referenced {
-			if err != nil {
-				return "", reclaimed, err
-			}
-			continue
-		}
-		tag, err := s.db.Exec(ctx, `DELETE FROM hub_detail_objects WHERE organization_id=$1 AND object_key=$2 AND created_at<$3`, s.organization, key, cutoff)
-		if err != nil {
-			return "", reclaimed, mapError(ctx, err)
-		}
-		reclaimed += int(tag.RowsAffected())
-	}
+	reclaimed := int(tag.RowsAffected())
 	if len(keys) < limit {
 		return "", reclaimed, nil
 	}
