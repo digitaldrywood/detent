@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -176,4 +177,18 @@ func ReplacementSource(t *testing.T, source, base string) tracker.ChangeSourceCa
 		t.Fatal(err)
 	}
 	return capture
+}
+
+func WaitForDeferredReview(t *testing.T, orch *orchestrator.Orchestrator, issueID string) {
+	t.Helper()
+	testenv.WaitUntil(t, t.Context(), func() error {
+		state, err := orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		if !state.Retry[issueID].CompletionDeferred {
+			return errors.New("waiting for published review handoff")
+		}
+		return nil
+	})
 }
