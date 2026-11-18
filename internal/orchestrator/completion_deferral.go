@@ -566,97 +566,105 @@ func recoveredDeferredCompletionClaim(o *Orchestrator, issue connector.Issue, no
 func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *State, now time.Time) bool {
 	settled := true
 	for _, issueID := range sortedKeys(state.deferredCompletions) {
-		retry := state.Retry[issueID]
-		if !retry.DueAt.IsZero() && now.Before(retry.DueAt) {
-			continue
-		}
-		record := state.deferredCompletions[issueID]
-		if !record.AuthorityRestored {
-			claim, err := o.restoreDeferredExecution(ctx, record)
-			if err != nil {
-				if errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
-					state.Running[issueID] = record.Running
-					o.rejectUnavailableCompletion(ctx, state, record.completion(), record.Running, err, false)
-					continue
-				}
-				o.observeTrackerReadFailure(state, "", err, now)
-				retry.DueAt = now.Add(o.cfg.PollInterval)
-				state.Retry[issueID] = retry
-				settled = false
-				continue
-			}
-			record.AuthorityRestored = true
-			state.deferredCompletions[issueID] = record
-			if claim.Issue.ID != "" {
-				state.Claimed[issueID] = claim
-			}
-			o.captureDeferredExecution(&record)
-			record.DeferredAt = now
-			record.Persisted = false
-		}
-		if !record.Persisted {
-			record.DeferredAt = now
-			if !o.persistDeferredCompletion(ctx, state, record) {
-				retry.DueAt = now.Add(o.cfg.PollInterval)
-				state.Retry[issueID] = retry
-				settled = false
-				continue
-			}
-			record.Persisted = true
-			state.deferredCompletions[issueID] = record
-		}
-		delete(state.deferredCompletions, issueID)
-		delete(state.Retry, issueID)
-		state.Running[issueID] = record.Running
-		if _, ok := state.Claimed[issueID]; !ok {
-			state.Claimed[issueID] = recoveredDeferredCompletionClaim(o, record.Running.Issue, now)
-		}
-		completion := record.completion()
-		if completion.Err == nil && completion.Result.NativeChange != nil {
-			if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
-				execution := source.RunExecution(issueID)
-				if publisher, ok := execution.(runpkg.CompletionExecution); ok {
-					err := execution.Validate(ctx)
-					if err == nil {
-						err = publisher.PrepareFinish(ctx, "succeeded", completion.Result.FinalMessage, nil)
-					}
-					if err != nil {
-						if record.Availability.Class == string(gate.ReasonAutomatedReviewMissing) {
-							err = fmt.Errorf("%w: %w", errNativeReviewPending, err)
-						}
-						o.deferTrackerUnavailableCompletion(ctx, state, completion, record.Running, err)
-						if _, deferred := state.deferredCompletions[issueID]; deferred {
-							settled = false
-						}
-						continue
-					}
-					if changes, ok := execution.(runpkg.ChangeExecution); ok {
-						completion.Result.NativeChange = changes.NativeChange()
-					}
-					if record.Availability.Class == string(gate.ReasonAutomatedReviewMissing) && completion.Result.NativeChange != nil {
-						change, review, err := o.refreshNativeChangeReview(ctx, issueID, completion.Result.NativeChange)
-						completion.Result.NativeChange = change
-						if err == nil && change.VersionError == "" && !change.Reviewed && !review.ChangesRequested {
-							err = o.continueNativeRun(ctx, state, completion, record.Running, true)
-							if err == nil {
-								continue
-							}
-						}
-						if err != nil {
-							o.deferTrackerUnavailableCompletion(ctx, state, completion, record.Running, fmt.Errorf("%w: %w", errNativeReviewPending, err))
-							settled = false
-							continue
-						}
-					}
-				}
-			}
-		}
-		o.handleRunResult(ctx, state, completion)
-		if _, deferred := state.deferredCompletions[issueID]; deferred {
+		if !now.Before(state.Retry[issueID].DueAt) && !o.retryDeferredCompletion(ctx, state, issueID, now) {
 			settled = false
 		}
 	}
 	return settled
+}
+
+func (o *Orchestrator) retryDeferredCompletion(ctx context.Context, state *State, issueID string, now time.Time) bool {
+	record := state.deferredCompletions[issueID]
+	retryLater := func() bool {
+		retry := state.Retry[issueID]
+		retry.DueAt = now.Add(o.cfg.PollInterval)
+		state.Retry[issueID] = retry
+		return false
+	}
+	restoring := !record.AuthorityRestored
+	if restoring {
+		claim, err := o.restoreDeferredExecution(ctx, record)
+		if errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
+			state.Running[issueID] = record.Running
+			o.rejectUnavailableCompletion(ctx, state, record.completion(), record.Running, err, false)
+			return true
+		}
+		if err != nil {
+			o.observeTrackerReadFailure(state, "", err, now)
+			return retryLater()
+		}
+		record.AuthorityRestored = true
+		if claim.Issue.ID != "" {
+			state.Claimed[issueID] = claim
+		}
+	}
+	completion := record.completion()
+	var publisher runpkg.CompletionExecution
+	if completion.Err == nil && completion.Result.NativeChange != nil {
+		completion.Request.Execution = o.nativeCompletionExecution(completion)
+		publisher, _ = completion.Request.Execution.(runpkg.CompletionExecution)
+	}
+	review := publisher != nil && record.Availability.Class == string(gate.ReasonAutomatedReviewMissing)
+	runCtx, running := ctx, record.Running
+	if review {
+		runCtx = o.nativeContinuationContext(ctx, &running)
+		if owner, ok := completion.Request.Execution.(interface{ BindReviewHandoff(<-chan struct{}) }); ok {
+			owner.BindReviewHandoff(runCtx.Done())
+		}
+	}
+	if restoring {
+		o.captureDeferredExecution(&record)
+		record.Persisted = false
+	}
+	if !record.Persisted {
+		record.DeferredAt = now
+		if !o.persistDeferredCompletion(runCtx, state, record) {
+			if review {
+				running.cancel()
+			}
+			state.deferredCompletions[issueID] = record
+			return retryLater()
+		}
+	}
+	delete(state.deferredCompletions, issueID)
+	delete(state.Retry, issueID)
+	state.Running[issueID] = record.Running
+	if _, ok := state.Claimed[issueID]; !ok {
+		state.Claimed[issueID] = recoveredDeferredCompletionClaim(o, record.Running.Issue, now)
+	}
+	var err error
+	if publisher != nil {
+		execution := completion.Request.Execution
+		if err = execution.Validate(runCtx); err == nil {
+			err = publisher.PrepareFinish(runCtx, "succeeded", completion.Result.FinalMessage, nil)
+		}
+		if changes, ok := execution.(runpkg.ChangeExecution); ok && err == nil {
+			completion.Result.NativeChange = changes.NativeChange()
+		}
+		if review && err == nil && completion.Result.NativeChange != nil {
+			change, evidence, readErr := o.refreshNativeChangeReview(runCtx, issueID, completion.Result.NativeChange)
+			completion.Result.NativeChange, err = change, readErr
+			if err == nil && change.VersionError == "" && !change.Reviewed && !evidence.ChangesRequested {
+				err = o.continueNativeRun(runCtx, state, completion, running, true)
+				if err == nil {
+					return true
+				}
+			}
+		}
+	}
+	if review {
+		running.cancel()
+		if err != nil {
+			err = fmt.Errorf("%w: %w", errNativeReviewPending, err)
+		}
+	}
+	if err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, completion, record.Running, err)
+	} else {
+		o.handleRunResult(ctx, state, completion)
+	}
+	_, deferred := state.deferredCompletions[issueID]
+	return !deferred
 }
 
 func (o *Orchestrator) restoreDeferredExecution(ctx context.Context, record deferredCompletion) (Claimed, error) {
@@ -675,10 +683,7 @@ func (o *Orchestrator) restoreDeferredExecution(ctx context.Context, record defe
 	return Claimed{}, nil
 }
 
-func (o *Orchestrator) captureDeferredExecution(record *deferredCompletion) bool {
-	if record == nil {
-		return false
-	}
+func (o *Orchestrator) captureDeferredExecution(record *deferredCompletion) {
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 		execution := source.RunExecution(record.Running.Issue.ID)
 		if owner, ok := execution.(interface{ RetainCompletion() }); ok {
@@ -686,10 +691,8 @@ func (o *Orchestrator) captureDeferredExecution(record *deferredCompletion) bool
 		}
 		if execution, ok := execution.(interface{ CompletionState() json.RawMessage }); ok {
 			record.Execution = execution.CompletionState()
-			return true
 		}
 	}
-	return false
 }
 
 func cloneDeferredCompletions(source map[string]deferredCompletion) map[string]deferredCompletion {

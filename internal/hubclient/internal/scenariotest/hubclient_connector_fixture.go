@@ -11,8 +11,9 @@ import (
 
 type hubclientFixtureConnector struct {
 	*NativeConnector
-	admin  *NativeClient
-	worker *NativeConnector
+	admin              *NativeClient
+	worker             *NativeConnector
+	afterCurrentReview func(context.Context, string)
 }
 
 func (c *hubclientFixtureConnector) UpdateIssueState(ctx context.Context, id, state string) error {
@@ -31,4 +32,12 @@ func (c *hubclientFixtureConnector) UpdateIssueState(ctx context.Context, id, st
 	}
 	_, err = c.admin.Transition(ctx, item.WorkItemID, tracker.Transition{Mutation: mutation, ExpectedRevision: item.Revision, State: state, Reason: "user_requested", ReasonDetail: connector.LaneTransitionReasonDetail(ctx)})
 	return err
+}
+
+func (c *hubclientFixtureConnector) ReadChangeReview(ctx context.Context, id, change, version, head string) (connector.ChangeReview, error) {
+	review, err := c.NativeConnector.ReadChangeReview(ctx, id, change, version, head)
+	if err == nil && review.Current && c.afterCurrentReview != nil {
+		c.afterCurrentReview(ctx, id)
+	}
+	return review, err
 }

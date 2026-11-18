@@ -1845,11 +1845,12 @@ func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			orch := &Orchestrator{cfg: cfg, supervisor: supervisor, runResults: make(chan runpkg.Completion, 1)}
-			orch.workerHostChecker = nativeReviewHostChecker(test.unavailableHost)
+			orch := &Orchestrator{cfg: cfg, supervisor: supervisor, runResults: make(chan runpkg.Completion, 1), workerHostChecker: nativeReviewHostChecker(test.unavailableHost)}
 			source := &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
 			event := runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Execution: &nativeCompletionPublisher{}}, Result: runpkg.RunResult{NativeChange: source, FinalMessage: "completed source"}}
-			err = orch.continueNativeRun(t.Context(), &state, event, running, true)
+			runCtx := orch.nativeContinuationContext(t.Context(), &running)
+			t.Cleanup(running.cancel)
+			err = orch.continueNativeRun(runCtx, &state, event, running, true)
 			if test.blocked {
 				if !errors.Is(err, runpkg.ErrModelPermitUnavailable) || !state.Running[issue.ID].CompletionOwnershipReleased {
 					t.Fatalf("capacity did not retain deferred owner: %v", err)
@@ -1861,7 +1862,6 @@ func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 			}
 			completion := <-orch.runResults
 			<-state.Running[issue.ID].done
-			defer state.Running[issue.ID].cancel()
 			continuation := completion.Request.NativeReviewContinuation
 			if completion.Request.WorkerHost != test.wantHost || state.Running[issue.ID].WorkerHost != test.wantHost {
 				t.Fatalf("review dispatched on request host %q and running host %q, want %q", completion.Request.WorkerHost, state.Running[issue.ID].WorkerHost, test.wantHost)
@@ -1869,7 +1869,7 @@ func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 			if continuation == nil || continuation.Source.VersionID != source.VersionID || continuation.Source.HeadSHA != source.HeadSHA || continuation.FinalMessage != event.Result.FinalMessage || state.Running[issue.ID].ModelPermitExempt || state.Running[issue.ID].CompletionOwnershipReleased {
 				t.Fatal("review continuation lost source or capacity ownership")
 			}
-			if err := orch.continueNativeLandingRun(t.Context(), &state, completion, state.Running[issue.ID]); err != nil {
+			if err := orch.continueNativeRun(t.Context(), &state, completion, state.Running[issue.ID], false); err != nil {
 				t.Fatal(err)
 			}
 			landing := <-orch.runResults
