@@ -217,7 +217,7 @@ func RunReleaseDeliveryReconciliation(t *testing.T, factories Constructors) {
 				return response, err
 			}))
 			provider := &committingAgent{}
-			cfg := config.Config{}
+			cfg := config.Config{Policy: h.descriptor}
 			cfg.Tracker.Kind = config.TrackerHubNative
 			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: f.directory, AutoBranch: true})
 			if err != nil {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -88,6 +89,7 @@ func TestWorkspaceSessionIDsAreUniqueAndDistinct(t *testing.T) {
 
 func newWorkspaceLaneTestScheduler(t *testing.T, projects map[string]string) orchestrator.SchedulingSource {
 	t.Helper()
+	approval := runnerTestApproval(t)
 	transport := readinessRoundTripper(func(request *http.Request) (*http.Response, error) {
 		response := httptest.NewRecorder()
 		response.Header().Set("Content-Type", "application/json")
@@ -96,7 +98,7 @@ func newWorkspaceLaneTestScheduler(t *testing.T, projects map[string]string) orc
 			return response.Result(), nil
 		}
 		if request.Method == http.MethodGet && request.URL.Path == "/api/v2/organizations/org_test/projects/prj_test/policy" {
-			_, _ = response.WriteString(`{"policy":null}`)
+			_ = json.NewEncoder(response).Encode(approval)
 			return response.Result(), nil
 		}
 		response.WriteHeader(http.StatusNotFound)

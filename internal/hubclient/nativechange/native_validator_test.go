@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -22,9 +24,10 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 		t.Run(outcome, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			previousPolicy := h.descriptor.ID
-			h.descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
-			h.descriptor.Gates.SecurityAudit = true
-			h.descriptor = h.descriptor.WithID()
+			h.descriptor = hubtest.PolicyDescriptor(func(w *config.Workflow) {
+				w.Config.Gate.AutomatedReview = gate.AutomatedReviewRequired
+				w.Config.Gate.SecurityAudit.Enabled = true
+			})
 			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previousPolicy, Policy: h.descriptor}); err != nil {
 				t.Fatal(err)
 			}

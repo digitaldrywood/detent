@@ -83,6 +83,7 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := config.Config{
+				Policy:      h.descriptor,
 				Tracker:     config.Tracker{Kind: config.TrackerHubNative, Repository: "acme/orders"},
 				Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
 				Gate:        gate.Config{Run: "true"},

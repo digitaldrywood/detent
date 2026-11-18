@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -467,14 +468,11 @@ func TestNativeSharedPolicy(t *testing.T) {
 				t.Fatalf("policy match = %v, want %t", descriptor.Match(approved), tt.match)
 			}
 			resolved, err := ApplyNativePolicy(local, approved)
-			if tt.name == "machine instructions" {
-				if err == nil {
-					t.Fatal("approved configuration accepted changed machine instructions")
-				}
-				return
-			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if resolved.Prompt != "Run the work.\n" {
+				t.Fatalf("approved prompt = %q", resolved.Prompt)
 			}
 			resolved.Config = resolved.Config.WithWorkerDefaults(WorkerDefaults{AllowLocalBinding: new(true)})
 			if resolved.Config.KanbanTransitionAllowed("Todo", "Done") || !resolved.Config.KanbanTransitionAllowed("Todo", "In Progress") {
@@ -629,11 +627,20 @@ func TestRunnerPolicyLocalPrivacy(t *testing.T) {
 		}
 		return workflow, descriptor
 	}
-	baseWorkflow, baseline := load(sources)
-	if baseline.Authored.Digest != "c021fe8bc5d3d194edfcd455138383651ef5c097dc53985c3e3371da82e02186" {
-		t.Fatalf("no-overlay pre-change digest changed: %s", baseline.Authored.Digest)
+	original, baseline := load(sources)
+	baseWorkflow, err := ApplyNativePolicy(Workflow{Config: Default()}, baseline)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if baseline.Authored.Files["WORKFLOW.md"] != "Run the work." || baseline.Authored.Files["detent.yaml"] != "gate:\n    run: echo 1\nschema: 1\ntracker:\n    kind: hub_native\n" {
+	original.Authored.Version = 3
+	legacy, err := ResolvePolicy(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Authored.Digest != "c021fe8bc5d3d194edfcd455138383651ef5c097dc53985c3e3371da82e02186" {
+		t.Fatalf("no-overlay pre-change digest changed: %s", legacy.Authored.Digest)
+	}
+	if baseline.Authored.Files["WORKFLOW.md"] != string(sources.Workflow) || baseline.Authored.Files["detent.yaml"] != "gate:\n    run: echo 1\nschema: 1\ntracker:\n    kind: hub_native\n" {
 		t.Fatal("no-overlay canonical source bytes changed")
 	}
 	for _, test := range []struct {
@@ -663,7 +670,7 @@ func TestRunnerPolicyLocalPrivacy(t *testing.T) {
 			if (descriptor.Authored.Digest != baseline.Authored.Digest) != test.changed || (descriptor.Match(baseline) != nil) != test.changed {
 				t.Error("local policy change did not invalidate approval as expected")
 			}
-			if test.changed {
+			if test.changed && test.prompt == "" {
 				if _, err := ApplyNativePolicy(workflow, baseline); err == nil {
 					t.Error("shared approval accepted an unapproved local overlay")
 				}
@@ -680,42 +687,33 @@ func TestRunnerPolicyLocalPrivacy(t *testing.T) {
 				t.Fatalf("shared policy round trip changed descriptor: %v", err)
 			}
 			applied, err := ApplyNativePolicy(workflow, descriptor)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if test.prompt != "" && !strings.Contains(applied.Prompt, test.prompt) {
-				t.Error("lost machine instructions")
-			}
-			if strings.Contains(applied.Prompt, "sha256:") {
-				t.Error("digest became execution instructions")
-			}
-			actual, err := ResolvePolicy(applied)
-			if err != nil || actual.Match(descriptor) != nil {
-				t.Fatalf("applied policy changed identity: %v", err)
-			}
 			if test.prompt != "" {
+				if !errors.Is(err, ErrNativePromptUnavailable) {
+					t.Fatalf("digest-only policy with matching runner file: %v", err)
+				}
 				shared, err := ResolveNativePolicy(descriptor)
 				if err != nil {
 					t.Fatal(err)
 				}
-				sharedWorkflow, err := shared.Workflow()
-				if err != nil {
-					t.Fatal(err)
+				if _, err := shared.Workflow(); !errors.Is(err, ErrNativePromptUnavailable) {
+					t.Fatalf("cached digest-only workflow: %v", err)
 				}
-				execution, err := NewExecutionConfiguration(sharedWorkflow, descriptor, ResolveCloudModelSelection(ModelSelection{}, ModelSelection{}))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := ApplyExecutionConfiguration(Workflow{Config: Default()}, descriptor, execution); err == nil {
-					t.Error("execution accepted unavailable private instructions")
-				}
-			}
-			if test.prompt != "" {
 				candidate.LocalWorkflow = append(candidate.LocalWorkflow, '!')
 				_, changed := load(candidate)
 				if changed.Authored.Digest == descriptor.Authored.Digest || changed.Match(descriptor) == nil {
 					t.Error("editing private instructions retained approval")
 				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if applied.Prompt != "Run the work.\n" {
+				t.Fatalf("approved prompt = %q", applied.Prompt)
+			}
+			actual, err := ResolvePolicy(applied)
+			if err != nil || actual.Match(descriptor) != nil {
+				t.Fatalf("applied policy changed identity: %v", err)
 			}
 		})
 	}

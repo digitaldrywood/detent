@@ -3,10 +3,12 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -20,12 +22,40 @@ func (s *Scheduler) ProjectWorkflowMarkdown(ctx context.Context, project string)
 	return definition.WorkflowMarkdown, err
 }
 
+func (s *Scheduler) ProjectWorkflowDefinition(ctx context.Context, project string, local workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+	native, ok := s.NativeClient(project)
+	if !ok {
+		return workflowconfig.Workflow{}, workflowconfig.ErrNoProjectDefinition
+	}
+	workflow, err := native.ProjectWorkflowDefinition(ctx, local)
+	if !errors.Is(err, policy.ErrExecutionConfigurationConflict) && !errors.Is(err, workflowconfig.ErrNoProjectDefinition) {
+		return workflow, err
+	}
+	markdown, readErr := s.ProjectWorkflowMarkdown(ctx, project)
+	if readErr != nil {
+		return workflowconfig.Workflow{}, api.RetryableProjectRead(ctx, readErr)
+	}
+	if markdown == "" {
+		return workflowconfig.Workflow{}, err
+	}
+	workflow, err = workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
+	if err != nil {
+		return workflowconfig.Workflow{}, err
+	}
+	workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
+	return workflow, nil
+}
+
 func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository string, descriptor policy.Descriptor) error {
 	return s.CheckProjectPolicyWithSource(ctx, project, repository, descriptor, nil)
 }
 
 func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, repository string, descriptor policy.Descriptor, provenance *policy.RepositorySource) error {
-	if err := descriptor.Validate(); err != nil {
+	return s.CheckProjectPolicyObservation(ctx, project, descriptor.ID, policy.Observation{Descriptor: descriptor, Source: provenance})
+}
+
+func (s *Scheduler) CheckProjectPolicyObservation(ctx context.Context, project, executingID string, observation policy.Observation) error {
+	if err := observation.Descriptor.Validate(); err != nil {
 		return fmt.Errorf("invalid project configuration: %w", err)
 	}
 	source := s.nativeProject(project)
@@ -33,12 +63,14 @@ func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, r
 		return fmt.Errorf("project %q is not mapped to a Hub-native project; generic Hub tracker mode was removed", project)
 	}
 	if s.client.Enrolled() {
-		s.client.SetLocalPolicy(source.NativeClient().ProjectID(), descriptor.ID)
+		if executingID != "" {
+			s.client.SetLocalPolicy(source.NativeClient().ProjectID(), executingID)
+		}
 		if err := s.ensureNativeMachine(ctx, source); err != nil {
 			return err
 		}
 	}
-	return s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance})
+	return s.reportObservedPolicy(ctx, project, source, observation)
 }
 
 func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, workflow workflowconfig.Workflow, provenance *policy.RepositorySource) (workflowconfig.Workflow, error) {
@@ -46,7 +78,11 @@ func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, 
 	if source == nil {
 		return workflow, nil
 	}
-	return source.NativeClient().ResolveProjectWorkflow(ctx, workflow, provenance)
+	resolved, err := source.NativeClient().ResolveProjectWorkflow(ctx, workflow, provenance)
+	if err == nil && s.client.Enrolled() && resolved.Config.Policy.ID == "" {
+		return workflowconfig.Workflow{}, policy.ErrExecutionConfigurationConflict
+	}
+	return resolved, err
 }
 
 func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, observation policy.Observation) error {

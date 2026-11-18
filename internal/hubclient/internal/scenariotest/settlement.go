@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/explain"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -142,8 +143,9 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 			}
 			if test.IntegrateAudit {
 				previous := h.descriptor.ID
-				h.descriptor.Gates.SecurityAudit = true
-				h.descriptor = h.descriptor.WithID()
+				h.descriptor = changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+					w.Config.Gate.SecurityAudit.Enabled = true
+				})
 				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
 					t.Fatal(err)
 				}
@@ -415,8 +417,9 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 			}
 			if test.RequiredPR {
 				previousPolicy := h.descriptor.ID
-				h.descriptor.Gates.GitHubPullRequest = true
-				h.descriptor = h.descriptor.WithID()
+				h.descriptor = changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+					w.Config.Deliverable.GitHubPullRequest = true
+				})
 				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{Policy: h.descriptor, ExpectedID: previousPolicy}); err != nil {
 					t.Fatal(err)
 				}

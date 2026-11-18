@@ -160,7 +160,7 @@ func withRunnerFactoryWithProjectTokens(
 				return nil, errors.Join(project.ErrProjectDefinition, connector.NewRetryableError(message))
 			}
 		}
-		workflow, err := project.LoadWorkflowContext(ctx, cfg)
+		workflow, err := project.LoadWorkflowForScheduling(ctx, cfg, deps.Scheduling)
 		if err != nil {
 			return nil, fmt.Errorf("load project workflow %s: %w", cfg.ID, err)
 		}
@@ -169,6 +169,13 @@ func withRunnerFactoryWithProjectTokens(
 			workflow.Config.Identity.Normalize()
 		}
 		workflow.Config = project.WithMappedNativeTracker(workflow.Config, deps.Scheduling, project.ID(cfg.ID))
+		selectedWorkflow := workflow
+		if workflow.Config.Policy.ID == "" && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+			workflow, err = project.ResolveRunnerWorkflow(ctx, cfg, workflow, deps.Scheduling)
+			if err != nil {
+				return nil, fmt.Errorf("%w: load runner policy %s: %w", project.ErrProjectDefinition, cfg.ID, err)
+			}
+		}
 		credentialConfig := workflow.Config
 		token, err := tokenSource(ctx, cfg, credentialConfig)
 		if err != nil {
@@ -239,7 +246,7 @@ func withRunnerFactoryWithProjectTokens(
 		if load != nil {
 			return load(projectDeps)
 		}
-		return project.NewContext(ctx, project.Config{Project: cfg, Workflow: workflow}, projectDeps)
+		return project.NewContext(ctx, project.Config{Project: cfg, Workflow: selectedWorkflow}, projectDeps)
 	}
 }
 

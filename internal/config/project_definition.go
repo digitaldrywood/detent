@@ -153,10 +153,7 @@ func ParseHistoricalProjectDefinition(sources ProjectDefinitionSources) (Workflo
 func parseProjectDefinition(sources ProjectDefinitionSources, validate workflowConfigValidator) (workflow Workflow, resultErr error) {
 	defer func() {
 		if resultErr == nil {
-			workflow.Authored = &policy.Authored{Version: PolicyCanonicalizationVersion}
-			if workflow.Config.Tracker.Kind == TrackerHubNative {
-				workflow.Authored.Version = NativePolicyCanonicalizationVersion
-			}
+			workflow.Authored = &policy.Authored{}
 			workflow.DefinitionSources = &sources
 		}
 	}()
@@ -189,7 +186,7 @@ func parseProjectDefinition(sources ProjectDefinitionSources, validate workflowC
 		if parseErr != nil {
 			return Workflow{}, definitionError(definition, parseErr)
 		}
-		workflow = attachProjectDefinitionAgents(workflow, sources)
+		workflow = attachProjectDefinitionPrompts(workflow, sources, shared, local)
 		workflow.Definition = definition
 		workflow.Definition.Revision = workflow.SourceHash
 		if validationErr := ValidateWorkflowAdmission(workflow); validationErr != nil {
@@ -201,7 +198,7 @@ func parseProjectDefinition(sources ProjectDefinitionSources, validate workflowC
 		if parseErr != nil {
 			return Workflow{}, definitionError(definition, parseErr)
 		}
-		workflow = attachProjectDefinitionAgents(workflow, sources)
+		workflow = attachProjectDefinitionPrompts(workflow, sources, shared, local)
 		workflow.Definition = definition
 		workflow.Definition.Revision = workflow.SourceHash
 		if validationErr := ValidateWorkflowAdmission(workflow); validationErr != nil {
@@ -561,7 +558,12 @@ func mixedProjectDefinitionError(
 	return errors.New("mixed project definition has ambiguous authority: " + strings.Join(conflicts, "; "))
 }
 
-func attachProjectDefinitionAgents(workflow Workflow, sources ProjectDefinitionSources) Workflow {
+func attachProjectDefinitionPrompts(workflow Workflow, sources ProjectDefinitionSources, shared, local projectWorkflowDocument) Workflow {
+	native := workflow.Config.Tracker.Kind == TrackerHubNative
+	if native {
+		workflow.SharedPrompt = string(shared.prompt)
+		workflow.Prompt = mergeWorkflowPrompts(shared.prompt, local.prompt)
+	}
 	admission := workflow.Config.BacklogAdmission
 	admission.Normalize()
 	if !admission.RequireEffort {
@@ -569,7 +571,11 @@ func attachProjectDefinitionAgents(workflow Workflow, sources ProjectDefinitionS
 	}
 	if sources.HasAgents && (admission.EffortFile == BacklogAdmissionEffortFileAgents ||
 		!admissionHeadingExists(workflow.SharedPrompt, admission.EffortSection)) {
-		workflow.AgentsPrompt = string(normalizeProjectDefinitionPrompt(sources.Agents))
+		if native {
+			workflow.AgentsPrompt = string(sources.Agents)
+		} else {
+			workflow.AgentsPrompt = string(normalizeProjectDefinitionPrompt(sources.Agents))
+		}
 	}
 	if admission.EffortFile == BacklogAdmissionEffortFileAgents {
 		workflow.SourceHash = projectDefinitionHash(sources, true)

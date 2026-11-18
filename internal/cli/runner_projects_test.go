@@ -30,7 +30,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	schedulerpkg "github.com/digitaldrywood/detent/internal/scheduler"
@@ -358,11 +357,8 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 				var removeLater atomic.Bool
 				var checkoutReport atomic.Value
 				var checkoutProblems atomic.Value
-				descriptor := policy.Descriptor{
-					SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
-					Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"},
-				}.WithID()
-				lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", PolicyID: descriptor.ID, FencingToken: 7, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}
+				approval := runnerTestApproval(t)
+				lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", PolicyID: approval.Policy.ID, FencingToken: 7, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					switch {
@@ -394,7 +390,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 						w.WriteHeader(test.status)
 						_ = json.NewEncoder(w).Encode(map[string]string{"code": http.StatusText(test.status)})
 					case strings.HasSuffix(r.URL.Path, "/projects/prj_orders/policy"):
-						_ = json.NewEncoder(w).Encode(policy.Approval{Policy: descriptor})
+						_ = json.NewEncoder(w).Encode(approval)
 					case test.blockedCheckout && strings.HasSuffix(r.URL.Path, "/heartbeat"):
 						var request struct {
 							LocalChecks runnerauth.LocalChecks `json:"local_checks"`
@@ -501,7 +497,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				issues, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "orders", Repository: "example-org/orders", Policy: descriptor})
+				issues, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "orders", Repository: "example-org/orders", Policy: approval.Policy})
 				if err != nil || len(issues) != 1 {
 					t.Fatalf("initial native claim = %+v, %v", issues, err)
 				}

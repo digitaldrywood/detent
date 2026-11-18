@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -33,6 +34,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -81,6 +83,12 @@ func operatorAuthorizationCause(err error) string {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
+	for _, reason := range []error{workflowconfig.ErrNativePromptUnavailable, workflowconfig.ErrNativeAuthoredMismatch, policy.ErrMissingAuthoredWorkflow} {
+		if errors.Is(err, reason) {
+			err = &hubapi.NativeError{Code: "policy_mismatch", Status: http.StatusConflict, Message: reason.Error(), PublicMessage: true}
+			break
+		}
+	}
 	err = hubapi.FromFeatureError(err)
 	var deniedAuthorization *operatortool.AuthorizationError
 	authorizationFailure := errors.As(err, &deniedAuthorization)

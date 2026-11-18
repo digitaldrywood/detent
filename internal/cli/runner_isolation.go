@@ -55,8 +55,8 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 		}
 	}
 	sprite := runner.SpriteSocketPresent()
-	for _, configured := range cfg.Projects {
-		workflow, err := project.LoadWorkflowContext(ctx, configured)
+	for _, configured := range project.ManagerConfigFromGlobal(cfg).Projects {
+		workflow, err := loadRunnerProjectWorkflow(ctx, cfg, configured)
 		if err != nil {
 			problems = append(problems, runnerauth.WorkflowLoadProblems(configured.ID, err)...)
 			continue

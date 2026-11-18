@@ -314,14 +314,10 @@ func TestApprovedPolicyReachesEveryRunner(t *testing.T) {
 			t.Fatalf("initial runner policy=%+v applied=%s", view.EffectivePolicy, r.runtime.appliedPolicy())
 		}
 	}
-	unapproved := hubfixture.Policy()
-	unapproved.SourceRevision = strings.Repeat("c", 40)
-	unapproved = unapproved.WithID()
+	unapproved := hubtest.PolicyDescriptor(hubtest.WithPolicyPrompt("Proposed instructions."))
 	runners[1].runtime.observe(unapproved)
 	runners[1].mustTick(t)
-	approved := hubfixture.Policy()
-	approved.SourceRevision = strings.Repeat("b", 40)
-	approved = approved.WithID()
+	approved := hubtest.PolicyDescriptor(hubtest.WithPolicyPrompt("Approved revision."))
 	hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", approved)
 	for index, r := range runners {
 		r.mustTick(t)

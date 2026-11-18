@@ -45,10 +45,10 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 			r.enroll(t)
 			current := hubTestPolicy()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", current)
-			selected := current
-			selected.Profile = "runner"
-			selected.Gates.HumanReview = true
-			selected = selected.WithID()
+			selected := hubTestPolicy(func(w *workflowconfig.Workflow) {
+				w.Config.Runners = workflowconfig.Runners{Profile: "runner", Profiles: map[string]policy.Requirements{"runner": {}}}
+				w.Config.Review.Human = true
+			})
 			if kind == "authored" {
 				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 					ConfigPath: "detent.yaml", HasConfig: true,

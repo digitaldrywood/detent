@@ -325,7 +325,7 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 			}
 			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
 				ProjectID: "local", Workspace: backend, AgentBackend: provider,
-				Workflow:               config.Workflow{Config: config.Config{Gate: gate.Config{Run: "git diff --check"}}, Prompt: "Complete the issue"},
+				Workflow:               config.Workflow{Config: config.Config{Policy: h.descriptor, Gate: gate.Config{Run: "git diff --check"}}, Prompt: h.descriptor.Configuration.Prompt},
 				ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil },
 			})
 			if err != nil {

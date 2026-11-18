@@ -21,12 +21,30 @@ func TestExecutionConfigurationProtocol(t *testing.T) {
 		name      string
 		change    func(*policy.Approval)
 		wantError string
+		legacyHub bool
 	}{
-		{name: "server values bypass authored resolver"},
+		{name: "server values with approved authored prompt"},
+		{name: "previous Hub serves version 1", legacyHub: true},
+		{name: "altered files and matching execution bytes", change: func(a *policy.Approval) {
+			const changed = "Unapproved instructions."
+			a.Policy.Authored.Files["WORKFLOW.md"] = changed
+			var values map[string]json.RawMessage
+			if err := json.Unmarshal(a.ExecutionConfiguration.Values, &values); err != nil {
+				t.Fatal(err)
+			}
+			values["prompt"], _ = json.Marshal(changed)
+			values["shared_prompt"] = values["prompt"]
+			a.ExecutionConfiguration.Values, _ = json.Marshal(values)
+		}, wantError: "authored inputs do not match"},
+		{name: "unsupported authored version", change: func(a *policy.Approval) {
+			a.Policy.Authored.Version = 999
+			a.Policy = a.Policy.WithID()
+			a.ExecutionConfiguration.PolicyID = a.Policy.ID
+		}, wantError: "unsupported"},
 		{name: "previous Hub refuses explicitly", change: func(a *policy.Approval) { a.ExecutionConfiguration = nil }, wantError: "unsupported execution configuration version"},
 		{name: "future version refuses explicitly", change: func(a *policy.Approval) { a.ExecutionConfiguration.Version++ }, wantError: "unsupported execution configuration version"},
 		{name: "wrong policy refuses explicitly", change: func(a *policy.Approval) { a.ExecutionConfiguration.PolicyID = "policy_other" }, wantError: "policy_mismatch"},
-		{name: "missing values refuses explicitly", change: func(a *policy.Approval) { a.ExecutionConfiguration.Values = json.RawMessage(`{}`) }, wantError: "execution configuration"},
+		{name: "missing values refuses explicitly", change: func(a *policy.Approval) { a.ExecutionConfiguration.Values = json.RawMessage(`{}`) }, wantError: "policy_mismatch"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := config.Default().ForNativeTracker()
@@ -36,21 +54,18 @@ func TestExecutionConfigurationProtocol(t *testing.T) {
 			cfg.Agent.MaxTurns = 23
 			cfg.Worker.ExtraNetworkDomains = []string{"example.test"}
 			cfg.Worker.AllowLocalBinding = new(true)
-			shared := config.Workflow{Config: cfg, Prompt: "Server instructions.", SharedPrompt: "## Issue Contract\n\n- Acceptance criteria\n- Execution evidence\n"}
+			shared, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte("Server instructions.\n\n## Issue Contract\n\n- Acceptance criteria\n- Execution evidence"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n"), HasConfig: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.legacyHub {
+				shared.Authored.Version = 3
+			}
 			descriptor, err := config.ResolvePolicy(shared)
 			if err != nil {
 				t.Fatal(err)
 			}
-			digest := policy.Digest([]byte("future authored format"))
-			descriptor.Authored = &policy.Authored{Version: 999, Digest: digest, Files: map[string]string{"WORKFLOW.md": "---\n: invalid: [\n---\n"}}
-			descriptor.SourceRevision, descriptor.SourceDigest, descriptor.ConfigDigest = digest, digest, digest
-			descriptor = descriptor.WithID()
-			if err := descriptor.Validate(); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, descriptor); err == nil {
-				t.Fatal("fixture must reject authored policy resolution")
-			}
+			shared.Config = cfg
 			selection := config.ResolveCloudModelSelection(config.ModelSelection{}, config.ModelSelection{NormalModel: new("server-model"), Stages: map[string]config.ModelSelectionStage{"code": {Effort: new("medium")}}})
 			execution, err := config.NewExecutionConfiguration(shared, descriptor, selection)
 			if err != nil {
@@ -63,7 +78,18 @@ func TestExecutionConfigurationProtocol(t *testing.T) {
 			client, err := New(Config{URL: "https://execution.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
 				w := httptest.NewRecorder()
 				if strings.HasSuffix(r.URL.Path, "/policy") {
-					if r.URL.Query().Get("execution_configuration") != "1" {
+					version := r.URL.Query().Get("execution_configuration")
+					if test.legacyHub && version == "2" {
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						_ = json.NewEncoder(w).Encode(map[string]string{"code": "invalid_request", "message": "unsupported execution configuration version"})
+						return w.Result(), nil
+					}
+					if test.legacyHub {
+						if version != "1" {
+							t.Fatal("previous Hub requires version 1")
+						}
+						approval.ExecutionConfiguration.Version = 1
+					} else if version != "2" {
 						t.Error("runner did not request execution configuration version")
 					}
 					_ = json.NewEncoder(w).Encode(approval)
@@ -95,7 +121,7 @@ func TestExecutionConfigurationProtocol(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if resolved.Config.Gate.Run != "printf server-command" || !resolved.Config.Gate.Validator.Enabled || !resolved.Config.Gate.SecurityAudit.Enabled || resolved.Config.Agent.MaxTurns != 23 || !resolved.Config.Worker.EffectiveAllowLocalBinding() || !reflect.DeepEqual(resolved.Config.Worker.ExtraNetworkDomains, []string{"example.test"}) || resolved.Prompt != "Server instructions." {
+			if resolved.Config.Gate.Run != "printf server-command" || !resolved.Config.Gate.Validator.Enabled || !resolved.Config.Gate.SecurityAudit.Enabled || resolved.Config.Agent.MaxTurns != 23 || !resolved.Config.Worker.EffectiveAllowLocalBinding() || !reflect.DeepEqual(resolved.Config.Worker.ExtraNetworkDomains, []string{"example.test"}) || resolved.Prompt != shared.Prompt {
 				t.Fatal("runner replaced server execution values")
 			}
 			if resolved.Config.EffectiveModelSelection().Model("normal") != "server-model" || *resolved.Config.EffectiveModelSelection().Stages["code"].Effort != "medium" {

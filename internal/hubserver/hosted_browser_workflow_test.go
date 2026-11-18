@@ -12,6 +12,20 @@ import (
 
 func resolvedWorkflowPolicy(t *testing.T, states []policy.State, revision string, promotion bool) policy.Descriptor {
 	t.Helper()
+	workflow := repositoryWorkflowFixture(t, states, revision, promotion)
+	descriptor, err := workflowconfig.ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err = workflowconfig.ResolveSharedPolicy(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
+}
+
+func repositoryWorkflowFixture(t *testing.T, states []policy.State, revision string, promotion bool) workflowconfig.Workflow {
+	t.Helper()
 	if !slices.ContainsFunc(states, func(state policy.State) bool { return state.Name == "Blocked" }) {
 		states = append(slices.Clone(states), policy.State{Name: "Blocked"})
 	}
@@ -45,13 +59,5 @@ func resolvedWorkflowPolicy(t *testing.T, states []policy.State, revision string
 		t.Fatal(err)
 	}
 	workflow.Definition.Revision = revision
-	descriptor, err := workflowconfig.ResolvePolicy(workflow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptor, err = workflowconfig.ResolveSharedPolicy(descriptor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return descriptor
+	return workflow
 }

@@ -61,7 +61,7 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope 
 	}
 	workflow := config.Workflow{Config: config.Default()}
 	if descriptor.ID != "" {
-		workflow, err = config.ApplyNativePolicy(workflow, descriptor)
+		workflow, err = config.ReadNativePolicy(descriptor)
 		if err != nil {
 			return revision, found, hubapi.PolicyMismatch(err.Error())
 		}

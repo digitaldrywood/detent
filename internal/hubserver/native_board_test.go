@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -408,9 +409,7 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 	descriptor := hubTestPolicy()
 	t.Run("policy reset", func(t *testing.T) {
 		beforeReset := frame.Sequence
-		changed := descriptor
-		changed.SourceDigest = policy.Digest([]byte("updated board policy instructions"))
-		changed = changed.WithID()
+		changed := hubTestPolicy(hubtest.WithPolicyPrompt("Updated board instructions."))
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), http.StatusOK)
 		descriptor = changed
 		f.create(t, "Card after policy reset")
@@ -433,9 +432,7 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 		{"historical terminal flag changes", []tracker.NativeState{{Name: "Done", Transitions: []string{"Todo"}}, nativeFixtureStates()[0], nativeFixtureStates()[1], {Name: "Closed", Terminal: true}}, false, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			changed := descriptor
-			changed.Workflow = &policy.Workflow{Source: "detent.yaml", States: test.states}
-			changed = changed.WithID()
+			changed := hubTestPolicy(withPolicyStates(t, "detent.yaml", strings.Repeat("a", 40), test.states), hubtest.WithPolicyPrompt("Updated board instructions."))
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), http.StatusOK)
 			descriptor = changed
 			drainTestNativeBoard(t, f.service)
@@ -763,12 +760,8 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		}
 		return candidates
 	}
-	instructions := hubTestPolicy()
-	instructions.SourceDigest = policy.Digest([]byte("changed instructions"))
-	instructions = instructions.WithID()
-	changed := hubTestPolicy()
-	changed.Gates.SecurityAudit = true
-	changed = changed.WithID()
+	instructions := hubTestPolicy(hubtest.WithPolicyPrompt("Changed instructions."))
+	changed := hubTestPolicy(func(w *workflowconfig.Workflow) { w.Config.Gate.SecurityAudit.Enabled = true })
 	for _, test := range []struct {
 		name   string
 		method string
@@ -1028,12 +1021,12 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 			cards.items = append(cards.items, issue)
 			cards.changes = append(cards.changes, change)
 		}
-		cards.policy.SourceDigest = policy.Digest([]byte(name))
+		cards.policy = hubTestPolicy(hubtest.WithPolicyPrompt(name), func(w *workflowconfig.Workflow) {
+			w.Config.Gate.SecurityAudit.Enabled = index == 0
+		})
 		if index == 0 {
-			cards.policy.Gates.SecurityAudit = true
 			cards.want = "stale_policy"
 		}
-		cards.policy = cards.policy.WithID()
 		projects = append(projects, cards)
 	}
 	for _, project := range projects {

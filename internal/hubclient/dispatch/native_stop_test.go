@@ -267,7 +267,11 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	backend := &stoppedFinalizationWorkspace{LocalGit: local, started: make(chan workspace.Info, 1), resume: make(chan struct{})}
-	agent, err := runner.NewRunner(runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true"}}, Prompt: "Complete the issue"}})
+	workflow, err := (config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true"}}}).WithApprovedPrompt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := runner.NewRunner(runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: workflow})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,8 +545,7 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 		t.Run(point, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			if point != "before publication" {
-				h.descriptor.Gates.GitHubPullRequest = true
-				h.repolicy(t)
+				h.repolicy(t, func(w *config.Workflow) { w.Config.Deliverable.GitHubPullRequest = true })
 			}
 			issue := h.createInProgress(t, "Stop an effect")
 			h.claim(t, issue.ID)

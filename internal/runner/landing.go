@@ -83,7 +83,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	if target.GitHubPullRequest {
 		message = tracker.AppendGitHubIssueClosingReferences(message, target.SourceIssues)
 	}
-	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow := r.executionRuntime(ctx).workflow
 	effectiveGate := gate.Effective(workflow.Config.Gate)
 	options := workspace.LandOptions{ReviewDispositions: target.ReviewDispositions, TargetBranch: target.BaseRef, LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
 	options.ChangeID = target.ChangeID
@@ -455,7 +455,7 @@ func newNativeLandingGitHubClient(policy workerGitHubPolicy, token string) (*git
 func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, policy workerGitHubPolicy) (*github.Client, workerGitHubPolicy, error) {
 	var err error
 	if policy.Token == "" {
-		workflow, _, _, _ := r.runtimeSnapshot()
+		workflow := r.executionRuntime(ctx).workflow
 		policy, err = newWorkerGitHubPolicy(ctx, workflow.Config, r.projectID, req.Issue.Identifier, r.lookupEnv, nil, nil, r.logger)
 		if err != nil {
 			return nil, policy, err
@@ -472,9 +472,9 @@ func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, 
 	return client, policy, err
 }
 
-func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentToolHandler) {
+func (r *Runner) nativeReviewThreadTools(ctx context.Context, req RunRequest) ([]AgentTool, AgentToolHandler) {
 	landing, ok := req.Execution.(LandingExecution)
-	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow := r.executionRuntime(ctx).workflow
 	if workflow.Config.Tracker.Kind != config.TrackerHubNative || normalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runRole(req.Mode, req.Issue) != RoleRework && !nativeLandingRework(req.Execution.Recovery()) {
 		return nil, nil
 	}

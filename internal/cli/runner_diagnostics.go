@@ -50,7 +50,7 @@ func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name
 	checks.Checkout, checks.CheckoutAt = "passed", time.Now().UTC()
 	checks.Configuration = "running"
 	publish()
-	if _, err := os.Stat(selected.Workflow); selected.WorkflowRef == "" && errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(selected.Workflow); cfg.Client.NativeProjects[name] == "" && selected.WorkflowRef == "" && errors.Is(err, os.ErrNotExist) {
 		checks.Configuration, checks.ConfigurationAt = "missing", time.Now().UTC()
 		return checks
 	}
@@ -239,6 +239,27 @@ func readRunnerSetupConfig(path string) (globalconfig.Config, error) {
 	return globalconfig.Read(path, globalconfig.WithMissingProjectPaths())
 }
 
+func loadRunnerProjectWorkflow(ctx context.Context, cfg globalconfig.Config, selected globalconfig.Project) (workflowconfig.Workflow, error) {
+	id := cfg.Client.NativeProjects[selected.ID]
+	if id == "" || !cfg.Client.Configured() {
+		return project.LoadWorkflowContext(ctx, selected)
+	}
+	return project.LoadRunnerWorkflow(ctx, selected, func(ctx context.Context, local workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+		if cfg.Client.IdentityFile == "" && local.DefinitionSources != nil {
+			return local, nil
+		}
+		client, err := newRunnerHubClient(cfg.Client)
+		if err != nil {
+			return workflowconfig.Workflow{}, err
+		}
+		native, err := client.Native(tracker.OrganizationID(cfg.Client.OrganizationID), tracker.ProjectID(id))
+		if err != nil {
+			return workflowconfig.Workflow{}, err
+		}
+		return native.ProjectWorkflowDefinition(ctx, local)
+	})
+}
+
 func resolveRunnerProjectPolicy(ctx context.Context, cfg globalconfig.Config, name string) (globalconfig.Config, workflowconfig.Workflow, policy.Descriptor, error) {
 	for _, selected := range cfg.Projects {
 		if selected.ID == name {
@@ -250,7 +271,7 @@ func resolveRunnerProjectPolicy(ctx context.Context, cfg globalconfig.Config, na
 		return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, errors.New("runner project is unavailable")
 	}
 	selected := project.ManagerConfigFromGlobal(cfg).Projects[0]
-	workflow, err := project.LoadWorkflowContext(ctx, selected)
+	workflow, err := loadRunnerProjectWorkflow(ctx, cfg, selected)
 	if err != nil {
 		return cfg, workflow, policy.Descriptor{}, err
 	}

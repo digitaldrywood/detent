@@ -173,12 +173,10 @@ func TestNativeIssueContract(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "contract-"+test.name)
-			descriptor := hubTestPolicy()
 			states := nativeFixtureStates()
 			states[0].Transitions = append(states[0].Transitions, "Blocked")
 			states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo"}})
-			descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: states}
-			descriptor = descriptor.WithID()
+			descriptor := hubTestPolicy(withPolicyStates(t, "detent.yaml", strings.Repeat("a", 40), states))
 			if test.custom {
 				workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte("## Issue Contract\n- Result\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: acme/orders\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done, Blocked]\n      In Progress: [Todo, Done]\n      Blocked: [Todo]\n      Done: [Todo]\n"), HasConfig: true, ConfigPath: "detent.yaml"})
 				if err != nil {
@@ -678,12 +676,9 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
-			descriptor := hubTestPolicy()
 			states := nativeFixtureStates()
 			states = append(states, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}})
-			descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: states}
-			descriptor = descriptor.WithID()
-			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			descriptor := seedLegacyTestWorkflow(t, f, states)
 			var original tracker.NativeIssue
 			if test.operation != "create" {
 				state := "Backlog"

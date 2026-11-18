@@ -803,7 +803,7 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 		}
 	}
 	if found {
-		workflow, err = config.ApplyNativePolicy(workflow, descriptor)
+		workflow, err = config.ReadNativePolicy(descriptor)
 		if err != nil {
 			return policystore.Revision{}, false, hubapi.PolicyMismatch(err.Error())
 		}

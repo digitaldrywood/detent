@@ -256,10 +256,11 @@ type WorkspaceReconciler = runpkg.WorkspaceReconciler
 type WorkspaceReconcileResult = runpkg.WorkspaceReconcileResult
 
 type RuntimeUpdate struct {
-	Config         Config
-	Connector      connector.Connector
-	Release        releasepkg.Coordinator
-	ReplaceRelease bool
+	ApplyRunnerWorkflow func()
+	Config              Config
+	Connector           connector.Connector
+	Release             releasepkg.Coordinator
+	ReplaceRelease      bool
 }
 
 type Orchestrator struct {
@@ -977,9 +978,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			o.applyRuntimeUpdate(&state, update.update, ticker)
+			close(update.reply)
 			o.refillProjectSlots(ctx, &state, o.clockNow())
 			o.finishTick(ctx, &state)
-			update.reply <- struct{}{}
 		}
 		o.publishState(ctx, &state)
 	}
@@ -1146,7 +1147,7 @@ func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) 
 	}
 	request := configUpdateRequest{
 		update: update,
-		reply:  make(chan struct{}, 1),
+		reply:  make(chan struct{}),
 	}
 	select {
 	case <-ctx.Done():
@@ -1156,18 +1157,7 @@ func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) 
 		o.setLocalIntakeDisabled(previousIntakeDisabled)
 		return ErrStopped
 	case o.configUpdates <- request:
-		return o.waitRuntimeUpdate(ctx, request)
-	}
-}
-
-func (o *Orchestrator) waitRuntimeUpdate(ctx context.Context, request configUpdateRequest) error {
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-o.done:
-		return ErrStopped
-	case <-request.reply:
+		<-request.reply
 		return nil
 	}
 }
@@ -1489,6 +1479,9 @@ func (o *Orchestrator) dispatchQuiesced() bool {
 }
 
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
+	if update.ApplyRunnerWorkflow != nil {
+		update.ApplyRunnerWorkflow()
+	}
 	cfg := normalizeConfig(update.Config)
 	previousCfg := o.cfg
 	cfg.IssueContractRolloutAt = previousCfg.IssueContractRolloutAt

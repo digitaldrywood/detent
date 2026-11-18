@@ -19,10 +19,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -199,8 +201,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			})
 			descriptor := hubTestPolicy()
 			if test.policy == "wrong-runner" {
-				descriptor.Requirements.RunnerID = runnerauth.NewBinding().RunnerID
-				descriptor = descriptor.WithID()
+				descriptor = hubtest.PolicyWithRequirements(policy.Requirements{RunnerID: runnerauth.NewBinding().RunnerID})
 			}
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			plan := hubrecords.NativeClaimPlan{Issue: issue, Descriptor: descriptor}

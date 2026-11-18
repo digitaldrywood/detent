@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -61,7 +62,16 @@ func (c *NativeClient) ProjectPolicy(ctx context.Context) (policy.Approval, erro
 
 func (c *NativeClient) readExecutionPolicy(ctx context.Context) (policy.Approval, error) {
 	var approval policy.Approval
-	err := RetryableProjectRead(ctx, c.client.request(ctx, http.MethodGet, c.base()+"/policy?execution_configuration=1", nil, &approval))
+	path := c.base() + "/policy?execution_configuration="
+	err := c.client.request(ctx, http.MethodGet, path+strconv.Itoa(policy.ExecutionConfigurationVersion), nil, &approval)
+	var refusal *APIError
+	if errors.As(err, &refusal) && refusal.Status == http.StatusUnprocessableEntity && refusal.Code == "invalid_request" {
+		err = c.client.request(ctx, http.MethodGet, path+"1", nil, &approval)
+	}
+	err = RetryableProjectRead(ctx, err)
+	if errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == "policy_mismatch" {
+		err = errors.Join(policy.ErrExecutionConfigurationConflict, err)
+	}
 	if c.client.runner != nil && err == nil {
 		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
 	}
@@ -80,6 +90,20 @@ func (c *NativeClient) ReportObservedPolicy(ctx context.Context, descriptor poli
 
 func (c *NativeClient) ReportPolicyObservation(ctx context.Context, observation policy.Observation) error {
 	return c.client.request(ctx, http.MethodPost, c.base()+"/policy/observed", observation, nil)
+}
+
+func (c *NativeClient) ProjectWorkflowDefinition(ctx context.Context, local workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+	approval, err := c.readExecutionPolicy(ctx)
+	if err != nil {
+		return workflowconfig.Workflow{}, err
+	}
+	if approval.Policy.ID != "" {
+		return workflowconfig.ApplyExecutionConfiguration(local, approval.Policy, approval.ExecutionConfiguration)
+	}
+	if local.DefinitionSources != nil {
+		return local, nil
+	}
+	return workflowconfig.Workflow{}, fmt.Errorf("%w: no approved project policy", workflowconfig.ErrNoProjectDefinition)
 }
 
 func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow workflowconfig.Workflow, provenance *policy.RepositorySource) (workflowconfig.Workflow, error) {
@@ -103,18 +127,47 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 	workflow.Config.Agents.ModelSelection = selection
 
 	supplied := workflow.Definition.Layout == workflowconfig.ProjectDefinitionSplit || workflow.Definition.Layout == workflowconfig.ProjectDefinitionLegacy
-	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud || supplied && provenance != nil {
-		return workflow, nil
+	verified := supplied && provenance != nil && provenance.Commit != "" && provenance.Commit == workflow.Definition.Revision
+	if supplied && provenance != nil && !verified {
+		return workflowconfig.Workflow{}, errors.New("policy_mismatch: repository provenance does not match the supplied revision")
 	}
 	approval, err := c.readExecutionPolicy(ctx)
 	if err != nil {
 		return workflowconfig.Workflow{}, fmt.Errorf("load approved shared project configuration: %w", err)
 	}
 	if approval.Policy.ID == "" {
+		if workflow.Config.Policy.ID != "" {
+			return workflowconfig.Workflow{}, policy.ErrExecutionConfigurationConflict
+		}
 		return workflow, nil
 	}
-	if supplied && approval.Policy.Authored == nil && (approval.Policy.Configuration == nil || workflow.DefinitionSources != nil) {
-		return workflow, nil
+	if err := workflowconfig.ValidateNativePromptInputs(approval.Policy); err != nil {
+		return workflowconfig.Workflow{}, errors.Join(policy.ErrExecutionConfigurationConflict, err)
+	}
+	if verified {
+		candidate, err := workflowconfig.ResolvePolicy(workflow)
+		if err != nil {
+			return workflowconfig.Workflow{}, err
+		}
+		if candidate.Workflow == nil || candidate.Workflow.Revision != provenance.Commit {
+			return workflowconfig.Workflow{}, errors.New("policy_mismatch: verified repository revision is required")
+		}
+		if candidate.ID == approval.Policy.ID && approval.Policy.Workflow != nil && candidate.Workflow.Source != approval.Policy.Workflow.Source {
+			return workflowconfig.Workflow{}, workflowconfig.ErrNativeAuthoredMismatch
+		}
+		if approval.Policy.Workflow != nil && candidate.Workflow.Source == approval.Policy.Workflow.Source && approval.Policy.Workflow.Revision == provenance.Commit {
+			if candidate.Authored != nil && approval.Policy.Authored != nil && candidate.Authored.Version != approval.Policy.Authored.Version {
+				historical := workflow
+				historical.Authored = &policy.Authored{Version: approval.Policy.Authored.Version}
+				candidate, err = workflowconfig.ResolvePolicy(historical)
+				if err != nil {
+					return workflowconfig.Workflow{}, err
+				}
+			}
+			if !candidate.SameRepositoryPolicyInputs(approval.Policy) {
+				return workflowconfig.Workflow{}, workflowconfig.ErrNativeAuthoredMismatch
+			}
+		}
 	}
 	return workflowconfig.ApplyExecutionConfiguration(workflow, approval.Policy, approval.ExecutionConfiguration)
 }

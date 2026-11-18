@@ -1021,8 +1021,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					t.Fatal(err)
 				}
 				actual, err := workflowconfig.ResolvePolicy(loaded)
-				if err != nil || actual.Match(candidate) != nil || loaded.Config.Hooks != local.Config.Hooks {
-					t.Fatalf("legacy approval hid supplied authored candidate: %+v %v", actual, err)
+				if err != nil || actual.ID != original.ID || loaded.Prompt != original.Configuration.Prompt || loaded.Config.Hooks != local.Config.Hooks {
+					t.Fatalf("runner lost the approved legacy prompt or local hooks: %+v %v", actual, err)
 				}
 				second := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 				second.redemption.Capacity = 1
@@ -1050,7 +1050,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 	}
 }
 
-func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
+func TestObservedCloudWorkflowGuidanceRequiresApproval(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "cloud-guidance")
 	markdown := "---\ntracker:\n  kind: hub_native\ngate:\n  run: make check-landing\n  security_audit:\n    enabled: false\n---\nExisting guidance.\n"
@@ -1074,7 +1074,7 @@ func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
 	runner.enroll(t)
 	for _, test := range []struct {
 		name, selected, saved string
-		applied               bool
+		approvable            bool
 	}{
 		{"saved guidance", strings.Replace(markdown, "Existing guidance", "Updated guidance", 1), strings.Replace(markdown, "Existing guidance", "Updated guidance", 1), true},
 		{"unsaved guidance", strings.Replace(markdown, "Existing guidance", "Invented guidance", 1), strings.Replace(markdown, "Existing guidance", "Updated guidance", 1), false},
@@ -1097,8 +1097,11 @@ func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.applied && after.Policy.ID != selected.ID || !test.applied && !reflect.DeepEqual(after, prior) {
-				t.Fatalf("adoption=%+v, want applied=%t", after, test.applied)
+			if !reflect.DeepEqual(after, prior) {
+				t.Fatal("runner observation changed the approval")
+			}
+			if test.approvable {
+				approveHubTestPolicy(t, f.service, f.base+"/policy", selected)
 			}
 		})
 	}

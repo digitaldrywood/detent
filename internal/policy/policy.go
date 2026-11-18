@@ -14,13 +14,17 @@ import (
 
 const Schema = 1
 
-const ExecutionConfigurationVersion = 1
+const ExecutionConfigurationVersion = 2
 
 type ExecutionConfiguration struct {
 	Version  int             `json:"version"`
 	PolicyID string          `json:"policy_id"`
 	Values   json.RawMessage `json:"values"`
 }
+
+var ErrExecutionConfigurationConflict = errors.New("approved execution configuration is unavailable")
+
+var ErrMissingAuthoredWorkflow = errors.New("policy_mismatch: authored workflow file is required")
 
 var tokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 
@@ -66,6 +70,48 @@ type Authored struct {
 	Version int               `json:"version"`
 	Digest  string            `json:"digest"`
 	Files   map[string]string `json:"files,omitempty"`
+}
+
+const AuthoredExactPromptVersion = 7
+
+const pinnedAuthoredVersionOffset = 3
+
+func (a Authored) SourceVersion() int {
+	switch a.Version {
+	case AuthoredExactPromptVersion + 1:
+		return AuthoredExactPromptVersion
+	case 4, 5, 6:
+		return a.Version - pinnedAuthoredVersionOffset
+	default:
+		return a.Version
+	}
+}
+
+func (d Descriptor) WithPinnedFiles() Descriptor {
+	if d.Authored == nil {
+		return d
+	}
+	authored := *d.Authored
+	switch authored.Version {
+	case 1, 2, 3:
+		authored.Version += pinnedAuthoredVersionOffset
+	case AuthoredExactPromptVersion:
+		authored.Version++
+	default:
+		return d
+	}
+	d.Authored = &authored
+	return d.WithID()
+}
+
+func (d Descriptor) OriginalAuthored() Descriptor {
+	if d.Authored == nil || d.Authored.SourceVersion() == d.Authored.Version {
+		return d
+	}
+	authored := *d.Authored
+	authored.Version = authored.SourceVersion()
+	d.Authored = &authored
+	return d.WithID()
 }
 
 type Configuration struct {
@@ -259,9 +305,9 @@ func (d Descriptor) Validate() error {
 	if d.Authored != nil && (d.Authored.Version < 1 || !validHash(d.Authored.Digest, 64) || d.SourceDigest != d.Authored.Digest || d.ConfigDigest != d.Authored.Digest || d.SourceRevision != d.Authored.Digest) {
 		return errors.New("policy_mismatch: invalid authored policy inputs")
 	}
-	if d.Authored != nil && len(d.Authored.Files) > 0 {
+	if d.Authored != nil && (len(d.Authored.Files) > 0 || d.Authored.SourceVersion() != d.Authored.Version) {
 		if _, present := d.Authored.Files["WORKFLOW.md"]; !present {
-			return errors.New("policy_mismatch: authored workflow file is required")
+			return ErrMissingAuthoredWorkflow
 		}
 		for name := range d.Authored.Files {
 			if !slices.Contains([]string{"WORKFLOW.md", "detent.yaml", "WORKFLOW.local.md", "detent.local.yaml", "AGENTS.md"}, name) {
@@ -321,6 +367,9 @@ func (d Descriptor) SameAuthoredInputs(expected Descriptor) bool {
 	if d.Authored == nil || expected.Authored == nil || len(d.Authored.Files) == 0 || len(expected.Authored.Files) == 0 {
 		return false
 	}
+	if (d.Authored.SourceVersion() == AuthoredExactPromptVersion) != (expected.Authored.SourceVersion() == AuthoredExactPromptVersion) {
+		return false
+	}
 	if (d.Workflow == nil) != (expected.Workflow == nil) {
 		return false
 	}
@@ -328,6 +377,20 @@ func (d Descriptor) SameAuthoredInputs(expected Descriptor) bool {
 		return false
 	}
 	return sameAuthoredFiles(d, expected)
+}
+
+func (candidate Descriptor) SameRepositoryPolicyInputs(approved Descriptor) bool {
+	if candidate.Authored == nil || approved.Authored == nil || len(candidate.Authored.Files) == 0 || len(approved.Authored.Files) == 0 {
+		return candidate.Match(approved) == nil
+	}
+	for _, name := range []string{"WORKFLOW.md", "detent.yaml", "AGENTS.md"} {
+		local, present := candidate.Authored.Files[name]
+		pinned, expected := approved.Authored.Files[name]
+		if present != expected || local != pinned {
+			return false
+		}
+	}
+	return true
 }
 
 func validHash(value string, length int) bool {

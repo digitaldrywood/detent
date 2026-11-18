@@ -318,7 +318,7 @@ func runnerHubMatches(have, want string, org tracker.OrganizationID) bool {
 	return haveErr == nil && wantErr == nil && strings.TrimSuffix(haveBase, suffix) == strings.TrimSuffix(wantBase, suffix)
 }
 
-func runnerCheckoutReady(ctx context.Context, selected globalconfig.Project) bool {
+func runnerCheckoutReady(ctx context.Context, cfg globalconfig.Config, selected globalconfig.Project) bool {
 	if selected.Workdir == "" {
 		return false
 	}
@@ -328,7 +328,7 @@ func runnerCheckoutReady(ctx context.Context, selected globalconfig.Project) boo
 	if strings.TrimSpace(selected.Workflow) == "" && strings.TrimSpace(selected.WorkflowRef) == "" {
 		selected.Workflow = filepath.Join(selected.Workdir, "WORKFLOW.md")
 	}
-	_, err := project.LoadWorkflowContext(ctx, selected)
+	_, err := loadRunnerProjectWorkflow(ctx, cfg, selected)
 	return err == nil
 }
 

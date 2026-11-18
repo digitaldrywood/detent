@@ -66,7 +66,7 @@ func nativeProjectsUseGit(ctx context.Context, cfg globalconfig.Config) bool {
 		if !found {
 			return false
 		}
-		workflow, err := project.LoadWorkflowContext(ctx, selected)
+		workflow, err := loadRunnerProjectWorkflow(ctx, cfg, selected)
 		if err != nil {
 			return false
 		}
@@ -154,18 +154,13 @@ func newWorkspaceLane(
 	if !found {
 		return nil, fmt.Errorf("configured project %q was not found", projectID)
 	}
-	workflow, err := project.LoadWorkflowContext(ctx, selected)
+	workflow, err := project.LoadRunnerWorkflow(ctx, selected, native.ProjectWorkflowDefinition)
 	if err != nil {
 		return nil, fmt.Errorf("load workflow for %s: %w", projectID, err)
 	}
-	workflow.Config = project.MapNativeTracker(workflow.Config, true)
-	workflow, err = native.ResolveProjectWorkflow(ctx, workflow, nil)
-	if err != nil {
-		return nil, fmt.Errorf("load shared configuration for %s: %w", projectID, err)
-	}
-	descriptor, err := project.ResolvePolicy(selected, workflow)
-	if err != nil {
-		return nil, fmt.Errorf("resolve policy for %s: %w", projectID, err)
+	descriptor := workflow.Config.Policy
+	if descriptor.ID == "" {
+		return nil, fmt.Errorf("project %s has no approved workspace policy", projectID)
 	}
 	// LeaseTTL is left to the claimer's default on purpose: a workspace claim
 	// is held for the 90 seconds the workspace session contract gives a workspace before

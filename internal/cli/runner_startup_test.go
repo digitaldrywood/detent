@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,7 +20,9 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -25,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRunnerProjectCredentials(t *testing.T) {
@@ -345,5 +351,121 @@ func TestRunnerProviderTimeoutsRecoverWithBackoff(t *testing.T) {
 	reports, err := source()
 	if err != nil || len(reports) != 1 || !reports[0].Supports(providercapacity.Requirement{Backend: "codex", Model: "example-model"}) {
 		t.Fatalf("recovered runner did not advertise its provider: %+v %v", reports, err)
+	}
+}
+
+func TestRunnerFactoryLoadsApprovedDefinitionFromEmptyCheckout(t *testing.T) {
+	t.Parallel()
+	const markdown = "---\ntracker:\n  kind: hub_native\n---\nFollow the approved instructions.\n"
+	for _, tt := range []struct {
+		name     string
+		saved    string
+		local    string
+		conflict bool
+	}{
+		{name: "approved repository definition"},
+		{name: "approved Cloud repair", saved: markdown},
+		{name: "stale saved markdown", saved: strings.ReplaceAll(markdown, "approved", "saved")},
+		{name: "invalid saved markdown", saved: "Incomplete definition."},
+		{name: "stale checkout markdown", saved: markdown, local: strings.ReplaceAll(markdown, "approved", "local")},
+		{name: "Cloud repair awaiting approval", saved: markdown, conflict: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := globalconfig.Project{ID: "example", Workdir: root, Workflow: filepath.Join(root, "WORKFLOW.md")}
+			sources := workflowconfig.ProjectDefinitionSources{HasConfig: true, Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n"), Workflow: []byte("Follow the approved instructions.")}
+			if tt.saved != "" {
+				sources = workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)}
+			}
+			if tt.local != "" {
+				if err := os.WriteFile(cfg.Workflow, []byte(tt.local), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			approved, err := workflowconfig.ParseProjectDefinition(sources)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.saved != "" {
+				approved.Definition.Layout = workflowconfig.ProjectDefinitionCloud
+			} else {
+				runDoctorWorkflowSourceGit(t, root, "init")
+				runDoctorWorkflowSourceGit(t, root, "-c", "user.name=Runner", "-c", "user.email=runner@example.test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "Empty checkout")
+				runDoctorWorkflowSourceGit(t, root, "remote", "add", "origin", root)
+				cfg.WorkflowRef = "origin/HEAD"
+				approved.Definition.Revision = strings.Repeat("a", 40)
+			}
+			d, err := workflowconfig.ResolvePolicy(approved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalID := d.ID
+			if tt.saved != "" {
+				d = d.WithPinnedFiles()
+			}
+			approved, err = workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			execution, err := workflowconfig.NewExecutionConfiguration(approved, d, workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{}, workflowconfig.ModelSelection{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			const base = "/api/v2/organizations/org_example/projects/prj_example"
+			var reported policy.Observation
+			client, err := hubclient.New(hubclient.Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: readinessRoundTripper(func(r *http.Request) (*http.Response, error) {
+				w := httptest.NewRecorder()
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == base:
+					_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: "prj_example", WorkflowMarkdown: tt.saved})
+				case r.Method == http.MethodGet && r.URL.RequestURI() == base+"/policy?execution_configuration=2":
+					if tt.conflict {
+						w.WriteHeader(http.StatusConflict)
+						_ = json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "Approved instructions unavailable"})
+					} else {
+						_ = json.NewEncoder(w).Encode(policy.Approval{Policy: d, ExecutionConfiguration: execution})
+					}
+				case r.Method == http.MethodPost && r.URL.Path == base+"/policy/observed":
+					if err := json.NewDecoder(r.Body).Decode(&reported); err != nil {
+						t.Fatal(err)
+					}
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					t.Fatalf("unexpected Hub request %s %s", r.Method, r.URL.RequestURI())
+				}
+				return w.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduling, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: "org_example", NativeProjects: map[string]tracker.ProjectID{"example": "prj_example"}, Machine: hubclient.Machine{ID: "machine", Hostname: "worker", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			factory := withRunnerFactoryWithProjectTokens(t.Context(), project.Dependencies{Runner: orchestrator.FakeRunner{}, Scheduling: scheduling}, nil, nil, serviceapi.Connection{}, nil, nil, func(_ context.Context, _ globalconfig.Project, cfg workflowconfig.Config) (string, error) {
+				if !tt.conflict && cfg.Policy.ID != d.ID {
+					t.Errorf("runner construction selected policy %q, want %q", cfg.Policy.ID, d.ID)
+				}
+				return "", nil
+			}, nil)
+			loaded, err := factory(cfg)
+			if tt.conflict {
+				if !errors.Is(err, policy.ErrExecutionConfigurationConflict) || loaded != nil || reported.ID != originalID || reported.Source != nil {
+					t.Fatalf("pending Cloud repair returned project %t, observed %s, error %v", loaded != nil, reported.ID, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := loaded.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			if w := loaded.Workflow(); w.Prompt != approved.Prompt || w.Config.Policy.ID != d.ID || reported.ID != d.ID || reported.Source != nil {
+				t.Fatal("replacement runner lost the approved instructions or reported repository provenance from an empty checkout")
+			}
+		})
 	}
 }

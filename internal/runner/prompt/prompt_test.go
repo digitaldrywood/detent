@@ -66,6 +66,8 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 				Prompt: "Keep the `## Codex Workpad` comment current and open a pull request. Report in_progress until a native version is published.",
 				Config: config.Config{Tracker: config.Tracker{Kind: tt.kind}},
 			}
+			workflow.Config.Policy.ID = "policy_example"
+			workflow.Prompt = "  " + workflow.Prompt + " \t\r\n"
 			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#7", State: tt.state}
 			opts := PromptOptions{}
 			if tt.recovery {
@@ -74,6 +76,9 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 			prompt, err := BuildPrompt(workflow, issue, opts)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.want && !strings.Contains(prompt, workflow.Prompt) {
+				t.Fatal("rendering discarded approved prompt bytes")
 			}
 			index := strings.Index(prompt, "## Native completion contract")
 			if got := index >= 0; got != tt.want {

@@ -9,6 +9,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -23,11 +25,39 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func PolicyDescriptor() policy.Descriptor {
+func LegacyPolicyDescriptor() policy.Descriptor {
 	return policy.Descriptor{
 		SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
 		Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"},
 	}.WithID()
+}
+
+func PolicyDescriptor(configure ...func(*config.Workflow)) policy.Descriptor {
+	cfg := config.Default().ForNativeTracker()
+	cfg.Gate.AutomatedReview = gate.AutomatedReviewOptional
+	cfg.Gate.SecurityAudit.Enabled = false
+	workflow := config.Workflow{Config: cfg}
+	for _, apply := range configure {
+		apply(&workflow)
+	}
+	descriptor, err := config.ResolvePolicy(workflow)
+	if err != nil {
+		panic(err)
+	}
+	return descriptor
+}
+
+func PolicyWithRequirements(requirements policy.Requirements) policy.Descriptor {
+	if requirements.RunnerID == "" && requirements.MachineID == "" && len(requirements.RequiredTags) == 0 {
+		return PolicyDescriptor()
+	}
+	return PolicyDescriptor(func(w *config.Workflow) {
+		w.Config.Runners = config.Runners{Profile: "selected", Profiles: map[string]policy.Requirements{"selected": requirements}}
+	})
+}
+
+func WithPolicyPrompt(prompt string) func(*config.Workflow) {
+	return func(w *config.Workflow) { w.Prompt, w.SharedPrompt = prompt, prompt }
 }
 
 type PolicyOptions struct {
@@ -61,8 +91,10 @@ func Policy(t *testing.T, repository tenantstore.Repository, details attachment.
 		}
 		return SeededPolicy{Descriptor: descriptor, Revision: current}
 	}
-	descriptor := PolicyDescriptor()
-	if options.Descriptor != nil {
+	var descriptor policy.Descriptor
+	if options.Descriptor == nil {
+		descriptor = PolicyDescriptor()
+	} else {
 		descriptor = options.Descriptor.WithID()
 	}
 	revision, err := content.PrepareProjectPolicy(t.Context(), project.OrganizationID, descriptor)

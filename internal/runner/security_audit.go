@@ -27,7 +27,7 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (SecurityA
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow := r.executionRuntime(ctx).workflow
 	if timeout := durationFromMillis(gateSecurityAuditConfig(workflow.Config).TurnTimeoutMS); timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -91,7 +91,8 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
+	snapshot := r.executionRuntime(ctx)
+	workflow, agentRuntime := snapshot.workflow, snapshot.agents
 	if req.Issue.IsolationPolicy != nil {
 		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
 	} else if workflow.Config.Tracker.Kind == config.TrackerHubNative {

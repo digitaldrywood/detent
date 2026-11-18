@@ -69,7 +69,13 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 	githubToken := runtimeGlobalGitHubToken(boot.Runtime.GitHubToken)
 	for _, configuredProject := range boot.Global.Projects {
 		id := doctorProjectID(configuredProject)
-		workflow, loadErr := loadDoctorProjectWorkflow(ctx, configuredProject, deps)
+		var workflow workflowconfig.Workflow
+		var loadErr error
+		if boot.Global.Client.Configured() && boot.Global.Client.NativeProjects[id] != "" {
+			workflow, loadErr = loadRunnerProjectWorkflow(ctx, boot.Global, configuredProject)
+		} else {
+			workflow, loadErr = loadDoctorProjectWorkflow(ctx, configuredProject, deps)
+		}
 		if loadErr == nil {
 			workflow.Config = projectpkg.MapNativeTracker(workflow.Config, boot.Global.Client.NativeProjects[id] != "")
 			workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, githubToken)

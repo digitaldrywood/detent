@@ -101,8 +101,9 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			}
 			h := newNativeChangeHubWithStates(t, "In Review", states, details, maintenance)
 			previousPolicy := h.descriptor.ID
-			h.descriptor.Gates.Validator = true
-			h.descriptor = h.descriptor.WithID()
+			h.descriptor = changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+				w.Config.Gate.Validator.Enabled = true
+			})
 			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previousPolicy, Policy: h.descriptor}); err != nil {
 				t.Fatal(err)
 			}
@@ -387,7 +388,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						t.Errorf("provider source head=%s want=%s error=%v", got, sourceHead, err)
 					}
 				}
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: destination, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: h.descriptor.Configuration.Prompt}, Workspace: destination, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -443,7 +444,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						}
 					}
 				}
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: h.descriptor.Configuration.Prompt}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -274,7 +275,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &nativeChangeHub{content: eventstore.NewContent(config.RunDetails), review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
+	h := &nativeChangeHub{content: eventstore.NewContent(config.RunDetails), review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: hubtest.PolicyDescriptor(hubtest.WithPolicyPrompt("Complete the assigned work."))}
 	h.projectBoard = func() { testsupport.DispatchRefreshProjections(t, config, service) }
 	h.seed = func(write func(tenantstore.Writer) error) {
 		dispatchWriteFixture(t, config, write)
@@ -450,11 +451,9 @@ const nativeChangeRepository = "https://github.com/example/native-change"
 // repolicy approves a changed repository policy, as an operator editing the
 // project's definition between attempts does; the seeded review policy
 // follows it, and versions published before it are stale.
-func (h *nativeChangeHub) repolicy(t *testing.T) {
+func (h *nativeChangeHub) repolicy(t *testing.T, configure func(*config.Workflow)) {
 	t.Helper()
-	next := h.descriptor
-	next.ConfigDigest = policy.Digest([]byte("changed between attempts"))
-	next = next.WithID()
+	next := hubtest.PolicyDescriptor(hubtest.WithPolicyPrompt(h.descriptor.Configuration.Prompt), configure)
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 		t.Fatal(err)
 	}

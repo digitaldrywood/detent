@@ -295,14 +295,16 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 		}
 	}
 	view.Source = policySourceKind(current, workflow)
-	if loaded, err := loadWorkflowForScheduling(ctx, current, p.policyScheduling); err == nil {
+	if loaded, err := LoadWorkflowForScheduling(ctx, current, p.policyScheduling); err == nil {
 		selected := loaded
 		selected.Config = WithMappedNativeTracker(selected.Config, p.policyScheduling, p.ID())
-		if source, ok := p.policyScheduling.(interface {
-			ResolveProjectWorkflow(context.Context, string, workflowconfig.Workflow, *policy.RepositorySource) (workflowconfig.Workflow, error)
-		}); ok && selected.Config.Tracker.Kind == workflowconfig.TrackerHubNative && selected.Definition.Layout != workflowconfig.ProjectDefinitionCloud {
-			var provenance *policy.RepositorySource
-			selected, provenance = repositoryPolicySource(ctx, current, selected)
+		var provenance *policy.RepositorySource
+		candidate := selected
+		if source, ok := p.policyScheduling.(projectWorkflowResolver); ok && selected.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+			if selected.DefinitionSources != nil {
+				selected, provenance = repositoryPolicySource(ctx, current, selected)
+			}
+			candidate = selected
 			resolved, err := source.ResolveProjectWorkflow(ctx, current.ID, selected, provenance)
 			if err != nil {
 				view.Constraint = "The approved shared project configuration cannot be loaded; retry through the existing policy owner."
@@ -311,7 +313,12 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 			selected = resolved
 		}
 		if descriptor, err := ResolvePolicy(current, selected); err == nil {
-			view.SelectedPolicy = &descriptor
+			observation, err := observedRepositoryPolicy(current, candidate, descriptor, provenance)
+			if err != nil {
+				view.Constraint = "The selected repository policy cannot be resolved."
+				return view
+			}
+			view.SelectedPolicy = &observation.Descriptor
 		}
 		view.ConfigRevision = policy.Digest([]byte(revision + "\x00" + loaded.SourceHash))
 		for _, enabled := range []bool{true, false} {
@@ -366,17 +373,17 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 
 func (p *Project) loadManagedWorkflow(ctx context.Context, revision string) (workflowconfig.Workflow, error) {
 	cfg := p.Config()
-	workflow, err := loadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
+	workflow, err := LoadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
 	if err != nil {
 		p.logger.WarnContext(ctx, "load managed project definition", "project_id", cfg.ID, "error", err)
 		return workflowconfig.Workflow{}, errors.New("the configured project definition cannot be read or validated; repair it through its configuration owner before retrying")
 	}
 	workflow.Config = WithMappedNativeTracker(workflow.Config, p.policyScheduling, p.ID())
-	if source, ok := p.policyScheduling.(interface {
-		ResolveProjectWorkflow(context.Context, string, workflowconfig.Workflow, *policy.RepositorySource) (workflowconfig.Workflow, error)
-	}); ok && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative && workflow.Definition.Layout != workflowconfig.ProjectDefinitionCloud {
+	if source, ok := p.policyScheduling.(projectWorkflowResolver); ok && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
 		var provenance *policy.RepositorySource
-		workflow, provenance = repositoryPolicySource(ctx, cfg, workflow)
+		if workflow.DefinitionSources != nil {
+			workflow, provenance = repositoryPolicySource(ctx, cfg, workflow)
+		}
 		workflow, err = source.ResolveProjectWorkflow(ctx, cfg.ID, workflow, provenance)
 		if err != nil {
 			p.logger.WarnContext(ctx, "load managed approved policy", "project_id", cfg.ID, "error", err)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"reflect"
 	"slices"
@@ -22,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -29,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -906,11 +909,35 @@ func TestProjectPolicyApprovalAndRetiredRevocationPreservePinnedLease(t *testing
 	}
 }
 
-func hubTestPolicy() policy.Descriptor {
-	return policy.Descriptor{
-		SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
-		Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"},
-	}.WithID()
+func hubTestPolicy(configure ...func(*config.Workflow)) policy.Descriptor {
+	return hubtest.PolicyDescriptor(configure...)
+}
+
+func seedLegacyTestWorkflow(t *testing.T, f nativeFixture, states []policy.State) policy.Descriptor {
+	t.Helper()
+	descriptor := hubtest.LegacyPolicyDescriptor()
+	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: states}
+	seed := hubtest.Policy(t, f.service.config.TenantRepository, f.service.runDetailStore(), f.project, hubtest.PolicyOptions{Descriptor: &descriptor, Now: f.service.config.Clock()})
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		return reconcileTenantWorkflowPolicy(t.Context(), w, project, seed.Descriptor)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return seed.Descriptor
+}
+
+func withPolicyStates(t *testing.T, source, revision string, states []policy.State) func(*config.Workflow) {
+	t.Helper()
+	repository := repositoryWorkflowFixture(t, states, revision, false)
+	return func(w *config.Workflow) {
+		w.Config.Tracker = repository.Config.Tracker
+		w.Config.Server.Kanban = repository.Config.Server.Kanban
+		w.Definition = config.ProjectDefinition{Layout: config.ProjectDefinitionSplit, ConfigPath: source, Revision: revision}
+	}
 }
 
 func approveHubTestPolicy(t *testing.T, service *Service, path string, descriptor policy.Descriptor) {
@@ -929,9 +956,9 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "policy")
 	worker := f.worker(t, "worker")
 	issue := f.create(t, "work")
-	descriptor := hubTestPolicy()
-	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Done"}})}
-	descriptor = descriptor.WithID()
+	states := append(nativeFixtureStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Done"}})
+	initialWorkflow := withPolicyStates(t, "detent.yaml", strings.Repeat("a", 40), states)
+	descriptor := hubtest.PolicyDescriptor(initialWorkflow)
 	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1005,10 +1032,9 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	}
 	event := nativeStartedEvent(lease)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
-	changed := descriptor
-	changed.Gates.AutoPromote = true
-	changed.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(append([]tracker.NativeState(nil), descriptor.Workflow.States...), tracker.NativeState{Name: "QA"})}
-	changed = changed.WithID()
+	changed := hubtest.PolicyDescriptor(withPolicyStates(t, "detent.yaml", strings.Repeat("b", 40), append(states, tracker.NativeState{Name: "QA"})), func(w *config.Workflow) {
+		w.Config.Agent.AutoPromote.Enabled = true
+	})
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), http.StatusOK)
 	pinned, err := f.service.database.leasePolicyID(t.Context(), lease.ID)
 	if err != nil || pinned != descriptor.ID {
@@ -1019,9 +1045,7 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 		t.Fatal("policy approval replaced a running attempt's execution configuration")
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
-	reported := descriptor
-	reported.SourceDigest = policy.Digest([]byte("reported configuration"))
-	reported = reported.WithID()
+	reported := hubTestPolicy(initialWorkflow, hubtest.WithPolicyPrompt("Reported instructions."))
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: reported}), http.StatusNoContent)
 	claim.PolicyID = reported.ID
 	newIssue := f.create(t, "new policy work")
@@ -1092,21 +1116,21 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 					states[i].Transitions = []string{test.target}
 				}
 			}
-			previous := hubTestPolicy()
-			previous.Workflow = &policy.Workflow{Source: "detent.yaml", States: states}
-			previous = previous.WithID()
-			next := previous
-			next.Gates.AutoPromote = true
-			if test.barrier {
-				next.Gates.LandingMode = "rolling_barrier"
-				next.Gates.LandingCommandDigest = policy.Digest([]byte("make check-barrier"))
-			}
-			next = next.WithID()
+			workflow := withPolicyStates(t, "detent.yaml", strings.Repeat("a", 40), states)
+			previous := hubTestPolicy(workflow)
+			next := hubTestPolicy(workflow, func(w *config.Workflow) { w.Config.Agent.AutoPromote.Enabled = true })
 			controlPolicy := next
 			if test.mutation != "" {
 				controlPolicy = previous
 			}
 			approveHubTestPolicy(t, f.service, f.base+"/policy", controlPolicy)
+			if test.barrier {
+				controlPolicy.Configuration = nil
+				controlPolicy.Gates.LandingMode = "rolling_barrier"
+				controlPolicy.Gates.LandingCommandDigest = policy.Digest([]byte("make check-barrier"))
+				controlPolicy = hubtest.Policy(t, f.service.config.TenantRepository, f.service.runDetailStore(), f.project, hubtest.PolicyOptions{Descriptor: &controlPolicy, Now: f.service.config.Clock()}).Descriptor
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "historical-barrier"}, ExpectedID: defaultChangeReviewPolicy(next).ID, Policy: defaultChangeReviewPolicy(controlPolicy)}), http.StatusOK)
+			}
 			nextRules := defaultChangeReviewPolicy(previous)
 			nextRules.RequireReview = true
 			nextRules.ID = changerequest.PolicyID(nextRules)
@@ -1316,14 +1340,13 @@ func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 	service := newPostgresNativeService(t, Config{})
 	a := newNativeFixture(t, service, "", "human")
 	b := newNativeFixture(t, service, a.project.OrganizationID, "automatic")
-	human := hubTestPolicy()
-	human.Gates.Kind, human.Gates.AutomatedReview = "human_review", ""
-	human.Workflow = &policy.Workflow{Source: "WORKFLOW.md", States: append(a.project.States, tracker.NativeState{Name: "Plan Review"})}
-	human = human.WithID()
-	automatic := hubTestPolicy()
-	automatic.Gates.AutoPromote, automatic.Gates.MergeMethod = true, "rebase"
-	automatic.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(b.project.States, tracker.NativeState{Name: "Repair", Dispatchable: true})}
-	automatic = automatic.WithID()
+	human := hubtest.PolicyDescriptor(withPolicyStates(t, "WORKFLOW.md", strings.Repeat("a", 40), append(a.project.States, tracker.NativeState{Name: "Plan Review"})), func(w *config.Workflow) {
+		w.Config.Gate.Kind = gate.KindHumanReview
+	})
+	automatic := hubtest.PolicyDescriptor(withPolicyStates(t, "detent.yaml", strings.Repeat("b", 40), append(b.project.States, tracker.NativeState{Name: "Repair", Dispatchable: true})), func(w *config.Workflow) {
+		w.Config.Agent.AutoPromote.Enabled = true
+		w.Config.Deliverable.MergeMethod = "rebase"
+	})
 	approveHubTestPolicy(t, service, a.base+"/policy", human)
 	approveHubTestPolicy(t, service, b.base+"/policy", automatic)
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, b.base+"/policy", a.token, nil), http.StatusNotFound)
@@ -1368,9 +1391,7 @@ func TestProjectPolicyConcurrentApproval(t *testing.T) {
 	statuses := make(chan int, 2)
 	for _, method := range []string{"merge", "rebase"} {
 		wait.Go(func() {
-			proposal := initial
-			proposal.Gates.MergeMethod = method
-			proposal = proposal.WithID()
+			proposal := hubtest.PolicyDescriptor(func(w *config.Workflow) { w.Config.Deliverable.MergeMethod = method })
 			statuses <- performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: initial.ID, Policy: proposal}).Code
 		})
 	}
@@ -1408,9 +1429,7 @@ func TestPolicyRequirementsNeverEnrollOrGrantCapabilities(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.create(t, "work")
-			descriptor := hubTestPolicy()
-			descriptor.Requirements = test.requirements
-			descriptor = descriptor.WithID()
+			descriptor := hubtest.PolicyWithRequirements(test.requirements)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": credential.Runner.MachineID, "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
 			reportRunnerCapacity(t, f.service, f.base, worker, credential.Runner.MachineID, "runner", isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, 1)
@@ -1473,9 +1492,7 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	if seeded.PolicyID != first.ID || seeded.RequireReview || len(seeded.RequiredChecks) != 0 || seeded.ID != changerequest.PolicyID(seeded) {
 		t.Fatalf("seeded review policy = %#v", seeded)
 	}
-	second := first
-	second.ConfigDigest = policy.Digest([]byte("second"))
-	second = second.WithID()
+	second := hubTestPolicy(hubtest.WithPolicyPrompt("Second instructions."))
 	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: first.ID, Policy: second})
 	requireNativeStatus(t, response, http.StatusOK)
 	if followed := read(t, http.StatusOK); followed.PolicyID != second.ID || followed.RequireReview || len(followed.RequiredChecks) != 0 {
@@ -1492,9 +1509,7 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	custom := tracker.ChangeReviewPolicy{PolicyID: second.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
 	response = performHubAPIRequest(t, f.service, http.MethodPut, rulesPath, testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "custom"}, ExpectedID: read(t, http.StatusOK).ID, Policy: custom})
 	requireNativeStatus(t, response, http.StatusOK)
-	third := second
-	third.ConfigDigest = policy.Digest([]byte("third"))
-	third = third.WithID()
+	third := hubTestPolicy(hubtest.WithPolicyPrompt("Third instructions."))
 	response = performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: second.ID, Policy: third})
 	requireNativeStatus(t, response, http.StatusOK)
 	if kept := read(t, http.StatusOK); kept.PolicyID != second.ID || len(kept.RequiredChecks) != 1 {
@@ -1502,9 +1517,7 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	}
 
 	checked := newNativeFixture(t, nil, "", "checked")
-	descriptor := hubTestPolicy()
-	descriptor.Gates.RequiredChecks = 1
-	descriptor = descriptor.WithID()
+	descriptor := hubtest.PolicyDescriptor(func(w *config.Workflow) { w.Config.Gate.RequiredStatusChecks = []string{"test"} })
 	approveHubTestPolicy(t, checked.service, checked.base+"/policy", descriptor)
 	if err := checked.service.config.TenantRepository.ReadTenant(t.Context(), checked.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := r.ReviewPolicy(t.Context(), checked.project.ID)
@@ -1517,10 +1530,10 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	}
 
 	reviewed := newNativeFixture(t, nil, "", "reviewed")
-	gated := hubTestPolicy()
-	gated.Gates.Kind, gated.Gates.AutomatedReview = "human_review", ""
-	gated.Gates.HumanReview = true
-	gated = gated.WithID()
+	gated := hubtest.PolicyDescriptor(func(w *config.Workflow) {
+		w.Config.Gate.Kind = gate.KindHumanReview
+		w.Config.Review.Human = true
+	})
 	approveHubTestPolicy(t, reviewed.service, reviewed.base+"/policy", gated)
 	response = performHubAPIRequest(t, reviewed.service, http.MethodGet, reviewed.base+"/change-review-policy", reviewed.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -1532,9 +1545,10 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	for _, humanReview := range []bool{false, true} {
 		t.Run(fmt.Sprintf("validator human review=%t", humanReview), func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "validator")
-			descriptor := hubTestPolicy()
-			descriptor.Gates.Validator, descriptor.Gates.HumanReview = true, humanReview
-			descriptor = descriptor.WithID()
+			descriptor := hubtest.PolicyDescriptor(func(w *config.Workflow) {
+				w.Config.Gate.Validator.Enabled = true
+				w.Config.Review.Human = humanReview
+			})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/change-review-policy", f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -1550,7 +1564,7 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 
 func TestDefaultFollowingReviewPolicy(t *testing.T) {
 	t.Parallel()
-	descriptor := hubTestPolicy()
+	descriptor := hubtest.LegacyPolicyDescriptor()
 	manual := defaultChangeReviewPolicy(descriptor)
 	manual.RequireReview = true
 	manual.ID = changerequest.PolicyID(manual)
@@ -1647,6 +1661,11 @@ func TestApprovedPolicyClaimExposure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			snapshot, err := json.Marshal(descriptor.Configuration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor.ConfigDigest = policy.Digest(snapshot)
 			descriptor.SourceRevision = strings.Repeat("b", 64)
 			descriptor = descriptor.WithID()
 			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
@@ -1873,7 +1892,7 @@ func TestProjectPolicyCache(t *testing.T) {
 				if i == hubrecords.ProjectPolicyCacheLimit {
 					read(ctx, scope, descriptor)
 				}
-				other := hubTestPolicy()
+				other := hubtest.LegacyPolicyDescriptor()
 				other.SourceRevision = fmt.Sprintf("%040x", i)
 				other = other.WithID()
 				otherScope := scope
@@ -1936,14 +1955,14 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				descriptor := hubTestPolicy()
+				descriptor := hubtest.LegacyPolicyDescriptor()
 				descriptor.Requirements.RequiredTags = []string{"example"}
 				descriptor = descriptor.WithID()
 				raw, err := json.Marshal(descriptor)
 				if err != nil {
 					t.Fatal(err)
 				}
-				other := hubTestPolicy()
+				other := hubtest.LegacyPolicyDescriptor()
 				otherRaw, err := json.Marshal(other)
 				if err != nil {
 					t.Fatal(err)
@@ -2164,10 +2183,10 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID); err != nil {
 				t.Fatal(err)
 			}
-			descriptor := hubTestPolicy()
+			descriptor := hubtest.LegacyPolicyDescriptor()
 			ctx := f.service.database.policyContext(t.Context())
 			if approved || test.warm {
-				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+				hubtest.Policy(t, f.service.config.TenantRepository, f.service.runDetailStore(), f.project, hubtest.PolicyOptions{Descriptor: &descriptor, Now: f.service.config.Clock()})
 			}
 			if test.warm {
 				if _, err := requireTestTenantProjectPolicy(ctx, f.service, scope); err != nil {
@@ -2185,6 +2204,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 			}
 			candidate := descriptor
 			candidate.Gates.AutoPromote = true
+			candidate = candidate.WithID()
 			if test.large {
 				workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
 					ConfigPath: "detent.yaml", HasConfig: true,
@@ -2199,7 +2219,6 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			candidate = candidate.WithID()
 			worker := f.worker(t, "policy-reader")
 			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
 			if err != nil {
@@ -2466,7 +2485,7 @@ func TestNativeWorkflowPolicyCanonicalStates(t *testing.T) {
 		{name: "workflow source", change: func(p *projectstore.Record) { p.Core.WorkflowSource = "other.yaml" }, conflict: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			descriptor := hubTestPolicy()
+			descriptor := hubtest.LegacyPolicyDescriptor()
 			descriptor.Workflow = &policy.Workflow{Source: "example-workflow.yaml", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
 			descriptor = descriptor.WithID()
 			project := projectstore.Record{Core: corestore.Project{WorkflowSource: descriptor.Workflow.Source, WorkflowSourceRevision: descriptor.Workflow.Revision}, States: hubrecords.NativeTriageStates(descriptor.Workflow.States)}
@@ -2608,5 +2627,123 @@ func requireClaimRefusedWithoutLease(t *testing.T, f nativeFixture, token string
 	var leases int
 	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE l.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3 AND l.released_at IS NULL", f.project.OrganizationID, f.project.ID, claim.WorkItemID).Scan(&leases); err != nil || leases != 0 {
 		t.Fatalf("refused claim for policy %s left %d active leases: %v", claim.PolicyID, leases, err)
+	}
+}
+
+func TestVerifiedPolicyRepairIdentity(t *testing.T) {
+	t.Parallel()
+	for _, version := range []int{1, 2, 3, policy.AuthoredExactPromptVersion} {
+		t.Run(fmt.Sprintf("authored version %d", version), func(t *testing.T) {
+			workflow := repositoryWorkflowFixture(t, nativeFixtureStates(), strings.Repeat("a", 40), false)
+			workflow.Authored.Version = version
+			full, err := config.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacy := full
+			authored := *full.Authored
+			authored.Files = nil
+			legacy.Authored = &authored
+			workflow.Definition.Revision = strings.Repeat("b", 40)
+			later, err := config.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if version < policy.AuthoredExactPromptVersion {
+				later.Authored.Files["WORKFLOW.md"] += " \t\n"
+			}
+			repaired, err := repairPolicyDescriptor(legacy, later)
+			if err != nil || repaired.ID == full.ID || repaired.OriginalAuthored().ID != full.ID || repaired.Workflow.Revision != full.Workflow.Revision || !reflect.DeepEqual(repaired.Authored.Files, full.Authored.Files) {
+				t.Fatalf("repair did not pin the verified files and original revision: %v", err)
+			}
+			decoded, err := config.ResolveNativePolicy(repaired)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := decoded.Workflow()
+			if err != nil || run.Prompt != workflow.Prompt || !reflect.DeepEqual(decoded.Descriptor(), repaired) {
+				t.Fatalf("repaired policy did not survive resolution: %v", err)
+			}
+
+			bad := later
+			changed := *later.Authored
+			changed.Files = maps.Clone(later.Authored.Files)
+			changed.Files["WORKFLOW.md"] = "Different instructions."
+			bad.Authored = &changed
+			if _, err := repairPolicyDescriptor(legacy, bad); !errors.Is(err, config.ErrNativeAuthoredMismatch) {
+				t.Fatalf("accepted changed bytes: %v", err)
+			}
+		})
+	}
+}
+
+type policyRepairRevisions struct {
+	tenantstore.Repository
+	tenantstore.Reader
+	scope hubscope.NativeScope
+	rows  map[string]policystore.Revision
+}
+
+func (r policyRepairRevisions) ReadTenant(_ context.Context, organization tracker.OrganizationID, _ corestore.Workload, read func(tenantstore.Reader) error) error {
+	if organization != r.scope.Organization {
+		return corestore.ErrTenantMismatch
+	}
+	return read(r)
+}
+
+func (r policyRepairRevisions) ProjectPolicyRevision(_ context.Context, project tracker.ProjectID, id string) (policystore.Revision, error) {
+	if project != r.scope.Project {
+		return policystore.Revision{}, corestore.ErrTenantMismatch
+	}
+	if row, ok := r.rows[id]; ok {
+		return row, nil
+	}
+	return policystore.Revision{}, corestore.ErrNotFound
+}
+
+func TestConfigurationObservationReusesVerifiedRevision(t *testing.T) {
+	t.Parallel()
+	scope := hubscope.NativeScope{Organization: "org_example", Project: "project_example"}
+	workflow := repositoryWorkflowFixture(t, nativeFixtureStates(), strings.Repeat("a", 40), false)
+	full, err := config.ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := full
+	authored := *full.Authored
+	authored.Files = nil
+	legacy.Authored, legacy.Configuration = &authored, nil
+	repository := policyRepairRevisions{scope: scope, rows: map[string]policystore.Revision{}}
+	store := &memoryRunDetails{}
+	content := eventstore.NewContent(store)
+	for _, descriptor := range []policy.Descriptor{legacy, full.WithPinnedFiles()} {
+		row, err := content.PrepareProjectPolicy(t.Context(), scope.Organization, descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row.ProjectID = scope.Project
+		repository.rows[row.PolicyID] = row
+	}
+	s := &Service{config: Config{TenantRepository: repository, RunDetails: store}}
+	workflow.Definition.Revision = strings.Repeat("b", 40)
+	later, err := config.ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := policy.Observation{Descriptor: later, Source: &policy.RepositorySource{Commit: later.Workflow.Revision}}
+	got, err := s.prepareConfigurationPolicyObservation(t.Context(), scope, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := repository.rows[full.WithPinnedFiles().ID]
+	if got.PolicyID != expected.PolicyID || got.Revision.PayloadSHA256 != expected.PayloadSHA256 || got.Source.Commit != later.Workflow.Revision {
+		t.Fatal("heartbeat did not retain the verified approval bytes and the current observation commit")
+	}
+	fileless := hubTestPolicy()
+	fileless.Authored = &policy.Authored{Version: 1, Digest: fileless.ConfigDigest}
+	fileless.Configuration.Prompt = "Unbound instructions."
+	_, err = s.prepareConfigurationPolicyObservation(t.Context(), scope, policy.Observation{Descriptor: fileless.WithID()})
+	if !errors.Is(err, config.ErrNativePromptUnavailable) {
+		t.Fatalf("heartbeat accepted unbound instructions or lost its refusal: %v", err)
 	}
 }

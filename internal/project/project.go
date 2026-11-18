@@ -230,7 +230,7 @@ func (s *scheduleFaultState) current() RuntimeError {
 }
 
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
-	workflow, err := loadWorkflowForScheduling(context.Background(), cfg, deps.Scheduling)
+	workflow, err := LoadWorkflowForScheduling(context.Background(), cfg, deps.Scheduling)
 	if err != nil {
 		return nil, fmt.Errorf("load project workflow: %w", err)
 	}
@@ -251,7 +251,8 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 	workflow := normalizeWorkflow(cfg.Workflow)
 	workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg.Project)
 	workflow.Config = WithMappedNativeTracker(workflow.Config, deps.Scheduling, id)
-	if err := configureProjectPolicy(ctx, cfg.Project, &workflow, deps.Scheduling); err != nil {
+	observation, err := configureProjectPolicy(ctx, cfg.Project, &workflow, deps.Scheduling)
+	if err != nil {
 		return nil, projectDefinitionError{err: err}
 	}
 	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
@@ -375,9 +376,11 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 		return nil, errors.Join(ErrMissingOrchestrator)
 	}
 	if workflow.Config.Policy.ID != "" {
-		if updater, ok := deps.Runner.(workflowUpdater); ok {
-			updater.UpdateWorkflow(workflow)
+		apply, err := prepareRunnerWorkflow(deps.Runner, workflow)
+		if err != nil {
+			return nil, fmt.Errorf("prepare approved runner workflow: %w", err)
 		}
+		apply()
 	}
 
 	watcherProject := cfg.Project
@@ -420,7 +423,10 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 		},
 	}
 	if workflow.Config.Policy.ID != "" {
-		observed := workflow.Config.Policy
+		observed := observation.Descriptor
+		if observed.ID == "" {
+			observed = workflow.Config.Policy
+		}
 		project.observedPolicy, project.observedSource = &observed, policySourceKind(cfg.Project, workflow)
 	}
 	project.watcher = resolveWorkflowWatcherFactory(ctx, deps, watcherProject, deps.GitHubToken, logger, project.Config)
@@ -513,11 +519,12 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 		return fmt.Errorf("prepare inherited agent configuration: %w", err)
 	}
 	if projectOrchestrator != nil && running {
-		if err := projectOrchestrator.UpdateConfig(ctx, runtimeConfig); err != nil {
+		if err := projectOrchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{Config: runtimeConfig, ApplyRunnerWorkflow: applyRunner}); err != nil {
 			return fmt.Errorf("update project live config: %w", err)
 		}
+	} else {
+		applyRunner()
 	}
-	applyRunner()
 	if updater, ok := projectRunner.(interface{ SetGoJobSlots(int) }); ok {
 		updater.SetGoJobSlots(cfg.GlobalJobSlots)
 	}
@@ -1193,7 +1200,7 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	loadedPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 
-	workflow, err := loadWorkflowForScheduling(ctx, projectConfig, p.policyScheduling)
+	workflow, err := LoadWorkflowForScheduling(ctx, projectConfig, p.policyScheduling)
 	now := time.Now().UTC()
 	p.mu.Lock()
 	p.workflowSource.LastReconcileAt = now
@@ -1204,6 +1211,8 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 		}
 		return fmt.Errorf("load workflow: %w", err)
 	}
+	workflow = normalizeWorkflow(workflow)
+	workflow.Config = applyProjectAgentDefaults(workflow.Config, projectConfig)
 	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
 		observedOnly, err := p.configureRepositoryPolicy(ctx, projectConfig, &workflow, scheduling)
@@ -1223,22 +1232,22 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 
 	path := workflowSourceDisplayPath(projectConfig)
 	p.logger.Warn("workflow reconcile detected stale config", "project_id", p.id, "path", path)
-	return p.applyWorkflowUpdate(ctx, configwatcher.Update{Path: path, Workflow: workflow, At: now}, false)
+	return p.installWorkflowUpdate(ctx, configwatcher.Update{Path: path, Workflow: workflow, At: now})
 }
 
 func (p *Project) configureRepositoryPolicy(ctx context.Context, cfg globalconfig.Project, workflow *workflowconfig.Workflow, scheduling orchestrator.SchedulingSource) (bool, error) {
-	descriptor, provenance, err := resolveProjectPolicy(ctx, cfg, workflow, scheduling)
+	descriptor, observation, err := resolveProjectPolicy(ctx, cfg, workflow, scheduling)
 	if err != nil || descriptor.ID == "" {
 		return false, err
 	}
 	p.mu.Lock()
-	p.observedPolicy, p.observedSource = &descriptor, policySourceKind(cfg, *workflow)
+	p.observedPolicy, p.observedSource = &observation.Descriptor, policySourceKind(cfg, *workflow)
 	owned := p.hubPolicyID
 	p.mu.Unlock()
 	if owned != "" && descriptor.ID != owned {
 		return true, nil
 	}
-	return false, checkProjectPolicy(ctx, cfg, workflow, scheduling, descriptor, provenance)
+	return false, checkProjectPolicy(ctx, cfg, workflow, scheduling, descriptor, observation)
 }
 
 func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) error {
@@ -1255,20 +1264,13 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 
 	p.mu.Lock()
 	projectConfig := p.cfg
-	githubToken := p.githubToken
-	connectorFactory := p.connectorFactory
-	schedulerFactory := p.schedulerFactory
-	runner := p.runner
-	projectOrchestrator := p.orchestrator
-	projectRunning := p.done != nil
-	scheduleConfig := p.scheduleConfig
 	scheduling := p.policyScheduling
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = applyProjectAgentDefaults(workflow.Config, projectConfig)
 	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if managed {
-		if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
+		if _, err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
 			return p.workflowReloadError(policyReloadFailure(err), update.Path, err)
 		}
 	} else if observedOnly, err := p.configureRepositoryPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
@@ -1279,6 +1281,22 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	if managed && update.Workflow.Config.Policy.ID != "" && (workflow.Config.Policy.ID != update.Workflow.Config.Policy.ID || workflow.Config.Policy.SourceRevision != update.Workflow.Config.Policy.SourceRevision) {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("the approved policy changed during application; read the current policy before retrying"))
 	}
+	update.Workflow = workflow
+	return p.installWorkflowUpdate(ctx, update)
+}
+
+func (p *Project) installWorkflowUpdate(ctx context.Context, update configwatcher.Update) error {
+	p.mu.Lock()
+	projectConfig := p.cfg
+	githubToken := p.githubToken
+	connectorFactory := p.connectorFactory
+	schedulerFactory := p.schedulerFactory
+	runner := p.runner
+	projectOrchestrator := p.orchestrator
+	projectRunning := p.done != nil
+	scheduleConfig := p.scheduleConfig
+	p.mu.Unlock()
+	workflow := update.Workflow
 	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
@@ -1313,18 +1331,20 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow)
 	if projectOrchestrator != nil && projectRunning {
 		if err := projectOrchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
-			Config:         runtimeConfig,
-			Connector:      projectConnector,
-			Release:        releaseCoordinator,
-			ReplaceRelease: true,
+			Config:              runtimeConfig,
+			ApplyRunnerWorkflow: applyRunner,
+			Connector:           projectConnector,
+			Release:             releaseCoordinator,
+			ReplaceRelease:      true,
 		}); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return p.workflowReloadError("apply workflow reload failed", update.Path, err)
 		}
+	} else {
+		applyRunner()
 	}
-	applyRunner()
 
 	p.mu.Lock()
 	p.workflow = workflow
@@ -1931,7 +1951,7 @@ func resolveWorkflowWatcherFactory(
 			}
 			watcher.currentProject = currentProject
 			watcher.fallback = func(ctx context.Context) (workflowconfig.Workflow, error) {
-				return loadWorkflowForScheduling(ctx, currentProject(), deps.Scheduling)
+				return LoadWorkflowForScheduling(ctx, currentProject(), deps.Scheduling)
 			}
 			return watcher, nil
 		}
@@ -1940,7 +1960,7 @@ func resolveWorkflowWatcherFactory(
 		return configwatcher.New(path,
 			configwatcher.WithLoader(func(path string) (workflowconfig.Workflow, error) {
 				project := currentProject()
-				workflow, err := loadWorkflowForScheduling(context.WithoutCancel(ctx), project, deps.Scheduling)
+				workflow, err := LoadWorkflowForScheduling(context.WithoutCancel(ctx), project, deps.Scheduling)
 				if err != nil {
 					return workflow, err
 				}
@@ -1956,7 +1976,7 @@ func resolveWorkflowWatcherFactory(
 }
 
 func normalizeWorkflow(workflow workflowconfig.Workflow) workflowconfig.Workflow {
-	if workflow.SharedPrompt == "" && workflow.Overlay.Path == "" {
+	if workflow.Config.Policy.ID == "" && workflow.SharedPrompt == "" && workflow.Overlay.Path == "" {
 		workflow.SharedPrompt = workflow.Prompt
 	}
 	if !emptyWorkflowConfig(workflow.Config) {

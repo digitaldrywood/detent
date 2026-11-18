@@ -206,16 +206,17 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	}
 	h := newPlannerHub(t, "Human Review", states, factories)
 	previousPolicyID := h.descriptor.ID
-	h.descriptor.Gates.HumanReview = true
-	h.descriptor = h.descriptor.WithID()
+	h.descriptor = changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+		w.Config.Review.Human = true
+	})
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previousPolicyID, Policy: h.descriptor}); err != nil {
 		t.Fatal(err)
 	}
 	requestedPolicy := h.descriptor
 	if resumeCase == "policy" {
-		prior := h.descriptor
-		prior.ConfigDigest = policy.Digest([]byte("prior persisted session policy"))
-		prior = prior.WithID()
+		prior := changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+			w.Prompt, w.SharedPrompt = "prior persisted session policy", "prior persisted session policy"
+		})
 		if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: prior}); err != nil {
 			t.Fatal(err)
 		}

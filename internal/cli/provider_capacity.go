@@ -121,7 +121,7 @@ func runnerProviderConfigs(ctx context.Context, cfg globalconfig.Config) ([]work
 		workflows = append(workflows, workflowconfig.Default().WithAgentDefaults(cfg.Global.Agents, cfg.Global.Budget))
 	}
 	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
-		workflow, err := project.LoadWorkflowContext(ctx, selected)
+		workflow, err := loadRunnerProjectWorkflow(ctx, cfg, selected)
 		if err != nil {
 			slog.Warn("Runner provider project definition unavailable", "project", selected.ID, "error", err)
 			continue

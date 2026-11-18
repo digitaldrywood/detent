@@ -18,7 +18,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -60,9 +62,7 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 
 	t.Parallel()
 	h := newNativeChangeHub(t, true)
-	next := h.descriptor
-	next.Gates.Validator = true
-	next = next.WithID()
+	next := hubtest.PolicyDescriptor(func(w *config.Workflow) { w.Config.Gate.Validator.Enabled = true })
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 		t.Fatal(err)
 	}

@@ -203,24 +203,27 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			var publicationCI *NativeClient
 			if test.Publication != "" {
 				previous := h.descriptor.ID
-				h.descriptor.Gates.GitHubPullRequest = true
-				h.descriptor = h.descriptor.WithID()
+				h.descriptor = changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+					w.Config.Deliverable.GitHubPullRequest = true
+				})
 				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{Policy: h.descriptor, ExpectedID: previous}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.Validator != "" {
 				previous := h.descriptor.ID
-				h.descriptor.Gates.Validator = true
-				h.descriptor = h.descriptor.WithID()
+				h.descriptor = changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+					w.Config.Gate.Validator.Enabled = true
+				})
 				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.SummaryFailure {
 				previous := h.descriptor.ID
-				h.descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
-				h.descriptor = h.descriptor.WithID()
+				h.descriptor = changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+					w.Config.Gate.AutomatedReview = gate.AutomatedReviewRequired
+				})
 				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
 					t.Fatal(err)
 				}
@@ -832,7 +835,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			dependencies := runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource,
 				Logger:       slog.New(slog.NewTextHandler(&runLogs, nil)),
 				ProjectID:    "local",
-				Workflow:     config.Workflow{Config: config.Config{Gate: gate.Config{Run: validationCommand, AutomatedReview: automatedReview, Validator: gate.ValidatorConfig{Enabled: test.Validator != ""}}}, Prompt: "Complete the issue"},
+				Workflow:     config.Workflow{Config: config.Config{Policy: h.descriptor, Gate: gate.Config{Run: validationCommand, AutomatedReview: automatedReview, Validator: gate.ValidatorConfig{Enabled: test.Validator != ""}}}, Prompt: h.descriptor.Configuration.Prompt},
 				Workspace:    backend,
 				AgentBackend: provider,
 				FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
@@ -1675,10 +1678,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					}
 				}
 				dependencies.Store = api.NewRunnerSessions(h.native)
-				agent, err = runner.NewRunner(dependencies)
-				if err != nil {
-					t.Fatal(err)
-				}
 				machineID := machine.ID
 				h.scheduler, err = newTestScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
@@ -1686,6 +1685,12 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				if test.PublicationFault == "policy" {
 					h.repolicy(t)
+				}
+				dependencies.Workflow.Config.Policy = h.descriptor
+				dependencies.Workflow.Prompt = h.descriptor.Configuration.Prompt
+				agent, err = runner.NewRunner(dependencies)
+				if err != nil {
+					t.Fatal(err)
 				}
 				if test.StalePolicy || test.PublicationFault == "policy" {
 					rules, err := h.admin.ChangeReviewPolicy(t.Context())
@@ -2896,9 +2901,9 @@ type nativeChangeHub struct {
 // follows it, and versions published before it are stale.
 func (h *nativeChangeHub) repolicy(t *testing.T) {
 	t.Helper()
-	next := h.descriptor
-	next.ConfigDigest = policy.Digest([]byte("changed between attempts"))
-	next = next.WithID()
+	next := changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+		w.Prompt, w.SharedPrompt = "changed between attempts", "changed between attempts"
+	})
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 		t.Fatal(err)
 	}

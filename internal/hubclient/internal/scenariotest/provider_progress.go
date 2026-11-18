@@ -429,7 +429,7 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool, factor
 		}
 		provider.duringCheck = func(ctx context.Context) error { return setIsolation(ctx, isolation.Sandbox) }
 	}
-	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{
+	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Agents: config.Agents{Routes: []config.AgentRoute{
 		{Name: "planner", Role: runner.RolePlan, Backend: "codex", Model: "plan-model"},
 		{Name: "implementation", Backend: "codex", Model: "code-model", Default: true},
 	}}}}, Workspace: nativeProgressWorkspace{path: t.TempDir()}, AgentBackend: provider})
@@ -609,7 +609,7 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 					t.Fatal(err)
 				}
 			}
-			cfg := config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}
+			cfg := config.Config{Policy: h.descriptor, Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}
 			if tt.projectEffort {
 				cfg.Agent.Effort.Rework = tt.effort
 			}

@@ -170,10 +170,11 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				gateCommand = "printf gate >> '" + strings.ReplaceAll(gateMarker, "'", "'\"'\"'") + "'"
 			}
 			previous := h.descriptor.ID
-			h.descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
-			h.descriptor.Gates.Validator = true
-			h.descriptor.Gates.SecurityAudit = true
-			h.descriptor = h.descriptor.WithID()
+			h.descriptor = changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+				w.Config.Gate.AutomatedReview = gate.AutomatedReviewRequired
+				w.Config.Gate.Validator.Enabled = true
+				w.Config.Gate.SecurityAudit.Enabled = true
+			})
 			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
 				t.Fatal(err)
 			}

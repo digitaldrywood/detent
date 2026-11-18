@@ -29,7 +29,8 @@ Do not claim actions were performed. Detent publishes the comment and routes the
 // runTriage uses the existing code/rework role in an empty read-only workspace.
 // It receives a complete evidence snapshot and exposes no mutation tools.
 func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResult, err error) {
-	workflow, runtime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
+	snapshot := r.executionRuntime(ctx)
+	workflow, runtime, budgetChecker, dispatchEstimator := snapshot.workflow, snapshot.agents, snapshot.budget, snapshot.estimator
 	// Triage always starts fresh, but still uses the native provider reservation.
 	req.RetryMode = ""
 	req.ResumeState = store.AgentResumeState{}

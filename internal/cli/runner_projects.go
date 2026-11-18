@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/onboarding"
@@ -118,7 +119,7 @@ func (p *runnerProjects) prepareConfiguration(ctx context.Context, cfg globalcon
 		if selected.ID != name {
 			continue
 		}
-		if !runnerCheckoutReady(ctx, selected) {
+		if _, err := os.Stat(filepath.Join(selected.Workdir, ".git")); err != nil {
 			native, err := p.client.Native(tracker.OrganizationID(cfg.Client.OrganizationID), tracker.ProjectID(cfg.Client.NativeProjects[name]))
 			if err != nil {
 				return err
@@ -226,7 +227,7 @@ func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.
 		}
 		cfg.Projects = []globalconfig.Project{verification}
 		setupProject := project.ManagerConfigFromGlobal(cfg).Projects[0]
-		_, run.err = project.LoadWorkflowContext(ctx, setupProject)
+		_, run.err = project.LoadRunnerWorkflow(ctx, setupProject, native.ProjectWorkflowDefinition)
 		if run.err == nil {
 			if id := cfg.Client.NativeProjects[selected.ID]; id != "" {
 				setupProject.ID = id
@@ -440,6 +441,9 @@ func (p *runnerProjects) runnerSetupDeclared(ctx context.Context, name string) *
 			selected.ID = id
 		}
 		workflow, err := project.LoadWorkflowContext(ctx, selected)
+		if errors.Is(err, workflowconfig.ErrNoProjectDefinition) {
+			return new(false)
+		}
 		if err != nil {
 			return nil
 		}
@@ -519,7 +523,7 @@ func resolveRunnerProjectsWithMode(ctx context.Context, cfg globalconfig.Config,
 	resolved, err := runnerProjectsForIdentity(ctx, cfg, client, identity, !readOnly && len(previous) == 0, readOnly)
 	if len(previous) > 0 && err == nil {
 		resolved.Projects = slices.DeleteFunc(resolved.Projects, func(selected globalconfig.Project) bool {
-			return !slices.ContainsFunc(previous[0].Projects, func(current globalconfig.Project) bool { return current.ID == selected.ID }) && !runnerCheckoutReady(ctx, selected)
+			return !slices.ContainsFunc(previous[0].Projects, func(current globalconfig.Project) bool { return current.ID == selected.ID }) && !runnerCheckoutReady(ctx, resolved, selected)
 		})
 	}
 	return resolved, err

@@ -177,9 +177,9 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
-			next := h.descriptor
-			next.Gates.Validator, next.Gates.SecurityAudit, next.Gates.AutomatedReview = true, test.audit, gate.AutomatedReviewRequired
-			next = next.WithID()
+			next := changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+				w.Config.Gate.Validator.Enabled, w.Config.Gate.SecurityAudit.Enabled, w.Config.Gate.AutomatedReview = true, test.audit, gate.AutomatedReviewRequired
+			})
 			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 				t.Fatal(err)
 			}
@@ -230,7 +230,7 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 			}
 
 			gateCfg := gate.Config{Run: "git status --porcelain", SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true}}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: 5}, Gate: gateCfg}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Agent: config.Agent{MaxTurns: 5}, Gate: gateCfg}, Prompt: h.descriptor.Configuration.Prompt}, Workspace: backend, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}

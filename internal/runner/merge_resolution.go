@@ -16,7 +16,8 @@ import (
 func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, source workspace.LandingConflictResolver, info workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.LandingResolution, RunResult, error) {
 	var result RunResult
 	resolved, err := source.ResolveLandingConflict(ctx, info, issue, opts, func(ctx context.Context, path string, files []string) (turnErr error) {
-		workflow, runtime, budgetChecker, estimator := r.runtimeSnapshot()
+		snapshot := r.executionRuntime(ctx)
+		workflow, runtime, budgetChecker, estimator := snapshot.workflow, snapshot.agents, snapshot.budget, snapshot.estimator
 		selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), RoleMerge)
 		if err != nil {
 			return err

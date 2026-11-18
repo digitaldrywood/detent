@@ -28,7 +28,7 @@ func DefaultIssueContract() IssueContract {
 
 func ResolvePolicyIssueContract(descriptor policy.Descriptor) (IssueContract, error) {
 	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
-		workflow, err := ApplyNativePolicy(Workflow{Config: Default()}, descriptor)
+		workflow, err := ReadNativePolicy(descriptor)
 		if err != nil {
 			return IssueContract{}, err
 		}

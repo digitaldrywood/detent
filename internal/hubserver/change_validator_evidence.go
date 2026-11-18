@@ -118,7 +118,7 @@ func validateValidatorReviewEvidence(scope hubscope.NativeScope, change tracker.
 		return "", invalid("review diff differs from the immutable source", "validator.diff_digest")
 	}
 	issue := evidence.issue
-	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, version.Policy)
+	workflow, err := config.ReadNativePolicy(version.Policy)
 	if err != nil {
 		return "", err
 	}

@@ -179,22 +179,33 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	if err := descriptor.Validate(); err != nil {
 		return Workflow{}, err
 	}
+	if err := validateLocalPolicySnapshot(workflow, descriptor); err != nil {
+		return Workflow{}, err
+	}
+	return applyNativePolicy(workflow, descriptor)
+}
+
+func ReadNativePolicy(descriptor policy.Descriptor) (Workflow, error) {
+	if err := descriptor.Validate(); err != nil {
+		return Workflow{}, err
+	}
+	return applyNativePolicy(Workflow{Config: Default()}, descriptor)
+}
+
+func applyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflow, error) {
 	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
 		shared, _, err := resolveAuthoredNativePolicy(descriptor)
 		if err != nil {
 			return Workflow{}, err
 		}
-		if err := validateLocalPolicySnapshot(workflow, descriptor); err != nil {
+		return applyAuthoredNativePolicy(workflow, shared), nil
+	}
+	if descriptor.Configuration != nil {
+		var err error
+		workflow, err = applyNativePolicyConfiguration(workflow, descriptor)
+		if err != nil {
 			return Workflow{}, err
 		}
-		return applyAuthoredNativePolicy(workflow, shared)
-	}
-	if descriptor.Configuration == nil {
-		return workflow, nil
-	}
-	workflow, err := applyNativePolicyConfiguration(workflow, descriptor)
-	if err != nil {
-		return Workflow{}, err
 	}
 	cfg := &workflow.Config
 	cfg.Review.Human = descriptor.Gates.HumanReview
@@ -226,11 +237,56 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	return workflow, nil
 }
 
+var ErrNativePromptUnavailable = errors.New("policy_mismatch: approved workflow instructions are unavailable. Include the required instructions in WORKFLOW.md and approve its pinned content")
+
+var ErrNativeAuthoredMismatch = errors.New("policy_mismatch: authored inputs do not match their digests")
+
+func ValidateNativePromptInputs(descriptor policy.Descriptor) error {
+	if descriptor.Authored != nil && (descriptor.Authored.SourceVersion() < 1 || descriptor.Authored.SourceVersion() > NativePolicyCanonicalizationVersion) {
+		return fmt.Errorf("unsupported policy canonicalization version %d", descriptor.Authored.Version)
+	}
+	if descriptor.Authored == nil || len(descriptor.Authored.Files) == 0 {
+		snapshot := descriptor.Configuration
+		if snapshot == nil {
+			return ErrNativePromptUnavailable
+		}
+		behavior := bytes.TrimSpace(snapshot.Behavior)
+		if len(behavior) == 0 || bytes.Equal(behavior, []byte("null")) {
+			return ErrNativePromptUnavailable
+		}
+		if descriptor.Authored != nil || strings.TrimSpace(snapshot.Prompt) == "" {
+			raw, err := json.Marshal(snapshot)
+			if err != nil || policy.Digest(raw) != descriptor.ConfigDigest {
+				return ErrNativePromptUnavailable
+			}
+		}
+		return nil
+	}
+	overlay, err := splitProjectWorkflow([]byte(descriptor.Authored.Files["WORKFLOW.local.md"]))
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(overlay.prompt)) != 0 {
+		return ErrNativePromptUnavailable
+	}
+	return nil
+}
+
 func validateLocalPolicySnapshot(workflow Workflow, descriptor policy.Descriptor) error {
+	if err := ValidateNativePromptInputs(descriptor); err != nil {
+		return err
+	}
 	if workflow.DefinitionSources == nil || descriptor.Authored == nil || len(descriptor.Authored.Files) == 0 {
 		return nil
 	}
-	local, err := nativeAuthoredSources(*workflow.DefinitionSources, NativePolicyCanonicalizationVersion)
+	sources := *workflow.DefinitionSources
+	localWorkflow, err := splitProjectWorkflow(sources.LocalWorkflow)
+	if err != nil {
+		return err
+	}
+	localWorkflow.prompt = nil
+	sources.LocalWorkflow = legacyWorkflowBytes(localWorkflow)
+	local, err := nativeAuthoredSources(sources, NativePolicyCanonicalizationVersion)
 	if err != nil {
 		return err
 	}
@@ -241,45 +297,14 @@ func validateLocalPolicySnapshot(workflow Workflow, descriptor policy.Descriptor
 	if local.HasLocalWorkflow && !bytes.Equal(local.LocalWorkflow, approved.LocalWorkflow) || local.HasLocalConfig && !bytes.Equal(local.LocalConfig, approved.LocalConfig) {
 		return errors.New("policy_mismatch: machine-local policy differs from approved inputs")
 	}
-	if !local.HasLocalWorkflow && approved.HasLocalWorkflow {
-		document, err := splitProjectWorkflow(approved.LocalWorkflow)
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(string(document.prompt)) != "" {
-			return errors.New("policy_mismatch: approved machine-local instructions are unavailable")
-		}
-	}
 	return nil
 }
 
-func applyAuthoredNativePolicy(workflow, shared Workflow) (Workflow, error) {
-	localPrompt, err := nativeMachinePrompt(workflow)
-	if err != nil {
-		return Workflow{}, err
-	}
+func applyAuthoredNativePolicy(workflow, shared Workflow) Workflow {
 	workflow.Config = nativeProjectBehavior(shared.Config).apply(workflow.Config)
 	workflow.Prompt, workflow.SharedPrompt, workflow.AgentsPrompt = shared.Prompt, shared.SharedPrompt, shared.AgentsPrompt
 	workflow.Authored, workflow.DefinitionSources, workflow.Definition = shared.Authored, shared.DefinitionSources, shared.Definition
-	workflow.machinePrompt = localPrompt
-	if localPrompt != "" && !strings.HasSuffix(workflow.Prompt, localPrompt) {
-		workflow.Prompt = mergeWorkflowPrompts([]byte(workflow.Prompt), []byte(localPrompt))
-	}
-	return workflow, nil
-}
-
-func nativeMachinePrompt(workflow Workflow) (string, error) {
-	if workflow.machinePrompt != "" {
-		return workflow.machinePrompt, nil
-	}
-	if workflow.DefinitionSources != nil && workflow.DefinitionSources.HasLocalWorkflow && !workflow.DefinitionSources.localDigestOnly {
-		local, err := splitProjectWorkflow(workflow.DefinitionSources.LocalWorkflow)
-		if err != nil {
-			return "", fmt.Errorf("parse machine workflow instructions: %w", err)
-		}
-		return string(normalizeProjectDefinitionPrompt(local.prompt)), nil
-	}
-	return "", nil
+	return workflow
 }
 
 func applyNativePolicyConfiguration(workflow Workflow, descriptor policy.Descriptor) (Workflow, error) {
@@ -291,8 +316,10 @@ func applyNativePolicyConfiguration(workflow Workflow, descriptor policy.Descrip
 	if err := json.Unmarshal(defaults, &fields); err != nil {
 		return Workflow{}, fmt.Errorf("decode shared project defaults: %w", err)
 	}
-	if err := json.Unmarshal(descriptor.Configuration.Behavior, &fields); err != nil {
-		return Workflow{}, fmt.Errorf("decode shared project behavior: %w", err)
+	if raw := bytes.TrimSpace(descriptor.Configuration.Behavior); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return Workflow{}, fmt.Errorf("decode shared project behavior: %w", err)
+		}
 	}
 	raw, err := json.Marshal(fields)
 	if err != nil {
@@ -329,18 +356,27 @@ func applyNativePolicyConfiguration(workflow Workflow, descriptor policy.Descrip
 	return workflow, nil
 }
 
+func verifiedAuthoredSources(authored *policy.Authored) (ProjectDefinitionSources, error) {
+	sources := sourcesFromAuthoredFiles(authored.Files)
+	identity, err := authoredProjectDefinitionVersion(sources, authored.Version)
+	if err != nil {
+		return ProjectDefinitionSources{}, err
+	}
+	if identity.Digest != authored.Digest {
+		return ProjectDefinitionSources{}, ErrNativeAuthoredMismatch
+	}
+	return sources, nil
+}
+
 func resolveAuthoredNativePolicy(descriptor policy.Descriptor) (Workflow, policy.Descriptor, error) {
 	if err := descriptor.Validate(); err != nil {
 		return Workflow{}, policy.Descriptor{}, err
 	}
-	sources := sourcesFromAuthoredFiles(descriptor.Authored.Files)
-	authored, err := authoredProjectDefinitionVersion(sources, descriptor.Authored.Version)
+	sources, err := verifiedAuthoredSources(descriptor.Authored)
 	if err != nil {
 		return Workflow{}, policy.Descriptor{}, err
 	}
-	if authored.Digest != descriptor.Authored.Digest {
-		return Workflow{}, policy.Descriptor{}, errors.New("policy_mismatch: authored inputs do not match their digests")
-	}
+	authored := *descriptor.Authored
 	authored.Files = authoredSourceFiles(sources)
 	parseSources := sources
 	if sources.HasLocalWorkflow {
@@ -360,9 +396,13 @@ func resolveAuthoredNativePolicy(descriptor policy.Descriptor) (Workflow, policy
 	if err != nil {
 		return Workflow{}, policy.Descriptor{}, err
 	}
+	shared, err = withAuthoredPrompt(shared, sources, authored.Version)
+	if err != nil {
+		return Workflow{}, policy.Descriptor{}, err
+	}
 	shared.DefinitionSources = &sources
 	shared.Config = shared.Config.ForNativeTracker()
-	shared.Authored = authored
+	shared.Authored = &authored
 	shared.Definition = ProjectDefinition{}
 	if descriptor.Workflow != nil {
 		shared.Definition.Layout = ProjectDefinitionSplit
@@ -465,11 +505,8 @@ func ResolveNativePolicy(descriptor policy.Descriptor) (*ResolvedNativePolicy, e
 		}
 		result.descriptor = resolved
 		result.once.Do(func() {
-			result.workflow, result.err = applyAuthoredNativePolicy(Workflow{Config: Default()}, workflow)
+			result.workflow = applyAuthoredNativePolicy(Workflow{Config: Default()}, workflow)
 		})
-		if result.err != nil {
-			return nil, result.err
-		}
 	}
 	return result, nil
 }
@@ -479,8 +516,15 @@ func (p *ResolvedNativePolicy) Descriptor() policy.Descriptor {
 }
 
 func (p *ResolvedNativePolicy) Workflow() (Workflow, error) {
+	if err := ValidateNativePromptInputs(p.descriptor); err != nil {
+		return Workflow{}, err
+	}
+	return p.ReadWorkflow()
+}
+
+func (p *ResolvedNativePolicy) ReadWorkflow() (Workflow, error) {
 	p.once.Do(func() {
-		p.workflow, p.err = ApplyNativePolicy(Workflow{Config: Default()}, p.descriptor)
+		p.workflow, p.err = ReadNativePolicy(p.descriptor)
 	})
 	if p.err != nil {
 		return Workflow{}, p.err

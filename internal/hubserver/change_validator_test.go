@@ -352,70 +352,43 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), "SELECT setval(pg_get_serial_sequence('runner_sessions','id'),40,true)"); err != nil {
 				t.Fatal(err)
 			}
-			descriptor := hubTestPolicy()
-			if test.name == "missing session" {
-				descriptor.Gates.GitHubPullRequest = true
-			}
-			if test.stages != nil && test.stages.gateKind != "" {
-				cfg := config.Default()
-				cfg.Tracker.Kind = config.TrackerHubNative
-				cfg.Gate.Kind = test.stages.gateKind
-				cfg.Gate.Validator.Enabled = true
-				cfg.Gate.SecurityAudit.Enabled = false
-				cfg.Review.Human = test.stages.gateKind == gate.KindHumanReview
-				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg})
-				if err != nil {
-					t.Fatal(err)
-				}
-				descriptor = resolved
-				if gate.Effective(cfg.Gate).Run != "" {
-					t.Fatal("non-command gate must omit source finalization validation")
-				}
-			}
-			if test.name == "disclosed missing evidence" {
-				cfg := config.Default()
-				cfg.Tracker.Kind = config.TrackerHubNative
-				cfg.Gate.Validator.Enabled = true
-				cfg.Gate.SecurityAudit.Enabled = false
-				cfg.Gate.AutomatedReview = gate.AutomatedReviewOff
-				cfg.Gate.Validator.UnverifiedCriteria = gate.UnverifiedCriteriaDisclose
-				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg})
-				if err != nil {
-					t.Fatal(err)
-				}
-				descriptor = resolved
-			}
 			audit := strings.HasPrefix(test.name, "security audit")
-			descriptor.Gates.Validator = !audit
-			descriptor.Gates.SecurityAudit = audit
 			implementation := strings.HasPrefix(test.name, "implementation review")
 			counterCollision := test.name == "source review from another machine does not collide" || test.name == "same machine source session cannot validate acceptance"
 			auditCollision := test.name == "same machine audit session cannot validate acceptance" || test.name == "audit from another machine does not collide"
-			if implementation || counterCollision {
-				descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
-			}
-			if test.stages != nil && test.stages.gateKind == "" {
-				descriptor.Gates.AutomatedReview = test.stages.mode
-			}
 			humanReview := test.name == "separate session pass with human review" || test.name == "implementation review is not human approval" || test.name == "implementation review does not leave stale human approval" || test.stages != nil && test.stages.gateKind == gate.KindHumanReview
-			if humanReview {
-				descriptor.Gates.HumanReview = true
-			}
 			aggregateLanding := test.name == "security audit landing large identities" || test.name == "security audit landing large blocking identities"
-			if aggregateLanding {
-				cfg := config.Default()
-				cfg.Tracker.Kind = config.TrackerHubNative
-				cfg.Gate.Validator.Enabled = false
-				cfg.Gate.SecurityAudit.Enabled = true
-				cfg.Gate.AutomatedReview = gate.AutomatedReviewOptional
-				cfg.Review.Human = false
-				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg, Prompt: strings.Repeat("p", 320<<10)})
-				if err != nil {
-					t.Fatal(err)
+			configurePolicy := func(w *config.Workflow) {
+				if aggregateLanding || test.name == "disclosed missing evidence" || test.stages != nil && test.stages.gateKind != "" {
+					*w = config.Workflow{Config: config.Default().ForNativeTracker()}
 				}
-				descriptor = resolved
+				cfg := &w.Config
+				cfg.Gate.Validator.Enabled, cfg.Gate.SecurityAudit.Enabled = !audit, audit
+				cfg.Review.Human = humanReview
+				cfg.Deliverable.GitHubPullRequest = test.name == "missing session"
+				if test.stages != nil {
+					if test.stages.gateKind == "" {
+						cfg.Gate.AutomatedReview = test.stages.mode
+					} else {
+						cfg.Gate.Kind = test.stages.gateKind
+						if gate.Effective(cfg.Gate).Run != "" {
+							t.Fatal("non-command gate must omit source finalization validation")
+						}
+					}
+				}
+				if implementation || counterCollision {
+					cfg.Gate.AutomatedReview = gate.AutomatedReviewRequired
+				}
+				if test.name == "disclosed missing evidence" {
+					cfg.Gate.AutomatedReview = gate.AutomatedReviewOff
+					cfg.Gate.Validator.UnverifiedCriteria = gate.UnverifiedCriteriaDisclose
+				}
+				if aggregateLanding {
+					cfg.Gate.AutomatedReview = gate.AutomatedReviewOptional
+					w.Prompt = strings.Repeat("p", 320<<10)
+				}
 			}
-			descriptor = descriptor.WithID()
+			descriptor := hubTestPolicy(configurePolicy)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			issue := f.create(t, "work")
 			largeAudit := strings.HasPrefix(test.name, "security audit large")
@@ -547,8 +520,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 				if test.name == "security audit landing after configuration change" {
 					previousID := descriptor.ID
-					descriptor.SourceDigest = policy.Digest([]byte("updated configuration"))
-					descriptor = descriptor.WithID()
+					descriptor = hubTestPolicy(configurePolicy, func(w *config.Workflow) { w.Prompt = "Updated instructions." })
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: previousID, Policy: descriptor}), http.StatusOK)
 				}
 				lease = claimNativeAttempt(t, f, worker, "machine", "merge-session", issue.WorkItemID, descriptor.ID)

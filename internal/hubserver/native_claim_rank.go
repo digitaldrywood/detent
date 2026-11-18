@@ -268,6 +268,9 @@ func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, compet
 	var resolver *runner.BoardIdentityResolver
 	for _, rows := range plans {
 		plan, err := s.hydrateNativeClaimPlan(ctx, competitor.scope, competitor.request, now, rows, descriptor)
+		if errors.Is(err, config.ErrNativePromptUnavailable) {
+			return false, true, nil
+		}
 		if errors.Is(err, ErrNoClaimableWork) {
 			continue
 		}

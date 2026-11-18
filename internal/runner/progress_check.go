@@ -47,13 +47,18 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	if req.Execution == nil {
 		return progresscheck.Decision{}, errors.New("progress check requires an admitted execution")
 	}
+	ctx, err := r.bindRequestPolicy(ctx, req)
+	if err != nil {
+		return progresscheck.Decision{}, err
+	}
 	guarded, release, err := req.Execution.Guard(ctx)
 	if err != nil {
 		return progresscheck.Decision{}, err
 	}
 	defer release()
 	ctx = gobudget.WithContext(guarded, r.currentGoBudget())
-	workflow, runtime, _, _ := r.runtimeSnapshot()
+	snapshot := r.executionRuntime(ctx)
+	workflow, runtime := snapshot.workflow, snapshot.agents
 	role := runRole(req.Mode, req.Issue)
 	selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), runtime.effectiveRunRole(role))
 	if err != nil {
@@ -193,7 +198,7 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 }
 
 func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence progresscheck.Request) (workspace.Info, func(), error) {
-	backend := r.workspaceSnapshot()
+	backend := r.executionRuntime(ctx).workspace
 	issue := workspaceIssue(r.projectID, req.Issue)
 	issue.ReviewVersionID = "progress-" + evidence.SourceSHA
 	issue.PullRequestHeadSHA = evidence.SourceSHA

@@ -490,20 +490,9 @@ retain complete historical definitions and the existing `limit` and `after`
 pagination. Retained history therefore does not enlarge the runner's current
 execution contract.
 
-Native runners request `GET .../policy?execution_configuration=1`. Alongside
-the unchanged descriptor and approval provenance, the Hub returns
-`execution_configuration` with `version: 1`, the approved `policy_id`, and
-resolved `values`: shared behavior, prompts, issue contract, definition identity, and effective
-Cloud model and effort selection. Runners apply this snapshot without parsing
-the approved authored files or filling policy defaults. Host paths, provider
-credentials and execution hooks remain local inputs; sandbox isolation remains
-part of the pinned lease contract. A running attempt retains its snapshot when
-another policy is approved.
+Native runners request `GET .../policy?execution_configuration=2`. The Hub returns the approved descriptor, approval provenance and an `execution_configuration` envelope containing its version, the approved `policy_id` and resolved values for behavior, instructions, issue contract, definition identity and Cloud model selection. Runners check the execution instructions against the approved descriptor. Host paths, provider credentials and execution hooks stay local. A running attempt retains its pinned snapshot across later approvals.
 
-Reads without the parameter retain the previous response for older runners.
-Unsupported requested versions are rejected explicitly. A new runner refuses
-to apply an approved shared policy if its Hub omits the resolved configuration
-or returns an unsupported version or a different policy identity.
+Reads without the parameter return the descriptor and approval provenance. A version-1 execution request can serve legacy authored versions 1–3 and configuration snapshots. Upgrade the Hub and runners before approving newer authored versions. Older descriptor readers reject those versions, and older execution readers reject version-2 envelopes. A current runner can read a version-1 envelope from an older Hub after verifying its instructions against the approved data.
 
 Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
 (owner or admin); the generic `PUT .../policy` above stays instance-administrator
@@ -544,6 +533,8 @@ through the existing policy approval path. Version 1 and 2 snapshots remain
 verifiable and applicable; existing leases retain their pinned approval. All
 runners must use the same portable definition and canonicalization version
 before reporting one shared policy identity.
+
+Native authored version 7 hashes the exact UTF-8 body of WORKFLOW.md after its optional YAML frontmatter and the complete AGENTS.md text. This preserves spaces, tabs and line endings. Older authored digests bound normalized, trimmed prompt bodies. Current readers execute those historical bytes for versions 1–3 and their file-pinned repair versions 4–6. An explicit repair of a fileless version-7 revision uses version 8. Approve a newly observed exact-byte definition to move current work to it.
 
 For repository-controlled native workflows, enrolled runners compare the loaded
 definition with committed contents and verify ancestry against the configured

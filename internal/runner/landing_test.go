@@ -890,7 +890,7 @@ func TestNativeReviewThreadTools(t *testing.T) {
 			if mode == "" {
 				mode = RunModeImplement
 			}
-			tools, handle := r.nativeReviewThreadTools(RunRequest{Execution: execution, Mode: mode, Issue: connector.Issue{ID: "wi_current", State: "Rework"}})
+			tools, handle := r.nativeReviewThreadTools(t.Context(), RunRequest{Execution: execution, Mode: mode, Issue: connector.Issue{ID: "wi_current", State: "Rework"}})
 			if (len(tools) != 0) != test.wantTools {
 				t.Fatalf("tools=%v, available=%t", tools, test.wantTools)
 			}

@@ -6,8 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func runnerTestPolicy() policy.Descriptor {
@@ -75,5 +79,63 @@ func TestHubResumeRequiresStoredIdentity(t *testing.T) {
 				t.Fatalf("resume error = %v, valid=%t", err, test.valid)
 			}
 		})
+	}
+}
+
+type workflowReloadExecution struct {
+	testExecution
+	reload func()
+}
+
+func (e *workflowReloadExecution) Guard(ctx context.Context) (context.Context, func(), error) {
+	e.reload()
+	return e.testExecution.Guard(ctx)
+}
+
+func TestRunKeepsPinnedPromptAcrossReload(t *testing.T) {
+	t.Parallel()
+	makeWorkflow := func(prompt string) config.Workflow {
+		w := config.Workflow{Config: config.Default().ForNativeTracker(), Prompt: prompt, SharedPrompt: prompt}
+		descriptor, err := config.ResolvePolicy(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Config.Policy = descriptor
+		return w
+	}
+	before := makeWorkflow("First approved instructions.")
+	after := makeWorkflow("Second approved instructions.")
+	agent := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: "Completed the work."}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}
+	installed := before
+	installed.Prompt, installed.SharedPrompt = "Stale installed instructions.", "Stale installed instructions."
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: installed, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "work", Branch: "work"}}, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := &workflowReloadExecution{reload: func() {
+		if err := r.UpdateWorkflowChecked(after); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	req := RunRequest{Policy: before.Config.Policy, Execution: execution, Issue: connector.Issue{ID: "work", Identifier: "work-1"}, Mode: RunModeImplement}
+	if _, err := r.Run(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 1 || !strings.Contains(agent.request.Prompt, before.Prompt) || strings.Contains(agent.request.Prompt, after.Prompt) || strings.Contains(agent.request.Prompt, installed.Prompt) {
+		t.Fatal("provider did not receive the instructions pinned before reload")
+	}
+	if _, err := r.Run(t.Context(), req); !errors.Is(err, ErrExecutionAuthorityUnavailable) || agent.calls != 1 {
+		t.Fatalf("stale request started a provider turn or lost its refusal: turns=%d err=%v", agent.calls, err)
+	}
+	if _, err := r.CheckProgress(t.Context(), req, progresscheck.Request{}); !errors.Is(err, ErrExecutionAuthorityUnavailable) || agent.calls != 1 {
+		t.Fatalf("stale progress check started a provider turn or lost its refusal: turns=%d err=%v", agent.calls, err)
+	}
+	execution.recovery.Lease.ID = "lease-example"
+	execution.recovery.Lease.PolicyID = before.Config.Policy.ID
+	for _, claimed := range []policy.Descriptor{{}, after.Config.Policy} {
+		req.Policy = claimed
+		if _, err := r.Run(t.Context(), req); !errors.Is(err, ErrExecutionAuthorityUnavailable) || agent.calls != 1 {
+			t.Fatalf("request ignored the lease policy: turns=%d err=%v", agent.calls, err)
+		}
 	}
 }

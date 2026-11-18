@@ -92,8 +92,10 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return BuildMergeFallbackPrompt(workflow, issue, opts)
 	}
 
+	native := workflow.Config.Tracker.Kind == config.TrackerHubNative
+	pinned := native && workflow.Config.Policy.ID != ""
 	template := workflow.Prompt
-	if strings.TrimSpace(template) == "" {
+	if template == "" || !pinned && strings.TrimSpace(template) == "" {
 		template = DefaultPromptTemplate
 	}
 
@@ -103,8 +105,13 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return "", err
 	}
 
-	native := workflow.Config.Tracker.Kind == config.TrackerHubNative
-	rendered = prependWorkspaceIsolationBlock(rendered, workflow.Config, opts.WorkspacePath, opts.Branch)
+	var pinnedBody string
+	if pinned {
+		pinnedBody = prependWorkspaceIsolationBlock("", workflow.Config, opts.WorkspacePath, opts.Branch) + rendered
+		rendered = ""
+	} else {
+		rendered = prependWorkspaceIsolationBlock(rendered, workflow.Config, opts.WorkspacePath, opts.Branch)
+	}
 	rendered = appendWorkspaceRecoveryBlock(rendered, opts.RecoveryState, native)
 	if opts.PlanOnly {
 		rendered = appendPlanOnlyBlock(rendered, workflow.Config.Plan, native)
@@ -137,7 +144,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		if !opts.PlanOnly {
 			rendered = appendReviewConversationRefusalBlock(rendered, opts.ReviewConversationRefusal)
 		}
-		return AppendNativeCompletionContract(rendered), nil
+		return pinnedBody + AppendNativeCompletionContract(rendered), nil
 	}
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
 		return rendered, nil

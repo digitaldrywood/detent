@@ -1545,6 +1545,9 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope hubscope.Nat
 	if plan.Descriptor.ID != request.PolicyID {
 		return hubrecords.NativeClaimPlan{}, hubapi.PolicyMismatch("Claim configuration does not match the current project policy")
 	}
+	if err := config.ValidateNativePromptInputs(plan.Descriptor); err != nil {
+		return hubrecords.NativeClaimPlan{}, err
+	}
 	if plan.Policy.GitHubPullRequest == nil || *plan.Policy.GitHubPullRequest != plan.Descriptor.Gates.GitHubPullRequest {
 		return hubrecords.NativeClaimPlan{}, errNativeClaimPlanRefused
 	}

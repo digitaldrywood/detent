@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -106,7 +107,7 @@ func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
 			if got := runnerCheckoutRepository(t.Context(), selected); got != test.want || strings.Contains(got, "private-secret") {
 				t.Fatalf("repository = %q, want %q", got, test.want)
 			}
-			if got := runnerCheckoutReady(t.Context(), selected); got != test.wantReady {
+			if got := runnerCheckoutReady(t.Context(), globalconfig.Config{}, selected); got != test.wantReady {
 				t.Fatalf("checkout ready = %v, want %v", got, test.wantReady)
 			}
 		})
@@ -313,6 +314,25 @@ type registerHub struct {
 	failCapabilities atomic.Bool
 }
 
+func runnerTestApproval(t *testing.T) policy.Approval {
+	t.Helper()
+	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("---\ntracker:\n  kind: hub_native\n---\nFollow the approved instructions.")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
+	d, err := workflowconfig.ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d = d.WithPinnedFiles()
+	execution, err := workflowconfig.NewExecutionConfiguration(workflow, d, workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{}, workflowconfig.ModelSelection{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return policy.Approval{Policy: d, ExecutionConfiguration: execution}
+}
+
 func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *registerHub {
 	t.Helper()
 	hub := &registerHub{projects: projects, repositories: make(map[tracker.ProjectID]string, len(projects))}
@@ -400,6 +420,10 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 			}
 			identity := hub.identity.Load().(runnerauth.Identity)
 			_ = json.NewEncoder(w).Encode(runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Build host", State: "active", CapacityLimit: 2, ProjectIDs: ids}.Normalized()})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/policy") {
+			_ = json.NewEncoder(w).Encode(policy.Approval{})
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/policy/observed") {

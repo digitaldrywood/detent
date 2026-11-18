@@ -11,8 +11,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -106,10 +108,7 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 		})
 	}
 	issue := f.Create(t, "work")
-	descriptor := hubfixture.Policy()
-	descriptor.Requirements.RunnerID = r.Binding.RunnerID
-	descriptor.Requirements.MachineID = string(r.Binding.MachineID)
-	descriptor = descriptor.WithID()
+	descriptor := hubtest.PolicyWithRequirements(policy.Requirements{RunnerID: r.Binding.RunnerID, MachineID: string(r.Binding.MachineID)})
 	hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", descriptor)
 	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.Binding.MachineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	response := f.Hub.Request(t, http.MethodPost, f.Base+"/claims", r.Redemption.Credential, claim)

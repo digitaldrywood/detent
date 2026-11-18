@@ -96,7 +96,7 @@ func TestHistoricalRetiredWorkflowKeys(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if applied.Config.Tracker.Kind != TrackerHubNative || applied.Config.Gate.Run != "make check-landing" || applied.Prompt != "Work." {
+			if applied.Config.Tracker.Kind != TrackerHubNative || applied.Config.Gate.Run != "make check-landing" || applied.Prompt != "Work.\n" {
 				t.Fatalf("historical native policy lost current behavior: tracker=%s gate=%s prompt=%q", applied.Config.Tracker.Kind, applied.Config.Gate.Run, applied.Prompt)
 			}
 		})

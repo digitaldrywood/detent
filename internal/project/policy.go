@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -10,12 +11,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
+type projectWorkflowResolver interface {
+	ResolveProjectWorkflow(context.Context, string, workflowconfig.Workflow, *policy.RepositorySource) (workflowconfig.Workflow, error)
+}
+
 type policyChecker interface {
 	CheckProjectPolicy(context.Context, string, string, policy.Descriptor) error
 }
 
 type policySourceChecker interface {
-	CheckProjectPolicyWithSource(context.Context, string, string, policy.Descriptor, *policy.RepositorySource) error
+	CheckProjectPolicyObservation(context.Context, string, string, policy.Observation) error
 }
 
 func ResolvePolicy(cfg globalconfig.Project, workflow workflowconfig.Workflow) (policy.Descriptor, error) {
@@ -49,42 +54,83 @@ func policySourceKind(cfg globalconfig.Project, workflow workflowconfig.Workflow
 	return "configured_local_workflow_read_only"
 }
 
-func configureProjectPolicy(ctx context.Context, cfg globalconfig.Project, workflow *workflowconfig.Workflow, scheduling orchestrator.SchedulingSource) error {
-	descriptor, provenance, err := resolveProjectPolicy(ctx, cfg, workflow, scheduling)
-	if err != nil || descriptor.ID == "" {
-		return err
-	}
-	return checkProjectPolicy(ctx, cfg, workflow, scheduling, descriptor, provenance)
+func ResolveRunnerWorkflow(ctx context.Context, cfg globalconfig.Project, workflow workflowconfig.Workflow, scheduling orchestrator.SchedulingSource) (workflowconfig.Workflow, error) {
+	_, _, err := resolveProjectPolicy(ctx, cfg, &workflow, scheduling)
+	return workflow, err
 }
 
-func resolveProjectPolicy(ctx context.Context, cfg globalconfig.Project, workflow *workflowconfig.Workflow, scheduling orchestrator.SchedulingSource) (policy.Descriptor, *policy.RepositorySource, error) {
+func configureProjectPolicy(ctx context.Context, cfg globalconfig.Project, workflow *workflowconfig.Workflow, scheduling orchestrator.SchedulingSource) (policy.Observation, error) {
+	descriptor, observation, err := resolveProjectPolicy(ctx, cfg, workflow, scheduling)
+	if err != nil || descriptor.ID == "" {
+		return observation, err
+	}
+	return observation, checkProjectPolicy(ctx, cfg, workflow, scheduling, descriptor, observation)
+}
+
+func resolveProjectPolicy(ctx context.Context, cfg globalconfig.Project, workflow *workflowconfig.Workflow, scheduling orchestrator.SchedulingSource) (policy.Descriptor, policy.Observation, error) {
 	if _, ok := scheduling.(policyChecker); !ok {
-		return policy.Descriptor{}, nil, nil
+		return policy.Descriptor{}, policy.Observation{}, nil
 	}
 	var provenance *policy.RepositorySource
-	if _, ok := scheduling.(policySourceChecker); ok && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+	reporter, canReport := scheduling.(policySourceChecker)
+	if canReport && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative && workflow.DefinitionSources != nil {
 		*workflow, provenance = repositoryPolicySource(ctx, cfg, *workflow)
 	}
-	if source, ok := scheduling.(interface {
-		ResolveProjectWorkflow(context.Context, string, workflowconfig.Workflow, *policy.RepositorySource) (workflowconfig.Workflow, error)
-	}); ok && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+	selected := *workflow
+	if source, ok := scheduling.(projectWorkflowResolver); ok && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
 		resolved, err := source.ResolveProjectWorkflow(ctx, cfg.ID, *workflow, provenance)
 		if err != nil {
-			return policy.Descriptor{}, nil, err
+			if canReport && (provenance != nil || workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud && workflow.DefinitionSources != nil) && errors.Is(err, policy.ErrExecutionConfigurationConflict) {
+				err = errors.Join(err, reportVerifiedPolicyRepair(ctx, cfg, selected, provenance, reporter))
+			}
+			return policy.Descriptor{}, policy.Observation{}, err
 		}
 		*workflow = resolved
 	}
 	descriptor, err := ResolvePolicy(cfg, *workflow)
 	if err != nil {
-		return policy.Descriptor{}, nil, fmt.Errorf("resolve repository policy: %w", err)
+		return policy.Descriptor{}, policy.Observation{}, fmt.Errorf("resolve repository policy: %w", err)
 	}
-	return descriptor, provenance, nil
+	observation, err := observedRepositoryPolicy(cfg, selected, descriptor, provenance)
+	return descriptor, observation, err
 }
 
-func checkProjectPolicy(ctx context.Context, cfg globalconfig.Project, workflow *workflowconfig.Workflow, scheduling orchestrator.SchedulingSource, descriptor policy.Descriptor, provenance *policy.RepositorySource) error {
+func observedRepositoryPolicy(cfg globalconfig.Project, selected workflowconfig.Workflow, descriptor policy.Descriptor, provenance *policy.RepositorySource) (policy.Observation, error) {
+	observed := descriptor
+	if provenance != nil {
+		candidate, err := ResolvePolicy(cfg, selected)
+		if err != nil {
+			return policy.Observation{}, err
+		}
+		if descriptor.Workflow == nil || candidate.Workflow == nil || candidate.Workflow.Source != descriptor.Workflow.Source {
+			provenance = nil
+		} else if !candidate.SameRepositoryPolicyInputs(descriptor) || candidate.Authored != nil && descriptor.Authored != nil && candidate.Authored.SourceVersion() != descriptor.Authored.SourceVersion() {
+			observed = candidate
+		}
+	}
+	if provenance != nil && observed.Authored != nil && observed.Workflow != nil && observed.Workflow.Revision != provenance.Commit {
+		repositoryWorkflow := *observed.Workflow
+		repositoryWorkflow.Revision = provenance.Commit
+		observed.Workflow = &repositoryWorkflow
+	}
+	return policy.Observation{Descriptor: observed, Source: provenance}, nil
+}
+
+func reportVerifiedPolicyRepair(ctx context.Context, cfg globalconfig.Project, selected workflowconfig.Workflow, provenance *policy.RepositorySource, reporter policySourceChecker) error {
+	candidate, err := ResolvePolicy(cfg, selected)
+	if err != nil {
+		return err
+	}
+	if err := workflowconfig.ValidateNativePromptInputs(candidate); err != nil {
+		return err
+	}
+	return reporter.CheckProjectPolicyObservation(ctx, cfg.ID, "", policy.Observation{Descriptor: candidate, Source: provenance})
+}
+
+func checkProjectPolicy(ctx context.Context, cfg globalconfig.Project, workflow *workflowconfig.Workflow, scheduling orchestrator.SchedulingSource, descriptor policy.Descriptor, observation policy.Observation) error {
 	var err error
 	if sourceChecker, ok := scheduling.(policySourceChecker); ok {
-		err = sourceChecker.CheckProjectPolicyWithSource(ctx, cfg.ID, workflow.Config.Tracker.Repository, descriptor, provenance)
+		err = sourceChecker.CheckProjectPolicyObservation(ctx, cfg.ID, descriptor.ID, observation)
 	} else if checker, ok := scheduling.(policyChecker); ok {
 		err = checker.CheckProjectPolicy(ctx, cfg.ID, workflow.Config.Tracker.Repository, descriptor)
 	}

@@ -281,7 +281,7 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 				evaluation := securityaudit.Evaluate(run, nil, key, "", []string{"none"})
 				allowed := evaluation.Allowed && review.Decision == "approved"
 				if values := dispositions[run.ID]; len(values) > 0 {
-					workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, current.Policy)
+					workflow, err := config.ReadNativePolicy(current.Policy)
 					allowed = false
 					if err == nil {
 						matched := make([]securityaudit.Disposition, 0, len(values))

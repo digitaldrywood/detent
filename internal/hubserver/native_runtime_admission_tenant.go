@@ -200,6 +200,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 	if err != nil {
 		return err
 	}
+	promptErr := config.ValidateNativePromptInputs(descriptor)
 	plan.Descriptor = descriptor
 	var answered *tracker.NativeAnsweredExclusion
 	if answeredPlan.SnapshotLoaded {
@@ -290,6 +291,8 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 			return err
 		}
 		switch {
+		case promptErr != nil:
+			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "policy_mismatch", promptErr.Error()
 		case nonExecutable != "":
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "inactive_state", nonExecutable
 		case len(exclusions) > 0:
@@ -384,7 +387,7 @@ func nativeRuntimeIssueContractEvaluation(plan hubrecords.NativeClaimPlan) (nati
 	if err != nil {
 		return nativeContractEvaluation{}, err
 	}
-	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, plan.Descriptor)
+	workflow, err := config.ReadNativePolicy(plan.Descriptor)
 	if err != nil {
 		return nativeContractEvaluation{}, err
 	}

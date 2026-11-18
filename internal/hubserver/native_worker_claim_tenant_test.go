@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -28,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -719,9 +721,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		changed := descriptor
-		changed.SourceRevision = strings.Repeat("e", 40)
-		changed = changed.WithID()
+		changed := hubTestPolicy(hubtest.WithPolicyPrompt("Updated instructions."))
 		approveHubTestPolicy(t, service, base+"/policy", changed)
 		t.Cleanup(func() { approveHubTestPolicy(t, service, base+"/policy", descriptor) })
 		cursor := claimstore.SelectionCursor{OrganizationID: organization.ID, RunnerID: binding.RunnerID, ProjectID: project.ID, SourceRevision: "rejected-source", Position: claimstore.CandidateCursor{WorkItemID: items[0].WorkItemID}}
@@ -1355,9 +1355,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 		foreign.MachineID = outsider.binding.MachineID
 		foreign.SessionID = "unauthorized-compatible"
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", outsider.redemption.Credential, foreign), http.StatusNotFound)
-		changed := descriptor
-		changed.Gates.HumanReview = !changed.Gates.HumanReview
-		changed = changed.WithID()
+		changed := hubTestPolicy(func(w *config.Workflow) { w.Config.Review.Human = true })
 		approveHubTestPolicy(t, f.service, f.base+"/policy", changed)
 		response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request)
 		requireNativeStatus(t, response, http.StatusConflict)

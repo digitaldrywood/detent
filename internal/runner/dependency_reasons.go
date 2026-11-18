@@ -113,7 +113,8 @@ func (r *Runner) installDependencyReasonGenerator(ctx context.Context, req RunRe
 		return ctx
 	}
 	generate := func(ctx context.Context, prompt string) (string, error) {
-		workflow, runtime, _, _ := r.runtimeSnapshot()
+		snapshot := r.executionRuntime(ctx)
+		workflow, runtime := snapshot.workflow, snapshot.agents
 		role := runtime.effectiveRunRole(runRole(req.Mode, req.Issue))
 		selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
 		if err != nil {

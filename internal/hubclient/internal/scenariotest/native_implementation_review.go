@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -61,10 +62,10 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 			} else {
 				h = newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
 			}
-			next := h.descriptor
-			next.Gates.AutomatedReview = gate.AutomatedReviewRequired
-			next.Gates.Validator = test.validator
-			next = next.WithID()
+			next := changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+				w.Config.Gate.AutomatedReview = gate.AutomatedReviewRequired
+				w.Config.Gate.Validator.Enabled = test.validator
+			})
 			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 				t.Fatal(err)
 			}

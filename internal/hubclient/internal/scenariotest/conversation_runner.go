@@ -528,6 +528,7 @@ func (h *conversationRunnerHub) startAttempt(t *testing.T, scheduler *Scheduler,
 	if len(workflows) > 0 {
 		workflow = workflows[0]
 	}
+	workflow.Config.Policy = h.descriptor
 	native, err := scheduler.Transport().Native(h.organization, h.project)
 	if err != nil {
 		t.Fatal(err)

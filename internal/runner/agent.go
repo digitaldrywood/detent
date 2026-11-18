@@ -1256,7 +1256,7 @@ func (r *Runner) runAgentTurn(
 		return agentTurnExecution{err: fmt.Errorf("%w: acquire managed Go build cache: %w", ErrWorkspacePreparation, err)}
 	}
 	defer func() { execution.err = errors.Join(execution.err, release()) }()
-	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow := r.executionRuntime(ctx).workflow
 	result := RunResult{
 		BillingMode:      strings.ToLower(strings.TrimSpace(workflow.Config.Budget.BillingMode)),
 		FinalState:       FinalStateCompleted,
@@ -1779,7 +1779,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
+	snapshot := r.executionRuntime(ctx)
+	workflow, agentRuntime := snapshot.workflow, snapshot.agents
+	budgetChecker, dispatchEstimator, runWorkspace := snapshot.budget, snapshot.estimator, snapshot.workspace
 	mode := normalizeRunMode(req.Mode)
 	if execution, ok := req.Execution.(ReleaseDeliveryExecution); ok && req.Execution.Recovery().Issue.ReleaseDelivery != nil && (mode == RunModeImplement || mode == RunModeMerge) {
 		result, err := execution.ReconcileReleaseDelivery(ctx, req.WorkAttemptID, req.Generation)
@@ -3780,7 +3782,8 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	if err := verifyValidatorRequest(req); err != nil {
 		return gate.ValidatorResult{}, err
 	}
-	workflow, agentRuntime, _, _, runWorkspace := r.runtimeSnapshotWithWorkspace()
+	snapshot := r.executionRuntime(ctx)
+	workflow, agentRuntime, runWorkspace := snapshot.workflow, snapshot.agents, snapshot.workspace
 	contract, contractErr := config.ResolveIssueContract(workflow.SharedPrompt)
 	if contractErr != nil {
 		return gate.ValidatorResult{}, fmt.Errorf("%w: resolve validator issue contract: %w", ErrValidatorInfrastructure, contractErr)
@@ -4483,6 +4486,24 @@ func (r *Runner) reconcileWorkspaces(ctx context.Context, activeIssues []connect
 		CompletedPaths:    result.CompletedPaths,
 		Failures:          failures,
 	}, err
+}
+
+type executionRuntime struct {
+	workflow  config.Workflow
+	agents    agentRuntime
+	budget    BudgetChecker
+	estimator DispatchEstimator
+	workspace workspace.Backend
+}
+
+type executionRuntimeKey struct{ runner *Runner }
+
+func (r *Runner) executionRuntime(ctx context.Context) *executionRuntime {
+	if snapshot, ok := ctx.Value(executionRuntimeKey{r}).(*executionRuntime); ok {
+		return snapshot
+	}
+	workflow, agents, budget, estimator, workspace := r.runtimeSnapshotWithWorkspace()
+	return &executionRuntime{workflow, agents, budget, estimator, workspace}
 }
 
 func (r *Runner) runtimeSnapshot() (config.Workflow, agentRuntime, BudgetChecker, DispatchEstimator) {

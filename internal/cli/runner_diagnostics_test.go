@@ -63,7 +63,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		{name: "missing Git origin", checkout: true, missingOrigin: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
 		{name: "GitLab origin with external workflow", checkout: true, externalWorkflow: true, unsupportedOrigin: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
 		{name: "Git ref workflow absent locally", checkout: true, refWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
-		{name: "missing configured workflow", checkout: true, externalWorkflow: true, missingWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "pending", wantProvider: "pending"},
+		{name: "missing workflow on unmapped project", checkout: true, externalWorkflow: true, missingWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "pending", wantProvider: "pending"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -76,6 +76,9 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 			cfg.Client.URL = "https://hub.example.test"
 			cfg.Client.NativeProjects = map[string]string{"orders": "prj_orders"}
 			cfg.Client.OrganizationID = "org_example"
+			if tt.missingWorkflow {
+				cfg.Client = globalconfig.HubClient{}
+			}
 			workdir := filepath.Join(root, "checkout")
 			workflowPath := filepath.Join(workdir, "WORKFLOW.md")
 			if tt.externalWorkflow {
@@ -341,7 +344,9 @@ func TestRunnerStartupIsolatesProjectPolicyFailure(t *testing.T) {
 			claims := make(map[string]int)
 			var snapshot runnerauth.RoutingSnapshot
 			var identity runnerauth.Identity
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			approval := runnerTestApproval(t)
+			const hubURL = "https://runner.example.test"
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				name := "healthy"
 				if strings.Contains(r.URL.Path, "/prj_failed") {
@@ -354,7 +359,13 @@ func TestRunnerStartupIsolatesProjectPolicyFailure(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(runnerauth.Runner{Binding: identity.Binding, OrganizationID: identity.OrganizationID, Routing: snapshot.Routing, HostCapacity: 2, ReportedCapacity: 2, ProjectUsed: map[tracker.ProjectID]int{}})
 				case strings.HasSuffix(r.URL.Path, "/capabilities"):
 					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeLocalChecksCapability, tracker.NativeProviderCapacityCapability}})
+				case strings.HasSuffix(r.URL.Path, "/policy"):
+					_ = json.NewEncoder(w).Encode(approval)
 				case strings.HasSuffix(r.URL.Path, "/policy/observed"):
+					var observation policy.Observation
+					if err := json.NewDecoder(r.Body).Decode(&observation); err != nil || observation.ID != approval.Policy.ID || observation.Source != nil {
+						t.Errorf("startup reported policy %q, want %q without repository provenance: %v", observation.ID, approval.Policy.ID, err)
+					}
 					if name == "failed" && failed.Load() && status != 0 {
 						w.WriteHeader(status)
 						_, _ = w.Write([]byte(`{"code":"policy_refused","message":"policy observation refused"}`))
@@ -389,10 +400,19 @@ func TestRunnerStartupIsolatesProjectPolicyFailure(t *testing.T) {
 					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 					w.WriteHeader(http.StatusNotFound)
 				}
-			}))
-			defer server.Close()
+			})
+			previousTransport := http.DefaultTransport
+			http.DefaultTransport = readinessRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Host != "runner.example.test" {
+					return nil, fmt.Errorf("unexpected host %q", r.URL.Host)
+				}
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, r)
+				return w.Result(), nil
+			})
+			t.Cleanup(func() { http.DefaultTransport = previousTransport })
 			identityPath := filepath.Join(root, "private", "identity.json")
-			file, err := runnerauth.Initialize(identityPath, server.URL)
+			file, err := runnerauth.Initialize(identityPath, hubURL)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -411,7 +431,7 @@ func TestRunnerStartupIsolatesProjectPolicyFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.Client.URL, cfg.Client.IdentityFile, cfg.Client.OrganizationID = server.URL, identityPath, "org_example"
+			cfg.Client.URL, cfg.Client.IdentityFile, cfg.Client.OrganizationID = hubURL, identityPath, "org_example"
 			cfg.Client.Capacity = 2
 			cfg.Client.ProviderCapacityFile = writeProviderCapacityFixture(t, root)
 			cfg.Client.NativeProjects = map[string]string{"failed": "prj_failed", "healthy": "prj_healthy"}
@@ -465,7 +485,7 @@ func TestRunnerStartupIsolatesProjectPolicyFailure(t *testing.T) {
 			if !slices.ContainsFunc(problems["failed"], func(p runnerauth.Problem) bool { return p.Code == "settings_invalid" && p.ProjectID == "prj_failed" }) {
 				t.Fatalf("failed project problems: %+v", problems["failed"])
 			}
-			descriptor := policy.Descriptor{SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")), Gates: policy.Gates{Kind: "human_review", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("stop")), MergeMethod: "squash"}}.WithID()
+			descriptor := approval.Policy
 			for _, name := range []string{"failed", "healthy"} {
 				issues, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: name, Policy: descriptor, ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
 					return providercapacity.Requirement{Backend: "codex", Model: "provider_default"}, nil
@@ -484,7 +504,7 @@ func TestRunnerStartupIsolatesProjectPolicyFailure(t *testing.T) {
 				return
 			}
 			failed.Store(false)
-			client, err := hubclient.New(hubclient.Config{URL: server.URL, IdentityFile: identityPath, HTTPClient: server.Client()})
+			client, err := hubclient.New(hubclient.Config{URL: hubURL, IdentityFile: identityPath, HTTPClient: &http.Client{Transport: http.DefaultTransport}})
 			if err != nil {
 				t.Fatal(err)
 			}

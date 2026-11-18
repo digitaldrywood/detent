@@ -45,8 +45,10 @@ type cloudPolicyScheduling struct {
 	markdown string
 }
 
-func (s *cloudPolicyScheduling) ProjectWorkflowMarkdown(context.Context, string) (string, error) {
-	return s.markdown, nil
+func (s *cloudPolicyScheduling) ProjectWorkflowDefinition(context.Context, string, workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+	w, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(s.markdown)})
+	w.Definition.Layout = workflowconfig.ProjectDefinitionCloud
+	return w, err
 }
 
 func TestNativeCloudWorkflowFallback(t *testing.T) {
@@ -82,7 +84,7 @@ func TestNativeCloudWorkflowFallback(t *testing.T) {
 				}
 			}
 			scheduling := &cloudPolicyScheduling{markdown: markdown}
-			workflow, err := loadWorkflowForScheduling(t.Context(), cfg, scheduling)
+			workflow, err := LoadWorkflowForScheduling(t.Context(), cfg, scheduling)
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {
 					t.Fatalf("load error = %v, want %s", err, test.wantError)
@@ -121,8 +123,20 @@ func TestNativeCloudWorkflowFallback(t *testing.T) {
 					t.Fatalf("Cloud policy revision cannot be applied: %v", err)
 				}
 				scheduling.markdown = strings.ReplaceAll(markdown, "Repair", "Updated Repair")
+				selected, err := loaded.loadManagedWorkflow(t.Context(), descriptor.SourceRevision)
+				if err != nil || selected.Config.Policy.ID != descriptor.ID {
+					t.Fatalf("saved Markdown displaced the approved policy: %v", err)
+				}
+				next, err := scheduling.ProjectWorkflowDefinition(t.Context(), cfg.ID, workflowconfig.Workflow{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduling.approved, err = ResolvePolicy(cfg, next)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if _, err := loaded.loadManagedWorkflow(t.Context(), descriptor.SourceRevision); err == nil {
-					t.Fatal("stale Cloud policy revision accepted a changed definition")
+					t.Fatal("accepted an obsolete revision after approval changed")
 				}
 			}
 		})

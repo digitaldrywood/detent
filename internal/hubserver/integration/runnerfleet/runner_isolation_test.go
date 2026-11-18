@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerupdate"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -121,10 +122,7 @@ func TestRunnerIsolationClaims(t *testing.T) {
 					if test.stalePolicy {
 						hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", permissive)
 					}
-					descriptor := hubfixture.Policy()
-					descriptor.Requirements = policy.Requirements{RequiredTags: test.requiredTags}
-					descriptor.ID = ""
-					descriptor = descriptor.WithID()
+					descriptor := hubtest.PolicyWithRequirements(policy.Requirements{RequiredTags: test.requiredTags})
 					hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", descriptor)
 					claimPolicy := descriptor.ID
 					if test.stalePolicy {

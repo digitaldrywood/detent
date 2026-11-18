@@ -107,7 +107,8 @@ func (r *Runner) attributeFailure(ctx context.Context, req RunRequest, err error
 	}
 	evidence := r.collectFailureEvidence(ctx, req, err).Public()
 	decision := tracker.FailureAttribution{Evidence: evidence, Outcome: "unknown", Reason: "failure decision backend unavailable"}
-	workflow, runtime, _, _ := r.runtimeSnapshot()
+	snapshot := r.executionRuntime(ctx)
+	workflow, runtime := snapshot.workflow, snapshot.agents
 	role := runRole(req.Mode, req.Issue)
 	selection, backend, config, selectErr := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), runtime.effectiveRunRole(role))
 	if selectErr == nil {

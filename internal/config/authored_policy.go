@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -16,10 +17,30 @@ import (
 
 const (
 	PolicyCanonicalizationVersion       = 2
-	NativePolicyCanonicalizationVersion = 3
+	NativePolicyCanonicalizationVersion = policy.AuthoredExactPromptVersion
 )
 
+func authoredMarkdown(name string, raw []byte, version int) (projectWorkflowDocument, error) {
+	exact := (policy.Authored{Version: version}).SourceVersion() == policy.AuthoredExactPromptVersion
+	if exact && !utf8.Valid(raw) {
+		return projectWorkflowDocument{}, errors.New("invalid UTF-8 in authored Markdown")
+	}
+	if exact && name == "AGENTS.md" {
+		return projectWorkflowDocument{prompt: raw}, nil
+	}
+	doc, err := splitProjectWorkflow(raw)
+	if !exact || name == "WORKFLOW.local.md" {
+		doc.prompt = legacyAuthoredPrompt(doc.prompt)
+	}
+	return doc, err
+}
+
+func legacyAuthoredPrompt(raw []byte) []byte {
+	return []byte(strings.TrimSpace(string(normalizeProjectDefinitionPrompt(raw))))
+}
+
 func nativeAuthoredSources(sources ProjectDefinitionSources, version int) (ProjectDefinitionSources, error) {
+	version = (policy.Authored{Version: version}).SourceVersion()
 	for _, input := range []struct {
 		raw      *[]byte
 		markdown bool
@@ -37,7 +58,11 @@ func nativeAuthoredSources(sources ProjectDefinitionSources, version int) (Proje
 		var document projectWorkflowDocument
 		var err error
 		if input.markdown {
-			document, err = splitProjectWorkflow(raw)
+			name := "WORKFLOW.md"
+			if input.raw == &sources.LocalWorkflow {
+				name = "WORKFLOW.local.md"
+			}
+			document, err = authoredMarkdown(name, raw, version)
 			if err != nil {
 				return sources, err
 			}
@@ -81,7 +106,7 @@ func nativeAuthoredSources(sources ProjectDefinitionSources, version int) (Proje
 		if input.raw == &sources.LocalWorkflow && empty && strings.TrimSpace(string(document.prompt)) != "" {
 			document.hasFrontmatter = false
 		}
-		prompt := strings.TrimSpace(string(normalizeProjectDefinitionPrompt(document.prompt)))
+		prompt := string(document.prompt)
 		if input.raw == &sources.LocalWorkflow && prompt != "" {
 			if sources.localDigestOnly {
 				if err := validateLocalWorkflowDigest(prompt); err != nil {
@@ -272,12 +297,12 @@ func authoredProjectDefinitionVersion(sources ProjectDefinitionSources, version 
 		raw := source.raw
 		prompt := ""
 		if source.markdown {
-			document, err := splitProjectWorkflow(raw)
+			document, err := authoredMarkdown(source.name, raw, version)
 			if err != nil {
 				return nil, err
 			}
 			raw = document.frontmatter
-			prompt = strings.TrimSpace(string(normalizeProjectDefinitionPrompt(document.prompt)))
+			prompt = string(document.prompt)
 		}
 		var node yaml.Node
 		if err := yaml.Unmarshal(raw, &node); err != nil {
@@ -293,10 +318,10 @@ func authoredProjectDefinitionVersion(sources ProjectDefinitionSources, version 
 		}{value, prompt}
 	}
 	var value any
-	switch version {
+	switch (policy.Authored{Version: version}).SourceVersion() {
 	case 1:
 		value = files
-	case 2, 3:
+	case 2, 3, policy.AuthoredExactPromptVersion:
 		value = struct{ Files map[string]any }{files}
 	default:
 		return nil, fmt.Errorf("unsupported policy canonicalization version %d", version)

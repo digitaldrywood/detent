@@ -59,7 +59,7 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 		}
 	}()
 
-	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow := r.executionRuntime(ctx).workflow
 	cfg := gateSecurityAuditConfig(workflow.Config)
 	if !cfg.Enabled {
 		return true, nil
@@ -153,7 +153,7 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 	if !ok {
 		return nil, errors.New("native landing security audit producer is unavailable")
 	}
-	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow := r.executionRuntime(ctx).workflow
 	cfg := gateSecurityAuditConfig(workflow.Config)
 	raw, err := json.Marshal(files.Files)
 	if err != nil {

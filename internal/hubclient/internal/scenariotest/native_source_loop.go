@@ -135,13 +135,13 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
-			next := h.descriptor
-			next.Gates.Validator = true
-			next.Gates.SecurityAudit = test.audit
-			if test.sourceReview {
-				next.Gates.AutomatedReview = gate.AutomatedReviewRequired
-			}
-			next = next.WithID()
+			next := changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+				w.Config.Gate.Validator.Enabled = true
+				w.Config.Gate.SecurityAudit.Enabled = test.audit
+				if test.sourceReview {
+					w.Config.Gate.AutomatedReview = gate.AutomatedReviewRequired
+				}
+			})
 			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 				t.Fatal(err)
 			}
@@ -166,7 +166,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			if test.sourceReview {
 				provider.sourceVerdict = "rework"
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: test.limit}, Gate: gate.Config{Run: "git push origin HEAD", SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: next.Gates.AutomatedReview, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: loopWorkspace, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Policy: next, Agent: config.Agent{MaxTurns: test.limit}, Gate: gate.Config{Run: "git push origin HEAD", SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: next.Gates.AutomatedReview, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: next.Configuration.Prompt}, Workspace: loopWorkspace, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}

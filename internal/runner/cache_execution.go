@@ -3,9 +3,11 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
@@ -19,6 +21,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (result RunResult, err
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, err = r.bindRequestPolicy(ctx, req)
+	if err != nil {
+		return RunResult{}, err
+	}
 	ctx = bindSessionExecution(ctx, r.store, req.Execution)
 	ctx = gobudget.WithContext(ctx, r.currentGoBudget())
 	ctx = r.buildCache.WithContext(ctx)
@@ -26,6 +32,34 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (result RunResult, err
 	ctx = r.withValidationProcessOwner(ctx, req.Issue, req.WorkAttemptID)
 	ctx = gotestreceipt.WithContext(ctx, r.goTestReceipts)
 	return r.runExecution(ctx, req)
+}
+
+func (r *Runner) bindRequestPolicy(ctx context.Context, req RunRequest) (context.Context, error) {
+	pin := req.Policy.ID
+	if req.Execution != nil {
+		lease := req.Execution.Recovery().Lease
+		if lease.ID != "" && lease.PolicyID != "" {
+			if pin != "" && pin != lease.PolicyID {
+				return ctx, fmt.Errorf("%w: request policy differs from the lease", ErrExecutionAuthorityUnavailable)
+			}
+			pin = lease.PolicyID
+		}
+	}
+	if pin == "" {
+		return ctx, nil
+	}
+	snapshot := *r.executionRuntime(ctx)
+	if pin != snapshot.workflow.Config.Policy.ID {
+		return ctx, fmt.Errorf("%w: installed runner workflow differs from the pinned request policy", ErrExecutionAuthorityUnavailable)
+	}
+	if req.Execution != nil || snapshot.workflow.Config.Tracker.Kind == config.TrackerHubNative {
+		workflow, err := snapshot.workflow.WithApprovedPrompt()
+		if err != nil {
+			return ctx, errors.Join(ErrExecutionAuthorityUnavailable, err)
+		}
+		snapshot.workflow = workflow
+	}
+	return context.WithValue(ctx, executionRuntimeKey{r}, &snapshot), nil
 }
 
 func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (result WorkspaceReapResult, err error) {

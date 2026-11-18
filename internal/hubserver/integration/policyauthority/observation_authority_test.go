@@ -11,7 +11,9 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -213,8 +215,11 @@ func TestRunnerPolicyObservationCannotApprovePolicy(t *testing.T) {
 		silent  bool
 	}
 	attacks := []attack{
+		{name: "saved Markdown without approval", modes: []string{"cloud"}, status: http.StatusNoContent, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
+			return policy.Observation{Descriptor: f.original}
+		}},
 		{name: "changed gates and selectors", modes: []string{"none"}, status: http.StatusNoContent, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
-			candidate := f.original
+			candidate := hubtest.LegacyPolicyDescriptor()
 			candidate.Gates.PlanReview, candidate.Gates.AutomatedReview = "none", "off"
 			candidate.Requirements = policy.Requirements{MachineID: "machine_privileged"}
 			return policy.Observation{Descriptor: candidate.WithID()}
@@ -241,6 +246,11 @@ func TestRunnerPolicyObservationCannotApprovePolicy(t *testing.T) {
 		}},
 	}
 	approvedAttacks := []attack{
+		{name: "later commit changes only workflow prompt", modes: []string{"repository"}, status: http.StatusNoContent, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
+			source := changedSource(true)
+			d := authorityRepositoryPolicy(t, "Run the work. \t\n", "gate:\n  run: make check\n  security_audit:\n    enabled: true\n", source.Commit)
+			return policy.Observation{Descriptor: d, Source: source}
+		}},
 		{name: "copied authored files with forged runtime metadata", modes: []string{"cloud", "repository"}, status: http.StatusNoContent, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
 			candidate := f.original
 			candidate.Gates.SecurityAudit, candidate.Gates.PlanReview = false, "none"
@@ -261,7 +271,7 @@ func TestRunnerPolicyObservationCannotApprovePolicy(t *testing.T) {
 		{name: "real receipt with unauthored policy content", modes: []string{"repository"}, status: http.StatusNoContent, setup: func(t *testing.T, f policyAuthorityFixture) {
 			seedLanding(t, f.Native, strings.Repeat("b", 40), "develop")
 		}, observe: func(t *testing.T, f policyAuthorityFixture) policy.Observation {
-			candidate := hubfixture.Policy()
+			candidate := hubtest.LegacyPolicyDescriptor()
 			candidate.Gates.PlanReview, candidate.Gates.AutomatedReview = "none", "off"
 			candidate.Workflow = &policy.Workflow{Source: "detent.yaml", Revision: strings.Repeat("b", 40), States: f.original.Workflow.States}
 			return policy.Observation{Descriptor: candidate.WithID(), Source: changedSource(false)}
@@ -304,7 +314,7 @@ func TestRunnerPolicyObservationCannotApprovePolicy(t *testing.T) {
 			if f.original.Workflow != nil {
 				return policy.Observation{Descriptor: weakRepository(t), Source: changedSource(true)}
 			}
-			candidate := f.original
+			candidate := hubtest.LegacyPolicyDescriptor()
 			candidate.Gates.PlanReview = "none"
 			return policy.Observation{Descriptor: candidate.WithID()}
 		}},
@@ -355,6 +365,13 @@ func TestRunnerPolicyObservationCannotApprovePolicy(t *testing.T) {
 		if test.silent && recorded != 0 || !test.silent && recorded != 1 {
 			t.Fatalf("observation rows for %s = %d, silent=%t", resolved.ID, recorded, test.silent)
 		}
+		if !test.silent && observation.Source != nil {
+			var commit string
+			err := f.Hub.Admin.QueryRowContext(t.Context(), "SELECT source_commit FROM project_policy_observations WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3", f.Project.OrganizationID, f.Project.ID, resolved.ID).Scan(&commit)
+			if err != nil || commit != observation.Source.Commit {
+				t.Fatalf("recorded commit %q, want %q: %v", commit, observation.Source.Commit, err)
+			}
+		}
 		f.requireNoNewClaimAuthority(t, resolved.ID, before.approval.Policy.ID, !test.silent && test.token == nil)
 	}
 	for _, approved := range []bool{false, true} {
@@ -393,7 +410,7 @@ func TestRunnerPolicyReobservationKeepsNewerGuidance(t *testing.T) {
 		source *policy.RepositorySource
 		status int
 	}{
-		{name: "Cloud guidance saved after approval", mode: "cloud", status: http.StatusConflict, newer: func(t *testing.T, f policyAuthorityFixture) {
+		{name: "Cloud guidance saved after approval", mode: "cloud", status: http.StatusNoContent, newer: func(t *testing.T, f policyAuthorityFixture) {
 			markdown := strings.Replace(authorityCloudMarkdown, "Existing guidance", "Newer guidance", 1)
 			updateIntegration(t, f, func(request *integrationUpdate) { request.WorkflowMarkdown = &markdown })
 		}},
@@ -425,6 +442,141 @@ func TestRunnerPolicyReobservationKeepsNewerGuidance(t *testing.T) {
 				t.Fatalf("re-observing the current policy undid newer guidance:\nbefore=%+v\nafter=%+v", before, after)
 			}
 			f.requireNoNewClaimAuthority(t, f.original.ID, f.original.ID, true)
+		})
+	}
+}
+
+func TestObservedCloudRepairRequiresExplicitApproval(t *testing.T) {
+	t.Parallel()
+	f := newPolicyAuthorityFixture(t, "cloud", false)
+	legacy := f.original
+	authored := *legacy.Authored
+	authored.Files = nil
+	legacy.Authored = &authored
+	hubtest.Policy(t, f.Hub.Repository, f.Hub.Config.RunDetails, f.Project, hubtest.PolicyOptions{Descriptor: &legacy, ApprovedBy: "previous-approver", Now: f.Hub.Now()})
+	before := f.snapshot(t)
+	path := f.Base + "/policy"
+	token := f.runner.Redemption.Credential
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, path+"/observed", token, policy.Observation{Descriptor: f.original}), http.StatusNoContent)
+	if after := f.snapshot(t); !reflect.DeepEqual(before, after) {
+		t.Fatal("observing saved Markdown changed the current approval or its provenance")
+	}
+	hubfixture.RequireCode(t, f.Hub.Request(t, http.MethodGet, path+"?execution_configuration=2", token, nil), http.StatusConflict, "policy_mismatch")
+	change := policy.Change{ExpectedID: legacy.ID, ObservedPolicyID: f.original.ID}
+	approved := f.Hub.Request(t, http.MethodPut, path, f.Hub.AdminToken(), change)
+	hubfixture.RequireStatus(t, approved, http.StatusOK)
+	var receipt policy.Approval
+	hubfixture.Decode(t, approved, &receipt)
+	if receipt.Policy.ID != f.original.WithPinnedFiles().ID || receipt.ApprovedBy != hubfixture.AdminCredentialID {
+		t.Fatal("Cloud repair did not record the explicit approval")
+	}
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodGet, path+"?execution_configuration=2", token, nil), http.StatusOK)
+}
+
+func TestFilelessPolicySubmissionBindsPrompt(t *testing.T) {
+	t.Parallel()
+	f := newPolicyAuthorityFixture(t, "none", true)
+	before := f.snapshot(t)
+	d := hubtest.PolicyDescriptor(hubtest.WithPolicyPrompt("Initial instructions."))
+	d.Authored = &policy.Authored{Version: 1, Digest: d.ConfigDigest}
+	d.Configuration.Prompt = "Unbound instructions."
+	d = d.WithID()
+	path := f.Base + "/policy"
+	hubfixture.RequireCode(t, f.Hub.Request(t, http.MethodPost, path+"/observed", f.runner.Redemption.Credential, policy.Observation{Descriptor: d}), http.StatusConflict, "policy_mismatch")
+	hubfixture.RequireCode(t, f.Hub.Request(t, http.MethodPut, path, f.Hub.AdminToken(), policy.Change{Policy: d, ExpectedID: before.approval.Policy.ID}), http.StatusConflict, "policy_mismatch")
+	if after := f.snapshot(t); !reflect.DeepEqual(before, after) || f.observations(t, d.ID) != 0 {
+		t.Fatal("unbound prompt changed project policy or entered the observation history")
+	}
+}
+
+func TestDigestOnlyPolicyFilingAndReapproval(t *testing.T) {
+	t.Parallel()
+	for _, route := range []string{"observed", "direct"} {
+		t.Run(route, func(t *testing.T) {
+			t.Parallel()
+			f := newPolicyAuthorityFixture(t, "repository", false)
+			const prompt = "## Issue Contract\n- Acceptance criteria\n- Rollback evidence"
+			full := authorityRepositoryPolicy(t, prompt, "gate:\n  run: make verify\n  validator:\n    enabled: true\n", strings.Repeat("a", 40))
+			legacy := full
+			authored := *full.Authored
+			authored.Files = nil
+			legacy.Authored = &authored
+			legacy.Configuration = &policy.Configuration{Behavior: []byte("null"), SharedPrompt: prompt}
+			historical := hubtest.Policy(t, f.Hub.Repository, f.Hub.Config.RunDetails, f.Project, hubtest.PolicyOptions{Descriptor: &legacy, ApprovedBy: "original-approver", Now: f.Hub.Now().Truncate(time.Microsecond)})
+			path := f.Base + "/policy"
+			worker := f.runner.Redemption.Credential
+			hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodGet, path, worker, nil), http.StatusOK)
+			hubfixture.RequireCode(t, f.Hub.Request(t, http.MethodGet, path+"?execution_configuration=2", worker, nil), http.StatusConflict, "policy_mismatch")
+			create := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "incomplete"}, Title: "Verify deployment rollback", State: "Todo", Body: "## Acceptance criteria\nRestore the previous release."}
+			missing := f.Request(t, http.MethodPost, f.Base+"/work-items", create)
+			hubfixture.RequireStatus(t, missing, http.StatusUnprocessableEntity)
+			if !strings.Contains(missing.Body.String(), "Rollback evidence") {
+				t.Fatalf("wrong contract refusal: %s", missing.Body)
+			}
+			create.Mutation.IdempotencyKey = "complete"
+			create.Body += "\n## Rollback evidence\nRecord the restored release revision."
+			filed := f.Request(t, http.MethodPost, f.Base+"/work-items", create)
+			hubfixture.RequireStatus(t, filed, http.StatusOK)
+			var issue tracker.NativeIssue
+			hubfixture.Decode(t, filed, &issue)
+			hubfixture.PublishCapacity(t, f.Native, f.runner, hubfixture.CapacityReport(f.Hub.Now()))
+			claim := hubfixture.ProviderClaim(f.runner, issue, "legacy")
+			claim.PolicyID = legacy.ID
+			requireClaimRefusedWithoutLease(t, f.Native, worker, claim, http.StatusConflict, "policy_mismatch")
+
+			change := policy.Change{ExpectedID: legacy.ID, Policy: full}
+			if route == "observed" {
+				hubfixture.RequireCode(t, f.Hub.Request(t, http.MethodPut, path, f.Hub.AdminToken(), policy.Change{ExpectedID: legacy.ID, ObservedPolicyID: legacy.ID}), http.StatusConflict, "policy_mismatch")
+				observation := policy.Observation{Descriptor: full, Source: &policy.RepositorySource{Repository: authorityRepository, Commit: full.Workflow.Revision}}
+				foreign := hubfixture.NewNative(t, f.Hub, hubfixture.Secondary, "separate tenant")
+				outsider := foreign.Worker(t, "foreign")
+				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, path+"/observed", outsider, observation), http.StatusUnauthorized)
+				for range 2 {
+					hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, path+"/observed", worker, observation), http.StatusNoContent)
+				}
+				current, _ := readApproval(t, f.Native)
+				if current.Policy.ID != legacy.ID || current.ApprovedBy != historical.Revision.ApprovedBy {
+					t.Fatal("runner report changed the original approval")
+				}
+				hubfixture.RequireCode(t, f.Hub.Request(t, http.MethodGet, path+"?execution_configuration=2", worker, nil), http.StatusConflict, "policy_mismatch")
+				change = policy.Change{ExpectedID: legacy.ID, ObservedPolicyID: full.ID}
+			}
+			admin := f.Hub.AdminToken()
+			approve := func(token string) policy.Approval {
+				response := f.Hub.Request(t, http.MethodPut, path, token, change)
+				hubfixture.RequireStatus(t, response, http.StatusOK)
+				var result policy.Approval
+				hubfixture.Decode(t, response, &result)
+				return result
+			}
+			repaired := approve(admin)
+			if repaired.ApprovedBy != hubfixture.AdminCredentialID || repaired.Policy.ID == legacy.ID || repaired.Policy.Authored == nil || repaired.Policy.Workflow == nil || !reflect.DeepEqual(repaired.Policy.Authored.Files, full.Authored.Files) || repaired.Policy.Workflow.Revision != full.Workflow.Revision {
+				t.Fatal("repair did not bind the approver and verified files to a new revision")
+			}
+			secondAdmin := hubtest.Credential(t, f.Hub.Repository, f.Organization(), hubtest.CredentialOptions{Scope: "admin", KeyScope: "admin", AllProject: true, Now: f.Hub.Now()})
+			if retry := approve(secondAdmin.Token); !reflect.DeepEqual(retry, repaired) {
+				t.Fatal("approval retry changed the receipt")
+			}
+			execution := f.Hub.Request(t, http.MethodGet, path+"?execution_configuration=2", worker, nil)
+			hubfixture.RequireStatus(t, execution, http.StatusOK)
+			var result policy.Approval
+			hubfixture.Decode(t, execution, &result)
+			run, err := workflowconfig.ApplyExecutionConfiguration(workflowconfig.Workflow{Config: workflowconfig.Default()}, result.Policy, result.ExecutionConfiguration)
+			if err != nil || run.Prompt != prompt || !run.Config.Gate.Validator.Enabled || run.Config.Policy.ID != repaired.Policy.ID {
+				t.Fatalf("repaired execution: %v", err)
+			}
+			var old policystore.Revision
+			if err := f.Hub.Repository.ReadTenant(t.Context(), f.Organization(), corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				old, err = r.ProjectPolicyRevision(t.Context(), f.Project.ID, legacy.ID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			oldPayload, err := eventstore.NewContent(f.Hub.Config.RunDetails).ProjectPolicy(t.Context(), old)
+			if err != nil || old.PayloadSHA256 != historical.Revision.PayloadSHA256 || old.ApprovedBy != historical.Revision.ApprovedBy || !old.ApprovedAt.Equal(historical.Revision.ApprovedAt) || !reflect.DeepEqual(oldPayload, legacy) {
+				t.Fatalf("historical receipt changed: %v", err)
+			}
 		})
 	}
 }

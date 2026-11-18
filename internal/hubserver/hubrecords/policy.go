@@ -121,8 +121,8 @@ func ProjectPolicyWorkflow(ctx context.Context, scope string, descriptor policy.
 		resolved := cache.Entries[ProjectPolicyCacheKey{Scope: scope, ID: descriptor.ID}]
 		cache.Mu.Unlock()
 		if resolved != nil {
-			return resolved.Workflow()
+			return resolved.ReadWorkflow()
 		}
 	}
-	return workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, descriptor)
+	return workflowconfig.ReadNativePolicy(descriptor)
 }

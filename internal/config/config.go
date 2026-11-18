@@ -118,7 +118,6 @@ const (
 )
 
 type Workflow struct {
-	machinePrompt     string
 	executionPolicy   *policy.Descriptor
 	Authored          *policy.Authored
 	DefinitionSources *ProjectDefinitionSources
@@ -1342,6 +1341,19 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 		perIssueMaxUSDConfigured := nestedFieldSet(root, "budget", "per_issue_max_usd")
 		if err := root.Decode(&cfg); err != nil {
 			return Config{}, fmt.Errorf("decode YAML frontmatter: %w", err)
+		}
+		if historical := mappingValue(root, "backlog_admission"); historical != nil {
+			var guidance struct {
+				RequireEffort bool   `yaml:"require_effort"`
+				EffortFile    string `yaml:"effort_file"`
+				EffortSection string `yaml:"effort_section"`
+			}
+			if err := historical.Decode(&guidance); err != nil {
+				return Config{}, fmt.Errorf("decode historical effort guidance: %w", err)
+			}
+			cfg.BacklogAdmission.RequireEffort = guidance.RequireEffort
+			cfg.BacklogAdmission.EffortFile = guidance.EffortFile
+			cfg.BacklogAdmission.EffortSection = guidance.EffortSection
 		}
 		cfg.Agent.Knowledge.Configured = knowledgeConfigured
 		cfg.Deliverable.mergeMethodConfigured = mergeMethodConfigured

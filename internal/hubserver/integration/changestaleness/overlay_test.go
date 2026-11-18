@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -62,9 +63,7 @@ func approveDescriptor(t *testing.T, p hubfixture.Native, expected string, descr
 }
 
 func instructionVariant(index int) policy.Descriptor {
-	variant := hubfixture.Policy()
-	variant.SourceDigest = policy.Digest([]byte(fmt.Sprintf("instructions %d", index)))
-	return variant.WithID()
+	return hubtest.PolicyDescriptor(hubtest.WithPolicyPrompt(fmt.Sprintf("Instructions %d.", index)))
 }
 
 func TestBoardOverlayWorkIgnoresUnrelatedPolicyHistory(t *testing.T) {
@@ -171,9 +170,7 @@ func TestBoardOverlayPendingUntilFactsAndImmediateStaleness(t *testing.T) {
 	if got := status(t); got != "needs_evidence" {
 		t.Fatalf("status after maintenance backfilled facts=%q, want needs_evidence", got)
 	}
-	changed := hubfixture.Policy()
-	changed.Gates.SecurityAudit = true
-	changed = changed.WithID()
+	changed := hubtest.PolicyDescriptor(func(w *config.Workflow) { w.Config.Gate.SecurityAudit.Enabled = true })
 	approveDescriptor(t, c.Native, hubfixture.Policy().ID, changed)
 	if got := status(t); got != "stale_policy" {
 		t.Fatalf("board status after an incompatible approval=%q, want stale_policy without maintenance", got)

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -61,9 +62,9 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 		{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
 		{Name: "Done", Terminal: true},
 	}, factories)
-	next := h.descriptor
-	next.Gates.GitHubPullRequest = true
-	next = next.WithID()
+	next := changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+		w.Config.Deliverable.GitHubPullRequest = true
+	})
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 		t.Fatal(err)
 	}
@@ -150,9 +151,9 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
 		t.Fatal(err)
 	}
-	next = h.descriptor
-	next.Gates.Validator = true
-	next = next.WithID()
+	next = changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+		w.Config.Gate.Validator.Enabled = true
+	})
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 		t.Fatal(err)
 	}

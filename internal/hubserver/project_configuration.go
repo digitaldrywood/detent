@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -994,19 +995,24 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 
 func (s *Service) prepareConfigurationPolicyObservation(ctx context.Context, scope hubscope.NativeScope, observation policy.Observation) (policystore.Observation, error) {
 	content := eventstore.NewContent(s.runDetailStore())
-	revision, found, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.Organization, scope.Project, observation.Descriptor, content)
+	descriptor, revision, found, err := s.readTenantPolicyRevisionForDescriptor(ctx, scope, observation.Descriptor, content)
 	if err != nil {
 		return policystore.Observation{}, err
 	}
 	if !found {
-		ref, err := s.prepareConfigurationPayload(ctx, scope.Organization, observation.Descriptor)
+		if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
+			descriptor, err = workflowconfig.ResolveSharedPolicy(descriptor)
+			if err != nil {
+				return policystore.Observation{}, err
+			}
+		}
+		ref, err := s.prepareConfigurationPayload(ctx, scope.Organization, descriptor)
 		if err != nil {
 			return policystore.Observation{}, err
 		}
-		gate := observation.Gates.GitHubPullRequest
-		revision = policystore.Revision{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: observation.ID, GitHubPullRequest: &gate, Compatibility: policystore.CompatibilityOf(observation.Descriptor), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}
+		revision = policystore.Revision{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: descriptor.ID, GitHubPullRequest: new(descriptor.Gates.GitHubPullRequest), Compatibility: policystore.CompatibilityOf(descriptor), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}
 	}
-	return policystore.Observation{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: observation.ID, Source: observation.Source, Revision: revision}, nil
+	return policystore.Observation{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: descriptor.ID, Source: observation.Source, Revision: revision}, nil
 }
 
 func (s *Service) recordConfigurationPolicyObservation(ctx context.Context, scope hubscope.NativeScope, observation policy.Observation) error {

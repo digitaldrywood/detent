@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -94,9 +95,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			settings := map[string]any{"expected_revision": 1, "display_name": "Build runner", "tags": test.tags, "state": test.state, "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
 			r.reportCapacity(t)
-			descriptor := hubTestPolicy()
-			descriptor.Requirements = test.requirements
-			descriptor = descriptor.WithID()
+			descriptor := hubtest.PolicyWithRequirements(test.requirements)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			switch test.name {
@@ -771,9 +770,7 @@ func TestRunnerRoutingRevocationAndDrain(t *testing.T) {
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
 				r.reportCapacity(t)
-				descriptor := hubTestPolicy()
-				descriptor.Requirements.RequiredTags = []string{"build"}
-				descriptor = descriptor.WithID()
+				descriptor := hubtest.PolicyWithRequirements(policy.Requirements{RequiredTags: []string{"build"}})
 				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 				issue := f.create(t, "work")
 				claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "work", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
@@ -1016,12 +1013,8 @@ func TestRepositoryRunnerSelectorsCannotStealWork(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
 		r.reportCapacity(t)
 	}
-	macPolicy := hubTestPolicy()
-	macPolicy.Requirements.MachineID = string(mac.binding.MachineID)
-	macPolicy = macPolicy.WithID()
-	linuxPolicy := hubTestPolicy()
-	linuxPolicy.Requirements.RequiredTags = []string{"build", "linux"}
-	linuxPolicy = linuxPolicy.WithID()
+	macPolicy := hubtest.PolicyWithRequirements(policy.Requirements{MachineID: string(mac.binding.MachineID)})
+	linuxPolicy := hubtest.PolicyWithRequirements(policy.Requirements{RequiredTags: []string{"build", "linux"}})
 	approveHubTestPolicy(t, a.service, a.base+"/policy", macPolicy)
 	approveHubTestPolicy(t, a.service, b.base+"/policy", linuxPolicy)
 	aIssue := a.create(t, "exact Mac work")

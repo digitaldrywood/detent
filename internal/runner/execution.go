@@ -365,7 +365,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return AgentToolResult{Content: "unsupported tool"}, nil
 		}
 	}
-	if tools, handler := r.nativeReviewThreadTools(req); len(tools) != 0 {
+	if tools, handler := r.nativeReviewThreadTools(guarded, req); len(tools) != 0 {
 		previous := req.AgentToolHandler
 		req.AgentTools = append(append([]AgentTool(nil), req.AgentTools...), tools...)
 		req.AgentToolHandler = func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
@@ -383,7 +383,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	guarded = r.installDependencyReasonGenerator(guarded, req)
 	sourceReviewed := false
 	if normalizeRunMode(req.Mode) == RunModeImplement {
-		workflow, _, _, _ := r.runtimeSnapshot()
+		workflow := r.executionRuntime(ctx).workflow
 		limit := workflow.Config.Agent.MaxTurns
 		if limit <= 0 {
 			limit = config.Default().Agent.MaxTurns
@@ -475,7 +475,8 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	if prepared, ok := req.Execution.(CompletionExecution); ok {
 		prepareCtx, prepareCancel := finishCtx, func() {}
 		if outcome == "succeeded" {
-			workflow, runtime, _, _ := r.runtimeSnapshot()
+			snapshot := r.executionRuntime(ctx)
+			workflow, runtime := snapshot.workflow, snapshot.agents
 			role := runtime.effectiveRunRole(runRole(req.Mode, req.Issue))
 			_, _, backend, routeErr := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
 			if routeErr != nil {
@@ -783,7 +784,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	}
 	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if recorder, ok := req.Execution.(SourceValidationExecution); ok {
-			workflow, _, _, _ := r.runtimeSnapshot()
+			workflow := r.executionRuntime(ctx).workflow
 			effectiveGate := gate.Effective(workflow.Config.Gate)
 			command := effectiveGate.Run
 			if command != "" {
@@ -1265,7 +1266,8 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if !ok {
 		return nil
 	}
-	workflow, runtime, _, _ := r.runtimeSnapshot()
+	snapshot := r.executionRuntime(ctx)
+	workflow, runtime := snapshot.workflow, snapshot.agents
 	cfg := gate.Effective(workflow.Config.Gate).Validator
 	if !cfg.Enabled {
 		return nil
@@ -1331,7 +1333,8 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 
 func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approved bool, err error) {
 	defer func() { err = failedStep("review", err) }()
-	workflow, runtime, _, _ := r.runtimeSnapshot()
+	snapshot := r.executionRuntime(ctx)
+	workflow, runtime := snapshot.workflow, snapshot.agents
 	if gate.AutomatedReviewMode(workflow.Config.Gate) != gate.AutomatedReviewRequired {
 		return true, nil
 	}

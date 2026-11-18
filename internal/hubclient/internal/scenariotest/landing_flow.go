@@ -48,7 +48,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		ssh          bool
 		batch        bool
 		otherMachine string
-		policyChange func(*policy.Descriptor)
+		policyChange func(*config.Workflow)
 		wantStale    bool
 		refusal      string
 		audited      string
@@ -71,20 +71,22 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		{name: "landing and coding in one refresh", batch: true},
 		{name: "local reviewed head stays on its source machine", otherMachine: "unpushed"},
 		{name: "published reviewed head remains available across machines", otherMachine: "clean"},
-		{name: "non-gate policy approval preserves landing", policyChange: func(p *policy.Descriptor) {
-			p.ConfigDigest = policy.Digest([]byte("new non-gate configuration"))
-			p.SourceRevision = strings.Repeat("f", 40)
-			p.SourceDigest = policy.Digest([]byte("new source"))
-			p.Profile = "updated"
+		{name: "non-gate policy approval preserves landing", policyChange: func(w *config.Workflow) {
+			w.Prompt, w.SharedPrompt = "Updated instructions.", "Updated instructions."
+			w.Config.Runners = config.Runners{Profile: "updated", Profiles: map[string]policy.Requirements{"updated": {}}}
 		}},
-		{name: "merge method change preserves landing", policyChange: func(p *policy.Descriptor) { p.Gates.MergeMethod = "merge" }},
-		{name: "validator change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.Validator = true }, wantStale: true},
-		{name: "required check floor change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.RequiredChecks++ }, wantStale: true},
-		{name: "GitHub CI contract change requires fresh review evidence", policyChange: func(p *policy.Descriptor) {
-			p.Gates.GitHubPullRequest, p.Gates.GitHubCIDigest = true, policy.Digest([]byte("Full CI run-full-ci"))
+		{name: "merge method change preserves landing", policyChange: func(w *config.Workflow) { w.Config.Deliverable.MergeMethod = "merge" }},
+		{name: "validator change requires fresh review evidence", policyChange: func(w *config.Workflow) { w.Config.Gate.Validator.Enabled = true }, wantStale: true},
+		{name: "required check floor change requires fresh review evidence", policyChange: func(w *config.Workflow) {
+			w.Config.Gate.RequiredStatusChecks = append(w.Config.Gate.RequiredStatusChecks, "additional-check")
 		}, wantStale: true},
-		{name: "review change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.HumanReview = true }, wantStale: true},
-		{name: "GitHub landing gate change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.GitHubPullRequest = true }, wantStale: true},
+		{name: "GitHub CI contract change requires fresh review evidence", policyChange: func(w *config.Workflow) {
+			w.Config.Deliverable.GitHubPullRequest = true
+			w.Config.Gate.RequiredStatusChecks = []string{"Full CI"}
+			w.Config.Gate.CITriggerLabel = "run-full-ci"
+		}, wantStale: true},
+		{name: "review change requires fresh review evidence", policyChange: func(w *config.Workflow) { w.Config.Review.Human = true }, wantStale: true},
+		{name: "GitHub landing gate change requires fresh review evidence", policyChange: func(w *config.Workflow) { w.Config.Deliverable.GitHubPullRequest = true }, wantStale: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -106,9 +108,9 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "In Progress"}},
 		{Name: "Done", Terminal: true},
 	}, factories)
-	next := h.descriptor
-	next.Gates.SecurityAudit, next.Gates.Validator = true, true
-	next = next.WithID()
+	next := changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+		w.Config.Gate.SecurityAudit.Enabled, w.Config.Gate.Validator.Enabled = true, true
+	})
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +434,7 @@ func RunLinkedLandingScenarios(t *testing.T, factories Constructors) {
 	}
 }
 
-func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantStale bool, factories Constructors, outage func(*testing.T, *LandingSetup), refusalKinds ...string) {
+func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*config.Workflow), wantStale bool, factories Constructors, outage func(*testing.T, *LandingSetup), refusalKinds ...string) {
 	t.Helper()
 	completionOutage := len(refusalKinds) > 0 && refusalKinds[0] == "completion_outage"
 	if completionOutage {
@@ -475,19 +477,19 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		fixtureConfigureScheduler(t, h, func(config *SchedulerConfig) { config.Machine.Capacity = 6 })
 	}
 	if github {
-		next := h.descriptor
-		next.Gates.GitHubPullRequest = true
-		next = next.WithID()
+		next := changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+			w.Config.Deliverable.GitHubPullRequest = true
+		})
 		if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 			t.Fatal(err)
 		}
 		h.descriptor = next
 	}
 	if staleAudit {
-		next := h.descriptor
-		next.Gates.AutomatedReview = gate.AutomatedReviewOff
-		next.Gates.SecurityAudit, next.Gates.Validator = true, true
-		next = next.WithID()
+		next := changeTestPolicy(t, h.descriptor, func(w *config.Workflow) {
+			w.Config.Gate.AutomatedReview = gate.AutomatedReviewOff
+			w.Config.Gate.SecurityAudit.Enabled, w.Config.Gate.Validator.Enabled = true, true
+		})
 		if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 			t.Fatal(err)
 		}
@@ -637,9 +639,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	publishedPolicyID := h.descriptor.ID
 	if policyChange != nil {
-		next := h.descriptor
-		policyChange(&next)
-		next = next.WithID()
+		next := changeTestPolicy(t, h.descriptor, policyChange)
 		if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 			t.Fatal(err)
 		}

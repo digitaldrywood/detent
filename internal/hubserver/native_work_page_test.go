@@ -30,7 +30,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -732,9 +731,8 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.October, 6, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
-	descriptor := hubTestPolicy()
-	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true}, tracker.NativeState{Name: "Retired", Terminal: true})}
-	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor.WithID())
+	states := append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true}, tracker.NativeState{Name: "Retired", Terminal: true})
+	seedLegacyTestWorkflow(t, f, states)
 	var issues []tracker.NativeIssue
 	var histories [][]tracker.CollaborationEvent
 	for index, seed := range []struct {

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/changefiles/sourcetest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -91,9 +92,7 @@ func TestStaleVersionRefusedWhileCardSaysReviewed(t *testing.T) {
 	t.Parallel()
 	t.Run("requirement change", func(t *testing.T) {
 		f := newReviewed(t)
-		changed := hubfixture.Policy()
-		changed.Gates.SecurityAudit = true
-		changed = changed.WithID()
+		changed := hubtest.PolicyDescriptor(func(w *config.Workflow) { w.Config.Gate.SecurityAudit.Enabled = true })
 		f.approve(t, changed)
 		if status := f.storedStatus(t); status != "reviewed" {
 			t.Fatalf("approval rebuilt the card: status=%q", status)
@@ -119,9 +118,7 @@ func TestStaleVersionRefusedWhileCardSaysReviewed(t *testing.T) {
 	})
 	t.Run("instruction-only change", func(t *testing.T) {
 		f := newReviewed(t)
-		instructions := hubfixture.Policy()
-		instructions.SourceDigest = policy.Digest([]byte("changed instructions"))
-		instructions = instructions.WithID()
+		instructions := instructionVariant(1)
 		f.approve(t, instructions)
 		if code := f.claim(t); code != http.StatusOK {
 			t.Fatalf("instruction-only policy change refused the landing claim: status=%d", code)

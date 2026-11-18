@@ -45,6 +45,13 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 		return policy.Descriptor{}, err
 	}
 	workflow.Config = cfg
+	if workflow.Authored != nil && workflow.Authored.Version == 0 {
+		version := PolicyCanonicalizationVersion
+		if cfg.Tracker.Kind == TrackerHubNative {
+			version = NativePolicyCanonicalizationVersion
+		}
+		workflow.Authored = &policy.Authored{Version: version}
+	}
 	if cfg.Tracker.Kind == TrackerHubNative {
 		return resolveNativePolicy(workflow)
 	}

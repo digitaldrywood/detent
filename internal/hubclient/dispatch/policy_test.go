@@ -286,6 +286,8 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	workflow.Definition.Revision = strings.Repeat("a", 40)
+	pinned := workflow
 	current, err := workflowconfig.ResolvePolicy(workflow)
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +308,7 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow.Authored.Version = 1
+	workflow.Authored = &policy.Authored{Version: 1}
 	previous, err := workflowconfig.ResolvePolicy(workflow)
 	if err != nil {
 		t.Fatal(err)
@@ -323,8 +325,9 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 		wantLost     bool
 		reports      int
 	}{
-		{name: "authored external load retains approved configuration", loadApproved: true, approved: &privatePolicy, status: http.StatusOK, local: privatePolicy, reports: 1},
-		{name: "authored external load refuses unapproved instructions", loadApproved: true, approved: &current, status: http.StatusOK, local: current, reports: 1},
+		{name: "authored external load refuses digest-only approval", loadApproved: true, approved: &privatePolicy, status: http.StatusOK, local: privatePolicy, reports: 1},
+		{name: "authored external load ignores unapproved instructions", loadApproved: true, approved: &current, status: http.StatusOK, local: current, reports: 1},
+		{name: "verified approved revision", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: pinned.Definition.Revision}, approved: &current, status: http.StatusOK, local: current, reports: 1},
 		{name: "verified authored source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40)}, approved: &current, status: http.StatusOK, local: current, reports: 1},
 		{name: "legacy external load retains approved configuration", loadApproved: true, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "verified legacy source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
@@ -375,16 +378,21 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 						} else {
 							approval := policy.Approval{Policy: *approved}
 							if approved.Configuration != nil || approved.Authored != nil {
-								shared, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, *approved)
+								executionPolicy := *approved
+								if test.name == "authored external load refuses digest-only approval" {
+									executionPolicy = current
+								}
+								shared, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, executionPolicy)
 								if err != nil {
 									t.Error(err)
 									return
 								}
-								approval.ExecutionConfiguration, err = workflowconfig.NewExecutionConfiguration(shared, *approved, workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{}, workflowconfig.ModelSelection{}))
+								approval.ExecutionConfiguration, err = workflowconfig.NewExecutionConfiguration(shared, executionPolicy, workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{}, workflowconfig.ModelSelection{}))
 								if err != nil {
 									t.Error(err)
 									return
 								}
+								approval.ExecutionConfiguration.PolicyID = approved.ID
 							}
 							_ = json.NewEncoder(w).Encode(approval)
 						}
@@ -454,20 +462,41 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 						t.Fatalf("fixture must have a different authored policy: %s, %v", original.ID, err)
 					}
 				}
+				if test.name == "verified approved revision" && layout == pinned.Definition.Layout {
+					workflow = pinned
+				}
 				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "site", workflow, test.provenance)
-				if test.status == http.StatusServiceUnavailable && layout != workflowconfig.ProjectDefinitionCloud {
+				if test.provenance != nil && layout != workflowconfig.ProjectDefinitionCloud && workflow.Definition.Revision != test.provenance.Commit {
+					if err == nil || !strings.Contains(err.Error(), "provenance does not match") {
+						t.Fatalf("accepted mismatched repository revision: %v", err)
+					}
+					continue
+				}
+				if test.name == "verified approved revision" && layout == pinned.Definition.Layout {
+					if err != nil || resolved.Prompt != "Run the work.\n" || resolved.Config.Policy.ID != current.ID || resolved.Definition.Revision != test.provenance.Commit {
+						t.Fatalf("approved repository prompt %q, policy %s, revision %s: %v", resolved.Prompt, resolved.Config.Policy.ID, resolved.Definition.Revision, err)
+					}
+					continue
+				}
+				if test.status == http.StatusServiceUnavailable {
 					if !errors.Is(err, ErrUnavailable) || !connector.IsRetryable(err) {
 						t.Fatalf("unavailable approval must remain retryable: %v", err)
 					}
 					continue
 				}
-				if test.name == "authored external load refuses unapproved instructions" && layout != workflowconfig.ProjectDefinitionCloud {
+				if test.name == "authored external load refuses digest-only approval" {
 					if err == nil || !strings.Contains(err.Error(), "policy_mismatch") {
-						t.Fatalf("unapproved private instructions were accepted: %v", err)
+						t.Fatalf("digest-only policy was accepted: %v", err)
 					}
 					continue
 				}
-				if test.approved != nil && (test.approved.Configuration != nil || test.approved.Authored != nil) && test.provenance == nil && layout != workflowconfig.ProjectDefinitionCloud {
+				if test.approved != nil && test.approved.ID != "" && test.approved.Authored == nil && test.approved.Configuration == nil {
+					if !errors.Is(err, workflowconfig.ErrNativePromptUnavailable) {
+						t.Fatalf("metadata-only approval accepted: %v", err)
+					}
+					continue
+				}
+				if test.approved != nil && (test.approved.Configuration != nil || test.approved.Authored != nil) {
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -475,7 +504,7 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 					if err != nil || !reflect.DeepEqual(actual, *approved) {
 						t.Fatalf("legacy load replaced the approved descriptor: %+v %v", actual, err)
 					}
-					if test.name == "authored external load retains approved configuration" && (resolved.Config.Worker.GitHubToken != "private-token" || resolved.Config.Workspace.Root != "private-worktrees" || resolved.Config.Hooks.BeforeRun != "private-isolation" || resolved.Config.Agent.MaxConcurrentAgents != 1 || !strings.HasSuffix(strings.TrimSpace(resolved.Prompt), "Private machine instructions.")) {
+					if test.name == "authored external load ignores unapproved instructions" && layout != workflowconfig.ProjectDefinitionCloud && (resolved.Config.Worker.GitHubToken != "private-token" || resolved.Config.Workspace.Root != "private-worktrees" || resolved.Config.Hooks.BeforeRun != "private-isolation" || resolved.Config.Agent.MaxConcurrentAgents != 1 || resolved.Prompt != "Run the work.\n") {
 						t.Fatal("approved configuration discarded private overlays")
 					}
 					continue

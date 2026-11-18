@@ -1412,11 +1412,22 @@ func TestUpdateRuntimeDispatchesWithoutWaitingForPoll(t *testing.T) {
 					ActiveStates:        []string{"Todo"},
 					TerminalStates:      []string{"Done"},
 				}}
+				installed := false
 				if test.replaceConnector {
-					update.Connector = newFakeConnector(issue)
+					replacement := newFakeConnector(issue)
+					update.Connector = replacement
+					update.ApplyRunnerWorkflow = func() {
+						installed = true
+						if replacement.fetchCandidateCount != 0 {
+							t.Error("refill requested work before the runner installed its workflow")
+						}
+					}
 				}
 				if err := orch.UpdateRuntime(t.Context(), update); err != nil {
 					t.Fatal(err)
+				}
+				if test.replaceConnector && !installed {
+					t.Fatal("runtime update completed before runner installation")
 				}
 				synctest.Wait()
 				select {

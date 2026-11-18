@@ -165,6 +165,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			case "private instructions":
 				sources := *previous.DefinitionSources
 				sources.Workflow = []byte("Approved shared instructions.\n")
+				sources.HasLocalWorkflow, sources.LocalWorkflow = false, nil
 				candidate, err := workflowconfig.ParseProjectDefinition(sources)
 				if err != nil {
 					t.Fatal(err)
@@ -237,8 +238,8 @@ func TestManagedProjectConfiguration(t *testing.T) {
 						t.Fatalf("private provenance in configuration report: %s", raw)
 					}
 				}
-				if !strings.Contains(p.Workflow().Prompt, "Fixture machine-only instructions.") || !strings.Contains(p.Workflow().Prompt, "Approved shared instructions.") {
-					t.Fatal("private or shared instructions lost")
+				if p.Workflow().Prompt != "Approved shared instructions.\n" {
+					t.Fatal("runtime prompt differs from approved content")
 				}
 			}
 			if !reflect.DeepEqual(other.Config(), previousOther) || other.Workflow().Config.Policy.ID != previousOtherPolicy.ID {
@@ -371,7 +372,7 @@ func TestHubConfigurationOwnsRuntimePolicy(t *testing.T) {
 			selected := globalconfig.Project{ID: "selected", Workflow: filepath.Join(root, "WORKFLOW.md"), Workdir: root, Weight: 1, Paused: true}
 			selected.GlobalWorker.AllowLocalBinding = new(false)
 			scheduling := &hubPolicyScheduling{}
-			repositoryWorkflow, err := loadWorkflowForScheduling(t.Context(), selected, scheduling)
+			repositoryWorkflow, err := LoadWorkflowForScheduling(t.Context(), selected, scheduling)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -388,7 +389,7 @@ func TestHubConfigurationOwnsRuntimePolicy(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(approvedRoot, "WORKFLOW.md"), []byte(strings.Replace(repository, "Repository instructions changed after approval.", "Approved instructions.", 1)), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			candidate, err := loadWorkflowForScheduling(t.Context(), globalconfig.Project{ID: "selected", Workflow: filepath.Join(approvedRoot, "WORKFLOW.md"), Workdir: approvedRoot}, scheduling)
+			candidate, err := LoadWorkflowForScheduling(t.Context(), globalconfig.Project{ID: "selected", Workflow: filepath.Join(approvedRoot, "WORKFLOW.md"), Workdir: approvedRoot}, scheduling)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -403,7 +404,7 @@ func TestHubConfigurationOwnsRuntimePolicy(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			global := globalconfig.Config{Projects: []globalconfig.Project{selected}}
 			manager, err := NewManager(ManagerConfigFromGlobal(global), ManagerDependencies{ProjectFactory: func(project globalconfig.Project) (*Project, error) {
-				workflow, err := loadWorkflowForScheduling(ctx, project, scheduling)
+				workflow, err := LoadWorkflowForScheduling(ctx, project, scheduling)
 				if err != nil {
 					return nil, err
 				}

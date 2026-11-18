@@ -84,30 +84,35 @@ func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflo
 	return workflow, err
 }
 
-func loadWorkflowForScheduling(ctx context.Context, cfg globalconfig.Project, scheduling orchestrator.SchedulingSource) (workflowconfig.Workflow, error) {
-	workflow, err := LoadWorkflowContext(ctx, cfg)
-	if !errors.Is(err, workflowconfig.ErrNoProjectDefinition) {
-		return workflow, err
-	}
+func LoadWorkflowForScheduling(ctx context.Context, cfg globalconfig.Project, scheduling orchestrator.SchedulingSource) (workflowconfig.Workflow, error) {
 	source, ok := scheduling.(interface {
-		ProjectWorkflowMarkdown(context.Context, string) (string, error)
+		ProjectWorkflowDefinition(context.Context, string, workflowconfig.Workflow) (workflowconfig.Workflow, error)
 	})
 	if !ok {
-		return workflow, err
+		return LoadWorkflowContext(ctx, cfg)
 	}
-	markdown, sourceErr := source.ProjectWorkflowMarkdown(ctx, cfg.ID)
-	if sourceErr != nil {
-		return workflowconfig.Workflow{}, sourceErr
+	return LoadRunnerWorkflow(ctx, cfg, func(ctx context.Context, local workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+		if local.DefinitionSources != nil {
+			return local, nil
+		}
+		return source.ProjectWorkflowDefinition(ctx, cfg.ID, local)
+	})
+}
+
+func LoadRunnerWorkflow(ctx context.Context, cfg globalconfig.Project, resolve func(context.Context, workflowconfig.Workflow) (workflowconfig.Workflow, error)) (workflowconfig.Workflow, error) {
+	workflow, err := LoadWorkflowContext(ctx, cfg)
+	if errors.Is(err, workflowconfig.ErrNoProjectDefinition) {
+		workflow = workflowconfig.Workflow{Config: applyProjectAgentDefaults(workflowconfig.Default().ForNativeTracker(), cfg)}
+	} else if err != nil {
+		return workflowconfig.Workflow{}, err
 	}
-	if markdown == "" {
-		return workflow, fmt.Errorf("%w; author a Markdown workflow in Cloud project settings or supply the repository definition", err)
-	}
-	workflow, err = workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
+	workflow, err = resolve(ctx, workflow)
 	if err != nil {
 		return workflowconfig.Workflow{}, err
 	}
-	workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
-	workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg)
+	if workflow.Config.Policy.ID == "" {
+		workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg)
+	}
 	return workflow, nil
 }
 

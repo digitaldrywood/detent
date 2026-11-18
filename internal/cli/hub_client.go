@@ -301,10 +301,15 @@ func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project
 	return repository
 }
 
+func newRunnerHubClient(settings globalconfig.HubClient) (*hubclient.Client, error) {
+	settings = settings.Normalized()
+	return hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile,
+		TokenSource: func() string { return os.Getenv(settings.TokenEnvironment) }, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})
+}
+
 func newHubRunnerFleet(cfg globalconfig.Config) (*hubclient.FleetClient, error) {
 	settings := cfg.Client.Normalized()
-	client, err := hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile,
-		TokenSource: func() string { return os.Getenv(settings.TokenEnvironment) }, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})
+	client, err := newRunnerHubClient(settings)
 	if err != nil {
 		return nil, err
 	}
