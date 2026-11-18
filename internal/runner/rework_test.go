@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner/internal/gitfixture"
 	"github.com/digitaldrywood/detent/internal/runner/runnertest"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -373,10 +374,7 @@ func TestDirtyCheckpointReworkMakesProgress(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			source := initRunnerSourceRepo(t)
-			remote := filepath.Join(t.TempDir(), "origin.git")
-			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
-			runRunnerGit(t, source, "remote", "add", "origin", remote)
-			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			gitfixture.AddOrigin(t, source)
 			backend := newReworkWorkspace(t, source, filepath.Join(t.TempDir(), "workspaces"))
 			issue := connector.Issue{ID: "work", Identifier: "example#1", State: "Rework"}
 			ownedIssue := workspaceIssue("default", issue)
@@ -487,6 +485,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		authorityLost            bool
 		resolvedPause            bool
 		checkpointRetry          string
+		sameMachine              bool
 		missingBundleBackend     string
 		unreachableRemote        bool
 		pausedLaterConflict      bool
@@ -501,6 +500,10 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 	}{
 		{name: "resolved source"},
 		{name: "resolved pause integrates target before validation with two remaining picks", resolvedPause: true},
+		{name: "same machine Todo retry starts from current source", resolvedPause: true, checkpointRetry: "Todo", sameMachine: true},
+		{name: "same machine In Progress retry starts from current source", resolvedPause: true, checkpointRetry: "In Progress", sameMachine: true},
+		{name: "same machine Todo retry keeps progress after plain checkpoint", staged: true, checkpointRetry: "Todo", sameMachine: true},
+		{name: "same machine Rework retry restores paused checkpoint", resolvedPause: true, checkpointRetry: "Rework", sameMachine: true},
 		{name: "Todo retry starts from current source", resolvedPause: true, checkpointRetry: "Todo"},
 		{name: "Todo retry requires unavailable Change source", resolvedPause: true, checkpointRetry: "Todo", missingBundleBackend: workspace.KindLocalGit},
 		{name: "Todo retry cannot fetch required checkpoint", resolvedPause: true, checkpointRetry: "Todo", missingBundleBackend: workspace.KindLocalGit, unreachableRemote: true},
@@ -561,10 +564,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			source := initRunnerSourceRepo(t)
-			remote := filepath.Join(t.TempDir(), "origin.git")
-			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
-			runRunnerGit(t, source, "remote", "add", "origin", remote)
-			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			remote := gitfixture.AddOrigin(t, source)
 			backend := newReworkWorkspace(t, source, filepath.Join(t.TempDir(), "workspaces"))
 			issue := connector.Issue{ID: "native", Identifier: "native#141", State: "Rework"}
 			if test.normal {
@@ -674,22 +674,33 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
 			var retryBackend workspace.Backend = backend
+			var saved tracker.NativeCheckpoint
 			if test.checkpointRetry != "" {
-				saved := publishReworkCheckpoint(t, backend, info, ownedIssue)
+				saved = publishReworkCheckpoint(t, backend, info, ownedIssue)
 				execution.recovery.Attempts = []tracker.NativeAttempt{
 					{Status: "interrupted", NativeRunData: tracker.NativeRunData{AttemptID: "source", Identity: &tracker.NativeExecutionIdentity{Role: RoleRework}}, Checkpoint: &saved},
 					{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "workspace_failure"}},
 				}
-				clone := filepath.Join(t.TempDir(), "retry-source")
-				runRunnerGit(t, source, "clone", "--no-local", remote, clone)
-				if test.unreachableRemote {
-					runRunnerGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unavailable.git"))
-				}
-				runRunnerGit(t, clone, "config", "user.name", "Test")
-				runRunnerGit(t, clone, "config", "user.email", "test@example.com")
-				retryBackend, err = workspace.NewBackend(cmp.Or(test.missingBundleBackend, workspace.KindLocalGit), workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: t.TempDir(), SourceRoot: clone, AutoBranch: true})
-				if err != nil {
-					t.Fatal(err)
+				if test.sameMachine {
+					execution.recovery.Lease.MachineID = "host"
+					execution.recovery.Attempts[0].MachineID = "host"
+					if !test.resolvedPause {
+						stageFile(info.Path, "target-fix.md", "retained work after checkpoint\n")
+						runRunnerGit(t, info.Path, "commit", "-m", "retained progress")
+						target = strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+					}
+				} else {
+					clone := filepath.Join(t.TempDir(), "retry-source")
+					runRunnerGit(t, source, "clone", "--no-local", remote, clone)
+					if test.unreachableRemote {
+						runRunnerGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unavailable.git"))
+					}
+					runRunnerGit(t, clone, "config", "user.name", "Test")
+					runRunnerGit(t, clone, "config", "user.email", "test@example.com")
+					retryBackend, err = workspace.NewBackend(cmp.Or(test.missingBundleBackend, workspace.KindLocalGit), workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: t.TempDir(), SourceRoot: clone, AutoBranch: true})
+					if err != nil {
+						t.Fatal(err)
+					}
 				}
 				issue.State = test.checkpointRetry
 			}
@@ -697,7 +708,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			bundleErr := fmt.Errorf("%w: Change bundle unavailable", ErrNativeRecoveryRequired)
 			if test.missingBundleBackend != "" {
 				execution.recovery.Change = &tracker.NativeChangeReference{ChangeID: "change_current", VersionID: "version_current", HeadSHA: original}
-				request.Execution = &reworkReviewExecution{reworkArtifactsExecution: *execution, recoverError: bundleErr}
+				request.Execution = &reworkReviewExecution{reworkArtifactsExecution: *execution, RecoveredSource: runnertest.RecoveredSource{Err: bundleErr}}
 			} else if test.resolvedPause {
 				request.Execution = &reworkValidationExecution{execution}
 			}
@@ -985,6 +996,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			if freshRetry && test.missingBundleBackend == "" {
 				cfg.Gate.Run = "test -f target-fix.md"
 				agent.beforeStage = func() {
+					if got := strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", saved.Ref)); got != saved.CommitSHA {
+						t.Errorf("published checkpoint at provider entry = %s, want %s", got, saved.CommitSHA)
+					}
 					dir := strings.TrimSpace(runRunnerGit(t, agent.request.Workspace, "rev-parse", "--absolute-git-dir"))
 					for _, marker := range []string{"rebase-merge", "rebase-apply", "MERGE_HEAD"} {
 						if _, err := os.Stat(filepath.Join(dir, marker)); !errors.Is(err, os.ErrNotExist) {
