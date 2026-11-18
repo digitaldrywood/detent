@@ -84,3 +84,31 @@ func TestRunUsesOneJitteredWakeAndKeepsWorkingAfterErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyRotationsBackOffAndResumeOnWork(t *testing.T) {
+	worked := false
+	feature := Feature{Name: "example", Bytes: 1, Step: func(ctx context.Context, tenant Tenant, _ Budget) (Outcome, error) {
+		return Outcome{Progress: worked && tenant.Organization == "org_00000"}, nil
+	}}
+	scheduler, err := New(registry(2), []Feature{feature})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waits []time.Duration
+	scheduler.wait = func(_ context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		worked = len(waits) == 3
+		if len(waits) == 4 {
+			return context.Canceled
+		}
+		return nil
+	}
+	if err := scheduler.Run(t.Context(), nil); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	for i, want := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, time.Second} {
+		if waits[i] < want*9/10 || waits[i] > want*11/10 {
+			t.Fatalf("wait %d = %v, want jitter around %v", i, waits[i], want)
+		}
+	}
+}

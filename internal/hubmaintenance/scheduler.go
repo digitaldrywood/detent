@@ -56,6 +56,7 @@ type Scheduler struct {
 	running     atomic.Bool
 	cursor      string
 	family      int
+	wake        chan struct{}
 	wait        func(context.Context, time.Duration) error
 }
 
@@ -74,7 +75,8 @@ func NewScoped(registry Registry, features []Feature, tickContext func(context.C
 		}
 		names[feature.Name] = true
 	}
-	scheduler := &Scheduler{registry: registry, wait: waitForWake, tickContext: tickContext}
+	scheduler := &Scheduler{registry: registry, wake: make(chan struct{}, 1), tickContext: tickContext}
+	scheduler.wait = scheduler.waitForWake
 	for _, feature := range features {
 		if feature.Lead {
 			scheduler.leads = append(scheduler.leads, feature)
@@ -89,12 +91,21 @@ func NewScoped(registry Registry, features []Feature, tickContext func(context.C
 	return scheduler, nil
 }
 
-func waitForWake(ctx context.Context, duration time.Duration) error {
+func (s *Scheduler) Wake() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Scheduler) waitForWake(ctx context.Context, duration time.Duration) error {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.wake:
+		return nil
 	case <-timer.C:
 		return nil
 	}
@@ -105,27 +116,50 @@ func (s *Scheduler) Run(ctx context.Context, report func(error)) error {
 		return errors.New("maintenance scheduler already running")
 	}
 	defer s.running.Store(false)
+	interval := time.Second
+	idleFamilies := 0
 	for {
-		if err := s.wait(ctx, jitteredWake()); err != nil {
+		if err := s.wait(ctx, jitteredWake(interval)); err != nil {
 			return err
 		}
-		if err := s.Tick(ctx); err != nil && ctx.Err() == nil && report != nil {
+		turn, err := s.tick(ctx)
+		if err != nil && ctx.Err() == nil && report != nil {
 			report(err)
+		}
+		if err != nil || turn.work {
+			interval = time.Second
+			idleFamilies = 0
+		} else {
+			idleFamilies += turn.completed
+			if idleFamilies >= len(s.features) {
+				interval = min(2*interval, time.Minute)
+				idleFamilies = 0
+			}
 		}
 	}
 }
 
-func jitteredWake() time.Duration {
+func jitteredWake(interval time.Duration) time.Duration {
 	var value [8]byte
 	if _, err := rand.Read(value[:]); err != nil {
-		return time.Second
+		return interval
 	}
-	return 900*time.Millisecond + time.Duration(binary.LittleEndian.Uint64(value[:])%uint64(200*time.Millisecond))
+	return interval*9/10 + time.Duration(binary.LittleEndian.Uint64(value[:])%uint64(interval/5))
+}
+
+type tickResult struct {
+	work      bool
+	completed int
 }
 
 func (s *Scheduler) Tick(ctx context.Context) error {
+	_, err := s.tick(ctx)
+	return err
+}
+
+func (s *Scheduler) tick(ctx context.Context) (turn tickResult, err error) {
 	if !s.active.CompareAndSwap(false, true) {
-		return errors.New("maintenance tick already running")
+		return turn, errors.New("maintenance tick already running")
 	}
 	defer s.active.Store(false)
 	if s.tickContext != nil {
@@ -143,6 +177,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		if err == nil && result.completed && result.served == 0 && cursor != "" {
 			result, err = s.serve(ctx, &leads, feature, "", ItemLimit/2)
 		}
+		turn.work = turn.work || result.progress || result.exhausted
 		s.leadCursors[index] = result.cursor
 		failure = errors.Join(failure, err)
 	}
@@ -151,8 +186,10 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			break
 		}
 		result, err := s.serve(ctx, &envelope, s.features[s.family], s.cursor, ItemLimit)
+		turn.work = turn.work || result.progress || result.exhausted
 		s.cursor = result.cursor
 		if result.completed {
+			turn.completed++
 			s.family = (s.family + 1) % len(s.features)
 		}
 		failure = errors.Join(failure, err)
@@ -160,7 +197,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			break
 		}
 	}
-	return errors.Join(failure, ctx.Err())
+	return turn, errors.Join(failure, ctx.Err())
 }
 
 type tickEnvelope struct {
