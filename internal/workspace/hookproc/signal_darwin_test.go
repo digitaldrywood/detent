@@ -89,7 +89,7 @@ func TestHookSignalKeepsVerifiedInstance(t *testing.T) {
 		return start, err
 	}
 	scan := func(context.Context, string) ([]int, error) { return []int{pid}, nil }
-	verified, send := verifiedProcessTargets(ctx, path, scan, identity, processEnvironment, nil)
+	verified, send := verifiedProcessTargets(ctx, path, scan, identity, processEnvironment, nil, nil)
 	if pids, err := verified(ctx, path); err != nil || len(pids) != 1 || pids[0] != pid {
 		t.Fatalf("verified targets = %v, %v; want child %d", pids, err, pid)
 	}

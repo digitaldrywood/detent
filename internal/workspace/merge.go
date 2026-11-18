@@ -523,7 +523,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
 	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
 	startedCommand = true
@@ -533,10 +533,10 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 			registrationErr = process.Started(ctx, identity)
 		}
 		if registrationErr != nil {
-			return result, errors.Join(fmt.Errorf("register host validation process: %w", registrationErr), cmd.Cancel(), cmd.Wait())
+			return result, errors.Join(fmt.Errorf("register host validation process: %w", registrationErr), cmd.Cancel(), procgroup.Wait(cmd))
 		}
 	}
-	err = cmd.Wait()
+	err = procgroup.Wait(cmd)
 	if issue.hookOwner != nil && errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
 		err = nil
 	}

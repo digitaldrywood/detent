@@ -44,7 +44,7 @@ func NewLifetime() (*Lifetime, error) {
 
 func (l *Lifetime) Capture(ctx context.Context, path, owner string) (bool, error) {
 	ctx = l.withOwner(ctx, owner)
-	verified, _ := verifiedProcessTargets(ctx, path, ReapProcessScanner, procstart.Identity, processEnvironment, nil)
+	verified, _ := verifiedProcessTargets(ctx, path, ReapProcessScanner, procstart.Identity, processEnvironment, nil, nil)
 	pids, err := verified(ctx, path)
 	return l.unidentifiedWriter || len(l.witnesses) > 0 || len(pids) > 0, err
 }

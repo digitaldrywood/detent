@@ -55,8 +55,26 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 }
 
 func reapVerifiedProcesses(ctx context.Context, path string, grace time.Duration, scan Scanner, identity func(int) (string, error), environment func(int) ([]string, error), signal workspaceProcessSignaler) (int, error) {
-	verified, guardedSignal := verifiedProcessTargets(ctx, path, scan, identity, environment, signal)
-	return reapProcesses(ctx, path, grace, verified, guardedSignal)
+	var dir os.FileInfo
+	if exactAttemptScratch(path) && ctx.Value(hookOwnerKey{}) == nil {
+		var err error
+		dir, err = os.Lstat(path)
+		if err != nil {
+			return 0, fmt.Errorf("identify reserved attempt directory: %w", err)
+		}
+		if !dir.IsDir() {
+			return 0, errors.New("reserved attempt path is not a directory")
+		}
+	}
+	verified, guardedSignal := verifiedProcessTargets(ctx, path, scan, identity, environment, signal, dir)
+	n, err := reapProcesses(ctx, path, grace, verified, guardedSignal)
+	if dir != nil {
+		current, statErr := os.Lstat(path)
+		if statErr != nil || !os.SameFile(current, dir) {
+			err = errors.Join(err, errors.New("reserved attempt directory changed during recovery"), statErr)
+		}
+	}
+	return n, err
 }
 
 type hookSignals interface {
@@ -64,13 +82,14 @@ type hookSignals interface {
 	signal(int, syscall.Signal) error
 }
 
-func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, identity func(int) (string, error), environment func(int) ([]string, error), signal workspaceProcessSignaler) (Scanner, workspaceProcessSignaler) {
+func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, identity func(int) (string, error), environment func(int) ([]string, error), signal workspaceProcessSignaler, dir os.FileInfo) (Scanner, workspaceProcessSignaler) {
 	starts := map[int]string{}
 	owner, _ := ctx.Value(hookOwnerKey{}).(string)
 	confirmed := map[int]string{}
 	lifetime, _ := ctx.Value(lifetimeKey{}).(*Lifetime)
 	var bindings hookSignals
-	if owner != "" && signal == nil {
+	attemptScratch := dir != nil
+	if (owner != "" || attemptScratch) && signal == nil {
 		bindings = platformHookSignals(lifetime)
 	}
 	if lifetime != nil {
@@ -94,10 +113,28 @@ func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, iden
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
 			return false, nil
 		}
-		if err != nil {
+		if err != nil && !(attemptScratch && (errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES))) {
 			return false, scratchProcessInspectionError(ctx, pid, "workspace ownership", err, func(context.Context) (bool, error) { return sameProcess(pid) })
 		}
+		if attemptScratch && !scratchDescriptorAllowed(path, env) {
+			return false, nil
+		}
 		if !hookSignalAllowed(owner, path, env) {
+			if attemptScratch {
+
+				held, inspectErr := holdsAttemptScratch(pid, dir)
+				if inspectErr != nil {
+					return false, inspectErr
+				}
+				if !held {
+					live, err := sameProcess(pid)
+					if err != nil || !live {
+						return false, err
+					}
+					return false, fmt.Errorf("unresolved attempt scratch ownership for process %d", pid)
+				}
+				return sameProcess(pid)
+			}
 			lifetime, ok := ctx.Value(lifetimeKey{}).(*Lifetime)
 			if !ok || !hookDescriptorAllowed(owner, path, env) {
 				return false, nil
@@ -139,12 +176,16 @@ func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, iden
 			candidates = verified
 			err = errors.Join(err, verifyErr)
 		}
-		if owner != "" && err == nil {
+		if (owner != "" && err == nil) || attemptScratch {
 			seen := make(map[int]bool, len(candidates))
 			for _, pid := range candidates {
 				seen[pid] = true
 			}
-			for pid := range confirmed {
+			observed := confirmed
+			if attemptScratch {
+				observed = starts
+			}
+			for pid := range observed {
 				if !seen[pid] {
 					candidates = append(candidates, pid)
 				}
@@ -201,7 +242,7 @@ func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, iden
 			}
 		}
 		check := stillOwned
-		if owner != "" && confirmed[pid] != "" {
+		if (owner != "" || attemptScratch) && confirmed[pid] != "" {
 			check = sameProcess
 		}
 		ok, err := check(pid)
@@ -461,14 +502,22 @@ func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 	// outlives every scan deadline; -d cwd alone is one row per process.
 	// -O disables lsof's per-operation fork timeout machinery: on macOS its
 	// global filesystem lookup overhead can exhaust the deadline before output.
-	output, err := lsofOutput(ctx, "-O", "-w", "-d", "cwd", "-F", "pn")
+	descriptors := "cwd"
+	if exactAttemptScratch(path) {
+		descriptors += "," + attemptScratchFD()
+	}
+	output, err := lsofOutput(ctx, "-O", "-w", "-d", descriptors, "-F", "pfn")
 	if err != nil && len(output) == 0 {
 		if lsofNoMatches(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return parseLsofCwdProcessIDs(string(output), path), nil
+	pids := parseLsofCwdProcessIDs(string(output), path)
+	if exactAttemptScratch(path) {
+		return pids, err
+	}
+	return pids, nil
 }
 
 // parseLsofCwdProcessIDs reads lsof -F pn records (a p<pid> line followed by
@@ -478,6 +527,7 @@ func parseLsofCwdProcessIDs(output string, root string) []int {
 	seen := map[int]struct{}{}
 	pids := []int{}
 	pid := 0
+	descriptor := "cwd"
 	for line := range strings.SplitSeq(output, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" {
@@ -490,12 +540,15 @@ func parseLsofCwdProcessIDs(output string, root string) []int {
 				parsed = 0
 			}
 			pid = parsed
+			descriptor = "cwd"
+		case 'f':
+			descriptor = line[1:]
 		case 'n':
 			if pid <= 0 {
 				continue
 			}
 			cwd := strings.TrimSuffix(strings.TrimSpace(line[1:]), " (deleted)")
-			if !pathInside(root, cwd) {
+			if (descriptor != "cwd" && cwd != root) || !pathInside(root, cwd) {
 				continue
 			}
 			if _, ok := seen[pid]; ok {

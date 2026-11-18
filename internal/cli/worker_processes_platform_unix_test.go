@@ -52,12 +52,12 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := cmd.Start(); err != nil {
+			if err := procgroup.Start(cmd); err != nil {
 				t.Fatal(err)
 			}
-			wait := make(chan error, 1)
-			go func() { wait <- cmd.Wait() }()
-			t.Cleanup(func() { _ = cmd.Process.Kill() })
+			wait := make(chan struct{})
+			go func() { _ = procgroup.Wait(cmd); close(wait) }()
+			t.Cleanup(func() { _ = stdin.Close(); <-wait })
 			if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
 				t.Fatalf("child startup: %q %v", line, err)
 			}

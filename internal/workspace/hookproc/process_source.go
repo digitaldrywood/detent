@@ -60,3 +60,15 @@ func hookDescriptorAllowed(owner, path string, env []string) bool {
 	}
 	return owner != ""
 }
+
+func scratchDescriptorAllowed(path string, env []string) bool {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, HookOwnerKey+"=") {
+			return false
+		}
+		if marked, ok := strings.CutPrefix(entry, "DETENT_WORKER_SCRATCH="); ok && marked != path {
+			return false
+		}
+	}
+	return true
+}
