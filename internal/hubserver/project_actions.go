@@ -261,10 +261,19 @@ func (s *Service) readActionRunForRequest(c echo.Context) (actionRunRecord, erro
 // what makes it exact instead of a heuristic: a terminal workspace holds no
 // runner and no worktree, so there is no live run it could be racing.
 func (w *workspaceService) sweepActionRuns(ctx context.Context) {
-	organization := tracker.OrganizationID(w.server.appOrganizationID())
 	w.relay.mu.Lock()
-	afterProject, afterID := w.relay.actionSweepProject, w.relay.actionSweepID
+	cursor := w.relay.actionSweep
 	w.relay.mu.Unlock()
+	if _, err := w.sweepActionPage(ctx, &cursor, actionRunSweepBatch); err != nil {
+		w.logger.Warn("action_run.sweep_failed", "error", err)
+	}
+	w.relay.mu.Lock()
+	w.relay.actionSweep = cursor
+	w.relay.mu.Unlock()
+}
+
+func (w *workspaceService) sweepActionPage(ctx context.Context, cursor *postgres.MaintenanceCursor, limit int) (int, error) {
+	organization := tracker.OrganizationID(w.server.appOrganizationID())
 	var page []postgres.ActionRunMaintenanceRow
 	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.RelayActionReader)
@@ -272,18 +281,15 @@ func (w *workspaceService) sweepActionRuns(ctx context.Context) {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		page, err = owner.ActiveActionRunPage(ctx, afterProject, afterID, actionRunSweepBatch)
+		page, err = owner.ActiveActionRunPage(ctx, tracker.ProjectID(cursor.Project), cursor.Key, limit)
 		return err
 	})
 	if err != nil {
-		w.logger.Warn("action_run.sweep_failed", "error", err)
-		return
+		return 0, err
 	}
 	if len(page) == 0 {
-		w.relay.mu.Lock()
-		w.relay.actionSweepProject, w.relay.actionSweepID = "", ""
-		w.relay.mu.Unlock()
-		return
+		cursor.Project, cursor.Key = "", ""
+		return 0, nil
 	}
 	for _, entry := range page {
 		run := entry.ProjectActionRun
@@ -297,14 +303,12 @@ func (w *workspaceService) sweepActionRuns(ctx context.Context) {
 				return err
 			})
 			if err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
-				w.logger.Warn("action_run.sweep_failed", "error", err)
-				return
+				return len(page), err
 			}
 		}
-		w.relay.mu.Lock()
-		w.relay.actionSweepProject, w.relay.actionSweepID = run.ProjectID, run.ID
-		w.relay.mu.Unlock()
+		cursor.Project, cursor.Key = string(run.ProjectID), run.ID
 	}
+	return len(page), nil
 }
 
 // actionRunReasonFor maps a workspace's own end reason onto the reason its

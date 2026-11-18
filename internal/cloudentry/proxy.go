@@ -433,7 +433,7 @@ func (s *Service) proxy(c echo.Context) error {
 			if err := s.attemptDiffResponse(c, organization, body, response); err != nil {
 				return err
 			}
-			if err := s.attachmentMCPResponse(c, body, response); err != nil {
+			if err := s.attachmentHandlers().HandleMCPResponse(c, body, response); err != nil {
 				return err
 			}
 			response.Header.Del("Set-Cookie")

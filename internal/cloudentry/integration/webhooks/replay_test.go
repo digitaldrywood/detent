@@ -1,4 +1,4 @@
-package cloudentry
+package webhooks_test
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -20,17 +20,38 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entryfixture"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 )
 
+type githubDelivery struct {
+	ID          int64     `json:"id"`
+	GUID        string    `json:"guid"`
+	DeliveredAt time.Time `json:"delivered_at"`
+	StatusCode  int       `json:"status_code"`
+	Event       string    `json:"event"`
+}
+
 type replayTestHandler struct {
 	slog.Handler
-	done chan slog.Record
+	done    chan slog.Record
+	address chan string
 }
 
 func (h replayTestHandler) Enabled(context.Context, slog.Level) bool { return true }
 
 func (h replayTestHandler) Handle(_ context.Context, record slog.Record) error {
+	if record.Message == "shared entry serving" {
+		record.Attrs(func(a slog.Attr) bool {
+			if a.Key == "address" {
+				h.address <- a.Value.String()
+			}
+			return true
+		})
+	}
 	if record.Message == "replay GitHub App deliveries" {
 		h.done <- record
 	}
@@ -72,18 +93,26 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			done := make(chan slog.Record, 1)
+			address := make(chan string, 1)
 			var receiptIDs []string
-			cfg := Config{
-				Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
-				PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry",
-				SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(),
+			cfg := cloudentry.Config{
+				Platform:  cloudentry.PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
+				PublicURL: harness.PublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry",
+				SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: harness.NewFakeProvider(),
 				StateDir: t.TempDir(), ClientFS: fstest.MapFS{},
-				Logger:              slog.New(replayTestHandler{Handler: slog.DiscardHandler, done: done}),
+				Logger:              slog.New(replayTestHandler{Handler: slog.DiscardHandler, done: done, address: address}),
 				GitHubWebhookSecret: []byte("secret"), Now: func() time.Time { return before },
-				Transport: func(organization Organization) (http.RoundTripper, error) {
-					return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				Transport: func(organization cloudentry.Organization) (http.RoundTripper, error) {
+					return entrytest.HandlerTransport{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						if strings.HasPrefix(r.URL.Path, "/internal/v1/attachments/") {
 							w.WriteHeader(http.StatusServiceUnavailable)
+							return
+						}
+						if r.URL.Path == "/internal/v1/github/repositories" {
+							_, err := io.WriteString(w, "[]")
+							if err != nil {
+								t.Error(err)
+							}
 							return
 						}
 						if r.URL.Path != "/internal/v1/github/receipt" {
@@ -113,24 +142,30 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 					})}, nil
 				},
 			}
-			entryPostgresConfig(t)(&cfg)
-			service, err := Open(t.Context(), cfg)
+			entryfixture.PostgresRestartConfig(t)(&cfg)
+			service, err := cloudentry.Open(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				if err := service.Close(); err != nil {
-					t.Error(err)
+				if service != nil {
+					if err := service.Close(); err != nil {
+						t.Error(err)
+					}
 				}
 			})
-			for _, organization := range []Organization{
-				{ID: "org_alpha", ProviderID: "porg_alpha", Name: "Alpha", Endpoint: testSocketEndpoint("alpha.sock"), Generation: 1},
-				{ID: "org_beta", ProviderID: "porg_beta", Name: "Beta", Endpoint: testSocketEndpoint("beta.sock"), Generation: 1},
+			for _, organization := range []cloudentry.Organization{
+				{ID: "org_alpha", ProviderID: "porg_alpha", Name: "Alpha", Endpoint: harness.SocketEndpoint("alpha.sock"), Generation: 1},
+				{ID: "org_beta", ProviderID: "porg_beta", Name: "Beta", Endpoint: harness.SocketEndpoint("beta.sock"), Generation: 1},
 			} {
 				if _, err := service.Registry().Register(t.Context(), organization); err != nil {
 					t.Fatal(err)
 				}
 			}
+			if err := service.Close(); err != nil {
+				t.Fatal(err)
+			}
+			service = nil
 			var mu sync.Mutex
 			var ids []string
 			pages := 0
@@ -197,22 +232,34 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 				}
 			}))
 			t.Cleanup(api.Close)
-			service.config.GitHubApp = &github.InstallationTokenConfig{AppID: "123", PrivateKey: privateKey, Endpoint: api.URL + "/graphql", HTTPClient: api.Client()}
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
+			cfg.GitHubApp = &github.InstallationTokenConfig{AppID: "123", PrivateKey: privateKey, Endpoint: api.URL + "/graphql", HTTPClient: api.Client()}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			served := make(chan error, 1)
-			go func() { served <- service.serve(ctx, listener) }()
+			var serveErr error
+			served := make(chan struct{})
+			go func() {
+				defer close(served)
+				serveErr = cloudentry.Run(ctx, cfg)
+			}()
 			t.Cleanup(func() {
 				cancel()
-				if err := <-served; err != nil {
-					t.Error(err)
+				<-served
+				if serveErr != nil {
+					t.Error(serveErr)
 				}
 			})
-			record := <-done
+			var listenAddress string
+			select {
+			case listenAddress = <-address:
+			case <-served:
+				t.Fatalf("entry stopped before serving: %v", serveErr)
+			}
+			var record slog.Record
+			select {
+			case record = <-done:
+			case <-served:
+				t.Fatalf("entry stopped before replay: %v", serveErr)
+			}
 			var requested int64
 			record.Attrs(func(attr slog.Attr) bool {
 				if attr.Key == "requested" {
@@ -232,7 +279,7 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 			client := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
 			t.Cleanup(client.CloseIdleConnections)
 			for range 3 {
-				request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+listener.Addr().String()+"/", nil)
+				request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+listenAddress+"/", nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -255,3 +302,5 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 		})
 	}
 }
+
+func TestMain(m *testing.M) { entryfixture.Main(m) }

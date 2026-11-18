@@ -20,7 +20,6 @@ const (
 	// coordinatorCodexStateDir holds the coordinator's own home, Codex home
 	// and temporary directory inside the configured workspace.
 	coordinatorCodexStateDir = ".detent-coordinator"
-	defaultCoordinatorCodex  = "codex app-server"
 	// coordinatorFeatureCheckTimeout bounds the startup feature check.
 	coordinatorFeatureCheckTimeout = 30 * time.Second
 )

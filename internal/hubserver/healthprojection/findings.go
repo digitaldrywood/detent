@@ -1,51 +1,33 @@
-package hubserver
+package healthprojection
 
 import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-type healthFindingsPage struct {
-	ChangeSequence      int64                       `json:"change_sequence"`
-	BaselineUnavailable []healthBaselineUnavailable `json:"baseline_unavailable"`
-	Items               []healthFinding             `json:"items"`
-	NextCursor          string                      `json:"next_cursor,omitempty"`
-	LastTickAt          *time.Time                  `json:"last_tick_at"`
+type Page struct {
+	ChangeSequence      int64                               `json:"change_sequence"`
+	BaselineUnavailable []healthsignals.BaselineUnavailable `json:"baseline_unavailable"`
+	Items               []healthsignals.Finding             `json:"items"`
+	NextCursor          string                              `json:"next_cursor,omitempty"`
+	LastTickAt          *time.Time                          `json:"last_tick_at"`
 }
 
-func (s *Service) getHealthFindings(c echo.Context) error {
-	limit := 100
-	if raw := c.QueryParam("limit"); raw != "" {
-		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > 100 {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("limit must be between 1 and 100"))
-		}
-		limit = value
-	}
-	page, err := s.readHealthFindings(c.Request().Context(), hubscope.NativeRequestScope(c), c.QueryParam("state"), c.QueryParam("since"), c.QueryParam("cursor"), limit)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, page)
-}
-
-func (s *Service) readHealthFindings(ctx context.Context, scope hubscope.NativeScope, state, since, cursor string, limit int) (healthFindingsPage, error) {
+func (s *Service) Read(ctx context.Context, scope hubscope.NativeScope, state, since, cursor string, limit int) (Page, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	page := healthFindingsPage{Items: []healthFinding{}, BaselineUnavailable: []healthBaselineUnavailable{}}
+	page := Page{Items: []healthsignals.Finding{}, BaselineUnavailable: []healthsignals.BaselineUnavailable{}}
 	if state == "" {
 		state = "open"
 	}
@@ -74,7 +56,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope hubscope.NativeS
 			return page, hubapi.NativePublicInvalid("invalid findings cursor")
 		}
 	}
-	if s.config.TenantRepository == nil {
+	if s.Tenants == nil {
 		return page, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	reporter := ""
@@ -86,7 +68,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope hubscope.NativeS
 	}
 	var records healthstore.Page
 	projected := true
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	repository, ok := s.Tenants.(tenantstore.SnapshotRepository)
 	if !ok {
 		return page, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -119,10 +101,10 @@ func (s *Service) readHealthFindings(ctx context.Context, scope hubscope.NativeS
 			page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(records.Findings[i-1].Sequence, 10)))
 			break
 		}
-		f := healthFinding{ID: row.ID, Fingerprint: row.Fingerprint, Signal: row.Signal, Class: row.Class, Subject: healthSubject{Kind: row.SubjectKind, ID: row.SubjectID}, OpenedAt: row.OpenedAt, LastSeenAt: row.LastSeenAt, ResolvedAt: row.ResolvedAt, Severity: row.Severity, Summary: row.Summary, NextAction: row.NextAction, EmailUnavailable: row.EmailUnavailable}
+		f := healthsignals.Finding{ID: row.ID, Fingerprint: row.Fingerprint, Signal: row.Signal, Class: row.Class, Subject: healthsignals.Subject{Kind: row.SubjectKind, ID: row.SubjectID}, OpenedAt: row.OpenedAt, LastSeenAt: row.LastSeenAt, ResolvedAt: row.ResolvedAt, Severity: row.Severity, Summary: row.Summary, NextAction: row.NextAction, EmailUnavailable: row.EmailUnavailable}
 		f.Evidence = row.DisplayEvidence
 		if !projected && row.Evidence.Key != "" {
-			raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), row.Evidence)
+			raw, err := s.Details.ReadDetail(ctx, string(scope.Organization), row.Evidence)
 			if err != nil {
 				return page, err
 			}
@@ -130,20 +112,20 @@ func (s *Service) readHealthFindings(ctx context.Context, scope hubscope.NativeS
 				return page, err
 			}
 		}
-		f.Evidence = scopeHealthEvidence(f.Evidence, scope.Project)
+		f.Evidence = healthsignals.ScopeEvidence(f.Evidence, scope.Project)
 		for _, link := range row.Issues {
-			f.Issues = append(f.Issues, healthFindingIssue{ProjectID: link.ProjectID, WorkItemID: link.WorkItemID})
+			f.Issues = append(f.Issues, healthsignals.FindingIssue{ProjectID: link.ProjectID, WorkItemID: link.WorkItemID})
 		}
 		if len(f.Issues) > 0 {
 			f.FiledBy = "health_detector"
 		}
 		if row.SlackUnavailableAt != nil {
-			f.SlackUnavailable = &healthSlackFailure{Code: "slack_unavailable", StatusCode: row.SlackStatusCode, At: *row.SlackUnavailableAt}
+			f.SlackUnavailable = &healthsignals.SlackFailure{Code: "slack_unavailable", StatusCode: row.SlackStatusCode, At: *row.SlackUnavailableAt}
 		}
 		page.Items = append(page.Items, f)
 	}
 	for _, gap := range records.Baselines {
-		page.BaselineUnavailable = append(page.BaselineUnavailable, healthBaselineUnavailable{Project: string(gap.ProjectID), Signal: gap.Signal, Lane: gap.Lane})
+		page.BaselineUnavailable = append(page.BaselineUnavailable, healthsignals.BaselineUnavailable{Project: string(gap.ProjectID), Signal: gap.Signal, Lane: gap.Lane})
 	}
 	page.LastTickAt = records.LastTickAt
 	return page, nil

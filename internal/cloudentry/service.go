@@ -62,6 +62,7 @@ type Config struct {
 	ListenAddress             string
 	Logger                    *slog.Logger
 	LookupEnv                 func(string) string
+	SharedHub                 *SharedHubConfig
 	Allocation                *AllocationConfig
 	Billing                   *BillingConfig
 	ConfigPath                string
@@ -114,7 +115,10 @@ func (c Config) validate() error {
 	if err := c.Billing.validate(); err != nil {
 		return err
 	}
-	if err := c.Allocation.validate(); err != nil {
+	if shared := c.SharedHub; shared != nil && (shared.Configure == nil || shared.TenantConfig == nil) {
+		return errors.New("shared Hub requires tenant configuration")
+	}
+	if err := c.Allocation.validate(c.SharedHub != nil); err != nil {
 		return err
 	}
 	if !safeID(c.Issuer) || len(c.SigningKey) != ed25519.PrivateKeySize || c.Provider == nil || strings.TrimSpace(c.StateDir) == "" {
@@ -124,25 +128,31 @@ func (c Config) validate() error {
 }
 
 type Service struct {
-	notifications     *platformNotifications
-	runtime           atomic.Pointer[entryRuntime]
-	allowlist         atomic.Pointer[signupAllowlist]
-	reloadMu          sync.Mutex
-	keyMCP            *mcp.HTTPHandler
-	administration    *operatoradmin.Executor
-	config            Config
-	registry          *Registry
-	auth              *authStore
-	echo              *echo.Echo
-	secure            bool
-	transports        sync.Map
-	mutationMu        sync.Mutex
-	verified          sessionVerifications
-	refreshes         keylock.Mutex
-	attachments       attachment.Storage
-	attachmentLocks   attachmentLocks
-	attachmentSweepAt time.Time
-	githubWebhooks    *webhooks.Service
+	sharedHub               *sharedHub
+	notifications           *platformNotifications
+	runtime                 atomic.Pointer[entryRuntime]
+	allowlist               atomic.Pointer[signupAllowlist]
+	reloadMu                sync.Mutex
+	keyMCP                  *mcp.HTTPHandler
+	administration          *operatoradmin.Executor
+	config                  Config
+	registry                *Registry
+	auth                    *authStore
+	echo                    *echo.Echo
+	secure                  bool
+	transports              sync.Map
+	mutationMu              sync.Mutex
+	verified                sessionVerifications
+	refreshes               keylock.Mutex
+	attachments             attachment.Storage
+	attachmentLocks         attachmentLocks
+	attachmentSweepAt       time.Time
+	attachmentAfter         string
+	deletionAfter           string
+	attachmentObjectSweepAt time.Time
+	attachmentObjectCursor  string
+	sweepingWebhookPayloads bool
+	githubWebhooks          *webhooks.Service
 
 	stopAuthReseal    context.CancelFunc
 	authResealDone    chan struct{}
@@ -214,14 +224,32 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	}
 	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.Now, seal: seal, keys: keys}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
 	service.attachments = attachments
+	if config := cfg.SharedHub; config != nil {
+		host, err := openSharedHub(ctx, service, config)
+		if err != nil {
+			return nil, errors.Join(err, authStorage.Close(), registry.Close())
+		}
+		service.sharedHub = host
+		if cfg.Allocation != nil {
+			allocation := *cfg.Allocation
+			allocation.Launcher = host
+			service.config.Allocation = &allocation
+		}
+		service.config.Transport = func(org Organization) (http.RoundTripper, error) {
+			return hubRoute{host: host, organization: org}, nil
+		}
+	}
 	if _, err := service.loadRuntime(ctx); err != nil {
+		if service.sharedHub != nil {
+			err = errors.Join(err, service.sharedHub.Close())
+		}
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
-	service.configureRuntimeLauncher(ctx)
-	if cfg.Transport == nil {
+
+	if service.config.Transport == nil {
 		service.config.Transport = service.tenantTransport
 	}
-	service.githubWebhooks = webhooks.New(webhooks.Deps{
+	webhookDeps := webhooks.Deps{
 		Secret: service.config.GitHubWebhookSecret, Logger: service.config.Logger,
 		List: service.registry.List, ReadyOrganization: service.readyOrganization,
 		StartManaged: service.config.Allocation != nil,
@@ -230,7 +258,11 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 		},
 		ServiceCall: service.serviceCall, Claims: service.claims, SignedCall: service.signedCall,
 		OrganizationNotFound: ErrOrganizationNotFound,
-	})
+	}
+	if service.sharedHub != nil {
+		webhookDeps.Accept = service.acceptGitHubWebhook
+	}
+	service.githubWebhooks = webhooks.New(webhookDeps)
 	service.echo = echo.New()
 	service.echo.HideBanner, service.echo.HidePort = true, true
 	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
@@ -246,6 +278,11 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	}
 	service.startOAuthClientBackfill(ctx)
 	service.startAuthReseal(ctx)
+	if service.sharedHub != nil {
+		if err := service.sharedHub.startScheduler(); err != nil {
+			return nil, errors.Join(err, service.CloseContext(ctx))
+		}
+	}
 	return service, nil
 }
 
@@ -408,7 +445,7 @@ func (s *Service) routes() {
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
 	e.POST("/api/v1/webhooks/github", s.githubWebhooks.Webhook)
 	e.GET("/invite", s.startInvitation)
-	s.registerAttachmentRoutes(e)
+	s.attachmentHandlers().Register(e, s.registerArchiveRoutes)
 	e.GET("/api/cloud/organizations/:organization/archive-storage", s.archiveStorageBinding)
 	e.PUT("/api/cloud/organizations/:organization/archive-storage", s.archiveStorageBinding)
 	e.GET("/api/cloud/organizations/:organization/archive-deletion", s.archiveDeletionReceipt)

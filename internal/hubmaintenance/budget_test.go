@@ -1,12 +1,24 @@
 package hubmaintenance
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 )
+
+type archiveCounter struct{ reads, writes int }
+
+func (s *archiveCounter) ReadContent(context.Context, string, attachment.ArchiveReference) ([]byte, error) {
+	s.reads++
+	return []byte("example"), nil
+}
+func (s *archiveCounter) PublishContent(context.Context, string, []byte) (attachment.ArchiveReference, error) {
+	s.writes++
+	return attachment.ArchiveReference{}, nil
+}
 
 type detailCounter struct{ reads, writes, canonicalReads int }
 
@@ -70,6 +82,29 @@ func TestPayloadBudgetRejectsBeforeIOAndCannotCrossTenant(t *testing.T) {
 			}
 		})
 	}
+	t.Run("archive contents", func(t *testing.T) {
+		raw := []byte("example")
+		ref, _, err := attachment.PrepareArchive(tenant.Organization, 1, bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := (Budget{Items: 1, Bytes: ref.CompressedSize + ref.UncompressedSize}).Context(t.Context(), tenant)
+		storage := &archiveCounter{}
+		contents := LimitArchiveContents(storage)
+		if _, err := contents.ReadContent(ctx, tenant.Organization, ref); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := contents.ReadContent(ctx, tenant.Organization, ref); !errors.Is(err, ErrByteBudget) {
+			t.Fatalf("read after exhaustion: %v", err)
+		}
+		if _, err := contents.PublishContent(ctx, tenant.Organization, raw); !errors.Is(err, ErrByteBudget) {
+			t.Fatalf("publish after exhaustion: %v", err)
+		}
+		if storage.reads != 1 || storage.writes != 0 {
+			t.Fatalf("archive I/O after refusal: reads=%d writes=%d", storage.reads, storage.writes)
+		}
+	})
+
 	key, err := attachment.ArchiveKey(tenant.Organization, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil {
 		t.Fatal(err)

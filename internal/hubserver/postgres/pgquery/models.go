@@ -1286,6 +1286,7 @@ type GithubPullRequestRefresh struct {
 	MergedBy                *string
 	MergePolicyBound        bool
 	RepositoryDefaultBranch *string
+	WebhookBindingProject   string
 }
 
 type GithubReconciliation struct {
@@ -1304,23 +1305,28 @@ type GithubReconciliation struct {
 }
 
 type GithubWebhookReceipt struct {
-	OrganizationID      tracker.OrganizationID
-	DeliveryID          string
-	Repository          string
-	EventType           string
-	Action              string
-	PayloadDigest       string
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
-	ReceivedAt          time.Time
-	ExpiresAt           time.Time
-	Status              string
-	AfterProject        string
-	Attempts            int64
-	NextAttemptAt       time.Time
-	LastReceivedAt      *time.Time
+	OrganizationID       tracker.OrganizationID
+	DeliveryID           string
+	Repository           string
+	EventType            string
+	Action               string
+	PayloadDigest        string
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	ReceivedAt           time.Time
+	ExpiresAt            time.Time
+	Status               string
+	AfterProject         string
+	Attempts             int64
+	NextAttemptAt        time.Time
+	LastReceivedAt       *time.Time
+	BindingProject       string
+	BindingGeneration    int64
+	BindingProjectXid    pgtype.Uint64
+	BindingRepositoryXid pgtype.Uint64
+	BindingCheckoutXid   pgtype.Uint64
 }
 
 type GoTestReceipt struct {
@@ -1617,6 +1623,28 @@ type HostedComplimentaryGrantScope struct {
 	Scope          string
 }
 
+type HostedHealthScanCursor struct {
+	OrganizationID   tracker.OrganizationID
+	Generation       int64
+	Project          string
+	RunnerName       string
+	RunnerID         string
+	AfterProject     string
+	ItemProject      string
+	ItemState        string
+	ItemID           int64
+	Conversation     string
+	Question         string
+	Finding          string
+	WaitFinding      string
+	WaitRevision     int64
+	WaitConversation string
+	WaitQuestion     string
+	StartedAt        time.Time
+	CycleFailed      bool
+	Completed        []bool
+}
+
 type HostedInvitation struct {
 	OrganizationID tracker.OrganizationID
 	ID             string
@@ -1633,6 +1661,17 @@ type HostedInvitationGrant struct {
 	ProjectID      tracker.ProjectID
 	CanWrite       bool
 	ManageRunner   bool
+}
+
+type HostedMaintenanceCursor struct {
+	OrganizationID tracker.OrganizationID
+	Feature        string
+	Generation     int64
+	CursorKey      string
+	Project        string
+	Kind           string
+	CursorID       int64
+	CursorAt       *time.Time
 }
 
 type HostedMember struct {
@@ -3545,6 +3584,23 @@ type PlatformGithubUserConnection struct {
 	RevokedAt    *time.Time
 }
 
+type PlatformGithubWebhookIngress struct {
+	DeliveryID        string
+	EventType         string
+	Repository        string
+	PayloadDigest     string
+	PayloadObjectKey  string
+	AcceptedSnapshot  interface{}
+	LastReceivedAt    time.Time
+	State             string
+	AfterOrganization string
+	AfterProject      string
+	PassFailed        bool
+	Attempts          int64
+	NextAttemptAt     time.Time
+	DispatchOrder     pgtype.Int8
+}
+
 type PlatformImportCheckpoint struct {
 	Singleton     bool
 	SnapshotID    string
@@ -3615,24 +3671,29 @@ type PlatformOauthSpentRefreshToken struct {
 }
 
 type PlatformOrganization struct {
-	ID             string
-	ProviderID     string
-	Name           string
-	State          string
-	Endpoint       string
-	Generation     int64
-	Managed        bool
-	CreatorSubject string
-	CreatorEmail   string
-	Step           string
-	Attempts       int64
-	NextAttemptAt  *time.Time
-	ErrorCode      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	ErrorDetail    string
-	Slug           string
-	CheckoutPrice  string
+	ID                      string
+	ProviderID              string
+	Name                    string
+	State                   string
+	Endpoint                string
+	Generation              int64
+	Managed                 bool
+	CreatorSubject          string
+	CreatorEmail            string
+	Step                    string
+	Attempts                int64
+	NextAttemptAt           *time.Time
+	ErrorCode               string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	ErrorDetail             string
+	Slug                    string
+	CheckoutPrice           string
+	BillingReconcileSeconds pgtype.Int4
+	BillingNextDueAt        *time.Time
+	WorkspacePolicyKey      *string
+	HostedConfigurationKey  *string
+	GithubBindingXid        pgtype.Uint64
 }
 
 type PlatformOrganizationEvent struct {
@@ -3793,6 +3854,7 @@ type Project struct {
 	CreatedAt               time.Time
 	DeletedAt               *time.Time
 	DuplicateSourceSequence int64
+	GithubBindingXid        pgtype.Uint64
 }
 
 type ProjectAction struct {
@@ -4428,6 +4490,8 @@ type ProjectSetting struct {
 	IconImageSha256                 string
 	PageSourceAt                    time.Time
 	GithubReconciliationInitialized bool
+	GithubRepositoryXid             pgtype.Uint64
+	GithubCheckoutXid               pgtype.Uint64
 }
 
 type ProjectSlug struct {

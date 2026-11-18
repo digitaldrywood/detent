@@ -2,29 +2,28 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"slices"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthprojection"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -62,80 +61,33 @@ func (s *Service) HealthPageMaintenanceFeature() hubmaintenance.Feature {
 		if rows < 1 {
 			return hubmaintenance.Outcome{}, corestore.ErrInvalidPage
 		}
+		var previous postgres.HealthScan
+		if s.config.runtimeHost != nil {
+			var err error
+			previous, err = s.database.postgres.HealthScan(ctx, organization, tenant.Generation)
+			if err != nil {
+				return hubmaintenance.Outcome{}, err
+			}
+			if err := s.restoreHealthScan(ctx, organization, previous, &state.cursor); err != nil {
+				return hubmaintenance.Outcome{}, err
+			}
+		}
 		observed := s.maintainHealthSources(ctx, organization, &state.cursor, hubmaintenance.Budget{Items: rows, Bytes: budget.Bytes})
+		if s.config.runtimeHost != nil {
+			if next := state.cursor.scan(); next != previous {
+				observed = errors.Join(observed, s.database.postgres.SetHealthScan(ctx, organization, tenant.Generation, next))
+			}
+		}
 		_, projectErr := s.MaintainHealthPage(ctx, organization)
 		_, deliveryErr := s.processSlackDelivery(ctx, organization)
 		return hubmaintenance.Outcome{Progress: true, Items: healthFixedUnits + healthRowScans*rows}, errors.Join(observed, projectErr, deliveryErr)
 	}}
 }
 
-func (s *Service) MaintainHealthPage(ctx context.Context, organization tracker.OrganizationID) (bool, error) {
-	if err := hubmaintenance.RequireAllowance(ctx, string(organization), hubmaintenance.ByteLimit); err != nil {
-		return false, err
-	}
-	var candidate healthstore.Finding
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
-		owner, ok := r.(healthstore.PageMaintainer)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		var err error
-		candidate, err = owner.NextHealthPage(ctx)
-		return err
-	})
-	if errors.Is(err, corestore.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		owner, ok := w.(healthstore.PageMaintainer)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		return owner.AdvanceHealthPage(ctx, candidate)
-	})
-	if err != nil {
-		return false, err
-	}
-	var evidence healthstore.Evidence
-	if candidate.Evidence.Key != "" {
-		raw, err := hubmaintenance.LimitDetails(s.runDetailStore()).ReadDetail(ctx, string(organization), candidate.Evidence)
-		if err != nil {
-			return false, err
-		}
-		if err := json.Unmarshal(raw, &evidence); err != nil {
-			return false, err
-		}
-	}
-	published := false
-	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		owner, ok := w.(healthstore.PageMaintainer)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		var err error
-		published, err = owner.PublishHealthPage(ctx, candidate, evidence)
-		return err
-	})
-	if published && s.config.Logger != nil {
-		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project health page", slog.String("organization_id", string(organization)), slog.Int64("generation", candidate.Generation), slog.Duration("projection_lag", s.config.Clock().Sub(candidate.SourceAt)))
-	}
-	return published, err
-}
-
 type healthMaintenanceState struct {
 	mu         sync.Mutex
 	generation int64
 	cursor     healthMaintenanceCursor
-}
-
-type healthWaitItemCursor struct {
-	afterProject tracker.ProjectID
-	project      tracker.ProjectID
-	state        string
-	id           int64
 }
 
 type healthProjectWaitCursor struct {
@@ -146,7 +98,7 @@ type healthProjectWaitCursor struct {
 type healthMaintenanceCursor struct {
 	project                tracker.ProjectID
 	runner                 runnerstore.UpdateProjectionCursor
-	item                   healthWaitItemCursor
+	item                   healthprojection.WaitItemCursor
 	conversation, question string
 	finding                string
 	startedAt              time.Time
@@ -155,8 +107,43 @@ type healthMaintenanceCursor struct {
 	projectWait            healthProjectWaitCursor
 }
 
+func (c healthMaintenanceCursor) scan() postgres.HealthScan {
+	return postgres.HealthScan{
+		Project: c.project, RunnerName: c.runner.DisplayName, RunnerID: c.runner.RunnerID,
+		AfterProject: c.item.AfterProject, ItemProject: c.item.Project, ItemState: c.item.State, ItemID: c.item.ID,
+		Conversation: c.conversation, Question: c.question, Finding: c.finding,
+		WaitFinding: c.projectWait.finding.ID, WaitRevision: c.projectWait.finding.Revision, WaitConversation: c.projectWait.conversation, WaitQuestion: c.projectWait.question,
+		StartedAt: c.startedAt, CycleFailed: c.cycleFailed, Completed: c.completed,
+	}
+}
+
+func (s *Service) restoreHealthScan(ctx context.Context, org tracker.OrganizationID, scan postgres.HealthScan, c *healthMaintenanceCursor) error {
+	*c = healthMaintenanceCursor{
+		project: scan.Project, runner: runnerstore.UpdateProjectionCursor{DisplayName: scan.RunnerName, RunnerID: scan.RunnerID},
+		item:         healthprojection.WaitItemCursor{AfterProject: scan.AfterProject, Project: scan.ItemProject, State: scan.ItemState, ID: scan.ItemID},
+		conversation: scan.Conversation, question: scan.Question, finding: scan.Finding,
+		startedAt: scan.StartedAt, cycleFailed: scan.CycleFailed, completed: scan.Completed,
+	}
+	if scan.WaitFinding == "" {
+		return nil
+	}
+	return s.database.postgres.ReadHealth(ctx, org, corestore.Background, func(r postgres.HealthReader) error {
+		row, err := r.HealthRecord(ctx, postgres.HealthRecordInput{OrganizationID: org, ID: scan.WaitFinding})
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if row.Revision == scan.WaitRevision {
+			c.projectWait = healthProjectWaitCursor{finding: row, conversation: scan.WaitConversation, question: scan.WaitQuestion}
+		}
+		return nil
+	})
+}
+
 func healthFingerprint(signal, kind, id string) string {
-	return newHealthFinding(signal, "", kind, id, "", "", nil, healthEvidence{}).Fingerprint
+	return healthsignals.NewFinding(signal, "", kind, id, "", "", nil, healthEvidence{}).Fingerprint
 }
 
 func (s *Service) maintainHealthSources(ctx context.Context, organization tracker.OrganizationID, cursor *healthMaintenanceCursor, budget hubmaintenance.Budget) error {
@@ -173,12 +160,13 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 
 	projectErr := s.maintainHealthProject(ctx, organization, &cursor.project)
 	runnerErr := s.maintainHealthRunner(ctx, organization, &cursor.runner)
-	itemErr := s.maintainHealthWaitItems(ctx, organization, &cursor.item, min(budget.Items, corestore.MaxPageSize))
-	questionErr := s.maintainHealthQuestions(ctx, organization, &cursor.conversation, &cursor.question, min(budget.Items, corestore.MaxPageSize))
+	projection := s.healthProjection()
+	itemErr := projection.MaintainWaitItems(ctx, organization, &cursor.item, min(budget.Items, corestore.MaxPageSize), s.maintainHealthWaitItem)
+	questionErr := projection.MaintainQuestions(ctx, organization, &cursor.conversation, &cursor.question, min(budget.Items, corestore.MaxPageSize))
 	findingErr := s.maintainRetiredHealthSubjects(ctx, organization, &cursor.finding, &cursor.projectWait, min(budget.Items, corestore.MaxPageSize))
 	cursor.completed[0] = cursor.completed[0] || cursor.project == ""
 	cursor.completed[1] = cursor.completed[1] || cursor.runner.RunnerID == ""
-	cursor.completed[2] = cursor.completed[2] || cursor.item == (healthWaitItemCursor{})
+	cursor.completed[2] = cursor.completed[2] || cursor.item == (healthprojection.WaitItemCursor{})
 	cursor.completed[3] = cursor.completed[3] || cursor.conversation == ""
 	cursor.completed[4] = cursor.completed[4] || cursor.finding == "" && cursor.projectWait.finding.ID == ""
 	combined := errors.Join(projectErr, runnerErr, itemErr, questionErr, findingErr)
@@ -193,30 +181,6 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 	}
 
 	return combined
-}
-
-func healthScheduledHistory(history healthstore.ScheduledHistory) healthScheduledValidation {
-	out := healthScheduledValidation{FirstReport: history.FirstReport, LastGreen: history.LastGreen}
-	intervals := []time.Duration{}
-	for index, report := range history.Reports {
-		if index == 0 {
-			out.LastReport, out.LastRunURL = report.RecordedAt, report.RunURL
-		}
-		if report.Conclusion == "failure" && report.RecordedAt.After(out.LastGreen) {
-			out.Failures++
-		}
-		if index > 0 && len(intervals) < 20 {
-			if interval := history.Reports[index-1].RecordedAt.Sub(report.RecordedAt); interval > 0 {
-				intervals = append(intervals, interval)
-			}
-		}
-	}
-	if len(intervals) > 0 {
-		slices.Sort(intervals)
-		out.Cadence = intervals[len(intervals)/2]
-	}
-	out.LastFailed = out.Failures > 0
-	return out
 }
 
 func (s *Service) maintainHealthRunner(ctx context.Context, organization tracker.OrganizationID, after *runnerstore.UpdateProjectionCursor) error {
@@ -268,13 +232,13 @@ func (s *Service) maintainHealthRunner(ctx context.Context, organization tracker
 	if err != nil || !found {
 		return err
 	}
-	finding, active := heartbeatFinding(now, runner)
-	scope := healthEvaluationScope{runners: map[string]bool{runner.ID: true}, fingerprints: map[string]bool{finding.Fingerprint: true}}
+	finding, active := healthsignals.HeartbeatFinding(now, runner)
+	scope := healthprojection.Scope{Runners: map[string]bool{runner.ID: true}, Fingerprints: map[string]bool{finding.Fingerprint: true}}
 	findings := []healthFinding{}
 	if active {
 		findings = append(findings, finding)
 	}
-	if err := s.publishHealthEvaluationScope(ctx, organization, now, findings, scope); err != nil {
+	if err := s.healthProjection().Publish(ctx, organization, now, findings, scope); err != nil {
 		return err
 	}
 	projects := []healthRateProject{}
@@ -298,12 +262,12 @@ func (s *Service) maintainHealthRunner(ctx context.Context, organization tracker
 		projects = append(projects, value.rate)
 	}
 	if complete {
-		values := evaluateHealthRates(now, projects)
+		values := healthsignals.EvaluateRates(now, projects)
 		values = slices.DeleteFunc(values, func(finding healthFinding) bool {
 			return finding.Subject.Kind != "runner" || finding.Subject.ID != runner.ID
 		})
-		scope.fingerprints = map[string]bool{healthFingerprint("runner_setup_failures", "runner", runner.ID): true, healthFingerprint("capacity_starvation", "runner", runner.ID): true}
-		if err := s.publishHealthEvaluationScope(ctx, organization, now, values, scope); err != nil {
+		scope.Fingerprints = map[string]bool{healthFingerprint("runner_setup_failures", "runner", runner.ID): true, healthFingerprint("capacity_starvation", "runner", runner.ID): true}
+		if err := s.healthProjection().Publish(ctx, organization, now, values, scope); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -433,7 +397,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 			if errors.Is(err, reportstore.ErrPopulationExceeded) {
 				costs = nil
 			}
-			dependency, dependencyKnown, err = readHealthDependencySource(ctx, reader, project)
+			dependency, dependencyKnown, err = healthprojection.ReadDependencies(ctx, reader, project)
 			if err != nil {
 				return err
 			}
@@ -448,7 +412,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 	if err != nil {
 		return healthProjectSource{}, err
 	}
-	p := healthProject{ID: string(project.Core.ID), Scheduled: healthScheduledHistory(scheduled), Candidates: len(candidates.Items), CandidateIDs: map[string]bool{}}
+	p := healthProject{ID: string(project.Core.ID), Scheduled: healthprojection.ScheduledHistory(scheduled), Candidates: len(candidates.Items), CandidateIDs: map[string]bool{}}
 	p.DependencyGated, p.HeldCount, p.HeldBlockers, p.HoldSince = dependency.DependencyGated, dependency.HeldCount, dependency.HeldBlockers, dependency.HoldSince
 
 	for _, candidate := range candidates.Items {
@@ -699,42 +663,42 @@ func (s *Service) maintainHealthProject(ctx context.Context, organization tracke
 	capacityKnown, attemptsKnown := source.capacityKnown, source.attemptsKnown
 	runners := runtimeRunnersFromSnapshot(capacity, hubscope.NativeScope{Organization: organization, Project: project.Core.ID}, now)
 
-	scope := healthEvaluationScope{projects: map[tracker.ProjectID]bool{project.Core.ID: true}, fingerprints: map[string]bool{}}
+	scope := healthprojection.Scope{Projects: map[tracker.ProjectID]bool{project.Core.ID: true}, Fingerprints: map[string]bool{}}
 	findings := []healthFinding{}
 	gaps := []healthBaselineUnavailable{}
 	add := func(finding healthFinding, active, complete bool) {
 		if active {
 			findings = append(findings, finding)
-			scope.fingerprints[finding.Fingerprint] = true
+			scope.Fingerprints[finding.Fingerprint] = true
 		} else if complete {
-			scope.fingerprints[finding.Fingerprint] = true
+			scope.Fingerprints[finding.Fingerprint] = true
 		} else {
 			gaps = append(gaps, healthBaselineUnavailable{Project: p.ID, Signal: finding.Signal})
 		}
 	}
 	flowKnown := capacityKnown && candidates.Next.WorkItemID == "" && source.landingsKnown
-	dead, active := deadManFinding(now, p)
+	dead, active := healthsignals.DeadManFinding(now, p)
 	if !flowKnown {
 		delete(dead.Evidence.Counts, "candidates")
 		delete(dead.Evidence.Counts, "free_slots")
 		delete(dead.Evidence.Counts, "landing_stalled")
 		dead.Evidence.Reason = "flow_coverage_unavailable"
 		scheduledOnly := healthProject{ID: p.ID, Scheduled: p.Scheduled}
-		dead, active = deadManFinding(now, scheduledOnly)
+		dead, active = healthsignals.DeadManFinding(now, scheduledOnly)
 		delete(dead.Evidence.Counts, "candidates")
 		delete(dead.Evidence.Counts, "free_slots")
 		delete(dead.Evidence.Counts, "landing_stalled")
 		dead.Evidence.Reason = "flow_coverage_unavailable"
 	}
 	add(dead, active, flowKnown)
-	hold, held := dependencyHoldFinding(now, p)
+	hold, held := healthsignals.DependencyHoldFinding(now, p)
 	if !source.dependencyKnown {
 		delete(hold.Evidence.Counts, "dependency_gated")
 		delete(hold.Evidence.Counts, "held_blockers")
 		hold.Evidence.Reason = "dependency_coverage_unavailable"
 	}
 	add(hold, held && candidates.Next.WorkItemID == "" && capacityKnown && source.landingsKnown, source.dependencyKnown && flowKnown)
-	scheduler, schedulerActive := schedulerFinding(now, p)
+	scheduler, schedulerActive := healthsignals.SchedulerFinding(now, p)
 	add(scheduler, schedulerActive, !capacity.Truncated)
 	if !capacity.Truncated && len(p.RefusalReasons) == 0 {
 		fallback := ""
@@ -760,10 +724,10 @@ func (s *Service) maintainHealthProject(ctx context.Context, organization tracke
 			}
 		}
 	}
-	refusal, refused := refusalFinding(p)
+	refusal, refused := healthsignals.RefusalFinding(p)
 	add(refusal, refused && candidates.Next.WorkItemID == "" && !capacity.Truncated, source.refusalKnown && !capacity.Truncated && candidates.Next.WorkItemID == "")
 	if attemptsKnown {
-		rateFindings := evaluateHealthRates(now, []healthRateProject{rate})
+		rateFindings := healthsignals.EvaluateRates(now, []healthRateProject{rate})
 		for _, finding := range rateFindings {
 			if finding.Subject.Kind == "runner" {
 				continue
@@ -778,22 +742,22 @@ func (s *Service) maintainHealthProject(ctx context.Context, organization tracke
 				delete(finding.Evidence.Values, "wasted_cost_usd")
 			}
 			findings = append(findings, finding)
-			scope.fingerprints[finding.Fingerprint] = true
+			scope.Fingerprints[finding.Fingerprint] = true
 		}
 		for _, issue := range residence.Issues {
 			for _, signal := range []string{"retry_storm", "recovery_loop", "unproductive_attempts"} {
-				scope.fingerprints[healthFingerprint(signal, "work_item", string(issue.WorkItemID))] = true
+				scope.Fingerprints[healthFingerprint(signal, "work_item", string(issue.WorkItemID))] = true
 			}
 			if !rate.ResidencePartial {
-				scope.fingerprints[healthFingerprint("stalled_active_item", "work_item", string(issue.WorkItemID))] = true
-				if rate.Costs[string(issue.WorkItemID)].Known && len(buildHealthRateBaseline(now, rate).Costs) >= healthBaselineSamples {
-					scope.fingerprints[healthFingerprint("cost_anomaly", "work_item", string(issue.WorkItemID))] = true
+				scope.Fingerprints[healthFingerprint("stalled_active_item", "work_item", string(issue.WorkItemID))] = true
+				if rate.Costs[string(issue.WorkItemID)].Known && len(healthsignals.BuildRateBaseline(now, rate).Costs) >= healthBaselineSamples {
+					scope.Fingerprints[healthFingerprint("cost_anomaly", "work_item", string(issue.WorkItemID))] = true
 				}
 			}
 		}
 		if !rate.ResidencePartial && source.landingsKnown {
 			for _, signal := range []string{"conflict_burn", "throughput_collapse", "activity_without_delivery"} {
-				scope.fingerprints[healthFingerprint(signal, "project", p.ID)] = true
+				scope.Fingerprints[healthFingerprint(signal, "project", p.ID)] = true
 			}
 		}
 	} else {
@@ -801,16 +765,16 @@ func (s *Service) maintainHealthProject(ctx context.Context, organization tracke
 			gaps = append(gaps, healthBaselineUnavailable{Project: p.ID, Signal: signal})
 		}
 	}
-	gaps = append(gaps, healthBaselineGaps(rate, buildHealthRateBaseline(now, rate))...)
+	gaps = append(gaps, healthsignals.BaselineGaps(rate, healthsignals.BuildRateBaseline(now, rate))...)
 	questionComplete := len(selectedQuestions) < corestore.MaxPageSize
 	questionActive := false
 	for _, row := range selectedQuestions {
 		if row.ProjectID != project.Core.ID || row.WorkItemID != "" {
 			continue
 		}
-		if healthQuestionActive(row, now) {
+		if healthprojection.QuestionActive(row, now) {
 			wait := healthWait{Project: p.ID, Since: row.CreatedAt, Attempt: row.AttemptID, Active: true}
-			finding, active := humanWaitFinding(now, wait)
+			finding, active := healthsignals.HumanWaitFinding(now, wait)
 			if active {
 				questionActive = true
 				add(finding, true, false)
@@ -818,7 +782,7 @@ func (s *Service) maintainHealthProject(ctx context.Context, organization tracke
 		}
 	}
 	if questionComplete && !questionActive {
-		scope.fingerprints[healthFingerprint("unanswered_human_wait", "project", p.ID)] = true
+		scope.Fingerprints[healthFingerprint("unanswered_human_wait", "project", p.ID)] = true
 	}
 	if !questionComplete {
 		gaps = append(gaps, healthBaselineUnavailable{Project: p.ID, Signal: "unanswered_human_wait"})
@@ -834,7 +798,7 @@ func (s *Service) maintainHealthProject(ctx context.Context, organization tracke
 		findings = append(findings, finding)
 	}
 	slices.SortFunc(findings, func(a, b healthFinding) int { return strings.Compare(a.Fingerprint, b.Fingerprint) })
-	if err := s.publishHealthEvaluationScope(ctx, organization, now, findings, scope); err != nil {
+	if err := s.healthProjection().Publish(ctx, organization, now, findings, scope); err != nil {
 		return err
 	}
 	if !source.landingsKnown {
@@ -850,158 +814,7 @@ func (s *Service) maintainHealthProject(ctx context.Context, organization tracke
 	if !attemptsKnown {
 		gaps = append(gaps, healthBaselineUnavailable{Project: p.ID, Signal: "runner_setup_failures"})
 	}
-	return s.publishHealthSourceBaselines(ctx, organization, project.Core.ID, now, gaps)
-}
-
-func healthQuestionActive(row healthstore.QuestionSource, now time.Time) bool {
-	return !row.ConversationDeleted && !row.ConversationArchived && row.ConversationStatus == "active" && slices.Contains([]string{"pending", "sending", "sent", "unknown"}, row.Status) && (row.ExpiresAt == nil || row.ExpiresAt.After(now))
-}
-
-func (s *Service) publishHealthSourceBaselines(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, now time.Time, gaps []healthBaselineUnavailable) error {
-	wanted := map[[2]string]bool{}
-	for _, gap := range gaps {
-		wanted[[2]string{gap.Signal, gap.Lane}] = true
-	}
-	current := map[[2]string]bool{}
-	if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
-		owner, ok := reader.(healthstore.SourceReader)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		rows, err := owner.HealthSourceBaselines(ctx, project)
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			current[[2]string{row.Signal, row.Lane}] = true
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	return s.database.postgres.WriteHealth(ctx, organization, corestore.Background, func(writer postgres.HealthWriter) error {
-		for _, signal := range []string{"dead_man", "scheduler_loop_behind", "every_candidate_refused", "dependency_hold", "unanswered_human_wait", "runner_setup_failures", "retry_storm", "recovery_loop", "unproductive_attempts", "activity_without_delivery", "conflict_burn", "throughput_collapse", "stalled_active_item", "cost_anomaly", "capacity_starvation"} {
-			lanes := []string{""}
-			if signal == "stalled_active_item" {
-				lanes = []string{"", "In Progress", "Rework", "Merging"}
-			}
-			if signal == "capacity_starvation" {
-				lanes = []string{"", "Todo"}
-			}
-			for _, lane := range lanes {
-				if current[[2]string{signal, lane}] == wanted[[2]string{signal, lane}] {
-					continue
-				}
-				input := postgres.PutHealthBaselineInput{OrganizationID: organization, ProjectID: project, Signal: signal, Lane: lane}
-				if wanted[[2]string{signal, lane}] {
-					if err := writer.PutHealthBaseline(ctx, input); err != nil {
-						return err
-					}
-				} else {
-					if err := writer.ClearHealthBaseline(ctx, postgres.ClearHealthBaselineInput(input)); err != nil {
-						return err
-					}
-				}
-			}
-		}
-		return nil
-	})
-}
-
-func (s *Service) maintainHealthWaitItems(ctx context.Context, organization tracker.OrganizationID, cursor *healthWaitItemCursor, limit int) error {
-	var items []healthstore.ItemSource
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
-	if !ok {
-		return hubapi.NativeWorkItemStorageUnavailable()
-	}
-	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
-		var project projectstore.Record
-		if cursor.project == "" {
-			projects, err := reader.Projects(ctx, cursor.afterProject, 1)
-			if err != nil {
-				return err
-			}
-			if len(projects) == 0 {
-				*cursor = healthWaitItemCursor{}
-				return nil
-			}
-			cursor.project, cursor.afterProject = projects[0].ID, projects[0].ID
-			if projects[0].Profile != "native" || projects[0].DeletedAt != nil {
-				cursor.project = ""
-				return nil
-			}
-		}
-		var err error
-		project, err = reader.ProjectRecord(ctx, cursor.project)
-		if errors.Is(err, corestore.ErrNotFound) {
-			cursor.project = ""
-			cursor.state = ""
-			cursor.id = 0
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if project.Core.DeletedAt != nil || project.Core.Profile != "native" {
-			cursor.project = ""
-			cursor.state = ""
-			cursor.id = 0
-			return nil
-		}
-		var states []string
-		for _, state := range project.States {
-			if !state.Terminal {
-				states = append(states, state.Name)
-			}
-		}
-		slices.Sort(states)
-		if cursor.state == "" && len(states) > 0 {
-			cursor.state = states[0]
-		}
-		if !slices.Contains(states, cursor.state) {
-			next := slices.IndexFunc(states, func(state string) bool { return state > cursor.state })
-			if next < 0 {
-				cursor.project = ""
-				cursor.state = ""
-				cursor.id = 0
-				return nil
-			}
-			cursor.state, cursor.id = states[next], 0
-		}
-		owner, ok := reader.(healthstore.SourceReader)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		items, err = owner.HealthSourceItems(ctx, cursor.project, cursor.state, cursor.id, limit)
-		if err != nil {
-			return err
-		}
-		if len(items) == 0 {
-			next := slices.IndexFunc(states, func(state string) bool { return state > cursor.state })
-			cursor.id = 0
-			if next < 0 {
-				cursor.project, cursor.state = "", ""
-			} else {
-				cursor.state = states[next]
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	var failures []error
-	for _, item := range items {
-		cursor.id = item.ID
-		if err := s.maintainHealthWaitItem(ctx, organization, item.WorkItemReference); err != nil {
-			failures = append(failures, err)
-		}
-		if ctx.Err() != nil {
-			break
-		}
-	}
-	return errors.Join(failures...)
+	return s.healthProjection().PublishBaselines(ctx, organization, project.Core.ID, gaps)
 }
 
 func (s *Service) maintainHealthWaitItem(ctx context.Context, organization tracker.OrganizationID, reference corestore.WorkItemReference) error {
@@ -1115,7 +928,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 	}
 	waits := []healthWait{}
 	for _, question := range questions {
-		if healthQuestionActive(question, now) {
+		if healthprojection.QuestionActive(question, now) {
 			waits = append(waits, healthWait{Item: string(item.NativeID), Project: string(reference.ProjectID), Since: question.CreatedAt, Attempt: question.AttemptID, Active: true})
 		}
 	}
@@ -1183,7 +996,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 	findings := []healthFinding{}
 	var selected *healthFinding
 	for _, wait := range waits {
-		finding, active := humanWaitFinding(now, wait)
+		finding, active := healthsignals.HumanWaitFinding(now, wait)
 		if active && (selected == nil || finding.ConditionSince.Before(selected.ConditionSince)) {
 			selected = &finding
 		}
@@ -1202,149 +1015,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 		}
 	}
 	fingerprint := healthFingerprint("unanswered_human_wait", "work_item", string(reference.WorkItemID))
-	return s.publishHealthEvaluationScope(ctx, organization, now, findings, healthEvaluationScope{projects: map[tracker.ProjectID]bool{reference.ProjectID: true}, fingerprints: map[string]bool{fingerprint: true}})
-}
-
-func (s *Service) maintainHealthQuestions(ctx context.Context, organization tracker.OrganizationID, afterConversation, afterQuestion *string, limit int) error {
-	now := s.config.Clock().UTC()
-	var rows []healthstore.QuestionSource
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
-		owner, ok := reader.(healthstore.SourceReader)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		var err error
-		rows, err = owner.HealthSourceQuestions(ctx, *afterConversation, *afterQuestion, limit)
-		return err
-	})
-	if err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		*afterConversation, *afterQuestion = "", ""
-		return nil
-	}
-	byFingerprint := map[string]healthFinding{}
-	projects := map[tracker.ProjectID]bool{}
-	for _, row := range rows {
-		*afterConversation, *afterQuestion = row.ConversationID, row.ID
-		if !healthQuestionActive(row, now) {
-			continue
-		}
-		var project corestore.Project
-		if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
-			var err error
-			project, err = reader.Project(ctx, row.ProjectID)
-			return err
-		}); err != nil {
-			return err
-		}
-		if project.Profile != "native" || project.DeletedAt != nil {
-			continue
-		}
-		wait := healthWait{Project: string(row.ProjectID), Item: string(row.WorkItemID), Attempt: row.AttemptID, Since: row.CreatedAt, Active: true}
-		finding, active := humanWaitFinding(now, wait)
-		if !active {
-			continue
-		}
-		if old, ok := byFingerprint[finding.Fingerprint]; !ok || finding.ConditionSince.Before(old.ConditionSince) {
-			byFingerprint[finding.Fingerprint] = finding
-		}
-		projects[row.ProjectID] = true
-	}
-	if len(byFingerprint) == 0 {
-		return nil
-	}
-	findings := make([]healthFinding, 0, len(byFingerprint))
-	fingerprints := map[string]bool{}
-	for fingerprint, finding := range byFingerprint {
-		findings = append(findings, finding)
-		fingerprints[fingerprint] = true
-	}
-	slices.SortFunc(findings, func(a, b healthFinding) int { return strings.Compare(a.Fingerprint, b.Fingerprint) })
-	return s.publishHealthEvaluationScope(ctx, organization, now, findings, healthEvaluationScope{projects: projects, fingerprints: fingerprints})
-}
-
-func readHealthDependencySource(ctx context.Context, reader tenantstore.Reader, project projectstore.Record) (healthProject, bool, error) {
-	out := healthProject{ID: string(project.Core.ID)}
-	if !project.Core.RequireDependencies {
-		return out, true, nil
-	}
-	transitions, ok := reader.(eventstore.WorkflowTransitionReader)
-	if !ok {
-		return out, false, hubapi.NativeWorkItemStorageUnavailable()
-	}
-	page, err := reader.WorkItemPage(ctx, project.Core.ID, corestore.Cursor{}, corestore.MaxPageSize)
-	if err != nil {
-		return out, false, err
-	}
-	items := page.Items
-	complete := page.Next.ID == 0
-	states := map[string]tracker.NativeState{}
-	for _, state := range project.States {
-		states[state.Name] = state
-	}
-	gated, held, listed := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	for _, item := range items {
-		state := states[hubapi.ValueOrEmpty(item.WorkflowStateName)]
-		if item.Archived || state.Terminal || !state.Dispatchable {
-			continue
-		}
-		relationships, err := reader.Relationships(ctx, item.ProjectID, item.NativeID, corestore.RelationshipCursor{}, corestore.MaxPageSize)
-		if err != nil {
-			return out, false, err
-		}
-		if relationships.Next.RelatedWorkItemID != "" {
-			complete = false
-		}
-		dependentAt := item.NativeCreatedAt
-		transition, err := transitions.LatestWorkflowTransition(ctx, item.ProjectID, item.NativeID)
-		if err == nil {
-			dependentAt = transition.RecordedAt
-		} else if !errors.Is(err, corestore.ErrNotFound) {
-			return out, false, err
-		}
-		for _, edge := range relationships.Items {
-			if edge.Type != "dependency" || edge.Direction != "blocked_by" || edge.Terminal {
-				continue
-			}
-			gated[string(item.NativeID)] = true
-			if edge.Dispatchable {
-				continue
-			}
-			held[string(edge.RelatedProjectID)+"/"+string(edge.RelatedWorkItemID)] = true
-			if edge.RelatedProjectID == project.Core.ID {
-				listed[string(edge.RelatedWorkItemID)] = true
-			}
-			blocker, err := reader.WorkItem(ctx, edge.RelatedProjectID, edge.RelatedWorkItemID)
-			if err != nil {
-				return out, false, err
-			}
-			blockerAt := blocker.NativeCreatedAt
-			transition, err := transitions.LatestWorkflowTransition(ctx, edge.RelatedProjectID, edge.RelatedWorkItemID)
-			if err == nil {
-				blockerAt = transition.RecordedAt
-			} else if !errors.Is(err, corestore.ErrNotFound) {
-				return out, false, err
-			}
-			since := edge.CreatedAt
-			if dependentAt.After(since) {
-				since = dependentAt
-			}
-			if blockerAt.After(since) {
-				since = blockerAt
-			}
-			if out.HoldSince.IsZero() || since.Before(out.HoldSince) {
-				out.HoldSince = since
-			}
-		}
-	}
-	out.DependencyGated, out.HeldCount = len(gated), len(held)
-	for item := range listed {
-		out.HeldBlockers = append(out.HeldBlockers, item)
-	}
-	slices.Sort(out.HeldBlockers)
-	return out, complete, nil
+	return s.healthProjection().Publish(ctx, organization, now, findings, healthprojection.Scope{Projects: map[tracker.ProjectID]bool{reference.ProjectID: true}, Fingerprints: map[string]bool{fingerprint: true}})
 }
 
 func (s *Service) maintainRetiredHealthSubjects(ctx context.Context, organization tracker.OrganizationID, after *string, projectWait *healthProjectWaitCursor, limit int) error {
@@ -1396,18 +1067,18 @@ func (s *Service) maintainRetiredHealthSubjects(ctx context.Context, organizatio
 				continue
 			}
 		}
-		scope := healthEvaluationScope{projects: map[tracker.ProjectID]bool{tracker.ProjectID(row.SubjectID): true}, runners: map[string]bool{row.SubjectID: true}, fingerprints: map[string]bool{row.Fingerprint: true}, retiredSubjects: map[healthSubject]bool{{Kind: row.SubjectKind, ID: row.SubjectID}: true}, observedAt: now}
+		scope := healthprojection.Scope{Projects: map[tracker.ProjectID]bool{tracker.ProjectID(row.SubjectID): true}, Runners: map[string]bool{row.SubjectID: true}, Fingerprints: map[string]bool{row.Fingerprint: true}, RetiredSubjects: map[healthSubject]bool{{Kind: row.SubjectKind, ID: row.SubjectID}: true}, ObservedAt: now}
 		covered := false
 		if err := s.database.postgres.ReadHealth(ctx, organization, corestore.Background, func(reader postgres.HealthReader) error {
 			var err error
-			covered, err = scope.coversRecord(ctx, reader, organization, row)
+			covered, err = scope.CoversRecord(ctx, reader, organization, row)
 			return err
 		}); err != nil {
 			failures = append(failures, err)
 			continue
 		}
 		if covered {
-			if err := s.resolveHealthRecord(ctx, organization, now, row, scope); err != nil {
+			if err := s.healthProjection().Resolve(ctx, organization, now, row, scope); err != nil {
 				failures = append(failures, err)
 			}
 		}
@@ -1432,10 +1103,10 @@ func (s *Service) maintainHealthProjectWait(ctx context.Context, organization tr
 	}
 	for _, question := range questions {
 		cursor.conversation, cursor.question = question.ConversationID, question.ID
-		if question.ProjectID != tracker.ProjectID(cursor.finding.SubjectID) || question.WorkItemID != "" || !healthQuestionActive(question, now) {
+		if question.ProjectID != tracker.ProjectID(cursor.finding.SubjectID) || question.WorkItemID != "" || !healthprojection.QuestionActive(question, now) {
 			continue
 		}
-		if _, active := humanWaitFinding(now, healthWait{Project: cursor.finding.SubjectID, Since: question.CreatedAt, Active: true}); active {
+		if _, active := healthsignals.HumanWaitFinding(now, healthWait{Project: cursor.finding.SubjectID, Since: question.CreatedAt, Active: true}); active {
 			*cursor = healthProjectWaitCursor{}
 			return nil
 		}
@@ -1444,8 +1115,8 @@ func (s *Service) maintainHealthProjectWait(ctx context.Context, organization tr
 		return nil
 	}
 	row := cursor.finding
-	scope := healthEvaluationScope{projects: map[tracker.ProjectID]bool{tracker.ProjectID(row.SubjectID): true}, fingerprints: map[string]bool{row.Fingerprint: true}}
-	err = s.resolveHealthRecord(ctx, organization, now, row, scope)
+	scope := healthprojection.Scope{Projects: map[tracker.ProjectID]bool{tracker.ProjectID(row.SubjectID): true}, Fingerprints: map[string]bool{row.Fingerprint: true}}
+	err = s.healthProjection().Resolve(ctx, organization, now, row, scope)
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		err = nil
 	}

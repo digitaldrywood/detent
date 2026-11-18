@@ -74,18 +74,13 @@ func (m *Service) repositoryHistory(ctx context.Context, out History, bucket tim
 }
 
 func (m *Service) Drain(ctx context.Context, now time.Time) error {
-	for {
-		if err := m.Flush(ctx, now); err != nil {
-			return err
-		}
-		m.mu.Lock()
-		remaining := len(m.pending)
-		m.mu.Unlock()
-		if remaining == 0 {
-			return nil
-		}
+	for m.HasPending() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if err := m.Flush(ctx, now); err != nil {
+			return err
+		}
 	}
+	return nil
 }

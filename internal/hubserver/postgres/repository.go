@@ -10,13 +10,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/digitaldrywood/detent/internal/pgtransport"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/maintenancerecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgcore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/poolbudget"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -30,18 +31,19 @@ type PoolConfig struct {
 const defaultBoardSearchBudget = 750 * time.Millisecond
 
 type Repository struct {
+	bound          bool
+	organization   tracker.OrganizationID
+	budget         *poolbudget.Budget
 	leaseClock     func() time.Time
 	searchBudget   time.Duration
 	pool           *pgxpool.Pool
 	runtime        *Runtime
-	serving        chan struct{}
-	background     chan struct{}
 	boardCommitMu  sync.RWMutex
 	boardCommitted func()
 }
 
 var ErrPoolConfig = errors.New("PostgreSQL pool requires positive serving and background budgets plus one reserved health connection within its connection limit")
-var ErrWorkload = errors.New("unknown PostgreSQL workload")
+var ErrWorkload = poolbudget.ErrWorkload
 
 var _ corestore.Repository = (*Repository)(nil)
 
@@ -65,7 +67,15 @@ func NewRepository(ctx context.Context, pool *pgxpool.Pool, config PoolConfig, l
 	if searchBudget <= 0 {
 		searchBudget = defaultBoardSearchBudget
 	}
-	return &Repository{leaseClock: clock, searchBudget: searchBudget, pool: pool, runtime: runtime, serving: make(chan struct{}, serving), background: make(chan struct{}, config.BackgroundConnections)}, nil
+	return &Repository{budget: poolbudget.New(serving, config.BackgroundConnections), leaseClock: clock, searchBudget: searchBudget, pool: pool, runtime: runtime}, nil
+}
+
+func (r *Repository) ForOrganization(organization tracker.OrganizationID, generation int64) (*Repository, error) {
+	pools, err := r.runtime.pools.ForOrganization(organization, generation)
+	if err != nil {
+		return nil, err
+	}
+	return &Repository{bound: true, organization: organization, budget: r.budget, pool: r.pool, runtime: &Runtime{reader: r.pool, writer: r.pool, pools: pools}, leaseClock: r.leaseClock, searchBudget: r.searchBudget}, nil
 }
 
 func (r *Repository) SetBoardCommitNotifier(notify func()) {
@@ -84,7 +94,7 @@ func (r *Repository) notifyBoardCommit() {
 }
 
 func (r *Repository) Close() error {
-	r.pool.Close()
+	r.runtime.pools.Close()
 	return nil
 }
 
@@ -97,7 +107,7 @@ func (r *Repository) Stats() *pgxpool.Stat {
 }
 
 func (r *Repository) WorkloadCapacities() (serving, background int) {
-	return cap(r.serving), cap(r.background)
+	return r.budget.Capacities()
 }
 
 func (r *Repository) Read(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(corestore.Reader) error) error {
@@ -110,6 +120,40 @@ func (r *Repository) Write(ctx context.Context, organization tracker.Organizatio
 
 func (r *Repository) transaction(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, run func(*session) error) error {
 	return r.transactionIsolation(ctx, organization, workload, readOnly, pgx.ReadCommitted, run)
+}
+
+type HealthScan = maintenancerecords.HealthScan
+type MaintenanceCursor = maintenancerecords.MaintenanceCursor
+
+func (r *Repository) maintenanceTransaction(ctx context.Context, org tracker.OrganizationID, generation int64, readOnly bool, run func(pgquery.DBTX) error) error {
+	return r.transaction(ctx, org, corestore.Background, readOnly, func(s *session) error {
+		if r.bound {
+			tenant, err := s.AccessTenant(ctx)
+			if err != nil {
+				return err
+			}
+			if tenant.Deployment != "shared" || tenant.AllocationGeneration != generation {
+				return corestore.ErrRevisionConflict
+			}
+		}
+		return run(s.db)
+	})
+}
+
+func (r *Repository) HealthScan(ctx context.Context, org tracker.OrganizationID, generation int64) (HealthScan, error) {
+	return maintenancerecords.Transaction(r.maintenanceTransaction).HealthScan(ctx, org, generation)
+}
+
+func (r *Repository) SetHealthScan(ctx context.Context, org tracker.OrganizationID, generation int64, c HealthScan) error {
+	return maintenancerecords.Transaction(r.maintenanceTransaction).SetHealthScan(ctx, org, generation, c)
+}
+
+func (r *Repository) MaintenanceCursor(ctx context.Context, organization tracker.OrganizationID, generation int64, feature string) (MaintenanceCursor, error) {
+	return maintenancerecords.Transaction(r.maintenanceTransaction).MaintenanceCursor(ctx, organization, generation, feature)
+}
+
+func (r *Repository) SetMaintenanceCursor(ctx context.Context, organization tracker.OrganizationID, generation int64, feature string, cursor MaintenanceCursor) error {
+	return maintenancerecords.Transaction(r.maintenanceTransaction).SetMaintenanceCursor(ctx, organization, generation, feature, cursor)
 }
 
 const internalWriteAttempts = 4
@@ -208,24 +252,12 @@ func (r *Repository) begin(ctx context.Context, organization tracker.Organizatio
 	return mapError(ctx, err)
 }
 
+func WithBackgroundWork(ctx context.Context) context.Context {
+	return corestore.WithBackgroundWork(ctx)
+}
+
 func (r *Repository) acquire(ctx context.Context, workload corestore.Workload) (func(), error) {
-	slots := r.serving
-	switch workload {
-	case corestore.Serving:
-	case corestore.Background:
-		slots = r.background
-	default:
-		return nil, ErrWorkload
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	select {
-	case slots <- struct{}{}:
-		return func() { <-slots }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return r.budget.Acquire(ctx, r.organization, workload)
 }
 
 type projectAccessKey struct {
@@ -286,5 +318,8 @@ func updated(ctx context.Context, err error) error {
 }
 
 func mapError(ctx context.Context, err error) error {
+	if errors.Is(err, pgtransport.ErrStaleGeneration) {
+		return errors.Join(corestore.ErrRevisionConflict, err)
+	}
 	return pgcore.MapError(ctx, err)
 }

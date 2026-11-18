@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -268,6 +269,60 @@ func TestHTTPTransportResultLimits(t *testing.T) {
 
 func TestHTTPTransportShutdownCancelsCallsAndRejectsSessions(t *testing.T) {
 	t.Parallel()
+
+	t.Run("joins calls removed by expiry", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			release := make(chan struct{})
+			started, cancelled := make(chan struct{}), make(chan struct{})
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			executor, err := NewConnectionExecutor([]operatortool.Definition{{Name: "example", InputSchema: json.RawMessage(`{"type":"object"}`)}}, func(ctx context.Context, _ operatortool.Call) (operatortool.Result, error) {
+				close(started)
+				<-ctx.Done()
+				close(cancelled)
+				<-release
+				return operatortool.Result{}, ctx.Err()
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler := newTestHTTPHandler(executor)
+			var clock atomic.Int64
+			handler.now = func() time.Time { return time.Unix(clock.Load(), 0) }
+			sessionID := performMCPRequest(t, handler, http.MethodPost, initializeRequest, "", "reader", nil).Header().Get(httpSessionHeader)
+			performMCPRequest(t, handler, http.MethodPost, initializedNotice, sessionID, "reader", nil)
+			complete := make(chan struct{})
+			go func() {
+				defer close(complete)
+				performMCPRequest(t, handler, http.MethodPost, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"example","arguments":{}}}`, sessionID, "reader", nil)
+			}()
+			<-started
+			clock.Store(int64(defaultHTTPSessionIdle.Seconds()))
+			result := performMCPRequest(t, handler, http.MethodPost, `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`, sessionID, "reader", nil)
+			if result.Code != http.StatusNotFound {
+				t.Fatalf("expired lookup got %d", result.Code)
+			}
+			<-cancelled
+			stopped := make(chan error, 1)
+			go func() { stopped <- handler.Shutdown(t.Context()) }()
+			synctest.Wait()
+			select {
+			case err := <-stopped:
+				t.Fatalf("shutdown finished with expired call still running: %v", err)
+			default:
+			}
+			close(release)
+			if err := <-stopped; err != nil {
+				t.Fatal(err)
+			}
+			<-complete
+		})
+	})
 
 	executor := newBlockingExecutor()
 	handler := newTestHTTPHandler(executor)

@@ -20,7 +20,7 @@ import (
 )
 
 var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-	_, err := db.ExecContext(ctx, `CREATE TABLE protected (tenant text,id text,PRIMARY KEY(tenant,id)); ALTER TABLE protected ENABLE ROW LEVEL SECURITY; ALTER TABLE protected FORCE ROW LEVEL SECURITY; CREATE POLICY tenant ON protected USING(tenant=current_setting('detent.organization_id',true)); GRANT SELECT,INSERT ON protected TO PUBLIC; INSERT INTO protected VALUES ('first','same'),('second','same')`)
+	_, err := db.ExecContext(ctx, `CREATE TABLE protected (tenant text,id text,PRIMARY KEY(tenant,id)); ALTER TABLE protected ENABLE ROW LEVEL SECURITY; ALTER TABLE protected FORCE ROW LEVEL SECURITY; CREATE POLICY tenant ON protected USING(tenant=current_setting('detent.organization_id',true)); GRANT SELECT,INSERT ON protected TO PUBLIC; INSERT INTO protected VALUES ('first','same'),('second','same'); CREATE FUNCTION public.hosted_write_authorized(bigint) RETURNS boolean LANGUAGE sql AS 'SELECT $1=1 AND current_setting(''detent.organization_id'') IN (''first'',''second'')'`)
 	return err
 })
 
@@ -82,7 +82,12 @@ func begin(t *testing.T, pools *pgtransport.Pools, options pgtransport.Options) 
 func reuse(t *testing.T, pools *pgtransport.Pools) {
 	t.Helper()
 	for _, tenant := range []string{"first", "second", "first"} {
-		tx, err := pools.Begin(t.Context(), pgtransport.Scope{Organization: tracker.OrganizationID(tenant)}, pgtransport.Options{ReadOnly: true})
+		view, err := pools.ForOrganization(tracker.OrganizationID(tenant), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer view.Close()
+		tx, err := view.Begin(t.Context(), pgtransport.Scope{Organization: tracker.OrganizationID(tenant)}, pgtransport.Options{ReadOnly: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,6 +101,38 @@ func reuse(t *testing.T, pools *pgtransport.Pools) {
 		}
 	}
 }
+func TestBorrowedPoolsRejectForeignAndClosedScopes(t *testing.T) {
+	var root pgtransport.Pools
+	a, err := root.ForOrganization("org_a", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := root.ForOrganization("org_b", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+	for _, test := range []struct {
+		name  string
+		pools *pgtransport.Pools
+		id    tracker.OrganizationID
+		want  error
+	}{
+		{"closed borrower", a, "org_a", pgtransport.ErrUnbound},
+		{"foreign borrower", b, "org_a", pgtransport.ErrUnbound},
+		{"missing scope", b, "", pgtransport.ErrTenantRequired},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, _, err := test.pools.BeginBatch(t.Context(), pgtransport.Scope{Organization: test.id}, pgtransport.Options{}, nil); !errors.Is(err, test.want) {
+				t.Fatalf("begin = %v, want %v", err, test.want)
+			}
+		})
+	}
+	if _, err := b.ForOrganization("org_a", 1); !errors.Is(err, pgtransport.ErrTenantRequired) {
+		t.Fatalf("rebind = %v", err)
+	}
+}
+
 func TestTenantBinding(t *testing.T) {
 	_, config := fixture(t)
 	pools := openPools(t, config, nil)

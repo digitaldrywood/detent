@@ -167,3 +167,81 @@ func TestLeadFeatureServesEveryTenantEveryTickWhileRotationAdvances(t *testing.T
 		})
 	}
 }
+
+func TestDueLeadAndRotatingWorkShareTenantItems(t *testing.T) {
+	var selected []string
+	costs := make(map[string]int)
+	var order []string
+	var mu sync.Mutex
+	step := func(name string) func(context.Context, Tenant, Budget) (Outcome, error) {
+		return func(_ context.Context, t Tenant, b Budget) (Outcome, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if name == "billing" {
+				selected = append(selected, t.Organization)
+			}
+			costs[t.Organization] += b.Items
+			if costs[t.Organization] > ItemLimit {
+				return Outcome{}, fmt.Errorf("tenant %s used %d items", t.Organization, costs[t.Organization])
+			}
+			order = append(order, name)
+			return Outcome{Items: b.Items, Progress: true}, nil
+		}
+	}
+	features := []Feature{
+		{Name: "billing", Lead: true, Bytes: 1, Step: step("billing"), Due: func(_ context.Context, limit int) ([]Tenant, error) {
+			if limit != TenantLimit {
+				return nil, fmt.Errorf("due page limit %d", limit)
+			}
+			return []Tenant{{Organization: "org_99999", Generation: 2}}, nil
+		}},
+		{Name: "board", Lead: true, Bytes: 1, Step: step("board")},
+		{Name: "retention", Bytes: 1, Step: step("retention")},
+	}
+	scheduler, err := New(registry(10000), features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		clear(costs)
+		order = nil
+		selected = nil
+		if err := scheduler.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if len(selected) != 1 || selected[0] != "org_99999" || order[0] != "billing" || order[len(order)-1] != "retention" {
+			t.Fatalf("selected=%v order=%v", selected, order)
+		}
+	}
+}
+
+func TestLeadsAndFullReservationShareOneByteLimit(t *testing.T) {
+	var consumed int64
+	var lead, rotation int
+	step := func(bytes int64, visits *int) func(context.Context, Tenant, Budget) (Outcome, error) {
+		return func(ctx context.Context, t Tenant, b Budget) (Outcome, error) {
+			if err := charge(ctx, t.Organization, bytes); err != nil {
+				return Outcome{}, err
+			}
+			consumed += bytes
+			*visits++
+			return Outcome{Progress: true, Items: 1}, nil
+		}
+	}
+	scheduler, err := NewShared(registry(1), []Feature{{Name: "lead", Bytes: ByteLimit / 4, Lead: true, Step: step(ByteLimit/4, &lead)}, {Name: "rotation", Bytes: ByteLimit, Step: step(ByteLimit, &rotation)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 6 {
+		consumed = 0
+		if err := scheduler.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if consumed > ByteLimit || consumed == 0 {
+			t.Fatalf("charged %d bytes in one tick, budget %d", consumed, ByteLimit)
+		}
+	}
+	if lead != 3 || rotation != 3 {
+		t.Fatalf("lead visits %d, full-reservation visits %d", lead, rotation)
+	}
+}

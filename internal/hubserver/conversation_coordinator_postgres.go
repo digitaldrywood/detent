@@ -401,13 +401,13 @@ func coordinatorPublicationPlan(ctx context.Context) (*conversationPublicationPl
 	return plan, nil
 }
 
-func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Context, id string) error {
+func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Context, id string, limit int) (int, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	organization, err := c.service.LifecycleOrganization()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var record conversationstore.Conversation
 	var page conversationstore.CommandPage
@@ -417,14 +417,14 @@ func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Con
 		if err != nil {
 			return err
 		}
-		page, err = r.PendingCoordinatorCommands(ctx, id, "", conversationLifecycleBatchSize)
+		page, err = r.PendingCoordinatorCommands(ctx, id, "", limit)
 		return err
 	}); err != nil {
-		return err
+		return 0, err
 	}
 	for _, command := range page.Items {
 		if err := ctx.Err(); err != nil {
-			return err
+			return len(page.Items), err
 		}
 		delivered := c.cancelRecordedTurn(id, command.TargetTurnID)
 		if !delivered && command.TargetTurnID != "" {
@@ -439,7 +439,7 @@ func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Con
 				delivered = target.Role == conversation.RoleAssistant && target.Delivery == conversation.DeliveryInterrupted
 				return nil
 			}); err != nil {
-				return err
+				return len(page.Items), err
 			}
 		}
 		receipt := command.Receipt
@@ -453,7 +453,7 @@ func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Con
 		receipt.UpdatedAt = now
 		plan := conversationPublicationPlan{Service: c.service, Record: conversationRecordFromStore(record), Now: now, Coordinator: true}
 		if err := plan.RecordReceipt(ctx, receipt); err != nil {
-			return err
+			return len(page.Items), err
 		}
 		prepared := plan.Context(ctx)
 		if err := c.server.config.TenantRepository.WriteTenant(prepared, organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -482,9 +482,9 @@ func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Con
 			}
 			return appendCoordinatorEvent(prepared, w, organization, id, conversation.EventCommandReceipt, receipt, now)
 		}); err != nil {
-			return err
+			return len(page.Items), err
 		}
 		c.service.Broker.Notify(id)
 	}
-	return nil
+	return len(page.Items), nil
 }

@@ -153,7 +153,7 @@ func TestRunnerRequestBudget(t *testing.T) {
 		capacity, budget int
 	}{{"zero capacity", 0, 120}, {"one slot", 1, 180}, {"four slots", 4, 360}} {
 		t.Run(test.name, func(t *testing.T) {
-			m := testRequestMetrics(t, "org_one")
+			m := &Service{}
 			now := time.Now().UTC().Truncate(time.Minute).Add(15 * time.Second)
 			for range test.budget {
 				if retry := m.Admit(now, "runner_one", "GET /items", test.capacity, []string{"project"}); retry != 0 {
@@ -185,5 +185,40 @@ func TestRunnerRequestBudget(t *testing.T) {
 				t.Fatal("finding did not clear")
 			}
 		})
+	}
+}
+
+func TestRunnerWindowsReleaseIdleFleet(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 15, 0, time.UTC)
+	shared := &RunnerWindows{}
+	busy := &Service{sharedWindows: shared, Organization: "org_active", generation: 1}
+	for i := range 10000 {
+		id := fmt.Sprintf("example_%d", i)
+		idle := &Service{sharedWindows: shared, Organization: tracker.OrganizationID(id), generation: 1}
+		idle.Admit(now, "runner", "GET /items", 0, nil)
+		busy.Admit(now, id, "GET /items", 0, nil)
+	}
+	for minute := 1; minute <= 3; minute++ {
+		busy.Admit(now.Add(time.Duration(minute)*time.Minute), "runner_active", "GET /items", 0, nil)
+	}
+	group := busy.runnerWindows(now.Add(3*time.Minute), false)
+	runners := 0
+	for _, b := range group.runners.buckets {
+		runners += len(b)
+	}
+	tenants := 0
+	for _, b := range shared.tenants.buckets {
+		tenants += len(b)
+	}
+	if runners != 1 || tenants != 1 {
+		t.Fatalf("after idle fleet expiry retained %d runners within busy tenant and %d tenants", runners, tenants)
+	}
+	if err := busy.FlushPage(t.Context(), now.Add(6*time.Minute), 6); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range shared.tenants.buckets {
+		if len(b) > 0 {
+			t.Fatal("idle runner windows retained after scheduled flush")
+		}
 	}
 }

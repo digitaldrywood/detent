@@ -229,7 +229,7 @@ func seedWorkflowPolicyPullRequest(t *testing.T, f nativeFixture, commit, baseRe
 	var stored projectstore.GitHubWebhook
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		stored, err = r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), row.DeliveryID)
+		stored, err = r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), row.DeliveryID, "")
 		return err
 	}); err != nil {
 		t.Fatal(err)

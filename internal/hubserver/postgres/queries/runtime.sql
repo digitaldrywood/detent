@@ -82,3 +82,38 @@ RETURNING price_id;
 -- name: InsertRuntimeAudits :exec
 INSERT INTO hosted_plan_audit(organization_id,command_id,request_hash,actor_id,action,recorded_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention)
 SELECT sqlc.arg(organization_id),q.command,q.hash,q.actor,q.action,q.recorded,q.binding,q.customer_owned,q.object_key,q.digest,q.compressed,q.content,q.codec,q.format_version,q.kind,q.retention FROM ROWS FROM (unnest(sqlc.arg(commands)::text[]),unnest(sqlc.arg(hashes)::text[]),unnest(sqlc.arg(actors)::text[]),unnest(sqlc.arg(actions)::text[]),unnest(sqlc.arg(times)::timestamptz[]),unnest(sqlc.arg(bindings)::text[]),unnest(sqlc.arg(customer_owned)::boolean[]),unnest(sqlc.arg(keys)::text[]),unnest(sqlc.arg(digests)::text[]),unnest(sqlc.arg(compressed)::bigint[]),unnest(sqlc.arg(content)::bigint[]),unnest(sqlc.arg(codecs)::text[]),unnest(sqlc.arg(formats)::integer[]),unnest(sqlc.arg(kinds)::text[]),unnest(sqlc.arg(retentions)::text[])) q(command,hash,actor,action,recorded,binding,customer_owned,object_key,digest,compressed,content,codec,format_version,kind,retention);
+
+-- name: ConfigureBillingSchedule :exec
+UPDATE platform.organizations SET
+    billing_next_due_at=CASE
+        WHEN sqlc.arg(seconds)::integer=0 THEN NULL
+        WHEN billing_reconcile_seconds IS NULL AND billing_next_due_at>sqlc.arg(now_at)::timestamptz
+            THEN sqlc.arg(now_at)::timestamptz + sqlc.arg(seconds)::integer * interval '1 second'
+        ELSE sqlc.arg(now_at)::timestamptz END,
+    billing_reconcile_seconds=sqlc.arg(seconds)::integer
+WHERE id=sqlc.arg(organization_id)::text AND generation=sqlc.arg(generation)::bigint AND state IN ('ready','allocating')
+AND billing_reconcile_seconds IS DISTINCT FROM sqlc.arg(seconds)::integer;
+
+-- name: DueBillingTenants :many
+SELECT due.id,due.generation FROM (
+    SELECT id,generation FROM platform.organizations
+    WHERE state='ready' AND billing_next_due_at<=sqlc.arg(now_at)::timestamptz
+    ORDER BY billing_next_due_at,id LIMIT sqlc.arg(page_limit)::integer
+) due ORDER BY due.id;
+
+-- name: BeginBillingReconciliation :execrows
+UPDATE platform.organizations SET billing_next_due_at=sqlc.arg(now_at)::timestamptz + COALESCE(billing_reconcile_seconds,60) * interval '1 second'
+WHERE id=sqlc.arg(organization_id)::text AND generation=sqlc.arg(generation)::bigint AND state='ready'
+AND (billing_next_due_at<=sqlc.arg(now_at)::timestamptz
+    OR (billing_reconcile_seconds IS NULL AND billing_next_due_at IS NULL
+        AND EXISTS(SELECT 1 FROM platform.billing_customers b WHERE b.organization_id=platform.organizations.id)));
+
+-- name: LegacyBillingSchedulePage :many
+WITH bindings AS MATERIALIZED (
+    SELECT organization_id FROM platform.billing_customers
+    WHERE organization_id>sqlc.arg(after_id)::text
+    ORDER BY organization_id,mode,account_id,customer_id LIMIT sqlc.arg(page_limit)::integer
+)
+SELECT o.id,o.generation,(o.state='ready' AND o.billing_reconcile_seconds IS NULL AND o.billing_next_due_at IS NULL)::boolean AS needs_discovery
+FROM bindings b JOIN platform.organizations o ON o.id=b.organization_id
+ORDER BY o.id;

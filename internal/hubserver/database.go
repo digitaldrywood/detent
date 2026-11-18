@@ -47,7 +47,13 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	if err := validateDatabaseBackend(cfg); err != nil {
 		return nil, err
 	}
-	store, err := openPostgresDatabase(ctx, *cfg.Postgres)
+	var store *database
+	var err error
+	if cfg.runtimeHost != nil {
+		store, err = cfg.runtimeHost.tenantDatabase(cfg.runtimeTenant, cfg.Hosted.SharedEntry.Generation)
+	} else {
+		store, err = openPostgresDatabase(ctx, *cfg.Postgres)
+	}
 	if err != nil {
 		return nil, err
 	}

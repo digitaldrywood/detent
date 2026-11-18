@@ -26,7 +26,14 @@ type hostedBillingWorker struct {
 }
 
 func (s *Service) startHostedBilling() {
-	if s.config.Hosted == nil || s.hostedBillingConfig() == nil {
+	if s.config.Hosted == nil {
+		return
+	}
+	if s.config.runtimeHost != nil {
+		s.billing = &hostedBillingWorker{service: s}
+		return
+	}
+	if s.hostedBillingConfig() == nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -35,7 +42,7 @@ func (s *Service) startHostedBilling() {
 }
 
 func (s *Service) stopHostedBilling() {
-	if s.billing != nil {
+	if s.billing != nil && s.billing.cancel != nil {
 		s.billing.cancel()
 		<-s.billing.done
 	}
@@ -64,7 +71,57 @@ func (w *hostedBillingWorker) run(ctx context.Context) {
 	}
 }
 
+func (s *Service) BillingReconcileSeconds(ctx context.Context) (int64, error) {
+	if s.config.Hosted == nil {
+		return 0, nil
+	}
+	plans := s.database.plansService()
+	if err := plans.RefreshRuntime(ctx); err != nil {
+		return 0, err
+	}
+	cfg := s.hostedBillingConfig()
+	if cfg == nil {
+		return 0, nil
+	}
+	_, err := plans.BillingBinding(ctx, cfg)
+	if errors.Is(err, hostedplans.ErrBillingUnbound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return cfg.ReconcileSeconds, nil
+}
+
+func (s *Service) maintainHostedBilling(ctx context.Context, limit int) (int, error) {
+	if s.billing == nil {
+		return 0, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if !s.billing.mu.TryLock() {
+		return 0, nil
+	}
+	defer s.billing.mu.Unlock()
+	seconds, err := s.BillingReconcileSeconds(ctx)
+	if err != nil || seconds == 0 {
+		return 0, err
+	}
+	if claim := s.config.ClaimBillingReconciliation; claim != nil {
+		claimed, err := claim(ctx)
+		if err != nil || !claimed {
+			return 0, err
+		}
+	}
+	return limit, s.billing.reconcilePage(ctx, (limit-2)/2)
+}
+
 func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
+	return w.reconcilePage(ctx, corestore.MaxPageSize)
+}
+
+func (w *hostedBillingWorker) reconcilePage(ctx context.Context, limit int) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	s := w.service
@@ -77,7 +134,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	var events []pendingEvent
 
 	if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
-		unprocessed, err := reader.UnprocessedBillingEvents(ctx, corestore.MaxPageSize)
+		unprocessed, err := reader.UnprocessedBillingEvents(ctx, limit)
 		if err != nil {
 			return err
 		}
@@ -85,7 +142,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 			through = row.Sequence
 			unprocessedEventIDs = append(unprocessedEventIDs, row.ID)
 		}
-		pending, err := reader.PendingBillingEvents(ctx, corestore.MaxPageSize)
+		pending, err := reader.PendingBillingEvents(ctx, limit)
 		if err != nil {
 			return err
 		}

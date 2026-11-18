@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/attachmententry"
+
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -138,7 +140,7 @@ func (s *Service) archiveDeletionReceipt(c echo.Context) (resultErr error) {
 	}
 	rows, err := s.registry.store.reader.QueryContext(ctx, `SELECT r.binding_id,r.complete,r.truncated,r.attempts,r.updated_at,coalesce(f.object_key,''),coalesce(f.version_id,''),coalesce(f.error_code,''),coalesce(b.backend,''),coalesce(b.endpoint,''),coalesce(b.bucket,''),coalesce(b.prefix,'') FROM platform.archive_deletion_receipts r LEFT JOIN platform.archive_storage_bindings b ON b.organization_id=r.organization_id AND b.id=r.binding_id LEFT JOIN platform.archive_deletion_failures f ON f.organization_id=r.organization_id AND f.binding_id=r.binding_id WHERE r.organization_id=$1 ORDER BY r.binding_id,f.ordinal`, organization.ID)
 	if err != nil {
-		return attachmentError(c, http.StatusServiceUnavailable, "receipt_unavailable", "Deletion receipt is unavailable")
+		return attachmententry.Error(c, http.StatusServiceUnavailable, "receipt_unavailable", "Deletion receipt is unavailable")
 	}
 	defer closeEntryRows(rows, &resultErr)
 	type record struct {

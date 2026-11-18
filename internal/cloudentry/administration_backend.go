@@ -39,7 +39,10 @@ func (s *Service) storeEntryObject(ctx context.Context, data []byte) (string, er
 	hash := hex.EncodeToString(digest[:])
 	key := "platform/entry/sha256/" + hash
 	if err := s.attachments.Put(ctx, key, bytes.NewReader(compressed.Bytes()), int64(compressed.Len()), "application/gzip", hash); err != nil {
-		return "", err
+		existing, readErr := s.readEntryObject(ctx, key)
+		if readErr != nil || !bytes.Equal(existing, data) {
+			return "", errors.Join(err, readErr)
+		}
 	}
 	return key, nil
 }

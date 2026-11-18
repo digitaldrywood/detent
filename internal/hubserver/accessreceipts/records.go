@@ -186,6 +186,10 @@ func (s *Service) Abandon(ctx context.Context, command Command) error {
 }
 
 func (s *Service) Retain(ctx context.Context, cutoff time.Time) error {
+	return s.RetainPage(ctx, cutoff, receiptstore.MaxRetentionBatch)
+}
+
+func (s *Service) RetainPage(ctx context.Context, cutoff time.Time, limit int) error {
 	organization := s.deps.Organization
 	var page []receiptstore.Record
 	if err := s.deps.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
@@ -194,7 +198,7 @@ func (s *Service) Retain(ctx context.Context, cutoff time.Time) error {
 			return eventstore.ErrInvalidRecord
 		}
 		var err error
-		page, err = reader.ReceiptExpiryPage(ctx, cutoff, receiptstore.MaxRetentionBatch)
+		page, err = reader.ReceiptExpiryPage(ctx, cutoff, min(limit, receiptstore.MaxRetentionBatch))
 		return err
 	}); err != nil {
 		return err

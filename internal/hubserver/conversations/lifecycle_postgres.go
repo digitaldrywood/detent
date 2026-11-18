@@ -62,7 +62,7 @@ func (c *ConversationService) normalizeAfterRestartPG(ctx context.Context, organ
 		}
 		for _, candidate := range page.Items {
 			for {
-				batch, more, err := c.normalizeRestartConversationBatchPG(ctx, organization, candidate, now)
+				batch, more, err := c.normalizeRestartConversationBatchPG(ctx, organization, candidate, now, time.Time{}, ConversationLifecycleBatchSize)
 				if err != nil {
 					return summary, fmt.Errorf("normalize PostgreSQL conversation after restart: %w", err)
 				}
@@ -82,7 +82,7 @@ func (c *ConversationService) normalizeAfterRestartPG(ctx context.Context, organ
 	}
 }
 
-func (c *ConversationService) normalizeRestartConversationBatchPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation, now time.Time) (conversationNormalizeSummary, bool, error) {
+func (c *ConversationService) normalizeRestartConversationBatchPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation, now, before time.Time, limit int) (conversationNormalizeSummary, bool, error) {
 	var summary conversationNormalizeSummary
 	more := false
 	err := c.Server.config().TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
@@ -99,7 +99,8 @@ func (c *ConversationService) normalizeRestartConversationBatchPG(ctx context.Co
 		messages, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{
 			ConversationID: stored.ID,
 			Deliveries:     []conversation.Delivery{conversation.DeliverySending, conversation.DeliverySent, conversation.DeliveryResponding},
-			Limit:          ConversationLifecycleBatchSize,
+			Limit:          limit,
+			UpdatedBefore:  before,
 		})
 		if err != nil {
 			return err
@@ -113,8 +114,13 @@ func (c *ConversationService) normalizeRestartConversationBatchPG(ctx context.Co
 		}
 		more = more || messages.Next != 0
 
+		limit -= len(messages.Items)
+		if limit == 0 {
+			more = true
+			return nil
+		}
 		afterQuestion := ""
-		questions, err := writer.RestartQuestions(ctx, stored.ID, afterQuestion, ConversationLifecycleBatchSize)
+		questions, err := writer.RestartQuestions(ctx, stored.ID, afterQuestion, before, limit)
 		if err != nil {
 			return err
 		}
@@ -127,7 +133,12 @@ func (c *ConversationService) normalizeRestartConversationBatchPG(ctx context.Co
 		}
 		more = more || questions.Next != ""
 
-		commands, err := writer.PendingCommands(ctx, stored.ID, "", ConversationLifecycleBatchSize)
+		limit -= len(questions.Items)
+		if limit == 0 {
+			more = true
+			return nil
+		}
+		commands, err := writer.PendingCommands(ctx, stored.ID, "", before, limit)
 		if err != nil {
 			return err
 		}
@@ -140,7 +151,18 @@ func (c *ConversationService) normalizeRestartConversationBatchPG(ctx context.Co
 		}
 		more = more || commands.Next != ""
 
+		if len(commands.Items) == limit {
+			more = true
+			return nil
+		}
 		execution := stored.Execution
+		updatedAt := execution.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = stored.UpdatedAt
+		}
+		if !before.IsZero() && !updatedAt.Before(before) {
+			return nil
+		}
 		normalized := conversation.NormalizeExecutionValue(execution)
 		if normalized.Status != execution.Status {
 			normalized.UpdatedAt = now
@@ -155,25 +177,47 @@ func (c *ConversationService) normalizeRestartConversationBatchPG(ctx context.Co
 	return summary, more, err
 }
 
+func (c *ConversationService) RecoverPage(ctx context.Context, org tracker.OrganizationID, after string, before time.Time, limit int) (next string, done bool, items int, err error) {
+	var page conversationstore.ConversationPage
+	err = c.Server.config().TenantRepository.ReadTenant(ctx, org, corestore.Background, func(reader tenantstore.Reader) error {
+		var err error
+		page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleRestart, AfterID: after, Before: before, Limit: 1})
+		return err
+	})
+	if err != nil || len(page.Items) == 0 {
+		return after, err == nil, 0, err
+	}
+	batch, more, err := c.normalizeRestartConversationBatchPG(ctx, org, page.Items[0], c.Server.config().Now(), before, limit)
+	items = int(max(1, batch.Messages+batch.Questions+batch.Receipts+batch.Conversations))
+	if more || err != nil {
+		return after, false, items, err
+	}
+	return page.Next, page.Next == "", items, nil
+}
+
 func (c *ConversationService) WakePendingPG(ctx context.Context, organization tracker.OrganizationID) error {
+	next, _, err := c.WakePage(ctx, organization, c.LifecycleCursor("pending"), ConversationLifecycleBatchSize, ConversationLifecycleBatchSize)
+	c.advanceLifecycleCursor("pending", next)
+	return err
+}
+
+func (c *ConversationService) WakePage(ctx context.Context, organization tracker.OrganizationID, after string, candidates, commandLimit int) (string, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	const cursor = "pending"
-	after := c.LifecycleCursor(cursor)
 	coordinator, controls := 0, 0
 	var page conversationstore.PendingConversationPage
 	var errs []error
 	if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var err error
-		page, err = reader.PendingConversations(ctx, after, ConversationLifecycleBatchSize)
+		page, err = reader.PendingConversations(ctx, after, candidates)
 		return err
 	}); err != nil {
-		return fmt.Errorf("list PostgreSQL conversations with pending messages: %w", err)
+		return after, 0, fmt.Errorf("list PostgreSQL conversations with pending messages: %w", err)
 	}
-	c.advanceLifecycleCursor(cursor, page.Next)
+	used := page.Examined
 	for _, pending := range page.Items {
 		if err := ctx.Err(); err != nil {
-			return errors.Join(append(errs, err)...)
+			return page.Next, used, errors.Join(append(errs, err)...)
 		}
 		if pending.Linked {
 			c.Controls.Wake(pending.ID)
@@ -181,9 +225,11 @@ func (c *ConversationService) WakePendingPG(ctx context.Context, organization tr
 			continue
 		}
 		if c.Coordinator.Available() {
-			if err := c.wakeCoordinator(ctx, pending.ID); err != nil {
+			commands, err := c.wakeCoordinator(ctx, pending.ID, commandLimit)
+			used += max(0, commands-1)
+			if err != nil {
 				if ctx.Err() != nil {
-					return errors.Join(append(errs, ctx.Err())...)
+					return page.Next, used, errors.Join(append(errs, ctx.Err())...)
 				}
 				errs = append(errs, fmt.Errorf("wake PostgreSQL coordinator %s: %w", pending.ID, err))
 				continue
@@ -192,29 +238,34 @@ func (c *ConversationService) WakePendingPG(ctx context.Context, organization tr
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return errors.Join(append(errs, err)...)
+		return page.Next, used, errors.Join(append(errs, err)...)
 	}
 	c.Logger.Info("conversation.wake_pending", "coordinator", coordinator, "controls", controls)
-	return errors.Join(errs...)
+	return page.Next, used, errors.Join(errs...)
 }
 
 func (c *ConversationService) ReconcileExecutionsPG(ctx context.Context, organization tracker.OrganizationID) error {
+	next, _, err := c.ReconcilePage(ctx, organization, c.LifecycleCursor("execution"), ConversationLifecycleBatchSize, ConversationLifecycleBatchSize)
+	c.advanceLifecycleCursor("execution", next)
+	return err
+}
+
+func (c *ConversationService) ReconcilePage(ctx context.Context, organization tracker.OrganizationID, after string, candidates, childLimit int) (string, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	const cursor = "execution"
-	after := c.LifecycleCursor(cursor)
 	var errs []error
 	var page conversationstore.ConversationPage
 	if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var err error
-		page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleExecution, AfterID: after, Limit: ConversationLifecycleBatchSize})
+		page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleExecution, AfterID: after, Limit: candidates})
 		return err
 	}); err != nil {
-		return fmt.Errorf("list PostgreSQL conversation executions: %w", err)
+		return after, 0, fmt.Errorf("list PostgreSQL conversation executions: %w", err)
 	}
-	c.advanceLifecycleCursor(cursor, page.Next)
+	used := 0
 	for _, candidate := range page.Items {
-		changed, err := c.ReconcileExecutionPG(ctx, organization, candidate)
+		changed, processed, err := c.reconcileExecution(ctx, organization, candidate, childLimit)
+		used += max(1, processed)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("conversation %s: %w", candidate.ID, err))
 			continue
@@ -232,14 +283,20 @@ func (c *ConversationService) ReconcileExecutionsPG(ctx context.Context, organiz
 			c.Committed(record)
 		}
 	}
-	return errors.Join(errs...)
+	return page.Next, used, errors.Join(errs...)
 }
 
 func (c *ConversationService) ReconcileExecutionPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation) (bool, error) {
+	changed, _, err := c.reconcileExecution(ctx, organization, candidate, ConversationLifecycleBatchSize)
+	return changed, err
+}
+
+func (c *ConversationService) reconcileExecution(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation, limit int) (bool, int, error) {
 	if candidate.WorkItemID == "" || candidate.Execution.Owner.LeaseID == "" || candidate.Execution.Owner.AttemptID == "" {
-		return false, nil
+		return false, 0, nil
 	}
 	changed := false
+	used := 0
 	err := c.Server.config().TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 		locker, ok := writer.(leasestore.FencedLeaseLocker)
 		if !ok {
@@ -287,12 +344,13 @@ func (c *ConversationService) ReconcileExecutionPG(ctx context.Context, organiza
 			status = conversation.ExecutionInterrupted
 			record.Execution.Error = ConversationLeaseLostError
 		}
-		processed, moreMessages, err := settlePGWorkerMessagesBatch(ctx, writer, &record, status, now, ConversationLifecycleBatchSize)
+		processed, moreMessages, err := settlePGWorkerMessagesBatch(ctx, writer, &record, status, now, limit)
 		if err != nil {
 			return err
 		}
 		moreQuestions := false
-		remaining := ConversationLifecycleBatchSize - processed
+		used = processed
+		remaining := limit - processed
 		if remaining > 0 {
 			questions, err := writer.OutstandingQuestions(ctx, record.ID, record.Execution.Owner.AttemptID, "", "", remaining)
 			if err != nil {
@@ -307,6 +365,7 @@ func (c *ConversationService) ReconcileExecutionPG(ctx context.Context, organiza
 					return err
 				}
 			}
+			used += len(questions.Items)
 			moreQuestions = questions.Next != ""
 		}
 		record.Execution.Status = status
@@ -332,7 +391,7 @@ func (c *ConversationService) ReconcileExecutionPG(ctx context.Context, organiza
 		changed = true
 		return nil
 	})
-	return changed, err
+	return changed, used, err
 }
 
 func (s *Server) ConversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, record ConversationRecord, now time.Time) (bool, error) {
@@ -410,21 +469,23 @@ func (s *Server) ConversationLeaseCurrentPG(ctx context.Context, reader tenantst
 }
 
 func (c *ConversationService) SettleIdleConversationsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {
+	next, _, settled, err := c.SettlePage(ctx, organization, c.LifecycleCursor("settle"), now, conversationSettleBatch)
+	c.advanceLifecycleCursor("settle", next)
+	return settled, err
+}
+func (c *ConversationService) SettlePage(ctx context.Context, organization tracker.OrganizationID, after string, now time.Time, limit int) (string, int, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	before := now.Add(-c.Config.SettleWindow)
-	const cursor = "settle"
-	after := c.LifecycleCursor(cursor)
 	settled := 0
 	var page conversationstore.ConversationPage
 	if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var err error
-		page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleSettle, AfterID: after, Before: before, Limit: conversationSettleBatch})
+		page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleSettle, AfterID: after, Before: before, Limit: limit})
 		return err
 	}); err != nil {
-		return settled, fmt.Errorf("list PostgreSQL conversations to settle: %w", err)
+		return after, 0, settled, fmt.Errorf("list PostgreSQL conversations to settle: %w", err)
 	}
-	c.advanceLifecycleCursor(cursor, page.Next)
 	var errs []error
 	for _, candidate := range page.Items {
 		changed, err := c.SettleIdleConversationPG(ctx, organization, candidate, before, now)
@@ -436,7 +497,7 @@ func (c *ConversationService) SettleIdleConversationsPG(ctx context.Context, org
 			settled++
 		}
 	}
-	return settled, errors.Join(errs...)
+	return page.Next, len(page.Items), settled, errors.Join(errs...)
 }
 
 func (c *ConversationService) SettleIdleConversationPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation, before, now time.Time) (bool, error) {

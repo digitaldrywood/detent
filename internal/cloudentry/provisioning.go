@@ -13,9 +13,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -25,7 +25,6 @@ import (
 type AllocationConfig struct {
 	TenantRoot              string
 	SocketRoot              string
-	MaxTenants              int
 	MaxConcurrent           int
 	Prices                  []hostedplans.HostedBillingPrice
 	RetryLimit              int
@@ -37,14 +36,14 @@ type AllocationConfig struct {
 	EntitlementAdminToken   []byte
 }
 
-func (a *AllocationConfig) validate() error {
+func (a *AllocationConfig) validate(shared bool) error {
 	if a == nil {
 		return nil
 	}
-	if !filepath.IsAbs(a.TenantRoot) || !filepath.IsAbs(a.SocketRoot) || a.Launcher == nil {
+	if !filepath.IsAbs(a.TenantRoot) || !filepath.IsAbs(a.SocketRoot) || (a.Launcher == nil && !shared) {
 		return errors.New("allocation requires absolute tenant and socket roots and a launcher")
 	}
-	if a.MaxTenants < 1 || a.MaxConcurrent < 1 || a.RetryLimit < 1 {
+	if a.MaxConcurrent < 1 || a.RetryLimit < 1 {
 		return errors.New("allocation limits must be positive")
 	}
 	return nil
@@ -94,7 +93,7 @@ func nextStep(completed string) string {
 
 func (s *Service) startAllocator(parent context.Context) {
 	allocation := s.config.Allocation
-	if allocation == nil && s.attachments == nil {
+	if allocation == nil && s.attachments == nil && s.sharedHub == nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
@@ -102,12 +101,14 @@ func (s *Service) startAllocator(parent context.Context) {
 	s.stopAllocator = cancel
 	s.allocatorDone = make(chan struct{})
 	s.wake = make(chan struct{}, 1)
-	organizations, err := s.registry.List(ctx)
-	if err == nil {
-		for _, organization := range organizations {
-			if allocation != nil && organization.Managed && organization.State == "ready" {
-				if err := allocation.Launcher.Start(ctx, s.tenantSpec(organization)); err != nil {
-					s.config.Logger.Warn("tenant Hub could not start", "organization", organization.ID)
+	if allocation != nil && s.sharedHub == nil {
+		organizations, err := s.registry.List(ctx)
+		if err == nil {
+			for _, organization := range organizations {
+				if allocation != nil && organization.Managed && organization.State == "ready" {
+					if err := allocation.Launcher.Start(ctx, s.tenantSpec(organization)); err != nil {
+						s.config.Logger.Warn("tenant Hub could not start", "organization", organization.ID)
+					}
 				}
 			}
 		}
@@ -138,6 +139,9 @@ func (s *Service) closeAllocator() error {
 	}
 	s.stopAllocator()
 	<-s.allocatorDone
+	if s.sharedHub != nil {
+		return s.sharedHub.Close()
+	}
 	if s.config.Allocation == nil {
 		return nil
 	}
@@ -155,20 +159,26 @@ func (s *Service) wakeAllocator() {
 }
 
 func (s *Service) tenantSpec(organization Organization) TenantSpec {
+	var directory string
+	if allocation := s.config.Allocation; allocation != nil {
+		directory = filepath.Join(allocation.TenantRoot, organization.ID)
+	} else if s.config.SharedHub != nil && organization.HostedConfigurationKey == nil && ValidOrganizationID(organization.ID) {
+		directory = filepath.Join(s.config.StateDir, "tenants", organization.ID)
+	}
 	return TenantSpec{
 		Icons:           tenantIconStore{service: s, allocation: organization},
-		ArchiveContents: attachment.ArchiveContents{Storage: archiveStorage(s.attachments)},
-		Organization:    organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
+		ArchiveContents: s.attachmentHandlers().Details(organization),
+		Organization:    organization, Directory: directory,
 		Socket: strings.TrimPrefix(organization.Endpoint, "unix:"), PublicURL: s.config.PublicURL, Issuer: s.config.Issuer,
 		PublicKey: cloudassert.PublicKeyOf(s.config.SigningKey),
 		Content: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
-			return s.tenantContent(ctx, organization, request)
+			return s.attachmentHandlers().Content(ctx, organization, request)
 		},
-		RunDetails: tenantDetailStore{service: s, allocation: organization},
+		RunDetails: s.attachmentHandlers().Details(organization),
 		ResolveKey: func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 			return s.resolveTenantKey(ctx, organization, origin)
 		},
-		ReadArchive: s.tenantArchiveReader(organization),
+		ReadArchive: s.attachmentHandlers().ArchiveReader(organization),
 		Check: func(ctx context.Context) error {
 			return s.checkTenant(ctx, organization)
 		},
@@ -180,19 +190,13 @@ func (s *Service) provisionDue(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	now := s.config.Now()
 	for _, organization := range due {
-		if organization.NextAttemptAt != "" {
-			if next, err := parseTime(organization.NextAttemptAt); err == nil && next.After(now) {
-				continue
-			}
-		}
 		s.provision(ctx, organization)
 	}
 }
 
 func (s *Service) dueOrganizations(ctx context.Context) (_ []Organization, resultErr error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, organizationSelect+" WHERE managed = true AND state IN ('requested','allocating') ORDER BY created_at")
+	rows, err := s.registry.store.db.QueryContext(ctx, organizationSelect+" WHERE managed AND state IN ('requested','allocating') AND COALESCE(next_attempt_at,'-infinity'::timestamptz)<=$1 ORDER BY COALESCE(next_attempt_at,'-infinity'::timestamptz), created_at, id LIMIT $2", s.config.Now(), hubmaintenance.TenantLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +215,7 @@ func (s *Service) dueOrganizations(ctx context.Context) (_ []Organization, resul
 func (s *Service) provision(ctx context.Context, organization Organization) {
 	for organization.State == "requested" || organization.State == "allocating" {
 		step := nextStep(organization.Step)
-		if step == "publish" {
+		if step == "publish" && s.sharedHub == nil {
 			s.reloadMu.Lock()
 			defer s.reloadMu.Unlock()
 		}
@@ -295,6 +299,9 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 		_, err = s.config.Provider.CreateMembership(ctx, organization.CreatorSubject, organization.ProviderID, "owner")
 		return err
 	case "tenant_files":
+		if s.sharedHub != nil {
+			return nil
+		}
 		for _, directory := range []string{allocation.TenantRoot, allocation.SocketRoot, filepath.Join(allocation.TenantRoot, organization.ID)} {
 			if err := os.MkdirAll(directory, 0o700); err != nil {
 				return err
@@ -308,6 +315,12 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 	case "tenant_start":
 		if err := allocation.Launcher.Start(ctx, s.tenantSpec(*organization)); err != nil {
 			return err
+		}
+		if s.sharedHub != nil {
+			if err := s.checkTenant(ctx, *organization); err != nil {
+				return err
+			}
+			return s.refreshGitHubRoutes(ctx, *organization)
 		}
 		deadline := time.Now().Add(s.config.tenantStartTimeout)
 		for {
@@ -358,13 +371,19 @@ func (s *Service) admissionLoad(ctx context.Context, id string) (holding, alloca
 	return holding, allocating, err
 }
 
+func (s *Service) activeProvisions(ctx context.Context, id string, limit int) (int, error) {
+	var allocating int
+	err := s.registry.store.db.QueryRowContext(ctx, "SELECT count(*) FROM (SELECT 1 FROM platform.organizations WHERE managed AND state='allocating' AND id!=$1 LIMIT $2) AS active", id, limit).Scan(&allocating)
+	return allocating, err
+}
+
 func (s *Service) admit(ctx context.Context, id string) error {
 	allocation := s.config.Allocation
-	holding, allocating, err := s.admissionLoad(ctx, id)
+	allocating, err := s.activeProvisions(ctx, id, allocation.MaxConcurrent)
 	if err != nil {
 		return err
 	}
-	if holding >= allocation.MaxTenants || allocating >= allocation.MaxConcurrent {
+	if allocating >= allocation.MaxConcurrent {
 		return errCapacity
 	}
 	if allocation.MinFreeDiskBytes > 0 {
@@ -753,9 +772,7 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 }
 
 func (s *Service) finishDeletion(ctx context.Context, id string) error {
-	unlock := s.attachmentLocks.lock(id, true)
 	organization, err := s.registry.Organization(ctx, id)
-	unlock()
 	if err != nil {
 		return err
 	}
@@ -765,10 +782,6 @@ func (s *Service) finishDeletion(ctx context.Context, id string) error {
 	if organization.State != "deleting" {
 		return ErrOrganizationConflict
 	}
-	if err := s.eraseOrganizationStorage(ctx, id); err != nil {
-		return err
-	}
-
 	revoked, err := s.auth.revokeOrganization(ctx, id)
 	if err != nil {
 		return err
@@ -777,12 +790,17 @@ func (s *Service) finishDeletion(ctx context.Context, id string) error {
 	if err := s.config.Allocation.Launcher.Stop(id); err != nil {
 		return err
 	}
-	_, err = s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = 'deleted', updated_at = $1 WHERE id = $2 AND state = 'deleting'", formatTime(s.config.Now()), id)
+	unlock := s.attachmentLocks.lock(id, true)
+	unlock()
+	if err := s.eraseOrganizationStorage(ctx, id); err != nil {
+		return err
+	}
+	_, err = s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = 'deleted', updated_at = $1 WHERE id = $2 AND state = 'deleting' AND generation=$3", formatTime(s.config.Now()), id, organization.Generation)
 	return err
 }
 
 func (s *Service) deletingOrganizations(ctx context.Context) (_ []string, resultErr error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id FROM platform.organizations WHERE managed = true AND state = 'deleting'")
+	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id FROM platform.organizations WHERE managed AND state='deleting' AND id>$1 ORDER BY id LIMIT $2", s.deletionAfter, hubmaintenance.TenantLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -802,6 +820,11 @@ func (s *Service) resumeDeletions(ctx context.Context) {
 	ids, err := s.deletingOrganizations(ctx)
 	if err != nil {
 		return
+	}
+	if len(ids) < hubmaintenance.TenantLimit {
+		s.deletionAfter = ""
+	} else {
+		s.deletionAfter = ids[len(ids)-1]
 	}
 	for _, id := range ids {
 		if err := s.finishDeletion(ctx, id); err != nil {

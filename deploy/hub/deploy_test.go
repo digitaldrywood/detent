@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -842,6 +843,7 @@ func TestSocketActivationInstallerIsRepeatable(t *testing.T) {
 		destination string
 		source      string
 	}{
+		{destination: "detent-cloud.service", source: "cloud/detent-cloud.service"},
 		{destination: "detent-cloud.socket", source: "cloud/detent-cloud.socket"},
 		{destination: "detent-cloud.service.d/socket.conf", source: "cloud/detent-cloud.service.d/socket.conf"},
 		{destination: "detent-hub.socket", source: "hub/detent-hub.socket"},
@@ -859,4 +861,33 @@ func TestSocketActivationInstallerIsRepeatable(t *testing.T) {
 			t.Errorf("installed %s differs from source", file.destination)
 		}
 	}
+	var starts []string
+	err = filepath.WalkDir(filepath.Join(root, "docs", "examples", "cloud"), func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(path, ".service") && !strings.Contains(path, ".service.d"+string(filepath.Separator)) {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(entry.Name(), "@") || strings.Contains(string(raw), "--hosted-config") {
+			return fmt.Errorf("per-organization service in %s", path)
+		}
+		for line := range strings.SplitSeq(string(raw), "\n") {
+			if strings.HasPrefix(line, "ExecStart=") {
+				starts = append(starts, line)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(starts) != 1 || starts[0] != "ExecStart=/opt/detent-hub/detent cloud serve --entry-config /etc/detent-hub/cloud.yaml" {
+		t.Fatalf("cloud deployment commands = %q", starts)
+	}
+
 }

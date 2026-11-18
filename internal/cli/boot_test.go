@@ -23,6 +23,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/cloudentry/integration/registrationtest"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -210,7 +211,7 @@ func TestMain(m *testing.M) {
 	}
 	cleanupCtx, cancelCleanup := context.WithDeadline(context.Background(), startedAt.Add(timeout))
 	defer cancelCleanup()
-	if err := clihangHubTemplate.Close(cleanupCtx); err != nil {
+	if err := errors.Join(clihangHubTemplate.Close(cleanupCtx), registrationtest.Close(cleanupCtx)); err != nil {
 		fmt.Fprintln(os.Stderr, "close CLI PostgreSQL fixture:", err)
 		exitCode = 1
 	}

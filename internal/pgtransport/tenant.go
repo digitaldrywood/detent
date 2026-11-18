@@ -15,6 +15,7 @@ import (
 )
 
 var ErrTenantRequired = errors.New("authenticated organization is required")
+var ErrStaleGeneration = errors.New("hosted organization generation is no longer authorized")
 var ErrUnbound = errors.New("protected PostgreSQL query requires a bound tenant")
 var ErrOpenResults = errors.New("PostgreSQL transaction has open results")
 
@@ -35,6 +36,7 @@ type Executor interface {
 }
 
 type Transaction struct {
+	generation  int64
 	conn        *pgxpool.Conn
 	scope       Scope
 	bound, done bool
@@ -57,7 +59,13 @@ func (p *Pools) BeginBatch(ctx context.Context, scope Scope, options Options, wo
 	if strings.TrimSpace(string(scope.Organization)) == "" {
 		return nil, nil, ErrTenantRequired
 	}
+	if p.closed.Load() || (p.organization != "" && p.organization != scope.Organization) {
+		return nil, nil, ErrUnbound
+	}
 	isolation := options.Isolation
+	if options.ReadOnly && p.generation != 0 && (isolation == "" || isolation == pgx.ReadCommitted) {
+		isolation = pgx.RepeatableRead
+	}
 	if isolation == "" {
 		isolation = pgx.ReadCommitted
 	}
@@ -77,18 +85,37 @@ func (p *Pools) BeginBatch(ctx context.Context, scope Scope, options Options, wo
 		return nil, nil, fmt.Errorf("acquire PostgreSQL tenant connection: %w", err)
 	}
 	tx := &Transaction{conn: conn, scope: scope}
+	if !options.ReadOnly {
+		tx.generation = p.generation
+	}
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN ISOLATION LEVEL " + string(isolation) + mode)
 	batch.Queue(`SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true), set_config('jit', 'off', true)`, string(scope.Organization))
-	if work != nil {
+	checkRead := options.ReadOnly && p.generation != 0
+	if checkRead {
+		batch.Queue("SELECT public.hosted_write_authorized($1)", p.generation)
+	} else if work != nil {
 		batch.QueuedQueries = append(batch.QueuedQueries, guardedBatch(work).QueuedQueries...)
 	}
 	results := conn.SendBatch(ctx, batch)
 	_, beginErr := results.Exec()
 	_, bindErr := results.Exec()
+	if checkRead && beginErr == nil && bindErr == nil {
+		var allowed bool
+		bindErr = results.QueryRow().Scan(&allowed)
+		if bindErr == nil && !allowed {
+			bindErr = ErrStaleGeneration
+		}
+	}
 	if err := errors.Join(beginErr, bindErr); err != nil {
 		closeErr := results.Close()
 		return nil, nil, errors.Join(fmt.Errorf("bind PostgreSQL tenant transaction: %w", err), closeErr, tx.Rollback(ctx))
+	}
+	if checkRead && work != nil {
+		if err := results.Close(); err != nil {
+			return nil, nil, errors.Join(err, tx.Rollback(ctx))
+		}
+		results = conn.SendBatch(ctx, guardedBatch(work))
 	}
 	tx.bound = true
 	tracked := &transactionBatch{BatchResults: results, tx: tx}
@@ -145,6 +172,18 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			return errors.Join(err, t.Rollback(ctx))
 		}
 		return err
+	}
+	if t.generation != 0 {
+		var allowed bool
+		if err := t.conn.QueryRow(ctx, "SELECT public.hosted_write_authorized($1)", t.generation).Scan(&allowed); err != nil {
+			return errors.Join(err, t.Rollback(ctx))
+		}
+		if !allowed {
+			if err := t.Rollback(ctx); err != nil {
+				return fmt.Errorf("roll back revoked organization write: %w", err)
+			}
+			return ErrStaleGeneration
+		}
 	}
 	t.bound = false
 	t.done = true

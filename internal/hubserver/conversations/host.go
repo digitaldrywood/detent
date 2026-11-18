@@ -51,10 +51,11 @@ func (noPreferenceIssue) Write(context.Context, tenantstore.Writer) error { retu
 func (noPreferenceIssue) Changed() bool                                   { return false }
 
 type CommandDeliverer interface {
-	DeliverCoordinatorCommands(context.Context, string) error
+	DeliverCoordinatorCommands(context.Context, string, int) (int, error)
 }
 
 type Deps struct {
+	SharedMaintenance              bool
 	Config                         func() Config
 	Conversations                  func() *ConversationService
 	Logger                         *slog.Logger

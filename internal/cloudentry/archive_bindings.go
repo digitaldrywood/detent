@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/attachmententry"
+
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -242,12 +244,12 @@ func (s *Service) archiveStorageBinding(c echo.Context) error {
 	if c.Request().Method == http.MethodGet {
 		binding, err := s.currentArchiveBinding(ctx, organization.ID)
 		if err != nil {
-			return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
+			return attachmententry.Error(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
 		}
 		return c.JSON(http.StatusOK, binding)
 	}
 	if c.Request().Header.Get("X-CSRF-Token") != claims.CSRF {
-		return attachmentError(c, http.StatusForbidden, "invalid_csrf", "Reload the form and try again")
+		return attachmententry.Error(c, http.StatusForbidden, "invalid_csrf", "Reload the form and try again")
 	}
 	var input struct {
 		Backend             string `json:"backend"`
@@ -261,7 +263,7 @@ func (s *Service) archiveStorageBinding(c echo.Context) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(c.Response(), c.Request().Body, 8192))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&input) != nil {
-		return attachmentError(c, http.StatusBadRequest, "invalid_binding", "Invalid storage binding")
+		return attachmententry.Error(c, http.StatusBadRequest, "invalid_binding", "Invalid storage binding")
 	}
 	b := attachment.StorageBinding{Organization: organization.ID, Backend: input.Backend, Endpoint: input.Endpoint, Region: input.Region, Bucket: input.Bucket, Prefix: input.Prefix, CredentialReference: input.CredentialReference}
 	if b.Backend == "hosted" && s.config.Attachments != nil {
@@ -269,35 +271,35 @@ func (s *Service) archiveStorageBinding(c echo.Context) error {
 		b.Endpoint, b.Region, b.Bucket, b.Prefix, b.CredentialReference = cfg.Endpoint, cfg.Region, cfg.Bucket, "", "hosted"
 	}
 	if b.Validate() != nil || attachment.ValidateArchiveEndpoint(ctx, b.Endpoint) != nil {
-		return attachmentError(c, http.StatusBadRequest, "invalid_binding", "Invalid storage binding endpoint or location")
+		return attachmententry.Error(c, http.StatusBadRequest, "invalid_binding", "Invalid storage binding endpoint or location")
 	}
 	b.ID = "validating"
 	storage, err := s.bindingStorage(ctx, b)
 	if err != nil || storage.ConfigureArchiveReads(ctx, []string{s.config.PublicURL}) != nil {
-		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
+		return attachmententry.Error(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	versioned, err := storage.ArchiveVersioning(ctx)
 	if err != nil {
-		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
+		return attachmententry.Error(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	b.Versioned = &versioned
 	unlock := s.attachmentLocks.lock(organization.ID, true)
 	defer unlock()
 	if err := s.ensureLegacyArchiveBinding(ctx, organization.ID); err != nil {
-		return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
+		return attachmententry.Error(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	if err := s.auth.audit(ctx, claims.Subject, organization.ID, "archive_storage_bound"); err != nil {
-		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Storage audit is unavailable")
+		return attachmententry.Error(c, http.StatusServiceUnavailable, "audit_unavailable", "Storage audit is unavailable")
 	}
 	b, err = s.saveArchiveBinding(ctx, b, input.ExpectedRevision)
 	if errors.Is(err, attachment.ErrInvalid) {
-		return attachmentError(c, http.StatusBadRequest, "invalid_binding", "Archive storage origins exceed the supported limit")
+		return attachmententry.Error(c, http.StatusBadRequest, "invalid_binding", "Archive storage origins exceed the supported limit")
 	}
 	if errors.Is(err, ErrOrganizationConflict) {
-		return attachmentError(c, http.StatusConflict, "revision_conflict", "Storage changed; reload and try again")
+		return attachmententry.Error(c, http.StatusConflict, "revision_conflict", "Storage changed; reload and try again")
 	}
 	if err != nil {
-		return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
+		return attachmententry.Error(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	return c.JSON(http.StatusOK, b)
 }

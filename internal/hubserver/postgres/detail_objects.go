@@ -162,3 +162,17 @@ func (d *DetailStore) read(ctx context.Context, organization, key string) ([]byt
 	})
 	return compressed, err
 }
+
+func (d *DetailStore) ReclaimPage(ctx context.Context, organization tracker.OrganizationID, cutoff time.Time, after string, limit int) (string, int, error) {
+	if limit < 1 || limit > DetailReclaimPage {
+		return after, 0, corestore.ErrInvalidPage
+	}
+	var next string
+	var count int
+	err := d.repository.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+		var err error
+		next, count, err = s.reclaimDetailObjects(ctx, cutoff, after, limit)
+		return err
+	})
+	return next, count, err
+}

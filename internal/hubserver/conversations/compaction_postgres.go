@@ -15,6 +15,12 @@ import (
 )
 
 func (c *ConversationService) CompactEventsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {
+	next, _, removed, err := c.CompactPage(ctx, organization, c.LifecycleCursor("compaction"), now, conversationstore.CompactionConversations, conversationstore.CompactionBatch)
+	c.advanceLifecycleCursor("compaction", next)
+	return removed, err
+}
+
+func (c *ConversationService) CompactPage(ctx context.Context, organization tracker.OrganizationID, after string, now time.Time, candidatesLimit, limit int) (string, int, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	before := now.Add(-conversationstore.EventRetention)
@@ -25,30 +31,30 @@ func (c *ConversationService) CompactEventsPG(ctx context.Context, organization 
 			return ConversationUnsupported("Conversation compaction owner is unavailable")
 		}
 		var err error
-		candidates, err = owner.CompactionCandidates(ctx, c.LifecycleCursor("compaction"), before, now, conversationstore.CompactionConversations)
+		candidates, err = owner.CompactionCandidates(ctx, after, before, now, candidatesLimit)
 		return err
 	}); err != nil {
-		return 0, err
+		return after, 0, 0, err
 	}
-	remaining, removed := conversationstore.CompactionBatch, 0
+	remaining, removed := limit, 0
 	processedCandidates := 0
 	for _, candidate := range candidates.Items {
 		if remaining == 0 {
 			break
 		}
 		processed, count, err := c.compactConversationEventsPG(ctx, candidate.Conversation, before, now, remaining)
-		c.advanceLifecycleCursor("compaction", candidate.Cursor)
+		after = candidate.Cursor
 		processedCandidates++
 		if err != nil {
-			return removed, fmt.Errorf("compact PostgreSQL conversation events: %w", err)
+			return after, limit - remaining + max(processed, 1), removed, fmt.Errorf("compact PostgreSQL conversation events: %w", err)
 		}
-		remaining -= processed
+		remaining -= max(processed, 1)
 		removed += count
 	}
 	if processedCandidates == len(candidates.Items) && candidates.Next == "" {
-		c.advanceLifecycleCursor("compaction", "")
+		after = ""
 	}
-	return removed, nil
+	return after, limit - remaining, removed, nil
 }
 
 func (c *ConversationService) compactConversationEventsPG(ctx context.Context, candidate conversationstore.Conversation, before, now time.Time, budget int) (int, int, error) {

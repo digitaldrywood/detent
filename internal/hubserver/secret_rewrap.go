@@ -20,7 +20,7 @@ func (s *Service) MaintainSecret(ctx context.Context, organization tracker.Organ
 	if organization == "" || s.config.AccessRepository == nil {
 		return after, false, corestore.ErrTenantMismatch
 	}
-	if s.config.SecretKeys == nil {
+	if s.config.SecretKeys == nil && s.config.runtimeHost == nil {
 		return after, false, nil
 	}
 	var page []accessstore.Secret
@@ -37,14 +37,23 @@ func (s *Service) MaintainSecret(ctx context.Context, organization tracker.Organ
 	}
 	secret := page[0]
 	next := SecretCursor{ProjectID: secret.ProjectID, Kind: secret.Kind}
-	if secret.Envelope.Version == s.config.SecretKeys.Version() {
-		return next, true, nil
+	if s.config.SecretKeys == nil || secret.Envelope.Version == s.config.SecretKeys.Version() {
+		return next, true, accessstore.VerifySecret(s.config.SecretKeys, secret)
 	}
 	envelope, err := s.config.SecretKeys.Rewrap(secret.Envelope, accessstore.SecretAAD(organization, secret.ProjectID, secret.Kind))
 	if err != nil {
 		return next, true, err
 	}
 	err = s.config.AccessRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		if s.config.runtimeHost != nil {
+			tenant, err := w.AccessTenant(ctx)
+			if err != nil {
+				return err
+			}
+			if err := s.accessHostedBinding(tenant); err != nil {
+				return err
+			}
+		}
 		return w.RewrapAccessSecret(ctx, secret, envelope, accessstore.SecretAudit{OrganizationID: organization, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "system:rewrap", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: s.config.Clock()})
 	})
 	if errors.Is(err, corestore.ErrRevisionConflict) {
@@ -78,7 +87,7 @@ func (s *Service) runSecretRewrap(ctx context.Context) {
 }
 
 func (s *Service) rewrapSecrets(ctx context.Context) {
-	if s.config.SecretKeys == nil {
+	if s.config.SecretKeys == nil && s.config.runtimeHost == nil {
 		return
 	}
 	if err := s.rewrapAccessSecrets(ctx); err != nil && ctx.Err() == nil {

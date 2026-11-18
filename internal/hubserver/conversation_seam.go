@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
@@ -70,21 +71,24 @@ func (s *Service) conversationContents(contents attachment.ArchiveContentStore) 
 	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
 		contents = s.config.Hosted.SharedEntry.ArchiveContents
 	}
-	if contents != nil {
-		return contents
+	if contents == nil {
+		call := s.config.Content
+		if call == nil && s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
+			call = s.config.Hosted.SharedEntry.Content
+		}
+		if call != nil {
+			contents = conversationArchiveStore{Call: call}
+		}
 	}
-	call := s.config.Content
-	if call == nil && s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
-		call = s.config.Hosted.SharedEntry.Content
+	if s.config.runtimeHost != nil {
+		return hubmaintenance.LimitArchiveContents(contents)
 	}
-	if call != nil {
-		return conversationArchiveStore{Call: call}
-	}
-	return nil
+	return contents
 }
 
 func (s *Service) conversationDeps() conversations.Deps {
 	deps := conversations.Deps{
+		SharedMaintenance: s.config.runtimeHost != nil,
 		Config: func() conversations.Config {
 			cfg := conversations.Config{TenantRepository: s.config.TenantRepository, Now: s.config.Clock, ConversationDispatch: s.config.ConversationDispatch}
 			if s.config.ConversationWorkerAuthority != nil {

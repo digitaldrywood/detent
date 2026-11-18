@@ -12,23 +12,25 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/digitaldrywood/detent/internal/buildinfo"
-	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
-
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/cli/conversationconfig"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubgithub"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 )
 
 type cloudFileConfig struct {
@@ -84,8 +86,8 @@ func (b *cloudBillingFileConfig) defaults() {
 type cloudAllocationFileConfig struct {
 	TenantRoot               string                         `yaml:"tenant_root"`
 	SocketRoot               string                         `yaml:"socket_root"`
-	Binary                   string                         `yaml:"binary"`
-	MaxTenants               int                            `yaml:"max_tenants"`
+	LegacyBinary             string                         `yaml:"binary"`
+	LegacyMaxTenants         int                            `yaml:"max_tenants"`
 	MaxConcurrentProvisions  int                            `yaml:"max_concurrent_provisions"`
 	RetryLimit               int                            `yaml:"retry_limit"`
 	MinFreeDiskBytes         uint64                         `yaml:"min_free_disk_bytes"`
@@ -100,9 +102,6 @@ type cloudAllocationFileConfig struct {
 
 func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []string {
 	names := []string{config.WorkOS.APIKeyEnv}
-	if config.TenantPostgres != nil {
-		names = append(names, config.TenantPostgres.PasswordEnv)
-	}
 	for _, name := range []string{"DETENT_HUB_GITHUB_APP_ID", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY", "DETENT_HUB_GITHUB_WEBHOOK_SECRET"} {
 		if lookupEnv(name) != "" {
 			names = append(names, name)
@@ -115,6 +114,9 @@ func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []
 	// keys; without them a hosted project cannot store a Sprites token.
 	if lookupEnv("DETENT_HUB_SECRET_KEYS") != "" {
 		names = append(names, "DETENT_HUB_SECRET_KEYS", "DETENT_HUB_SECRET_KEY_VERSION")
+	}
+	if billing := config.Billing; billing != nil {
+		names = append(names, billing.APIKeyEnv, billing.WebhookSecretEnv)
 	}
 	if tenantBilling := config.Allocation.Billing; tenantBilling != nil {
 		names = append(names, tenantBilling.APIKeyEnv, tenantBilling.WebhookSecretEnv)
@@ -140,14 +142,17 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 		if err != nil {
 			return nil, err
 		}
-		tenant := hostedFileConfig{
-			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL,
-			Plans: config.Allocation.Entitlements, Billing: config.Allocation.Billing,
-			Conversation:             &hostedConversationFileConfig{Enabled: true},
-			Workspaces:               preserved.Workspaces,
-			EntitlementAdministrator: config.Allocation.EntitlementAdministrator, EntitlementAdminTokenEnv: config.Allocation.EntitlementAdminTokenEnv,
-			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
-			Postgres:    config.TenantPostgres,
+		tenant := preserved
+		if tenant.OrganizationID == "" {
+			tenant.Conversation = &conversationconfig.Section{Enabled: true}
+		}
+		tenant.OrganizationID, tenant.WorkOSOrganizationID = spec.Organization.ID, spec.Organization.ProviderID
+		tenant.PublicURL = spec.PublicURL
+		tenant.Postgres = nil
+		tenant.SharedEntry = &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation}
+		if allocation := config.Allocation; allocation != nil && (spec.Organization.Managed || preserved.OrganizationID == "") {
+			tenant.Plans, tenant.Billing = allocation.Entitlements, allocation.Billing
+			tenant.EntitlementAdministrator, tenant.EntitlementAdminTokenEnv = allocation.EntitlementAdministrator, allocation.EntitlementAdminTokenEnv
 		}
 		if spec.Organization.CheckoutPrice != "" {
 			tenant.Plans = hostedplans.CheckoutHostedPlans(tenant.Plans)
@@ -157,27 +162,72 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 	}
 }
 
-func preservedTenantConfiguration(spec cloudentry.TenantSpec) (hostedFileConfig, error) {
-	if spec.Directory == "" {
-		return hostedFileConfig{}, nil
-	}
-	file, err := os.Open(filepath.Join(spec.Directory, "tenant.yaml"))
-	if errors.Is(err, os.ErrNotExist) {
-		return hostedFileConfig{}, nil
-	}
+func sharedTenantConfig(raw []byte, spec cloudentry.TenantSpec, lookup, lookupBilling func(string) string) (hubserver.Config, error) {
+	hosted, err := parseHostedConfigWithBilling(bytes.NewReader(raw), lookup, lookupBilling)
 	if err != nil {
-		return hostedFileConfig{}, errors.New("tenant workspace policy could not be opened")
+		return hubserver.Config{}, err
 	}
-	decoder := yaml.NewDecoder(io.LimitReader(file, 128*1024))
+	if !hosted.BindsSharedOrganization(spec.Organization.ID) || hosted.WorkOSOrganizationID != spec.Organization.ProviderID || hosted.SharedEntry.Generation != spec.Organization.Generation || hosted.SharedEntry.Issuer != spec.Issuer {
+		return hubserver.Config{}, hubserver.ErrHostedDatabaseBinding
+	}
+	authority := hosted.SharedEntry
+	authority.ResolveKey, authority.Content, authority.ArchiveContents = spec.ResolveKey, spec.Content, spec.ArchiveContents
+	authority.RunDetails, authority.ReadArchive, authority.Icons = spec.RunDetails, spec.ReadArchive, spec.Icons
+	keys, err := hubsecrets.FromEnvironment(lookup)
+	if err != nil {
+		return hubserver.Config{}, err
+	}
+	cfg := hubserver.Config{Hosted: hosted, DatabaseBackend: hubserver.DatabasePostgres, SecretKeys: keys, GitHubWebhookSecret: []byte(strings.TrimSpace(lookup("DETENT_HUB_GITHUB_WEBHOOK_SECRET")))}
+	var file hostedFileConfig
+	if err := yaml.Unmarshal(raw, &file); err != nil {
+		return hubserver.Config{}, err
+	}
+	usage, priced, err := convertUsageConfig(file.Usage)
+	if err != nil {
+		return hubserver.Config{}, err
+	}
+	if priced {
+		cfg.Usage = &usage
+	}
+	conversation, enabled, err := file.Conversation.Build(buildCoordinatorCodexBackend, os.Stat, lookup)
+	if err != nil {
+		return hubserver.Config{}, err
+	}
+	if enabled {
+		cfg.Conversation = &conversation
+	}
+	workspace, enabled, err := readWorkspaceConfig(file.Workspaces)
+	if err != nil {
+		return hubserver.Config{}, err
+	}
+	if enabled {
+		cfg.Workspace = &workspace
+	}
+	if app, key := lookup("DETENT_HUB_GITHUB_APP_ID"), lookup("DETENT_HUB_GITHUB_APP_PRIVATE_KEY"); app != "" && key != "" {
+		transport := hubgithub.NewAppTransport(connectorgithub.InstallationTokenConfig{AppID: app, PrivateKey: key, LookupEnv: lookup})
+		cfg.GitHubAppInstallation = transport.AppInstallation
+		cfg.OutboxBackend = hubgithub.NewWriter(transport)
+		cfg.ReconcileBackend = hubgithub.NewReconciler(transport)
+		cfg.ImportBackend = hubgithub.NewImporter(transport)
+		cfg.GitHubRequestCounts = transport.Counts
+	}
+	return cfg, nil
+}
+
+func preservedTenantConfiguration(spec cloudentry.TenantSpec) (hostedFileConfig, error) {
+	data, err := spec.ConfigurationSource()
+	if err != nil || data == nil {
+		return hostedFileConfig{}, err
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	var tenant hostedFileConfig
-	decodeErr := decoder.Decode(&tenant)
-	closeErr := file.Close()
-	if decodeErr != nil || closeErr != nil {
-		return hostedFileConfig{}, errors.New("tenant workspace policy could not be read")
+	var trailing any
+	if err := decoder.Decode(&tenant); err != nil || !errors.Is(decoder.Decode(&trailing), io.EOF) {
+		return hostedFileConfig{}, errors.New("original hosted configuration is invalid")
 	}
 	if tenant.OrganizationID != spec.Organization.ID || tenant.WorkOSOrganizationID != spec.Organization.ProviderID {
-		return hostedFileConfig{}, errors.New("tenant workspace policy belongs to another organization")
+		return hostedFileConfig{}, errors.New("original hosted configuration belongs to another organization")
 	}
 	if _, _, err := readWorkspaceConfig(tenant.Workspaces); err != nil {
 		return hostedFileConfig{}, err
@@ -297,13 +347,8 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	if config.TenantPostgres != nil && config.Storage.Backend != "postgres" {
 		return cloudentry.Config{}, errors.New("tenant PostgreSQL requires PostgreSQL platform storage")
 	}
-	if config.Allocation != nil && config.Storage.Backend == "postgres" && config.TenantPostgres == nil {
-		return cloudentry.Config{}, errors.New("PostgreSQL tenant runtime is required when allocating PostgreSQL tenants")
-	}
-	if config.TenantPostgres != nil {
-		if _, err := config.TenantPostgres.runtime(lookupEnv); err != nil {
-			return cloudentry.Config{}, err
-		}
+	if config.Storage.Backend == "postgres" && config.TenantPostgres == nil {
+		return cloudentry.Config{}, errors.New("cloud serve requires tenant_postgres with the shared database runtime role and pool budgets")
 	}
 	result := cloudentry.Config{
 		Storage:                cloudentry.StorageConfig{Backend: config.Storage.Backend, PostgresDSN: lookupEnv(config.Storage.PostgresDSNEnv), Pool: platformstore.PoolConfig{MaxConnections: config.Storage.MaxConnections, ServingConnections: config.Storage.ServingConnections, BackgroundConnections: config.Storage.BackgroundConnections}},
@@ -328,12 +373,6 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		result.Attachments = config.Attachments
 	}
 	if allocation := config.Allocation; allocation != nil {
-		binary := allocation.Binary
-		if binary == "" {
-			if binary, err = os.Executable(); err != nil {
-				return cloudentry.Config{}, err
-			}
-		}
 		if allocation.MaxConcurrentProvisions == 0 {
 			allocation.MaxConcurrentProvisions = 1
 		}
@@ -346,11 +385,13 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		if allocation.Entitlements.IsZero() {
 			allocation.Entitlements = nil
 		}
+		if err := validateTenantConfiguration(config, key, lookupEnv); err != nil {
+			return cloudentry.Config{}, err
+		}
 		result.Allocation = &cloudentry.AllocationConfig{
-			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
+			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxConcurrent: allocation.MaxConcurrentProvisions,
 			RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
 			AllowedEmails: allocation.AllowedEmails, AllowedDomains: allocation.AllowedDomains,
-			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: tenantEnvironment(config, lookupEnv), Configure: tenantConfiguration(config), Logger: slog.Default(), RestartLimit: allocation.RetryLimit},
 		}
 		if name := allocation.EntitlementAdminTokenEnv; name != "" {
 			result.Allocation.EntitlementAdminToken = []byte(lookupEnv(name))
@@ -366,9 +407,42 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 				return cloudentry.Config{}, err
 			}
 		}
-		if err := validateTenantConfiguration(config, key, lookupEnv); err != nil {
+
+	}
+	if config.TenantPostgres != nil {
+		hostConfig := config
+		if hostConfig.Allocation == nil {
+			hostConfig.Allocation = &cloudAllocationFileConfig{}
+		}
+		pg, err := hostConfig.TenantPostgres.runtime(lookupEnv)
+		if err != nil {
 			return cloudentry.Config{}, err
 		}
+		environment := tenantEnvironment(hostConfig, lookupEnv)
+		tenantSecrets := make(map[string]string, len(environment))
+		for _, pair := range environment {
+			name, value, _ := strings.Cut(pair, "=")
+			tenantSecrets[name] = value
+		}
+		tenantLookup := func(name string) string { return tenantSecrets[name] }
+		result.SharedHub = &cloudentry.SharedHubConfig{Postgres: *pg, Configure: tenantConfiguration(config), TenantConfig: func(raw []byte, spec cloudentry.TenantSpec) (hubserver.Config, error) {
+			billingLookup := tenantLookup
+			if config.Allocation == nil {
+				original, err := preservedTenantConfiguration(spec)
+				if err != nil {
+					return hubserver.Config{}, err
+				}
+				if b := original.Billing; b != nil {
+					billingLookup = func(name string) string {
+						if name == b.APIKeyEnv || name == b.WebhookSecretEnv {
+							return lookupEnv(name)
+						}
+						return tenantLookup(name)
+					}
+				}
+			}
+			return sharedTenantConfig(raw, spec, tenantLookup, billingLookup)
+		}}
 	}
 	if billingConfig := config.Billing; billingConfig != nil {
 		if !validEnvName(billingConfig.APIKeyEnv) || !validEnvName(billingConfig.WebhookSecretEnv) {
@@ -437,7 +511,7 @@ func newCloudCommand(opts options) *cobra.Command {
 		Use:     "cloud",
 		Short:   "Run the operator-hosted shared entry for Detent Cloud",
 		Example: "detent cloud serve --entry-config /etc/detent/cloud.yaml",
-		Long:    "Opt-in operator-hosted functionality: one shared public origin for sign-in, organization selection and authenticated routing to dedicated tenant Hubs. Self-hosted Detent never needs it.",
+		Long:    "Opt-in operator-hosted functionality: one shared public origin for sign-in, organization selection and authenticated routing to one shared Hub. Self-hosted Detent never needs it.",
 		Args:    NoArgs,
 	}
 	cmd.AddCommand(newCloudServeCommand(lookupEnv, opts.build), newCloudAssertionKeyCommand(lookupEnv))
@@ -456,21 +530,12 @@ func newCloudServeCommand(lookupEnv func(string) string, build buildinfo.Info) *
 			if _, err := OutputForCommand(cmd); err != nil {
 				return err
 			}
-			logger, level, err := serveLogger(cmd, lookupEnv, cmd.ErrOrStderr())
+			logger, _, err := serveLogger(cmd, lookupEnv, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
 			slog.SetDefault(logger)
-			// Tenant Hubs run at the level this process resolved, not at
-			// whatever LOG_LEVEL the environment carried under a --log-level
-			// override.
-			tenantLookup := func(name string) string {
-				if name == "LOG_LEVEL" {
-					return level
-				}
-				return lookupEnv(name)
-			}
-			config, err := readCloudConfig(configPath, tenantLookup)
+			config, err := readCloudConfig(configPath, lookupEnv)
 			if err != nil {
 				return err
 			}

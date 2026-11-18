@@ -291,6 +291,14 @@ func (c *conversationTurnCoordinator) Stop() {
 		delete(c.passes, id)
 	}
 	c.queue = nil
+	if c.server != nil && c.server.config.runtimeHost != nil {
+		for _, turn := range c.turns {
+			turn.cancel()
+		}
+		c.mu.Unlock()
+		c.wg.Wait()
+		return
+	}
 	c.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -531,7 +539,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		c.mu.Unlock()
 		return false, nil
 	}
-	turnCtx, cancelTurn := context.WithCancel(context.Background())
+	turnCtx, cancelTurn := context.WithTimeout(context.Background(), coordinatorTurnTimeout)
 	turn := &coordinatorTurn{cancel: cancelTurn, done: make(chan struct{})}
 	c.turns[conversationID] = turn
 	c.mu.Unlock()
@@ -884,22 +892,27 @@ func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend r
 		finished = true
 		updateMu.Unlock()
 	}()
+	run := func() (result runner.AgentTurnResult, err error) {
+		defer func() {
+			if recover() != nil {
+				err = errors.New("coordinator backend panicked")
+			}
+		}()
+		if toolBackend, ok := backend.(runner.AgentToolBackend); ok {
+			toolset := newCoordinatorToolset(c, state)
+			return toolBackend.RunTurnWithTools(ctx, request, toolset.tools(), toolset.handle, onUpdate)
+		}
+		return backend.RunTurn(ctx, request, onUpdate)
+	}
+	if c.server != nil && c.server.config.runtimeHost != nil {
+		return run()
+	}
 	type completion struct {
 		result runner.AgentTurnResult
 		err    error
 	}
 	done := make(chan completion, 1)
-	go func() {
-		var result runner.AgentTurnResult
-		var err error
-		if toolBackend, ok := backend.(runner.AgentToolBackend); ok {
-			toolset := newCoordinatorToolset(c, state)
-			result, err = toolBackend.RunTurnWithTools(ctx, request, toolset.tools(), toolset.handle, onUpdate)
-		} else {
-			result, err = backend.RunTurn(ctx, request, onUpdate)
-		}
-		done <- completion{result: result, err: err}
-	}()
+	go func() { result, err := run(); done <- completion{result, err} }()
 	select {
 	case result := <-done:
 		return result.result, result.err

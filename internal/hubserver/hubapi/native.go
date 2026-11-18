@@ -8,11 +8,15 @@ import (
 	"runtime"
 	"strconv"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func FromFeatureError(err error) error {
+	if errors.Is(err, corestore.ErrServingCapacity) {
+		return &NativeError{Code: "service_unavailable", Message: "Organization serving capacity is occupied", Status: http.StatusServiceUnavailable, PublicMessage: true, RetryAfter: 1}
+	}
 	var failure *Error
 	if !errors.As(err, &failure) || failure == nil {
 		return err

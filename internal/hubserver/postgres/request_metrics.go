@@ -217,9 +217,16 @@ func metricFromMinute(row pgquery.RequestMinute) metricsstore.Metric {
 }
 
 func (r *Repository) RetainRequestMetrics(ctx context.Context, organization tracker.OrganizationID, now time.Time) error {
+	return r.RetainRequestMetricPage(ctx, organization, now, metricsstore.RetentionLimit)
+}
+
+func (r *Repository) RetainRequestMetricPage(ctx context.Context, organization tracker.OrganizationID, now time.Time, perStage int) error {
+	if perStage < 1 || perStage > metricsstore.RetentionLimit {
+		return metricsstore.ErrInvalidMetric
+	}
 	minuteCutoff := now.Add(-metricsstore.MinuteRetention).UTC().Truncate(time.Minute)
 	dayCutoff := now.Add(-metricsstore.DayRetention).UTC().Truncate(24 * time.Hour)
-	for range metricsstore.RetentionLimit {
+	for range perStage {
 		more := false
 		err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
 			row, err := s.queries.TakeExpiredRequestMinute(ctx, pgquery.TakeExpiredRequestMinuteParams{
@@ -258,6 +265,7 @@ func (r *Repository) RetainRequestMetrics(ctx context.Context, organization trac
 	for _, expire := range []func(*session) error{
 		func(s *session) error {
 			_, err := s.queries.ExpireRequestHours(ctx, pgquery.ExpireRequestHoursParams{
+				BatchLimit:     int32(perStage),
 				OrganizationID: organization,
 				Cutoff:         now.Add(-metricsstore.HourRetention).UTC().Truncate(time.Hour),
 			})
@@ -265,6 +273,7 @@ func (r *Repository) RetainRequestMetrics(ctx context.Context, organization trac
 		},
 		func(s *session) error {
 			_, err := s.queries.ExpireRequestDays(ctx, pgquery.ExpireRequestDaysParams{
+				BatchLimit:     int32(perStage),
 				OrganizationID: organization,
 				Cutoff:         dayCutoff,
 			})
@@ -275,7 +284,7 @@ func (r *Repository) RetainRequestMetrics(ctx context.Context, organization trac
 			return err
 		}
 	}
-	for range metricsstore.RetentionLimit {
+	for range perStage {
 		var expired int64
 		if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
 			var err error

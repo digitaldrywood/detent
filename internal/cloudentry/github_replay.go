@@ -27,6 +27,28 @@ func (s *Service) githubReplayWindow(ctx context.Context) (time.Time, time.Time)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if s.sharedHub != nil {
+		latest, err := s.registry.store.db.postgres.LatestGitHubIngress(ctx)
+		if err != nil {
+			s.config.Logger.Warn("read GitHub ingress replay window", "error", err)
+			return time.Time{}, before
+		}
+		if !latest.IsZero() {
+			return latest, before
+		}
+		var since *time.Time
+		err = s.registry.store.db.QueryRowContext(ctx, `SELECT (
+SELECT COALESCE(r.last_received_at,r.received_at)
+FROM public.github_webhook_receipts r JOIN platform.organizations o ON o.id=r.organization_id
+WHERE o.state='ready' ORDER BY COALESCE(r.last_received_at,r.received_at) DESC LIMIT 1)`).Scan(&since)
+		if err != nil {
+			s.config.Logger.Warn("read GitHub replay window", "error", err)
+		}
+		if since == nil {
+			return time.Time{}, before
+		}
+		return *since, before
+	}
 	organizations, err := s.registry.List(ctx)
 	if err != nil {
 		s.config.Logger.Warn("read GitHub replay window", "error", err)

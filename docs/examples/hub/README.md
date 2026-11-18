@@ -17,13 +17,7 @@ the runner. `python3 -m unittest scripts/hub_examples_test.py` parses the plist,
 builds the current CLI, invokes both service commands with `--help`, and
 exercises file-to-environment token loading without starting a Hub.
 
-The rest of this page describes the shared entry (`detent cloud serve`), which
-runs a public site with a shared identity/provisioning entry and metadata
-registry in front of dedicated private tenant Hub processes with separate
-databases. Self-hosted Detent never needs it. The public reverse proxy forwards
-to the entry unchanged and never chooses a tenant with a URL rewrite; each
-tenant verifies the entry's signed assertion. The [nginx examples](../cloud/)
-show that ingress shape.
+The shared Cloud deployment runs one `detent cloud serve` process behind the public reverse proxy. The entry authenticates the caller and routes the signed request to a Hub handler in the same process. Organizations share one PostgreSQL runtime pool. The platform registry and authentication store use a separate role and pool. The [nginx examples](../cloud/) show the ingress configuration.
 
 ## Configuration surfaces
 
@@ -33,7 +27,7 @@ show that ingress shape.
 | Hosted tenant Hub | `--hosted-config PATH`; root `organization_id`, `workos_organization_id`, `bootstrap_subject`, `public_url`, `workos`, `directory`, `staff_emails`, `support_actors`, entitlement and billing fields |
 | WorkOS fields | `client_id`, `api_key_env` (default `WORKOS_API_KEY`), optional `api_url` (default `https://api.workos.com`), `issuer_url` (default `<api_url>/user_management/<client_id>`; set only for a custom auth domain) |
 | Entitlements | `entitlements` plan catalog and assignments; see [allowances](../../hosted-allowances.md) |
-| Shared entry and registry | `detent cloud serve --entry-config PATH`; tenant `shared_entry` block; `detent cloud registry register/list`; `detent hub migrate-shared-origin` |
+| Shared entry and registry | `detent cloud serve --entry-config PATH` and `detent hub migrate-shared-origin` |
 
 Hosted and entry YAML parsers reject unknown fields.
 
@@ -48,7 +42,7 @@ runner fallback.
 ## Shared entry
 
 `detent cloud serve` runs the shared entry on a loopback port behind the public
-TLS proxy. Its configuration:
+TLS proxy. These fields identify the public site. Use the existing platform, object storage and runtime database settings for the installation.
 
 ```yaml
 public_url: https://cloud.example.com
@@ -64,8 +58,7 @@ workos:
   api_key_env: WORKOS_API_KEY
 ```
 
-Platform membership lives in `registry.db`, independently of customer organization
-membership. `platform.bootstrap_admin_email` names the operator's verified email;
+PostgreSQL stores platform membership separately from organization membership. `platform.bootstrap_admin_email` names the operator's verified email;
 startup restores this address to `admin`, and the members API cannot remove it.
 The entry requires this address or an existing registry admin to start.
 `admin` manages platform members and includes support and billing privileges;
@@ -86,20 +79,11 @@ belongs in the entry's private environment and the public key in each tenant's
 authentication sessions, login transactions and content-free audit records.
 Install directories contain disposable runtime files, never application state.
 
-Tenant endpoints are Unix sockets only. Before every connection the entry checks
-that the socket and its directory are owned by the entry's service user and that
-the directory is private (mode 0700), so another local process cannot impersonate
-a restarting tenant. The entry and tenants run as the same service user.
+### Upgrading a registered organization
 
-Tenant registration happens while the entry is stopped; it is idempotent, refuses
-to reuse IDs or provider organizations, and changes an endpoint only with a higher
-generation:
+Configure `tenant_postgres` on the entry for both self-service and registration-only deployments. Point it at the existing Hub database with its restricted runtime login. Keep `storage.postgres_dsn_env` on the platform login. Preserve the signing key, encryption keyring, public URL, organization and provider IDs, allocation generations and registered endpoints. The entry retains endpoint values for binding checks and routes traffic in process.
 
-```sh
-detent cloud registry register --registry /var/lib/detent/cloud/registry.db \
-  --organization org_example --provider-organization org_workos_example \
-  --name "Example" --endpoint unix:/run/detent/tenants/org_example.sock --generation 1
-```
+On first activation the shared Hub imports the registered organization's settings from its original `tenant.yaml`, including the bootstrap subject, conversation settings, usage prices and workspace policy. For a managed organization the source is `allocation.tenant_root/ORG/tenant.yaml`. For registration-only operation place the original file at `state_directory/tenants/ORG/tenant.yaml`. The entry checks the organization and provider IDs, validates the settings and records the configuration and workspace object references together in PostgreSQL. Later activations load the imported settings. Keep the original file available until import succeeds. An older registration or a workspace policy alone still needs the original hosted settings.
 
 ## Platform notification email
 
@@ -127,7 +111,6 @@ YAML, a bootstrap user, DNS or a public port.
 allocation:
   tenant_root: /var/lib/detent/tenants
   socket_root: /run/detent/tenants
-  max_tenants: 20
   max_concurrent_provisions: 1
   retry_limit: 5
   min_free_disk_bytes: 2147483648
@@ -145,11 +128,9 @@ consume it. When the slot is used, creation requires a configured paid plan and
 continues to hosted checkout. Until payment succeeds, the new organization has
 no project or AI execution allowance. Allocation YAML uses strict field
 validation, so older files containing the retired per-identity organization
-limit fail to load. `max_tenants` is the operator capacity ceiling.
+limit fail to load.
 
-`max_tenants` and the free-memory/disk floors are admission limits: a request that
-does not fit is stored as a retryable `capacity` failure before any provider or
-filesystem effect, and ready tenants are never disturbed. The memory floor reads
+The entry enforces host memory, disk and concurrent provisioning limits. A request that exceeds a limit records a retryable `capacity` failure before it creates a provider organization. The memory floor reads
 Linux `MemAvailable`; where memory cannot be measured a nonzero floor refuses
 admission. `allowed_domains`/`allowed_emails` restrict sign-up; empty lists admit
 any verified account. `entitlements` is the tenant's
@@ -165,44 +146,12 @@ inconsistent tenant billing stops the entry with an error instead of leaving
 every tenant unable to start.
 `entitlement_administrator` and `entitlement_admin_token_env` are optional; when set,
 each tenant accepts complimentary grants on `POST /api/v2/organizations/ORG/entitlements`
-with that token (at least 32 bytes, read from the entry's environment and passed to
-tenants as an environment variable, never written to `tenant.yaml`). Without them
+with that token (at least 32 bytes, read from the entry's environment). Without them
 complimentary access cannot be granted on the shared deployment.
 
-For each organization the entry creates `tenant_root/ORG/` (mode 0700) holding the
-generated `tenant.yaml` (no secrets), `hub.db` and a private per-tenant Hub admin
-token, and runs `detent hub serve --hosted-config ... --listen unix:socket_root/ORG.sock`
-as a supervised child (restarted with backoff; stopped when the entry stops).
-The same supervisor checks the authenticated tenant health endpoint every five
-seconds. A tenant that has not passed a check within 15 minutes of starting, or
-that fails checks for 30 seconds after serving, is interrupted and reaped before
-the existing restart backoff. The entry's `/health` returns 503 when its registry
-or authentication database is unavailable or any ready tenant fails its
-authenticated health check. Allocating, failed and deleted organizations are not
-expected to serve yet. The entry interrupts all children together and waits for
-their exit before releasing its own databases. A child has 15 seconds to exit
-before the launcher kills and reaps it. Keep all tenants in the entry's systemd
-cgroup: use `KillMode=mixed` with `TimeoutStopSec=45` (or longer), never
-`KillMode=process`. This gives the entry time to drain requests and join tenants
-while systemd retains final cgroup cleanup authority. Shared-entry tenants wait
-cancellably for a previous process to release their database ownership lock;
-same-process and live-sibling contention still fails immediately.
+Provisioning creates the organization's database binding and cursor keys in a tenant transaction. Ready organizations reopen their existing bindings. Closing an organization releases its service view. The host owns the physical pool until shutdown.
 
-A child that exits `retry_limit` times in a row without staying up for five minutes is no
-longer restarted: during setup the organization moves to `failed` with the reason
-shown on the provisioning screen and the platform console, and resuming setup
-starts it again. The child receives only
-`PATH`/`HOME`/`TMPDIR`/`LANG`/`TZ`/`LOG_LEVEL`/`DETENT_LOG_LEVEL`, the WorkOS key
-variable, the optional entitlement token variable and its own admin token. Each
-tenant's durable application state belongs to PostgreSQL through authenticated
-Hub APIs; `tenant_root` is not a durable database owner.
-
-Deletion is owner-only (`/organizations/ORG/delete`, current provider owner, typed
-name, CSRF). It marks the organization `deleting`, revokes every authorization and
-tenant session, stops the tenant and records a permanent `deleted` tombstone that
-cannot be routed or resurrected; an interrupted deletion resumes automatically.
-Tenant data stays on disk for the operator's retention process; the entry never
-erases customer data, including after a failed signup.
+An owner requests deletion at `/organizations/ORG/delete` with a current provider session, CSRF token and the organization's name. Deletion marks the matching generation as deleting, revokes access, joins tenant work and drains admitted archive publishers. The entry then erases the organization's object-storage bindings and records the deletion tombstone. An interrupted erasure retains its receipt and resumes through the allocator.
 
 ### Backup and recovery
 

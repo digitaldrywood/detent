@@ -171,7 +171,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 							return err
 						}
 					}
-					stored, err := owner.GitHubWebhook(t.Context(), row.DeliveryID)
+					stored, err := owner.GitHubWebhook(t.Context(), row.DeliveryID, "")
 					if err != nil || stored.Attempts != attempts || stored.Status != "pending" {
 						return fmt.Errorf("cadence delivery lost initial retry state: attempts=%d status=%s: %v", stored.Attempts, stored.Status, err)
 					}
@@ -191,7 +191,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 			if err := s.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 				owner := r.(projectstore.GitHubIntakeReader)
 				for _, id := range deliveries {
-					row, err := owner.GitHubWebhook(t.Context(), id)
+					row, err := owner.GitHubWebhook(t.Context(), id, "")
 					if err != nil || row.Status != "completed" || row.Attempts != 0 {
 						return fmt.Errorf("unprocessed webhook delivery or retry %s: status=%s attempts=%d: %v", id, row.Status, row.Attempts, err)
 					}

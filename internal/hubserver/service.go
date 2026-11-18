@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/releasenotes"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -281,7 +282,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		clientBuild:        conversationClientIdentity(cfg.staticFiles(), cfg.Version, cfg.Clock()),
 		pullRequests:       newPullRequestCache(),
 	}
-	if database.postgres != nil && !cfg.CredentialMaintenance {
+	if database.postgres != nil && !cfg.CredentialMaintenance && cfg.runtimeHost == nil {
 		service.maintenance, err = service.newReadModelMaintenance()
 		if err != nil {
 			workerCancel()
@@ -345,7 +346,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		}
 	}
 	if cfg.Hosted != nil && !cfg.CredentialMaintenance {
-		service.requestMetrics, err = database.openRequestMetrics(ctx, tracker.OrganizationID(cfg.Hosted.OrganizationID))
+		service.requestMetrics, err = service.openRequestMetrics()
 		if err != nil {
 			workerCancel()
 			if service.workspaces != nil {
@@ -358,7 +359,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 			return nil, closeStartupDatabase(errors.Join(err, mcpErr))
 		}
 	}
-	if cfg.SecretKeys != nil && !cfg.CredentialMaintenance {
+	if cfg.SecretKeys != nil && !cfg.CredentialMaintenance && cfg.runtimeHost == nil {
 		go service.runSecretRewrap(workerContext)
 	} else {
 		close(service.secretRewrapDone)
@@ -372,15 +373,21 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		}
 		return service, nil
 	}
-	go service.runPostgresMaintenance(service.runDetailContext(workerContext))
+	if cfg.runtimeHost == nil {
+		go service.runPostgresMaintenance(service.runDetailContext(workerContext))
+	} else {
+		close(service.workerDone)
+	}
 	service.ready.Store(true)
-	if service.outbox != nil {
+	if service.outbox != nil && cfg.runtimeHost == nil {
 		service.outbox.start(ctx)
 	}
 	service.startHostedBilling()
 	service.startIssueMailer()
 	service.dashboard = newDashboardDelivery(service)
-	service.dashboard.start()
+	if cfg.runtimeHost == nil {
+		service.dashboard.start()
+	}
 	if startup != nil {
 		startup.auth.Store(service)
 	}
@@ -568,6 +575,56 @@ func (s *Service) ServeTLS(listener net.Listener, certificateFile string, keyFil
 	return nil
 }
 
+func HostedMaintenanceSchedule(step func(context.Context, hubmaintenance.Tenant, hubmaintenance.Budget, string) (hubmaintenance.Outcome, error)) []hubmaintenance.Feature {
+	features := new(Service).SharedMaintenanceFeatures()
+	for i := range features {
+		name := features[i].Name
+		features[i].Step = func(ctx context.Context, t hubmaintenance.Tenant, b hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+			return step(ctx, t, b, name)
+		}
+	}
+	return features
+}
+
+func (s *Service) HostedActivity() bool {
+	s.spriteWakeMu.Lock()
+	active := len(s.spriteWakes) > 0
+	s.spriteWakeMu.Unlock()
+	return active || s.activeHostedSessions() || s.mcpHTTP != nil && s.mcpHTTP.HasLiveSessions()
+}
+
+func (s *Service) PendingRequestMetrics() bool {
+	return s.requestMetrics != nil && s.requestMetrics.HasPending()
+}
+
+func (s *Service) PrepareIdleClose(ctx context.Context) (bool, error) {
+	if s.requestMetrics == nil || !s.requestMetrics.HasPending() {
+		return true, nil
+	}
+	if err := s.requestMetrics.FlushPage(postgres.WithBackgroundWork(ctx), s.config.Clock(), hubmaintenance.ItemLimit); err != nil {
+		return false, err
+	}
+	return !s.requestMetrics.HasPending(), nil
+}
+
+func (s *Service) AdoptRuntime(ctx context.Context, expected string, update hostedplans.HostedRuntimeUpdate) error {
+	snapshots, err := NewHostedRuntimeSnapshots(s.database.postgres, s.runDetailStore())
+	if err != nil {
+		return err
+	}
+	if err := snapshots.Adopt(ctx, s.MaintenanceTenant(), expected, update); err != nil {
+		return err
+	}
+	if s.config.RecordBillingSchedule == nil {
+		return nil
+	}
+	seconds, err := s.BillingReconcileSeconds(ctx)
+	if err != nil {
+		return err
+	}
+	return s.config.RecordBillingSchedule(ctx, seconds)
+}
+
 func (s *Service) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -612,7 +669,11 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		}
 		var mcpErr error
 		if s.mcpHTTP != nil {
-			mcpErr = s.mcpHTTP.Shutdown(ctx)
+			shutdownCtx := ctx
+			if s.config.runtimeHost != nil {
+				shutdownCtx = context.Background()
+			}
+			mcpErr = s.mcpHTTP.Shutdown(shutdownCtx)
 		}
 		httpErr := s.echo.Close()
 		if errors.Is(httpErr, http.ErrServerClosed) {
@@ -634,7 +695,11 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		s.tokenUseWork.Wait()
 		var metricsErr error
 		if s.requestMetrics != nil {
-			metricsErr = errors.Join(s.requestMetrics.Drain(ctx, s.config.Clock()), s.requestMetrics.Close())
+			metricsErr = s.requestMetrics.Drain(ctx, s.config.Clock())
+			if errors.Is(metricsErr, pgtransport.ErrStaleGeneration) {
+				metricsErr = nil
+			}
+			metricsErr = errors.Join(metricsErr, s.requestMetrics.Close())
 		}
 		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, metricsErr, s.database.Close())
 	})

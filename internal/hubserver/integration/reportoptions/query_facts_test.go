@@ -1,4 +1,4 @@
-package hubserver
+package reportoptions_test
 
 import (
 	"encoding/json"
@@ -11,6 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -21,10 +23,9 @@ import (
 
 func TestReportTypedQueryCompatibility(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
+	repository, _ := hubfixture.RepositoryWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := &Service{config: Config{Clock: func() time.Time { return now }}}
-	objects := &memoryRunDetails{}
+	objects := hubtest.NewDetails()
 	content := eventstore.NewContent(objects)
 	identities := []struct{ role, requested, resolved, execution, model, stage string }{
 		{"code", "requested", "resolved", "", "resolved", "code"},
@@ -33,9 +34,10 @@ func TestReportTypedQueryCompatibility(t *testing.T) {
 		{"", "", "", "code", "", ""},
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: org, Name: "Example", Slug: string(org)})
+		hubtest.Organization(t, repository, hubtest.OrganizationOptions{ID: org, Name: "Example", Slug: string(org), Now: now})
+		hubfixture.SeedAdmin(t, repository, org, hubfixture.AdminToken, now)
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "prj_reports", Name: "Example", Slug: "example", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "prj_reports", Name: "Example", Slug: "example", Profile: "native"}, States: hubfixture.States()}); err != nil {
 				return err
 			}
 			_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "prj_reports", NativeID: "wi_reports", Number: 1, Title: "Example", ActorPrincipalID: new("filer"), CreatedAt: now.Add(-time.Hour)})

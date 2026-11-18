@@ -209,16 +209,20 @@ func (s *session) RecordGitHubPullRequestSource(ctx context.Context, project tra
 		return artifact.ErrIntegrity
 	}
 	tag, err := s.db.Exec(ctx, `WITH bound AS MATERIALIZED (
- SELECT p.id FROM projects p JOIN project_settings ps ON ps.organization_id=p.organization_id AND ps.project_id=p.id
+ SELECT p.id,p.github_binding_xid,ps.github_repository_xid FROM projects p JOIN project_settings ps ON ps.organization_id=p.organization_id AND ps.project_id=p.id
  WHERE p.organization_id=$1 AND p.id=$2 AND p.profile='native' AND p.deleted_at IS NULL AND lower(ps.repository)=$3
  FOR UPDATE OF p,ps
  ), verified AS MATERIALIZED (
- SELECT 1 FROM github_webhook_receipts WHERE organization_id=$1 AND delivery_id=$4 AND repository=$3 AND event_type='pull_request' AND payload_digest=$5 AND status='pending' AND payload_object_key=$6 AND payload_sha256=$7 AND payload_bytes=$8 AND payload_content_bytes=$9 AND after_project=$20 AND attempts=$21
+ SELECT 1 FROM github_webhook_receipts WHERE organization_id=$1 AND delivery_id=$4 AND repository=$3 AND event_type='pull_request' AND payload_digest=$5 AND status='pending' AND payload_object_key=$6 AND payload_sha256=$7 AND payload_bytes=$8 AND payload_content_bytes=$9 AND after_project=$20 AND attempts=$21 AND binding_project=$23 AND (binding_project='' OR (binding_project=$2
+ AND binding_project_xid IS NOT DISTINCT FROM (SELECT github_binding_xid FROM bound)
+ AND binding_repository_xid IS NOT DISTINCT FROM (SELECT github_repository_xid FROM bound)
+ AND binding_generation=(SELECT allocation_generation FROM hosted_tenant WHERE organization_id=$1)))
  AND EXISTS(SELECT 1 FROM bound) FOR UPDATE
  )
- INSERT INTO github_pull_request_refresh AS stored(organization_id,project_id,source_kind,change_id,repository,pull_number,work_item_id,requested_version,requested_head_sha,request_count,requested_at,next_attempt_at,pending,attempts,webhook_delivery_id,observed_head_sha,source_updated_at,observed_at,state,draft,merge_sha,base_ref,merged_at,merged_by,repository_default_branch,merge_policy_bound)
- SELECT $1,$2,'webhook',NULL,$3,$10,NULL,NULL,NULL,NULL,NULL,NULL,false,0,$4,$11,$12,$13,$14,$15,$16,$17,$18,$19,$22,($18::timestamptz IS NOT NULL) FROM verified
+ INSERT INTO github_pull_request_refresh AS stored(organization_id,project_id,source_kind,change_id,repository,pull_number,work_item_id,requested_version,requested_head_sha,request_count,requested_at,next_attempt_at,pending,attempts,webhook_delivery_id,webhook_binding_project,observed_head_sha,source_updated_at,observed_at,state,draft,merge_sha,base_ref,merged_at,merged_by,repository_default_branch,merge_policy_bound)
+ SELECT $1,$2,'webhook',NULL,$3,$10,NULL,NULL,NULL,NULL,NULL,NULL,false,0,$4,$23,$11,$12,$13,$14,$15,$16,$17,$18,$19,$22,($18::timestamptz IS NOT NULL) FROM verified
  ON CONFLICT(organization_id,project_id,change_id,repository,pull_number) DO UPDATE SET
+ webhook_binding_project=CASE WHEN stored.source_updated_at<=excluded.source_updated_at THEN excluded.webhook_binding_project ELSE stored.webhook_binding_project END,
  webhook_delivery_id=CASE WHEN stored.source_updated_at<=excluded.source_updated_at THEN excluded.webhook_delivery_id ELSE stored.webhook_delivery_id END,
  observed_head_sha=CASE WHEN stored.source_updated_at<=excluded.source_updated_at THEN excluded.observed_head_sha ELSE stored.observed_head_sha END,
  observed_at=CASE WHEN stored.source_updated_at<=excluded.source_updated_at THEN GREATEST(stored.observed_at,excluded.observed_at) ELSE stored.observed_at END,
@@ -233,7 +237,7 @@ func (s *session) RecordGitHubPullRequestSource(ctx context.Context, project tra
  source_updated_at=GREATEST(stored.source_updated_at,excluded.source_updated_at)
  WHERE stored.source_kind='webhook'`,
 		s.organization, project, source.Repository, source.DeliveryID, source.Digest, source.Payload.PayloadObjectKey, source.Payload.PayloadSHA256, source.Payload.PayloadBytes, source.Payload.PayloadContentBytes,
-		observation.Number, observation.HeadSHA, observation.SourceUpdatedAt, observation.ObservedAt, observation.State, observation.Draft, observation.MergeSHA, observation.BaseRef, observation.MergedAt, observation.MergedBy, source.AfterProject, source.Attempts, observation.RepositoryDefaultBranch)
+		observation.Number, observation.HeadSHA, observation.SourceUpdatedAt, observation.ObservedAt, observation.State, observation.Draft, observation.MergeSHA, observation.BaseRef, observation.MergedAt, observation.MergedBy, source.AfterProject, source.Attempts, observation.RepositoryDefaultBranch, source.BindingProject)
 	if err != nil {
 		return mapError(ctx, err)
 	}
