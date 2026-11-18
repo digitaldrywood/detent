@@ -31,65 +31,79 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if !ok || credential.Runner.RunnerID == "" || credential.ID == "" || credential.Runner.OrganizationID != tracker.OrganizationID(c.Param("organization")) || credential.Runner.MachineID != tracker.MachineID(c.Param("machine")) {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	if len(request.DisplayName) == 0 || len(request.DisplayName) > 200 || request.Capacity < 0 || request.Capacity > 10000 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Display name, version and nonnegative capacity are required"))
-	}
-	projectID := tracker.ProjectID(c.Param("project"))
-	if err := validateTenantHeartbeatProjection(request, projectID); err != nil {
+	scope := hubscope.NativeRequestScope(c)
+	scope.Credential = credential
+	scope.Project = tracker.ProjectID(c.Param("project"))
+	scope.Organization = credential.Runner.OrganizationID
+	snapshot, err := s.applyRunnerReport(c.Request().Context(), scope, c.Request().URL.EscapedPath(), request, "")
+	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.JSON(http.StatusOK, snapshot)
+}
+
+func (s *Service) applyRunnerReport(parent context.Context, scope hubscope.NativeScope, path string, request nativeMachineHeartbeatRequest, syncDigest string) (runnerauth.RoutingSnapshot, error) {
+	credential := scope.Credential
+	if len(request.DisplayName) == 0 || len(request.DisplayName) > 200 || request.Capacity < 0 || request.Capacity > 10000 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
+		return runnerauth.RoutingSnapshot{}, hubapi.NativePublicInvalid("Display name, version and nonnegative capacity are required")
+	}
+	projectID := scope.Project
+	if err := validateTenantHeartbeatProjection(request, projectID); err != nil {
+		return runnerauth.RoutingSnapshot{}, err
 	}
 	if err := validateProviderReports(request.ProviderReports); err != nil {
-		return s.nativeAPIError(c, err)
+		return runnerauth.RoutingSnapshot{}, err
 	}
 	if err := request.BackendIsolation.Validate(); err != nil {
-		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
+		return runnerauth.RoutingSnapshot{}, hubapi.NativeInvalid(err.Error())
 	}
 	if err := validateRunnerUpdateObservation(request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture); err != nil {
-		return s.nativeAPIError(c, err)
+		return runnerauth.RoutingSnapshot{}, err
 	}
 	if request.SpriteName != "" && !validSpritesSlug(request.SpriteName) {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Sprite name is invalid"))
+		return runnerauth.RoutingSnapshot{}, hubapi.NativePublicInvalid("Sprite name is invalid")
 	}
 	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Workspace isolation must be sandbox, container or user"))
+		return runnerauth.RoutingSnapshot{}, hubapi.NativePublicInvalid("Workspace isolation must be sandbox, container or user")
 	}
 	if request.CapacityConfig != nil {
 		if err := request.CapacityConfig.Validate(); err != nil {
-			return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
+			return runnerauth.RoutingSnapshot{}, hubapi.NativeInvalid(err.Error())
 		}
 	}
 	if request.Admission != nil && (request.Admission.RunnerRevision < 1 || !request.Admission.ReceivedAt.IsZero() || request.Admission.Context.Validate() != nil) {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Admission observation is invalid"))
+		return runnerauth.RoutingSnapshot{}, hubapi.NativePublicInvalid("Admission observation is invalid")
 	}
 	if err := runnerauth.ValidateReportedProblems(request.Problems); err != nil {
-		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
+		return runnerauth.RoutingSnapshot{}, hubapi.NativeInvalid(err.Error())
 	}
 	if request.LocalChecks != nil {
 		if projectID == "" {
-			return s.nativeAPIError(c, hubapi.NativeNotFound())
+			return runnerauth.RoutingSnapshot{}, hubapi.NativeNotFound()
 		}
 		if err := request.LocalChecks.Validate(); err != nil {
-			return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
+			return runnerauth.RoutingSnapshot{}, hubapi.NativeInvalid(err.Error())
 		}
 	}
 	if request.Skills != nil {
 		if projectID == "" {
-			return s.nativeAPIError(c, hubapi.NativeNotFound())
+			return runnerauth.RoutingSnapshot{}, hubapi.NativeNotFound()
 		}
 		if len(*request.Skills) > runnerstore.MaxProjectSkills {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Runner skill report exceeds its item limit"))
+			return runnerauth.RoutingSnapshot{}, hubapi.NativePublicInvalid("Runner skill report exceeds its item limit")
 		}
 		for _, skill := range *request.Skills {
 			if !skills.ValidProviderSkill(skill) {
-				return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid runner skill metadata"))
+				return runnerauth.RoutingSnapshot{}, hubapi.NativePublicInvalid("Invalid runner skill metadata")
 			}
 		}
 	}
 	if err := validateRunnerCheckoutReport(hubscope.NativeScope{Credential: credential}, request.CheckoutRepository); err != nil {
-		return s.nativeAPIError(c, err)
+		return runnerauth.RoutingSnapshot{}, err
 	}
 	updateTarget := runnerUpdateTarget(s.config.Version)
-	updateReleasePublished := updateTarget != "" && request.OS != "" && request.Architecture != "" && s.runnerReleasePublished(c.Request().Context(), updateTarget, request.OS, request.Architecture)
+	updateReleasePublished := updateTarget != "" && request.OS != "" && request.Architecture != "" && s.runnerReleasePublished(parent, updateTarget, request.OS, request.Architecture)
 	var changeCursor nativeCursor
 	var changeKey []byte
 	var changeReset bool
@@ -97,27 +111,27 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if request.ChangeCursor != nil {
 		params := url.Values{"cursor": {*request.ChangeCursor}}
 		var err error
-		_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), hubscope.NativeRequestScope(c), c.Request().URL.EscapedPath()+"/changes", params)
+		_, changeCursor, changeKey, err = s.readNativePage(parent, scope, path+"/changes", params)
 		if err != nil {
 			params.Set("cursor", "")
-			_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), hubscope.NativeRequestScope(c), c.Request().URL.EscapedPath()+"/changes", params)
+			_, changeCursor, changeKey, err = s.readNativePage(parent, scope, path+"/changes", params)
 		}
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return runnerauth.RoutingSnapshot{}, err
 		}
 		changeReset = *request.ChangeCursor == "" || changeCursor.After == ""
-		capabilities, err := s.readNativeCapabilities(c.Request().Context())
+		capabilities, err := s.readNativeCapabilities(parent)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return runnerauth.RoutingSnapshot{}, err
 		}
 		changeDigest, err = capabilitiesDigest(capabilities)
 		if err != nil {
-			return err
+			return runnerauth.RoutingSnapshot{}, err
 		}
 	}
 	hostSummaries := prepareRunnerHostMetrics(request.HostMetrics)
 
-	ctx, cancel := s.requestTimeout(c.Request().Context(), hubapi.ReadTimeout)
+	ctx, cancel := s.requestTimeout(parent, hubapi.ReadTimeout)
 	defer cancel()
 	if request.SpriteName != "" {
 		if err := s.config.TenantRepository.ReadTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -130,20 +144,20 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			}
 			return nil
 		}); err != nil {
-			return s.nativeAPIError(c, err)
+			return runnerauth.RoutingSnapshot{}, err
 		}
 	}
 	configuration, err := s.prepareConfigurationHeartbeat(ctx, credential, projectID, request.ProjectConfiguration)
 	if err != nil {
 		if !errors.Is(err, errConfigurationPayloadUnavailable) {
-			return s.nativeAPIError(c, err)
+			return runnerauth.RoutingSnapshot{}, err
 		}
 		s.config.Logger.Warn("project configuration payload unavailable", "runner_id", credential.Runner.RunnerID, "error", err)
 		configuration = nil
 	}
 	admissionDecisions, err := s.prepareRunnerAdmissionDecisions(ctx, credential, request.ProjectConfiguration)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return runnerauth.RoutingSnapshot{}, err
 	}
 	var snapshot runnerauth.RoutingSnapshot
 	var acknowledgments []hostmetrics.Acknowledgment
@@ -167,6 +181,9 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		receivedAt := s.config.Clock().UTC()
 		if identity.OrganizationID != credential.Runner.OrganizationID || identity.RunnerID != credential.Runner.RunnerID || identity.MachineID != credential.Runner.MachineID || identity.RemovedAt != nil || identity.TokenID != credential.ID || !identity.ExpiresAt.After(receivedAt) || current.OrganizationID != identity.OrganizationID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, receivedAt) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
 			return hubscope.RunnerUnauthorized()
+		}
+		if syncDigest != "" && runnerReportCurrent(identity, syncDigest, receivedAt) {
+			return nil
 		}
 		if err := appendRunnerAdmissionDecisions(ctx, w, identity, admissionDecisions, receivedAt); err != nil {
 			return err
@@ -196,6 +213,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		identity.OS = request.OS
 		identity.Architecture = request.Architecture
 		identity.LastHeartbeatAt = heartbeatAt
+		identity.SyncReportDigest = syncDigest
 		if err := w.UpdateRunnerIdentity(ctx, identity); err != nil {
 			return err
 		}
@@ -362,7 +380,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		err = s.config.TenantRepository.WriteTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
 	}
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return runnerauth.RoutingSnapshot{}, err
 	}
 	if dispatchChanged {
 		s.notifications.notify(dispatchNotificationKey(credential.Runner.OrganizationID))
@@ -370,11 +388,14 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if s.startSpriteLifecycle != nil {
 		s.startSpriteLifecycle(hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID}, "")
 	}
+	if projectID == "" {
+		return snapshot, nil
+	}
 	assigned := false
 	cleanupKey := releasedExecutionCursorKey{organization: credential.Runner.OrganizationID, project: projectID, runner: credential.Runner.RunnerID}
 	cleanupAfter, err := s.runnerCleanupCursor(cleanupKey)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return runnerauth.RoutingSnapshot{}, err
 	}
 	var cleanupNext string
 	var cleanupCandidates []hubrecords.TenantAttemptSnapshot
@@ -438,14 +459,13 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return runnerauth.RoutingSnapshot{}, err
 	}
 	if !assigned {
-		c.Response().Header().Set("Cache-Control", "no-store")
-		return c.JSON(http.StatusOK, snapshot)
+		return snapshot, nil
 	}
 	if err := s.resolveRunnerCleanupCandidates(ctx, hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID, Credential: credential}, credential.Runner.RunnerID, cleanupCandidates, snapshot.ClaimState); err != nil {
-		return s.nativeAPIError(c, err)
+		return runnerauth.RoutingSnapshot{}, err
 	}
 	s.advanceRunnerCleanupCursor(cleanupKey, cleanupNext)
 	task, err := s.readGitHubBatchTaskRecord(ctx, hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID, Credential: credential})
@@ -454,8 +474,8 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	} else {
 		snapshot.GitHubIntake = task
 	}
-	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusOK, snapshot)
+
+	return snapshot, nil
 }
 
 func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest, projectID tracker.ProjectID) error {

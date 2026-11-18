@@ -22,6 +22,7 @@ func (s *Service) registerRunnerRoutes(e *echo.Echo) {
 	admin := s.requireInstanceAdmin()
 	worker := s.requireAPIScope(hubapi.APIScopeWorker)
 	e.GET(runnerBase+"/:runner", s.getRunnerIdentity, worker)
+	e.POST(runnerBase+"/:runner/sync", s.syncRunner, worker)
 	e.POST(runnerBase+"/:runner/renew", s.renewRunnerIdentity, worker)
 	e.POST(runnerBase+"/:runner/rotate", s.rotateRunnerIdentity, worker)
 	e.DELETE(runnerBase+"/:runner", s.revokeRunnerIdentity, admin)
