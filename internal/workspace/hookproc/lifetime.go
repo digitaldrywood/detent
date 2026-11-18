@@ -13,7 +13,6 @@ import (
 )
 
 type Lifetime struct {
-	instances          hookProcessInstances
 	starts             map[int]string
 	unidentifiedWriter bool
 	witnesses          map[int]string
@@ -67,13 +66,6 @@ func (l *Lifetime) checkPath() error {
 	return nil
 }
 
-func (l *Lifetime) recordWitness(pid int, start string) {
-	if l.witnesses == nil {
-		l.witnesses = make(map[int]string)
-	}
-	l.witnesses[pid] = start
-}
-
 func (l *Lifetime) verifyWriterExits() error {
 	if l.unidentifiedWriter {
 		return errors.New("observed hook descriptor writer lacks a verified process identity")
@@ -84,7 +76,7 @@ func (l *Lifetime) verifyWriterExits() error {
 			return err
 		}
 		if alive {
-			return errors.New("observed hook process is still running")
+			return errors.New("observed hook descriptor writer is still running")
 		}
 	}
 	return nil

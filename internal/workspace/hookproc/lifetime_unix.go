@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/digitaldrywood/detent/internal/procstart"
 	"golang.org/x/sys/unix"
@@ -45,7 +46,7 @@ func NewLifetime() (*Lifetime, error) {
 
 func (l *Lifetime) Capture(ctx context.Context, path, owner string) (bool, error) {
 	ctx = l.withOwner(ctx, owner)
-	verified, _ := verifiedProcessTargets(ctx, path, ReapProcessScanner, procstart.Identity, processEnvironment, nil)
+	verified, _ := verifiedProcessTargets(ctx, path, ReapProcessScanner, procstart.Identity, processEnvironment, syscall.Kill)
 	pids, err := verified(ctx, path)
 	return l.unidentifiedWriter || len(l.witnesses) > 0 || len(pids) > 0, err
 }
@@ -77,7 +78,10 @@ func (l *Lifetime) recordWriters(ctx context.Context) (context.Context, error) {
 		}
 		matched = true
 		if l.starts[pid] != start {
-			l.recordWitness(pid, start)
+			if l.witnesses == nil {
+				l.witnesses = make(map[int]string)
+			}
+			l.witnesses[pid] = start
 		}
 	}
 	if !matched || err != nil {
