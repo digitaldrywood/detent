@@ -16,12 +16,13 @@ import (
 
 func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		states []runnerauth.LifecycleState
-		failed int
+		name     string
+		states   []runnerauth.LifecycleState
+		failures []int
 	}{
-		{"orderly upgrade", []runnerauth.LifecycleState{runnerauth.LifecycleStarting, runnerauth.LifecycleReady, runnerauth.LifecycleDraining, runnerauth.LifecycleUpdating, runnerauth.LifecycleShuttingDown, runnerauth.LifecycleStopped, runnerauth.LifecycleStarting}, 0},
-		{"repeated start", []runnerauth.LifecycleState{runnerauth.LifecycleStarting, runnerauth.LifecycleStarting, runnerauth.LifecycleStarting}, 3},
+		{"orderly upgrade", []runnerauth.LifecycleState{runnerauth.LifecycleStarting, runnerauth.LifecycleReady, runnerauth.LifecycleDraining, runnerauth.LifecycleUpdating, runnerauth.LifecycleShuttingDown, runnerauth.LifecycleStopped, runnerauth.LifecycleStarting}, []int{0, 0, 0, 0, 0, 0, 0}},
+		{"repeated start", []runnerauth.LifecycleState{runnerauth.LifecycleStarting, runnerauth.LifecycleStarting, runnerauth.LifecycleStarting}, []int{0, 1, 3}},
+		{"reported failure", []runnerauth.LifecycleState{runnerauth.LifecycleStarting, runnerauth.LifecycleStartFailed}, []int{0, 1}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newReceiptFixture(t)
@@ -29,14 +30,17 @@ func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
 				path := "/api/v2/organizations/org_startup/runners/" + binding.RunnerID + "/lifecycle"
 				for step, state := range test.states {
 					report := runnerauth.LifecycleReport{ProcessID: fmt.Sprintf("process-%d", index), Sequence: int64(step + 1), State: state, Version: "1.2.3", BuildRevision: "revision"}
-					if test.failed == 0 && step == len(test.states)-1 {
+					if step > 0 && test.states[step-1] == runnerauth.LifecycleStopped {
 						report.ProcessID = "next-process"
 						report.Sequence = 1
 						report.Version = "1.2.4"
 					}
-					if test.failed > 0 {
+					if step > 0 && state == runnerauth.LifecycleStarting && test.states[step-1] == runnerauth.LifecycleStarting {
 						report.ProcessID = fmt.Sprintf("process-%d-%d", index, step)
 						report.Sequence = 1
+					}
+					if state == runnerauth.LifecycleStartFailed {
+						report.ErrorCode = "startup_error"
 					}
 					if state == runnerauth.LifecycleUpdating {
 						seedMonotonicRequest(t, f, index, runnerauth.UpdateRequest{ID: fmt.Sprintf("update_%d", index), RequestedAt: time.Now().UTC().Truncate(time.Microsecond), Service: "detent", Version: "1.2.4", Release: true, ExpectedBuildRevision: strings.Repeat("a", 64)})
@@ -54,7 +58,7 @@ func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
 							return err
 						}
 						want := state
-						if test.failed > 0 && step == 2 {
+						if test.failures[step] == 3 {
 							want = runnerauth.LifecycleStartFailed
 						}
 						if current == nil || current.State != want || current.Version != report.Version {
@@ -70,19 +74,16 @@ func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
 						if len(history) != step+1 {
 							t.Fatalf("history=%d want %d", len(history), step+1)
 						}
-						expectedFailures := test.failed
-						if state == runnerauth.LifecycleStarting && test.failed == 0 {
-							expectedFailures = 1
-						}
-						if step == len(test.states)-1 && current.ConsecutiveFailedStarts != expectedFailures {
-							t.Errorf("failures=%d want %d", current.ConsecutiveFailedStarts, test.failed)
+						expectedFailures := test.failures[step]
+						if current.ConsecutiveFailedStarts != expectedFailures {
+							t.Errorf("step %d failures=%d want %d", step, current.ConsecutiveFailedStarts, expectedFailures)
 						}
 						return nil
 					}); err != nil {
 						t.Fatal(err)
 					}
 				}
-				if test.failed == 0 {
+				if test.states[len(test.states)-1] == runnerauth.LifecycleStarting && test.failures[len(test.failures)-1] == 0 {
 					stale := runnerauth.LifecycleReport{ProcessID: fmt.Sprintf("process-%d", index), Sequence: 99, State: runnerauth.LifecycleShuttingDown, Version: "1.2.3", BuildRevision: "revision", Reason: "signal"}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], stale), http.StatusConflict)
 				}

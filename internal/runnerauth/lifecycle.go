@@ -68,9 +68,10 @@ func (r LifecycleReport) Validate() error {
 const RunnerReadyTimeout = 2 * time.Minute
 
 func (l Lifecycle) Effective(now time.Time) Lifecycle {
-	if l.State == LifecycleStarting && !now.Before(l.LastTransitionAt.Add(2*time.Minute)) {
+	if l.State == LifecycleStarting && !now.Before(l.LastTransitionAt.Add(RunnerReadyTimeout)) {
 		l.State = LifecycleStartFailed
 		l.ErrorCode = "ready_timeout"
+		l.ConsecutiveFailedStarts++
 		l.LastTransitionAt = l.LastTransitionAt.Add(RunnerReadyTimeout)
 	}
 	return l

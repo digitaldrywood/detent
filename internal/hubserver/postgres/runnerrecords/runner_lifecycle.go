@@ -79,6 +79,9 @@ func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerau
 			return corestore.ErrRevisionConflict
 		}
 		next.ConsecutiveFailedStarts = old.ConsecutiveFailedStarts
+		if old.State == runnerauth.LifecycleStarting && r.State == runnerauth.LifecycleStartFailed {
+			next.ConsecutiveFailedStarts++
+		}
 	} else {
 		if r.State != runnerauth.LifecycleStarting || r.Sequence != 1 {
 			return corestore.ErrRevisionConflict
@@ -98,11 +101,14 @@ func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerau
 				return err
 			}
 		}
-		next.ConsecutiveFailedStarts = 1
 		if old != nil && old.Version == r.Version {
-			next.ConsecutiveFailedStarts += old.ConsecutiveFailedStarts
+			next.ConsecutiveFailedStarts = old.ConsecutiveFailedStarts
+			if old.State == runnerauth.LifecycleStarting {
+				next.ConsecutiveFailedStarts++
+			}
 		}
-		if next.ConsecutiveFailedStarts >= 3 {
+		if next.ConsecutiveFailedStarts >= 2 {
+			next.ConsecutiveFailedStarts++
 			next.State = runnerauth.LifecycleStartFailed
 			next.ErrorCode = "repeated_start"
 		}
@@ -195,8 +201,7 @@ func (s *Store) ExpireRunnerStart(ctx context.Context, id string, now time.Time)
 	if current.State == runnerauth.LifecycleShuttingDown {
 		current.State = runnerauth.LifecycleStopped
 	} else {
-		current.State = runnerauth.LifecycleStartFailed
-		current.ErrorCode = "ready_timeout"
+		*current = current.Effective(now)
 	}
 	current.LastTransitionAt = now
 	return s.storeRunnerLifecycle(ctx, id, *current)
