@@ -9,17 +9,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
-const (
-	statThreadCountField = 17
-	statStartTimeField   = 19
-)
+const statStartTimeField = 19
 
 func identity(pid int) (string, error) {
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return "", ErrNotRunning
 	}
 	if err != nil {
@@ -46,13 +42,7 @@ func statStartTime(stat string) (string, error) {
 		return "", fmt.Errorf("unexpected process stat %q", stat)
 	}
 	if fields[0] == "Z" || fields[0] == "X" {
-		threads, err := strconv.ParseUint(fields[statThreadCountField], 10, 64)
-		if err != nil {
-			return "", fmt.Errorf("parse process thread count: %w", err)
-		}
-		if threads <= 1 {
-			return "", ErrNotRunning
-		}
+		return "", ErrNotRunning
 	}
 	if _, err := strconv.ParseUint(fields[statStartTimeField], 10, 64); err != nil {
 		return "", fmt.Errorf("parse process start time: %w", err)
