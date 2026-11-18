@@ -585,13 +585,21 @@ type durationWorkerAgentBackend struct {
 }
 
 type terminalWorkerAgentBackend struct {
-	identity procgroup.Identity
-	err      error
+	registered <-chan struct{}
+	identity   procgroup.Identity
+	err        error
 }
 
-func (b terminalWorkerAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+func (b terminalWorkerAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	if err := onUpdate(AgentUpdate{Type: AgentUpdateProcessStarted, WorkerProcess: b.identity}); err != nil {
 		return AgentTurnResult{}, err
+	}
+	if b.registered != nil {
+		select {
+		case <-ctx.Done():
+			return AgentTurnResult{}, context.Cause(ctx)
+		case <-b.registered:
+		}
 	}
 	return AgentTurnResult{ThreadID: "thread-1885", TurnID: "turn-1885", SessionID: "session-1885"}, b.err
 }

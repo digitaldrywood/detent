@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -114,6 +115,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	var output strings.Builder
 	turnCount := 0
 	removeWorkspace = false
+	observeProcess := r.workerProcessObserver(sessionID, r.securityAuditRoot)
 	turn, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		reserveScratch: r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, path),
 		Workspace:      path, Prompt: triageInstructions + "\n\nEvidence:\n" + req.TriageContext,
@@ -130,7 +132,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
 			return ErrSecurityAuditToolUse
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, path); err != nil {
+		if err := observeProcess(updateCtx, update, path); err != nil {
 			return err
 		}
 		r.persistSessionProviderIdentity(updateCtx, sessionID, update)
@@ -139,7 +141,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		}
 		applyAgentUpdate(&result, update)
 		if req.OnUsageUpdate != nil {
-			if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, SessionID: update.ProviderSessionID, WorkerProcess: update.WorkerProcess, WorkspacePath: path, LastEventAt: r.now().UTC(), LastEvent: string(update.Type), TurnCount: turnCount, Tokens: result.Tokens, RuntimeIdentity: result.RuntimeIdentity, RateLimits: result.RateLimits}); err != nil {
+			if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, SessionID: update.ProviderSessionID, WorkerProcess: update.WorkerProcess, WorkspacePath: path, LastEventAt: r.now().UTC(), LastEvent: string(update.Type), TurnCount: turnCount, Tokens: result.Tokens, RuntimeIdentity: result.RuntimeIdentity, RateLimits: result.RateLimits}); err != nil && !transport.DeferObservation(updateCtx, err) {
 				return err
 			}
 		}
