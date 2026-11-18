@@ -348,6 +348,12 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 	shared := newHostedSharedFixture(t)
 	f := shared.hostedSecurityFixture
 	user := f.user(t, "revision_owner", "owner", "revision-owner@example.test", "write", "")
+	admin := hostedPostgresAdmin(t, f.service)
+	if result, err := admin.ExecContext(t.Context(), "UPDATE project_settings SET duplicate_challenge=false WHERE organization_id=$1 AND project_id=$2", "org_security", f.project); err != nil {
+		t.Fatal(err)
+	} else if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("duplicate-challenge fixture affected=%d error=%v", affected, err)
+	}
 	issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
 	if err != nil {
 		t.Fatal(err)
@@ -366,6 +372,9 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 		var item tracker.NativeIssue
 		if err := json.Unmarshal(raw, &item); err != nil {
 			t.Fatal(err)
+		}
+		if item.WorkItemID == "" {
+			t.Fatalf("create fixture %q returned no work item ID", name)
 		}
 		return item
 	}
