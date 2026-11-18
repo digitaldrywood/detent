@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -1328,12 +1329,26 @@ func startProcess(ctx context.Context, command string, args []string) error {
 }
 
 func verifyBinaryVersion(ctx context.Context, path string) (string, error) {
-	cmd := exec.CommandContext(ctx, path, "version") // #nosec G204 -- the downloaded binary path is verified before installation and bypasses a shell.
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(output), fmt.Errorf("verify %s version: %w: %s", path, err, strings.TrimSpace(string(output)))
+	return verifyBinaryVersionWith(ctx, path, (*exec.Cmd).CombinedOutput, waitForUpdateCheck)
+}
+
+func verifyBinaryVersionWith(ctx context.Context, path string, run func(*exec.Cmd) ([]byte, error), wait func(context.Context, time.Duration) bool) (string, error) {
+	const maxStarts = 3
+	for attempt := 1; ; attempt++ {
+		cmd := ReleaseCommand(ctx, path, "version")
+		output, err := run(cmd)
+		if err == nil {
+			return string(output), nil
+		}
+		startErr, ok := errors.AsType[*os.PathError](err)
+		if attempt == maxStarts || runtime.GOOS != "linux" || cmd.Process != nil || !ok ||
+			startErr.Op != "fork/exec" || startErr.Path != path || !errors.Is(startErr.Err, syscall.ETXTBSY) {
+			return string(output), fmt.Errorf("verify %s version: %w: %s", path, err, strings.TrimSpace(string(output)))
+		}
+		if !wait(ctx, 20*time.Millisecond) || ctx.Err() != nil {
+			return "", fmt.Errorf("wait to verify %s version: %w", path, ctx.Err())
+		}
 	}
-	return string(output), nil
 }
 
 func binaryIdentityVerifier(verifier BinaryVerifier, expectedVersion string, expectedCommit string) BinaryVerifier {
