@@ -72,9 +72,20 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 }
 
 func reapVerifiedProcesses(ctx context.Context, path string, grace time.Duration, scan Scanner, identity func(int) (string, error), environment func(int) ([]string, error), signal workspaceProcessSignaler) (int, error) {
+	verified, guardedSignal := verifiedProcessTargets(ctx, path, scan, identity, environment, signal)
+	return reapProcesses(ctx, path, grace, verified, guardedSignal)
+}
+
+func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, identity func(int) (string, error), environment func(int) ([]string, error), signal workspaceProcessSignaler) (Scanner, workspaceProcessSignaler) {
 	starts := map[int]string{}
 	owner, _ := ctx.Value(hookOwnerKey{}).(string)
-	confirmed := map[int]bool{}
+	confirmed := map[int]string{}
+	if lifetime, ok := ctx.Value(lifetimeKey{}).(*Lifetime); ok {
+		confirmed = lifetime.starts
+	}
+	for pid, start := range confirmed {
+		starts[pid] = start
+	}
 	sameProcess := func(pid int) (bool, error) {
 		current, err := identity(pid)
 		if errors.Is(err, procstart.ErrNotRunning) {
@@ -121,16 +132,27 @@ func reapVerifiedProcesses(ctx context.Context, path string, grace time.Duration
 			candidates = verified
 			err = errors.Join(err, verifyErr)
 		}
+		if owner != "" && err == nil {
+			seen := make(map[int]bool, len(candidates))
+			for _, pid := range candidates {
+				seen[pid] = true
+			}
+			for pid := range confirmed {
+				if !seen[pid] {
+					candidates = append(candidates, pid)
+				}
+			}
+		}
 		var owned []int
 		for _, pid := range candidates {
 			check := stillOwned
-			if confirmed[pid] {
+			if confirmed[pid] != "" {
 				check = sameProcess
 			}
 			ok, inspectErr := check(pid)
 			err = errors.Join(err, inspectErr)
 			if ok {
-				confirmed[pid] = true
+				confirmed[pid] = starts[pid]
 				owned = append(owned, pid)
 			}
 		}
@@ -152,7 +174,11 @@ func reapVerifiedProcesses(ctx context.Context, path string, grace time.Duration
 				return err
 			}
 		}
-		ok, err := stillOwned(pid)
+		check := stillOwned
+		if owner != "" && confirmed[pid] != "" {
+			check = sameProcess
+		}
+		ok, err := check(pid)
 		if err != nil {
 			return err
 		}
@@ -161,7 +187,7 @@ func reapVerifiedProcesses(ctx context.Context, path string, grace time.Duration
 		}
 		return send(pid, sig)
 	}
-	return reapProcesses(ctx, path, grace, verified, guardedSignal)
+	return verified, guardedSignal
 }
 
 var ReapProcessScanner Scanner = ProcessIDs
@@ -318,7 +344,9 @@ func waitForWorkspaceProcesses(
 
 func ProcessIDs(ctx context.Context, path string) ([]int, error) {
 	if lifetime, ok := ctx.Value(lifetimeKey{}).(*Lifetime); ok {
-		return lifetime.candidates(ctx)
+		marked, envErr := scratchEnvironmentProcessIDs(ctx, path)
+		holders, fdErr := lifetime.candidates(ctx)
+		return append(marked, holders...), errors.Join(envErr, fdErr)
 	}
 	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
 		return source(ctx, path)

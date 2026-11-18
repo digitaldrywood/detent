@@ -20,7 +20,7 @@ func identity(pid int) (string, error) {
 		}
 		return "", fmt.Errorf("sysctl kern.proc.pid %d: %w", pid, err)
 	}
-	if int(info.Proc.P_pid) != pid {
+	if int(info.Proc.P_pid) != pid || info.Proc.P_stat == 5 {
 		return "", ErrNotRunning
 	}
 	start := info.Proc.P_starttime

@@ -132,14 +132,13 @@ func (o *hookOwner) commandFinished(ctx context.Context) error {
 	if err := o.descriptor.CloseWriter(); err != nil {
 		return err
 	}
-	if o.finish != nil {
-		return nil
-	}
-	active, err := o.descriptor.Active()
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	active, err := o.descriptor.Capture(cleanup, o.path, o.token)
 	if err != nil || active {
 		return err
 	}
-	return o.release(ctx)
+	return o.release(cleanup)
 }
 
 func (o *hookOwner) stop(ctx context.Context) (int, error) {
@@ -153,19 +152,12 @@ func (o *hookOwner) stop(ctx context.Context) (int, error) {
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	active, err := o.descriptor.Active()
+	count, err := o.descriptor.Reap(cleanup, o.path, o.token)
 	if err != nil {
-		return 0, err
+		return count, fmt.Errorf("stop workspace hook processes: %w", err)
 	}
-	var count int
-	if active {
-		count, err = o.descriptor.Reap(cleanup, o.path, o.token)
-		if err != nil {
-			return count, fmt.Errorf("stop workspace hook processes: %w", err)
-		}
-		if err := o.descriptor.WaitClosed(cleanup); err != nil {
-			return count, err
-		}
+	if err := o.descriptor.WaitClosed(cleanup); err != nil {
+		return count, err
 	}
 	return count, o.release(cleanup)
 }

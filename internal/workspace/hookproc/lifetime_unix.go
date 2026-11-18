@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 
+	"syscall"
+
+	"github.com/digitaldrywood/detent/internal/procstart"
 	"golang.org/x/sys/unix"
 )
 
@@ -21,7 +24,7 @@ func NewLifetime() (*Lifetime, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &Lifetime{dir: dir}
+	l := &Lifetime{dir: dir, starts: make(map[int]string)}
 	if err = unix.Mkfifo(l.path(), 0600); err == nil {
 		l.reader, err = os.OpenFile(l.path(), os.O_RDONLY|unix.O_NONBLOCK, 0)
 	}
@@ -35,6 +38,16 @@ func NewLifetime() (*Lifetime, error) {
 		return nil, errors.Join(err, os.RemoveAll(dir))
 	}
 	return l, nil
+}
+
+func (l *Lifetime) Capture(ctx context.Context, path, owner string) (bool, error) {
+	ctx = l.withOwner(ctx, owner)
+	verified, _ := verifiedProcessTargets(ctx, path, ReapProcessScanner, procstart.Identity, processEnvironment, syscall.Kill)
+	pids, err := verified(ctx, path)
+	if err != nil || len(pids) > 0 {
+		return len(pids) > 0, err
+	}
+	return l.Active()
 }
 
 func (l *Lifetime) Active() (bool, error) {
