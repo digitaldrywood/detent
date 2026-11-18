@@ -25,6 +25,7 @@ const NativeDispatchPriorityCapability = "dispatch_priority"
 
 const NativeLandingCapacityCapability = "project_landing_capacity"
 
+const NativeRunnerSyncCapability = "native_runner_sync"
 const NativeDispatchWaitCapability = "native_dispatch_wait"
 const NativeHostMetricsCapability = "runner_host_metrics"
 

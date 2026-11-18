@@ -71,6 +71,8 @@ func RunnerOperationAllowed(c echo.Context, operations []string) bool {
 	}
 	operation := ""
 	switch {
+	case path == runnerBase+"/:runner/sync":
+		return c.Request().Method == http.MethodPost && slices.Contains(operations, runnerauth.Heartbeat) && slices.Contains(operations, runnerauth.Read)
 	case path == runnerBase+"/:runner/update/receipt":
 		operation = runnerauth.Heartbeat
 	case path == "/api/v2/capabilities":

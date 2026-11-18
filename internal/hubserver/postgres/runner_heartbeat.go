@@ -220,6 +220,7 @@ func (h *runnerHeartbeatSession) UpdateRunnerIdentity(ctx context.Context, row r
 		h.identity.OS = row.OS
 		h.identity.Architecture = row.Architecture
 		h.identity.LastHeartbeatAt = pgtransport.Timestamp(row.LastHeartbeatAt)
+		h.identity.SyncReportDigest = row.SyncReportDigest
 		h.identity.ExpiresAt = pgtransport.Timestamp(row.ExpiresAt)
 	}
 	return nil

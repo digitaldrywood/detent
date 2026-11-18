@@ -61,6 +61,8 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	syncPoll           *machineSyncPoll
+	syncVersions       runnerauth.SyncVersions
 	hubProcessReceipts bool
 	executionFactory   ExecutionFactory
 	completionRestorer CompletionRestorer

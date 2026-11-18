@@ -71,33 +71,16 @@ func (c *heartbeatConn) Write(value []byte) (int, error) {
 func TestTenantHeartbeatHTTPCommandAndAuthority(t *testing.T) {
 	t.Parallel()
 	f := newRunnerPGFixture(t)
-	connection := startupConnection(t, f.admin, "detent_runtime_v2", "")
-	config := postgresStartupTemplate.NativeConfig(t, f.admin, connection.User, connection.Password)
-	config.MaxConns = 3
 	wire := new(heartbeatWire)
-	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := new(net.Dialer).DialContext(ctx, network, address)
-		if err != nil {
-			return nil, err
+	installRunnerTestPool(t, f, func(config *pgxpool.Config) {
+		config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := new(net.Dialer).DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			return &heartbeatConn{Conn: conn, wire: wire, startup: true}, nil
 		}
-		return &heartbeatConn{Conn: conn, wire: wire, startup: true}, nil
-	}
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	original := f.service.database.postgres
-	t.Cleanup(func() {
-		f.service.config.TenantRepository = original
-		f.service.database.postgres = original
 	})
-	f.service.config.TenantRepository = repository
-	f.service.database.postgres = repository
 	if _, err := f.admin.ExecContext(t.Context(), `UPDATE runner_identities SET display_name='Example' WHERE organization_id='org_startup'`); err != nil {
 		t.Fatal(err)
 	}
@@ -128,4 +111,28 @@ func TestTenantHeartbeatHTTPCommandAndAuthority(t *testing.T) {
 		denied := performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], request)
 		requireNativeStatus(t, denied, http.StatusUnauthorized)
 	}
+}
+
+func installRunnerTestPool(t *testing.T, f runnerPGFixture, configure func(*pgxpool.Config)) {
+	t.Helper()
+	connection := startupConnection(t, f.admin, "detent_runtime_v2", "")
+	config := postgresStartupTemplate.NativeConfig(t, f.admin, connection.User, connection.Password)
+	config.MaxConns = 3
+	configure(config)
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := f.service.database.postgres
+	t.Cleanup(func() {
+		f.service.config.TenantRepository = original
+		f.service.database.postgres = original
+	})
+	f.service.config.TenantRepository = repository
+	f.service.database.postgres = repository
 }
