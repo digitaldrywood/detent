@@ -12,9 +12,19 @@ import (
 
 func TestRunnerCancellationPublicationWireBudget(t *testing.T) {
 	t.Parallel()
+	t.Run("after rollback", func(t *testing.T) { checkCancellationPublication(t, true) })
+	t.Run("normal publication", func(t *testing.T) { checkCancellationPublication(t, false) })
+}
+
+func checkCancellationPublication(t *testing.T, reject bool) {
+	t.Helper()
 	first, second, _, wire, logs := newRunnerEventWireFixtures(t)
 	if _, err := first.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_runner_release() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF OLD.release_reason='fixture_reject' AND NEW.released_at IS NOT NULL THEN RAISE EXCEPTION 'fixture release rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_runner_release BEFORE UPDATE ON leases FOR EACH ROW EXECUTE FUNCTION reject_runner_release()`); err != nil {
 		t.Fatal(err)
+	}
+	maxExchanges := 8
+	if reject {
+		maxExchanges = 9
 	}
 	var expected [2]int
 	for tenantIndex, fixture := range []runnerPGFixture{first, second} {
@@ -29,13 +39,6 @@ func TestRunnerCancellationPublicationWireBudget(t *testing.T) {
 			request := tracker.NativeLeaseMutation{FencingToken: lease.FencingToken + 1, Reason: "cancelled", CancelAttempt: true}
 			requireNativeStatus(t, performHubAPIRequest(t, fixture.service, http.MethodPost, path, fixture.tokens[index], request), http.StatusConflict)
 			request.FencingToken = lease.FencingToken
-			if _, err := fixture.admin.ExecContext(t.Context(), `UPDATE leases SET release_reason='fixture_reject' WHERE organization_id=$1 AND lease_id=$2`, org, lease.ID); err != nil {
-				t.Fatal(err)
-			}
-			response := performHubAPIRequest(t, fixture.service, http.MethodPost, path, fixture.tokens[index], request)
-			if response.Code < 500 {
-				t.Fatalf("release rejection status=%d body=%s diagnostics=%s", response.Code, response.Body.String(), logs.String())
-			}
 			var sequence, events int64
 			var status string
 			var released bool
@@ -45,17 +48,27 @@ func TestRunnerCancellationPublicationWireBudget(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			read()
-			if sequence != 1 || status != "running" || released || events != 0 {
-				t.Fatalf("failed cancellation leaked: sequence=%d status=%s released=%t events=%d", sequence, status, released, events)
-			}
-			if _, err := fixture.admin.ExecContext(t.Context(), `UPDATE leases SET release_reason='' WHERE organization_id=$1 AND lease_id=$2`, org, lease.ID); err != nil {
-				t.Fatal(err)
+			if reject {
+				if _, err := fixture.admin.ExecContext(t.Context(), `UPDATE leases SET release_reason='fixture_reject' WHERE organization_id=$1 AND lease_id=$2`, org, lease.ID); err != nil {
+					t.Fatal(err)
+				}
+				response := performHubAPIRequest(t, fixture.service, http.MethodPost, path, fixture.tokens[index], request)
+				if response.Code < 500 {
+					t.Fatalf("release rejection status=%d body=%s diagnostics=%s", response.Code, response.Body.String(), logs.String())
+				}
+
+				read()
+				if sequence != 1 || status != "running" || released || events != 0 {
+					t.Fatalf("failed cancellation leaked: sequence=%d status=%s released=%t events=%d", sequence, status, released, events)
+				}
+				if _, err := fixture.admin.ExecContext(t.Context(), `UPDATE leases SET release_reason='' WHERE organization_id=$1 AND lease_id=$2`, org, lease.ID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			wire.Lock()
 			wire.statements, wire.exchanges, wire.transactions = 0, 0, 0
 			wire.Unlock()
-			response = httptest.NewRecorder()
+			response := httptest.NewRecorder()
 			ctx := context.WithValue(t.Context(), claimRequestTraceKey{}, true)
 			fixture.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path, fixture.tokens[index], request).WithContext(ctx))
 			if response.Code != http.StatusNoContent {
@@ -66,8 +79,8 @@ func TestRunnerCancellationPublicationWireBudget(t *testing.T) {
 			actual := [2]int{wire.statements, wire.exchanges}
 			wire.Unlock()
 			t.Logf("tenant=%s history=%d cancellation HTTP statements=%d exchanges=%d", org, history, actual[0], actual[1])
-			if actual[1] < 1 || actual[1] > 8 || expected != [2]int{} && actual != expected {
-				t.Errorf("cancellation bound=%v previous=%v want <=8 exchanges, fixed across history and tenants", actual, expected)
+			if actual[1] < 1 || actual[1] > maxExchanges || expected != [2]int{} && actual != expected {
+				t.Errorf("cancellation bound=%v previous=%v want <=%d exchanges, fixed across history and tenants", actual, expected, maxExchanges)
 			}
 			expected = actual
 			read()

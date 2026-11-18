@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 )
 
-const candidateStatement = "SELECT i.id,i.revision,i.number,i.native_id,"
+const candidateStatement = "WITH candidates AS ("
 
 type capturedCandidate struct {
 	statement string

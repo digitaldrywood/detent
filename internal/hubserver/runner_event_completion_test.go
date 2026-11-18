@@ -18,9 +18,19 @@ import (
 
 func TestRunnerCompletionPublicationWireBudget(t *testing.T) {
 	t.Parallel()
+	t.Run("after rollback", func(t *testing.T) { checkCompletionPublication(t, true) })
+	t.Run("normal publication", func(t *testing.T) { checkCompletionPublication(t, false) })
+}
+
+func checkCompletionPublication(t *testing.T, reject bool) {
+	t.Helper()
 	first, second, repository, wire, logs := newRunnerEventWireFixtures(t)
 	if _, err := first.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_completion_receipt() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.command_key='rollback_completion' THEN RAISE EXCEPTION 'fixture publication rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_completion_receipt BEFORE INSERT ON native_commands FOR EACH ROW EXECUTE FUNCTION reject_completion_receipt()`); err != nil {
 		t.Fatal(err)
+	}
+	maxExchanges := 11
+	if reject {
+		maxExchanges = 14
 	}
 	var expected [2]int
 	for tenantIndex, fixture := range []runnerPGFixture{first, second} {
@@ -51,22 +61,25 @@ func TestRunnerCompletionPublicationWireBudget(t *testing.T) {
 			data.Usage = []tracker.NativeUsage{{Provider: "example", Model: "example-model", Input: 17, CachedInput: 2, Output: 3, BillingMode: "metered", Currency: "USD", Revision: 1, From: attempt.StartedAt, To: ended, ReportedAt: ended, ReportedCostMicros: &paid, CostSource: "runner_report", CostCoverage: "complete"}}
 			finish := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "rollback_completion"}, Type: "run.finished", SchemaVersion: 1, OccurredAt: ended, Data: data}
 			path := fmt.Sprintf("/api/v2/organizations/%s/projects/prj_runner/work-items/%s/events", org, lease.WorkItemID)
-			response := performHubAPIRequest(t, fixture.service, http.MethodPost, path, fixture.tokens[index], finish)
-			if response.Code < 500 {
-				t.Fatalf("publication rejection status=%d body=%s diagnostics=%s", response.Code, response.Body.String(), logs.String())
-			}
 			var sequence, comments, costs, reports int64
-			if err := fixture.admin.QueryRowContext(t.Context(), `SELECT a.sequence,(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND work_item_id=$3),(SELECT count(*) FROM cost_sources WHERE organization_id=$1 AND resource_id=$2),(SELECT count(*) FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2) FROM native_attempts a WHERE organization_id=$1 AND id=$2`, org, data.AttemptID, lease.WorkItemID).Scan(&sequence, &comments, &costs, &reports); err != nil {
-				t.Fatal(err)
-			}
-			if sequence != 1 || comments != 0 || costs != 0 || reports != 0 {
-				t.Fatalf("rejected completion leaked publication: %d %d %d %d", sequence, comments, costs, reports)
+			if reject {
+				response := performHubAPIRequest(t, fixture.service, http.MethodPost, path, fixture.tokens[index], finish)
+				if response.Code < 500 {
+					t.Fatalf("publication rejection status=%d body=%s diagnostics=%s", response.Code, response.Body.String(), logs.String())
+				}
+
+				if err := fixture.admin.QueryRowContext(t.Context(), `SELECT a.sequence,(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND work_item_id=$3),(SELECT count(*) FROM cost_sources WHERE organization_id=$1 AND resource_id=$2),(SELECT count(*) FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2) FROM native_attempts a WHERE organization_id=$1 AND id=$2`, org, data.AttemptID, lease.WorkItemID).Scan(&sequence, &comments, &costs, &reports); err != nil {
+					t.Fatal(err)
+				}
+				if sequence != 1 || comments != 0 || costs != 0 || reports != 0 {
+					t.Fatalf("rejected completion leaked publication: %d %d %d %d", sequence, comments, costs, reports)
+				}
 			}
 			finish.IdempotencyKey = "finish"
 			wire.Lock()
 			wire.statements, wire.exchanges, wire.transactions = 0, 0, 0
 			wire.Unlock()
-			response = httptest.NewRecorder()
+			response := httptest.NewRecorder()
 			ctx := context.WithValue(t.Context(), claimRequestTraceKey{}, true)
 			fixture.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path, fixture.tokens[index], finish).WithContext(ctx))
 			if response.Code != http.StatusOK {
@@ -77,8 +90,8 @@ func TestRunnerCompletionPublicationWireBudget(t *testing.T) {
 			actual := [2]int{wire.statements, wire.exchanges}
 			wire.Unlock()
 			t.Logf("tenant=%s history=%d completion HTTP statements=%d exchanges=%d", org, history, actual[0], actual[1])
-			if actual[1] < 1 || actual[1] > 11 || expected != [2]int{} && actual != expected {
-				t.Errorf("completion bound=%v previous=%v want <=11 exchanges, fixed across history and tenants", actual, expected)
+			if actual[1] < 1 || actual[1] > maxExchanges || expected != [2]int{} && actual != expected {
+				t.Errorf("completion bound=%v previous=%v want <=%d exchanges, fixed across history and tenants", actual, expected, maxExchanges)
 			}
 			expected = actual
 			if err := fixture.admin.QueryRowContext(t.Context(), `SELECT a.sequence,(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND work_item_id=$3),(SELECT count(*) FROM cost_sources WHERE organization_id=$1 AND resource_id=$2),(SELECT count(*) FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2 AND input=17) FROM native_attempts a WHERE organization_id=$1 AND id=$2`, org, data.AttemptID, lease.WorkItemID).Scan(&sequence, &comments, &costs, &reports); err != nil {

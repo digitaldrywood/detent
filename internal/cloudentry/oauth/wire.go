@@ -29,13 +29,13 @@ type Registration struct {
 }
 
 type Grant struct {
-	ID             string  `json:"id"`
-	ClientID       string  `json:"client_id"`
-	ClientName     string  `json:"client_name"`
-	OrganizationID string  `json:"organization_id"`
-	ConnectedAt    string  `json:"connected_at"`
-	LastUsedAt     *string `json:"last_used_at"`
-	RevokedAt      *string `json:"revoked_at"`
+	ID             string     `json:"id"`
+	ClientID       string     `json:"client_id"`
+	ClientName     string     `json:"client_name"`
+	OrganizationID string     `json:"organization_id"`
+	ConnectedAt    time.Time  `json:"connected_at"`
+	LastUsedAt     *time.Time `json:"last_used_at"`
+	RevokedAt      *time.Time `json:"revoked_at"`
 }
 
 type GrantPage struct {

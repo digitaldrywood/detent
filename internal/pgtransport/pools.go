@@ -16,7 +16,7 @@ import (
 
 type Pools struct{ reader, writer *pgxpool.Pool }
 
-const statementCacheCapacity = 128
+const statementCacheCapacity = 512
 
 func Configure(config *pgxpool.Config) {
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
