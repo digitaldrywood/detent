@@ -15,15 +15,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *session) EnqueueGitHubOutbound(ctx context.Context, row projectstore.GitHubOutbound) error {
+func (s *session) EnqueueGitHubOutbound(ctx context.Context, row projectstore.GitHubOutbound, committed func(tracker.OrganizationID)) error {
 	if err := s.checkOrganization(row.Payload.OrganizationID); err != nil {
 		return err
 	}
 	if err := validRecordPayload(s.organization, row.Payload.PayloadObjectKey, row.Payload.PayloadSHA256, row.Payload.PayloadBytes, row.Payload.PayloadContentBytes); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(ctx, `INSERT INTO github_outbound(organization_id,project_id,work_item_id,command_key,repository,issue_number,kind,target_node_id,next_attempt_at,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,outcome,coalesce_key)
+	tag, err := s.db.Exec(ctx, `INSERT INTO github_outbound(organization_id,project_id,work_item_id,command_key,repository,issue_number,kind,target_node_id,next_attempt_at,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,outcome,coalesce_key)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,'unattempted',$14) ON CONFLICT(organization_id,command_key) DO NOTHING`, s.organization, row.ProjectID, row.WorkItemID, row.Key, row.Repository, row.IssueNumber, row.Kind, row.TargetNodeID, row.CreatedAt, row.Payload.PayloadObjectKey, row.Payload.PayloadSHA256, row.Payload.PayloadBytes, row.Payload.PayloadContentBytes, row.CoalesceKey)
+	if err == nil && tag.RowsAffected() != 0 && committed != nil {
+		s.outboundCommitted = committed
+	}
 	return mapError(ctx, err)
 }
 

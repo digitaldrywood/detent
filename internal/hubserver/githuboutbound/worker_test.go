@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -14,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"testing"
 )
 
 func TestOutboxStepStopsAfterOneDeliveryOrRejection(t *testing.T) {
@@ -38,9 +38,9 @@ func TestOutboxStepStopsAfterOneDeliveryOrRejection(t *testing.T) {
 				cancel()
 			}
 			github := 0
-			delivered, err := processOutboxStep(ctx, func(context.Context) (bool, error) {
+			delivered, _, err := processOutboxStep(ctx, func(context.Context) (bool, time.Time, error) {
 				github++
-				return test.delivered, test.failure
+				return test.delivered, time.Time{}, test.failure
 			})
 			if github != test.github {
 				t.Fatalf("delivery budget: github=%d", github)
@@ -72,9 +72,24 @@ func TestOutboundIdleStatements(t *testing.T) {
 	deps.Repository, deps.Details = repo, hubtest.NewDetails()
 	backend := &recordingOutboxBackend{}
 	deps.Backend = backend
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	deps.Now = func() time.Time { return now }
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
+	deps.Organization = organizations[1]
+	receiver := NewWorker(New(deps))
+	expectWake := func(want bool) {
+		t.Helper()
+		select {
+		case <-receiver.wake:
+			if !want {
+				t.Fatal("unexpected outbound wake")
+			}
+		default:
+			if want {
+				t.Fatal("committed outbound work did not wake its worker")
+			}
+		}
+	}
 	for _, org := range organizations {
 		hubtest.Organization(t, repo, hubtest.OrganizationOptions{ID: org})
 		hubtest.Project(t, repo, org, hubtest.ProjectOptions{ID: "project"})
@@ -84,15 +99,51 @@ func TestOutboundIdleStatements(t *testing.T) {
 		}
 		due := now
 		if org == organizations[0] {
-			due = now.Add(time.Hour)
+			due = now.Add(250 * time.Millisecond)
 		}
-		err = repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "item", Key: string(org), Repository: "example-org/example-project", IssueNumber: 1, Kind: "workpad", CreatedAt: due, Payload: payload})
-		})
-		if err != nil {
+		row := projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "item", Key: string(org), Repository: "example-org/example-project", IssueNumber: 1, Kind: "workpad", CreatedAt: due, Payload: payload}
+		enqueue := func(w tenantstore.Writer) error {
+			err := w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), row, receiver.Wake)
+			expectWake(false)
+			return err
+		}
+		rollback := errors.New("rollback")
+		if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := enqueue(w); err != nil {
+				return err
+			}
+			return rollback
+		}); !errors.Is(err, rollback) {
 			t.Fatal(err)
 		}
+		expectWake(false)
+		if err := repo.WriteTenant(t.Context(), org, corestore.Serving, enqueue); err != nil {
+			t.Fatal(err)
+		}
+		expectWake(org == deps.Organization)
+		if err := repo.WriteTenant(t.Context(), org, corestore.Serving, enqueue); err != nil {
+			t.Fatal(err)
+		}
+		expectWake(false)
 	}
+	t.Run("timer honors durable deadline", func(t *testing.T) {
+		d := deps
+		d.Organization = organizations[0]
+		d.OutboxPollInterval = time.Minute
+		d.Jitter = func() float64 { return 1 }
+		ticks := make(chan time.Time, 1)
+		waits := make(chan time.Duration, 1)
+		d.NewTimer = func(time.Duration) Timer {
+			return Timer{Ticks: ticks, Reset: func(delay time.Duration) { waits <- delay }, Stop: func() {}}
+		}
+		worker := NewWorker(New(d))
+		worker.Start(t.Context())
+		defer worker.Stop()
+		ticks <- now
+		if delay := <-waits; delay != 250*time.Millisecond {
+			t.Errorf("next delivery in 250ms, timer=%s", delay)
+		}
+	})
 	for _, org := range organizations {
 		deps.Organization = org
 		wire.Reset()
@@ -117,4 +168,34 @@ func TestOutboundIdleStatements(t *testing.T) {
 	if len(backend.deliveredKeys) != 1 || backend.deliveredKeys[0] != string(organizations[1]) {
 		t.Fatalf("delivered %v", backend.deliveredKeys)
 	}
+	t.Run("processing lease and retry deadlines", func(t *testing.T) {
+		org := organizations[0]
+		at := now.Add(250 * time.Millisecond)
+		leaseUntil := at.Add(3 * time.Second)
+		var row projectstore.GitHubOutbound
+		if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			var err error
+			row, err = w.(projectstore.GitHubOutboxWriter).ClaimGitHubOutbound(t.Context(), at, leaseUntil, "lease")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		checkDeadline := func(want time.Time) {
+			t.Helper()
+			wire.Reset()
+			got, err := repo.GitHubOutboundDeadline(t.Context(), org)
+			exchanges, statements := wire.Stop()
+			if err != nil || !got.Equal(want) || exchanges != 1 || statements != 1 {
+				t.Fatalf("deadline %s, want %s, statements=%d exchanges=%d err=%v", got, want, statements, exchanges, err)
+			}
+		}
+		checkDeadline(leaseUntil)
+		row.Status, row.Outcome, row.NextAttemptAt = "retrying", "rejected", leaseUntil.Add(time.Second)
+		if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.(projectstore.GitHubOutboxWriter).FinishGitHubOutbound(t.Context(), row, at)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		checkDeadline(row.NextAttemptAt)
+	})
 }

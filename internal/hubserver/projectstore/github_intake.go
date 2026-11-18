@@ -116,7 +116,7 @@ type GitHubOutboxWriter interface {
 	SupersedeGitHubSummaries(context.Context, tracker.ProjectID, string, time.Time) error
 	SupersedeGitHubCompatibilityWrites(context.Context, tracker.ProjectID, bool, time.Time) error
 	GitHubOutbound(context.Context, string) (GitHubOutbound, error)
-	EnqueueGitHubOutbound(context.Context, GitHubOutbound) error
+	EnqueueGitHubOutbound(context.Context, GitHubOutbound, func(tracker.OrganizationID)) error
 	ClaimGitHubOutbound(context.Context, time.Time, time.Time, string) (GitHubOutbound, error)
 	RenewGitHubOutbound(context.Context, int64, string, time.Time, time.Time, bool) error
 	FinishGitHubOutbound(context.Context, GitHubOutbound, time.Time) error

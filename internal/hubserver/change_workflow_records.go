@@ -553,7 +553,7 @@ func (s *Service) applyChangeWorkflowTransition(ctx context.Context, w tenantsto
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.EnqueueGitHubOutbound(ctx, *p.outbound)
+		return owner.EnqueueGitHubOutbound(ctx, *p.outbound, s.outbox.wake)
 	}
 	return nil
 }

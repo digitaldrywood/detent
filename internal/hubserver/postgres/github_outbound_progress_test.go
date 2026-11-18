@@ -33,7 +33,7 @@ func TestGitHubOutboundVerificationKeepsLatestScopedFacts(t *testing.T) {
 					return err
 				}
 				payload := eventstore.Receipt{OrganizationID: organization, PayloadObjectKey: key, PayloadSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PayloadBytes: 1, PayloadContentBytes: 1}
-				if err := w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: project, Key: string(project), Repository: "example-org/example-project", IssueNumber: 1, Kind: "merge_pull_request", CreatedAt: now, Payload: payload}); err != nil {
+				if err := w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: project, Key: string(project), Repository: "example-org/example-project", IssueNumber: 1, Kind: "merge_pull_request", CreatedAt: now, Payload: payload}, nil); err != nil {
 					return err
 				}
 			}

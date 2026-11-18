@@ -46,7 +46,7 @@ func TestGitHubOutboundFencesExpiredClaimsAcrossTenants(t *testing.T) {
 				}
 				out := projectstore.GitHubOutbound{ProjectID: project, WorkItemID: "wi_example", Key: string(project), Repository: "example-org/example-project", IssueNumber: 1, Kind: "workpad", CreatedAt: now, Payload: payload}
 				for range 2 {
-					if err := w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), out); err != nil {
+					if err := w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), out, nil); err != nil {
 						return err
 					}
 				}
@@ -121,7 +121,7 @@ func TestGitHubOutboundFencesExpiredClaimsAcrossTenants(t *testing.T) {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			owner := w.(projectstore.GitHubOutboxWriter)
 			for _, row := range []projectstore.GitHubOutbound{{ProjectID: "one", WorkItemID: "wi_example", Key: "one-new", Repository: "example-org/example-project", IssueNumber: 1, Kind: "workpad", CreatedAt: now.Add(4 * time.Minute), Payload: payload}, {ProjectID: "one", WorkItemID: "wi_other", Key: "other-item", Repository: "example-org/example-project", IssueNumber: 2, Kind: "workpad", CreatedAt: now.Add(4 * time.Minute), Payload: payload}} {
-				if err := owner.EnqueueGitHubOutbound(t.Context(), row); err != nil {
+				if err := owner.EnqueueGitHubOutbound(t.Context(), row, nil); err != nil {
 					return err
 				}
 			}

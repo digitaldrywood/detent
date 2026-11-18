@@ -86,7 +86,7 @@ func TestPostgresGitHubOutboundUsesConfiguredBackend(t *testing.T) {
 			if !ok {
 				return service.deps.Unavailable
 			}
-			return owner.EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "wi_example", Key: string(org), Repository: "example-org/example-project", IssueNumber: 1, Kind: string(githubcontract.MutationWorkpad), CreatedAt: now, Payload: payload})
+			return owner.EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "wi_example", Key: string(org), Repository: "example-org/example-project", IssueNumber: 1, Kind: string(githubcontract.MutationWorkpad), CreatedAt: now, Payload: payload}, nil)
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -115,7 +115,7 @@ func TestGitHubOutboundCallBoundedByLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := service.deps.Repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
-		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "first", WorkItemID: "wi_example", Key: "deadline", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(githubcontract.MutationWorkpad), CreatedAt: *now, Payload: payload})
+		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "first", WorkItemID: "wi_example", Key: "deadline", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(githubcontract.MutationWorkpad), CreatedAt: *now, Payload: payload}, nil)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -137,10 +137,10 @@ func TestGitHubOutboundPollJitter(t *testing.T) {
 		service := New(deps)
 		service.deps.Backend = &recordingOutboxBackend{}
 		deliveries := []bool{false, false, true, false}
-		service.deps.Process = func(context.Context) (bool, error) {
+		service.deps.Process = func(context.Context) (bool, time.Time, error) {
 			next := deliveries[0]
 			deliveries = deliveries[1:]
-			return next, nil
+			return next, time.Time{}, nil
 		}
 		service.deps.Jitter = func() float64 { value := jitter[0]; jitter = jitter[1:]; return value }
 		service.deps.NewTimer = func(delay time.Duration) Timer {
@@ -184,7 +184,7 @@ func TestGitHubOutboundRenewsExecutingLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := service.deps.Repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
-		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "first", WorkItemID: "wi_example", Key: "renew", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(githubcontract.MutationWorkpad), CreatedAt: now(), Payload: payload})
+		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "first", WorkItemID: "wi_example", Key: "renew", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(githubcontract.MutationWorkpad), CreatedAt: now(), Payload: payload}, nil)
 	}); err != nil {
 		t.Fatal(err)
 	}

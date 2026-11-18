@@ -126,7 +126,7 @@ func TestPostgresWriterReconcilesExpiredLostResponse(t *testing.T) {
 		if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: "org_example", ID: "project", Name: "Example", Profile: "native"}); err != nil {
 			return err
 		}
-		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "wi_example", Key: "lost-response", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(hubserver.MutationWorkpad), CreatedAt: now(), Payload: payload})
+		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "wi_example", Key: "lost-response", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(hubserver.MutationWorkpad), CreatedAt: now(), Payload: payload}, nil)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestPostgresWriterBoundsMergeHistory(t *testing.T) {
 				if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: "org_example", ID: "project", Name: "Example", Profile: "native"}); err != nil {
 					return err
 				}
-				return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "wi_example", Key: "merge", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(hubserver.MutationMergePullRequest), CreatedAt: now(), Payload: payload})
+				return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "wi_example", Key: "merge", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(hubserver.MutationMergePullRequest), CreatedAt: now(), Payload: payload}, nil)
 			}); err != nil {
 				t.Fatal(err)
 			}

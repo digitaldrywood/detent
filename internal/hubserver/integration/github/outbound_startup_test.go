@@ -69,7 +69,7 @@ func TestPostgresGitHubOutboundWorkerStarts(t *testing.T) {
 		if !ok {
 			return hubapi.ErrPostgresFeatureUnavailable
 		}
-		return owner.EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "wi_example", Key: "explicit", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(hubserver.MutationWorkpad), CreatedAt: time.Now(), Payload: payload})
+		return owner.EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "project", WorkItemID: "wi_example", Key: "explicit", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(hubserver.MutationWorkpad), CreatedAt: time.Now(), Payload: payload}, nil)
 	}); err != nil {
 		t.Fatal(err)
 	}

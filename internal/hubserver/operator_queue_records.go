@@ -192,7 +192,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeSc
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()
 			}
-			if err := owner.EnqueueGitHubOutbound(ctx, *outbound); err != nil {
+			if err := owner.EnqueueGitHubOutbound(ctx, *outbound, s.outbox.wake); err != nil {
 				return err
 			}
 		}

@@ -15,18 +15,28 @@ import (
 )
 
 func (s *Service) Process(ctx context.Context) (bool, error) {
+	worked, _, err := s.processNext(ctx)
+	return worked, err
+}
+
+func (s *Service) processNext(ctx context.Context) (bool, time.Time, error) {
 	if s.deps.Backend == nil || s.deps.Repository == nil {
-		return false, s.deps.Disabled
+		return false, time.Time{}, s.deps.Disabled
 	}
-	organization := s.deps.Organization
 	if probe, ok := s.deps.Repository.(interface {
-		GitHubOutboundDue(context.Context, tracker.OrganizationID, time.Time) (bool, error)
+		GitHubOutboundDeadline(context.Context, tracker.OrganizationID) (time.Time, error)
 	}); ok {
-		due, err := probe.GitHubOutboundDue(ctx, organization, s.deps.Now())
-		if err != nil || !due {
-			return false, err
+		deadline, err := probe.GitHubOutboundDeadline(ctx, s.deps.Organization)
+		if err != nil || deadline.IsZero() || deadline.After(s.deps.Now()) {
+			return false, deadline, err
 		}
 	}
+	worked, err := s.claimAndDeliver(ctx)
+	return worked, time.Time{}, err
+}
+
+func (s *Service) claimAndDeliver(ctx context.Context) (bool, error) {
+	organization := s.deps.Organization
 	var row projectstore.GitHubOutbound
 	err := s.deps.Repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		var err error

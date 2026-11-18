@@ -1802,7 +1802,7 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-				return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Key: "protected-merge", Repository: "example/repo", IssueNumber: int64(f.issue.Number), Kind: string(MutationMergePullRequest), CreatedAt: service.config.Clock(), Payload: payload})
+				return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Key: "protected-merge", Repository: "example/repo", IssueNumber: int64(f.issue.Number), Kind: string(MutationMergePullRequest), CreatedAt: service.config.Clock(), Payload: payload}, nil)
 			}); err != nil {
 				t.Fatal(err)
 			}

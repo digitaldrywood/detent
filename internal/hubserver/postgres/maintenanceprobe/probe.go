@@ -20,8 +20,25 @@ func New(pool *pgxpool.Pool, acquire func(context.Context, corestore.Workload) (
 	return Reader{pool: pool, acquire: acquire}
 }
 
-func (r Reader) GitHubOutboundDue(ctx context.Context, org tracker.OrganizationID, now time.Time) (bool, error) {
-	return r.due(ctx, org, "SELECT public.github_outbound_due($1,$2)", org, now)
+func (r Reader) GitHubOutboundDeadline(ctx context.Context, org tracker.OrganizationID) (time.Time, error) {
+	if org == "" {
+		return time.Time{}, corestore.ErrTenantMismatch
+	}
+	release, err := r.acquire(ctx, corestore.Background)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer release()
+	const query = "SELECT public.github_outbound_deadline($1)"
+	defer pgcore.ObserveStatement(ctx, time.Now(), query)
+	var next *time.Time
+	if err := r.pool.QueryRow(ctx, query, org).Scan(&next); err != nil {
+		return time.Time{}, pgcore.MapError(ctx, err)
+	}
+	if next == nil {
+		return time.Time{}, nil
+	}
+	return *next, nil
 }
 
 func (r Reader) due(ctx context.Context, org tracker.OrganizationID, query string, args ...any) (bool, error) {

@@ -616,7 +616,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				if !ok {
 					return hubapi.NativeWorkItemStorageUnavailable()
 				}
-				if err := owner.EnqueueGitHubOutbound(ctx, *workflowOutbound); err != nil {
+				if err := owner.EnqueueGitHubOutbound(ctx, *workflowOutbound, s.outbox.wake); err != nil {
 					return err
 				}
 			}
@@ -625,7 +625,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				if !ok {
 					return hubapi.NativeWorkItemStorageUnavailable()
 				}
-				if err := owner.EnqueueGitHubOutbound(ctx, *sourceCancellation); err != nil {
+				if err := owner.EnqueueGitHubOutbound(ctx, *sourceCancellation, s.outbox.wake); err != nil {
 					return err
 				}
 			}

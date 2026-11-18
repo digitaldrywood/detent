@@ -28,7 +28,7 @@ type Deps struct {
 	Disabled                error
 	Unavailable             error
 	SplitRepository         func(string) (string, string, bool)
-	Process                 func(context.Context) (bool, error)
+	Process                 func(context.Context) (bool, time.Time, error)
 }
 
 type Service struct{ deps Deps }

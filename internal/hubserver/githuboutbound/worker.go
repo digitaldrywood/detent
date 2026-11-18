@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type Worker struct {
@@ -26,6 +28,16 @@ func NewWorker(service *Service) *Worker {
 	}
 }
 
+func (w *Worker) Wake(org tracker.OrganizationID) {
+	if org != w.service.deps.Organization {
+		return
+	}
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
 func (w *Worker) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	w.cancel = cancel
@@ -44,6 +56,10 @@ func (w *Worker) run(ctx context.Context) {
 	}
 	timer := w.service.deps.NewTimer(wait())
 	defer timer.Stop()
+	process := w.service.deps.Process
+	if process == nil && w.service.deps.Backend != nil {
+		process = w.service.processNext
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -52,20 +68,15 @@ func (w *Worker) run(ctx context.Context) {
 			interval = base
 		case <-timer.Ticks:
 		}
+		var next time.Time
 		worked := false
 		for range 64 {
-			var github func(context.Context) (bool, error)
-			if w.service.deps.Backend != nil {
-				github = w.service.Process
-				if w.service.deps.Process != nil {
-					github = w.service.deps.Process
-				}
-			}
-			processed, err := processOutboxStep(ctx, github)
+			processed, deadline, err := processOutboxStep(ctx, process)
+			next = deadline
 			if err != nil && ctx.Err() == nil {
 				w.service.deps.Logger.WarnContext(ctx, "outbox delivery failed", "error", err)
 			}
-			worked = worked || processed
+			worked = worked || processed || err != nil
 			if !processed || ctx.Err() != nil {
 				break
 			}
@@ -75,16 +86,20 @@ func (w *Worker) run(ctx context.Context) {
 		} else if interval < time.Minute {
 			interval = min(2*interval, time.Minute)
 		}
-		timer.Reset(wait())
+		delay := wait()
+		if !next.IsZero() {
+			delay = min(delay, max(0, next.Sub(w.service.deps.Now())))
+		}
+		timer.Reset(delay)
 	}
 }
 
-func processOutboxStep(ctx context.Context, github func(context.Context) (bool, error)) (bool, error) {
+func processOutboxStep(ctx context.Context, github func(context.Context) (bool, time.Time, error)) (bool, time.Time, error) {
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return false, time.Time{}, err
 	}
 	if github == nil {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	return github(ctx)
 }

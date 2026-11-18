@@ -480,7 +480,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope hubscop
 				return err
 			}
 			if item.outbound != nil {
-				if err := outbox.EnqueueGitHubOutbound(ctx, *item.outbound); err != nil {
+				if err := outbox.EnqueueGitHubOutbound(ctx, *item.outbound, s.outbox.wake); err != nil {
 					return err
 				}
 			}
@@ -697,6 +697,6 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope h
 		if err := owner.SupersedeGitHubSummaries(ctx, scope.Project, outbound.CoalesceKey, s.config.Clock()); err != nil {
 			return err
 		}
-		return owner.EnqueueGitHubOutbound(ctx, outbound)
+		return owner.EnqueueGitHubOutbound(ctx, outbound, s.outbox.wake)
 	})
 }

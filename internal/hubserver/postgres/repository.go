@@ -208,6 +208,9 @@ func (r *Repository) begin(ctx context.Context, organization tracker.Organizatio
 	err = tx.Commit(ctx)
 	observeStatement(ctx, started, "COMMIT")
 	finishCommit()
+	if err == nil && owner.outboundCommitted != nil {
+		owner.outboundCommitted(organization)
+	}
 	if err == nil && hasDelivery {
 		r.notifyBoardCommit()
 	}
@@ -241,6 +244,7 @@ type projectAccessKey struct {
 }
 
 type session struct {
+	outboundCommitted       func(tracker.OrganizationID)
 	boardDeltas             []boardAppend
 	flushesBoardDeltas      bool
 	archiveAccountingLocked bool

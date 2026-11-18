@@ -21,7 +21,7 @@ func (s *Service) githubOutboundService() *githuboutbound.Service {
 		OutboxPollInterval: s.config.OutboxPollInterval, OutboxProcessingTimeout: s.config.OutboxProcessingTimeout,
 		OutboxBaseBackoff: s.config.OutboxBaseBackoff, OutboxMaxBackoff: s.config.OutboxMaxBackoff,
 		Disabled: ErrOutboxDisabled, Unavailable: hubapi.ErrPostgresFeatureUnavailable,
-		SplitRepository: splitRepositoryFullName, Process: s.ProcessOutbox,
+		SplitRepository: splitRepositoryFullName,
 		NewTimer: func(delay time.Duration) githuboutbound.Timer {
 			timer := s.config.deps.NewOutboxTimer(delay)
 			return githuboutbound.Timer{Ticks: timer.C, Reset: timer.Reset, Stop: timer.Stop}
@@ -41,5 +41,11 @@ func (w *outboxWorker) start(ctx context.Context) { w.worker.Start(ctx) }
 func (w *outboxWorker) stop() {
 	if w != nil {
 		w.worker.Stop()
+	}
+}
+
+func (w *outboxWorker) wake(org tracker.OrganizationID) {
+	if w != nil {
+		w.worker.Wake(org)
 	}
 }

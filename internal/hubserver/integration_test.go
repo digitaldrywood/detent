@@ -657,7 +657,7 @@ func TestCutoverRefusesChangedAuthoritySourcesAndRollsBack(t *testing.T) {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					owner := w.(projectstore.GitHubOutboxWriter)
 					now := f.service.config.Clock()
-					if err := owner.EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: tracker.NativeWorkItemID(first.WorkItemID), Key: "uncertain-source", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(MutationWorkflowLabel), CreatedAt: now, Payload: payload}); err != nil {
+					if err := owner.EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: tracker.NativeWorkItemID(first.WorkItemID), Key: "uncertain-source", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(MutationWorkflowLabel), CreatedAt: now, Payload: payload}, nil); err != nil {
 						return err
 					}
 					row, err := owner.ClaimGitHubOutbound(t.Context(), now, now.Add(time.Minute), "uncertain-source-lease")

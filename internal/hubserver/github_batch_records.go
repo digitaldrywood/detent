@@ -862,7 +862,7 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope hubscope.Na
 			if err != nil || canonical != source.URL || repository != item.Repository || int64(number) != item.IssueNumber || source.SnapshotObjectKey == "" {
 				return eventstore.ErrInvalidRecord
 			}
-			if err := owner.EnqueueGitHubOutbound(ctx, item); err != nil {
+			if err := owner.EnqueueGitHubOutbound(ctx, item, s.outbox.wake); err != nil {
 				return err
 			}
 		}

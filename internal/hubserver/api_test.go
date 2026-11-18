@@ -354,7 +354,7 @@ func TestWorkItemAPIUsesStableFilteredCursorsAndDetailTimeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: ids[2], Key: "workpad-api", Repository: "example-org/example-project", IssueNumber: 3, Kind: string(MutationWorkpad), CreatedAt: f.service.config.Clock(), Payload: payload})
+		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: ids[2], Key: "workpad-api", Repository: "example-org/example-project", IssueNumber: 3, Kind: string(MutationWorkpad), CreatedAt: f.service.config.Clock(), Payload: payload}, nil)
 	}); err != nil {
 		t.Fatal(err)
 	}
