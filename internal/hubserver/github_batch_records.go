@@ -308,11 +308,11 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope hubscope.N
 		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.Clock())); err != nil {
 			return err
 		}
-		current, err := w.ProjectRecord(ctx, scope.Project)
+		version, err := w.ProjectVersion(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		if current.Settings.Revision != project.Settings.Revision {
+		if version.SettingsRevision != project.Settings.Revision {
 			return corestore.ErrRevisionConflict
 		}
 		intakeBatchWriter, ok := w.(projectstore.IntakeBatchWriter)
@@ -839,11 +839,11 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope hubscope.Na
 		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, writer, "github_integration", s.config.Clock())); err != nil {
 			return err
 		}
-		current, err := writer.ProjectRecord(ctx, scope.Project)
+		version, err := writer.ProjectVersion(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		if current.Settings.Revision != project.Settings.Revision {
+		if version.SettingsRevision != project.Settings.Revision {
 			return corestore.ErrRevisionConflict
 		}
 		owner, ok := writer.(projectstore.GitHubOutboxWriter)
@@ -1259,11 +1259,11 @@ func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope hubscope.Na
 		if err := writer.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		current, err := writer.ProjectRecord(ctx, scope.Project)
+		version, err := writer.ProjectVersion(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		if current.Settings.Revision != project.Settings.Revision {
+		if version.SettingsRevision != project.Settings.Revision {
 			return corestore.ErrRevisionConflict
 		}
 		batches, ok := writer.(projectstore.IntakeBatchWriter)

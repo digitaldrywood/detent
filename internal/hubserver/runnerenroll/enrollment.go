@@ -37,14 +37,14 @@ func (s *Service) Create(ctx context.Context, scope hubapi.Scope, request runner
 	var enrollment runnerauth.Enrollment
 	err = s.Write(ctx, scope, func(ctx context.Context, w tenantstore.Writer, now time.Time) error {
 		for i, project := range request.ProjectIDs {
-			record, err := w.ProjectRecord(ctx, project)
+			_, err := w.ProjectVersion(ctx, project)
 			if err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
 					return hubapi.PublicInvalid("Enrollment projects must be unique and belong to the organization")
 				}
 				return err
 			}
-			if record.Core.DeletedAt != nil || slices.Contains(request.ProjectIDs[:i], project) {
+			if slices.Contains(request.ProjectIDs[:i], project) {
 				return hubapi.PublicInvalid("Enrollment projects must be unique and belong to the organization")
 			}
 		}

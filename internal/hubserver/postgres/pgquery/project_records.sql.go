@@ -203,6 +203,31 @@ func (q *Queries) BoundProjectRecord(ctx context.Context, arg BoundProjectRecord
 	return items, nil
 }
 
+const boundProjectRoute = `-- name: BoundProjectRoute :one
+SELECT p.profile,p.slug AS project_slug,o.slug AS organization_slug
+FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
+JOIN public.organizations o ON o.organization_id=p.organization_id
+WHERE p.organization_id=$1 AND p.id=$2 AND p.deleted_at IS NULL
+`
+
+type BoundProjectRouteParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             tracker.ProjectID
+}
+
+type BoundProjectRouteRow struct {
+	Profile          string
+	ProjectSlug      string
+	OrganizationSlug string
+}
+
+func (q *Queries) BoundProjectRoute(ctx context.Context, arg BoundProjectRouteParams) (BoundProjectRouteRow, error) {
+	row := q.db.QueryRow(ctx, boundProjectRoute, arg.OrganizationID, arg.ID)
+	var i BoundProjectRouteRow
+	err := row.Scan(&i.Profile, &i.ProjectSlug, &i.OrganizationSlug)
+	return i, err
+}
+
 const boundProjectVersion = `-- name: BoundProjectVersion :one
 SELECT p.slug,s.revision,p.content_settings_revision,s.model_revision
 FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id

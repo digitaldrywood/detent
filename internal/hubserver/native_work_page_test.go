@@ -833,7 +833,7 @@ func TestNativeWorkClosedOrdering(t *testing.T) {
 		t.Fatalf("fixture authentication=%d %v", status, err)
 	}
 	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
-	project, err := f.service.readTenantProjectRecord(t.Context(), scope)
+	project, err := f.service.readProjectRecord(t.Context(), scope)
 	if err != nil {
 		t.Fatal(err)
 	}

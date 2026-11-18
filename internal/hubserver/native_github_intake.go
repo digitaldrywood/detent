@@ -47,11 +47,11 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope hubscope.Native
 	if err != nil {
 		return nil, hubapi.NativeInvalid(err.Error())
 	}
-	project, err := s.readProjectRecord(ctx, scope)
-	integration := projectIntegrationRecord(project)
+	project, err := s.readProjectMetadata(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
+	integration := ProjectIntegration{Profile: project.Core.Profile, Repository: project.Settings.Repository, CheckoutRepository: project.Settings.CheckoutRepository}
 	if err := validateLinkedIssueRepository(integration, repository); err != nil {
 		return nil, err
 	}

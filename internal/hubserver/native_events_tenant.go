@@ -517,7 +517,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		s.recordWorkerHubVersion(previousRunData, &request.Data)
 	}
 	if disposition := request.Data.Disposition; !termination && request.Type == "run.finished" && request.Data.Outcome == "succeeded" && disposition != nil && disposition.Status == "blocked" && !disposition.HumanAction && disposition.ReasonCode == "" && len(disposition.BlockerEvidence) > 0 && (previousRunData == nil || !nativeUsageCorrection(*previousRunData, request.Data)) {
-		project, err := s.readTenantProjectRecord(ctx, scope)
+		project, err := s.readProjectMetadata(ctx, scope)
 		if err != nil {
 			return nil, err
 		}

@@ -61,12 +61,15 @@ type ProjectWorkflowTrace struct {
 	Rows      atomic.Int64
 	Revisions atomic.Int64
 	Metadata  atomic.Int64
+	Routes    atomic.Int64
 }
 
 type workflowQueryKey struct{}
 
 func (trace *ProjectWorkflowTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, query pgx.TraceQueryStartData) context.Context {
 	switch {
+	case strings.Contains(query.SQL, "-- name: BoundProjectRoute "):
+		trace.Routes.Add(1)
 	case strings.Contains(query.SQL, "-- name: BoundProjectVersion "):
 		trace.Revisions.Add(1)
 	case strings.Contains(query.SQL, "-- name: BoundProjectMetadata "):

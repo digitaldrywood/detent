@@ -39,12 +39,9 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 			return hubapi.NativePublicInvalid("Select each project only once")
 		}
 		selected[grant.ProjectID] = true
-		project, err := r.ProjectRecord(ctx, tracker.ProjectID(grant.ProjectID))
+		_, err := r.ProjectVersion(ctx, tracker.ProjectID(grant.ProjectID))
 		if err != nil {
 			return hubscope.OperatorAuthorizationError(err)
-		}
-		if project.Core.DeletedAt != nil {
-			return operatortool.ErrAccessDenied
 		}
 		if credential.EntryKey != nil && !credential.EntryKey.Allows(grant.ProjectID) {
 			return operatortool.ErrAccessDenied
@@ -122,12 +119,9 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 }
 
 func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantstore.Reader, credential hubapi.APICredential, project tracker.ProjectID, write, runner bool) error {
-	row, err := r.ProjectRecord(ctx, project)
+	_, err := r.ProjectVersion(ctx, project)
 	if err != nil {
 		return hubscope.OperatorAuthorizationError(err)
-	}
-	if row.Core.DeletedAt != nil {
-		return operatortool.ErrAccessDenied
 	}
 	if credential.EntryKey != nil {
 		if credential.EntryKey.Allows(string(project)) {

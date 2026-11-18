@@ -761,9 +761,9 @@ type integrationProjectReadSpy struct {
 	read *bool
 }
 
-func (r integrationProjectReadSpy) ProjectRecord(ctx context.Context, project tracker.ProjectID) (projectstore.Record, error) {
+func (r integrationProjectReadSpy) ProjectVersion(ctx context.Context, project tracker.ProjectID) (projectstore.Version, error) {
 	*r.read = true
-	return r.Reader.ProjectRecord(ctx, project)
+	return r.Reader.ProjectVersion(ctx, project)
 }
 
 func (r *integrationRevokingRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {

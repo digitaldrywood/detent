@@ -388,7 +388,7 @@ func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.R
 				if project.Profile != "github_compatible" {
 					continue
 				}
-				record, err := reader.ProjectRecord(ctx, project.ID)
+				record, err := reader.ProjectMetadata(ctx, project.ID)
 				if err != nil {
 					return err
 				}

@@ -659,13 +659,13 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, nil
 		}
 		if r.Input.RepositoryPolicy {
-			var record projectstore.Record
+			var record projectstore.Metadata
 			err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 					return err
 				}
 				var err error
-				record, err = reader.ProjectRecord(ctx, scope.Project)
+				record, err = reader.ProjectMetadata(ctx, scope.Project)
 				return err
 			})
 			if err != nil {

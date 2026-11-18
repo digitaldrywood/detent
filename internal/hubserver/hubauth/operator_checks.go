@@ -88,7 +88,7 @@ func (s *Authenticator) CurrentAuthority(ctx context.Context, credential Credent
 			if err := s.AuthorizeProject(ctx, checkScope, requirement.Scope != apikey.ScopeRead); err != nil {
 				return err
 			}
-			if _, err := s.ReadProject(ctx, checkScope); err != nil {
+			if err := s.RequireActiveProject(ctx, checkScope); err != nil {
 				return err
 			}
 		}

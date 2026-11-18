@@ -68,7 +68,7 @@ func (s *Service) scheduledRepository(ctx context.Context, scope hubscope.Native
 	}
 	var repository string
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		record, err := r.ProjectRecord(ctx, scope.Project)
+		record, err := r.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

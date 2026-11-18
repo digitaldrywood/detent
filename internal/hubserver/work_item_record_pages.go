@@ -157,11 +157,11 @@ func (s *Service) workItemResource(ctx context.Context, scope hubscope.NativeSco
 
 	var issue tracker.NativeIssue
 	var source eventstore.LinkedSource
-	project, err := s.readTenantProjectRecord(ctx, scope)
+	route, err := readProject(ctx, s.config.TenantRepository, scope, tenantstore.Reader.ProjectRoute)
 	if err != nil {
 		return issue, err
 	}
-	if project.Core.Profile == "github_compatible" {
+	if route.Profile == "github_compatible" {
 		issue, err = s.readWorkItemSourcePage(ctx, scope, id)
 	} else {
 		err = s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
@@ -170,6 +170,7 @@ func (s *Service) workItemResource(ctx context.Context, scope hubscope.NativeSco
 			return err
 		})
 		if err == nil {
+			issue.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(route.OrganizationSlug, route.ProjectSlug, issue.Number)}).WebURL
 			issue, err = s.workItemReader().LinkSource(ctx, scope.Organization, issue, source)
 		}
 	}

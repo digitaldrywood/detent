@@ -252,7 +252,7 @@ func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope
 	if err != nil {
 		return nil, err
 	}
-	project, err := s.readTenantProjectRecord(ctx, scope)
+	project, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
 		return nil, err
 	}

@@ -21,7 +21,7 @@ func (s *Service) resolveWorkflowItem(ctx context.Context, scope hubscope.Native
 }
 
 func (s *Service) workflowProjectStates(ctx context.Context, scope hubscope.NativeScope) ([]tracker.NativeState, error) {
-	project, err := s.readTenantProjectRecord(ctx, scope)
+	project, err := s.readProjectRecord(ctx, scope)
 	return project.States, err
 }
 

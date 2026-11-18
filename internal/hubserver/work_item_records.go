@@ -956,7 +956,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 						return err
 					}
 				}
-				targetProject, err := w.ProjectRecord(ctx, plan.Related.ProjectID)
+				targetProject, err := w.ProjectMetadata(ctx, plan.Related.ProjectID)
 				if err != nil {
 					return err
 				}

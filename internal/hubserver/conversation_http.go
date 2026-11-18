@@ -54,8 +54,8 @@ func (s *Service) requireConversationScope(extra ...hubapi.APIScope) echo.Middle
 				}
 				return s.nativeAPIError(c, err)
 			}
-			if _, err := s.readProjectRecord(ctx, scope); err != nil {
-				return s.nativeAPIError(c, err)
+			if err := s.requestAuth().RequireActiveProject(ctx, s.authInput(scope)); err != nil {
+				return s.nativeAPIError(c, hubapi.FromFeatureError(err))
 			}
 			if item := c.Param("item"); item != "" {
 				if _, _, err := s.readWorkItemRecord(ctx, scope, item); err != nil {
@@ -166,8 +166,7 @@ func (s *Service) refreshConversationStream(readCtx context.Context, c echo.Cont
 	if err := s.authorizeProjectRecord(readCtx, *scope, false); err != nil {
 		return err
 	}
-	_, err := s.readProjectRecord(readCtx, *scope)
-	return err
+	return hubapi.FromFeatureError(s.requestAuth().RequireActiveProject(readCtx, s.authInput(*scope)))
 }
 
 func (c *Config) streamHeartbeat() time.Duration {

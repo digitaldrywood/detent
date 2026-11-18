@@ -31,7 +31,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope hubscope.Na
 	if raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || err != nil {
 		return raw, err
 	}
-	project, err := s.readProjectRecord(ctx, scope)
+	project, err := s.readProjectMetadata(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -71,12 +71,12 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope hubscope.Na
 		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.Clock())); err != nil {
 			return err
 		}
-		latest, err := w.ProjectRecord(ctx, scope.Project)
+		version, err := w.ProjectVersion(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		if latest.Settings.Revision != project.Settings.Revision {
-			return hubapi.NativeConflict(tracker.Revision(latest.Settings.Revision))
+		if version.SettingsRevision != project.Settings.Revision {
+			return hubapi.NativeConflict(tracker.Revision(version.SettingsRevision))
 		}
 		owner, ok := w.(projectstore.GitHubImportWriter)
 		if !ok {

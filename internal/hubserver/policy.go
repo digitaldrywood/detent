@@ -39,7 +39,7 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 	defer cancel()
 	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Project: tracker.ProjectID(c.Param("project"))}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		_, err := reader.ProjectRecord(ctx, scope.Project)
+		_, err := reader.ProjectVersion(ctx, scope.Project)
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -80,11 +80,11 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 		selection := workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{}, workflowconfig.ModelSelection{})
 		if c.Param("organization") != "" {
 			projectScope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Project: tracker.ProjectID(c.Param("project"))}
-			record, err := s.readProjectRecord(ctx, projectScope)
+			record, err := s.readProjectMetadata(ctx, projectScope)
 			if err != nil {
 				return s.nativeAPIError(c, err)
 			}
-			resolved, err := s.projectRecordModel(ctx, record)
+			resolved, err := s.projectRecordModel(ctx, record.Settings)
 			if err != nil {
 				return s.nativeAPIError(c, err)
 			}
@@ -599,13 +599,13 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubsc
 			return policy.Approval{}, err
 		}
 	}
-	snapshot, err := s.readTenantProjectRecord(ctx, scope)
+	snapshot, err := s.readProjectMetadata(ctx, scope)
 	if err != nil {
 		return policy.Approval{}, err
 	}
 	var cloudWorkflowErr error
 	if approval.Policy.Workflow == nil && snapshot.Core.Profile == "native" {
-		markdown, err := s.projectRecordWorkflow(ctx, snapshot)
+		markdown, err := s.projectWorkflowMarkdown(ctx, snapshot.Settings)
 		if err != nil {
 			return policy.Approval{}, err
 		}
@@ -762,13 +762,13 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope hubscope
 	if err != nil {
 		return err
 	}
-	projectSnapshot, err := s.readTenantProjectRecord(ctx, scope)
+	projectSnapshot, err := s.readProjectMetadata(ctx, scope)
 	if err != nil {
 		return err
 	}
 	var savedGuidance bool
 	if observation.Workflow == nil && projectSnapshot.Core.Profile == "native" {
-		markdown, err := s.projectRecordWorkflow(ctx, projectSnapshot)
+		markdown, err := s.projectWorkflowMarkdown(ctx, projectSnapshot.Settings)
 		if err != nil {
 			return err
 		}
@@ -968,7 +968,7 @@ func (s *Service) prepareObservedPolicyLanding(ctx context.Context, scope hubsco
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.ProjectRecord(ctx, scope.Project)
+		project, err := r.ProjectMetadata(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -1263,7 +1263,8 @@ func (d *database) policyContext(ctx context.Context) context.Context {
 
 func (s *Service) policyCacheMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		c.SetRequest(c.Request().WithContext(s.database.policyContext(c.Request().Context())))
+		ctx := s.database.policyContext(c.Request().Context())
+		c.SetRequest(c.Request().WithContext(s.database.postgres.WithProjectWorkflows(ctx)))
 		return next(c)
 	}
 }

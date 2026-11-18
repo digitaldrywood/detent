@@ -72,11 +72,11 @@ func (s *Service) MaintainProjectPage(ctx context.Context, org tracker.Organizat
 	ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, nil)
 	ctx = context.WithValue(ctx, hubcontent.RunDetailContextKey{}, nil)
 	page := projectstore.Page{}
-	page.Body, err = s.projectRecordWorkflow(ctx, candidate.Record)
+	page.Body, err = s.projectWorkflowMarkdown(ctx, candidate.Record.Settings)
 	if err != nil {
 		return next, false, err
 	}
-	selection, err := s.projectRecordModel(ctx, candidate.Record, candidate.Models)
+	selection, err := s.projectRecordModel(ctx, candidate.Record.Settings, candidate.Models)
 	if err != nil {
 		return next, false, err
 	}

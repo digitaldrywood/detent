@@ -65,11 +65,11 @@ func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operato
 	if scope.Project == "" {
 		selection, err = e.service.readOrganizationModels(ctx, scope.Organization)
 	} else {
-		record, readErr := e.service.readProjectRecord(ctx, scope)
+		record, readErr := e.service.readProjectMetadata(ctx, scope)
 		if readErr != nil {
 			return operatortool.Result{}, projectToolError(readErr)
 		}
-		selection, err = e.service.projectRecordModel(ctx, record)
+		selection, err = e.service.projectRecordModel(ctx, record.Settings)
 	}
 	if err != nil {
 		return operatortool.Result{}, projectToolError(err)

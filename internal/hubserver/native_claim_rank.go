@@ -356,7 +356,7 @@ func (s *Service) nativeClaimRankResolver(ctx context.Context, scope hubscope.Na
 		return nil, err
 	}
 	workflow.Config.Plan.Enabled = plan.Descriptor.Gates.PlanEnabled
-	selection, err := s.projectRecordModel(ctx, plan.Project)
+	selection, err := s.projectRecordModel(ctx, plan.Project.Settings)
 	if err != nil {
 		return nil, err
 	}

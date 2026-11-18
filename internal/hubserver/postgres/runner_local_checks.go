@@ -62,7 +62,7 @@ func (s *session) ReplaceRunnerLocalChecks(ctx context.Context, runnerID string,
 	if _, err := s.RunnerIdentity(ctx, runnerID); err != nil {
 		return err
 	}
-	if _, err := s.ProjectRecord(ctx, project); err != nil {
+	if _, err := s.ProjectVersion(ctx, project); err != nil {
 		return err
 	}
 	_, err := s.db.Exec(ctx, `INSERT INTO runner_local_checks

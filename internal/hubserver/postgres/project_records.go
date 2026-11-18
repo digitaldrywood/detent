@@ -66,6 +66,11 @@ func (s *session) ProjectSlugOwner(ctx context.Context, slug string) (tracker.Pr
 	return id, mapError(ctx, err)
 }
 
+func (s *session) ProjectRoute(ctx context.Context, id tracker.ProjectID) (projectstore.Route, error) {
+	row, err := s.queries.BoundProjectRoute(ctx, pgquery.BoundProjectRouteParams{OrganizationID: s.organization, ID: id})
+	return projectstore.Route(row), mapError(ctx, err)
+}
+
 func (s *session) ProjectAddressBySlug(ctx context.Context, slug string) (tracker.ProjectID, string, error) {
 	row, err := s.queries.ActiveProjectAddressBySlug(ctx, pgquery.ActiveProjectAddressBySlugParams{OrganizationID: s.organization, Slug: slug})
 	return row.ID, row.Slug, mapError(ctx, err)

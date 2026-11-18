@@ -195,7 +195,7 @@ func (s *Service) resolveHubauthNativeScope(ctx context.Context, c echo.Context)
 		},
 		ReadProject: func(ctx context.Context, input hubauth.Input, write, models bool) error {
 			record, err := s.readAuthorizedProjectRecord(ctx, hubscope.ScopeFromAuthInput(input), write, models)
-			if err == nil {
+			if models && err == nil {
 				c.Set("native_project_record", record)
 			}
 			return err

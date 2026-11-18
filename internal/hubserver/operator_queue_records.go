@@ -44,7 +44,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeSc
 	}
 	var outbound *projectstore.GitHubOutbound
 	var source corestore.WorkItem
-	var sourceProject projectstore.Record
+	var sourceProject projectstore.Metadata
 	var orderEvent *eventstore.Event
 	if name == operatortool.SetQueuePriority || name == operatortool.OrderItem {
 		var version eventstore.CollaborationVersion
@@ -63,7 +63,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeSc
 			}
 			orderEvent = &event
 		} else {
-			sourceProject, err = s.readProjectRecord(ctx, scope)
+			sourceProject, err = s.readProjectMetadata(ctx, scope)
 			if err != nil {
 				return nil, err
 			}

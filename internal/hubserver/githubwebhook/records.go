@@ -289,7 +289,7 @@ func (s *Service) applyPullRequest(ctx context.Context, scope Integration, row p
 		if err := scope.Scope.Authorize(ctx, w, true); err != nil {
 			return err
 		}
-		project, err := w.ProjectRecord(ctx, scope.Scope.Project)
+		project, err := w.ProjectMetadata(ctx, scope.Scope.Project)
 		if err != nil {
 			return err
 		}

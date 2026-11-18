@@ -70,15 +70,12 @@ func (s *Service) RedeemTenant(ctx context.Context, organization tracker.Organiz
 			}
 		}
 		for _, projectID := range enrollment.ProjectIDs {
-			project, err := w.ProjectRecord(ctx, projectID)
+			_, err := w.ProjectVersion(ctx, projectID)
 			if err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
 					return Unauthorized()
 				}
 				return err
-			}
-			if project.Core.DeletedAt != nil {
-				return Unauthorized()
 			}
 			if err := w.CreateAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: organization, TokenID: binding.RunnerID, ProjectID: projectID}); err != nil {
 				return err

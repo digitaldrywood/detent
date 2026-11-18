@@ -53,7 +53,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		value, err = s.operatorProjectList(ctx, scope, r)
 	case "get_native_project":
 		var record projectstore.Record
-		record, err = s.readHostedProjectRecord(ctx, scope)
+		record, err = readHostedProject(ctx, s, scope, tenantstore.Reader.ProjectRecord)
 		if err == nil {
 			value, err = s.projectRecordNative(ctx, record)
 		}
@@ -89,8 +89,8 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	case "list_git_hub_import_records":
 		value, err = s.readProjectImportRecords(ctx, scope, r)
 	case "get_project_policy":
-		var record projectstore.Record
-		record, err = s.readHostedProjectRecord(ctx, scope)
+		var record projectstore.Metadata
+		record, err = readHostedProject(ctx, s, scope, tenantstore.Reader.ProjectMetadata)
 		if err == nil && r.RepositoryPolicy && (record.Core.Profile != "native" || record.Settings.CheckoutRepository == "") {
 			err = &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
 		}
@@ -400,12 +400,12 @@ func (s *Service) operatorProjectListHosted(ctx context.Context, scope hubscope.
 	return page, nil
 }
 
-func (s *Service) readHostedProjectRecord(ctx context.Context, scope hubscope.NativeScope) (projectstore.Record, error) {
+func readHostedProject[T any](ctx context.Context, s *Service, scope hubscope.NativeScope, read func(tenantstore.Reader, context.Context, tracker.ProjectID) (T, error)) (T, error) {
+	var record T
 	if s.config.TenantRepository == nil {
-		return projectstore.Record{}, operatortool.ErrServiceUnavailable
+		return record, operatortool.ErrServiceUnavailable
 	}
 	filter := projectAccessFilter(scope.Credential, scope.Project, "", 1)
-	var record projectstore.Record
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
 		if !ok {
@@ -418,7 +418,7 @@ func (s *Service) readHostedProjectRecord(ctx context.Context, scope hubscope.Na
 		if len(rows) == 0 {
 			return corestore.ErrNotFound
 		}
-		record, err = reader.ProjectRecord(ctx, scope.Project)
+		record, err = read(reader, ctx, scope.Project)
 		return err
 	})
 	return record, hubapi.ProjectRecordError(err)
@@ -435,7 +435,7 @@ func (s *Service) readCutoverReceipt(ctx context.Context, scope hubscope.NativeS
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		if _, err := r.ProjectRecord(ctx, scope.Project); err != nil {
+		if _, err := r.ProjectVersion(ctx, scope.Project); err != nil {
 			return hubapi.ProjectRecordError(err)
 		}
 		reader, ok := r.(postgres.CutoverReader)
@@ -510,7 +510,7 @@ func (s *Service) readProjectImportRecords(ctx context.Context, scope hubscope.N
 	return result, nil
 }
 func (s *Service) projectRepositoryFreshness(ctx context.Context, scope hubscope.NativeScope) (repositoryFreshnessResponse, error) {
-	record, err := s.readProjectRecord(ctx, scope)
+	record, err := s.readProjectMetadata(ctx, scope)
 	if err != nil {
 		return repositoryFreshnessResponse{}, err
 	}

@@ -195,11 +195,11 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope hubscope.
 		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.Clock())); err != nil {
 			return err
 		}
-		latestProject, err := w.ProjectRecord(ctx, scope.Project)
+		version, err := w.ProjectVersion(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		if latestProject.Settings.Revision != project.Settings.Revision {
+		if version.SettingsRevision != project.Settings.Revision {
 			return corestore.ErrRevisionConflict
 		}
 		owner, ok := w.(projectstore.GitHubImportWriter)
