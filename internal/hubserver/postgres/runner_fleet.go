@@ -144,11 +144,11 @@ func (s *session) fleetLeaseRows(ctx context.Context, now time.Time, limit int, 
 		selector = " AND l.machine_id=ANY($4)"
 		args = append(args, machines)
 	}
-	prefix, relation := "", "leases"
+	candidateOrder := "l.fencing_token"
 	if retainSentinel {
-		prefix = "WITH candidates AS MATERIALIZED (SELECT * FROM leases l WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.expires_at>$2" + selector + " ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT $3) "
-		relation = "candidates"
+		candidateOrder = "l.machine_id,l.expires_at,l.lease_id"
 	}
+	prefix := "WITH candidates AS MATERIALIZED (SELECT * FROM leases l WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.expires_at>$2" + selector + " ORDER BY " + candidateOrder + " LIMIT $3) "
 	workflowColumns, runtimeJoins := "", ""
 	if runtime {
 		workflowColumns = ",coalesce(i.workflow_state_name,''),CASE WHEN lower(trim(coalesce(i.workflow_state_name,'')))='merging' AND landing_policy.gate_github_pull_request IS FALSE THEN i.project_id ELSE '' END,CASE WHEN l.landing_capacity>0 THEN true WHEN lower(trim(coalesce(i.workflow_state_name,''))) = 'merging' OR pending.landing_waiting AND pending.landing_change_id=landing_policy.change_id AND pending.landing_version_id=landing_policy.version_id AND pending.landing_head_sha=landing_policy.head_sha THEN landing_policy.gate_github_pull_request ELSE false END"
@@ -172,15 +172,14 @@ LEFT JOIN LATERAL (
 `
 	}
 	rows, err := s.db.Query(ctx, prefix+`SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,''),coalesce((SELECT array_agg(m.model_id ORDER BY m.position) FROM provider_reservation_models m WHERE m.organization_id=p.organization_id AND m.lease_id=p.lease_id),'{}'::text[]),coalesce(policy.policy_id,''),coalesce(current_policy.policy_id,''),l.renewed_at,coalesce(runtime.id,''),runtime.runtime_heartbeat_at`+workflowColumns+`
-FROM `+relation+` l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+FROM candidates l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 LEFT JOIN runner_lease_assignments r ON r.organization_id=l.organization_id AND r.lease_id=l.lease_id
 LEFT JOIN native_attempts runtime ON runtime.organization_id=l.organization_id AND runtime.lease_id=l.lease_id AND runtime.fencing_token=l.fencing_token AND runtime.status='running' AND runtime.runtime_summary_sequence=runtime.sequence
 LEFT JOIN provider_reservations p ON p.organization_id=l.organization_id AND p.lease_id=l.lease_id
 LEFT JOIN lease_policy_bindings binding ON binding.organization_id=l.organization_id AND binding.lease_id=l.lease_id
 LEFT JOIN policy_revisions policy ON policy.organization_id=binding.organization_id AND policy.project_id=binding.project_id AND policy.policy_id=binding.policy_id
 LEFT JOIN project_policies current_policy ON current_policy.organization_id=i.organization_id AND current_policy.project_id=i.project_id
-`+runtimeJoins+`WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.expires_at>$2
-`+selector+` ORDER BY l.fencing_token LIMIT $3`, args...)
+`+runtimeJoins+` ORDER BY l.fencing_token LIMIT $3`, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

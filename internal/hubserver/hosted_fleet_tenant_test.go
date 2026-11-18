@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -164,6 +165,22 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		reader := &Service{database: service.database, config: service.config}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			fleet := r.(runnerstore.FleetReader)
+			leases, err := fleet.FleetLeases(t.Context(), now, 2)
+			if err != nil {
+				return err
+			}
+			if len(leases) != 2 || leases[0].Lease.ID != "lease_1" || leases[1].Lease.ID != "lease_2" {
+				t.Errorf("%s: expected lease_1 then lease_2 at the exact limit, got %+v", org, leases)
+			}
+			if _, err := fleet.FleetLeases(t.Context(), now, 1); !errors.Is(err, runnerstore.ErrLimitExceeded) {
+				t.Errorf("%s: expected overflow for two leases at limit one, got %v", org, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 		reader.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org)}
 		for _, tc := range []struct {
 			name         string
