@@ -490,8 +490,8 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 	}{
 		{name: "resolved source"},
 		{name: "resolved pause integrates target before validation with two remaining picks", resolvedPause: true},
-		{name: "Todo retry restores paused checkpoint before validation", resolvedPause: true, checkpointRetry: "Todo"},
-		{name: "code retry restores paused checkpoint before validation", resolvedPause: true, checkpointRetry: "In Progress"},
+		{name: "Todo retry starts from current source", resolvedPause: true, checkpointRetry: "Todo"},
+		{name: "In Progress retry starts from current source", resolvedPause: true, checkpointRetry: "In Progress"},
 		{name: "Rework retry restores paused checkpoint before validation", resolvedPause: true, checkpointRetry: "Rework"},
 		{name: "resolved pause preserves later replay conflict", resolvedPause: true, pausedLaterConflict: true},
 		{name: "resolved pause retains genuine final gate failure", resolvedPause: true, failedFinalGate: true},
@@ -564,16 +564,12 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeLocalProgressFile(t, info.Path, "README.md", "feature\n")
 			runRunnerGit(t, info.Path, "add", "README.md")
 			runRunnerGit(t, info.Path, "commit", "-m", "feature")
 			if test.resolvedPause {
 				for _, path := range []string{"later-one.md", "later-two.md"} {
-					if err := os.WriteFile(filepath.Join(info.Path, path), []byte(path+"\n"), 0o600); err != nil {
-						t.Fatal(err)
-					}
+					writeLocalProgressFile(t, info.Path, path, path+"\n")
 					runRunnerGit(t, info.Path, "add", path)
 					runRunnerGit(t, info.Path, "commit", "-m", path)
 				}
@@ -584,20 +580,14 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			if test.staged && !test.lateConflict {
 				basePath = "base.md"
 			}
-			if err := os.WriteFile(filepath.Join(source, basePath), []byte("base\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeLocalProgressFile(t, source, basePath, "base\n")
 			runRunnerGit(t, source, "add", basePath)
 			if test.pausedLaterConflict {
-				if err := os.WriteFile(filepath.Join(source, "later-one.md"), []byte("parallel later change\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				writeLocalProgressFile(t, source, "later-one.md", "parallel later change\n")
 				runRunnerGit(t, source, "add", "later-one.md")
 			}
 			if test.followOnConflict {
-				if err := os.WriteFile(filepath.Join(source, "repair.md"), []byte("parallel repair\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				writeLocalProgressFile(t, source, "repair.md", "parallel repair\n")
 				runRunnerGit(t, source, "add", "repair.md")
 			}
 			runRunnerGit(t, source, "commit", "-m", "base")
@@ -609,13 +599,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				if err != nil || prepared.Status != workspace.MergePrepareStatusConflict {
 					t.Fatalf("pause original replay: %+v, %v", prepared, err)
 				}
-				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("resolved\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				writeLocalProgressFile(t, info.Path, "README.md", "resolved\n")
 				runRunnerGit(t, info.Path, "add", "README.md")
-				if err := os.WriteFile(filepath.Join(source, "target-fix.md"), []byte("required target fix\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				writeLocalProgressFile(t, source, "target-fix.md", "required target fix\n")
 				runRunnerGit(t, source, "add", "target-fix.md")
 				runRunnerGit(t, source, "commit", "-m", "target validation fix")
 				runRunnerGit(t, source, "push", "origin", "main")
@@ -630,8 +616,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
 				runRunnerGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-personal-signer"))
 			}
-			signer := ""
-			signingUnavailable := ""
+			var signer, signingUnavailable string
 			var allowed string
 			var signerBefore []byte
 			if test.signed || test.signingFail {
@@ -677,9 +662,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.lateConflict {
-				if err := os.WriteFile(filepath.Join(info.Path, "repair.md"), []byte("preserved staged progress\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				writeLocalProgressFile(t, info.Path, "repair.md", "preserved staged progress\n")
 				runRunnerGit(t, info.Path, "add", "repair.md")
 			}
 			agent := &resolvingReworkAgent{preserved: test.resolvedPause, unresolved: test.unresolved, staged: test.staged, signer: signer, t: t}
@@ -1006,7 +989,18 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 			}
 			cfg := config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}
-			if test.resolvedPause {
+			freshRetry := test.checkpointRetry != "" && test.checkpointRetry != "Rework"
+			if freshRetry {
+				cfg.Gate.Run = "test -f target-fix.md"
+				agent.beforeStage = func() {
+					dir := strings.TrimSpace(runRunnerGit(t, agent.request.Workspace, "rev-parse", "--absolute-git-dir"))
+					for _, marker := range []string{"rebase-merge", "rebase-apply", "MERGE_HEAD"} {
+						if _, err := os.Stat(filepath.Join(dir, marker)); !errors.Is(err, os.ErrNotExist) {
+							t.Errorf("provider started with %s: stat error %v", marker, err)
+						}
+					}
+				}
+			} else if test.resolvedPause {
 				cfg.Gate.Run = "test -f target-fix.md && test -f later-one.md && test -f later-two.md"
 				if test.failedFinalGate {
 					cfg.Gate.Run += " && echo actual-final-gate-failure && exit 1"
@@ -1020,6 +1014,12 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				r.store = &fakeSessionStore{sessionID: 2, resumeState: store.AgentResumeState{DetentSessionID: 1, ProviderThreadID: "source-thread", ProviderSessionID: "source-session", RequestedModel: "provider_default", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode}}
 			}
 			_, err = r.Run(t.Context(), request)
+			if freshRetry {
+				if err != nil || agent.beforeHead != target {
+					t.Fatalf("provider started at %q, want current source %s: %v", agent.beforeHead, target, err)
+				}
+				return
+			}
 			if test.checkpointRetry != "" {
 				info.Path = agent.request.Workspace
 			}
