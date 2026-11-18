@@ -1,0 +1,41 @@
+{
+  "id": "q_4f81ba08",
+  "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+  "message_id": "msg_6a20f1cb",
+  "status": "pending",
+  "owner": {
+    "attempt_id": "att_18f4",
+    "turn_id": "turn_6"
+  },
+  "questions": [
+    {
+      "id": "surfaces",
+      "header": "Surfaces",
+      "question": "Which surfaces should the fix cover?",
+      "options": [
+        {
+          "label": "Checkout lock",
+          "description": "The renewal path this conversation is about."
+        },
+        {
+          "label": "Orphan completion lease",
+          "description": "The neighbouring lease refresh with the same shape."
+        }
+      ],
+      "free_text": false,
+      "multiple": true
+    },
+    {
+      "id": "notes",
+      "header": "Notes",
+      "question": "Anything else the runner should know?",
+      "options": [],
+      "free_text": true
+    }
+  ],
+  "answers": {},
+  "answered_by": null,
+  "expires_at": null,
+  "created_at": "2026-09-09T10:06:00Z",
+  "updated_at": "2026-09-09T10:06:00Z"
+}

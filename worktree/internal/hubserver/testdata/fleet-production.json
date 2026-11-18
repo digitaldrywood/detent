@@ -1,0 +1,420 @@
+{
+  "runners": [
+    {
+      "update": {
+        "runner_id": "runner_0",
+        "revision": 0,
+        "status": "unavailable",
+        "desired": {
+          "requested_at": "2026-10-26T12:00:00Z",
+          "id": "update_runner_0",
+          "service": "detent",
+          "expected_build_revision": "",
+          "version": "v0.169.1",
+          "release": false,
+          "from_release": false
+        },
+        "observation": null
+      },
+      "capacity_configuration": {
+        "projects": {
+          "project_first": {
+            "desired": null,
+            "applied": null,
+            "effective": null,
+            "used": 0
+          },
+          "project_second": {
+            "desired": null,
+            "applied": null,
+            "effective": null,
+            "used": 0
+          }
+        },
+        "scope": "runner",
+        "dispatch_constraint": "",
+        "runner_id": "runner_0",
+        "revision": 0,
+        "desired": 4,
+        "applied": null,
+        "effective": null,
+        "status": "unavailable",
+        "limits": [
+          {
+            "owner": "runner",
+            "limit": null
+          }
+        ]
+      },
+      "problems": [
+        {
+          "check": "setup",
+          "error_output": "Example error",
+          "fix_command": "make setup",
+          "reported_at": "2026-10-26T12:00:00Z",
+          "code": "setup_failed",
+          "message": "Example setup failed",
+          "fix_hint": "Run setup",
+          "first_seen": "2026-10-26T12:00:00Z"
+        }
+      ],
+      "id": "runner_0",
+      "machine_id": "machine_runner_0",
+      "display_name": "runner_0",
+      "hostname": "runner_0.example.com",
+      "connection_health": "online",
+      "health": "online",
+      "state": "active",
+      "os": "linux",
+      "architecture": "arm64",
+      "claim_refusal_reason": "",
+      "version": "v0.169.0",
+      "host_capacity": 4,
+      "host_used": 0,
+      "capacity_limit": 4,
+      "reported_capacity": 4,
+      "provider_capacity": [
+        {
+          "billing": "unknown",
+          "usage_windows": [
+            {
+              "kind": "primary",
+              "percent_used": 42,
+              "reset_at": "2026-10-26T13:00:00Z",
+              "observed_at": "2026-10-26T12:00:00Z"
+            }
+          ],
+          "provider": "openai",
+          "backend": "native/codex",
+          "account_alias": "example",
+          "models": null,
+          "availability": "available",
+          "observed_at": "2026-10-26T12:00:00Z",
+          "used": 0,
+          "state": "ready",
+          "reason": ""
+        }
+      ],
+      "has_heartbeat": false,
+      "last_heartbeat_at": "2026-10-26T12:00:00Z",
+      "leases": [],
+      "isolation_tier": "sandbox",
+      "backend_isolation": {
+        "native/codex": []
+      },
+      "availability": {
+        "timezone": "",
+        "windows": [],
+        "hard_deadline": ""
+      },
+      "editable": false,
+      "can_convert_scope": false,
+      "can_edit_projects": false,
+      "routing": {
+        "scope": "projects",
+        "display_name": "runner_0",
+        "tags": [],
+        "state": "active",
+        "capacity_limit": 4,
+        "project_capacity_limits": {
+          "project_first": 2
+        },
+        "project_ranks": {
+          "project_first": 1,
+          "project_second": 2
+        },
+        "project_ids": [
+          "project_first",
+          "project_second"
+        ],
+        "isolation_tier": "sandbox",
+        "host_services": [],
+        "availability": {
+          "timezone": "",
+          "windows": [],
+          "hard_deadline": ""
+        }
+      }
+    },
+    {
+      "update": {
+        "runner_id": "runner_1",
+        "revision": 0,
+        "status": "unavailable",
+        "desired": {
+          "requested_at": "2026-10-26T12:00:00Z",
+          "id": "update_runner_1",
+          "service": "detent",
+          "expected_build_revision": "",
+          "version": "v0.169.1",
+          "release": false,
+          "from_release": false
+        },
+        "observation": null
+      },
+      "capacity_configuration": {
+        "projects": {
+          "project_first": {
+            "desired": null,
+            "applied": null,
+            "effective": null,
+            "used": 0
+          },
+          "project_second": {
+            "desired": null,
+            "applied": null,
+            "effective": null,
+            "used": 0
+          }
+        },
+        "scope": "runner",
+        "dispatch_constraint": "",
+        "runner_id": "runner_1",
+        "revision": 0,
+        "desired": 4,
+        "applied": null,
+        "effective": null,
+        "status": "unavailable",
+        "limits": [
+          {
+            "owner": "runner",
+            "limit": null
+          }
+        ]
+      },
+      "problems": [
+        {
+          "check": "setup",
+          "error_output": "Example error",
+          "fix_command": "make setup",
+          "reported_at": "2026-10-26T12:00:00Z",
+          "code": "setup_failed",
+          "message": "Example setup failed",
+          "fix_hint": "Run setup",
+          "first_seen": "2026-10-26T12:00:00Z"
+        }
+      ],
+      "id": "runner_1",
+      "machine_id": "machine_runner_1",
+      "display_name": "runner_1",
+      "hostname": "runner_1.example.com",
+      "connection_health": "online",
+      "health": "online",
+      "state": "active",
+      "os": "darwin",
+      "architecture": "arm64",
+      "claim_refusal_reason": "",
+      "version": "v0.169.0",
+      "host_capacity": 4,
+      "host_used": 0,
+      "capacity_limit": 4,
+      "reported_capacity": 4,
+      "provider_capacity": [
+        {
+          "billing": "subscription",
+          "usage_windows": [
+            {
+              "kind": "primary",
+              "percent_used": 42,
+              "reset_at": "2026-10-26T13:00:00Z",
+              "observed_at": "2026-10-26T12:00:00Z"
+            }
+          ],
+          "provider": "openai",
+          "backend": "native/codex",
+          "account_alias": "example",
+          "models": null,
+          "availability": "available",
+          "observed_at": "2026-10-26T12:00:00Z",
+          "used": 0,
+          "state": "ready",
+          "reason": ""
+        }
+      ],
+      "has_heartbeat": false,
+      "last_heartbeat_at": "2026-10-26T12:00:00Z",
+      "leases": [],
+      "isolation_tier": "sandbox",
+      "backend_isolation": {
+        "native/codex": []
+      },
+      "availability": {
+        "timezone": "",
+        "windows": [],
+        "hard_deadline": ""
+      },
+      "editable": false,
+      "can_convert_scope": false,
+      "can_edit_projects": false,
+      "routing": {
+        "scope": "projects",
+        "display_name": "runner_1",
+        "tags": [],
+        "state": "active",
+        "capacity_limit": 4,
+        "project_capacity_limits": {
+          "project_first": 2
+        },
+        "project_ranks": {
+          "project_first": 1,
+          "project_second": 2
+        },
+        "project_ids": [
+          "project_first",
+          "project_second"
+        ],
+        "isolation_tier": "sandbox",
+        "host_services": [],
+        "availability": {
+          "timezone": "",
+          "windows": [],
+          "hard_deadline": ""
+        }
+      }
+    },
+    {
+      "update": {
+        "runner_id": "runner_2",
+        "revision": 0,
+        "status": "unavailable",
+        "desired": {
+          "requested_at": "2026-10-26T12:00:00Z",
+          "id": "update_runner_2",
+          "service": "detent",
+          "expected_build_revision": "",
+          "version": "v0.169.1",
+          "release": false,
+          "from_release": false
+        },
+        "observation": null
+      },
+      "capacity_configuration": {
+        "projects": {
+          "project_first": {
+            "desired": null,
+            "applied": null,
+            "effective": null,
+            "used": 0
+          },
+          "project_second": {
+            "desired": null,
+            "applied": null,
+            "effective": null,
+            "used": 0
+          }
+        },
+        "scope": "runner",
+        "dispatch_constraint": "",
+        "runner_id": "runner_2",
+        "revision": 0,
+        "desired": 4,
+        "applied": null,
+        "effective": null,
+        "status": "unavailable",
+        "limits": [
+          {
+            "owner": "runner",
+            "limit": null
+          }
+        ]
+      },
+      "problems": [
+        {
+          "check": "setup",
+          "error_output": "Example error",
+          "fix_command": "make setup",
+          "reported_at": "2026-10-26T12:00:00Z",
+          "code": "setup_failed",
+          "message": "Example setup failed",
+          "fix_hint": "Run setup",
+          "first_seen": "2026-10-26T12:00:00Z"
+        }
+      ],
+      "id": "runner_2",
+      "machine_id": "machine_runner_2",
+      "display_name": "runner_2",
+      "hostname": "runner_2.example.com",
+      "connection_health": "online",
+      "health": "online",
+      "state": "active",
+      "os": "linux",
+      "architecture": "arm64",
+      "claim_refusal_reason": "",
+      "version": "v0.169.0",
+      "host_capacity": 4,
+      "host_used": 0,
+      "capacity_limit": 4,
+      "reported_capacity": 4,
+      "provider_capacity": [
+        {
+          "billing": "subscription",
+          "usage_windows": [
+            {
+              "kind": "primary",
+              "percent_used": 42,
+              "reset_at": "2026-10-26T13:00:00Z",
+              "observed_at": "2026-10-26T12:00:00Z"
+            }
+          ],
+          "provider": "openai",
+          "backend": "native/codex",
+          "account_alias": "example",
+          "models": null,
+          "availability": "available",
+          "observed_at": "2026-10-26T12:00:00Z",
+          "used": 0,
+          "state": "ready",
+          "reason": ""
+        }
+      ],
+      "has_heartbeat": false,
+      "last_heartbeat_at": "2026-10-26T12:00:00Z",
+      "leases": [],
+      "isolation_tier": "sandbox",
+      "backend_isolation": {
+        "native/codex": []
+      },
+      "availability": {
+        "timezone": "",
+        "windows": [],
+        "hard_deadline": ""
+      },
+      "editable": false,
+      "can_convert_scope": false,
+      "can_edit_projects": false,
+      "routing": {
+        "scope": "projects",
+        "display_name": "runner_2",
+        "tags": [],
+        "state": "active",
+        "capacity_limit": 4,
+        "project_capacity_limits": {
+          "project_first": 2
+        },
+        "project_ranks": {
+          "project_first": 1,
+          "project_second": 2
+        },
+        "project_ids": [
+          "project_first",
+          "project_second"
+        ],
+        "isolation_tier": "sandbox",
+        "host_services": [],
+        "availability": {
+          "timezone": "",
+          "windows": [],
+          "hard_deadline": ""
+        }
+      }
+    }
+  ],
+  "editable": false,
+  "usage": {
+    "window_ends_at": "",
+    "allowances": {}
+  },
+  "spend": null,
+  "current": "v0.169.1",
+  "minimum_runner_version": "v0.169.1"
+}

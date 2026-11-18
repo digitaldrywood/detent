@@ -1,0 +1,631 @@
+package orchestrator
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
+)
+
+func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) autoPromoteTickResult {
+	return o.transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads(ctx, state, issues, now, nil)
+}
+
+func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+	validatorHeadHydration map[string]bool,
+) autoPromoteTickResult {
+	if len(state.Completed) == 0 || len(issues) == 0 {
+		return autoPromoteTickResult{}
+	}
+
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
+	for _, issue := range issues {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if running, active := state.Running[issueID]; active && !running.CompletionOwnershipReleased {
+			continue
+		}
+		completed, ok := state.Completed[issueID]
+		if !ok {
+			continue
+		}
+		if completed.CompletionKind == workpad.CompletionOperational && !operationalCompletionEvidenceCurrent(completed.Issue, issue) {
+			continue
+		}
+		if pullRequestMerged(issue.PullRequest) {
+			// Merged delivery belongs to the existing merged-PR owner. An open-PR
+			// review transition would otherwise schedule a continuation here.
+			if completed.successfulAttemptPersisted && completed.FinalState == FinalStateCompleted {
+				if _, transitioned := o.reconcileStaleLinkedPullRequestIssues(ctx, state, []connector.Issue{issue}, now)[issueID]; transitioned {
+					result.transitioned[issueID] = struct{}{}
+				}
+			}
+			continue
+		}
+		if gate.Effective(cfg.Gate).Validator.Enabled &&
+			strings.TrimSpace(completed.GateWaitReason) == completedReworkGateWaitReason {
+			if hydrated, attempted := validatorHeadHydration[issueID]; attempted {
+				if !hydrated {
+					result.transitioned[issueID] = struct{}{}
+					continue
+				}
+			} else {
+				var hydrated bool
+				issue, hydrated = o.hydrateValidatorStagePullRequest(ctx, issue)
+				if !hydrated || validatorStageIdentityForIssue(issue).Key == "" || pullRequestHydrationBlocksProgress(issue.PullRequest) {
+					result.transitioned[issueID] = struct{}{}
+					continue
+				}
+			}
+		}
+		if gateRequiresPullRequest(cfg.Gate) {
+			var hydrated bool
+			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+			if !hydrated {
+				result.transitioned[issueID] = struct{}{}
+				if completed.successfulAttemptPersisted {
+					if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(completed.Attempt), now, "review thread evidence unavailable", ""); err != nil && o.logger != nil {
+						o.logger.Warn("review thread retry failed", "issue_id", issueID, "error", err)
+					}
+				}
+				continue
+			}
+		}
+		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) &&
+			normalizeState(completed.Issue.State) != normalizeState(issue.State) {
+			continue
+		}
+		if rejected, err := o.operatorRejectedHead(ctx, issue); err != nil || rejected {
+			continue
+		}
+		targetState := completedActiveReviewTargetState(
+			issue,
+			completed.FinalState,
+			completed.CompletionKind,
+			o.cfg.ActiveStates,
+			o.cfg.TerminalStates,
+			cfg,
+		)
+		if targetState == "" {
+			if transitioned, promoted := o.transitionTimedOutCompletedActiveGateWait(ctx, state, issue, completed, cfg, now); transitioned {
+				result.transitioned[issueID] = struct{}{}
+				if mergeWorkerIssue(promoted) {
+					o.recordMergeQueueEntered(state, promoted, now, "completed_active_gate_wait_timeout")
+					result.dispatchCandidates = append(result.dispatchCandidates, promoted)
+					o.logMergeWorkerPickup(promoted, "completed_active_gate_wait_timeout")
+				}
+			}
+			continue
+		}
+
+		result.transitioned[issueID] = struct{}{}
+		direct, promoted, summary, decision := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, completed.FinalState, cfg, now)
+		if direct {
+			if normalizeState(issue.State) == normalizeState(promoted.State) {
+				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
+			} else if mergeWorkerIssue(promoted) {
+				o.recordMergeQueueEntered(state, promoted, now, "completed_active_auto_promote")
+				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
+				o.logMergeWorkerPickup(promoted, "completed_active_auto_promote")
+			}
+			o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, promoted.State)
+			o.recordAutoPromoteReworkHandoff(state, issue, summary, decision, promoted.State)
+			continue
+		}
+		if _, retained := state.Completed[issueID]; !retained {
+			continue
+		}
+		if !cfg.humanReviewEnabled() && (decision.Reason == AutoPromoteReasonValidatorMissing || decision.QuietRemaining > 0 || autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
+			continue
+		}
+
+		reason := "completed_active_review_transition"
+		if !cfg.humanReviewEnabled() && decision.Reason != "" {
+			reason = string(decision.Reason)
+		}
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, reason); err != nil {
+			if o.logger != nil {
+				o.logger.Warn(
+					"completed issue review transition failed",
+					"issue_id", issueID,
+					"identifier", issue.Identifier,
+					"from_state", issue.State,
+					"target_state", targetState,
+					"error", err,
+				)
+			}
+			continue
+		}
+
+		o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, targetState)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "completed_issue_review_transition",
+			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after successful completion",
+		})
+		if o.logger != nil {
+			o.logger.Info(
+				"completed issue review transition",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"from_state", issue.State,
+				"target_state", targetState,
+			)
+		}
+	}
+	if len(result.transitioned) == 0 {
+		return autoPromoteTickResult{}
+	}
+	return result
+}
+
+func (o *Orchestrator) transitionActiveArtifactGateWaitIssuesToReview(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) autoPromoteTickResult {
+	if len(issues) == 0 {
+		return autoPromoteTickResult{}
+	}
+
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
+	for _, issue := range issues {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if running, active := state.Running[issueID]; active && !running.CompletionOwnershipReleased {
+			continue
+		}
+		targetState := activeArtifactGateWaitReviewTargetState(
+			issue,
+			o.cfg.ActiveStates,
+			o.cfg.TerminalStates,
+			cfg,
+		)
+		if targetState == "" {
+			continue
+		}
+
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "artifact_gate_wait_review_reconciliation"); err != nil {
+			if o.logger != nil {
+				o.logger.Warn(
+					"artifact gate wait review reconciliation failed",
+					"issue_id", issueID,
+					"identifier", issue.Identifier,
+					"from_state", issue.State,
+					"target_state", targetState,
+					"error", err,
+				)
+			}
+			continue
+		}
+		if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+			o.logger.Warn("abandon artifact gate wait claim failed", "issue_id", issueID, "error", err)
+		}
+		delete(state.Claimed, issueID)
+		delete(state.Retry, issueID)
+		delete(state.BudgetRefusals, issueID)
+		delete(state.PriorAttempts, issueID)
+		result.transitioned[issueID] = struct{}{}
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "artifact_gate_wait_review_reconciliation",
+			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after artifact gate wait status",
+		})
+		if o.logger != nil {
+			o.logger.Info(
+				"artifact gate wait review reconciliation",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"from_state", issue.State,
+				"target_state", targetState,
+			)
+		}
+	}
+	if len(result.transitioned) == 0 {
+		return autoPromoteTickResult{}
+	}
+	return result
+}
+
+func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	reviewState string,
+	completedFinalState string,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) (bool, connector.Issue, AutoPromoteSummary, AutoPromoteDecision) {
+	if normalizeState(reviewState) != normalizeState(cfg.reviewTargetState()) {
+		return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
+	}
+
+	summary := AutoPromoteSummaryFromIssue(issue)
+	summary.CompletedFinalState = completedFinalState
+	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
+	unresolvedReviewThreads := gateRequiresPullRequest(cfg.Gate) && len(summary.UnresolvedReviewThreads) > 0
+	validatorRework := gate.Effective(cfg.Gate).Validator.Enabled &&
+		normalizeState(issue.State) == normalizeState(cfg.ReworkState)
+	if !unresolvedReviewThreads && (!cfg.Enabled || cfg.QuietDuration != 0 && !validatorRework && cfg.humanReviewEnabled()) {
+		return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
+	}
+	decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
+	if !unresolvedReviewThreads {
+		decision = EvaluateAutoPromote(issue, summary, cfg, now)
+	}
+	var validatorReady bool
+	decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+	if !validatorReady {
+		recordAutoPromoteSnapshotDecision(state, strings.TrimSpace(issue.ID), decision)
+		o.logAutoPromoteDecision(issue, decision, "")
+		return false, connector.Issue{}, summary, decision
+	}
+	if autoPromoteDecisionNeedsWorkpadHydration(decision) {
+		issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+		if !validatorReady {
+			recordAutoPromoteSnapshotDecision(state, strings.TrimSpace(issue.ID), decision)
+			o.logAutoPromoteDecision(issue, decision, "")
+			return false, connector.Issue{}, summary, decision
+		}
+	}
+	targetState := autoPromoteTargetState(decision.Action, cfg)
+	if targetState == "" {
+		o.logAutoPromoteDecision(issue, decision, "")
+		return false, connector.Issue{}, summary, decision
+	}
+	if normalizeState(issue.State) == normalizeState(targetState) {
+		promoted := promotedIssue(issue, targetState, now)
+		o.logAutoPromoteDecision(issue, decision, targetState)
+		o.logCompletedActiveAutoPromoteSameState(issue, decision, cfg)
+		return true, promoted, summary, decision
+	}
+	effectiveTargetState, applied := o.applyAutoPromoteDecisionWithTarget(ctx, state, issue, summary, decision, targetState, now)
+	if !applied {
+		return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
+	}
+	return true, promotedIssue(issue, effectiveTargetState, now), summary, decision
+}
+
+func (o *Orchestrator) discardUnavailableCompletedClaim(ctx context.Context, state *State, issueID string, err error) {
+	if state == nil || !errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
+		return
+	}
+	if _, completed := state.Completed[issueID]; !completed {
+		return
+	}
+	if running, active := state.Running[issueID]; active && !running.CompletionOwnershipReleased {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if releaseErr := o.abandonClaim(cleanupCtx, issueID); releaseErr != nil && o.logger != nil {
+		o.logger.Warn("abandon obsolete review claim failed", "issue_id", issueID, "error", releaseErr)
+	}
+	delete(state.Completed, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+}
+
+func (o *Orchestrator) finishCompletedActiveReviewTransition(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	completed Completed,
+	targetState string,
+) {
+	issueID := strings.TrimSpace(issue.ID)
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon completed review claim failed", "issue_id", issueID, "error", err)
+	}
+	o.recordCompletedActiveReviewTransition(state, issue, completed, targetState)
+}
+
+func (o *Orchestrator) recordCompletedActiveReviewTransition(state *State, issue connector.Issue, completed Completed, targetState string) {
+	issueID := strings.TrimSpace(issue.ID)
+	sameState := normalizeState(issue.State) == normalizeState(targetState)
+	terminal := stateIn(targetState, o.cfg.TerminalStates)
+	if sameState && !terminal {
+		delete(state.Completed, issueID)
+	} else {
+		updated := mergeIssueTrackerFields(completed.Issue, issue)
+		updated.State = targetState
+		completed.Issue = updated
+		state.Completed[issueID] = completed
+	}
+	delete(state.Claimed, issueID)
+	if !sameState || terminal {
+		delete(state.Retry, issueID)
+		delete(state.BudgetRefusals, issueID)
+	}
+	delete(state.PriorAttempts, issueID)
+}
+
+func (o *Orchestrator) logCompletedActiveAutoPromoteSameState(
+	issue connector.Issue,
+	decision AutoPromoteDecision,
+	cfg AutoPromoteConfig,
+) {
+	if o.logger == nil {
+		return
+	}
+	gateCfg := gate.Effective(cfg.Gate)
+	if gateCfg.Kind != gate.KindArtifact || decision.Action != AutoPromoteActionRework {
+		return
+	}
+	statusField := strings.TrimSpace(gateCfg.Artifact.StatusField)
+	o.logger.Warn(
+		"completed artifact gate status unchanged after successful rework",
+		"issue_id", strings.TrimSpace(issue.ID),
+		"identifier", issue.Identifier,
+		"state", issue.State,
+		"action", decision.Action,
+		"reason", decision.Reason,
+		"gate_status_field", statusField,
+		"gate_status", artifactStatusFromIssue(issue, statusField),
+	)
+}
+
+func completedActiveReviewTargetState(
+	issue connector.Issue,
+	finalState string,
+	completionKind string,
+	activeStates []string,
+	terminalStates []string,
+	cfg AutoPromoteConfig,
+) string {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	if !cfg.Enabled && !cfg.humanReviewEnabled() {
+		return ""
+	}
+	if !stateIn(issue.State, activeStates) || stateIn(issue.State, terminalStates) {
+		return ""
+	}
+	reviewState := cfg.SourceState
+	switch normalizeState(issue.State) {
+	case normalizeState(reviewState), normalizeState(autoPromoteMergingState):
+		return ""
+	}
+	operationalCompletionAccepted := completedOperationalCompletionAccepted(issue, completionKind)
+	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate), operationalCompletionAccepted) {
+		return ""
+	}
+	if !completedActiveFinalStateReviewEligible(finalState, reviewState) {
+		return ""
+	}
+	targetState := cfg.reviewTargetState()
+	if explicitHumanAction(issue) != "" {
+		targetState = blockedStatusState
+	}
+	if autoPromoteOptoutLabel(issue, cfg) {
+		targetState = reviewState
+	}
+	if !operationalCompletionAccepted && gateRequiresPullRequest(cfg.Gate) && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
+		return targetState
+	}
+	if !completedActiveShouldEnterReview(issue, cfg, operationalCompletionAccepted) {
+		return ""
+	}
+	return targetState
+}
+
+func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig, operationalCompletionAccepted bool) bool {
+	if !cfg.humanReviewEnabled() {
+		return true
+	}
+	if operationalCompletionAccepted {
+		return true
+	}
+	if autoPromoteHumanReviewRequired(issue, cfg, cfg.Gate) {
+		return true
+	}
+	if gate.Effective(cfg.Gate).Kind == gate.KindArtifact {
+		return true
+	}
+	if gate.Effective(cfg.Gate).Validator.Enabled &&
+		normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
+		return true
+	}
+	return cfg.GateWaitState == autoPromoteGateWaitReview
+}
+
+func activeArtifactGateWaitReviewTargetState(
+	issue connector.Issue,
+	activeStates []string,
+	terminalStates []string,
+	cfg AutoPromoteConfig,
+) string {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	if gate.Effective(cfg.Gate).Kind != gate.KindArtifact {
+		return ""
+	}
+	if !stateIn(issue.State, activeStates) || stateIn(issue.State, terminalStates) {
+		return ""
+	}
+	switch normalizeState(issue.State) {
+	case "todo", normalizeState(cfg.SourceState), normalizeState(autoPromoteMergingState):
+		return ""
+	}
+	if !artifactGateWaitStatusBlocksDispatch(issue, cfg.Gate) {
+		return ""
+	}
+	return cfg.reviewTargetState()
+}
+
+func completedActiveFinalStateReviewEligible(finalState string, reviewState string) bool {
+	switch normalizeState(finalState) {
+	case "", normalizeState(FinalStateCompleted), normalizeState(reviewState):
+		return true
+	default:
+		return false
+	}
+}
+
+func completedActiveIssueReadyForReview(issue connector.Issue, requirePullRequest bool, operationalCompletionAccepted bool) bool {
+	// A successful worker session does not override its report that implementation
+	// is unfinished. Share the parsed Workpad authority with promotion evaluation,
+	// including status blocks followed by appended worker prose.
+	if completionWorkpadUnfinished(issue) {
+		return false
+	}
+	if issue.PullRequest != nil && issue.PullRequest.Draft {
+		return false
+	}
+	if operationalCompletionAccepted {
+		return true
+	}
+	if !requirePullRequest {
+		return true
+	}
+	if issue.PullRequest == nil {
+		return false
+	}
+	return normalizePullRequestState(issue.PullRequest.State) == "open"
+}
+
+func completedOperationalCompletionAccepted(issue connector.Issue, completionKind string) bool {
+	if strings.TrimSpace(completionKind) != workpad.CompletionOperational {
+		return false
+	}
+	_, ok := operationalCompletionFromIssue(issue)
+	return ok
+}
+
+func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	completed Completed,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) (bool, connector.Issue) {
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" || completed.CompletedAt.IsZero() {
+		return false, connector.Issue{}
+	}
+	if now.Before(completed.CompletedAt.Add(cfg.GateWaitTimeout)) {
+		return false, connector.Issue{}
+	}
+	if !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg) {
+		return false, connector.Issue{}
+	}
+	if cfg.GateWaitTimeoutAction == autoPromoteGateWaitTimeoutMerge {
+		summary := AutoPromoteSummaryFromIssue(issue)
+		summary.CompletedFinalState = completed.FinalState
+		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
+		summary.AutomatedReviewWaitExpired = true
+		decision := EvaluateAutoPromote(issue, summary, cfg, now)
+		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
+			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		}
+		targetState := autoPromoteTargetState(decision.Action, cfg)
+		if targetState == "" {
+			recordAutoPromoteSnapshotDecision(state, issueID, decision)
+			o.logAutoPromoteDecision(issue, decision, "")
+			return false, connector.Issue{}
+		}
+		effectiveTargetState, applied := o.applyAutoPromoteDecisionWithTarget(ctx, state, issue, summary, decision, targetState, now)
+		if !applied {
+			return false, connector.Issue{}
+		}
+		promoted := promotedIssue(issue, effectiveTargetState, now)
+		o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, effectiveTargetState)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "completed_active_gate_wait_timeout",
+			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + effectiveTargetState + " after auto-promote gate wait timeout",
+		})
+		return true, promoted
+	}
+	targetState := cfg.reviewTargetState()
+	if explicitHumanAction(issue) != "" {
+		targetState = blockedStatusState
+	}
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "auto_promote_gate_wait_timeout"); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"completed issue gate wait timeout transition failed",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"from_state", issue.State,
+				"target_state", targetState,
+				"error", err,
+			)
+		}
+		return false, connector.Issue{}
+	}
+	if err := o.connector.CreateComment(ctx, issueID, completedActiveGateWaitTimeoutComment(issue, completed, cfg, now)); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"completed issue gate wait timeout comment failed",
+			"issue_id", issueID,
+			"identifier", issue.Identifier,
+			"error", err,
+		)
+	}
+	o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, targetState)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "completed_active_gate_wait_timeout",
+		Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after auto-promote gate wait timeout",
+	})
+	return true, promotedIssue(issue, targetState, now)
+}
+
+func completedActiveGateWaitTimeoutComment(
+	issue connector.Issue,
+	completed Completed,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) string {
+	waited := now.Sub(completed.CompletedAt)
+	var b strings.Builder
+	b.WriteString("Auto-promote gate wait timed out; moved this issue from ")
+	b.WriteString(strings.TrimSpace(issue.State))
+	b.WriteString(" to ")
+	b.WriteString(cfg.reviewTargetState())
+	b.WriteString(".")
+	b.WriteString("\n\n- reason: auto_promote_gate_wait_timeout")
+	b.WriteString("\n- waited: ")
+	b.WriteString(waited.Round(time.Second).String())
+	b.WriteString("\n- timeout: ")
+	b.WriteString(cfg.GateWaitTimeout.Round(time.Second).String())
+	if issue.PullRequest != nil {
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			b.WriteString("\n- pull_request: ")
+			b.WriteString(url)
+		}
+		if ciStatus := strings.TrimSpace(issue.PullRequest.CIStatus); ciStatus != "" {
+			b.WriteString("\n- ci_status: ")
+			b.WriteString(ciStatus)
+		}
+		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
+			b.WriteString("\n- mergeable_state: ")
+			b.WriteString(strings.ToLower(mergeableState))
+		}
+	}
+	return b.String()
+}

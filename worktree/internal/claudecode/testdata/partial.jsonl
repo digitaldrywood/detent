@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"session-partial","model":"fable"}
+{"type":"stream_event","session_id":"session-partial","event":{"type":"message_start","message":{"id":"msg-partial","type":"message","role":"assistant","model":"fable","content":[]}}}
+{"type":"stream_event","session_id":"session-partial","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial "}}}
+{"type":"stream_event","session_id":"session-partial","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"text"}}}
+{"type":"assistant","session_id":"session-partial","message":{"id":"msg-partial","type":"message","role":"assistant","model":"fable","content":[{"type":"text","text":"ignored full text"}],"usage":{"input_tokens":5,"output_tokens":2}}}
+{"type":"result","subtype":"success","session_id":"session-partial","usage":{"input_tokens":6,"output_tokens":3}}

@@ -1,0 +1,394 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/boardsnapshot"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
+	"github.com/digitaldrywood/detent/internal/tui"
+)
+
+func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
+	for _, source := range []string{"project_state", "lifetime_totals"} {
+		for _, cached := range []bool{false, true} {
+			name := source + "/initializing"
+			if cached {
+				name = source + "/cached_draining"
+			}
+			t.Run(name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					snapshots := hub.New[telemetry.Snapshot]()
+					registry := project.NewRegistry()
+					var requests []orchestrator.RunRequest
+					for _, id := range []string{"beta", "gamma"} {
+						tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: id, Identifier: id + "#1", Title: id + " active worker", State: "In Progress", AssignedToWorker: true}}})
+						runner := newRestartRecoveryRunner()
+						tracked := newTelemetryProject(t, id, tracker, runner)
+						if err := tracked.Start(ctx); err != nil {
+							t.Fatal(err)
+						}
+						mustSetProject(t, registry, tracked)
+						select {
+						case request := <-runner.started:
+							requests = append(requests, request)
+						case <-time.After(10 * time.Second):
+							state, err := tracked.Orchestrator().State(ctx)
+							t.Fatalf("worker did not start: dispatch = %#v, error = %v", state.DispatchStatus, err)
+						}
+					}
+					var totals lifetimeTotalsSource
+					if source == "project_state" {
+						tracker := stalledTelemetryConnector{Connector: fakehub.New(fakehub.Config{})}
+						tracked := newTelemetryProject(t, "alpha", tracker, nil)
+						if err := tracked.Start(ctx); err != nil {
+							t.Fatal(err)
+						}
+						mustSetProject(t, registry, tracked)
+					} else {
+						totals = stalledTelemetryTotals{}
+					}
+					if err := publishStartupSnapshotOnce(ctx, globalconfig.Config{}, snapshots, nil, "", time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					if cached {
+						seedRestartTelemetry(t, ctx, snapshots)
+					}
+					initial, _ := snapshots.Latest()
+					var previousSeq uint64
+					if initial.Shutdown.Draining || initial.Shutdown.Status != "running" {
+						t.Fatalf("startup retained prior shutdown state: %#v", initial.Shutdown)
+					}
+					model, err := tui.NewModel(ctx, snapshots)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer model.Close()
+					terminal, next := model.Update(model.Init()())
+					var seq atomic.Uint64
+					done := make(chan struct{})
+					go func() {
+						defer close(done)
+						publishSnapshots(ctx, registry, nil, snapshots, &seq, nil, totals, "", nil, time.Second, time.Now, nil)
+					}()
+					defer func() {
+						cancel()
+						<-done
+					}()
+					for index := range 2 {
+						for _, request := range requests {
+							if err := request.OnUsageUpdate(orchestrator.UsageUpdate{LastEventAt: time.Now(), LastMessage: "worker progress", Tokens: orchestrator.TokenTotals{TotalTokens: int64(index+1) * 100}}); err != nil {
+								t.Fatal(err)
+							}
+						}
+						time.Sleep(2 * time.Second)
+						synctest.Wait()
+						current, _ := snapshots.Latest()
+						if !current.GeneratedAt.After(initial.GeneratedAt) || current.Seq <= previousSeq {
+							t.Fatalf("publication froze at %v (seq %d) while two workers run", current.GeneratedAt, current.Seq)
+						}
+						if len(current.Running) != 2 || current.Shutdown.Draining || current.Shutdown.Status != "running" {
+							t.Fatalf("running = %d, shutdown = %#v", len(current.Running), current.Shutdown)
+						}
+						for _, running := range current.Running {
+							if running.Tokens.Total != int64(index+1)*100 {
+								t.Fatalf("worker progress froze: %#v", running.Tokens)
+							}
+						}
+						if source == "lifetime_totals" && (current.LifetimeTotals.Available || !strings.Contains(current.LifetimeTotals.DegradedReason, "deadline")) {
+							t.Fatalf("lifetime totals = %#v, want unavailable with deadline diagnostic", current.LifetimeTotals)
+						}
+						if source == "project_state" {
+							alpha := current.Projects[0]
+							if alpha.Runtime.Source != telemetry.SnapshotSourceLive || !alpha.Refresh.Initializing() || alpha.Refresh.LastRefreshAt != nil || alpha.Refresh.InFlight == nil || alpha.Refresh.InFlight.Stage != "tracker_fetch" {
+								t.Fatalf("stalled project = %#v, want live runtime and initializing tracker with stage diagnostic", alpha)
+							}
+							if !cached && alpha.Tracker.Source != telemetry.SnapshotSourceUnknown {
+								t.Fatal("uninitialized tracker presented as fresh")
+							}
+							if cached && alpha.Tracker.Source != telemetry.SnapshotSourceCached {
+								t.Fatal("stalled project lost cached tracker provenance")
+							}
+						}
+						terminal, next = terminal.Update(next())
+						view := terminal.View().Content
+						if !strings.Contains(view, "beta#1") || !strings.Contains(view, "gamma#1") || strings.Contains(view, "draining sessions") {
+							t.Fatalf("terminal did not advance to live workers: %s", view)
+						}
+						initial = current
+						previousSeq = current.Seq
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestTelemetryPublicationDuringCompletionFence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		registry := project.NewRegistry()
+		snapshots := hub.New[telemetry.Snapshot]()
+		tracker := &completionTelemetryConnector{
+			Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: "alpha", Identifier: "alpha#1", Title: "alpha active worker", State: "In Progress", AssignedToWorker: true}}}),
+			armed:     make(chan struct{}), started: make(chan struct{}), release: make(chan struct{}),
+		}
+		releaseWorker := make(chan struct{})
+		runner := &shutdownBlockingRunner{started: make(chan struct{}, 1), canceled: make(chan struct{}, 1), release: releaseWorker}
+		alpha := newTelemetryProject(t, "alpha", tracker, runner)
+		betaRunner := newRestartRecoveryRunner()
+		beta := newTelemetryProject(t, "beta", fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: "beta", Identifier: "beta#1", Title: "beta active worker", State: "In Progress", AssignedToWorker: true}}}), betaRunner)
+		for _, tracked := range []*project.Project{alpha, beta} {
+			if err := tracked.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			mustSetProject(t, registry, tracked)
+		}
+		select {
+		case <-runner.started:
+		case <-time.After(10 * time.Second):
+			state, err := alpha.Orchestrator().State(ctx)
+			t.Fatalf("alpha worker did not start: dispatch %#v, error %v", state.DispatchStatus, err)
+		}
+		var betaRequest orchestrator.RunRequest
+		select {
+		case betaRequest = <-betaRunner.started:
+		case <-time.After(10 * time.Second):
+			state, err := beta.Orchestrator().State(ctx)
+			t.Fatalf("beta worker did not start: dispatch %#v, error %v", state.DispatchStatus, err)
+		}
+		synctest.Wait()
+		var seq atomic.Uint64
+		var observedAt time.Time
+		for index, tt := range []struct {
+			name   string
+			source telemetry.SnapshotSource
+		}{
+			{name: "before completion", source: telemetry.SnapshotSourceLive},
+			{name: "blocked completion", source: telemetry.SnapshotSourceCached},
+			{name: "still blocked", source: telemetry.SnapshotSourceCached},
+			{name: "completed", source: telemetry.SnapshotSourceLive},
+		} {
+			if index == 1 {
+				close(tracker.armed)
+				close(releaseWorker)
+				<-tracker.started
+			}
+			if index == 3 {
+				close(tracker.release)
+				synctest.Wait()
+			}
+			time.Sleep(time.Second)
+			if err := betaRequest.OnUsageUpdate(orchestrator.UsageUpdate{LastEventAt: time.Now(), LastMessage: tt.name, Tokens: orchestrator.TokenTotals{TotalTokens: int64(index + 1)}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := publishSnapshotOnce(ctx, registry, nil, snapshots, &seq, nil, time.Now(), nil, nil, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, ok := snapshots.Latest()
+			if !ok || len(snapshot.Projects) != 2 || snapshot.Seq != uint64(index+1) {
+				t.Fatalf("%s: snapshot did not advance: %#v", tt.name, snapshot)
+			}
+			alphaSnapshot, betaSnapshot := snapshot.Projects[0], snapshot.Projects[1]
+			if alphaSnapshot.Project.ID != "alpha" || alphaSnapshot.Runtime.Source != tt.source || !alphaSnapshot.Runtime.Complete {
+				t.Fatalf("%s: alpha runtime = %#v", tt.name, alphaSnapshot.Runtime)
+			}
+			if tt.source == telemetry.SnapshotSourceCached {
+				if observedAt.IsZero() {
+					observedAt = alphaSnapshot.Runtime.ObservedAt
+				}
+				if observedAt.IsZero() || alphaSnapshot.Runtime.ObservedAt != observedAt || !observedAt.Before(snapshot.GeneratedAt) {
+					t.Fatalf("%s: cached observation time = %v", tt.name, alphaSnapshot.Runtime.ObservedAt)
+				}
+				if !alphaSnapshot.Refresh.Ready() || snapshot.Runtime.Source != telemetry.SnapshotSourceMixed {
+					t.Fatalf("%s: tracker or fleet provenance incorrect: refresh %#v, runtime %#v", tt.name, alphaSnapshot.Refresh, snapshot.Runtime)
+				}
+			}
+			if betaSnapshot.Runtime.Source != telemetry.SnapshotSourceLive {
+				t.Fatalf("%s: healthy project stopped advancing: %#v", tt.name, betaSnapshot)
+			}
+			var betaRunning []telemetry.Running
+			for _, running := range snapshot.Running {
+				if running.ProjectID == "beta" {
+					betaRunning = append(betaRunning, running)
+				}
+			}
+			if len(betaRunning) != 1 || betaRunning[0].Tokens.Total != int64(index+1) {
+				t.Fatalf("%s: healthy worker stopped advancing: %#v", tt.name, betaRunning)
+			}
+		}
+	})
+}
+
+type completionTelemetryConnector struct {
+	connector.Connector
+	armed   chan struct{}
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *completionTelemetryConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	select {
+	case <-c.armed:
+		select {
+		case <-c.started:
+		default:
+			close(c.started)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.release:
+		}
+	default:
+	}
+	return c.Connector.FetchIssueStatesByIDs(ctx, ids)
+}
+
+func TestReadTelemetrySource(t *testing.T) {
+	sourceErr := errors.New("source unavailable")
+	for _, tt := range []struct {
+		name         string
+		cancelParent bool
+		stall        bool
+		readErr      error
+		wantErr      error
+	}{
+		{name: "success"},
+		{name: "source error", readErr: sourceErr, wantErr: sourceErr},
+		{name: "deadline", stall: true, wantErr: context.DeadlineExceeded},
+		{name: "service cancellation", cancelParent: true, stall: true, wantErr: context.Canceled},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				parent, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if tt.cancelParent {
+					cancel()
+				}
+				var sourceContextErr func() error
+				value, err := readTelemetrySource(parent, "example", "alpha", func(ctx context.Context) (int, error) {
+					sourceContextErr = ctx.Err
+					deadline, ok := ctx.Deadline()
+					if !ok || time.Until(deadline) != defaultTelemetryReadTimeout {
+						t.Fatalf("source deadline = %v, %v", deadline, ok)
+					}
+					if tt.stall {
+						<-ctx.Done()
+						return 0, ctx.Err()
+					}
+					return 42, tt.readErr
+				})
+				if !errors.Is(err, tt.wantErr) || (tt.wantErr == nil && value != 42) {
+					t.Fatalf("read = %d, %v; want error %v", value, err, tt.wantErr)
+				}
+				if sourceContextErr() == nil || (parent.Err() != nil && !tt.cancelParent) {
+					t.Fatal("source context was not released independently of service context")
+				}
+				if err != nil && !strings.Contains(err.Error(), "telemetry source example:") {
+					t.Fatalf("error lacks source identity: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func newTelemetryProject(t *testing.T, id string, tracker connector.Connector, runner orchestrator.Runner) *project.Project {
+	t.Helper()
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	tracked, err := projectfixture.New(project.Config{
+		Project:  globalconfig.Project{ID: id, Workdir: t.TempDir(), Weight: 1},
+		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Telemetry fixture"},
+	}, project.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		OrchestratorFactory: func(cfg orchestrator.Config, deps orchestrator.Dependencies) (*orchestrator.Orchestrator, error) {
+			return orchestrator.New(orchestrator.Config{
+				Project: cfg.Project, PollInterval: time.Hour, MaxConcurrentAgents: 1,
+				ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"},
+			}, deps)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := tracked.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			t.Error(err)
+		}
+	})
+	return tracked
+}
+
+func seedRestartTelemetry(t *testing.T, ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot]) {
+	t.Helper()
+	cache, err := boardsnapshot.New(boardsnapshot.Config{Path: filepath.Join(t.TempDir(), "snapshot.json"), MaxAge: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Save(ctx, telemetry.Snapshot{
+		Seq:         900,
+		GeneratedAt: time.Now().Add(-time.Second),
+		Counts:      telemetry.Counts{Running: 1},
+		Running:     []telemetry.Running{{Issue: telemetry.Issue{ID: "previous-process-worker", ProjectID: "alpha"}}},
+		Shutdown:    telemetry.Shutdown{Status: "draining", Draining: true},
+		Project:     telemetry.Project{ID: "alpha"},
+		Projects:    []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "alpha"}}},
+		BoardIssues: []telemetry.Issue{{ID: "cached", ProjectID: "alpha", Identifier: "alpha#1", State: "Todo"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err := cache.Load(ctx)
+	if err != nil || !found {
+		t.Fatalf("Load() = %v, %v", found, err)
+	}
+	if loaded.Counts.Running != 0 || len(loaded.Running) != 0 || loaded.Runtime.Source != telemetry.SnapshotSourceUnknown {
+		t.Fatalf("cached runtime was not cleared: counts %#v, running %#v, runtime %#v", loaded.Counts, loaded.Running, loaded.Runtime)
+	}
+	if err := snapshots.Publish(loaded); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type stalledTelemetryTotals struct{}
+
+func (stalledTelemetryTotals) LifetimeTotals(ctx context.Context) (store.LifetimeTotals, error) {
+	<-ctx.Done()
+	return store.LifetimeTotals{}, ctx.Err()
+}
+
+type stalledTelemetryConnector struct {
+	connector.Connector
+}
+
+func (stalledTelemetryConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (stalledTelemetryConnector) FetchIssuesByStates(ctx context.Context, _ []string) ([]connector.Issue, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}

@@ -1,0 +1,17 @@
+{
+  "status": "waiting_for_runner",
+  "attempt_id": null,
+  "run_id": null,
+  "runner_id": null,
+  "thread_id": "thr_0d7e",
+  "turn_id": null,
+  "capabilities": {
+    "steer": false,
+    "interrupt": false,
+    "answer": false,
+    "continue": true
+  },
+  "resume": "",
+  "error": null,
+  "updated_at": "2026-09-09T10:05:00Z"
+}

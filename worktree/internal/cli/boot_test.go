@@ -1,0 +1,1570 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/digitaldrywood/detent/internal/activehours"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gotestreceipt"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/instancelock"
+	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
+	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/tui"
+)
+
+func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
+	for _, missingCheckout := range []bool{false, true} {
+		name := "enrolled runner"
+		if missingCheckout {
+			name = "enrolled runner with absent checkout"
+		}
+		t.Run(name, func(t *testing.T) {
+			func(t *testing.T) {
+				observations := make(chan *runnerauth.UpdateObservation, 1)
+				var identity runnerauth.File
+				var first sync.Once
+				firstRequest := make(chan string, 1)
+				lifecycleReports := make(chan runnerauth.LifecycleReport, 8)
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					first.Do(func() { firstRequest <- r.URL.Path })
+					w.Header().Set("Content-Type", "application/json")
+					var response any
+					switch {
+					case strings.HasSuffix(r.URL.Path, "/lifecycle"):
+						var report runnerauth.LifecycleReport
+						if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+							t.Error(err)
+							w.WriteHeader(http.StatusBadRequest)
+							return
+						}
+						select {
+						case lifecycleReports <- report:
+						default:
+							t.Error("too many lifecycle reports")
+							w.WriteHeader(http.StatusConflict)
+							return
+						}
+						w.WriteHeader(http.StatusNoContent)
+						return
+					case r.URL.Path == "/api/v2/capabilities":
+						response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability, tracker.NativeProviderCapacityCapability}}
+					case strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID):
+						response = identity.Identity
+					case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID+"/update/receipt"):
+						response = (*runnerauth.UpdateReceipt)(nil)
+					case strings.HasSuffix(r.URL.Path, "/projects/prj_test"):
+						response = tracker.NativeProject{Profile: "native"}
+					case strings.HasSuffix(r.URL.Path, "/heartbeat"):
+						var report struct {
+							Update *runnerauth.UpdateObservation `json:"update"`
+						}
+						if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+							t.Error(err)
+							w.WriteHeader(http.StatusBadRequest)
+							return
+						}
+						select {
+						case observations <- report.Update:
+						default:
+						}
+						response = runnerauth.RoutingSnapshot{RunnerID: identity.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}.Normalized()}
+					default:
+						t.Errorf("unexpected Hub request: %s %s", r.Method, r.URL.Path)
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					if err := json.NewEncoder(w).Encode(response); err != nil {
+						t.Error(err)
+					}
+				})
+				previousTransport := http.DefaultTransport
+				http.DefaultTransport = readinessRoundTripper(func(r *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					handler.ServeHTTP(response, r)
+					return response.Result(), nil
+				})
+				t.Cleanup(func() { http.DefaultTransport = previousTransport })
+				hubURL := "https://hub.example.test"
+				root := t.TempDir()
+				var err error
+				identity, err = runnerauth.Initialize(filepath.Join(root, "private", "runner.json"), hubURL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				identity.Identity.OrganizationID = "org_test"
+				identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+				identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+				if err := runnerauth.Save(filepath.Join(root, "private", "runner.json"), identity); err != nil {
+					t.Fatal(err)
+				}
+				port := 0
+				cfg := BootConfig{Mode: BootModeRunning, Version: "dev", Headless: true, Host: "127.0.0.1", Port: &port, Output: newBootOutput(), Shutdown: NewShutdownController(), Restart: NewRestartRequest()}
+				cfg.remoteHeartbeatTicker = func(time.Duration) (<-chan time.Time, func()) {
+					ticks := make(chan time.Time, 1)
+					ticks <- time.Now()
+					return ticks, func() {}
+				}
+				cfg.Global, err = globalconfig.Default()
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg.Global.Path = filepath.Join(root, "global.yaml")
+				cfg.Global.Client = globalconfig.HubClient{URL: hubURL, IdentityFile: filepath.Join(root, "private", "runner.json"), OrganizationID: "org_test", NativeProjects: map[string]string{"test": "prj_test"}, ProviderCapacityFile: writeProviderCapacityFixture(t, root)}
+				if missingCheckout {
+					cfg.Global.Projects = []globalconfig.Project{{ID: "test", Workdir: filepath.Join(root, "missing"), Workflow: filepath.Join(root, "missing", "WORKFLOW.md"), Weight: 1, Priority: 3}}
+				}
+				if err := globalconfig.Write(cfg.Global.Path, cfg.Global, globalconfig.WithMissingProjectPaths()); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				done := make(chan error, 1)
+				joined := false
+				go func() {
+					done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{})
+				}()
+				t.Cleanup(func() {
+					defer func() {
+						select {
+						case path := <-firstRequest:
+							if !strings.HasSuffix(path, "/lifecycle") {
+								t.Errorf("first Hub request=%s", path)
+							}
+						default:
+							t.Error("runner made no Hub request")
+						}
+						close(lifecycleReports)
+						reports := []runnerauth.LifecycleReport{}
+						for report := range lifecycleReports {
+							reports = append(reports, report)
+						}
+						if len(reports) != 3 {
+							t.Errorf("lifecycle reports=%+v", reports)
+							return
+						}
+						if reports[0].State != runnerauth.LifecycleStarting || reports[0].Version != "dev" || reports[0].BuildRevision == "" || reports[1].State != runnerauth.LifecycleReady || reports[2].State != runnerauth.LifecycleShuttingDown || reports[2].Reason != "signal" {
+							t.Errorf("lifecycle reports=%+v", reports)
+						}
+					}()
+					cancel()
+					if !joined {
+						err := <-done
+						if err != nil && !errors.Is(err, context.Canceled) {
+							t.Error(err)
+						}
+					}
+				})
+				waitCtx := testenv.WaitContext(t, ctx)
+				select {
+				case observed := <-observations:
+					if observed == nil || !observed.Supported || observed.Validate() != nil {
+						t.Fatalf("headless heartbeat update observation = %+v", observed)
+					}
+				case err := <-done:
+					joined = true
+					t.Fatalf("headless runtime stopped before its heartbeat: %v", err)
+				case <-waitCtx.Done():
+					t.Fatalf("headless heartbeat wait ended: %v", context.Cause(waitCtx))
+				}
+			}(t)
+		})
+	}
+}
+
+var fixtureBuildCache string
+
+func TestMain(m *testing.M) {
+	if gotestreceipt.IsWrapperInvocation(os.Args[0]) {
+		os.Exit(gotestreceipt.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
+	if os.Getenv("DETENT_OFFLINE_UPDATE_PHASE") != "" {
+		if err := offlineUpdateControllerProcess(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "gh" && os.Getenv("DETENT_SSH_TEST_HELPER") != "" {
+		sshGitHubCLIHelper()
+	}
+	// Boot and reaper tests use disposable provider state as well as a test
+	// runtime store. They must never pair an empty store with host rollouts.
+	codexHome, err := os.MkdirTemp("", "detent-cli-codex-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("CODEX_HOME", codexHome); err != nil {
+		panic(err)
+	}
+	fixtureBuildCache = os.Getenv("GOCACHE")
+	if err := os.Setenv("GOCACHE", filepath.Join(codexHome, "go-build")); err != nil {
+		panic(err)
+	}
+	if err := testenv.ClearGitEnvironment(); err != nil {
+		panic(err)
+	}
+	for key, value := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1"} {
+		if err := os.Setenv(key, value); err != nil {
+			panic(err)
+		}
+	}
+	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment, "TMUX", "TMUX_PANE"} {
+		if err := os.Unsetenv(name); err != nil {
+			panic("clear " + name + ": " + err.Error())
+		}
+	}
+	defaultInspectCaches = func(context.Context) toolcache.Report { return toolcache.Report{} }
+	startedAt := time.Now()
+	exitCode := m.Run()
+	timeout, timeoutErr := time.ParseDuration(flag.Lookup("test.timeout").Value.String())
+	if timeoutErr != nil {
+		fmt.Fprintln(os.Stderr, "read CLI test deadline:", timeoutErr)
+		exitCode = 1
+	}
+	cleanupCtx, cancelCleanup := context.WithDeadline(context.Background(), startedAt.Add(timeout))
+	defer cancelCleanup()
+	if err := clihangHubTemplate.Close(cleanupCtx); err != nil {
+		fmt.Fprintln(os.Stderr, "close CLI PostgreSQL fixture:", err)
+		exitCode = 1
+	}
+	if err := os.RemoveAll(codexHome); err != nil {
+		fmt.Fprintln(os.Stderr, "clean test Codex home:", err)
+		exitCode = 1
+	}
+	os.Exit(exitCode)
+}
+
+func TestAwaitStartupServerRequiresExpectedBuild(t *testing.T) {
+	t.Parallel()
+
+	expected := buildinfo.Info{
+		Version: "v1.2.3",
+		Commit:  "0123456789abcdef0123456789abcdef01234567",
+	}
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "matching restarted listener", body: `{"status":"not_ready","version":"v1.2.3","commit":"0123456789abcdef0123456789abcdef01234567"}`},
+		{name: "wrong commit listener", body: `{"status":"ok","version":"v1.2.3","commit":"89abcdef0123456789abcdef0123456789abcdef"}`, wantErr: "does not match restarted build"},
+		{name: "unrelated listener", body: `not found`, wantErr: "decode startup listener identity"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(server.Close)
+
+			err := awaitStartupServer(t.Context(), server.URL, expected)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("awaitStartupServer() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("awaitStartupServer() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestShouldLaunchTerminalDashboard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  BootConfig
+		want bool
+	}{
+		{
+			name: "running terminal",
+			cfg:  BootConfig{Mode: BootModeRunning, StdoutTTY: true},
+			want: true,
+		},
+		{
+			name: "headless terminal",
+			cfg:  BootConfig{Mode: BootModeRunning, Headless: true, StdoutTTY: true},
+			want: false,
+		},
+		{
+			name: "non terminal",
+			cfg:  BootConfig{Mode: BootModeRunning},
+			want: false,
+		},
+		{
+			name: "onboarding terminal",
+			cfg:  BootConfig{Mode: BootModeOnboarding, StdoutTTY: true},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := shouldLaunchTerminalDashboard(tt.cfg); got != tt.want {
+				t.Fatalf("shouldLaunchTerminalDashboard(%#v) = %v, want %v", tt.cfg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDashboardServiceAddressUsesBoundListener(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		addr    net.Addr
+		want    string
+		wantErr bool
+	}{
+		{name: "non-loopback IPv4", addr: &net.TCPAddr{IP: net.ParseIP("100.111.222.33"), Port: 4101}, want: "100.111.222.33:4101"},
+		{name: "wildcard becomes connectable loopback", addr: &net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 4102}, want: "127.0.0.1:4102"},
+		{name: "nil listener", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := dashboardServiceAddress(tt.addr)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("dashboardServiceAddress() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("dashboardServiceAddress() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBackfillRuntimeSessionProjects(t *testing.T) {
+	t.Parallel()
+
+	projects := []globalconfig.Project{{ID: "detent"}, {ID: "gopher-ai"}, {ID: "duplicate"}}
+	backfiller := &fakeSessionProjectBackfiller{}
+	err := backfillRuntimeSessionProjects(context.Background(), projects, backfiller, func(project globalconfig.Project) (workflowconfig.Workflow, error) {
+		cfg := workflowconfig.Default()
+		switch project.ID {
+		case "detent":
+			cfg.Tracker.Repository = "digitaldrywood/detent"
+		case "gopher-ai", "duplicate":
+			cfg.Tracker.Repository = "gopherguides/gopher-ai"
+		}
+		return workflowconfig.Workflow{Config: cfg}, nil
+	})
+	if err != nil {
+		t.Fatalf("backfillRuntimeSessionProjects() error = %v", err)
+	}
+	want := []store.SessionProjectAttribution{{ProjectID: "detent", Repository: "digitaldrywood/detent"}}
+	if len(backfiller.attributions) != len(want) || backfiller.attributions[0] != want[0] {
+		t.Fatalf("attributions = %#v, want %#v", backfiller.attributions, want)
+	}
+}
+
+func TestBuildGlobalSchedulerFromSettings(t *testing.T) {
+	t.Parallel()
+
+	global, err := buildGlobalScheduler(globalconfig.Settings{
+		MaxConcurrentAgents: 2,
+		Scheduling:          globalconfig.SchedulingRoundRobin,
+		FairShare:           map[string]any{"half_life": "30m"},
+	})
+	if err != nil {
+		t.Fatalf("buildGlobalScheduler() error = %v", err)
+	}
+	if global.Mode() != scheduler.ModeStrictPriority {
+		t.Fatalf("Mode() = %q, want %q", global.Mode(), scheduler.ModeStrictPriority)
+	}
+
+	first, err := global.RequestSlot(context.Background(), scheduler.SlotRequest{State: "Todo"})
+	if err != nil {
+		t.Fatalf("RequestSlot() first error = %v", err)
+	}
+	second, err := global.RequestSlot(context.Background(), scheduler.SlotRequest{State: "Todo"})
+	if err != nil {
+		t.Fatalf("RequestSlot() second error = %v", err)
+	}
+	if _, err := global.RequestSlot(context.Background(), scheduler.SlotRequest{State: "Todo"}); !errors.Is(err, scheduler.ErrNoSlots) {
+		t.Fatalf("RequestSlot() third error = %v, want ErrNoSlots", err)
+	}
+	if err := global.ReleaseSlot(first); err != nil {
+		t.Fatalf("ReleaseSlot() first error = %v", err)
+	}
+	if err := global.ReleaseSlot(second); err != nil {
+		t.Fatalf("ReleaseSlot() second error = %v", err)
+	}
+}
+
+func TestGlobalPoolConfigsIgnoreLegacyScheduling(t *testing.T) {
+	t.Parallel()
+
+	pools, err := globalPoolConfigs(globalconfig.Settings{
+		MaxConcurrentAgents: 1,
+		Scheduling:          globalconfig.SchedulingStrict,
+		AgentPools: []globalconfig.AgentPool{
+			{Name: "code", MaxConcurrentAgents: 5},
+			{Name: "video", MaxConcurrentAgents: 10, BurstTo: 15, Scheduling: globalconfig.SchedulingRoundRobin},
+		},
+		FairShare: map[string]any{"half_life": "30m"},
+	})
+	if err != nil {
+		t.Fatalf("globalPoolConfigs() error = %v", err)
+	}
+	if len(pools) != 3 {
+		t.Fatalf("globalPoolConfigs() = %#v, want three pools", pools)
+	}
+	tests := []struct {
+		index    int
+		name     string
+		capacity int
+		kind     string
+	}{
+		{index: 0, name: scheduler.DefaultPoolName, capacity: 1, kind: globalconfig.SchedulingStrict},
+		{index: 1, name: "code", capacity: 5, kind: globalconfig.SchedulingStrict},
+		{index: 2, name: "video", capacity: 10, kind: globalconfig.SchedulingStrict},
+	}
+	for _, tt := range tests {
+		pool := pools[tt.index]
+		if pool.Name != tt.name || pool.Scheduler.Capacity != tt.capacity || pool.Scheduler.Kind != tt.kind {
+			t.Fatalf("pools[%d] = %#v, want name/capacity/kind %s/%d/%s", tt.index, pool, tt.name, tt.capacity, tt.kind)
+		}
+	}
+	if pools[2].BurstTo != 15 {
+		t.Fatalf("pools[2].BurstTo = %d, want 15", pools[2].BurstTo)
+	}
+}
+
+func TestRuntimeLogLevelForReloadPreservesOverrides(t *testing.T) {
+	t.Parallel()
+
+	level := &slog.LevelVar{}
+	tests := []struct {
+		name   string
+		source string
+		want   *slog.LevelVar
+	}{
+		{name: "config", source: runtimeSourceConfig, want: level},
+		{name: "default", source: runtimeSourceDefault, want: level},
+		{name: "flag", source: runtimeSourceFlag},
+		{name: "primary environment", source: "LOG_LEVEL"},
+		{name: "deprecated environment", source: "DETENT_LOG_LEVEL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := BootConfig{
+				Runtime:  RuntimeSettings{LogLevel: RuntimeValue{Source: tt.source}},
+				LogLevel: level,
+			}
+			if got := runtimeLogLevelForReload(cfg); got != tt.want {
+				t.Fatalf("runtimeLogLevelForReload() = %p, want %p", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSyncGlobalDispatchProjectsMarksUnstartedProjectsIdle(t *testing.T) {
+	t.Parallel()
+
+	projects := []globalconfig.Project{
+		{ID: "higher", Weight: 1, Priority: 0},
+		{ID: "lower", Weight: 1, Priority: 3},
+	}
+	gate, err := scheduler.NewPoolRegistry(
+		[]scheduler.PoolConfig{{
+			Name: scheduler.DefaultPoolName,
+			Scheduler: scheduler.Config{
+				Kind:     globalconfig.SchedulingStrict,
+				Capacity: 1,
+			},
+		}},
+		globalProjectCandidates(projects),
+	)
+	if err != nil {
+		t.Fatalf("NewPoolRegistry() error = %v", err)
+	}
+	syncGlobalDispatchProjects(gate, projects, projectpkg.NewRegistry())
+
+	lower := globalProjectCandidates(projects)[1]
+	gate.BeginProjectCycle(lower)
+	slot, ok, decision, err := gate.TryAcquireWithDecision(
+		t.Context(),
+		lower,
+		scheduler.SlotRequest{State: "Todo"},
+		time.Date(2026, 7, 10, 15, 0, 0, 0, time.Local),
+	)
+	gate.EndProjectCycle(lower.ID)
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok || decision.Reason != scheduler.DispatchGateReasonGranted {
+		t.Fatalf("TryAcquireWithDecision() ok = %t decision = %#v, want granted", ok, decision)
+	}
+	if err := gate.Release(slot); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+}
+
+func TestRunnerDispatchGateDoesNotKeepBootPause(t *testing.T) {
+	t.Parallel()
+
+	booted := globalconfig.Project{ID: "prj_example", Weight: 1, Paused: true}
+	gate, err := buildGlobalDispatchPools(globalconfig.Config{
+		Global:   globalconfig.Settings{MaxConcurrentAgents: 1, Scheduling: globalconfig.SchedulingStrict},
+		Projects: []globalconfig.Project{booted},
+	})
+	if err != nil {
+		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
+	}
+	resumed := scheduler.ProjectCandidate{ID: booted.ID}
+	gate.BeginProjectCycle(resumed)
+	slot, ok, decision, err := gate.TryAcquireWithDecision(t.Context(), resumed, scheduler.SlotRequest{State: "Todo"}, time.Date(2026, 7, 10, 15, 0, 0, 0, time.Local))
+	gate.EndProjectCycle(resumed.ID)
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok || decision.Reason != scheduler.DispatchGateReasonGranted {
+		t.Fatalf("resumed project dispatch ok = %t decision = %#v, want granted", ok, decision)
+	}
+	if err := gate.Release(slot); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+}
+
+func TestGlobalProjectCandidatesApplyHostActiveHours(t *testing.T) {
+	t.Parallel()
+	globalDefault := activehours.Config{Timezone: "America/Chicago", Windows: []string{"Mon-Sun 22:00-06:00"}}
+	projectOverride := activehours.Config{Timezone: "America/New_York", Windows: []string{"Mon-Fri 21:00-05:00"}}
+	projects := []globalconfig.Project{
+		{ID: "default", ActiveHoursOverrideUntil: "2026-08-08T02:00:00Z"},
+		{ID: "override", ActiveHours: &projectOverride},
+	}
+
+	candidates := globalProjectCandidatesWithDefault(projects, &globalDefault)
+	if got := candidates[0].ActiveHours.Timezone; got != globalDefault.Timezone {
+		t.Fatalf("default Timezone = %q, want %q", got, globalDefault.Timezone)
+	}
+	if got := candidates[1].ActiveHours.Timezone; got != projectOverride.Timezone {
+		t.Fatalf("override Timezone = %q, want %q", got, projectOverride.Timezone)
+	}
+	if got := candidates[0].ActiveHoursOverrideUntil.Format(time.RFC3339); got != projects[0].ActiveHoursOverrideUntil {
+		t.Fatalf("ActiveHoursOverrideUntil = %q, want %q", got, projects[0].ActiveHoursOverrideUntil)
+	}
+}
+
+func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	path := filepath.Join(t.TempDir(), "runtime", "detent.log")
+	restore, err := redirectDefaultLogger(path, "info")
+	if err != nil {
+		t.Fatalf("redirectDefaultLogger() error = %v", err)
+	}
+
+	slog.Info("dashboard log message", "mode", "tui")
+	slog.Warn("runner failure", "err", fmt.Errorf("run: %w", os.ErrPermission))
+	restore()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	logs := string(raw)
+	for _, want := range []string{`"msg":"dashboard log message"`, `"mode":"tui"`, `"source":`, `"error":"run: permission denied"`, `"error_class":"*errors.errorString"`} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("log file missing %q:\n%s", want, logs)
+		}
+	}
+	if slog.Default() != previous {
+		t.Fatal("default logger was not restored")
+	}
+}
+
+func TestRedirectDefaultLoggerRotatesAndRetainsConfiguredBackups(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	path := filepath.Join(t.TempDir(), "runtime", "detent.log")
+	restore, err := redirectDefaultLoggerWithRotation(path, "info", logRotation{
+		MaxSizeBytes: 1,
+		MaxBackups:   2,
+	})
+	if err != nil {
+		t.Fatalf("redirectDefaultLoggerWithRotation() error = %v", err)
+	}
+
+	for index := 1; index <= 4; index++ {
+		slog.Info("rotate message", "index", index)
+	}
+	restore()
+
+	assertLogFileContains(t, path, `"index":4`)
+	assertLogFileContains(t, rotatedLogPath(path, 1), `"index":3`)
+	assertLogFileContains(t, rotatedLogPath(path, 2), `"index":2`)
+	if _, err := os.Stat(rotatedLogPath(path, 3)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rotated log %s exists or stat failed: %v", rotatedLogPath(path, 3), err)
+	}
+}
+
+func assertLogFileContains(t *testing.T, path string, want string) {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	if !strings.Contains(string(raw), want) {
+		t.Fatalf("log file %s missing %q:\n%s", path, want, string(raw))
+	}
+}
+
+func TestTerminalDashboardError(t *testing.T) {
+	t.Parallel()
+
+	serverErr := errors.New("server failed")
+	tests := []struct {
+		name   string
+		first  error
+		second error
+		want   error
+	}{
+		{
+			name:   "dashboard quit stops server cleanly",
+			second: context.Canceled,
+		},
+		{
+			name:  "server failure wins",
+			first: serverErr,
+			want:  serverErr,
+		},
+		{
+			name:   "external cancel is preserved",
+			first:  context.Canceled,
+			second: context.Canceled,
+			want:   context.Canceled,
+		},
+		{
+			name:  "terminal program killed during shutdown is clean",
+			first: tea.ErrProgramKilled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := terminalDashboardError(tt.first, tt.second); !errors.Is(got, tt.want) {
+				t.Fatalf("terminalDashboardError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunTerminalDashboardProgramKillsOnContextCancel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	program := newTerminalDashboardProgramProbe()
+	errs := make(chan error, 1)
+	go func() {
+		_, err := runTerminalDashboardProgram(ctx, program)
+		errs <- err
+	}()
+
+	select {
+	case <-program.started:
+	case <-time.After(time.Second):
+		t.Fatal("program did not start")
+	}
+	cancel()
+
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("runTerminalDashboardProgram() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for terminal dashboard program to exit")
+	}
+	if !program.killCalled() {
+		t.Fatal("terminal dashboard program was not killed")
+	}
+}
+
+func TestRunTerminalDashboardProgramRejectsNilProgram(t *testing.T) {
+	t.Parallel()
+
+	if _, err := runTerminalDashboardProgram(context.Background(), nil); !errors.Is(err, errNilTerminalDashboardProgram) {
+		t.Fatalf("runTerminalDashboardProgram(nil) error = %v, want %v", err, errNilTerminalDashboardProgram)
+	}
+}
+
+func TestRunTerminalDashboardProgramSurfacesFinalModelAndPrintsSummary(t *testing.T) {
+	t.Parallel()
+
+	model, err := tui.NewModel(
+		context.Background(),
+		hub.New[telemetry.Snapshot](),
+		tui.WithNow(func() time.Time { return time.Date(2026, 7, 12, 20, 30, 45, 0, time.UTC) }),
+		tui.WithLogPath("/var/log/detent.log"),
+	)
+	if err != nil {
+		t.Fatalf("NewModel() error = %v", err)
+	}
+	t.Cleanup(model.Close)
+
+	finalModel, err := runTerminalDashboardProgram(context.Background(), terminalDashboardCompletedProgram{model: model})
+	if err != nil {
+		t.Fatalf("runTerminalDashboardProgram() error = %v", err)
+	}
+	if _, ok := finalModel.(tui.Model); !ok {
+		t.Fatalf("final model type = %T, want tui.Model", finalModel)
+	}
+	var output bytes.Buffer
+	if err := writeTerminalDashboardSummary(&output, finalModel, tui.Model{}); err != nil {
+		t.Fatalf("writeTerminalDashboardSummary() error = %v", err)
+	}
+	for _, want := range []string{"Detent exit summary", "Timestamp: 2026-07-12T20:30:45Z", "Logs: /var/log/detent.log"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("summary output missing %q: %s", want, output.String())
+		}
+	}
+}
+
+func TestTerminalDashboardSummaryFollowsTerminalRestore(t *testing.T) {
+	t.Parallel()
+
+	model, err := tui.NewModel(context.Background(), hub.New[telemetry.Snapshot](), tui.WithLogPath("/var/log/detent.log"))
+	if err != nil {
+		t.Fatalf("NewModel() error = %v", err)
+	}
+	t.Cleanup(model.Close)
+
+	var output bytes.Buffer
+	program := tea.NewProgram(
+		terminalDashboardQuitModel{Model: model},
+		append(terminalDashboardProgramOptions(), tea.WithInput(nil), tea.WithOutput(&output))...,
+	)
+	finalModel, err := runTerminalDashboardProgram(context.Background(), program)
+	if err != nil {
+		t.Fatalf("runTerminalDashboardProgram() error = %v", err)
+	}
+	if err := writeTerminalDashboardSummary(&output, finalModel, model); err != nil {
+		t.Fatalf("writeTerminalDashboardSummary() error = %v", err)
+	}
+	restoreAt := strings.LastIndex(output.String(), "\x1b[?1049l")
+	summaryAt := strings.Index(output.String(), "Detent exit summary")
+	if restoreAt < 0 || summaryAt < 0 || restoreAt > summaryAt {
+		t.Fatalf("terminal restore index = %d, summary index = %d: %q", restoreAt, summaryAt, output.String())
+	}
+}
+
+func TestTerminalDashboardProgramOptionsUseAltScreen(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	opts := append(terminalDashboardProgramOptions(),
+		tea.WithInput(nil),
+		tea.WithOutput(&output),
+	)
+	if _, err := tea.NewProgram(terminalDashboardOptionModel{}, opts...).Run(); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	got := output.String()
+	for _, sequence := range []string{"\x1b[?1049h", "\x1b[?1049l"} {
+		if !strings.Contains(got, sequence) {
+			t.Fatalf("terminal dashboard output missing %q:\n%q", sequence, got)
+		}
+	}
+}
+
+func TestTerminalDashboardMessageFilterRoutesInterruptToCtrlC(t *testing.T) {
+	t.Parallel()
+
+	interrupt := terminalDashboardMessageFilter(nil, tea.InterruptMsg{})
+	key, ok := interrupt.(tea.KeyPressMsg)
+	if !ok {
+		t.Fatalf("filtered interrupt type = %T, want tea.KeyPressMsg", interrupt)
+	}
+	if got := key.String(); got != "ctrl+c" {
+		t.Fatalf("filtered interrupt = %q, want ctrl+c", got)
+	}
+
+	windowSize := tea.WindowSizeMsg{Width: 80, Height: 24}
+	if got := terminalDashboardMessageFilter(nil, windowSize); got != windowSize {
+		t.Fatalf("filtered window size = %#v, want unchanged", got)
+	}
+}
+
+func TestStartupServerURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		addr *net.TCPAddr
+		want string
+	}{
+		{name: "specific host", addr: &net.TCPAddr{IP: net.ParseIP("100.109.187.102"), Port: 4000}, want: "http://100.109.187.102:4000"},
+		{name: "IPv4 wildcard", addr: &net.TCPAddr{IP: net.IPv4zero, Port: 4000}, want: "http://127.0.0.1:4000"},
+		{name: "IPv6 wildcard", addr: &net.TCPAddr{IP: net.IPv6zero, Port: 4000}, want: "http://[::1]:4000"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := startupServerURL(tt.addr); got != tt.want {
+				t.Fatalf("startupServerURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeStoreLocation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		path     string
+		memory   bool
+		lockPath string
+	}{
+		{name: "private memory", path: ":memory:", memory: true, lockPath: ":memory:.lock"},
+		{name: "memory prefix is file", path: ":memory:extra", lockPath: ":memory:extra.lock"},
+		{name: "memory text in file path", path: "/var/lib/detent/mode=memory/detent.db", lockPath: "/var/lib/detent/mode=memory/detent.db.lock"},
+		{name: "named memory URI", path: "file:detent?mode=memory&cache=shared", memory: true, lockPath: "detent.lock"},
+		{name: "special memory URI", path: "file::memory:?cache=shared", memory: true, lockPath: ":memory:.lock"},
+		{name: "absolute file URI", path: "file:/tmp/detent.db?mode=rw", lockPath: filepath.FromSlash("/tmp/detent.db.lock")},
+		{name: "localhost file URI", path: "file://localhost/tmp/detent.db?mode=rwc", lockPath: filepath.FromSlash("/tmp/detent.db.lock")},
+		{name: "escaped file URI", path: "file:/tmp/detent%20runtime.db?mode=rwc#ignored", lockPath: filepath.FromSlash("/tmp/detent runtime.db.lock")},
+		{name: "relative file URI", path: "file:detent.db?mode=rw", lockPath: "detent.db.lock"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := runtimeStoreIsMemory(tt.path); got != tt.memory {
+				t.Fatalf("runtimeStoreIsMemory(%q) = %v, want %v", tt.path, got, tt.memory)
+			}
+			if got := runtimeStoreLockPath(tt.path); got != tt.lockPath {
+				t.Fatalf("runtimeStoreLockPath(%q) = %q, want %q", tt.path, got, tt.lockPath)
+			}
+		})
+	}
+}
+
+func TestRuntimeBoardSnapshotPath(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	tests := []struct {
+		name     string
+		database string
+		want     string
+	}{
+		{name: "memory database", database: ":memory:", want: filepath.Join(home, "detent-board-snapshot.json")},
+		{name: "file database", database: filepath.Join(home, "runtime.db"), want: filepath.Join(home, "runtime-board-snapshot.json")},
+		{name: "file URI", database: "file:" + filepath.ToSlash(filepath.Join(home, "runtime.db")) + "?mode=rwc", want: filepath.Join(home, "runtime-board-snapshot.json")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := BootConfig{
+				Global:        globalconfig.Config{Path: filepath.Join(home, "global.yaml")},
+				RuntimeDBPath: tt.database,
+			}
+			if got := runtimeBoardSnapshotPath(cfg); got != tt.want {
+				t.Fatalf("runtimeBoardSnapshotPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeUpdateStatePath(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	tests := []struct {
+		name     string
+		database string
+		want     string
+	}{
+		{name: "memory database", database: ":memory:", want: filepath.Join(home, "detent-update-state.json")},
+		{name: "file database", database: filepath.Join(home, "runtime.db"), want: filepath.Join(home, "runtime-update-state.json")},
+		{name: "file URI", database: "file:" + filepath.ToSlash(filepath.Join(home, "runtime.db")) + "?mode=rwc", want: filepath.Join(home, "runtime-update-state.json")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := BootConfig{
+				Global:        globalconfig.Config{Path: filepath.Join(home, "global.yaml")},
+				RuntimeDBPath: tt.database,
+			}
+			if got := runtimeUpdateStatePath(cfg); got != tt.want {
+				t.Fatalf("runtimeUpdateStatePath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAcquireRuntimeInstanceLockReportsLiveHolder(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "detent.db.lock")
+	lock, err := instancelock.Acquire(path)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := lock.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	_, err = acquireRuntimeInstanceLock(path)
+	if err == nil {
+		t.Fatal("acquireRuntimeInstanceLock() error = nil, want live holder error")
+	}
+	for _, want := range []string{"another detent (pid ", "started ", ") holds " + path} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("acquireRuntimeInstanceLock() error = %q, want %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("acquireRuntimeInstanceLock() error = %q, want actionable contention error", err)
+	}
+}
+
+func TestAwaitProjectProvisioningStart(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		started     bool
+		done        bool
+		doneErr     error
+		timeout     time.Duration
+		wantErrText string
+	}{
+		{
+			name:    "provisioning starts",
+			started: true,
+			timeout: time.Second,
+		},
+		{
+			name:        "startup error",
+			done:        true,
+			doneErr:     errors.New("store unavailable"),
+			timeout:     time.Second,
+			wantErrText: "startRunning returned before project provisioning started: store unavailable",
+		},
+		{
+			name:        "startup stops without error",
+			done:        true,
+			timeout:     time.Second,
+			wantErrText: "startRunning returned before project provisioning started without error",
+		},
+		{
+			name:        "deadline while startup remains active",
+			timeout:     0,
+			wantErrText: "project provisioning did not start within 0s; startRunning remained active; output:\nDetent dev",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			provisionStarted := make(chan struct{})
+			if tt.started {
+				close(provisionStarted)
+			}
+			done := make(chan error, 1)
+			if tt.done {
+				done <- tt.doneErr
+			}
+			output := newBootOutput()
+			if _, err := output.Write([]byte("Detent dev\n")); err != nil {
+				t.Fatalf("Write() error = %v", err)
+			}
+
+			err := awaitProjectProvisioningStart(provisionStarted, done, output, tt.timeout)
+			if tt.wantErrText == "" {
+				if err != nil {
+					t.Fatalf("awaitProjectProvisioningStart() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
+				t.Fatalf("awaitProjectProvisioningStart() error = %v, want containing %q", err, tt.wantErrText)
+			}
+		})
+	}
+}
+
+func TestAwaitBootDashboardURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		writes      []string
+		done        bool
+		doneErr     error
+		timeout     time.Duration
+		wantURL     string
+		wantErrText string
+	}{
+		{
+			name:    "dashboard banner",
+			writes:  []string{"Detent dev\nDashboard: ", "http://127.0.0.1:12345\n"},
+			timeout: time.Second,
+			wantURL: "http://127.0.0.1:12345",
+		},
+		{
+			name:        "startup error",
+			done:        true,
+			doneErr:     errors.New("store unavailable"),
+			timeout:     time.Second,
+			wantErrText: "startRunning returned before boot banner was written: store unavailable",
+		},
+		{
+			name:        "startup stops without error",
+			done:        true,
+			timeout:     time.Second,
+			wantErrText: "startRunning returned before boot banner was written without error",
+		},
+		{
+			name:        "diagnostic timeout",
+			writes:      []string{"Detent dev\nProject: https://github.com/digitaldrywood/detent\n"},
+			timeout:     0,
+			wantErrText: "timed out waiting for boot dashboard URL; output:\nDetent dev\nProject: https://github.com/digitaldrywood/detent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			output := newBootOutput()
+			for _, write := range tt.writes {
+				if _, err := output.Write([]byte(write)); err != nil {
+					t.Fatalf("Write() error = %v", err)
+				}
+			}
+			done := make(chan error, 1)
+			if tt.done {
+				done <- tt.doneErr
+			}
+
+			url, err := awaitBootDashboardURL(output, done, tt.timeout)
+			if tt.wantErrText != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
+					t.Fatalf("awaitBootDashboardURL() error = %v, want containing %q", err, tt.wantErrText)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("awaitBootDashboardURL() error = %v", err)
+			}
+			if url != tt.wantURL {
+				t.Fatalf("awaitBootDashboardURL() = %q, want %q", url, tt.wantURL)
+			}
+		})
+	}
+}
+
+func TestAwaitDashboard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		setup       func(*testing.T) (context.Context, *http.Client, string, <-chan error)
+		wantBody    string
+		wantErrText string
+	}{
+		{
+			name: "dashboard ready",
+			setup: func(t *testing.T) (context.Context, *http.Client, string, <-chan error) {
+				t.Helper()
+
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+					_, _ = writer.Write([]byte("ready"))
+				}))
+				t.Cleanup(server.Close)
+				return context.Background(), server.Client(), server.URL, make(chan error)
+			},
+			wantBody: "ready",
+		},
+		{
+			name: "runtime exits early",
+			setup: func(*testing.T) (context.Context, *http.Client, string, <-chan error) {
+				done := make(chan error, 1)
+				done <- errors.New("store unavailable")
+				return context.Background(), http.DefaultClient, "http://127.0.0.1:0/health", done
+			},
+			wantErrText: "startRunning returned before dashboard responded: store unavailable",
+		},
+		{
+			name: "runtime exits without error",
+			setup: func(*testing.T) (context.Context, *http.Client, string, <-chan error) {
+				done := make(chan error, 1)
+				done <- nil
+				return context.Background(), http.DefaultClient, "http://127.0.0.1:0/health", done
+			},
+			wantErrText: "startRunning returned before dashboard responded without error",
+		},
+		{
+			name: "deadlock guard expires",
+			setup: func(t *testing.T) (context.Context, *http.Client, string, <-chan error) {
+				t.Helper()
+
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, http.DefaultClient, "http://127.0.0.1:0/health", make(chan error)
+			},
+			wantErrText: "timed out waiting for dashboard at http://127.0.0.1:0/health: context canceled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, client, url, done := tt.setup(t)
+			body, err := awaitDashboard(ctx, client, url, done)
+			if tt.wantErrText != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
+					t.Fatalf("awaitDashboard() error = %v, want containing %q", err, tt.wantErrText)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("awaitDashboard() error = %v", err)
+			}
+			if body != tt.wantBody {
+				t.Fatalf("awaitDashboard() = %q, want %q", body, tt.wantBody)
+			}
+		})
+	}
+}
+
+const (
+	bootProvisioningStartTimeout    = 45 * time.Second
+	bootDashboardURLTimeout         = 45 * time.Second
+	dashboardReadinessDeadlockGuard = 2 * time.Minute
+)
+
+type bootOutput struct {
+	mu                    sync.Mutex
+	buffer                bytes.Buffer
+	dashboardURL          chan string
+	dashboardURLPublished bool
+}
+
+func newBootOutput() *bootOutput {
+	return &bootOutput{dashboardURL: make(chan string, 1)}
+}
+
+func (o *bootOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	n, err := o.buffer.Write(p)
+	if err != nil || o.dashboardURLPublished {
+		return n, err
+	}
+	url := bootDashboardURL(o.buffer.String())
+	if url == "" {
+		return n, nil
+	}
+	o.dashboardURLPublished = true
+	o.dashboardURL <- url
+	return n, nil
+}
+
+func (o *bootOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buffer.String()
+}
+
+func awaitProjectProvisioningStart(
+	provisionStarted <-chan struct{},
+	done <-chan error,
+	output *bootOutput,
+	timeout time.Duration,
+) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-provisionStarted:
+		return nil
+	case err := <-done:
+		return projectProvisioningStartExitError(err)
+	case <-timer.C:
+		select {
+		case <-provisionStarted:
+			return nil
+		case err := <-done:
+			return projectProvisioningStartExitError(err)
+		default:
+			return fmt.Errorf(
+				"project provisioning did not start within %s; startRunning remained active; output:\n%s",
+				timeout,
+				output.String(),
+			)
+		}
+	}
+}
+
+func projectProvisioningStartExitError(err error) error {
+	if err == nil {
+		return errors.New("startRunning returned before project provisioning started without error")
+	}
+	return fmt.Errorf("startRunning returned before project provisioning started: %w", err)
+}
+
+func awaitBootDashboardURL(output *bootOutput, done <-chan error, timeout time.Duration) (string, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			return "", errors.New("startRunning returned before boot banner was written without error")
+		}
+		return "", fmt.Errorf("startRunning returned before boot banner was written: %w", err)
+	case url := <-output.dashboardURL:
+		return url, nil
+	case <-timer.C:
+		return "", fmt.Errorf("timed out waiting for boot dashboard URL; output:\n%s", output.String())
+	}
+}
+
+func bootDashboardURL(output string) string {
+	lines := strings.Split(output, "\n")
+	for _, line := range lines[:len(lines)-1] {
+		url, ok := strings.CutPrefix(line, "Dashboard: ")
+		if ok && strings.TrimSpace(url) != "" {
+			return strings.TrimSpace(url)
+		}
+	}
+	return ""
+}
+
+func waitForDashboard(t *testing.T, url string, done <-chan error) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), dashboardReadinessDeadlockGuard)
+	defer cancel()
+	return waitForDashboardContext(t, ctx, url, done)
+}
+
+func waitForDashboardContext(t *testing.T, ctx context.Context, url string, done <-chan error) string {
+	t.Helper()
+
+	client := newRuntimeHTTPClient()
+	defer client.CloseIdleConnections()
+	body, err := awaitDashboard(ctx, client, url, done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func awaitDashboard(ctx context.Context, client *http.Client, url string, done <-chan error) (string, error) {
+	var lastStatus int
+	var lastRequestErr error
+	timeoutError := func() error {
+		err := fmt.Errorf("timed out waiting for dashboard at %s: %w; last HTTP status: %d", url, ctx.Err(), lastStatus)
+		if lastRequestErr != nil {
+			return fmt.Errorf("%w; last request error: %w", err, lastRequestErr)
+		}
+		return err
+	}
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+
+	for {
+		select {
+		case err := <-done:
+			return "", dashboardExitError(err)
+		case <-ctx.Done():
+			return "", timeoutError()
+		default:
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return "", fmt.Errorf("create dashboard readiness request: %w", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastRequestErr = err
+		} else {
+			lastStatus = resp.StatusCode
+			body, readErr := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if readErr != nil {
+				return "", fmt.Errorf("read dashboard readiness response: %w", readErr)
+			}
+			if closeErr != nil {
+				return "", fmt.Errorf("close dashboard readiness response: %w", closeErr)
+			}
+			if resp.StatusCode == http.StatusOK {
+				return string(body), nil
+			}
+		}
+
+		select {
+		case err := <-done:
+			return "", dashboardExitError(err)
+		case <-ctx.Done():
+			return "", timeoutError()
+		case <-retry.C:
+		}
+	}
+}
+
+func dashboardExitError(err error) error {
+	if err == nil {
+		return errors.New("startRunning returned before dashboard responded without error")
+	}
+	return fmt.Errorf("startRunning returned before dashboard responded: %w", err)
+}
+
+type bootProjectFiles struct {
+	workflowPath string
+	workdirPath  string
+}
+
+func createBootProjectFiles(t *testing.T) bootProjectFiles {
+	t.Helper()
+
+	workdir := t.TempDir()
+	workflow := filepath.Join(workdir, "WORKFLOW.md")
+	if err := os.WriteFile(workflow, []byte(`---
+tracker:
+  kind: hub_native
+---
+Test workflow prompt.
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return bootProjectFiles{
+		workflowPath: workflow,
+		workdirPath:  workdir,
+	}
+}
+
+type terminalDashboardProgramProbe struct {
+	started chan struct{}
+	killed  chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	killSet bool
+}
+
+type terminalDashboardCompletedProgram struct {
+	model tea.Model
+}
+
+func (p terminalDashboardCompletedProgram) Run() (tea.Model, error) {
+	return p.model, nil
+}
+
+func (terminalDashboardCompletedProgram) Kill() {}
+
+func newTerminalDashboardProgramProbe() *terminalDashboardProgramProbe {
+	return &terminalDashboardProgramProbe{
+		started: make(chan struct{}),
+		killed:  make(chan struct{}),
+	}
+}
+
+func (p *terminalDashboardProgramProbe) Run() (tea.Model, error) {
+	close(p.started)
+	<-p.killed
+	return nil, nil //nolint:nilnil // Test probe exits without yielding another Bubble Tea model.
+}
+
+func (p *terminalDashboardProgramProbe) Kill() {
+	p.mu.Lock()
+	p.killSet = true
+	p.mu.Unlock()
+	p.once.Do(func() {
+		close(p.killed)
+	})
+}
+
+func (p *terminalDashboardProgramProbe) killCalled() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killSet
+}
+
+type terminalDashboardOptionModel struct{}
+
+func (terminalDashboardOptionModel) Init() tea.Cmd {
+	return tea.Quit
+}
+
+func (terminalDashboardOptionModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
+	return terminalDashboardOptionModel{}, nil
+}
+
+func (terminalDashboardOptionModel) View() tea.View {
+	view := tea.NewView("detent")
+	view.AltScreen = true
+	return view
+}
+
+type terminalDashboardQuitModel struct {
+	tui.Model
+}
+
+func (m terminalDashboardQuitModel) Init() tea.Cmd {
+	return tea.Quit
+}
+
+func (m terminalDashboardQuitModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
+	return m, nil
+}
+
+func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
+	t.Helper()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	project, err := projectfixture.New(projectpkg.Config{
+		Project: globalconfig.Project{
+			ID:      id,
+			Workdir: t.TempDir(),
+			Weight:  1,
+		},
+		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
+	}, projectpkg.Dependencies{})
+	if err != nil {
+		t.Fatalf("projectfixture.New() error = %v", err)
+	}
+	return project
+}
+
+func startRefreshProject(t *testing.T, id string) *projectpkg.Project {
+	t.Helper()
+
+	project := newRefreshProject(t, id)
+	if err := project.Start(context.Background()); err != nil {
+		t.Fatalf("Project.Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+			t.Fatalf("Project.Stop() error = %v", err)
+		}
+	})
+	return project
+}
+
+func mustSetProject(t *testing.T, registry *projectpkg.Registry, project *projectpkg.Project) {
+	t.Helper()
+
+	if err := registry.Set(project); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+}
+
+type bootProvisioningConnector struct {
+	provision func(context.Context) error
+}
+
+type fakeSessionProjectBackfiller struct {
+	calls        int
+	err          error
+	attributions []store.SessionProjectAttribution
+}
+
+func (f *fakeSessionProjectBackfiller) BackfillSessionProjectIDs(_ context.Context, attributions []store.SessionProjectAttribution) (int64, error) {
+	f.calls++
+	f.attributions = append([]store.SessionProjectAttribution(nil), attributions...)
+	return int64(len(attributions)), f.err
+}
+
+func (bootProvisioningConnector) Name() string {
+	return "boot"
+}
+
+func (bootProvisioningConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (bootProvisioningConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (bootProvisioningConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (bootProvisioningConnector) CreateComment(context.Context, string, string) error {
+	return nil
+}
+
+func (bootProvisioningConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (bootProvisioningConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (bootProvisioningConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
+func (c bootProvisioningConnector) Provision(ctx context.Context) error {
+	if c.provision == nil {
+		return nil
+	}
+	return c.provision(ctx)
+}

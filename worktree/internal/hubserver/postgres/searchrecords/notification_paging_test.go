@@ -1,0 +1,116 @@
+package searchrecords_test
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestNotificationRelatedRecipientPagingResumesWithoutDuplicates(t *testing.T) {
+	t.Parallel()
+	var candidate *postgres.Repository
+	if _, ok := any(candidate).(accountstore.NotificationCollector); !ok {
+		t.Fatal("PostgreSQL notification collector is missing")
+	}
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	delivery := any(repository).(accountstore.NotificationCollector)
+	org := tracker.OrganizationID("org_paging")
+	seedNotificationMembers(t, repository, org)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		for index := range 256 {
+			user := fmt.Sprintf("participant_%03d", index)
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: user, Name: user, Hash: "hash_" + user, Scope: "operator", NativeOnly: true, CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), ProjectAccess: "selected", Kind: "personal"}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: user, Email: user + "@example.test", MembershipID: "membership_" + user, Role: "member", Active: true, PrincipalID: user, NotifyIssues: true, CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt()}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: user, ProjectID: "prj_first"}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index := range 256 {
+		user := fmt.Sprintf("participant_%03d", index)
+		value := tracker.CollaborationEvent{ID: "event_" + user, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_2", Type: "comment.created", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: user}, RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{CommentID: "comment_" + user}}
+		record, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvent(t.Context(), record); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := delivery.NotificationEvents(t.Context(), org)
+	if err != nil || len(events) != 256 {
+		t.Fatalf("participant events=%d error=%v", len(events), err)
+	}
+	for _, event := range events {
+		if done, _, err := delivery.QueueNotification(t.Context(), org, event, accountstore.IssueNotice{}, "", false, 256); err != nil || !done {
+			t.Fatalf("participant done=%v error=%v", done, err)
+		}
+	}
+	if events, err := delivery.NotificationEvents(t.Context(), org); err != nil || len(events) != 0 {
+		t.Fatalf("consumed participants=%d error=%v", len(events), err)
+	}
+	value := tracker.CollaborationEvent{ID: "event_related", OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "issue.edited", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: pgstoretest.HistoryAt().Add(time.Second), Data: tracker.CollaborationData{Operation: "add", Fields: []string{"related"}, RelatedWorkItemID: "wi_first_2"}}
+	record, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
+		var err error
+		record, err = w.AppendEvent(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		done  bool
+		count int
+	}{{false, 256}, {true, 2}, {true, 0}} {
+		done, count, err := delivery.QueueNotification(t.Context(), org, record, accountstore.IssueNotice{Related: true}, "wi_first_2", true, 256)
+		if err != nil || done != test.done || count != test.count {
+			t.Fatalf("done=%v count=%d error=%v", done, count, err)
+		}
+		events, err := delivery.NotificationEvents(t.Context(), org)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !test.done && (len(events) != 1 || events[0].ID != record.ID) {
+			t.Fatalf("unfinished event lost: %+v", events)
+		}
+		if test.done && len(events) != 0 {
+			t.Fatalf("completed event rediscovered: %+v", events)
+		}
+	}
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(t.Context())
+	if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, true)", string(org)); err != nil {
+		t.Fatal(err)
+	}
+	var notices int
+	if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM issue_notification_notices WHERE organization_id=$1", org).Scan(&notices); err != nil || notices != 258 {
+		t.Fatalf("notices=%d error=%v", notices, err)
+	}
+}

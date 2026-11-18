@@ -1,0 +1,814 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+var ErrLocalOrganizationRequired = errors.New("populated PostgreSQL database has no designated local organization")
+
+const designatedLocalOrganizationQuery = `SELECT public.lookup_designated_local_organization()`
+
+func publicActorNameSQL(organization, principal string) string {
+	return boardviewsql.PublicActorName(organization, principal)
+}
+
+func (s *session) AccessPublicNames(ctx context.Context, principals []string) (map[string]string, error) {
+	names := make(map[string]string, len(principals))
+	if len(principals) == 0 {
+		return names, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT requested.principal_id,`+publicActorNameSQL("$1", "requested.principal_id")+` FROM unnest($2::text[]) AS requested(principal_id)`, s.organization, principals)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var principal, name string
+		if err := rows.Scan(&principal, &name); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		names[principal] = name
+	}
+	return names, mapError(ctx, rows.Err())
+}
+
+func (s *session) HubIdentity(ctx context.Context) (accessstore.HubIdentity, error) {
+	var row accessstore.HubIdentity
+	err := s.db.QueryRow(ctx, `SELECT organization_id,server_id,cursor_key FROM hub_server_identities WHERE organization_id=$1`, s.organization).Scan(&row.OrganizationID, &row.ID, &row.CursorKey)
+	return row, mapError(ctx, err)
+}
+
+func (s *session) CreateHubIdentity(ctx context.Context, row accessstore.HubIdentity) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hub_server_identities (organization_id,server_id,cursor_key) VALUES ($1,$2,$3)`, row.OrganizationID, row.ID, row.CursorKey)
+	return mapError(ctx, err)
+}
+
+func (r *Repository) DesignatedLocalOrganization(ctx context.Context) (tracker.OrganizationID, error) {
+	return scanDesignatedLocalOrganization(ctx, r.pool.QueryRow(ctx, designatedLocalOrganizationQuery))
+}
+
+func scanDesignatedLocalOrganization(ctx context.Context, row pgx.Row) (tracker.OrganizationID, error) {
+	var organization *string
+	if err := row.Scan(&organization); err != nil {
+		var state interface{ SQLState() string }
+		if errors.As(err, &state) && state.SQLState() == "55000" {
+			return "", ErrLocalOrganizationRequired
+		}
+		return "", mapError(ctx, err)
+	}
+	if organization == nil {
+		return "", corestore.ErrNotFound
+	}
+	if strings.TrimSpace(*organization) == "" {
+		return "", corestore.ErrTenantMismatch
+	}
+	return tracker.OrganizationID(*organization), nil
+}
+
+func (r *Repository) BootstrapLocalOrganization(ctx context.Context, organization accessstore.Organization, credential accessstore.Credential, identity accessstore.HubIdentity, secret accessstore.Secret, audit accessstore.SecretAudit) (tracker.OrganizationID, error) {
+	if !organization.Local || credential.OrganizationID != organization.OrganizationID || identity.OrganizationID != organization.OrganizationID || secret.OrganizationID != organization.OrganizationID || secret.Kind != accessstore.NativeCursorKeyKind {
+		return "", corestore.ErrTenantMismatch
+	}
+	var selected tracker.OrganizationID
+	err := r.transaction(ctx, organization.OrganizationID, corestore.Serving, false, func(s *session) error {
+		if _, err := s.db.Exec(ctx, `LOCK TABLE public.organizations IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+			return fmt.Errorf("lock organizations before bootstrap: %w", err)
+		}
+		var err error
+		selected, err = scanDesignatedLocalOrganization(ctx, s.db.QueryRow(ctx, designatedLocalOrganizationQuery))
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err := s.CreateAccessOrganization(ctx, organization); err != nil {
+			return err
+		}
+		if err := s.CreateAccessCredential(ctx, credential); err != nil {
+			return err
+		}
+		if err := s.CreateHubIdentity(ctx, identity); err != nil {
+			return err
+		}
+		if err := s.EnsureOrganizationSecret(ctx, secret, audit); err != nil {
+			return err
+		}
+		selected = organization.OrganizationID
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return selected, nil
+}
+
+func (s *session) AccessOrganization(ctx context.Context) (accessstore.Organization, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.organizationRecord != nil {
+		return *s.organizationRecord, nil
+	}
+	var row accessstore.Organization
+	err := s.db.QueryRow(ctx, `SELECT organization_id,name,slug,local,created_at FROM organizations WHERE organization_id=$1`+s.accessLock(), s.organization).Scan(&row.OrganizationID, &row.Name, &row.Slug, &row.Local, &row.CreatedAt)
+	if err == nil && s.credentials != nil {
+		s.organizationRecord = &row
+	}
+	return row, mapError(ctx, err)
+}
+
+func (s *session) CreateAccessOrganization(ctx context.Context, row accessstore.Organization) error {
+	return s.createAccessOrganization(ctx, row, true)
+}
+
+func (s *session) createAccessOrganization(ctx context.Context, row accessstore.Organization, initializeUsage bool) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO organizations (organization_id,name,slug,local,created_at) VALUES ($1,$2,$3,$4,$5)`, row.OrganizationID, row.Name, row.Slug, row.Local, row.CreatedAt)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if initializeUsage {
+		_, err = s.db.Exec(ctx, `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'collaboration_bytes',0)`, row.OrganizationID)
+	}
+	return mapError(ctx, err)
+}
+
+func (s *session) LockAccessOrganization(ctx context.Context) error {
+	var organization tracker.OrganizationID
+	if err := s.db.QueryRow(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR NO KEY UPDATE`, s.organization).Scan(&organization); err != nil {
+		return mapError(ctx, err)
+	}
+	return nil
+}
+
+func (s *session) UpdateAccessOrganizationName(ctx context.Context, name string) error {
+	result, err := s.db.Exec(ctx, `UPDATE organizations SET name=$2 WHERE organization_id=$1`, s.organization, name)
+	var rows int64
+	if err == nil {
+		rows = result.RowsAffected()
+	}
+	return affected(ctx, rows, err)
+}
+
+func (s *session) AccessTenant(ctx context.Context) (accessstore.Tenant, error) {
+	var row accessstore.Tenant
+	err := s.db.QueryRow(ctx, `SELECT organization_id,provider_id,bootstrap_subject,deployment,public_url,allocation_generation FROM hosted_tenant WHERE organization_id=$1`+s.accessLock(), s.organization).Scan(&row.OrganizationID, &row.ProviderID, &row.BootstrapSubject, &row.Deployment, &row.PublicURL, &row.AllocationGeneration)
+	return row, accessLookupError(ctx, "tenant", err)
+}
+
+func (s *session) CreateAccessTenant(ctx context.Context, row accessstore.Tenant) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_tenant (organization_id,provider_id,bootstrap_subject,deployment,public_url,allocation_generation) VALUES ($1,$2,$3,$4,$5,$6)`, row.OrganizationID, row.ProviderID, row.BootstrapSubject, row.Deployment, row.PublicURL, row.AllocationGeneration)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessCredential(ctx context.Context, id string) (accessstore.Credential, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if row, ok := s.credentials[id]; ok {
+		return row, nil
+	}
+	var row accessstore.Credential
+	err := s.db.QueryRow(ctx, `SELECT organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at,rotated_at,revoked_at,expires_at,last_used_at,hosted_user_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind FROM api_tokens WHERE organization_id=$1 AND id=$2`+s.accessLock(), s.organization, id).Scan(&row.OrganizationID, &row.ID, &row.Name, &row.Hash, &row.Fingerprint, &row.Scope, &row.NativeOnly, &row.CreatedAt, &row.UpdatedAt, &row.RotatedAt, &row.RevokedAt, &row.ExpiresAt, &row.LastUsedAt, &row.UserID, &row.MembershipID, &row.KeyScope, &row.ProjectAccess, &row.Kind)
+	if err == nil && s.credentials != nil {
+		s.credentials[id] = row
+	}
+	return row, accessLookupError(ctx, "credential", err)
+}
+
+func (s *session) CreateAccessCredential(ctx context.Context, row accessstore.Credential) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO api_tokens (organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at,rotated_at,revoked_at,expires_at,last_used_at,hosted_user_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, row.OrganizationID, row.ID, row.Name, row.Hash, row.Fingerprint, row.Scope, row.NativeOnly, row.CreatedAt, row.UpdatedAt, row.RotatedAt, row.RevokedAt, row.ExpiresAt, row.LastUsedAt, row.UserID, row.MembershipID, row.KeyScope, row.ProjectAccess, row.Kind)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessMember(ctx context.Context, user_id string) (accessstore.Member, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if row, ok := s.members[user_id]; ok {
+		return row, nil
+	}
+	var row accessstore.Member
+	err := s.db.QueryRow(ctx, `SELECT organization_id,user_id,email,membership_id,role,active,principal_id,notify_issues,created_at,updated_at FROM hosted_members WHERE organization_id=$1 AND user_id=$2`+s.accessLock(), s.organization, user_id).Scan(&row.OrganizationID, &row.UserID, &row.Email, &row.MembershipID, &row.Role, &row.Active, &row.PrincipalID, &row.NotifyIssues, &row.CreatedAt, &row.UpdatedAt)
+	if err == nil && s.members != nil {
+		s.members[user_id] = row
+	}
+	return row, accessLookupError(ctx, "member", err)
+}
+
+func (s *session) CreateAccessMember(ctx context.Context, row accessstore.Member) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	if err := s.lockHostedOrganization(ctx); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_members (organization_id,user_id,email,membership_id,role,active,principal_id,notify_issues,created_at,updated_at,sessions_revoked_before) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN NOT $6 THEN $10::timestamptz END)`, row.OrganizationID, row.UserID, row.Email, row.MembershipID, row.Role, row.Active, row.PrincipalID, row.NotifyIssues, row.CreatedAt, row.UpdatedAt)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessProjectGrant(ctx context.Context, user_id string, project_id tracker.ProjectID, role string) (accessstore.ProjectGrant, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	key := projectAccessKey{principal: user_id, project: project_id, role: role}
+	if row, ok := s.projectGrants[key]; ok {
+		return row, nil
+	}
+	var row accessstore.ProjectGrant
+	err := s.db.QueryRow(ctx, `SELECT organization_id,user_id,project_id,can_write,manage_runner FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3 AND (explicit OR NOT hosted_administrator_access(organization_id,user_id,''))`+s.accessLock(), s.organization, user_id, project_id).Scan(&row.OrganizationID, &row.UserID, &row.ProjectID, &row.CanWrite, &row.ManageRunner)
+	if accessstore.RoleGrantsProjectAccess(role) && (errors.Is(err, pgx.ErrNoRows) || err == nil && (!row.CanWrite || !row.ManageRunner)) {
+		var administrator bool
+		roleErr := s.db.QueryRow(ctx, `SELECT hosted_administrator_access(m.organization_id,m.user_id,'',$4) FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.id=$3 AND p.deleted_at IS NULL WHERE m.organization_id=$1 AND m.user_id=$2`+s.accessLockOf("m"), s.organization, user_id, project_id, role).Scan(&administrator)
+		switch {
+		case roleErr == nil && administrator:
+			row, err = accessstore.ProjectGrant{OrganizationID: s.organization, UserID: user_id, ProjectID: project_id, CanWrite: true, ManageRunner: true}, nil
+		case roleErr != nil && !errors.Is(roleErr, pgx.ErrNoRows):
+			err = roleErr
+		}
+	}
+	if err == nil && s.projectGrants != nil {
+		s.projectGrants[key] = row
+	}
+	return row, accessLookupError(ctx, "project_grant", err)
+}
+
+func (s *session) CreateAccessProjectGrant(ctx context.Context, row accessstore.ProjectGrant) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_project_grants (organization_id,user_id,project_id,can_write,manage_runner,explicit) VALUES ($1,$2,$3,$4,$5,true)`, row.OrganizationID, row.UserID, row.ProjectID, row.CanWrite, row.ManageRunner)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessTokenGrant(ctx context.Context, token_id string, project_id tracker.ProjectID, role string) (accessstore.TokenGrant, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	key := projectAccessKey{principal: token_id, project: project_id, role: role}
+	if row, ok := s.tokenGrants[key]; ok {
+		return row, nil
+	}
+	var row accessstore.TokenGrant
+	err := s.db.QueryRow(ctx, `SELECT organization_id,token_id,project_id FROM token_grants WHERE organization_id=$1 AND token_id=$2 AND project_id=$3`+s.accessLock(), s.organization, token_id, project_id).Scan(&row.OrganizationID, &row.TokenID, &row.ProjectID)
+	if errors.Is(err, pgx.ErrNoRows) && accessstore.RoleGrantsProjectAccess(role) {
+		var administrator bool
+		roleErr := s.db.QueryRow(ctx, `SELECT hosted_administrator_access(m.organization_id,m.user_id,m.principal_id,$4) FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.id=$3 AND p.deleted_at IS NULL WHERE m.organization_id=$1 AND m.principal_id=$2`+s.accessLockOf("m"), s.organization, token_id, project_id, role).Scan(&administrator)
+		switch {
+		case roleErr == nil && administrator:
+			row, err = accessstore.TokenGrant{OrganizationID: s.organization, TokenID: token_id, ProjectID: project_id}, nil
+		case roleErr != nil && !errors.Is(roleErr, pgx.ErrNoRows):
+			err = roleErr
+		}
+	}
+	if err == nil && s.tokenGrants != nil {
+		s.tokenGrants[key] = row
+	}
+	return row, accessLookupError(ctx, "token_grant", err)
+}
+
+func (s *session) CreateAccessTokenGrant(ctx context.Context, row accessstore.TokenGrant) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO token_grants (organization_id,token_id,project_id) VALUES ($1,$2,$3)`, row.OrganizationID, row.TokenID, row.ProjectID)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessSession(ctx context.Context, token_hash string) (accessstore.Session, error) {
+	var row accessstore.Session
+	err := s.db.QueryRow(ctx, `SELECT hs.organization_id,hs.token_hash,hs.email,hs.identity_subject,hs.provider_organization_id,hs.session_id,hs.identity_created_at,hs.identity_expires_at,hs.support_actor,hs.support_reason,hs.created_at,hs.expires_at,hs.revoked_at
+FROM hosted_sessions hs WHERE hs.organization_id=$1 AND hs.token_hash=$2
+AND NOT EXISTS (SELECT 1 FROM hosted_members m WHERE m.organization_id=hs.organization_id AND m.user_id=hs.identity_subject
+AND hs.identity_created_at<=COALESCE(m.sessions_revoked_before,CASE WHEN NOT m.active THEN m.updated_at END))`+s.accessLock(), s.organization, token_hash).Scan(&row.OrganizationID, &row.Hash, &row.Email, &row.Subject, &row.ProviderOrganizationID, &row.SessionID, &row.IdentityCreatedAt, &row.IdentityExpiresAt, &row.SupportActor, &row.SupportReason, &row.CreatedAt, &row.ExpiresAt, &row.RevokedAt)
+	return row, accessLookupError(ctx, "session", err)
+}
+
+func (s *session) AccessSessionMemberRevoked(ctx context.Context, token_hash string) (bool, error) {
+	var revoked bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM hosted_sessions hs JOIN hosted_members m ON m.organization_id=hs.organization_id AND m.user_id=hs.identity_subject
+WHERE hs.organization_id=$1 AND hs.token_hash=$2 AND NOT m.active)`, s.organization, token_hash).Scan(&revoked)
+	return revoked, mapError(ctx, err)
+}
+
+func (s *session) CreateAccessSession(ctx context.Context, row accessstore.Session) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_sessions (organization_id,token_hash,email,identity_subject,provider_organization_id,session_id,identity_created_at,identity_expires_at,support_actor,support_reason,created_at,expires_at,revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, row.OrganizationID, row.Hash, row.Email, row.Subject, row.ProviderOrganizationID, row.SessionID, row.IdentityCreatedAt, row.IdentityExpiresAt, row.SupportActor, row.SupportReason, row.CreatedAt, row.ExpiresAt, row.RevokedAt)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessLoginTransaction(ctx context.Context, token_hash string) (accessstore.LoginTransaction, error) {
+	var row accessstore.LoginTransaction
+	err := s.db.QueryRow(ctx, `SELECT organization_id,token_hash,state,verifier,provider_organization_id,support_actor,support_session,invitation_token,expires_at,consumed_at FROM hosted_transactions WHERE organization_id=$1 AND token_hash=$2`, s.organization, token_hash).Scan(&row.OrganizationID, &row.Hash, &row.State, &row.Verifier, &row.ProviderOrganizationID, &row.SupportActor, &row.SupportSession, &row.InvitationToken, &row.ExpiresAt, &row.ConsumedAt)
+	return row, mapError(ctx, err)
+}
+
+func (s *session) CreateAccessLoginTransaction(ctx context.Context, row accessstore.LoginTransaction) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_transactions (organization_id,token_hash,state,verifier,provider_organization_id,support_actor,support_session,invitation_token,expires_at,consumed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, row.OrganizationID, row.Hash, row.State, row.Verifier, row.ProviderOrganizationID, row.SupportActor, row.SupportSession, row.InvitationToken, row.ExpiresAt, row.ConsumedAt)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessInvitation(ctx context.Context, id string) (accessstore.Invitation, error) {
+	var row accessstore.Invitation
+	err := s.db.QueryRow(ctx, `SELECT organization_id,id,email,role,accepted_user_id,created_at,expires_at FROM hosted_invitations WHERE organization_id=$1 AND id=$2`+s.accessLock(), s.organization, id).Scan(&row.OrganizationID, &row.ID, &row.Email, &row.Role, &row.AcceptedUserID, &row.CreatedAt, &row.ExpiresAt)
+	return row, mapError(ctx, err)
+}
+
+func (s *session) CreateAccessInvitation(ctx context.Context, row accessstore.Invitation) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_invitations (organization_id,id,email,role,accepted_user_id,created_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`, row.OrganizationID, row.ID, row.Email, row.Role, row.AcceptedUserID, row.CreatedAt, row.ExpiresAt)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessInvitationGrant(ctx context.Context, invitation_id string, project_id tracker.ProjectID) (accessstore.InvitationGrant, error) {
+	var row accessstore.InvitationGrant
+	err := s.db.QueryRow(ctx, `SELECT organization_id,invitation_id,project_id,can_write,manage_runner FROM hosted_invitation_grants WHERE organization_id=$1 AND invitation_id=$2 AND project_id=$3`, s.organization, invitation_id, project_id).Scan(&row.OrganizationID, &row.InvitationID, &row.ProjectID, &row.CanWrite, &row.ManageRunner)
+	return row, mapError(ctx, err)
+}
+
+func (s *session) CreateAccessInvitationGrant(ctx context.Context, row accessstore.InvitationGrant) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_invitation_grants (organization_id,invitation_id,project_id,can_write,manage_runner) VALUES ($1,$2,$3,$4,$5)`, row.OrganizationID, row.InvitationID, row.ProjectID, row.CanWrite, row.ManageRunner)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessMemberReservation(ctx context.Context, email string) (accessstore.MemberReservation, error) {
+	var row accessstore.MemberReservation
+	err := s.db.QueryRow(ctx, `SELECT organization_id,email,expires_at FROM hosted_member_reservations WHERE organization_id=$1 AND email=$2`, s.organization, email).Scan(&row.OrganizationID, &row.Email, &row.ExpiresAt)
+	return row, mapError(ctx, err)
+}
+
+func (s *session) CreateAccessMemberReservation(ctx context.Context, row accessstore.MemberReservation) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_member_reservations (organization_id,email,expires_at) VALUES ($1,$2,$3)`, row.OrganizationID, row.Email, row.ExpiresAt)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessMemberSeatCounts(ctx context.Context, now time.Time) (int64, int64, error) {
+	var active, reserved int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM hosted_members WHERE organization_id=$1 AND active`, s.organization).Scan(&active); err != nil {
+		return 0, 0, mapError(ctx, err)
+	}
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM hosted_member_reservations WHERE organization_id=$1 AND expires_at>$2`, s.organization, now).Scan(&reserved); err != nil {
+		return 0, 0, mapError(ctx, err)
+	}
+	return active, reserved, nil
+}
+
+func (s *session) ReserveAccessMemberReservation(ctx context.Context, row accessstore.MemberReservation, now time.Time, limit int64) (bool, error) {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return false, err
+	}
+	if limit < 0 {
+		return false, accessstore.ErrDenied
+	}
+	if err := s.LockAccessOrganization(ctx); err != nil {
+		return false, err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_member_reservations WHERE organization_id=$1 AND expires_at<=$2`, s.organization, now); err != nil {
+		return false, mapError(ctx, err)
+	}
+	var active int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM hosted_members WHERE organization_id=$1 AND lower(email)=lower($2) AND active`, s.organization, row.Email).Scan(&active); err != nil {
+		return false, mapError(ctx, err)
+	}
+	var held int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM hosted_member_reservations WHERE organization_id=$1 AND email=$2 AND expires_at>$3`, s.organization, row.Email, now).Scan(&held); err != nil {
+		return false, mapError(ctx, err)
+	}
+	if active == 0 && held == 0 && limit > 0 {
+		members, reservations, err := s.AccessMemberSeatCounts(ctx, now)
+		if err != nil {
+			return false, err
+		}
+		if members+reservations >= limit {
+			return false, accessstore.ErrSeatLimit
+		}
+	}
+	if active > 0 {
+		return false, nil
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_member_reservations(organization_id,email,expires_at) VALUES($1,$2,$3) ON CONFLICT(organization_id,email) DO UPDATE SET expires_at=excluded.expires_at`, row.OrganizationID, row.Email, row.ExpiresAt)
+	if err != nil {
+		return false, mapError(ctx, err)
+	}
+	return held == 0, nil
+}
+
+func (s *session) DeleteAccessMemberReservation(ctx context.Context, email string) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM hosted_member_reservations WHERE organization_id=$1 AND email=$2`, s.organization, email)
+	return mapError(ctx, err)
+}
+
+func (s *session) AccessBindingMigration(ctx context.Context, id int64) (accessstore.BindingMigration, error) {
+	var row accessstore.BindingMigration
+	err := s.db.QueryRow(ctx, `SELECT organization_id,id,from_public_url,to_public_url,from_deployment,from_generation,to_generation,migrated_at,applied FROM hosted_binding_migrations WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(&row.OrganizationID, &row.ID, &row.FromPublicURL, &row.ToPublicURL, &row.FromDeployment, &row.FromGeneration, &row.ToGeneration, &row.MigratedAt, &row.Applied)
+	return row, mapError(ctx, err)
+}
+
+func (s *session) CreateAccessBindingMigration(ctx context.Context, row accessstore.BindingMigration) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_binding_migrations (organization_id,id,from_public_url,to_public_url,from_deployment,from_generation,to_generation,migrated_at,applied) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, row.OrganizationID, row.ID, row.FromPublicURL, row.ToPublicURL, row.FromDeployment, row.FromGeneration, row.ToGeneration, row.MigratedAt, row.Applied)
+	return mapError(ctx, err)
+}
+
+func (s *session) CredentialByHash(ctx context.Context, hash string) (accessstore.Credential, error) {
+	var id string
+	if err := s.db.QueryRow(ctx, `SELECT id FROM api_tokens WHERE organization_id=$1 AND token_hash=$2`+s.accessLock(), s.organization, hash).Scan(&id); err != nil {
+		return accessstore.Credential{}, mapError(ctx, err)
+	}
+	return s.AccessCredential(ctx, id)
+}
+
+func (s *session) UpdateAccessMember(ctx context.Context, row accessstore.Member) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	if err := s.lockHostedOrganization(ctx); err != nil {
+		return err
+	}
+	result, err := s.db.Exec(ctx, `UPDATE hosted_members SET sessions_revoked_before=CASE WHEN NOT active THEN GREATEST(sessions_revoked_before,updated_at) ELSE sessions_revoked_before END,
+email=$3,membership_id=$4,role=$5,active=$6,notify_issues=$7,updated_at=$8 WHERE organization_id=$1 AND user_id=$2 AND principal_id=$9`, s.organization, row.UserID, row.Email, row.MembershipID, row.Role, row.Active, row.NotifyIssues, row.UpdatedAt, row.PrincipalID)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	n := result.RowsAffected()
+	return affected(ctx, n, err)
+}
+
+func (s *session) RevokeAccessMember(ctx context.Context, user string, at time.Time) error {
+	if err := s.lockHostedOrganization(ctx); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `UPDATE hosted_members SET sessions_revoked_before=GREATEST(sessions_revoked_before,CASE WHEN NOT active THEN updated_at END,$3::timestamptz),active=false,updated_at=$3 WHERE organization_id=$1 AND user_id=$2`, s.organization, user, at)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	return s.ClearAccessMemberGrants(ctx, user)
+}
+
+func (s *session) RotateAccessCredential(ctx context.Context, id, hash, fingerprint string, at time.Time) error {
+	result, err := s.db.Exec(ctx, `UPDATE api_tokens SET token_hash=$3,token_fingerprint=$4,rotated_at=$5,updated_at=$5 WHERE organization_id=$1 AND id=$2 AND revoked_at IS NULL`, s.organization, id, hash, fingerprint, at)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	n := result.RowsAffected()
+	return affected(ctx, n, err)
+}
+
+func (s *session) RenewAccessCredential(ctx context.Context, id, hash, fingerprint string, expires, at time.Time) error {
+	result, err := s.db.Exec(ctx, `UPDATE api_tokens SET token_hash=$3,token_fingerprint=$4,expires_at=$5,rotated_at=$6,updated_at=$6 WHERE organization_id=$1 AND id=$2 AND revoked_at IS NULL`, s.organization, id, hash, fingerprint, expires, at)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	n := result.RowsAffected()
+	return affected(ctx, n, err)
+}
+
+func (s *session) ScopeAccessCredentialToNative(ctx context.Context, id string, at time.Time) error {
+	result, err := s.db.Exec(ctx, `UPDATE api_tokens SET native_only=true,updated_at=$3 WHERE organization_id=$1 AND id=$2`, s.organization, id, at)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	return affected(ctx, result.RowsAffected(), nil)
+}
+
+func (s *session) RevokeAccessCredential(ctx context.Context, id string, at time.Time) error {
+	_, err := s.db.Exec(ctx, `UPDATE api_tokens SET revoked_at=COALESCE(revoked_at,$3),updated_at=$3 WHERE organization_id=$1 AND id=$2`, s.organization, id, at)
+	return mapError(ctx, err)
+}
+
+func (s *session) RevokeAccessSession(ctx context.Context, hash string, at time.Time) error {
+	_, _, err := s.EndAccessSession(ctx, hash, at)
+	return err
+}
+
+func (s *session) EndAccessSession(ctx context.Context, hash string, at time.Time) (accessstore.Session, bool, error) {
+	var row accessstore.Session
+	err := s.db.QueryRow(ctx, `UPDATE hosted_sessions SET revoked_at=$3 WHERE organization_id=$1 AND token_hash=$2 AND revoked_at IS NULL
+RETURNING organization_id,token_hash,email,identity_subject,provider_organization_id,session_id,identity_created_at,identity_expires_at,support_actor,support_reason,created_at,expires_at,revoked_at`, s.organization, hash, at).Scan(&row.OrganizationID, &row.Hash, &row.Email, &row.Subject, &row.ProviderOrganizationID, &row.SessionID, &row.IdentityCreatedAt, &row.IdentityExpiresAt, &row.SupportActor, &row.SupportReason, &row.CreatedAt, &row.ExpiresAt, &row.RevokedAt)
+	if err == nil {
+		return row, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return accessstore.Session{}, false, mapError(ctx, err)
+	}
+	return accessstore.Session{}, false, s.EnsureRevokedAccessSession(ctx, hash, at)
+}
+
+func (s *session) EnsureRevokedAccessSession(ctx context.Context, hash string, at time.Time) error {
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_sessions(organization_id,token_hash,email,identity_subject,provider_organization_id,session_id,identity_created_at,identity_expires_at,support_actor,support_reason,created_at,expires_at,revoked_at) VALUES($1,$2,'','','','',$3,$3,'','',$3,$3,$3) ON CONFLICT(organization_id,token_hash) DO UPDATE SET revoked_at=COALESCE(hosted_sessions.revoked_at,excluded.revoked_at)`, s.organization, hash, at)
+	return mapError(ctx, err)
+}
+
+func (s *session) ConsumeAccessTransaction(ctx context.Context, hash, state string, at time.Time) (accessstore.LoginTransaction, error) {
+	result, err := s.db.Exec(ctx, `UPDATE hosted_transactions SET consumed_at=$4 WHERE organization_id=$1 AND token_hash=$2 AND (state=$3 OR support_actor<>'') AND consumed_at IS NULL AND expires_at>$4`, s.organization, hash, state, at)
+	if err != nil {
+		return accessstore.LoginTransaction{}, mapError(ctx, err)
+	}
+	n := result.RowsAffected()
+	if err := affected(ctx, n, err); err != nil {
+		return accessstore.LoginTransaction{}, err
+	}
+	return s.AccessLoginTransaction(ctx, hash)
+}
+
+func (s *session) AcceptAccessInvitation(ctx context.Context, id, email, user string, at time.Time) error {
+	result, err := s.db.Exec(ctx, `UPDATE hosted_invitations SET accepted_user_id=$4 WHERE organization_id=$1 AND id=$2 AND lower(email)=lower($3) AND accepted_user_id='' AND expires_at>$5`, s.organization, id, email, user, at)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	n := result.RowsAffected()
+	return affected(ctx, n, err)
+}
+
+func (s *session) ReplaceAccessInvitationGrants(ctx context.Context, invitation string, grants []accessstore.InvitationGrant) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_invitation_grants WHERE organization_id=$1 AND invitation_id=$2`, s.organization, invitation); err != nil {
+		return mapError(ctx, err)
+	}
+	for _, grant := range grants {
+		if err := s.checkOrganization(grant.OrganizationID); err != nil || grant.InvitationID != invitation {
+			return accessstore.ErrDenied
+		}
+		if err := s.CreateAccessInvitationGrant(ctx, grant); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *session) DeleteAccessInvitation(ctx context.Context, id string) (string, error) {
+	var email, accepted string
+	if err := s.db.QueryRow(ctx, `SELECT email,accepted_user_id FROM hosted_invitations WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&email, &accepted); err != nil {
+		return "", mapError(ctx, err)
+	}
+	if accepted != "" {
+		return "", accessstore.ErrDenied
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_invitation_grants WHERE organization_id=$1 AND invitation_id=$2`, s.organization, id); err != nil {
+		return "", mapError(ctx, err)
+	}
+	result, err := s.db.Exec(ctx, `DELETE FROM hosted_invitations WHERE organization_id=$1 AND id=$2 AND accepted_user_id=''`, s.organization, id)
+	if err != nil {
+		return "", mapError(ctx, err)
+	}
+	n := result.RowsAffected()
+	if err := affected(ctx, n, err); err != nil {
+		return "", err
+	}
+	var remaining int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM hosted_invitations WHERE organization_id=$1 AND lower(email)=lower($2) AND accepted_user_id=''`, s.organization, email).Scan(&remaining); err != nil {
+		return "", mapError(ctx, err)
+	}
+	if remaining == 0 {
+		if err := s.DeleteAccessMemberReservation(ctx, email); err != nil {
+			return "", err
+		}
+	}
+	return email, nil
+}
+
+func (s *session) DeleteAccessProjectGrant(ctx context.Context, user string, project tracker.ProjectID) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3`, s.organization, user, project)
+	return mapError(ctx, err)
+}
+
+func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Authority, now time.Time) (accessstore.Member, error) {
+
+	credential, err := s.AccessCredential(ctx, authority.CredentialID)
+	if err != nil {
+		return accessstore.Member{}, &accessstore.LookupError{Step: "credential", Cause: accessAuthorizationError(err)}
+	}
+	if !credential.Valid(authority.Hash, now) {
+		return accessstore.Member{}, &accessstore.LookupError{Step: "credential", Cause: accessstore.ErrDenied}
+	}
+	required := apikey.ScopeRead
+	if authority.Write {
+		required = apikey.ScopeWrite
+	}
+	if authority.Admin {
+		required = apikey.ScopeAdmin
+	}
+	if credential.KeyScope != "" && (!apikey.ValidScope(apikey.Scope(credential.KeyScope)) || !apikey.HasScope([]string{credential.KeyScope}, required)) {
+		return accessstore.Member{}, accessstore.ErrDenied
+	}
+	var member accessstore.Member
+	var role string
+	if authority.UserID != "" {
+		member, err = s.AccessMember(ctx, authority.UserID)
+		if err != nil {
+			return member, accessAuthorizationError(err)
+		}
+		if !member.Active || member.MembershipID != authority.MembershipID {
+			return member, accessstore.ErrDenied
+		}
+		principal, err := s.AccessCredential(ctx, member.PrincipalID)
+		if err != nil {
+			return member, accessAuthorizationError(err)
+		}
+		if principal.RevokedAt != nil {
+			return member, accessstore.ErrDenied
+		}
+		if credential.ID != member.PrincipalID && (credential.UserID != member.UserID || credential.MembershipID != member.MembershipID) {
+			return member, accessstore.ErrDenied
+		}
+		role = authority.MemberRole(member.Role)
+		if authority.Admin && !accessstore.RoleAllows(role, apikey.ScopeAdmin) {
+			return member, accessstore.ErrDenied
+		}
+		if authority.Write && !accessstore.RoleAllows(role, apikey.ScopeWrite, authority.Action) {
+			return member, accessstore.ErrDenied
+		}
+	}
+	if authority.SessionHash != "" {
+		session, err := s.AccessSession(ctx, authority.SessionHash)
+		if err != nil {
+			return member, accessAuthorizationError(err)
+		}
+		if session.RevokedAt != nil || !session.ExpiresAt.After(now) || session.Subject != member.UserID {
+			return member, accessstore.ErrDenied
+		}
+	}
+	if authority.ProjectID != "" && (credential.NativeOnly || credential.Scope != "admin") {
+		if member.UserID != "" {
+			grant, err := s.AccessProjectGrant(ctx, member.UserID, authority.ProjectID, role)
+			if err != nil {
+				return member, accessAuthorizationError(err)
+			}
+			if authority.Write && !grant.CanWrite {
+				return member, accessstore.ErrDenied
+			}
+			if _, err := s.AccessTokenGrant(ctx, member.PrincipalID, authority.ProjectID, role); err != nil {
+				return member, accessAuthorizationError(err)
+			}
+		}
+		if credential.ProjectAccess != "all" {
+			if _, err := s.AccessTokenGrant(ctx, credential.ID, authority.ProjectID, role); err != nil {
+				if !errors.Is(err, corestore.ErrNotFound) || errors.Is(err, tenantauth.ErrUnavailable) || member.UserID != "" || credential.Scope != "worker" || credential.Kind != "service" {
+					return member, accessAuthorizationError(err)
+				}
+				var allowed bool
+				if err := s.db.QueryRow(ctx, `SELECT EXISTS (`+runnerCredentialProjectAuthorizedSQL+`)`, s.organization, credential.ID, authority.ProjectID, now).Scan(&allowed); err != nil {
+					return member, accessAuthorizationError(accessLookupError(ctx, "runner_identity", err))
+				}
+				if !allowed {
+					return member, accessstore.ErrDenied
+				}
+			}
+		}
+	}
+	return member, nil
+}
+
+func accessLookupError(ctx context.Context, step string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &accessstore.LookupError{Step: step, Cause: mapError(ctx, err)}
+}
+
+func accessAuthorizationError(err error) error {
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return err
+	}
+	if errors.Is(err, corestore.ErrNotFound) {
+		return accessstore.ErrDenied
+	}
+	return errors.Join(tenantauth.ErrUnavailable, err)
+}
+
+var _ accessstore.Reader = (*session)(nil)
+var _ accessstore.Writer = (*session)(nil)
+
+func (s *session) accessLock() string {
+	if s.readOnly {
+		return ""
+	}
+	return " FOR SHARE"
+}
+
+func (s *session) accessLockOf(table string) string {
+	if s.readOnly {
+		return ""
+	}
+	return " FOR SHARE OF " + table
+}
+
+func (s *session) EnsureAccessSession(ctx context.Context, row accessstore.Session) (bool, error) {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return false, err
+	}
+	result, err := s.db.Exec(ctx, `INSERT INTO hosted_sessions(organization_id,token_hash,email,identity_subject,provider_organization_id,session_id,identity_created_at,identity_expires_at,support_actor,support_reason,created_at,expires_at,revoked_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(organization_id,token_hash) DO NOTHING`, row.OrganizationID, row.Hash, row.Email, row.Subject, row.ProviderOrganizationID, row.SessionID, row.IdentityCreatedAt, row.IdentityExpiresAt, row.SupportActor, row.SupportReason, row.CreatedAt, row.ExpiresAt, row.RevokedAt)
+	if err != nil {
+		return false, accessLookupError(ctx, "session_create", err)
+	}
+	return result.RowsAffected() == 1, nil
+}
+
+func (s *session) ClearAccessMemberGrants(ctx context.Context, user string) error {
+	if err := s.lockHostedOrganization(ctx); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT principal_id FROM hosted_members WHERE organization_id=$1 AND user_id=$2)`, s.organization, user); err != nil {
+		return mapError(ctx, err)
+	}
+	_, err := s.db.Exec(ctx, `DELETE FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2`, s.organization, user)
+	return mapError(ctx, err)
+}
+
+func (s *session) SetAccessProjectGrant(ctx context.Context, row accessstore.ProjectGrant) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner,explicit) VALUES($1,$2,$3,$4,$5,true) ON CONFLICT(organization_id,user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner,explicit=true`, row.OrganizationID, row.UserID, row.ProjectID, row.CanWrite, row.ManageRunner)
+	return mapError(ctx, err)
+}
+
+func (s *session) SetAccessTokenGrant(ctx context.Context, row accessstore.TokenGrant) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO token_grants(organization_id,token_id,project_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, row.OrganizationID, row.TokenID, row.ProjectID)
+	return mapError(ctx, err)
+}
+
+func (s *session) DeleteAccessTokenGrant(ctx context.Context, token string, project tracker.ProjectID) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=$2 AND project_id=$3`, s.organization, token, project)
+	return mapError(ctx, err)
+}
+
+func (s *session) SetAccessTransactionInvitation(ctx context.Context, hash, token string) error {
+	result, err := s.db.Exec(ctx, `UPDATE hosted_transactions SET invitation_token=$3 WHERE organization_id=$1 AND token_hash=$2 AND consumed_at IS NULL`, s.organization, hash, token)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	n := result.RowsAffected()
+	return affected(ctx, n, err)
+}
+func (s *session) EnsureAccessCredential(ctx context.Context, row accessstore.Credential) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO api_tokens (organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at,rotated_at,revoked_at,expires_at,last_used_at,hosted_user_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT(organization_id,id) DO NOTHING`, row.OrganizationID, row.ID, row.Name, row.Hash, row.Fingerprint, row.Scope, row.NativeOnly, row.CreatedAt, row.UpdatedAt, row.RotatedAt, row.RevokedAt, row.ExpiresAt, row.LastUsedAt, row.UserID, row.MembershipID, row.KeyScope, row.ProjectAccess, row.Kind)
+	return mapError(ctx, err)
+}
+
+func (s *session) OrganizationLogo(ctx context.Context) (accessstore.Logo, error) {
+	var logo accessstore.Logo
+	err := s.db.QueryRow(ctx, `SELECT logo_image_key,logo_image_sha256,logo_revision FROM organizations WHERE organization_id=$1`, s.organization).Scan(&logo.ImageKey, &logo.ImageSHA256, &logo.Revision)
+	return logo, mapError(ctx, err)
+}
+
+func (s *session) UpdateOrganizationLogo(ctx context.Context, logo accessstore.Logo, revision tracker.Revision) error {
+	result, err := s.db.Exec(ctx, `UPDATE organizations SET logo_image_key=$2,logo_image_sha256=$3,logo_revision=logo_revision+1 WHERE organization_id=$1 AND logo_revision=$4`, s.organization, logo.ImageKey, logo.ImageSHA256, revision)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	n := result.RowsAffected()
+	if n == 0 {
+		return corestore.ErrRevisionConflict
+	}
+	return err
+}
+
+func (s *session) LatestAccessSessionCreatedAt(ctx context.Context) (*time.Time, error) {
+	var created time.Time
+	if err := s.db.QueryRow(ctx, `SELECT created_at FROM hosted_sessions WHERE organization_id=$1 ORDER BY created_at DESC,token_hash DESC LIMIT 1`, s.organization).Scan(&created); err != nil {
+		return nil, mapError(ctx, err)
+	}
+	created = created.UTC()
+	return &created, nil
+}

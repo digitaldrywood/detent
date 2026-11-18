@@ -1,0 +1,98 @@
+{
+  "member_count": 3,
+  "members": [
+    {
+      "id": "mem_owner",
+      "user_id": "user_owner",
+      "email": "owner@example.com",
+      "never_signed_in": false,
+      "role": "owner",
+      "status": "active",
+      "grants": [
+        {
+          "project_id": "proj_example_project",
+          "write": true,
+          "runner": true
+        }
+      ]
+    },
+    {
+      "id": "mem_admin",
+      "user_id": "user_member",
+      "email": "member@example.com",
+      "never_signed_in": false,
+      "role": "admin",
+      "status": "active",
+      "grants": [
+        {
+          "project_id": "proj_example_project",
+          "write": true,
+          "runner": false
+        },
+        {
+          "project_id": "proj_marketing",
+          "write": true,
+          "runner": false
+        }
+      ]
+    },
+    {
+      "id": "mem_viewer",
+      "user_id": "user_sam",
+      "email": "sam@example.test",
+      "never_signed_in": false,
+      "role": "viewer",
+      "status": "active",
+      "grants": [
+        {
+          "project_id": "proj_marketing",
+          "write": false,
+          "runner": false
+        }
+      ]
+    }
+  ],
+  "invitations": [
+    {
+      "id": "inv_01J9",
+      "email": "rae@example.test",
+      "role": "member",
+      "created_at": "2026-09-09T14:02:11Z",
+      "expires_at": "2026-09-10T14:02:11Z",
+      "grants": [
+        {
+          "project_id": "proj_marketing",
+          "write": false,
+          "runner": false
+        }
+      ]
+    }
+  ],
+  "roles": [
+    {
+      "slug": "owner",
+      "name": "Owner",
+      "description": "Owns the organization and manages its settings and members."
+    },
+    {
+      "slug": "admin",
+      "name": "Admin",
+      "description": "Manages the organization, members and projects."
+    },
+    {
+      "slug": "member",
+      "name": "Member",
+      "description": "Works in the projects you give them."
+    },
+    {
+      "slug": "reporter",
+      "name": "Reporter",
+      "description": "Reads issues and files new ones into Triage."
+    },
+    {
+      "slug": "viewer",
+      "name": "Viewer",
+      "description": "Reads the projects you give them."
+    }
+  ]
+}

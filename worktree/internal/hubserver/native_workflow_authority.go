@@ -1,0 +1,183 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"slices"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func (s *Service) authorizeNativeWorkflowScope(ctx context.Context, reader accessstore.Reader, scope hubscope.NativeScope) error {
+	if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
+		return err
+	}
+	if scope.Credential.Hosted == nil {
+		return nil
+	}
+	member, err := reader.AuthorizeAccess(ctx, s.accessAuthority(scope, true), s.config.Clock())
+	if err != nil {
+		return err
+	}
+	if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole) != scope.Credential.HostedRole {
+		return auth.ErrHostedIdentity
+	}
+	return nil
+}
+
+func validateNativeWorkflowPolicy(project projectstore.Record, descriptor policy.Descriptor, found bool) error {
+	if project.Core.WorkflowSource == "" {
+		return nil
+	}
+	if !found || descriptor.Workflow == nil || descriptor.Validate() != nil {
+		return hubapi.PolicyMismatch("The configured workflow requires its approved policy")
+	}
+	workflowRevision := descriptor.Workflow.Revision
+	if workflowRevision == "" {
+		workflowRevision = descriptor.SourceRevision
+	}
+	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(canonicalWorkflowStates(hubrecords.NativeTriageStates(descriptor.Workflow.States)), canonicalWorkflowStates(project.States), func(a, b policy.State) bool {
+		return a.Name == b.Name && a.Terminal == b.Terminal && a.Dispatchable == b.Dispatchable && a.OperatorOnly == b.OperatorOnly && slices.Equal(a.Transitions, b.Transitions)
+	}) {
+		return hubapi.PolicyMismatch("The configured workflow differs from its approved policy")
+	}
+	return nil
+}
+
+func validateApprovedWorkflowContent(project projectstore.Record, descriptor policy.Descriptor) error {
+	if descriptor.Workflow != nil {
+		project.Core.WorkflowSourceRevision = descriptor.Workflow.Revision
+		if project.Core.WorkflowSourceRevision == "" {
+			project.Core.WorkflowSourceRevision = descriptor.SourceRevision
+		}
+	}
+	return validateNativeWorkflowPolicy(project, descriptor, true)
+}
+
+func canonicalWorkflowStates(states []tracker.NativeState) []tracker.NativeState {
+	result := slices.Clone(states)
+	for i := range result {
+		result[i].Transitions = slices.Clone(result[i].Transitions)
+		slices.Sort(result[i].Transitions)
+	}
+	slices.SortFunc(result, func(a, b tracker.NativeState) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return result
+}
+
+func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, lease leasestore.Lease, request tracker.Transition, prepared *preparedNativeLeaseCancellation, stopState string) error {
+	fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
+	if prepared.expiresLease(lease) || !lease.ExpiresAt.After(s.config.Clock().UTC()) {
+		_, err := w.ExpireWithCancellation(ctx, fence, prepared.attemptCancellation())
+		if errors.Is(err, tracker.ErrStaleFencingToken) {
+			return tracker.ErrLeaseConflict
+		}
+		return err
+	}
+	if request.State != "Cancelled" && !strings.EqualFold(request.State, "Blocked") && request.State != stopState {
+		return nil
+	}
+	leaseAuthority := NativeLeaseAuthority{Scope: scope, Lease: lease, Request: tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(lease.FencingToken), Reason: "cancelled", CancelAttempt: true}, Operation: "release"}
+	if err := (tenantNativeRunEventParticipant{service: s}).validateNativeLeaseMutation(ctx, w, &leaseAuthority, true); err != nil {
+		return err
+	}
+	if prepared == nil || prepared.expired {
+		return corestore.ErrSerializationFailure
+	}
+	if prepared.attempt.ID == "" {
+		current, err := w.LatestAttempt(ctx, lease.IssueID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil && current.LeaseID == lease.LeaseID && current.FencingToken == lease.FencingToken && current.Status == "running" {
+			return corestore.ErrSerializationFailure
+		}
+	}
+	if prepared.attempt.ID != "" {
+		attempt, err := w.LatestAttempt(ctx, lease.IssueID)
+		if err != nil {
+			return err
+		}
+		if attempt.ID != prepared.attempt.ID || attempt.LeaseID != lease.LeaseID || attempt.FencingToken != lease.FencingToken || attempt.Sequence != prepared.attempt.Sequence || attempt.Status != "running" {
+			return leasestore.ErrAttemptConflict
+		}
+		item, err := w.WorkItem(ctx, scope.Project, prepared.workItem.NativeID)
+		if err != nil {
+			return err
+		}
+		authority := NativeRunEventAuthority{Scope: scope, OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItem: item, Lease: lease, Event: prepared.event}
+		if err := (tenantNativeRunEventParticipant{service: s}).validateNativeRunEvent(ctx, w, &authority, true); err != nil {
+			return err
+		}
+		event := leasestore.AttemptEvent{ID: attempt.ID, Fence: fence, RunID: attempt.RunID, Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: authority.DispatchGeneration, PayloadObjectKey: prepared.payloadReference.Key, PayloadReference: prepared.payloadReference, WorkerCleanupRequired: new(nativeRunCleanupRequired(prepared.event.Data)), Failure: attemptFailureSummary(prepared.event.Data, "cancelled"), Identity: leasestore.NewAttemptIdentity(prepared.event.Data)}
+		stored, duplicate, err := w.RecordAttemptEvent(ctx, event)
+		if err != nil {
+			return err
+		}
+		if duplicate || stored.Status != "cancelled" || stored.Sequence != event.Sequence {
+			return leasestore.ErrAttemptConflict
+		}
+		if _, err := w.AppendEvent(ctx, prepared.history); err != nil {
+			return err
+		}
+		if err := s.config.NativeRunEvents.ApplyNativeRunEvent(ctx, w, authority); err != nil {
+			return err
+		}
+	}
+	if _, err := w.Release(ctx, fence, "cancelled"); err != nil {
+		return err
+	}
+	if err := s.config.NativeRunEvents.ApplyNativeLeaseMutation(ctx, w, leaseAuthority); err != nil {
+		return err
+	}
+	if s.conversations != nil {
+		return s.conversations.LeaseReleasedTenant(ctx, w, lease.LeaseID, lease.FencingToken, "cancelled")
+	}
+	return nil
+}
+
+func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope hubscope.NativeScope, issueID int64, request tracker.Transition, stopState string) (*preparedNativeLeaseCancellation, bool, error) {
+	expired, err := s.prepareExpiredNativeLeaseCancellation(ctx, scope, issueID, false)
+	if err != nil || expired != nil {
+		return expired, expired != nil, err
+	}
+	if request.State != "Cancelled" && !strings.EqualFold(request.State, "Blocked") && request.State != stopState {
+		return nil, false, nil
+	}
+	if s.config.NativeRunEvents == nil {
+		return nil, false, hubapi.NativeRunEventStorageUnavailable()
+	}
+	var lease leasestore.Lease
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeNativeWorkflowScope(ctx, r, scope); err != nil {
+			return err
+		}
+		var err error
+		lease, err = r.ActiveLeaseForIssue(ctx, issueID)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	prepared, err := s.prepareLeaseCancellationTenant(ctx, scope, lease.LeaseID, tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(lease.FencingToken), Reason: "cancelled", CancelAttempt: true}, true)
+	return prepared, err == nil, err
+}

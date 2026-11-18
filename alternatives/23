@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "packages": {
+    "github.com/digitaldrywood/detent/internal/cli": {
+      "files": 118,
+      "loc": 30305,
+      "test-files": 147,
+      "test-funcs": 609
+    },
+    "github.com/digitaldrywood/detent/internal/cloudentry": {
+      "files": 60,
+      "loc": 11962
+    },
+    "github.com/digitaldrywood/detent/internal/hubclient/api": {
+      "files": 48
+    },
+    "github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest": {
+      "loc": 17439
+    },
+    "github.com/digitaldrywood/detent/internal/hubserver": {
+      "files": 432,
+      "loc": 94757,
+      "test-files": 481,
+      "test-funcs": 1401
+    },
+    "github.com/digitaldrywood/detent/internal/hubserver/postgres": {
+      "files": 257,
+      "loc": 44117
+    },
+    "github.com/digitaldrywood/detent/internal/orchestrator": {
+      "files": 112,
+      "loc": 45379,
+      "test-files": 157,
+      "test-funcs": 1050
+    },
+    "github.com/digitaldrywood/detent/internal/runner": {
+      "files": 65,
+      "loc": 20286,
+      "test-files": 79,
+      "test-funcs": 429
+    },
+    "github.com/digitaldrywood/detent/internal/workspace": {
+      "loc": 11637,
+      "test-files": 47
+    }
+  }
+}

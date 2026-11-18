@@ -1,0 +1,192 @@
+package conversations
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+)
+
+func PreparePGWorkerEvent(ctx context.Context, plan *ConversationPublicationPlan, body any) error {
+	if message, ok := body.(ConversationMessageResource); ok {
+		message.Seq = 0
+		body = message
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	content, err := MessageContent(ConversationMessageRecord{Data: raw})
+	if err != nil {
+		return err
+	}
+	_, err = plan.Prepare(ctx, content)
+	return err
+}
+
+func (r *WorkerRouter) preparePGTurnMessages(ctx context.Context, scope hubscope.NativeScope, plan *ConversationPublicationPlan, events []conversationTurnEvent) ([]ConversationMessageRecord, error) {
+	prepared := make([]ConversationMessageRecord, len(events))
+	messages := map[string]ConversationMessageRecord{}
+	providers := map[string]string{}
+	execution := plan.Record.Execution
+	for index, event := range events {
+		switch event.Type {
+		case "turn_started":
+			if thread := strings.TrimSpace(event.ThreadID); thread != "" {
+				execution.Owner.ThreadID = thread
+			}
+			execution.Owner.TurnID = strings.TrimSpace(event.TurnID)
+		case "delta":
+			id := event.MessageID
+			if id == "" {
+				id = providers[strings.TrimSpace(event.ProviderItemID)]
+			}
+			message, found := messages[id]
+			if !found {
+				if err := r.server.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					var row conversationstore.Message
+					if id != "" {
+						var err error
+						row, err = reader.Message(ctx, plan.Record.ID, id)
+						if errors.Is(err, corestore.ErrNotFound) {
+							return nil
+						}
+						if err != nil {
+							return err
+						}
+					} else {
+						page, err := reader.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: plan.Record.ID, AttemptID: execution.Owner.AttemptID, ProviderItemID: strings.TrimSpace(event.ProviderItemID), Role: conversation.RoleAssistant, Limit: 1})
+						if err != nil || len(page.Items) == 0 {
+							return err
+						}
+						row = page.Items[0]
+					}
+					if row.AttemptID == execution.Owner.AttemptID && row.Role == conversation.RoleAssistant {
+						message, found = ConversationMessageFromStore(row), true
+					}
+					return nil
+				}); err != nil {
+					return nil, err
+				}
+			}
+			if found && message.ContentID != "" && plan.Messages[message.ID].ID == "" {
+				var err error
+				message, err = r.service.ReadPublicationMessage(ctx, scope.Organization, plan.Record.ID, message.ID)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if !found {
+				message = ConversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: plan.Record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, TurnID: execution.Owner.TurnID, ProviderItemID: strings.TrimSpace(event.ProviderItemID), Actor: ConversationActorFor(ScopeInput(scope)), CreatedAt: plan.Now.Truncate(time.Microsecond), UpdatedAt: plan.Now}
+			}
+			revision, offset := message.Revision, message.TextBytes
+			message.Text += event.Text
+			message.TextBytes = offset + int64(len(event.Text))
+			message.UpdatedAt = plan.Now
+			var err error
+			message, err = plan.Message(ctx, message)
+			if err != nil {
+				return nil, err
+			}
+			prepared[index] = message
+			prepared[index].Revision = revision
+			if !found {
+				accepted := message
+				accepted.Text, accepted.TextBytes, accepted.Revision = "", 0, 1
+				if err := PreparePGWorkerEvent(ctx, plan, ProjectMessage(accepted)); err != nil {
+					return nil, err
+				}
+				revision = 1
+			}
+			if event.Text != "" {
+				revision++
+				if err := PreparePGWorkerEvent(ctx, plan, ConversationDeltaFact{Text: event.Text, Revision: revision, MessageID: message.ID, Offset: offset, Bytes: len(event.Text)}); err != nil {
+					return nil, err
+				}
+			}
+			message.Revision = revision
+			messages[message.ID], providers[strings.TrimSpace(event.ProviderItemID)] = message, message.ID
+			plan.RememberMessage(message)
+		case "item", "question_opened":
+			if event.Type == "question_opened" {
+				if err := plan.PrepareQuestion(ctx, ConversationQuestionRecord{Question: conversation.Question{Prompts: event.Prompts}}); err != nil {
+					return nil, err
+				}
+			}
+			message := ConversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageKind(event.Kind), Text: conversationTruncate(event.Summary, ConversationMaxSummaryBytes), Delivery: conversation.DeliveryCompleted, ProviderItemID: strings.TrimSpace(event.ProviderItemID), AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, TurnID: execution.Owner.TurnID, Actor: ConversationActorFor(ScopeInput(scope)), CreatedAt: plan.Now.Truncate(time.Microsecond), UpdatedAt: plan.Now}
+			if event.Type == "item" {
+				var err error
+				message.Data, err = conversationItemData(event.Data)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				message.Role, message.Kind, message.Text = conversation.RoleAssistant, conversation.MessageStatus, ConversationQuestionPrompt
+				message.ProviderItemID = ""
+				if turn := strings.TrimSpace(event.TurnID); turn != "" {
+					message.TurnID = turn
+				}
+			}
+			if err := PreparePGConversationMessage(ctx, plan, &message); err != nil {
+				return nil, err
+			}
+			prepared[index] = message
+			if err := PreparePGWorkerEvent(ctx, plan, ProjectMessage(message)); err != nil {
+				return nil, err
+			}
+		case "turn_completed":
+			turnID := strings.TrimSpace(event.TurnID)
+			if err := r.server.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				page, err := reader.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: plan.Record.ID, AttemptID: execution.Owner.AttemptID, TurnID: turnID, Role: conversation.RoleAssistant, Deliveries: []conversation.Delivery{conversation.DeliveryResponding}, Limit: ConversationPGWorkerPageSize})
+				if err != nil {
+					return err
+				}
+				if page.Next != 0 {
+					return ConversationUnsupported("The turn message set exceeds the bounded event batch")
+				}
+				for _, row := range page.Items {
+					if _, found := messages[row.ID]; !found {
+						messages[row.ID] = ConversationMessageFromStore(row)
+					}
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+			delivery := conversation.DeliveryCompleted
+			switch event.Status {
+			case "failed":
+				delivery = conversation.DeliveryFailed
+			case "interrupted", "cancelled":
+				delivery = conversation.DeliveryInterrupted
+			}
+			for id, message := range messages {
+				if message.Delivery != conversation.DeliveryResponding || message.TurnID != turnID {
+					continue
+				}
+				if message.ContentID != "" && plan.Messages[id].ID == "" {
+					var err error
+					message, err = r.service.ReadPublicationMessage(ctx, scope.Organization, plan.Record.ID, id)
+					if err != nil {
+						return nil, err
+					}
+				}
+				message.Delivery, message.UpdatedAt = delivery, plan.Now
+				message.Revision++
+				if err := PreparePGWorkerEvent(ctx, plan, ProjectMessage(message)); err != nil {
+					return nil, err
+				}
+				plan.RememberMessage(message)
+				messages[id] = message
+			}
+		}
+	}
+	return prepared, nil
+}

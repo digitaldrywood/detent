@@ -1,0 +1,17 @@
+{
+  "key": "cmd_link_2f19c4a7",
+  "share_history": true,
+  "issue": {
+    "title": "Checkout lock renewal waits on a healthy handoff",
+    "description": "The renewal returns before the handoff completes, so the lease can lapse under load. Move the renewal behind the handoff acknowledgement and cover it with a race test.",
+    "labels": [
+      "bug"
+    ],
+    "priority": 1
+  },
+  "next": {
+    "state": "Todo",
+    "priority": 1,
+    "dispatch": "later"
+  }
+}
