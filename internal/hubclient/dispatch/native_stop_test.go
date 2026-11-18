@@ -47,7 +47,7 @@ func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, inf
 
 func TestNativeStopDuringHostFinalization(t *testing.T) {
 	isolateNativeChangeGit(t)
-	for _, mode := range []string{"stop", "stop with scheduler restart", "stop prioritized Todo", "stop prioritized Todo with scheduler restart", "stop prioritized Todo at default rank three", "stop prioritized Todo at default rank three with scheduler restart", "stop prioritized Todo with custom priority map with scheduler restart", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
+	for _, mode := range []string{"stop", "stop with failed gate", "stop with scheduler restart", "stop prioritized Todo", "stop prioritized Todo with scheduler restart", "stop prioritized Todo at default rank three", "stop prioritized Todo at default rank three with scheduler restart", "stop prioritized Todo with custom priority map with scheduler restart", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			testNativeStopDuringHostFinalization(t, mode)
@@ -267,7 +267,11 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	backend := &stoppedFinalizationWorkspace{LocalGit: local, started: make(chan workspace.Info, 1), resume: make(chan struct{})}
-	agent, err := runner.NewRunner(runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true"}}, Prompt: "Complete the issue"}})
+	command, exitCode := "true", 0
+	if mode == "stop with failed gate" {
+		command, exitCode = "false", 1
+	}
+	agent, err := runner.NewRunner(runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: command}}, Prompt: "Complete the issue"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,8 +496,8 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil || len(recovery.Attempts) != 1 || !interrupted.Load() || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Outcome != "interrupted" && (recovery.Attempts[0].Outcome != "cancelled" || recovery.Attempts[0].CleanupAcknowledgedAt == nil) || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA == "" || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
 		t.Fatalf("stopped checkpoint or native outcome = %+v, %v", recovery.Attempts, err)
 	}
-	if runtime := recovery.Attempts[0].Runtime; runtime == nil || runtime.Validation == nil || runtime.Validation.ExitCode != 0 || runtime.Validation.HeadSHA != recovery.Attempts[0].Checkpoint.HeadSHA {
-		t.Fatalf("in-flight successful validation receipt was lost: %+v", runtime)
+	if runtime := recovery.Attempts[0].Runtime; runtime == nil || runtime.Validation == nil || runtime.Validation.ExitCode != exitCode || runtime.Validation.HeadSHA != recovery.Attempts[0].Checkpoint.HeadSHA {
+		t.Fatalf("in-flight validation result was lost: %+v", runtime)
 	}
 	h.scheduler.mu.Lock()
 	_, claimed := h.scheduler.nativeClaims[issue.ID]

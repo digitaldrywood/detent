@@ -800,20 +800,19 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 						r.recordPipeline(req, receipt.PipelineTiming("finalization"))
 						if runErr != nil {
 							err = runErr
-						} else if receipt.ExitCode != 0 {
-							attributeCommandFailure(ctx, commands, info, validationIssue, issue.BaseRef, &receipt)
-							receipt.Stage = gate.StageSourceFinalization
-							receipt = tracker.PublicGateResult(receipt)
-							err = &workspace.ValidationError{Stage: workspace.ValidationStageSourceFinalization, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
-							if recordErr := recorder.RecordSourceValidation(ctx, receipt); recordErr != nil {
-								err = errors.Join(err, recordErr)
-							}
 						} else {
-							binding.Validation = &receipt
-							err = recordStep(ctx, req.Execution, binding)
-							if err == nil {
-								err = recorder.RecordSourceValidation(ctx, receipt)
+							if receipt.ExitCode != 0 {
+								attributeCommandFailure(ctx, commands, info, validationIssue, issue.BaseRef, &receipt)
+								receipt.Stage = gate.StageSourceFinalization
+								receipt = tracker.PublicGateResult(receipt)
+								err = &workspace.ValidationError{Stage: workspace.ValidationStageSourceFinalization, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
 							}
+							binding.Validation = &receipt
+							recordErr := recordStep(ctx, req.Execution, binding)
+							if recordErr == nil {
+								recordErr = recorder.RecordSourceValidation(ctx, receipt)
+							}
+							err = errors.Join(err, recordErr)
 						}
 					}
 					finalizationErr = failedStep("validation", err)

@@ -899,11 +899,6 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 					data.Handoff = nil
 					if data.Runtime != nil {
 						data.Runtime.Phase = "completed"
-						for _, step := range data.Steps {
-							if step.Step == "validation" && step.Validation != nil && attempt.Checkpoint != nil && step.Source.HeadSHA == attempt.Checkpoint.HeadSHA {
-								data.Runtime.Validation = step.Validation
-							}
-						}
 					}
 					event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":interrupted:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
 					authorize := func(ctx context.Context) error { return e.authorizeEvent(ctx, true) }
