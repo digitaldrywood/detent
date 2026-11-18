@@ -910,13 +910,12 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					synctest.Wait()
 				}
 				if strings.HasPrefix(name, "renewal outage") {
-					time.Sleep(4 * time.Minute)
+					time.Sleep(5*time.Second - time.Nanosecond)
 					synctest.Wait()
 					if guarded.Err() != nil {
-						t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
+						t.Fatalf("outage canceled worker before lease expiry: %v", context.Cause(guarded))
 					}
-					offline.Store(false)
-					time.Sleep(30 * time.Second)
+					time.Sleep(time.Nanosecond)
 					synctest.Wait()
 				}
 				if !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
