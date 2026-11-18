@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -363,8 +364,7 @@ func (c *NativeClient) completeIssueList(ctx context.Context, query url.Values, 
 		page, pageLimit, err := c.issuePageWithinLimit(ctx, query, limit)
 		limit = pageLimit
 		if err != nil {
-			var apiErr *APIError
-			if cursor != "" && !restarted && errors.As(err, &apiErr) && apiErr.Status == http.StatusUnprocessableEntity && apiErr.Code == "invalid_request" && apiErr.Message == "Work list order changed; restart the query" {
+			if cursor != "" && !restarted && workListOrderChanged(err) {
 				items, seen, cursor, restarted = nil, map[tracker.NativeWorkItemID]bool{}, "", true
 				continue
 			}
@@ -390,6 +390,11 @@ func (c *NativeClient) completeIssueList(ctx context.Context, query url.Values, 
 	}
 }
 
+func workListOrderChanged(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusUnprocessableEntity && apiErr.Code == "invalid_request" && apiErr.Message == "Work list order changed; restart the query"
+}
+
 func NativeMutationKey() tracker.Mutation { return tracker.Mutation{IdempotencyKey: uuid.NewString()} }
 
 func nativeMutationKeyForContext(ctx context.Context) tracker.Mutation {
@@ -412,10 +417,7 @@ func (c *NativeConnector) createIssue(ctx context.Context, draft issuefiling.Iss
 	authority, bound := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
 	hostIntake := state == "Backlog" && bound && authority.scope == c.client.base()
 	if origin, machine := issueorigin.Parse(draft.Body); machine && !hostIntake {
-		existing, found, err := c.findIntakeIssue(ctx, func(issue tracker.NativeIssue) bool {
-			previous, ok := issueorigin.Parse(issue.Body)
-			return !issue.Terminal && ok && previous.Fingerprint == origin.Fingerprint
-		})
+		existing, found, err := c.findMachineOccurrence(ctx, origin.Fingerprint)
 		if err != nil {
 			return connector.Issue{}, err
 		}
@@ -445,6 +447,35 @@ func (c *NativeConnector) createIssue(ctx context.Context, draft issuefiling.Iss
 	result := IssueFromNative(issue)
 	result.PublicationReused = issue.PublicationReused
 	return result, err
+}
+
+func (c *NativeConnector) findMachineOccurrence(ctx context.Context, fingerprint string) (issuefiling.Issue, bool, error) {
+	canCollaborate, err := c.canLookupMachineOccurrence(ctx)
+	if !canCollaborate {
+		return issuefiling.Issue{}, false, err
+	}
+	issue, found, err := c.findIntakeIssue(ctx, func(issue tracker.NativeIssue) bool {
+		previous, ok := issueorigin.Parse(issue.Body)
+		return !issue.Terminal && ok && previous.Fingerprint == fingerprint
+	})
+	if workListOrderChanged(err) {
+		if allowed, grantErr := c.canLookupMachineOccurrence(ctx); !allowed {
+			return issuefiling.Issue{}, false, grantErr
+		}
+	}
+	return issue, found, err
+}
+
+func (c *NativeConnector) canLookupMachineOccurrence(ctx context.Context) (bool, error) {
+	client := c.client.Transport()
+	if !client.Enrolled() {
+		return true, nil
+	}
+	file, err := client.readRunnerCredential(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(file.Identity.Operations, runnerauth.Collaborate), nil
 }
 
 func (c *NativeConnector) FindIntakeIssue(ctx context.Context, marker string) (issuefiling.Issue, bool, error) {
