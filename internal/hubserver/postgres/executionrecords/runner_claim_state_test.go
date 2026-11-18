@@ -95,8 +95,10 @@ func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
 			if _, err := w.RecordAttempt(t.Context(), firstCancellation.Attempt); err != nil {
 				return err
 			}
-			if _, err := w.AppendEvent(t.Context(), firstCancellation.History); err != nil {
-				return err
+			if org == "org_second" {
+				if _, err := w.AppendEvent(t.Context(), firstCancellation.History); err != nil {
+					return err
+				}
 			}
 			_, err := w.Release(t.Context(), pgstoretest.LeaseFence(first), "example")
 			return err
@@ -139,6 +141,40 @@ func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
 			return err
 		}); err != nil {
 			t.Fatal(err)
+		}
+		if org == "org_first" {
+			if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL WHERE organization_id=$1 AND id=$2", org, firstEvent.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range []string{"missing", "still missing", "restored"} {
+				if state == "restored" {
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						_, err := w.AppendEvent(t.Context(), firstCancellation.History)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					page, err := r.(runnerstore.ClaimStateReader).RunnerClaimState(t.Context(), "runner", "prj_1", "", 1, second.AcquiredAt)
+					if err != nil {
+						return err
+					}
+					if page.Next != firstEvent.ID || len(page.Candidates) != 0 {
+						t.Fatalf("%s proof: unfenced cleanup or lost cursor: %+v", state, page)
+					}
+					if state == "restored" {
+						if len(page.Unclassified) != 1 || page.Unclassified[0].AttemptID != firstEvent.ID {
+							t.Fatalf("restored proof not selected for verification: %+v", page)
+						}
+					} else if len(page.Unclassified) != 0 {
+						t.Fatalf("%s proof selected for hydration: %+v", state, page.Unclassified)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 		t.Run(string(org)+"/peer cleanup authority", func(t *testing.T) {
 			const peer = "peer"

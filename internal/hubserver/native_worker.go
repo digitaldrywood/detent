@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -28,26 +29,9 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if err := validateProviderCandidates(request.ProviderCandidates); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if request.LandingCapacity < 0 {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing capacity must be non-negative"))
-	}
-	if request.ProtocolMajor != tracker.NativeProtocolMajor || !slices.Contains(request.Capabilities, "scoped_collaboration") || !slices.Contains(request.Capabilities, "native_issues") {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Native protocol and required collaboration capabilities must be negotiated"))
-	}
-	for _, capability := range request.Capabilities {
-		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeWorkspaceCapability, tracker.NativeLandingCapacityCapability}, capability) {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Unknown required capability"))
-		}
-	}
-	if len(request.SessionID) > 128 {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Session ID is too long"))
-	}
-	ttl, err := apiTTL(request.TTLSeconds)
+	ttl, err := validateNativeClaimRequest(request)
 	if err != nil {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Lease TTL is invalid"))
+		return s.nativeAPIError(c, err)
 	}
 	scope := hubscope.NativeRequestScope(c)
 	if request.WorkItemID == "" && len(request.ProviderCandidates) == 1 {
@@ -58,6 +42,31 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return s.respondNativeLeaseTenant(c, scope, lease.LeaseID)
+}
+
+func validateNativeClaimRequest(request tracker.NativeClaim) (time.Duration, error) {
+	if err := validateProviderCandidates(request.ProviderCandidates); err != nil {
+		return 0, err
+	}
+	if request.LandingCapacity < 0 {
+		return 0, hubapi.NativePublicInvalid("Landing capacity must be non-negative")
+	}
+	if request.ProtocolMajor != tracker.NativeProtocolMajor || !slices.Contains(request.Capabilities, "scoped_collaboration") || !slices.Contains(request.Capabilities, "native_issues") {
+		return 0, hubapi.NativePublicInvalid("Native protocol and required collaboration capabilities must be negotiated")
+	}
+	for _, capability := range request.Capabilities {
+		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeWorkspaceCapability, tracker.NativeLandingCapacityCapability}, capability) {
+			return 0, hubapi.NativePublicInvalid("Unknown required capability")
+		}
+	}
+	if len(request.SessionID) > 128 {
+		return 0, hubapi.NativePublicInvalid("Session ID is too long")
+	}
+	ttl, err := apiTTL(request.TTLSeconds)
+	if err != nil {
+		return 0, hubapi.NativePublicInvalid("Lease TTL is invalid")
+	}
+	return ttl, nil
 }
 
 func (s *Service) renewNativeLease(c echo.Context) error {
