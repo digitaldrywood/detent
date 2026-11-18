@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestMain(m *testing.M) {
@@ -57,5 +61,51 @@ func TestRunnerPublication(t *testing.T) {
 }
 
 func TestNativePublicationFixtureKeepsLeaseUntilHandoff(t *testing.T) {
-	scenariotest.PublicationFixtureKeepsLeaseUntilHandoff(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
+	t.Parallel()
+	var stopGuard func()
+	fixture, scheduler := scenariotest.NewPublicationHandoff(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution}, func(stop func()) {
+		stopGuard = sync.OnceFunc(stop)
+		t.Cleanup(stopGuard)
+	})
+	lease := fixture.Recovery().Lease
+	item := string(lease.WorkItemID)
+	guarded, returned, err := fixture.Guard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer returned()
+	if err := fixture.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.Finish(guarded, "interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	returned()
+	before, ok := scheduler.ExecutionClaim(item)
+	if !ok {
+		t.Fatal("runner return released the publication lease")
+	}
+	scenariotest.SetSchedulerNow(scheduler, scheduler.Now())
+	scenariotest.SetSchedulerNow(scheduler, scheduler.Now().Add(scheduler.RemainingExecution(before.Lease)))
+	if err := fixture.Validate(guarded); err != nil {
+		t.Fatalf("publication guard did not renew before expiry: %v", err)
+	}
+	after, ok := scheduler.ExecutionClaim(item)
+	if !ok || !checkpoint.SameLease(after.Lease, before.Lease) || !after.Deadline.After(before.Deadline) {
+		t.Fatal("publication guard did not extend the same fenced lease")
+	}
+	scenariotest.SetSchedulerNow(scheduler, before.Deadline)
+	if err := fixture.Validate(guarded); err != nil {
+		t.Fatalf("renewed publication guard failed at the original deadline: %v", err)
+	}
+	if guarded.Err() != nil {
+		t.Errorf("runner return stopped the publication guard: %v", context.Cause(guarded))
+	}
+	stopGuard()
+	if !errors.Is(guarded.Err(), context.Canceled) {
+		t.Fatalf("handoff left the old guard running: %v", guarded.Err())
+	}
+	if err := before.Source.NativeClient().Release(t.Context(), lease, "released"); err != nil {
+		t.Fatalf("publication handoff lost its lease: %v", err)
+	}
 }

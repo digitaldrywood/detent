@@ -3259,56 +3259,13 @@ func nativeChangeGitWithContext(ctx context.Context, t *testing.T, dir string, a
 	}
 }
 
-func PublicationFixtureKeepsLeaseUntilHandoff(t *testing.T, factories Constructors) {
-	t.Parallel()
+func NewPublicationHandoff(t *testing.T, factories Constructors, keepGuard func(func())) (runner.Execution, *Scheduler) {
+	t.Helper()
 	h := newScenarioHub(t, factories, true)
 	issue := h.createInProgress(t, "Publication handoff")
 	h.claim(t, issue.ID)
 	owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-	stopGuard := func() {}
-	fixture := &nativePublicationFixtureExecution{ownedExecution: owner, keepGuard: func(stop func()) {
-		stopGuard = sync.OnceFunc(stop)
-		t.Cleanup(stopGuard)
-	}}
-	guarded, returned, err := fixture.Guard(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer returned()
-	if err := fixture.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.Finish(guarded, "interrupted"); err != nil {
-		t.Fatal(err)
-	}
-	returned()
-	before, ok := h.scheduler.ExecutionClaim(issue.ID)
-	if !ok {
-		t.Fatal("runner return released the publication lease")
-	}
-	SetSchedulerNow(h.scheduler, h.scheduler.Now())
-	SetSchedulerNow(h.scheduler, h.scheduler.Now().Add(h.scheduler.RemainingExecution(before.Lease)))
-	if err := fixture.Validate(guarded); err != nil {
-		t.Fatalf("publication guard did not renew before expiry: %v", err)
-	}
-	after, ok := h.scheduler.ExecutionClaim(issue.ID)
-	if !ok || !sameCompletionLease(after.Lease, before.Lease) || !after.Deadline.After(before.Deadline) {
-		t.Fatal("publication guard did not extend the same fenced lease")
-	}
-	SetSchedulerNow(h.scheduler, before.Deadline)
-	if err := fixture.Validate(guarded); err != nil {
-		t.Fatalf("renewed publication guard failed at the original deadline: %v", err)
-	}
-	if guarded.Err() != nil {
-		t.Errorf("runner return stopped the publication guard: %v", context.Cause(guarded))
-	}
-	stopGuard()
-	if !errors.Is(guarded.Err(), context.Canceled) {
-		t.Fatalf("handoff left the old guard running: %v", guarded.Err())
-	}
-	if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
-		t.Fatalf("publication handoff lost its lease: %v", err)
-	}
+	return &nativePublicationFixtureExecution{ownedExecution: owner, keepGuard: keepGuard}, h.scheduler
 }
 
 func (e *nativePublicationFixtureExecution) Guard(ctx context.Context) (context.Context, func(), error) {
