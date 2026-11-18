@@ -6,9 +6,46 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"testing"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 const ReportCandidateCap = 50000
+
+func WaitForReportSeed(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var seed string
+	if err := db.QueryRowContext(t.Context(), "SELECT pg_current_xact_id()::xid::text").Scan(&seed); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	testenv.WaitUntil(t, ctx, func() error {
+		visible, err := reportSeedVisible(ctx, db, seed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !visible {
+			return fmt.Errorf("snapshot still holds report seed transaction %s", seed)
+		}
+		return nil
+	})
+}
+
+func reportSeedVisible(ctx context.Context, db *sql.DB, seed string) (bool, error) {
+	var visible bool
+	err := db.QueryRowContext(ctx, `
+SELECT NOT EXISTS (
+	SELECT FROM pg_stat_activity
+	WHERE datname=current_database() AND pid<>pg_backend_pid()
+	  AND greatest(age(backend_xmin), age(backend_xid)) >= age($1::xid)
+) AND NOT EXISTS (
+	SELECT FROM pg_prepared_xacts WHERE database=current_database() AND age(transaction) >= age($1::xid)
+) AND NOT EXISTS (
+	SELECT FROM pg_replication_slots WHERE age(xmin) >= age($1::xid)
+)`, seed).Scan(&visible)
+	return visible, err
+}
 
 type ReportRequestBudget struct {
 	Overhead  int

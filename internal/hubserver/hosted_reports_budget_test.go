@@ -200,8 +200,9 @@ func installReportsBudgetTrace(t *testing.T, s *Service) {
 }
 func freezeReportPlannerInputs(t *testing.T, admin *sql.DB) {
 	t.Helper()
+	pgstoretest.WaitForReportSeed(t, admin)
 	relations, autovacuum := strings.Join(reportsBudgetHotRelations, ","), " SET (autovacuum_enabled=false, toast.autovacuum_enabled=false)"
-	for _, statement := range []string{"ALTER TABLE " + strings.Join(reportsBudgetHotRelations, autovacuum+";ALTER TABLE ") + autovacuum, "VACUUM (FREEZE) " + relations, "VACUUM (ANALYZE) " + relations, `DO $$DECLARE lagging text; BEGIN SELECT string_agg(relname||' '||relallvisible||'/'||relpages,',') INTO lagging FROM pg_class WHERE oid=ANY(string_to_array('` + relations + `',',')::regclass[]) AND relallvisible<relpages; IF lagging IS NOT NULL THEN RAISE EXCEPTION 'planner inputs not all-visible after VACUUM: %', lagging; END IF; END$$`} {
+	for _, statement := range []string{"ALTER TABLE " + strings.Join(reportsBudgetHotRelations, autovacuum+";ALTER TABLE ") + autovacuum, "VACUUM (FREEZE, INDEX_CLEANUP ON) " + relations, "VACUUM (ANALYZE) " + relations, `DO $$DECLARE lagging text; BEGIN SELECT string_agg(relname||' '||relallvisible||'/'||relpages,',') INTO lagging FROM pg_class WHERE oid=ANY(string_to_array('` + relations + `',',')::regclass[]) AND relallvisible<relpages; IF lagging IS NOT NULL THEN RAISE EXCEPTION 'planner inputs not all-visible after VACUUM: %', lagging; END IF; END$$`} {
 		if _, err := admin.ExecContext(t.Context(), statement); err != nil {
 			t.Fatal(err)
 		}

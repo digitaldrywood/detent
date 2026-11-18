@@ -74,3 +74,37 @@ func TestReportPlanControlsOnPostgreSQL(t *testing.T) {
 		})
 	}
 }
+
+func TestReportSeedVisibility(t *testing.T) {
+	t.Parallel()
+	db := reportPlanTemplate.Database(t)
+	ctx := t.Context()
+	reader, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Rollback()
+	if _, err := reader.ExecContext(ctx, "SELECT pg_current_snapshot()"); err != nil {
+		t.Fatal(err)
+	}
+	var seed string
+	if err := db.QueryRowContext(ctx, "SELECT pg_current_xact_id()::xid::text").Scan(&seed); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []struct {
+		name     string
+		released bool
+	}{{"held snapshot", false}, {"released snapshot", true}} {
+		t.Run(state.name, func(t *testing.T) {
+			if state.released {
+				if err := reader.Rollback(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			visible, err := reportSeedVisible(t.Context(), db, seed)
+			if err != nil || visible != state.released {
+				t.Fatalf("seed visible = %t, want %t: %v", visible, state.released, err)
+			}
+		})
+	}
+}
