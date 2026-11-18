@@ -501,6 +501,7 @@ func assertActivityIssueOwnerStatements(t *testing.T, pool *pgxpool.Pool, organi
 		kind := ""
 		bound := float64(0)
 		relation := ""
+		candidateCount := -1
 		if strings.HasPrefix(statement.query, "SELECT i.id,e.sequence,e.type,e.from_state,e.to_state,e.recorded_at") {
 			kind, relation = "history", "collaboration_events"
 			ids, ok := statement.args[1].([]int64)
@@ -516,13 +517,14 @@ func assertActivityIssueOwnerStatements(t *testing.T, pool *pgxpool.Pool, organi
 			}
 			bound = float64(activitystore.PopulationLimit + 1)
 		}
-		if strings.HasPrefix(statement.query, "SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name") {
+		if strings.Contains(statement.query, "AS recent(id)") {
 			kind, relation = "terminal", "issues"
 			ids, ok := statement.args[2].([]int64)
 			if !ok || len(ids) > activitystore.PopulationLimit || statement.args[3] != activitystore.PopulationLimit {
 				t.Fatalf("activity terminal issues lost their candidate bound: %v", statement.args)
 			}
 			bound = float64(activitystore.PopulationLimit)
+			candidateCount = len(ids)
 		}
 		if kind == "" {
 			continue
@@ -559,6 +561,9 @@ func assertActivityIssueOwnerStatements(t *testing.T, pool *pgxpool.Pool, organi
 		var inspect func(planNode)
 		inspect = func(node planNode) {
 			if node.Relation == relation {
+				if candidateCount >= 0 && node.Loops > float64(candidateCount) {
+					t.Fatalf("activity %s probed %s %.0f times for %d candidates", kind, relation, node.Loops, candidateCount)
+				}
 				work += (node.Rows + node.Removed + node.Rechecked) * node.Loops
 			}
 			for _, child := range node.Plans {
