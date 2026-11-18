@@ -654,7 +654,7 @@ func (t hostedMaintenanceTenant) Page(ctx context.Context, after string, limit i
 }
 
 func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
-	return hubmaintenance.New(hostedMaintenanceTenant{s.MaintenanceTenant()}, s.ReadModelMaintenanceFeatures())
+	return hubmaintenance.NewScoped(hostedMaintenanceTenant{s.MaintenanceTenant()}, s.ReadModelMaintenanceFeatures(), s.database.postgres.WithProjectWorkflows)
 }
 
 func (s *Service) MaintenanceTenant() hubmaintenance.Tenant {
