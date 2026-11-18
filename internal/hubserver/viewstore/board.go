@@ -208,13 +208,21 @@ type BoardDelta struct {
 type BoardUpdate struct {
 	ProjectID               tracker.ProjectID
 	WorkItemID              tracker.NativeWorkItemID
+	ExpectedProjection      *BoardProjectionVersion
 	ExpectedRevision        int64
 	ExpectedEventSequence   int64
 	ExpectedProjectRevision int64
 	Current                 *BoardRecord
 }
 
+type BoardProjectionVersion struct {
+	Issue     uint32
+	Published uint32
+	Dirty     uint32
+}
+
 type BoardReader interface {
+	BoardProjectionVersion(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (BoardProjectionVersion, error)
 	BoardAttemptCount(context.Context, int64) (int64, error)
 	BoardAccessRevisions(context.Context, string, string) ([3]int64, error)
 	NextBoardCandidate(context.Context, tracker.NativeWorkItemID, ...tracker.NativeWorkItemID) (BoardCandidate, error)

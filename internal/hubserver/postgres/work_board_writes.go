@@ -23,13 +23,9 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 	if u.ProjectID == "" || u.WorkItemID == "" || u.ExpectedRevision < 0 || u.ExpectedEventSequence < 0 {
 		return viewstore.ErrInvalidView
 	}
-	var projectID string
-	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR NO KEY UPDATE`, s.organization, u.ProjectID).Scan(&projectID); err != nil {
+	var project corestore.Project
+	if err := s.db.QueryRow(ctx, `SELECT content_settings_revision,profile,deleted_at FROM projects WHERE organization_id=$1 AND id=$2 FOR NO KEY UPDATE`, s.organization, u.ProjectID).Scan(&project.ContentSettingsRevision, &project.Profile, &project.DeletedAt); err != nil {
 		return mapError(ctx, err)
-	}
-	project, err := s.Project(ctx, u.ProjectID)
-	if err != nil {
-		return err
 	}
 	if project.ContentSettingsRevision != u.ExpectedProjectRevision {
 		return corestore.ErrRevisionConflict
@@ -80,12 +76,15 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 		value.Assignees = slices.Compact(value.Assignees)
 		next = &value
 	}
-	old, err := s.BoardItem(ctx, u.ProjectID, u.WorkItemID)
+	old, published, err := s.boardItemVersion(ctx, u.ProjectID, u.WorkItemID)
 	var previous *viewstore.BoardRecord
 	if err == nil {
 		previous = &old
 	} else if !errors.Is(err, corestore.ErrNotFound) {
 		return err
+	}
+	if u.ExpectedProjection != nil && published != u.ExpectedProjection.Published {
+		return corestore.ErrRevisionConflict
 	}
 	counted := false
 	if previous != nil {
@@ -160,8 +159,25 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 			return err
 		}
 	}
-	_, err = s.db.Exec(ctx, "DELETE FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, u.ProjectID, u.WorkItemID)
-	return mapError(ctx, err)
+	return s.acknowledgeBoardRefresh(ctx, u)
+}
+
+func (s *session) acknowledgeBoardRefresh(ctx context.Context, u viewstore.BoardUpdate) error {
+	const clearDirty = `DELETE FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`
+	if u.ExpectedProjection == nil {
+		_, err := s.db.Exec(ctx, clearDirty, s.organization, u.ProjectID, u.WorkItemID)
+		return mapError(ctx, err)
+	}
+	var issue, dirty uint32
+	err := s.db.QueryRow(ctx, `WITH acknowledged AS (`+clearDirty+` AND xmin=$4::xid RETURNING xmin)
+ SELECT `+boardIssueVersion+`, COALESCE((SELECT xmin FROM acknowledged),'0'::xid)`, s.organization, u.ProjectID, u.WorkItemID, u.ExpectedProjection.Dirty).Scan(&issue, &dirty)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if issue != u.ExpectedProjection.Issue || dirty != u.ExpectedProjection.Dirty {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
 }
 
 type boardAppend struct {

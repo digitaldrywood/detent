@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -20,6 +21,135 @@ import (
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type boardOverlapRepository struct {
+	tenantstore.Repository
+	tenantstore.SnapshotRepository
+	beforePublish func()
+}
+
+func (r boardOverlapRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	r.beforePublish()
+	return r.Repository.WriteTenant(ctx, org, workload, write)
+}
+
+func TestBoardRefreshOverlappingReasonEdit(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	dependent, blocker := f.create(t, "Dependent"), f.create(t, "Blocker")
+	edge := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "edge"}, ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(dependent.WorkItemID)+"/dependencies", f.token, edge), http.StatusOK)
+	repository := f.service.config.TenantRepository
+	drain := func(t *testing.T) {
+		t.Helper()
+		for range boardMaintenanceBatch {
+			_, processed, _, err := f.service.refreshNextBoardRecord(t.Context(), f.project.OrganizationID, true, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !processed {
+				return
+			}
+		}
+		t.Fatal("dirty board queue did not drain for two linked items")
+	}
+	publishDuring := func(t *testing.T, id tracker.NativeWorkItemID, edit func()) {
+		t.Helper()
+		publisher := &Service{config: f.service.config}
+		publisher.config.TenantRepository = boardOverlapRepository{Repository: repository, SnapshotRepository: repository.(tenantstore.SnapshotRepository), beforePublish: edit}
+		candidate := viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: id}
+		err := publisher.refreshBoardRecord(t.Context(), f.project.OrganizationID, candidate, f.service.config.Clock())
+		if err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatal(err)
+		}
+		drain(t)
+	}
+	for _, tc := range []struct {
+		name, kind string
+		id         tracker.NativeWorkItemID
+		requeued   bool
+		drained    bool
+	}{
+		{"requeued while dirty", "blocked", dependent.WorkItemID, true, false},
+		{"queued while clean", "unblocks", blocker.WorkItemID, false, false},
+		{"newer publication already drained", "blocked", dependent.WorkItemID, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := readWorkItem(t, f, tc.id, "")
+			reason := issue.BlockedReason
+			if tc.kind == "unblocks" {
+				reason = issue.UnblocksReason
+			}
+			edit := func(text string) {
+				request := tracker.UpdateDependencyReason{Mutation: tracker.Mutation{IdempotencyKey: tc.name + text}, WorkItemID: tc.id, Kind: tc.kind, Text: text, Basis: reason.CurrentBasis, ExpectedRevision: reason.Revision}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(tc.id)+"/dependency-reasons", f.token, request), http.StatusOK)
+				reason.Revision++
+			}
+			edit("Earlier reason.")
+			if !tc.requeued {
+				drain(t)
+			}
+			publishDuring(t, tc.id, func() {
+				edit("Updated reason.")
+				if tc.drained {
+					drain(t)
+				}
+			})
+			err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				board, err := r.BoardItem(t.Context(), f.project.ID, tc.id)
+				if err != nil {
+					return err
+				}
+				if board.PageIssue == nil || board.ListIssue == nil {
+					t.Fatal("drained board is missing its page or list projection")
+				}
+				for _, projected := range []*tracker.NativeIssue{board.PageIssue, board.ListIssue} {
+					got := projected.BlockedReason
+					if tc.kind == "unblocks" {
+						got = projected.UnblocksReason
+					}
+					if got.Text != "Updated reason." || got.Revision != reason.Revision || projected.Revision != issue.Revision {
+						t.Fatalf("after drain got reason %q revision %d, issue revision %d; want updated reason revision %d, issue revision %d", got.Text, got.Revision, projected.Revision, reason.Revision, issue.Revision)
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	t.Run("neighbor requeues an already dirty item", func(t *testing.T) {
+		source := readWorkItem(t, f, dependent.WorkItemID, "")
+		target := readWorkItem(t, f, blocker.WorkItemID, "")
+		mark := tracker.UpdateDependencyReason{Mutation: tracker.Mutation{IdempotencyKey: "mark dependent"}, WorkItemID: source.WorkItemID, Kind: "blocked", Text: "Needs the blocker.", Basis: source.BlockedReason.CurrentBasis, ExpectedRevision: source.BlockedReason.Revision}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(source.WorkItemID)+"/dependency-reasons", f.token, mark), http.StatusOK)
+		publishDuring(t, source.WorkItemID, func() {
+			edit := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "rename blocker"}, ExpectedRevision: target.Revision, Title: new("Renamed blocker")}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(target.WorkItemID), f.token, edit), http.StatusOK)
+			candidate := viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: target.WorkItemID}
+			if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, candidate, f.service.config.Clock()); err != nil {
+				t.Fatal(err)
+			}
+		})
+		err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			board, err := r.BoardItem(t.Context(), f.project.ID, source.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if board.PageIssue == nil || len(board.PageIssue.Blockers) != 1 || board.PageIssue.Blockers[0].Title != "Renamed blocker" {
+				t.Fatal("drained board lost the concurrent blocker rename")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
 
 func TestNativeDependencyReasonCAS(t *testing.T) {
 	t.Parallel()

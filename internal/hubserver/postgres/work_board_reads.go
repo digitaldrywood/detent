@@ -77,9 +77,25 @@ func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWo
 	return candidate, mapError(ctx, err)
 }
 
+const boardIssueVersion = `COALESCE((SELECT xmin FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3),'0'::xid)`
+
+func (s *session) BoardProjectionVersion(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (viewstore.BoardProjectionVersion, error) {
+	var version viewstore.BoardProjectionVersion
+	err := s.db.QueryRow(ctx, `SELECT `+boardIssueVersion+`,
+ COALESCE((SELECT xmin FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3),'0'::xid),
+ COALESCE((SELECT xmin FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3),'0'::xid)`, s.organization, project, item).Scan(&version.Issue, &version.Published, &version.Dirty)
+	return version, mapError(ctx, err)
+}
+
 func (s *session) BoardItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (viewstore.BoardRecord, error) {
-	row, err := scanBoard(s.db.QueryRow(ctx, "SELECT "+boardColumns+" FROM native_board_items b WHERE b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=$3", s.organization, project, item))
-	return row, mapError(ctx, err)
+	row, _, err := s.boardItemVersion(ctx, project, item)
+	return row, err
+}
+
+func (s *session) boardItemVersion(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (viewstore.BoardRecord, uint32, error) {
+	var version uint32
+	row, err := scanBoard(s.db.QueryRow(ctx, "SELECT "+boardColumns+",b.xmin FROM native_board_items b WHERE b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=$3", s.organization, project, item), &version)
+	return row, version, mapError(ctx, err)
 }
 
 func (s *session) boardSelectionWhere(ctx context.Context, selection viewstore.BoardSelection) (string, []any, error) {

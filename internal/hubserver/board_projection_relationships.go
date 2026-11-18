@@ -16,30 +16,37 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) boardProjectedRelationshipIssues(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, issue tracker.NativeIssue) (tracker.NativeIssue, viewstore.BoardReporterRelations, error) {
-	var facts []tenantstore.WorkItemRelationshipFact
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
-		if err := workitemread.LoadDependencyReasons(ctx, reader, project, []*tracker.NativeIssue{&issue}); err != nil {
+func (snapshot *boardProjectionSnapshot) readRelationships(ctx context.Context, reader tenantstore.Reader, candidate viewstore.BoardCandidate) error {
+	ids := []tracker.NativeWorkItemID{candidate.WorkItemID}
+	if reasons, ok := reader.(corestore.DependencyReasonReader); ok {
+		var err error
+		snapshot.dependencyReasons, err = reasons.DependencyReasonRecords(ctx, candidate.ProjectID, ids)
+		if err != nil {
 			return err
 		}
-		batch, ok := reader.(tenantstore.WorkItemRelationshipBatchReader)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
+	}
+	batch, ok := reader.(tenantstore.WorkItemRelationshipBatchReader)
+	if !ok {
+		return hubapi.NativeWorkItemStorageUnavailable()
+	}
+	var err error
+	snapshot.relationships, err = batch.WorkItemRelationshipFacts(ctx, candidate.ProjectID, ids)
+	return err
+}
+
+func (s *Service) boardProjectedRelationshipIssues(organization tracker.OrganizationID, project tracker.ProjectID, issue tracker.NativeIssue, snapshot boardProjectionSnapshot) (tracker.NativeIssue, viewstore.BoardReporterRelations) {
+	for _, record := range snapshot.dependencyReasons {
+		if issue.WorkItemID == record.WorkItemID {
+			workitemread.ApplyDependencyReason(&issue, record)
 		}
-		var err error
-		facts, err = batch.WorkItemRelationshipFacts(ctx, project, []tracker.NativeWorkItemID{issue.WorkItemID})
-		return err
-	})
-	if err != nil {
-		return issue, viewstore.BoardReporterRelations{}, err
 	}
 	broad := issue
-	s.projectBoardRelationships(hubscope.NativeScope{Organization: organization, Project: project}, &broad, facts)
+	s.projectBoardRelationships(hubscope.NativeScope{Organization: organization, Project: project}, &broad, snapshot.relationships)
 	reporter := issue
 	scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: hubapi.APICredential{HostedRole: "reporter", ID: issue.Actor.PrincipalID}, SourceActor: &issue.Actor}
-	s.projectBoardRelationships(scope, &reporter, facts)
+	s.projectBoardRelationships(scope, &reporter, snapshot.relationships)
 	result := viewstore.BoardReporterRelations{ReporterStatus: hubscope.ReporterStatus(issue.State), Dependencies: reporter.Dependencies, Blockers: reporter.Blockers, Dependents: reporter.Dependents, Related: reporter.Related, DependencyReady: reporter.DependencyReady, BlockedReason: reporter.BlockedReason, UnblocksReason: reporter.UnblocksReason}
-	return broad, result, nil
+	return broad, result
 }
 
 func (s *Service) projectBoardRelationships(scope hubscope.NativeScope, issue *tracker.NativeIssue, facts []tenantstore.WorkItemRelationshipFact) {

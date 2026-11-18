@@ -79,6 +79,7 @@ ON CONFLICT(organization_id,project_id,work_item_id,kind) DO UPDATE SET reason=e
 	if count != 1 {
 		return corestore.ErrRevisionConflict
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO native_board_dirty(organization_id,project_id,work_item_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, s.organization, record.ProjectID, record.WorkItemID)
+	_, err = s.db.Exec(ctx, `INSERT INTO native_board_dirty(organization_id,project_id,work_item_id) VALUES($1,$2,$3)
+ON CONFLICT (organization_id,project_id,work_item_id) DO UPDATE SET queued_at=native_board_dirty.queued_at`, s.organization, record.ProjectID, record.WorkItemID)
 	return mapError(ctx, err)
 }

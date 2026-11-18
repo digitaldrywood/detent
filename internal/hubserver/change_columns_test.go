@@ -464,9 +464,7 @@ func TestChangeColumnsSelectIssueSideData(t *testing.T) {
 						t.Fatal(err)
 					}
 					issue := f.issue
-					if err := f.service.prepareNativeIssueChangeRecord(t.Context(), snapshot, &issue); err != nil {
-						t.Fatal(err)
-					}
+					f.service.prepareNativeIssueChangeRecord(snapshot, &issue)
 					if issue.ListChange == nil || issue.ListChange.HeadSHA != head || issue.ListChange.Branch != branch {
 						t.Fatalf("pending=%v issue Change=%+v want branch=%s head=%s", pending, issue.ListChange, branch, head)
 					}
