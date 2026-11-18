@@ -10,9 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
-
 	"syscall"
 
 	"github.com/digitaldrywood/detent/internal/procstart"
@@ -31,7 +31,11 @@ func NewLifetime() (*Lifetime, error) {
 	if err == nil {
 		l.writer, err = os.OpenFile(l.path(), os.O_WRONLY|unix.O_NONBLOCK, 0)
 	}
+	if err == nil {
+		err = l.writer.Chmod(0400)
+	}
 	if err != nil {
+		err = errors.Join(err, l.CloseWriter())
 		if l.reader != nil {
 			err = errors.Join(err, l.reader.Close())
 		}
@@ -118,6 +122,42 @@ func (l *Lifetime) procDescriptorHolders(ctx context.Context, root string) ([]in
 		}
 	}
 	return pids, nil
+}
+
+func (l *Lifetime) holdsWriter(ctx context.Context, pid int) (bool, error) {
+	if runtime.GOOS == "linux" {
+		marker, err := l.reader.Stat()
+		if err != nil || !hookDescriptorMatches("/proc", pid, marker) {
+			return false, err
+		}
+		data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "fdinfo", "4"))
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		for line := range strings.Lines(string(data)) {
+			if value, ok := strings.CutPrefix(line, "flags:"); ok {
+				flags, err := strconv.ParseUint(strings.TrimSpace(value), 8, 64)
+				return flags&unix.O_ACCMODE == unix.O_WRONLY, err
+			}
+		}
+		return false, errors.New("hook descriptor access mode unavailable")
+	}
+	if err := l.checkPath(); err != nil {
+		return false, err
+	}
+	cmd := exec.CommandContext(ctx, "lsof", "-nP", "-w", "-a", "-p", strconv.Itoa(pid), "-d", "4", "-F", "a", "--", l.path())
+	data, err := workspaceScanOutput(ctx, cmd)
+	var exited *exec.ExitError
+	if errors.As(err, &exited) && exited.ExitCode() == 1 && ctx.Err() == nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect hook descriptor access: %w", err)
+	}
+	return slices.Contains(strings.Fields(string(data)), "aw"), nil
 }
 
 func hookDescriptorMatches(root string, pid int, marker os.FileInfo) bool {
