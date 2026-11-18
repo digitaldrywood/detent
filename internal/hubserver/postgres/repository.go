@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgcore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/projectreads"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -180,7 +181,7 @@ func (r *Repository) begin(ctx context.Context, organization tracker.Organizatio
 	}()
 	finishCallback := transactionSpan(ctx, "pg_callback")
 	db := timedQueries{DBTX: tx}
-	owner := &session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly, leaseClock: r.leaseClock, searchBudget: r.searchBudget, flushesBoardDeltas: !readOnly}
+	owner := &session{projectReads: projectreads.New(ctx, r.pool, readOnly), organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly, leaseClock: r.leaseClock, searchBudget: r.searchBudget, flushesBoardDeltas: !readOnly}
 	err = func() error {
 		defer finishCallback()
 		return run(owner)
@@ -252,7 +253,7 @@ type session struct {
 	cacheMu            sync.Mutex
 	projectGrants      map[projectAccessKey]accessstore.ProjectGrant
 	tokenGrants        map[projectAccessKey]accessstore.TokenGrant
-	projectRows        map[tracker.ProjectID][]pgquery.BoundProjectRecordRow
+	projectReads       projectreads.Reader
 	credentials        map[string]accessstore.Credential
 	members            map[string]accessstore.Member
 	organizationRecord *accessstore.Organization

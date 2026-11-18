@@ -14410,7 +14410,10 @@
       ],
       "inventory": {
         "operations": {
+          "Queries.ActiveProjectAddressBySlug:QueryRow": 1,
+          "Queries.BoundProjectMetadata:QueryRow": 1,
           "Queries.BoundProjectRecord:Query": 1,
+          "Queries.BoundProjectVersion:QueryRow": 1,
           "Queries.CreateProjectSettings:Exec": 1,
           "Queries.CreateProjectState:Exec": 1,
           "Queries.CreateProjectTransition:Exec": 1,
@@ -14430,7 +14433,10 @@
           "Queries.UpdateProjectMetadata:Exec": 1,
           "Queries.UpdateProjectModel:Exec": 1,
           "Queries.UpdateProjectSettings:QueryRow": 1,
+          "activeProjectAddressBySlug:SQL": 1,
+          "boundProjectMetadata:SQL": 1,
           "boundProjectRecord:SQL": 1,
+          "boundProjectVersion:SQL": 1,
           "createProjectSettings:SQL": 1,
           "createProjectState:SQL": 1,
           "createProjectTransition:SQL": 1,
@@ -15647,14 +15653,17 @@
           "session.CreateProjectRecord:query-receiver": 2,
           "session.GitHubRepositoryBindings:Query": 1,
           "session.GitHubRepositoryBindings:SQL": 1,
+          "session.ProjectAddressBySlug:generated:ActiveProjectAddressBySlug": 1,
+          "session.ProjectAddressBySlug:query-receiver": 1,
           "session.ProjectBySlug:generated:ResolveProjectSlug": 1,
           "session.ProjectBySlug:query-receiver": 1,
           "session.ProjectIDByName:generated:ResolveProjectName": 1,
           "session.ProjectIDByName:query-receiver": 1,
-          "session.ProjectRecord:generated:BoundProjectRecord": 1,
+          "session.ProjectMetadata:query-receiver": 1,
           "session.ProjectRecord:query-receiver": 1,
           "session.ProjectSlugOwner:generated:ResolveProjectSlug": 1,
           "session.ProjectSlugOwner:query-receiver": 1,
+          "session.ProjectVersion:query-receiver": 1,
           "session.RequireProjectIdle:generated:ProjectHasActiveWork": 1,
           "session.RequireProjectIdle:query-receiver": 1,
           "session.RetireProject:Exec": 2,
@@ -15692,6 +15701,21 @@
           "hub/projects",
           "hub/runner_enrollment_projects"
         ]
+      }
+    },
+    "internal/hubserver/postgres/projectreads/reads.go": {
+      "atomic_groups": [
+        "postgres-callback"
+      ],
+      "disposition": "target-adapter",
+      "families": [
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
+        },
+        "tables": []
       }
     },
     "internal/hubserver/postgres/projects.go": {
@@ -17074,7 +17098,10 @@
       "inventory": {
         "operations": {
           "SQL": 1,
+          "query:ActiveProjectAddressBySlug:one": 1,
+          "query:BoundProjectMetadata:one": 1,
           "query:BoundProjectRecord:many": 1,
+          "query:BoundProjectVersion:one": 1,
           "query:CreateProjectSettings:exec": 1,
           "query:CreateProjectState:exec": 1,
           "query:CreateProjectTransition:exec": 1,
@@ -17755,18 +17782,6 @@
           "hub/workspace_occupancy",
           "hub/workspace_sessions"
         ]
-      }
-    },
-    "internal/hubserver/postgres/read_request.go": {
-      "disposition": "target-adapter",
-      "families": [
-        "lifecycle"
-      ],
-      "inventory": {
-        "operations": {
-          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
-        },
-        "tables": []
       }
     },
     "internal/hubserver/postgres/receipt_import.go": {

@@ -55,3 +55,31 @@ func TracedFeaturePool(t *testing.T, source *pgxpool.Pool, tracer pgx.QueryTrace
 	t.Cleanup(pool.Close)
 	return pool
 }
+
+type ProjectWorkflowTrace struct {
+	Calls     atomic.Int64
+	Rows      atomic.Int64
+	Revisions atomic.Int64
+	Metadata  atomic.Int64
+}
+
+type workflowQueryKey struct{}
+
+func (trace *ProjectWorkflowTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, query pgx.TraceQueryStartData) context.Context {
+	switch {
+	case strings.Contains(query.SQL, "-- name: BoundProjectVersion "):
+		trace.Revisions.Add(1)
+	case strings.Contains(query.SQL, "-- name: BoundProjectMetadata "):
+		trace.Metadata.Add(1)
+	case strings.Contains(query.SQL, "JOIN project_workflow_transitions"):
+		trace.Calls.Add(1)
+		return context.WithValue(ctx, workflowQueryKey{}, true)
+	}
+	return ctx
+}
+
+func (trace *ProjectWorkflowTrace) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, result pgx.TraceQueryEndData) {
+	if ctx.Value(workflowQueryKey{}) == true {
+		trace.Rows.Add(result.CommandTag.RowsAffected())
+	}
+}

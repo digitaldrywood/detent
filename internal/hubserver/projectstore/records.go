@@ -47,6 +47,18 @@ type Settings struct {
 	ModelContentBytes         int64
 }
 
+type Version struct {
+	Slug                    string
+	SettingsRevision        int64
+	ContentSettingsRevision int64
+	ModelRevision           int64
+}
+
+type Metadata struct {
+	Core     corestore.Project
+	Settings Settings
+}
+
 type Record struct {
 	Page     *Page
 	Core     corestore.Project
@@ -58,7 +70,10 @@ type Reader interface {
 	ProjectLatestAttemptStatus(context.Context, tracker.ProjectID) (string, error)
 	ProjectOnboardingProgress(context.Context, tracker.ProjectID) (onboarding.Progress, error)
 	ProjectAllowanceUsage(context.Context, int64) (int64, error)
+	ProjectMetadata(context.Context, tracker.ProjectID) (Metadata, error)
+	ProjectVersion(context.Context, tracker.ProjectID) (Version, error)
 	ProjectRecord(context.Context, tracker.ProjectID) (Record, error)
+	ProjectAddressBySlug(context.Context, string) (tracker.ProjectID, string, error)
 	ProjectBySlug(context.Context, string) (Record, error)
 	ProjectIDByName(context.Context, string) (tracker.ProjectID, error)
 	ProjectSlugOwner(context.Context, string) (tracker.ProjectID, error)

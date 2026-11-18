@@ -3,11 +3,12 @@ package postgres
 import (
 	"context"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/projectreads"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,9 +28,16 @@ func (r *Repository) ReadRequest(ctx context.Context, organization tracker.Organ
 	return r.transactionIsolation(ctx, organization, corestore.Serving, true, pgx.RepeatableRead, func(s *session) error {
 		s.projectGrants = make(map[projectAccessKey]accessstore.ProjectGrant)
 		s.tokenGrants = make(map[projectAccessKey]accessstore.TokenGrant)
-		s.projectRows = make(map[tracker.ProjectID][]pgquery.BoundProjectRecordRow)
+		s.projectReads.BeginSnapshot()
 		s.credentials = make(map[string]accessstore.Credential)
 		s.members = make(map[string]accessstore.Member)
 		return run(context.WithValue(ctx, readRequestKey{}, &readRequest{repository: r, session: s}))
 	})
+}
+
+func (r *Repository) WithProjectWorkflows(ctx context.Context) context.Context {
+	if r == nil {
+		return ctx
+	}
+	return projectreads.WithScope(ctx, r.pool)
 }
