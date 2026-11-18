@@ -113,6 +113,10 @@ func ExplainReportPlan(ctx context.Context, db *sql.DB, organization string, sta
 		return nil, fmt.Errorf("begin report explain: %w", err)
 	}
 	defer tx.Rollback()
+	return explainReportPlanTx(ctx, tx, organization, statement, settings...)
+}
+
+func explainReportPlanTx(ctx context.Context, tx *sql.Tx, organization string, statement ReportStatement, settings ...string) ([]byte, error) {
 	if _, err := tx.ExecContext(ctx, "SET LOCAL ROLE detent_runtime_v2"); err != nil {
 		return nil, fmt.Errorf("set report explain role: %w", err)
 	}
@@ -174,6 +178,25 @@ func CheckReportRequest(ctx context.Context, db *sql.DB, organization string, st
 		report.Problems = append(report.Problems, fmt.Sprintf("request: %s (probes %d, candidates %d)", problem, reportProbes(report.Results), report.Candidates))
 	}
 	return report, nil
+}
+
+func AssertReportRequest(t *testing.T, db *sql.DB, organization string, statements []ReportStatement, relations []string, request string, required ...string) {
+	t.Helper()
+	report, err := CheckReportRequest(t.Context(), db, organization, statements, relations, ReportRequestBudgets[request])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, problem := range report.Problems {
+		t.Errorf("actual %s read violates report source bounds: %s", request, problem)
+	}
+	for _, relation := range required {
+		if !report.Relations[relation] {
+			t.Errorf("actual report did not exercise %s facts", relation)
+		}
+	}
+	if request == "activity" {
+		assertActivityMetadataPlans(t, db, organization, statements)
+	}
 }
 
 func reportProbes(results []ReportPlanResult) int {

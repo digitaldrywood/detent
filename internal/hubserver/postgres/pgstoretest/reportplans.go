@@ -36,7 +36,9 @@ type ReportPlanScan struct {
 	Work     float64
 	Bound    float64
 	Probe    bool
-	rounding float64
+
+	rounding  float64
+	indexCond string
 }
 
 type ReportPlanResult struct {
@@ -876,7 +878,7 @@ func (a *reportAnalysis) scan(node reportPlanNode, ctx reportContext) (float64, 
 	if !hot {
 		return emitted, examined
 	}
-	scan := ReportPlanScan{Relation: node.Relation, Alias: alias, Node: node.Node, Index: node.Index, Scope: ctx.scope, Class: class, Loops: node.Loops, PerLoop: node.perLoop(), Work: node.examined(), Bound: examined, Probe: ctx.perLoop || node.Loops > 1, rounding: max(node.rows.rowsRounding, node.rows.removedRounding)}
+	scan := ReportPlanScan{Relation: node.Relation, Alias: alias, Node: node.Node, Index: node.Index, indexCond: node.IndexCond, Scope: ctx.scope, Class: class, Loops: node.Loops, PerLoop: node.perLoop(), Work: node.examined(), Bound: examined, Probe: ctx.perLoop || node.Loops > 1, rounding: max(node.rows.rowsRounding, node.rows.removedRounding)}
 	if node.Node == "Bitmap Heap Scan" {
 		entries := 0.0
 		var count func(reportPlanNode)
