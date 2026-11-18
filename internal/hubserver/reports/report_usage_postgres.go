@@ -7,11 +7,13 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportdata"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type PostgresReportUsage struct {
@@ -20,6 +22,14 @@ type PostgresReportUsage struct {
 	Facts          []reportstore.UsageFact
 	CostsAvailable bool
 	UsageAvailable bool
+}
+
+func ReadSnapshot(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID, read func(tenantstore.Reader) error) error {
+	snapshot, ok := repository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return errors.New("PostgreSQL report snapshot reader is unavailable")
+	}
+	return snapshot.ReadTenantSnapshot(ctx, organization, corestore.Serving, read)
 }
 
 func ReadPostgresReportUsage(ctx context.Context, reader tenantstore.Reader, query reportstore.OverviewQuery, facts []reportstore.OverviewFact, w, prior operatortool.AnalyticsWindow) (PostgresReportUsage, error) {

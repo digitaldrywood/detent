@@ -3,10 +3,12 @@ package billingrecords_test
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportreads"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -20,7 +22,7 @@ import (
 
 func TestSummaryUsageRestrictsHistoryBeforePopulationLimit(t *testing.T) {
 	admin := pgstoretest.Template.Database(t)
-	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedLeaseFamily(t, repository, org)
@@ -31,10 +33,29 @@ func TestSummaryUsageRestrictsHistoryBeforePopulationLimit(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,'prj_1','attempt_summary',$2::timestamptz - interval '1 year' + n*interval '1 second','example','model',1,0,1,1,'usd',$2 FROM generate_series(1,100001) n`, org, at); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,'prj_1','attempt_summary',$2::timestamptz - interval '1 year' + n*interval '1 second','example','model',1,0,1,1,'usd',$2 FROM generate_series(1,99998) n`, org, at); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) VALUES($1,'prj_1','attempt_summary',$2,'example','model',3,0,2,7,'usd',$2),($1,'prj_1','attempt_summary',$2::timestamptz+interval '1 hour','example','model',9,0,9,99,'usd',$2)`, org, at); err != nil {
+			t.Fatal(err)
+		}
+		t.Run(string(org)+"/exact lifetime import allowance", func(t *testing.T) {
+			err := repository.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+				query := reportstore.CompletionCostQuery{Items: []reportstore.CompletionCostItem{{ProjectID: "prj_1", WorkItemID: "wi_1"}}, CurrentTo: at.Add(time.Hour), PriorTo: at}
+				rows, err := reader.(reportstore.CompletionCostReader).ReadCompletionCosts(t.Context(), query)
+				if err != nil {
+					return err
+				}
+				if len(rows) != 1 || rows[0].Cost != 100005 || rows[0].PriorCost != 99998 || rows[0].Complete {
+					t.Fatalf("lifetime costs at 100000 rows = %+v", rows)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) VALUES($1,'prj_2','attempt_summary',$2,'example','model',0,0,0,1,'eur',$2)`, org, at.Add(3*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -83,6 +104,59 @@ func TestSummaryUsageRestrictsHistoryBeforePopulationLimit(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		t.Run(string(org)+"/batch empty attempts at the exact row limit", func(t *testing.T) {
+			counter := &pgstoretest.ReportCountingTracer{}
+			tx, err := pgstoretest.TracedFeaturePool(t, pool, counter).Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(t.Context())
+			if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", org); err != nil {
+				t.Fatal(err)
+			}
+			attempts := []reportstore.AttemptFact{{AttemptID: "attempt_summary", ProjectID: "prj_1"}}
+			for i := range 64 {
+				attempts = append(attempts, reportstore.AttemptFact{AttemptID: fmt.Sprintf("empty-%d", i), ProjectID: "prj_1"})
+			}
+			counter.Count.Store(0)
+			rows, err := reportreads.UsageRows(t.Context(), tx, org, at, at.Add(time.Hour), 1, attempts, false)
+			if err != nil || len(rows) != 1 || rows[0].Cost != 7 {
+				t.Fatalf("exact-limit rows=%v error=%v", rows, err)
+			}
+			if statements := counter.Count.Load(); statements > 3 {
+				t.Fatalf("exact-limit read with empty attempts used %d statements", statements)
+			}
+		})
+		t.Run(string(org)+"/tied usage keys count before currency filtering", func(t *testing.T) {
+			period := at.Add(2 * time.Hour)
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at)
+SELECT $1,'prj_1','attempt_summary',$2,'example','model-'||n,n,0,0,n,CASE WHEN n=4 THEN 'eur' ELSE 'usd' END,$2 FROM generate_series(1,6) n`, org, period); err != nil {
+				t.Fatal(err)
+			}
+			err := repository.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+				usage := reader.(reportstore.UsageReader)
+				query := reportstore.OverviewQuery{Projects: []tracker.ProjectID{"prj_1"}, From: period, To: period.Add(time.Second), Limit: 6}
+				rows, err := usage.ReadReportUsage(t.Context(), query)
+				if err != nil {
+					return err
+				}
+				var inputs []int64
+				for _, row := range rows {
+					inputs = append(inputs, row.Input)
+				}
+				if !slices.Equal(inputs, []int64{1, 2, 3, 5, 6}) {
+					t.Fatalf("windowed inputs = %v", inputs)
+				}
+				query.Limit = 5
+				if _, err := usage.ReadReportUsage(t.Context(), query); !errors.Is(err, reportstore.ErrPopulationExceeded) {
+					t.Fatalf("six raw rows at limit five = %v", err)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 		t.Run(string(org)+"/zero billing authority", func(t *testing.T) {
 			objects := pgstoretest.NewHistoryObjects()
 			content := eventstore.NewContent(objects)

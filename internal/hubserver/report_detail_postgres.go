@@ -10,8 +10,8 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/reports"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -88,7 +88,7 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 	var usage postgresReportUsage
 	var completionCosts map[reportstore.CompletionCostItem]reportstore.CompletionCostFact
 	var priorRecorded bool
-	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+	err := reports.ReadSnapshot(ctx, s.config.TenantRepository, tracker.OrganizationID(s.config.Hosted.OrganizationID), func(reader tenantstore.Reader) error {
 		store, ok := reader.(reportstore.Reader)
 		if !ok {
 			return errors.New("PostgreSQL report reader is unavailable")

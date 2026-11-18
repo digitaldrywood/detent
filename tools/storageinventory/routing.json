@@ -12251,6 +12251,18 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261118135325_report_current_usage_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "analytics"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -15170,9 +15182,11 @@
       "inventory": {
         "operations": {
           "Queries.ReadCompletionCosts:Query": 1,
+          "Queries.ReadCompletionImportAttempts:Query": 1,
           "Queries.ReadCompletionImportCosts:Query": 1,
           "Queries.ReadSummaryUsage:Query": 1,
           "readCompletionCosts:SQL": 1,
+          "readCompletionImportAttempts:SQL": 1,
           "readCompletionImportCosts:SQL": 1,
           "readSummaryUsage:SQL": 1
         },
@@ -17695,6 +17709,7 @@
         "operations": {
           "SQL": 1,
           "query:ReadCompletionCosts:many": 1,
+          "query:ReadCompletionImportAttempts:many": 1,
           "query:ReadCompletionImportCosts:many": 1,
           "query:ReadSummaryUsage:many": 1
         },
@@ -18469,12 +18484,12 @@
           "StartedWindowAttempts:SQL": 1,
           "UpdatedWindowIssues:SQL": 1,
           "UsageCoverage:Query": 1,
-          "UsageCoverage:SQL": 3,
+          "UsageCoverage:SQL": 2,
           "UsageRows:Query": 1,
-          "UsageRows:SQL": 4,
+          "UsageRows:SQL": 2,
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "importedUsageCoverage:Query": 1,
-          "importedUsageCoverage:SQL": 2,
+          "importedUsageCoverage:SQL": 1,
           "keyset:Query": 1,
           "usageWindowAttempts:SQL": 1
         },
@@ -18487,6 +18502,21 @@
           "hub/leases",
           "hub/native_attempts"
         ]
+      }
+    },
+    "internal/hubserver/postgres/reportreads/usage_pages.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "analytics"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "usageKeys.input:SQL": 1,
+          "usagePage.fetch:Query": 1,
+          "usagePage.fetch:SQL": 2
+        },
+        "tables": []
       }
     },
     "internal/hubserver/postgres/reports.go": {
@@ -19792,7 +19822,6 @@
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
-          "session.ReadCompletionCosts:query-receiver": 1,
           "session.ReadSummaryUsage:generated:ReadSummaryUsage": 1,
           "session.ReadSummaryUsage:query-receiver": 1
         },

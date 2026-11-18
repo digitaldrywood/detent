@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/reports"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -239,7 +240,7 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 	var facts []reportstore.OverviewFact
 	var issueCosts map[reportstore.CompletionCostItem]reportstore.CompletionCostFact
 	var priorRecorded bool
-	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+	err := reports.ReadSnapshot(ctx, s.config.TenantRepository, tracker.OrganizationID(s.config.Hosted.OrganizationID), func(reader tenantstore.Reader) error {
 		store, ok := reader.(reportstore.Reader)
 		if !ok {
 			return errors.New("PostgreSQL report reader is unavailable")
@@ -298,9 +299,6 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 			}
 		}
 		issueCosts, err = readPostgresReportCompletionCosts(ctx, reader, query, facts, w, prior, true)
-		if err != nil {
-			return err
-		}
 
 		return err
 	})

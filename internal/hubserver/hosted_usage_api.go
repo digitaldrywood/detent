@@ -11,9 +11,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/reports"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -98,7 +98,7 @@ func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []
 	}
 	var facts []reportstore.UsageFact
 	var attempts []reportstore.AttemptFact
-	err := s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+	err := reports.ReadSnapshot(ctx, s.config.TenantRepository, s.accessOrganization(), func(r tenantstore.Reader) error {
 		usage, ok := r.(reportstore.UsageReader)
 		if !ok {
 			return errors.New("typed usage reader unavailable")

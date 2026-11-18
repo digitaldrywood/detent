@@ -159,15 +159,23 @@ func UsageRows(ctx context.Context, db pgquery.DBTX, organization tracker.Organi
 		ids[i], projects[i] = attempts[i].AttemptID, string(attempts[i].ProjectID)
 		owners[ids[i]] = &attempts[i]
 	}
-	const attemptKeys = `SELECT u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) AND u.period>=$3 AND u.period<$4`
-	pages := FactPages("attempt_keys", attemptKeys, "attempt_id,period,provider,model,currency,usage_origin", limit)
+	page := usagePage{from: from, to: to}
+	imported, err := page.read(ctx, db, organization, ids, limit)
+	if err != nil {
+		return nil, err
+	}
+	args := []any{organization, ids, projects}
+	pages := imported.input("attempt_keys", false, &args)
 	usage := `
  SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency,'attempt' AS source_kind,u.usage_origin AS source_key
  FROM attempt_keys k CROSS JOIN LATERAL (SELECT u.* FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=k.attempt_id AND u.period=k.period AND u.provider=k.provider AND u.model=k.model AND u.currency=k.currency AND u.usage_origin=k.usage_origin LIMIT 1) u`
-	raw := `(SELECT count(*) FROM attempt_keys)>$6`
 	if current {
-		const currentKeys = `SELECT u.attempt_id,u.period,u.source_key FROM report_usage_current u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) AND u.period>=$3 AND u.period<$4`
-		pages += ", " + FactPages("current_keys", currentKeys, "attempt_id,period,source_key", limit)
+		page.current = true
+		keys, err := page.read(ctx, db, organization, ids, limit)
+		if err != nil {
+			return nil, err
+		}
+		pages += ", " + keys.input("current_keys", true, &args)
 		usage += `
  WHERE coalesce((SELECT false FROM report_usage_current unknown WHERE unknown.organization_id=u.organization_id AND unknown.attempt_id=u.attempt_id AND unknown.provider=u.provider AND unknown.model=u.model AND unknown.usage_kind IS NULL LIMIT 1),true)
  UNION ALL
@@ -175,15 +183,12 @@ func UsageRows(ctx context.Context, db pgquery.DBTX, organization tracker.Organi
  FROM current_keys k CROSS JOIN LATERAL (SELECT u.* FROM report_usage_current u WHERE u.organization_id=$1 AND u.source_key=k.source_key LIMIT 1) u
  CROSS JOIN LATERAL (SELECT c.currency FROM cost_sources c WHERE c.organization_id=u.organization_id AND c.source_key=u.source_key LIMIT 1) c
  WHERE u.usage_kind IS DISTINCT FROM 'cumulative' OR coalesce((SELECT false FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model LIMIT 1),true)`
-		raw += ` OR (SELECT count(*) FROM current_keys)>$6`
 	}
-	rows, err := db.Query(ctx, "WITH "+pages+`, usage AS (`+usage+`
+	rows, err := db.Query(ctx, "WITH "+pages+`, usage AS MATERIALIZED (`+usage+`
 )
-SELECT false AS exceeded,u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency,u.source_kind,u.source_key FROM usage u
-WHERE upper(u.currency)='USD' AND (u.attempt_id,u.project_id) IN (SELECT s.attempt_id,s.project_id FROM ROWS FROM (unnest($2::text[]),unnest($5::text[])) AS s(attempt_id,project_id))
-UNION ALL
-SELECT true,'','',$3::timestamptz,'','',0::bigint,0::bigint,0::bigint,0::double precision,'','','' WHERE `+raw+`
-ORDER BY exceeded DESC,period,attempt_id,provider,model,source_kind,source_key,currency`, organization, ids, from, to, projects, limit)
+SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency,u.source_kind,u.source_key FROM usage u
+WHERE upper(u.currency)='USD' AND (u.attempt_id,u.project_id) IN (SELECT s.attempt_id,s.project_id FROM ROWS FROM (unnest($2::text[]),unnest($3::text[])) AS s(attempt_id,project_id))
+ORDER BY period,attempt_id,provider,model,source_kind,source_key,currency`, args...)
 	if err != nil {
 		return nil, pgcore.MapError(ctx, err)
 	}
@@ -191,13 +196,9 @@ ORDER BY exceeded DESC,period,attempt_id,provider,model,source_kind,source_key,c
 	out := []reportstore.UsageFact{}
 	for rows.Next() {
 		var fact reportstore.UsageFact
-		var exceeded bool
 		var kind, key string
-		if err := rows.Scan(&exceeded, &fact.ProjectID, &fact.AttemptID, &fact.Period, &fact.Provider, &fact.Model, &fact.Input, &fact.CachedInput, &fact.Output, &fact.Cost, &fact.Currency, &kind, &key); err != nil {
+		if err := rows.Scan(&fact.ProjectID, &fact.AttemptID, &fact.Period, &fact.Provider, &fact.Model, &fact.Input, &fact.CachedInput, &fact.Output, &fact.Cost, &fact.Currency, &kind, &key); err != nil {
 			return nil, pgcore.MapError(ctx, err)
-		}
-		if exceeded {
-			return nil, reportstore.ErrPopulationExceeded
 		}
 		attempt := owners[fact.AttemptID]
 		if attempt == nil || attempt.ProjectID != fact.ProjectID {
@@ -366,8 +367,17 @@ func UsageCoverage(ctx context.Context, db pgquery.DBTX, organization tracker.Or
 		return importedUsageCoverage(ctx, db, organization, ids, true)
 	}
 	const sources = `SELECT c.source_key,c.resource_id,c.revision FROM cost_sources c WHERE c.organization_id=$1 AND c.bucket='runner_api' AND c.resource_id=ANY($2::text[])`
-	rows, err := db.Query(ctx, "WITH "+FactPages("report_page", sources, "resource_id,source_key", 100000)+`
- SELECT c.resource_id,u.complete AND u.revision=c.revision AND a.usage_pending_sequence=0 AND (u.usage_kind IS NOT NULL OR NOT EXISTS(SELECT 1 FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model AND active.usage_sequence>0)) FROM report_page c CROSS JOIN LATERAL (SELECT a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=c.resource_id LIMIT 1) a LEFT JOIN report_usage_current u ON u.organization_id=$1 AND u.source_key=c.source_key`, organization, ids)
+	rows, err := db.Query(ctx, "WITH "+FactPages("report_page", sources, "resource_id,source_key", 100000)+`,
+ requested AS MATERIALIZED (SELECT DISTINCT d.id FROM unnest($2::text[]) AS d(id) LIMIT $3),
+ pending AS MATERIALIZED (
+  SELECT a.id,a.usage_pending_sequence FROM requested d CROSS JOIN LATERAL (SELECT a.id,a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=d.id LIMIT 1) a
+ ), projected AS MATERIALIZED (
+  SELECT c.resource_id,u.known FROM report_page c LEFT JOIN LATERAL (
+   SELECT u.complete AND u.revision=c.revision AND (u.usage_kind IS NOT NULL OR coalesce((SELECT false FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model AND active.usage_sequence>0 LIMIT 1),true)) AS known
+   FROM report_usage_current u WHERE u.organization_id=$1 AND u.source_key=c.source_key LIMIT 1
+  ) u ON true
+ )
+ SELECT f.resource_id,f.known AND p.usage_pending_sequence=0 FROM projected f JOIN pending p ON p.id=f.resource_id`, organization, ids, len(ids))
 	if err != nil {
 		return false, pgcore.MapError(ctx, err)
 	}
@@ -404,29 +414,38 @@ func UsageCoverage(ctx context.Context, db pgquery.DBTX, organization tracker.Or
 }
 
 func importedUsageCoverage(ctx context.Context, db pgquery.DBTX, organization tracker.OrganizationID, missing []string, complete bool) (bool, error) {
-	const facts = `SELECT u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[])`
-	rows, err := db.Query(ctx, "WITH "+FactPages("report_page", facts, "attempt_id,period,provider,model,currency,usage_origin", 100000)+`, counted AS (SELECT f.attempt_id,count(*) AS actual,count(*) FILTER(WHERE f.usage_origin='import') AS historical FROM report_page f GROUP BY f.attempt_id)
- SELECT f.attempt_id,f.actual,f.historical,coalesce(c.row_count,0),a.usage_pending_sequence FROM counted f CROSS JOIN LATERAL (SELECT a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=f.attempt_id LIMIT 1) a LEFT JOIN report_usage_import_coverage c ON c.organization_id=$1 AND c.attempt_id=f.attempt_id`, organization, missing)
+	keys, err := (usagePage{}).read(ctx, db, organization, missing, 100000)
+	if err != nil {
+		return false, err
+	}
+	type counts struct{ actual, historical int }
+	observed := make(map[string]counts, len(missing))
+	for i, id := range keys.attempts {
+		count := observed[id]
+		count.actual++
+		if keys.origins[i] == "import" {
+			count.historical++
+		}
+		observed[id] = count
+	}
+	rows, err := db.Query(ctx, `WITH requested AS MATERIALIZED (SELECT d.attempt_id FROM unnest($2::text[]) AS d(attempt_id) LIMIT $3)
+ SELECT f.attempt_id,coalesce(c.row_count,0),a.usage_pending_sequence FROM requested f CROSS JOIN LATERAL (SELECT a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=f.attempt_id LIMIT 1) a LEFT JOIN LATERAL (SELECT c.row_count FROM report_usage_import_coverage c WHERE c.organization_id=$1 AND c.attempt_id=f.attempt_id LIMIT 1) c ON true`, organization, missing, len(missing))
 	if err != nil {
 		return false, pgcore.MapError(ctx, err)
 	}
 	imported := map[string]bool{}
-	count := 0
 	for rows.Next() {
 		var id string
-		var actual, historical, expected, pending int
-		if err := rows.Scan(&id, &actual, &historical, &expected, &pending); err != nil {
+		var expected, pending int
+		if err := rows.Scan(&id, &expected, &pending); err != nil {
 			rows.Close()
 			return false, pgcore.MapError(ctx, err)
 		}
-		count += actual
-		imported[id] = historical == expected && (expected > 0 || actual > 0 && historical == 0) && pending == 0
+		count := observed[id]
+		imported[id] = count.actual > 0 && count.historical == expected && pending == 0
 	}
 	if err := rows.Err(); err != nil {
 		return false, pgcore.MapError(ctx, err)
-	}
-	if count > 100000 {
-		return false, reportstore.ErrPopulationExceeded
 	}
 	for _, id := range missing {
 		complete = complete && imported[id]
@@ -434,7 +453,7 @@ func importedUsageCoverage(ctx context.Context, db pgquery.DBTX, organization tr
 	return complete, nil
 }
 
-func CompletionCosts(ctx context.Context, queries *pgquery.Queries, organization tracker.OrganizationID, query reportstore.CompletionCostQuery, current bool) ([]reportstore.CompletionCostFact, error) {
+func CompletionCosts(ctx context.Context, db pgquery.DBTX, organization tracker.OrganizationID, query reportstore.CompletionCostQuery, current bool) ([]reportstore.CompletionCostFact, error) {
 	projects, items := make([]string, len(query.Items)), make([]string, len(query.Items))
 	seen := make(map[reportstore.CompletionCostItem]bool, len(query.Items))
 	for i, item := range query.Items {
@@ -444,18 +463,39 @@ func CompletionCosts(ctx context.Context, queries *pgquery.Queries, organization
 		seen[item] = true
 		projects[i], items[i] = string(item.ProjectID), string(item.WorkItemID)
 	}
+	queries := pgquery.New(db)
+	selected, err := queries.ReadCompletionImportAttempts(ctx, pgquery.ReadCompletionImportAttemptsParams{
+		OrganizationID: organization, ProjectIds: projects, WorkItemIds: items, ItemCount: int32(len(query.Items)), Principal: query.Principal, HasSources: current,
+	})
+	if err != nil {
+		return nil, pgcore.MapError(ctx, err)
+	}
+	if len(selected) > CandidateRows {
+		return nil, reportstore.ErrPopulationExceeded
+	}
+	ids := make([]string, 0, len(selected))
+	for _, attempt := range selected {
+		if attempt.Imported {
+			ids = append(ids, attempt.ID)
+		}
+	}
+	keys, err := (usagePage{}).read(ctx, db, organization, ids, 100000)
+	if err != nil {
+		return nil, err
+	}
 	var rows []pgquery.ReadCompletionCostsRow
-	var err error
 	if current {
 		rows, err = queries.ReadCompletionCosts(ctx, pgquery.ReadCompletionCostsParams{
-			OrganizationID: organization, ProjectIds: projects, WorkItemIds: items, Principal: query.Principal,
+			OrganizationID: organization, ProjectIds: projects, WorkItemIds: items, ItemCount: int32(len(query.Items)), Principal: query.Principal,
 			CurrentTo: query.CurrentTo.UTC(), PriorTo: query.PriorTo.UTC(),
+			UsageAttempts: keys.attempts, UsagePeriods: keys.periods, UsageModels: keys.models, UsageProviders: keys.providers, UsageCurrencies: keys.currencies, UsageOrigins: keys.origins,
 		})
 	} else {
 		var imported []pgquery.ReadCompletionImportCostsRow
 		imported, err = queries.ReadCompletionImportCosts(ctx, pgquery.ReadCompletionImportCostsParams{
-			OrganizationID: organization, ProjectIds: projects, WorkItemIds: items, Principal: query.Principal,
+			OrganizationID: organization, ProjectIds: projects, WorkItemIds: items, ItemCount: int32(len(query.Items)), Principal: query.Principal,
 			CurrentTo: query.CurrentTo.UTC(), PriorTo: query.PriorTo.UTC(),
+			UsageAttempts: keys.attempts, UsagePeriods: keys.periods, UsageModels: keys.models, UsageProviders: keys.providers, UsageCurrencies: keys.currencies, UsageOrigins: keys.origins,
 		})
 		for _, row := range imported {
 			rows = append(rows, pgquery.ReadCompletionCostsRow(row))

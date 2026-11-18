@@ -47,5 +47,5 @@ func (s *session) ReadCompletionCosts(ctx context.Context, query reportstore.Com
 	if err != nil {
 		return nil, err
 	}
-	return reportreads.CompletionCosts(ctx, s.queries, s.organization, query, current)
+	return reportreads.CompletionCosts(ctx, s.db, s.organization, query, current)
 }
