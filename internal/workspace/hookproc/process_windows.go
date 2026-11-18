@@ -3,7 +3,6 @@ package hookproc
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,14 +108,6 @@ func windowsScratchProcessAlive(ctx context.Context, observe func(context.Contex
 		return false, nil
 	}
 	return alive, err
-}
-
-func ReapWorkspace(ctx context.Context, path string, logger *slog.Logger) int {
-	reaped, err := ReapProcesses(ctx, path, procgroup.DefaultTerminationGrace)
-	if err != nil && logger != nil {
-		logger.Warn("workspace process reap failed", "path", path, "error", err)
-	}
-	return reaped
 }
 
 func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, error) {

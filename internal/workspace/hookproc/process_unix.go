@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,16 +26,6 @@ const (
 	defaultProcessTerminationGrace     = 250 * time.Millisecond
 	minimumWorkspaceProcessScanTimeout = 30 * time.Second
 )
-
-func ReapWorkspace(ctx context.Context, path string, logger *slog.Logger) int {
-	reaped, err := ReapProcesses(ctx, path, defaultProcessTerminationGrace)
-	if err != nil {
-		if logger != nil {
-			logger.Warn("workspace process reap failed", slog.String("path", path), slog.Any("error", err))
-		}
-	}
-	return reaped
-}
 
 func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, error) {
 	path = strings.TrimSpace(path)
