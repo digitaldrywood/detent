@@ -44,8 +44,6 @@ type Deps struct {
 	Accounts        accountstore.Repository
 	Organization    tracker.OrganizationID
 	Now             func() time.Time
-	Viewer          func(echo.Context) (Viewer, error)
-	CredentialError func(echo.Context, error) error
 	AppOrganization func() string
 	Error           func(echo.Context, error) error
 }
@@ -143,12 +141,8 @@ func (s *Service) Read(ctx context.Context, viewer Viewer, request operatortool.
 	return page, nil
 }
 
-func (s *Service) API(c echo.Context) error {
+func (s *Service) API(c echo.Context, viewer Viewer) error {
 	ctx := c.Request().Context()
-	viewer, err := s.deps.Viewer(c)
-	if err != nil {
-		return s.deps.CredentialError(c, err)
-	}
 	if c.Param("organization") != s.deps.AppOrganization() {
 		return s.deps.Error(c, hubapi.NotFound())
 	}
@@ -162,6 +156,7 @@ func (s *Service) API(c echo.Context) error {
 			return s.deps.Error(c, errors.New("account repository unavailable"))
 		}
 		preference := accountstore.ReleasePreference{Version: build.Version, BuildTime: build.BuildTime.UTC()}
+		var err error
 		if viewer.Hosted {
 			err = repository.SetReleasePreference(ctx, s.deps.Organization, viewer.Subject, viewer.Membership, viewer.CredentialID, preference)
 		} else {
