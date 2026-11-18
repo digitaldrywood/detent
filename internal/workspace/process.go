@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
@@ -15,6 +16,9 @@ func scanOwnedWorkspaceProcessIDs(ctx context.Context, path string, scan workspa
 }
 func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 	return hookproc.ProcessIDs(ctx, path)
+}
+func reapWorkspaceProcesses(ctx context.Context, path string, logger *slog.Logger) int {
+	return hookproc.ReapWorkspace(ctx, path, logger)
 }
 func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, error) {
 	return hookproc.ReapProcesses(ctx, path, grace)

@@ -291,6 +291,7 @@ type LocalGitOptions struct {
 }
 
 type LocalGit struct {
+	processSource    ProcessSource
 	cleanupInventory *cleanupInventoryScanner
 
 	commits            commitPolicy
@@ -516,7 +517,7 @@ func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commi
 		scan = workspaceProcessScanner(opts.ProcessSource)
 	}
 	return &LocalGit{
-
+		processSource:      opts.ProcessSource,
 		uses:               &workspaceUses{},
 		cleanupInventory:   &cleanupInventoryScanner{},
 		createMu:           &sync.Mutex{},
@@ -938,6 +939,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if err != nil {
 		return result, err
 	}
+	result.Processes += reapWorkspaceProcesses(WithProcessSource(ctx, l.processSource), info.Path, l.logger)
 	if err := l.beginWorkspaceCleanup(ctx, info, issue, isDir); err != nil {
 		return result, err
 	}
@@ -2364,7 +2366,9 @@ func (l *LocalGit) executeHook(ctx context.Context, name string, command string,
 	} else {
 		output, err = runHookCommand(hookCtx, command, l.hooks, info, issue)
 	}
-	err = errors.Join(err, owner.commandFinished(ctx, err))
+	if finishErr := owner.commandFinished(ctx); finishErr != nil && err == nil {
+		err = finishErr
+	}
 	if err == nil {
 		return nil
 	}

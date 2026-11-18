@@ -46,7 +46,7 @@ func TestRunTeardownStopsDetachedHook(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			daemon := workspacetest.DetachedHook(t)
 			workspacetest.UseDaemonCandidates(t, daemon)
-			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: daemon.Command, BeforeRun: ":"}})
+			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{ProcessSource: emptyProcessSource, Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: daemon.Command, BeforeRun: ":"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +144,7 @@ func TestProgressHookStopsBeforeCheckoutRelease(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			service := workspacetest.DetachedHook(t)
 			workspacetest.UseDaemonCandidates(t, service)
-			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: service.Command}})
+			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), ProcessSource: emptyProcessSource, Hooks: workspace.Hooks{AfterCreate: service.Command}})
 			if err != nil {
 				t.Fatal(err)
 			}

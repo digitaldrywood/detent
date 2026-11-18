@@ -117,17 +117,7 @@ func TestCheckoutRemovalPreservesForeignProcesses(t *testing.T) {
 				issue.LandedHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 			}
 			other := workspacetest.DetachedHook(t)
-			scratch, err := PrepareWorkerScratch(t.Context(), info.Path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := CleanupWorkerScratch(info.Path, scratch); err != nil {
-					t.Error(err)
-				}
-			})
-			otherCommand := "unset DETENT_HOOK_OWNER DETENT_WORKSPACE; TEST_HOOK_CWD=" + shellQuote(info.Path) + " DETENT_WORKER_SCRATCH=" + shellQuote(scratch) + " " + other.Command
-			otherBackend, err := NewFilesystem(FilesystemOptions{Root: root, Hooks: Hooks{AfterCreate: otherCommand}})
+			otherBackend, err := NewFilesystem(FilesystemOptions{Root: root, Hooks: Hooks{AfterCreate: "TEST_HOOK_CWD=" + shellQuote(info.Path) + " " + other.Command}})
 			if err != nil {
 				t.Fatal(err)
 			}

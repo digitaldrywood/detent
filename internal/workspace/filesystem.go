@@ -21,20 +21,22 @@ import (
 )
 
 type FilesystemOptions struct {
-	Root       string
-	SourceRoot string
-	OutputRoot string
-	Hooks      Hooks
-	Logger     *slog.Logger
+	ProcessSource ProcessSource
+	Root          string
+	SourceRoot    string
+	OutputRoot    string
+	Hooks         Hooks
+	Logger        *slog.Logger
 }
 
 type Filesystem struct {
-	uses       *workspaceUses
-	root       string
-	sourceRoot string
-	outputRoot string
-	hooks      Hooks
-	logger     *slog.Logger
+	processSource ProcessSource
+	uses          *workspaceUses
+	root          string
+	sourceRoot    string
+	outputRoot    string
+	hooks         Hooks
+	logger        *slog.Logger
 }
 
 func NewFilesystem(opts FilesystemOptions) (*Filesystem, error) {
@@ -69,13 +71,13 @@ func NewFilesystem(opts FilesystemOptions) (*Filesystem, error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Filesystem{
-
-		uses:       &workspaceUses{},
-		root:       root,
-		sourceRoot: sourceRoot,
-		outputRoot: outputRoot,
-		hooks:      hooks,
-		logger:     logger,
+		processSource: opts.ProcessSource,
+		uses:          &workspaceUses{},
+		root:          root,
+		sourceRoot:    sourceRoot,
+		outputRoot:    outputRoot,
+		hooks:         hooks,
+		logger:        logger,
 	}, nil
 }
 
@@ -179,6 +181,7 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if err != nil {
 		return result, err
 	}
+	result.Processes += reapWorkspaceProcesses(WithProcessSource(ctx, f.processSource), info.Path, f.logger)
 	if err := removeWorkspacePath(f.root, info.Path); err != nil {
 		return CleanupResult{}, fmt.Errorf("remove filesystem workspace: %w", err)
 	}
@@ -421,7 +424,9 @@ func (f *Filesystem) runHook(ctx context.Context, name string, command string, i
 	}
 	issue.hookOwner = owner
 	output, err := runHookCommand(hookCtx, command, f.hooks, info, issue)
-	err = errors.Join(err, owner.commandFinished(ctx, err))
+	if finishErr := owner.commandFinished(ctx); finishErr != nil && err == nil {
+		err = finishErr
+	}
 	if err == nil {
 		return nil
 	}

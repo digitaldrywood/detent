@@ -393,7 +393,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			cfg.Codex.Command = commands[i]
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Backend: "codex", Model: "sol", Default: true}}
 			provider := backend
-			workspaces, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir()})
+			workspaces, err := workspace.NewFilesystem(workspace.FilesystemOptions{ProcessSource: emptyProcessSource, Root: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
 			}
