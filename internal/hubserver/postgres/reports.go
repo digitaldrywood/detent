@@ -299,23 +299,23 @@ func (s *session) readOverviewCandidates(ctx context.Context, projects []string,
  SELECT i.id FROM unnest($5::text[]) n(native_id) CROSS JOIN LATERAL (
   SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.native_id=n.native_id AND i.project_id=ANY($2::text[])
  ) i LIMIT $6
+), selected_projects AS MATERIALIZED (
+ SELECT DISTINCT p.id FROM unnest($2::text[]) p(id) LIMIT $8
 ), transitioned AS MATERIALIZED (
- SELECT e.project_id,e.work_item_id,e.to_state,e.recorded_at FROM collaboration_events e
- WHERE e.organization_id=$1 AND e.project_id=ANY($2::text[]) AND e.type='workflow.transitioned' AND e.recorded_at>=$3 AND e.recorded_at<$4
- AND e.to_state=ANY(ARRAY(SELECT ws.name FROM project_workflow_states ws WHERE ws.organization_id=$1 AND ws.project_id=ANY($2::text[]) AND ws.terminal UNION SELECT 'Rework'))
- AND (cardinality($2::text[])=1 OR e.to_state='Rework' OR EXISTS (SELECT 1 FROM project_workflow_states ws WHERE ws.organization_id=e.organization_id AND ws.project_id=e.project_id AND ws.name=e.to_state AND ws.terminal))
- ORDER BY e.project_id,e.to_state,e.recorded_at,e.work_item_id LIMIT $6
+ SELECT e.* FROM selected_projects p CROSS JOIN LATERAL (
+  SELECT e.project_id,e.work_item_id,e.to_state,e.recorded_at FROM collaboration_events e
+  WHERE e.organization_id=$1 AND e.project_id=p.id AND e.type='workflow.transitioned' AND e.recorded_at>=$3 AND e.recorded_at<$4
+  AND e.to_state=ANY(ARRAY(SELECT ws.name FROM project_workflow_states ws WHERE ws.organization_id=$1 AND ws.project_id=p.id AND ws.terminal UNION SELECT 'Rework'))
+  ORDER BY e.to_state,e.recorded_at,e.work_item_id OFFSET 0
+ ) e LIMIT $6
 ), landed AS MATERIALIZED (
  SELECT c.id,c.project_id,c.work_item_id,c.landed_at,c.landed_version_id,c.landed_head_sha FROM change_requests c
  WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$3 AND c.landed_at<$4 AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ORDER BY c.project_id,c.landed_at,c.id LIMIT $6
 ), verified AS MATERIALIZED (
  SELECT i.id,l.landed_at FROM landed l CROSS JOIN LATERAL (SELECT 1 FROM change_versions v WHERE v.organization_id=$1 AND v.id=l.landed_version_id AND v.change_id=l.id AND v.head_sha=l.landed_head_sha LIMIT 1) v
  CROSS JOIN LATERAL (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=l.project_id AND i.native_id=l.work_item_id LIMIT 1) i
-), terminal AS MATERIALIZED (
- SELECT t.project_id,t.work_item_id,t.to_state,t.recorded_at FROM transitioned t LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=t.project_id AND ws.name=t.to_state
- WHERE t.to_state='Rework' OR coalesce(ws.terminal,false)
 ), transitioned_items AS MATERIALIZED (
- SELECT i.id,t.to_state,t.recorded_at FROM terminal t CROSS JOIN LATERAL (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=t.project_id AND i.native_id=t.work_item_id LIMIT 1) i
+ SELECT i.id,t.to_state,t.recorded_at FROM transitioned t CROSS JOIN LATERAL (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=t.project_id AND i.native_id=t.work_item_id LIMIT 1) i
 ), keyed AS (
  SELECT id FROM created UNION SELECT id FROM named
  UNION SELECT a.issue_id FROM unnest($7::text[]) s(id) CROSS JOIN LATERAL (SELECT a.issue_id FROM native_attempts a WHERE a.organization_id=$1 AND a.id=s.id LIMIT 1) a
@@ -327,7 +327,7 @@ SELECT (SELECT count(*) FROM created)>=$6 OR (SELECT count(*) FROM named)>=$6 OR
  coalesce((SELECT array_agg(id ORDER BY id,recorded_at) FROM transitioned_items WHERE to_state='Rework'),'{}'::bigint[]),
  coalesce((SELECT array_agg(recorded_at ORDER BY id,recorded_at) FROM transitioned_items WHERE to_state='Rework'),'{}'::timestamptz[]),
  coalesce((SELECT array_agg(id ORDER BY id,landed_at) FROM verified),'{}'::bigint[]),
- coalesce((SELECT array_agg(landed_at ORDER BY id,landed_at) FROM verified),'{}'::timestamptz[])`, s.organization, projects, from, to, named, maxOverviewCandidateRows+1, started).Scan(&exceeded, &out.ids, &reworkIDs, &reworkAt, &landingIDs, &landingAt)
+ coalesce((SELECT array_agg(landed_at ORDER BY id,landed_at) FROM verified),'{}'::timestamptz[])`, s.organization, projects, from, to, named, maxOverviewCandidateRows+1, started, len(projects)).Scan(&exceeded, &out.ids, &reworkIDs, &reworkAt, &landingIDs, &landingAt)
 	if err != nil {
 		return overviewCandidates{}, mapError(ctx, err)
 	}
@@ -474,11 +474,13 @@ func (s *session) ReadAttemptFacts(ctx context.Context, query reportstore.Attemp
 FROM unnest($15::text[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM native_attempts a WHERE a.organization_id=$1 AND a.id=candidate.id LIMIT 1) a
 CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=a.organization_id AND i.id=a.issue_id LIMIT 1) i
 LEFT JOIN LATERAL (SELECT * FROM report_attempt_facts af WHERE af.organization_id=a.organization_id AND af.attempt_id=a.id LIMIT 1) af ON true
-LEFT JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=af.organization_id AND e.id=af.outcome_event_id LIMIT 1) outcome ON true
-LEFT JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=af.organization_id AND e.id=af.latest_event_id LIMIT 1) latest ON true
-LEFT JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=af.organization_id AND e.id=af.first_event_id LIMIT 1) first ON true
-LEFT JOIN LATERAL(SELECT CASE WHEN outcome.recorded_at<$5 THEN outcome.id WHEN latest.recorded_at<$5 THEN latest.id WHEN first.recorded_at<$5 THEN first.id END AS id) chosen ON true
-LEFT JOIN LATERAL(SELECT rf.*,e.recorded_at FROM collaboration_events e JOIN report_event_facts rf ON rf.organization_id=e.organization_id AND rf.event_id=e.id WHERE e.organization_id=a.organization_id AND e.id=chosen.id LIMIT 1) f ON true
+LEFT JOIN LATERAL (
+ WITH choices AS MATERIALIZED (SELECT * FROM (VALUES (af.outcome_event_id,1),(af.latest_event_id,2),(af.first_event_id,3)) v(id,priority))
+ SELECT e.id,e.recorded_at FROM choices pick
+ CROSS JOIN LATERAL (SELECT e.id,e.recorded_at FROM collaboration_events e WHERE e.organization_id=a.organization_id AND e.id=pick.id LIMIT 1) e
+ WHERE e.recorded_at<$5 ORDER BY pick.priority LIMIT 1
+) chosen ON true
+LEFT JOIN LATERAL (SELECT rf.*,chosen.recorded_at FROM report_event_facts rf WHERE rf.organization_id=a.organization_id AND rf.event_id=chosen.id LIMIT 1) f ON true
 LEFT JOIN LATERAL (SELECT * FROM leases l WHERE l.organization_id=a.organization_id AND l.lease_id=a.lease_id LIMIT 1) l ON true
 LEFT JOIN LATERAL(SELECT CASE WHEN coalesce(nullif(f.run_status,''),'running')='running' AND (l.released_at IS NOT NULL OR l.expires_at<=$14) THEN least(coalesce(l.released_at,l.expires_at),l.expires_at) END AS ended_at) lost ON true
 LEFT JOIN LATERAL (SELECT * FROM runner_lease_assignments la WHERE la.organization_id=a.organization_id AND la.lease_id=a.lease_id LIMIT 1) la ON true

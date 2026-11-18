@@ -282,13 +282,16 @@ func OpenCandidates(ctx context.Context, db pgquery.DBTX, organization tracker.O
   SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name>s.name ORDER BY i.workflow_state_name,i.id LIMIT 1
  ) next WHERE s.depth<=$5
 ), open_states AS MATERIALIZED (
- SELECT s.project_id,s.name FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
- WHERE NOT coalesce(ws.terminal,false)
+ SELECT s.project_id,array_agg(DISTINCT s.name) AS names FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
+ WHERE NOT coalesce(ws.terminal,false) GROUP BY s.project_id LIMIT $6
+), named_open AS MATERIALIZED (
+ SELECT i.id FROM open_states s CROSS JOIN LATERAL (
+  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived
+  AND i.workflow_state_name=ANY(s.names)
+  ORDER BY i.workflow_state_name,i.id OFFSET 0
+ ) i LIMIT $4
 ), open AS MATERIALIZED (
- (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND NOT i.archived
-  AND i.workflow_state_name=ANY(ARRAY(SELECT name FROM open_states))
-  AND (cardinality($2::text[])=1 OR (i.project_id,i.workflow_state_name) IN (SELECT project_id,name FROM open_states))
-  ORDER BY i.project_id,i.workflow_state_name,i.id LIMIT $4)
+ SELECT id FROM named_open
  UNION ALL
  (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND NOT i.archived AND i.workflow_state_name IS NULL ORDER BY i.project_id,i.id LIMIT $4)
 ), terminal AS MATERIALIZED (
@@ -301,7 +304,7 @@ func OpenCandidates(ctx context.Context, db pgquery.DBTX, organization tracker.O
  UNION SELECT id FROM updated WHERE NOT archived
 )
 SELECT EXISTS(SELECT 1 FROM states WHERE depth>$5) OR (SELECT count(*) FROM open)>=$4 OR (SELECT count(*) FROM terminal)>=$4 OR (SELECT count(*) FROM updated)>=$4,
- coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::bigint[])`, organization, projects, at, CandidateRows+1, maxStateNames).Scan(&exceeded, &ids)
+ coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::bigint[])`, organization, projects, at, CandidateRows+1, maxStateNames, len(projects)).Scan(&exceeded, &ids)
 	if err != nil {
 		return nil, pgcore.MapError(ctx, err)
 	}
@@ -331,13 +334,16 @@ func HistoryCandidates(ctx context.Context, db pgquery.DBTX, organization tracke
   SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND i.workflow_state_name>s.name ORDER BY i.workflow_state_name LIMIT 1
  ) next WHERE s.depth<=$6
 ), open_states AS MATERIALIZED (
- SELECT s.project_id,s.name FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
- WHERE NOT coalesce(ws.terminal,false)
+ SELECT s.project_id,array_agg(DISTINCT s.name) AS names FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
+ WHERE NOT coalesce(ws.terminal,false) GROUP BY s.project_id LIMIT $8
+), named_open AS MATERIALIZED (
+ SELECT i.id FROM open_states s CROSS JOIN LATERAL (
+  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id
+  AND i.workflow_state_name=ANY(s.names)
+  ORDER BY i.workflow_state_name,i.id OFFSET 0
+ ) i LIMIT $5
 ), open AS MATERIALIZED (
- (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[])
-  AND i.workflow_state_name=ANY(ARRAY(SELECT name FROM open_states))
-  AND (cardinality($2::text[])=1 OR (i.project_id,i.workflow_state_name) IN (SELECT project_id,name FROM open_states))
-  ORDER BY i.project_id,i.workflow_state_name,i.id LIMIT $5)
+ SELECT id FROM named_open
  UNION ALL
  (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND i.workflow_state_name IS NULL ORDER BY i.project_id,i.id LIMIT $5)
 ), active AS MATERIALIZED (
@@ -351,7 +357,7 @@ func HistoryCandidates(ctx context.Context, db pgquery.DBTX, organization tracke
 )
 SELECT EXISTS(SELECT 1 FROM states WHERE depth>$6) OR (SELECT count(*) FROM open)>=$5 OR (SELECT count(*) FROM active)>=$5,
  coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::bigint[]),
- coalesce((SELECT array_agg(DISTINCT work_item_id ORDER BY work_item_id) FROM active),'{}'::text[])`, organization, projects, from, to, CandidateRows+1, maxStateNames, updated).Scan(&exceeded, &ids, &active)
+ coalesce((SELECT array_agg(DISTINCT work_item_id ORDER BY work_item_id) FROM active),'{}'::text[])`, organization, projects, from, to, CandidateRows+1, maxStateNames, updated, len(projects)).Scan(&exceeded, &ids, &active)
 	if err != nil {
 		return nil, nil, pgcore.MapError(ctx, err)
 	}
