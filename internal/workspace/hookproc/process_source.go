@@ -50,13 +50,3 @@ func hookSignalAllowed(owner, path string, env []string) bool {
 	}
 	return !slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, HookOwnerKey+"=") })
 }
-
-func hookDescriptorAllowed(owner, path string, env []string) bool {
-	for _, entry := range env {
-		key, value, _ := strings.Cut(entry, "=")
-		if key == HookOwnerKey && value != owner || key == "DETENT_WORKSPACE" && value != path {
-			return false
-		}
-	}
-	return owner != ""
-}
