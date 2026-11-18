@@ -58,7 +58,7 @@ func (o *Orchestrator) checkpointValidator(issueID string, attemptID int64, gene
 				}
 			}
 			heartbeat := o.runningWorkAttemptHeartbeat(nil, owned.withProgress(), o.clockNow())
-			if err := recordWorkAttemptHeartbeat(ctx, o.workAttempts, heartbeat); err != nil {
+			if err := o.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat); err != nil {
 				return err
 			}
 			if owned.progress != nil {

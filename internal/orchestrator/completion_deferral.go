@@ -440,6 +440,7 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 		o.heartbeats.upsert(heartbeatTarget{
 			progress:             record.Running.progress,
 			issueID:              record.Running.Issue.ID,
+			claimExpiresAt:       state.Claimed[record.Running.Issue.ID].LeaseExpiresAt,
 			claimOwner:           firstNonBlank(state.Claimed[record.Running.Issue.ID].Owner, o.claimOwner()),
 			workAttemptHeartbeat: heartbeat,
 			workerProcess:        record.Running.WorkerProcess,

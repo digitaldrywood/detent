@@ -294,6 +294,12 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 	return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 }
 
+func (s *Scheduler) ClaimHeartbeatDeadline(issueID string) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nativeClaims[issueID].deadline
+}
+
 func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now time.Time) (orchestrator.Claimed, error) {
 	s.mu.Lock()
 	claim, ok := s.nativeClaims[issueID]

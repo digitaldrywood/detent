@@ -376,7 +376,8 @@ func TestDedicatedClaimRenewalDoesNotWaitForOtherWork(t *testing.T) {
 
 func TestDedicatedClaimRenewalUsesIndependentConnectionPool(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 5, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+	serverTime := time.Now().Add(-time.Hour)
+	lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 5, ServerTime: serverTime, ExpiresAt: serverTime.Add(time.Minute)}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/changes/") {
 			close(entered)
@@ -414,9 +415,13 @@ func TestDedicatedClaimRenewalUsesIndependentConnectionPool(t *testing.T) {
 	go func() { _, err := native.Change(ctx, "wi_example", "change_example"); done <- err }()
 	defer func() { close(release); <-done }()
 	<-entered
-	renewed, err := scheduler.RenewClaimHeartbeat(ctx, "wi_example", time.Now())
+	started := scheduler.Now()
+	renewed, err := scheduler.RenewClaimHeartbeat(ctx, "wi_example", started)
 	if err != nil || !renewed.LeaseExpiresAt.Equal(lease.ExpiresAt) {
 		t.Fatalf("renewal waited behind the occupied connection: %v", err)
+	}
+	if deadline := scheduler.ClaimHeartbeatDeadline("wi_example"); deadline.Before(started.Add(time.Minute)) || deadline.After(scheduler.Now().Add(time.Minute)) {
+		t.Fatalf("heartbeat deadline %v does not reflect remaining Hub authority", deadline)
 	}
 }
 

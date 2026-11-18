@@ -150,14 +150,25 @@ func (p *workerProgress) observe(ctx context.Context, update runpkg.UsageUpdate)
 	if !persistCheckpoint {
 		return nil
 	}
-	operationCtx, cancel := context.WithTimeout(ctx, heartbeatOperationTimeout)
-	defer cancel()
+	ttl := p.leaseTTL
+	if ttl <= 0 {
+		ttl = defaultWorkAttemptLeaseTTL
+	}
 	now := time.Now()
+	budget := ttl
+	if expiry := p.leaseExpiry(p.base.LeaseExpiresAt); !expiry.IsZero() {
+		budget = min(budget, expiry.Sub(now)/2)
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	if err := operationCtx.Err(); err != nil {
+		return err
+	}
 	base := p.base
-	base.LeaseExpiresAt = now.Add(p.leaseTTL)
+	base.LeaseExpiresAt = now.Add(ttl)
 	heartbeat := p.heartbeat(base, now)
 	heartbeat.WorkerMetadataJSON = runningWorkAttemptMetadataJSON(running, nil)
-	if err := recordWorkAttemptHeartbeat(operationCtx, p.attempts, heartbeat); err != nil {
+	if err := p.attempts.RecordWorkAttemptHeartbeat(operationCtx, heartbeat); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			p.closed = true
 		}
@@ -166,6 +177,15 @@ func (p *workerProgress) observe(ctx context.Context, update runpkg.UsageUpdate)
 	p.latest.Store(&running)
 	p.persisted.Store(&heartbeat)
 	return nil
+}
+
+func (p *workerProgress) leaseExpiry(expiry time.Time) time.Time {
+	if p != nil {
+		if heartbeat := p.persisted.Load(); heartbeat != nil && heartbeat.LeaseExpiresAt.After(expiry) {
+			return heartbeat.LeaseExpiresAt
+		}
+	}
+	return expiry
 }
 
 func (p *workerProgress) heartbeat(base store.WorkAttemptHeartbeat, now time.Time) store.WorkAttemptHeartbeat {

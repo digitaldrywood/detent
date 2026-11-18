@@ -46,15 +46,15 @@ func TestClaimHeartbeatPrecedesBlockedAttemptPersistence(t *testing.T) {
 		source := &independentClaimHeartbeat{renewed: make(chan time.Duration, 1)}
 		attempts := &blockedClaimHeartbeatPersistence{entered: make(chan struct{}), release: make(chan struct{})}
 		manager := newHeartbeatManager(Config{}, nil, attempts, time.Now, nil, source)
-		target := heartbeatTarget{issueID: "wi_example", workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 42}}
+		target := heartbeatTarget{claimExpiresAt: time.Now().Add(3 * time.Minute), issueID: "wi_example", workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 42}}
 		done := make(chan struct{})
 		go func() { defer close(done); manager.execute(t.Context(), target) }()
 		<-attempts.entered
 		synctest.Wait()
 		select {
 		case budget := <-source.renewed:
-			if budget != heartbeatOperationTimeout {
-				t.Errorf("renewal budget = %s, want %s", budget, heartbeatOperationTimeout)
+			if budget != 90*time.Second {
+				t.Errorf("renewal budget = %s, want %s", budget, 90*time.Second)
 			}
 		default:
 			t.Error("claim renewal waited behind attempt persistence")

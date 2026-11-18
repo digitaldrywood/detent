@@ -23,7 +23,10 @@ type blockedHeartbeatStore struct {
 func (s *blockedHeartbeatStore) RecordWorkAttemptHeartbeat(ctx context.Context, h store.WorkAttemptHeartbeat) error {
 	s.calls++
 	if s.calls == 1 {
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-time.After(40 * time.Second):
+		}
 	}
 	err := ctx.Err()
 	if err == nil {
@@ -45,21 +48,24 @@ func TestHeartbeatWriteDeadlineRecovery(t *testing.T) {
 				db := &checkpointAttemptStore{attempt: store.WorkAttempt{
 					ID: id, ProjectID: "test", IssueID: "worker", WorkerType: "implement",
 					Status: store.WorkAttemptStatusActive, StartedAt: now.Add(-time.Minute),
-					HeartbeatAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Minute),
+					HeartbeatAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(2 * time.Minute),
 				}}
 				backend := &blockedHeartbeatStore{WorkAttemptStore: db}
 				var logs bytes.Buffer
 				logger := slog.New(slog.NewTextHandler(&logs, nil))
 				running := Running{Issue: connector.Issue{ID: "worker", State: "In Progress"}, WorkAttemptID: id, Generation: 1, Mode: runner.RunModeImplement}
-				h := store.WorkAttemptHeartbeat{AttemptID: id, HeartbeatAt: now, LeaseExpiresAt: now.Add(time.Minute)}
-				ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+				h := store.WorkAttemptHeartbeat{AttemptID: id, HeartbeatAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(2 * time.Minute)}
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 				defer cancel()
 				switch path {
 				case "dedicated":
-					m := newHeartbeatManager(Config{}, nil, backend, func() time.Time { return now }, logger)
-					target := heartbeatTarget{issueID: "worker", sequence: 1, workAttemptHeartbeat: h}
-					m.targets["worker"] = target
-					m.execute(ctx, target)
+					m := newHeartbeatManager(Config{Claiming: ClaimingConfig{HeartbeatInterval: time.Second}}, nil, backend, time.Now, logger)
+					m.upsert(heartbeatTarget{issueID: "worker", workAttemptHeartbeat: h})
+					done := make(chan struct{})
+					go func() { defer close(done); m.Run(ctx) }()
+					<-m.results
+					cancel()
+					<-done
 				case "tick":
 					o := &Orchestrator{workAttempts: backend, logger: logger}
 					o.heartbeatRunningWorkAttempts(ctx, &State{Running: map[string]Running{"worker": running}}, now)
@@ -69,8 +75,8 @@ func TestHeartbeatWriteDeadlineRecovery(t *testing.T) {
 						t.Error(err)
 					}
 				}
-				if backend.calls != 2 || backend.recorded != 1 {
-					t.Errorf("calls=%d recorded=%d, want 2/1", backend.calls, backend.recorded)
+				if backend.calls != 1 || backend.recorded != 1 {
+					t.Errorf("calls=%d recorded=%d, want 1/1", backend.calls, backend.recorded)
 				}
 				if strings.Contains(logs.String(), "WARN") {
 					t.Errorf("unexpected warning: %s", logs.String())
@@ -79,7 +85,7 @@ func TestHeartbeatWriteDeadlineRecovery(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if attempt.HeartbeatAt.Before(now) {
+				if attempt.HeartbeatAt.Before(now) || !time.Now().Before(now.Add(2*time.Minute)) || !attempt.LeaseExpiresAt.After(now.Add(2*time.Minute)) {
 					t.Errorf("heartbeat did not advance: %v", attempt.HeartbeatAt)
 				}
 			})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,10 @@ const heartbeatOperationTimeout = 30 * time.Second
 
 type claimHeartbeatSource interface {
 	RenewClaimHeartbeat(context.Context, string, time.Time) (Claimed, error)
+}
+
+type claimHeartbeatClock interface {
+	ClaimHeartbeatDeadline(string) time.Time
 }
 
 type heartbeatManager struct {
@@ -58,6 +63,9 @@ type heartbeatTarget struct {
 	workerAlive          bool
 	workerChecked        bool
 	livenessError        error
+	claimExpiresAt       time.Time
+	attemptExpiresAt     time.Time
+	failures             int
 	sequence             uint64
 	nextDue              time.Time
 	inFlight             bool
@@ -166,6 +174,9 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 	m.mu.Lock()
 	current, ok := m.targets[target.issueID]
 	if ok && current.workAttemptHeartbeat.AttemptID == target.workAttemptHeartbeat.AttemptID && current.progress == target.progress {
+		target.failures = current.failures
+		target.claimExpiresAt = current.claimExpiresAt
+		target.attemptExpiresAt = current.attemptExpiresAt
 		target.sequence = current.sequence
 		target.nextDue = current.nextDue
 		target.inFlight = current.inFlight
@@ -178,11 +189,32 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 	} else {
 		m.nextSequence++
 		target.sequence = m.nextSequence
-		target.nextDue = m.now().Add(m.settings.interval)
+		if target.workAttemptHeartbeat.AttemptID > 0 {
+			target.attemptExpiresAt = target.workAttemptHeartbeat.LeaseExpiresAt
+		}
+		now := m.now()
+		target.claimExpiresAt = m.settings.claimDeadline(target.issueID, target.claimExpiresAt)
+		target.nextDue = now.Add(target.delay(now, m.settings.interval))
 	}
 	m.targets[target.issueID] = target
 	m.mu.Unlock()
 	m.notify()
+}
+
+func (settings heartbeatSettings) claimDeadline(issueID string, expiresAt time.Time) time.Time {
+	if source, ok := settings.scheduling.(claimHeartbeatClock); ok {
+		return source.ClaimHeartbeatDeadline(issueID)
+	}
+	return expiresAt
+}
+
+func (target heartbeatTarget) delay(now time.Time, maximum time.Duration) time.Duration {
+	for _, expiry := range []time.Time{target.claimExpiresAt, target.progress.leaseExpiry(target.attemptExpiresAt)} {
+		if !expiry.IsZero() {
+			maximum = min(maximum, max(0, expiry.Sub(now)/2))
+		}
+	}
+	return maximum
 }
 
 func (m *heartbeatManager) remove(issueID string) {
@@ -286,7 +318,6 @@ func (m *heartbeatManager) due(now time.Time) []heartbeatTarget {
 		}
 		target.inFlight = true
 		target.flightDone = make(chan struct{})
-		target.nextDue = now.Add(m.settings.interval)
 		m.targets[issueID] = target
 		due = append(due, target)
 	}
@@ -299,12 +330,25 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 	}
 	settings := m.settingsSnapshot()
 	result := heartbeatResult{issueID: target.issueID, sequence: target.sequence}
-	claimCtx, cancelClaim := context.WithTimeout(ctx, heartbeatOperationTimeout)
 	now := m.now().UTC()
+	target.claimExpiresAt = settings.claimDeadline(target.issueID, target.claimExpiresAt)
+	maximum := settings.leaseTTL
+	if settings.scheduling != nil && !target.claimExpiresAt.IsZero() && !target.claimExpiresAt.After(now) {
+		target.claimExpiresAt = time.Time{}
+		maximum = settings.interval
+	}
+	budget := target.delay(now, maximum)
+	if budget <= 0 {
+		result.claimOwnerLost = true
+		m.finish(target, result)
+		return
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	if source, ok := settings.scheduling.(claimHeartbeatSource); ok {
-		result.claim, result.claimError = source.RenewClaimHeartbeat(claimCtx, target.issueID, now)
+		result.claim, result.claimError = source.RenewClaimHeartbeat(operationCtx, target.issueID, now)
 	} else if settings.scheduling != nil {
-		result.claim, result.claimError = settings.scheduling.RenewClaim(claimCtx, target.issueID, now)
+		result.claim, result.claimError = settings.scheduling.RenewClaim(operationCtx, target.issueID, now)
 	}
 	if settings.scheduling != nil {
 		result.claimOwnerLost = errors.Is(result.claimError, ErrSchedulingClaimLost)
@@ -314,9 +358,17 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 			result.currentClaimOwner = result.claim.Owner
 		}
 	}
-	cancelClaim()
-	operationCtx, cancel := context.WithTimeout(ctx, heartbeatOperationTimeout)
-	defer cancel()
+	if settings.scheduling == nil && settings.claiming.Enabled && strings.TrimSpace(settings.claiming.LeaseField) != "" && strings.TrimSpace(target.claimOwner) != "" {
+		result.claimIssue, result.currentClaimOwner, result.claimOwnerLost, result.claimError = renewTrackerClaim(operationCtx, settings, target, now)
+		result.claimRenewed = result.claimError == nil && !result.claimOwnerLost
+	}
+	if result.claimRenewed && result.claim.LeaseExpiresAt.IsZero() {
+		result.claim.LeaseExpiresAt = now.Add(settings.leaseTTL)
+	}
+	if result.claimOwnerLost || result.claimError != nil {
+		m.finish(target, result)
+		return
+	}
 	if target.progress != nil {
 		running := target.progress.latest.Load()
 		target.workerProcess = running.WorkerProcess
@@ -326,9 +378,9 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 	result.workspaceModifiedAt, result.workspaceAdvanced = heartbeatWorkspaceActivity(target.workspacePath, target.workspaceModifiedAt)
 	result.heartbeat, result.workAttemptError = m.persistHeartbeat(operationCtx, target, settings)
 	result.workAttemptRenewed = result.workAttemptError == nil && settings.workAttempts != nil && result.heartbeat.AttemptID > 0
-	if settings.scheduling == nil && settings.claiming.Enabled && strings.TrimSpace(settings.claiming.LeaseField) != "" && strings.TrimSpace(target.claimOwner) != "" {
-		result.claimIssue, result.currentClaimOwner, result.claimOwnerLost, result.claimError = renewTrackerClaim(operationCtx, settings, target, now)
-		result.claimRenewed = result.claimError == nil && !result.claimOwnerLost
+
+	if result.claimRenewed {
+		target.claimExpiresAt = settings.claimDeadline(target.issueID, result.claim.LeaseExpiresAt)
 	}
 	m.finish(target, result)
 }
@@ -354,7 +406,10 @@ func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbea
 		heartbeat = target.progress.heartbeat(heartbeat, now)
 	}
 	if settings.workAttempts != nil && heartbeat.AttemptID > 0 {
-		err := recordWorkAttemptHeartbeat(ctx, settings.workAttempts, heartbeat)
+		if err := ctx.Err(); err != nil {
+			return heartbeat, err
+		}
+		err := settings.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat)
 		if err != nil {
 			return heartbeat, err
 		}
@@ -363,25 +418,6 @@ func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbea
 		}
 	}
 	return heartbeat, nil
-}
-
-// Each write gets its own budget inside the caller's operation. A blocked write
-// can exhaust that budget without consuming the context needed by its retry.
-// Caller cancellation and retirement remain authoritative.
-func recordWorkAttemptHeartbeat(ctx context.Context, attempts store.WorkAttemptStore, heartbeat store.WorkAttemptHeartbeat) error {
-	var err error
-	for range 2 {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err = attempts.RecordWorkAttemptHeartbeat(writeCtx, heartbeat)
-		cancel()
-		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, store.ErrNotFound) {
-			return err
-		}
-	}
-	return err
 }
 
 func (m *heartbeatManager) settingsSnapshot() heartbeatSettings {
@@ -397,10 +433,31 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 		m.mu.Unlock()
 		return
 	}
+	now := m.now()
+	if result.claimRenewed {
+		current.claimExpiresAt = target.claimExpiresAt
+	}
+	if result.workAttemptRenewed {
+		current.attemptExpiresAt = result.heartbeat.LeaseExpiresAt
+	}
+	delay := m.settings.interval
+	if !result.claimOwnerLost && (result.claimError != nil || result.workAttemptError != nil && !errors.Is(result.workAttemptError, store.ErrNotFound)) {
+		current.failures++
+		delay = min(delay, schedulingBackoffInterval(time.Second, current.failures-1))
+		delay -= rand.N(delay/8 + 1)
+	} else {
+		current.failures = 0
+	}
+	if remaining := current.delay(now, delay); remaining > 0 {
+		delay = remaining
+	}
+	current.nextDue = now.Add(delay)
 	current.inFlight = false
-	current.workerAlive = result.workerAlive
-	current.workerChecked = result.workerChecked
-	current.livenessError = result.livenessError
+	if result.claimError == nil {
+		current.workerAlive = result.workerAlive
+		current.workerChecked = result.workerChecked
+		current.livenessError = result.livenessError
+	}
 	if !result.workspaceModifiedAt.IsZero() {
 		current.workspaceModifiedAt = result.workspaceModifiedAt
 	}
@@ -589,6 +646,7 @@ func (o *Orchestrator) trackRunningHeartbeat(state *State, running Running, clai
 		progress:             running.progress,
 		issueID:              running.Issue.ID,
 		claimOwner:           owner,
+		claimExpiresAt:       claimed.LeaseExpiresAt,
 		workAttemptHeartbeat: o.runningWorkAttemptHeartbeat(state, running, now),
 		workerProcess:        running.WorkerProcess,
 		workspacePath:        running.WorkspacePath,
@@ -634,8 +692,8 @@ func (o *Orchestrator) handleHeartbeatResult(state *State, result heartbeatResul
 	}
 	if result.claim.LeaseRenewedAt.IsZero() {
 		claimed.Owner = result.currentClaimOwner
-		claimed.LeaseRenewedAt = result.heartbeat.HeartbeatAt
-		claimed.LeaseExpiresAt = o.leaseExpiresAt(result.heartbeat.HeartbeatAt)
+		claimed.LeaseExpiresAt = result.claim.LeaseExpiresAt
+		claimed.LeaseRenewedAt, _ = parseClaimTime(result.claimIssue.Fields[o.cfg.Claiming.LeaseField])
 		claimed.Issue = mergeIssueTrackerFields(claimed.Issue, result.claimIssue)
 	} else {
 		renewed := result.claim
