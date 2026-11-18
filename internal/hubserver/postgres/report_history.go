@@ -28,7 +28,13 @@ func (s *session) reportQueryArgs(query reportstore.OverviewQuery) ([]any, error
 		}
 		projects[i] = string(p)
 	}
-	return []any{s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit + 1, query.Filter.Models, query.Filter.Stages}, nil
+	models, stages := query.Filter.Models, query.Filter.Stages
+	var matched []string
+	if query.EventWindow != nil {
+		matched = query.EventWindow.MatchingItems
+		models, stages = nil, nil
+	}
+	return []any{s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit + 1, models, stages, matched}, nil
 }
 
 func (s *session) ReadHistory(ctx context.Context, query reportstore.OverviewQuery) ([]reportstore.ProjectHistory, error) {
@@ -67,17 +73,20 @@ func (s *session) ReadHistory(ctx context.Context, query reportstore.OverviewQue
 	if !ok {
 		return nil, errors.New("report query projects have an unexpected type")
 	}
-	candidateIDs, active, err := s.readHistoryCandidates(ctx, projectIDs, query.From.UTC(), query.To.UTC())
-	if err != nil {
-		return nil, err
+	window := query.EventWindow
+	if window == nil {
+		window, err = reportreads.HistoryCandidates(ctx, s.db, s.organization, projectIDs, query.From.UTC(), query.To.UTC(), nil, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	rows, err = s.db.Query(ctx, `SELECT i.project_id,i.native_id,i.created_at,coalesce(
 (SELECT e.from_state FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence LIMIT 1),
 CASE WHEN (SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created' LIMIT 1) THEN i.workflow_state_name END,'')
-FROM unnest($14::bigint[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i
+FROM unnest($15::bigint[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i
 LEFT JOIN LATERAL (SELECT ws.terminal FROM project_workflow_states ws WHERE ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name LIMIT 1) ws ON true
-WHERE `+reportreads.IssueFilter+` AND i.created_at<$5 AND (NOT coalesce(ws.terminal,false) OR i.native_updated_at>=$4 OR i.native_id=ANY($15::text[]))
-ORDER BY i.project_id,i.native_id LIMIT $11`, append(args, candidateIDs, active)...)
+WHERE `+reportreads.IssueFilter+` AND i.created_at<$5 AND (NOT coalesce(ws.terminal,false) OR i.native_updated_at>=$4 OR i.native_id=ANY($16::text[]))
+ORDER BY i.project_id,i.native_id LIMIT $11`, append(args, window.HistoryIDs, window.ActiveItems)...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -147,8 +156,12 @@ ORDER BY i.project_id,i.native_id LIMIT $11`, append(args, candidateIDs, active)
 	return out, nil
 }
 
-func (s *session) readHistoryCandidates(ctx context.Context, projects []string, from, to time.Time) ([]int64, []string, error) {
-	return reportreads.HistoryCandidates(ctx, s.db, s.organization, projects, from, to)
+func (s *session) ReadEventWindow(ctx context.Context, query reportstore.OverviewQuery) (*reportstore.EventWindow, error) {
+	projects := make([]string, len(query.Projects))
+	for i, p := range query.Projects {
+		projects[i] = string(p)
+	}
+	return reportreads.HistoryCandidates(ctx, s.db, s.organization, projects, query.From.UTC(), query.To.UTC(), query.Filter.Models, query.Filter.Stages)
 }
 
 func (s *session) ReadHistoryIssueEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor reportstore.HistoryEventCursor, limit int) (reportstore.HistoryEventPage, error) {

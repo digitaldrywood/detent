@@ -21,7 +21,18 @@ type Filter struct {
 	Stages     []string
 }
 
+type EventWindow struct {
+	HistoryIDs    []int64
+	ActiveItems   []string
+	MatchingItems []string
+}
+
+type EventWindowReader interface {
+	ReadEventWindow(context.Context, OverviewQuery) (*EventWindow, error)
+}
+
 type OverviewQuery struct {
+	EventWindow       *EventWindow
 	Projects          []tracker.ProjectID
 	Principal         string
 	ActivityWorkItems []tracker.NativeWorkItemID
@@ -208,11 +219,11 @@ type OpenQuery struct {
 }
 
 type OpenFact struct {
-	ProjectID     tracker.ProjectID
-	WorkItemID    tracker.NativeWorkItemID
-	Title         string
-	State         string
-	Terminal      bool
+	ProjectID          tracker.ProjectID
+	WorkItemID         tracker.NativeWorkItemID
+	Title              string
+	State              string
+	Terminal           bool
 	EnteredAt          *time.Time
 	FirstWorkedAt      *time.Time
 	FirstWorkedPartial bool

@@ -145,22 +145,9 @@ func (s *session) ReadOverviewFacts(ctx context.Context, query reportstore.Overv
 	}
 	statement := `WITH candidates AS (
 	 SELECT i.organization_id,i.id,i.project_id,i.native_id,i.title,i.created_at,i.workflow_state_name,i.actor_kind,i.actor_principal_id,i.issue_type,i.priority,i.revision,i.doctor_identity_revision
- FROM unnest($15::bigint[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i
- WHERE i.project_id=ANY($2::text[])
-   AND ($3='' OR i.actor_principal_id=$3)
-	   AND (coalesce(cardinality($7::text[]),0)=0 OR i.issue_type=ANY($7::text[]))
-	   AND (coalesce(cardinality($8::integer[]),0)=0 OR i.priority=ANY($8::integer[]))
-	   AND (coalesce(cardinality($9::text[]),0)=0 OR i.actor_principal_id=ANY($9::text[]))
-	   AND (coalesce(cardinality($10::text[]),0)=0 OR EXISTS (
-	     SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY($10::text[])
-   ))
-   AND (coalesce(cardinality($11::text[]),0)=0 OR EXISTS (
-     SELECT 1 FROM native_attempts a JOIN runner_lease_assignments r ON r.organization_id=a.organization_id AND r.lease_id=a.lease_id
-     WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at < $5 AND a.updated_at >= $4 AND r.runner_id=ANY($11::text[])
-   ))
- AND (coalesce(cardinality($13::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND coalesce(nullif(trim(f.model),''),'Unavailable')=ANY($13::text[])))
- AND (coalesce(cardinality($14::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND coalesce(nullif(trim(f.role),''),'Unavailable')=ANY($14::text[])))
- ORDER BY i.created_at,i.project_id,i.native_id LIMIT $12
+ FROM unnest($16::bigint[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i
+ WHERE ` + reportreads.IssueFilter + `
+ ORDER BY i.created_at,i.project_id,i.native_id LIMIT $11
 )
 SELECT i.project_id,i.native_id,i.title,i.created_at,coalesce(i.workflow_state_name,''),
  coalesce(i.actor_kind IN ('machine','automation','system','integration'),false) OR coalesce(i.doctor_identity_revision=i.revision,false) AND (coalesce(filing.actor_envelope_known,false) OR coalesce(filer_page.revision=i.revision,false) OR EXISTS(SELECT 1 FROM doctor_proposal_identities origin WHERE origin.organization_id=i.organization_id AND origin.project_id=i.project_id AND origin.work_item_id=i.native_id AND origin.kind='fingerprint' AND origin.source_revision=i.revision)),
@@ -176,8 +163,8 @@ SELECT i.project_id,i.native_id,i.title,i.created_at,coalesce(i.workflow_state_n
  CASE WHEN previous_completion.actor_envelope_known AND previous_completion.actor_kind='human' AND previous_completion.actor_agent='' THEN 'people' WHEN previous_final_runner.runner_id IS NOT NULL THEN 'runner' ELSE 'unknown' END,
  CASE WHEN previous_completion.actor_envelope_known AND previous_completion.actor_kind='human' AND previous_completion.actor_agent='' THEN previous_completion.actor_principal_id ELSE coalesce(previous_final_runner.runner_id,'') END,
  CASE WHEN previous_completion.actor_envelope_known AND previous_completion.actor_kind='human' AND previous_completion.actor_agent='' THEN previous_completion.actor_display_name ELSE coalesce(previous_final_runner.display_name,'') END,
- coalesce((SELECT true FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at >= $6 AND a.started_at < $5 LIMIT 1),false),
- coalesce((SELECT true FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at >= $4 AND a.started_at < $6 LIMIT 1),false),
+ coalesce((SELECT true FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at >= $15 AND a.started_at < $5 LIMIT 1),false),
+ coalesce((SELECT true FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at >= $4 AND a.started_at < $15 LIMIT 1),false),
  i.id, coalesce((SELECT true FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at >= $4 AND a.started_at < $5 LIMIT 1),false)
 FROM candidates i
 LEFT JOIN LATERAL (
@@ -208,7 +195,7 @@ LEFT JOIN LATERAL (
  FROM collaboration_events e LEFT JOIN project_workflow_states ws
    ON ws.organization_id=e.organization_id AND ws.project_id=e.project_id AND ws.name=e.to_state
  WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id
-   AND e.type='workflow.transitioned' AND e.recorded_at < $6
+   AND e.type='workflow.transitioned' AND e.recorded_at < $15
  ORDER BY e.recorded_at DESC,e.sequence DESC LIMIT 1
 ) previous_completion ON previous_completion.terminal
 LEFT JOIN LATERAL (
@@ -221,7 +208,11 @@ LEFT JOIN LATERAL (
  ORDER BY a.started_at DESC,a.started_at_submicro_ns DESC,a.id DESC LIMIT 1
 ) previous_final_runner ON previous_completion.to_state='Done' 
 ORDER BY i.created_at,i.project_id,i.native_id`
-	rows, err := s.db.Query(ctx, statement, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Split.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages, candidates.ids)
+	args, err := s.reportQueryArgs(query)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, statement, append(args, query.Split.UTC(), candidates.ids)...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

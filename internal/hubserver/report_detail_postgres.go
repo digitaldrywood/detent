@@ -88,7 +88,13 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 	var usage postgresReportUsage
 	var completionCosts map[reportstore.CompletionCostItem]reportstore.CompletionCostFact
 	var priorRecorded bool
-	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+	read := s.config.TenantRepository.ReadTenant
+	snapshot, prepared := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	prepared = prepared && (len(query.Filter.Models) > 0 || len(query.Filter.Stages) > 0)
+	if prepared {
+		read = snapshot.ReadTenantSnapshot
+	}
+	err := read(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
 		store, ok := reader.(reportstore.Reader)
 		if !ok {
 			return errors.New("PostgreSQL report reader is unavailable")
@@ -97,6 +103,12 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 		priorRecorded, err = store.HasPriorData(ctx, ids, prior.To, query.Principal)
 		if err != nil {
 			return err
+		}
+		if source, ok := reader.(reportstore.EventWindowReader); prepared && ok {
+			query.EventWindow, err = source.ReadEventWindow(ctx, query)
+			if err != nil {
+				return err
+			}
 		}
 		facts, err = store.ReadOverviewFacts(ctx, query)
 		if err != nil {

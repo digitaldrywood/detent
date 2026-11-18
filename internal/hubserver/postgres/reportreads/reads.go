@@ -25,6 +25,7 @@ const (
 )
 
 const IssueFilter = `i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND ($3='' OR i.actor_principal_id=$3)
+AND ($14::text[] IS NULL OR i.native_id=ANY($14::text[]))
 AND (coalesce(cardinality($6::text[]),0)=0 OR i.issue_type=ANY($6::text[]))
 AND (coalesce(cardinality($7::integer[]),0)=0 OR i.priority=ANY($7::integer[]))
 AND (coalesce(cardinality($8::text[]),0)=0 OR i.actor_principal_id=ANY($8::text[]))
@@ -224,11 +225,11 @@ func EscapeFacts(ctx context.Context, db pgquery.DBTX, organization tracker.Orga
 		return []reportstore.EscapeFact{}, nil
 	}
 	rows, err := db.Query(ctx, `WITH observed AS MATERIALIZED (
- SELECT f.change_id FROM report_escape_facts f WHERE f.organization_id=$1 AND f.observed_at>=$4 AND f.observed_at<$5 ORDER BY f.observed_at,f.change_id LIMIT $14
+ SELECT f.change_id FROM report_escape_facts f WHERE f.organization_id=$1 AND f.observed_at>=$4 AND f.observed_at<$5 ORDER BY f.observed_at,f.change_id LIMIT $15
 ), landed AS MATERIALIZED (
- SELECT c.id FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$4 ORDER BY c.project_id,c.landed_at,c.id LIMIT $14
+ SELECT c.id FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$4 ORDER BY c.project_id,c.landed_at,c.id LIMIT $15
 ), keyed AS MATERIALIZED (
- SELECT f.change_id,f.evidence_sequence,f.observed_at,f.change_id IN (SELECT id FROM landed) AS landed FROM report_escape_facts f WHERE f.organization_id=$1 AND f.change_id=ANY(ARRAY(SELECT change_id FROM observed UNION SELECT id FROM landed)) ORDER BY f.change_id,f.evidence_sequence LIMIT $14
+ SELECT f.change_id,f.evidence_sequence,f.observed_at,f.change_id IN (SELECT id FROM landed) AS landed FROM report_escape_facts f WHERE f.organization_id=$1 AND f.change_id=ANY(ARRAY(SELECT change_id FROM observed UNION SELECT id FROM landed)) ORDER BY f.change_id,f.evidence_sequence LIMIT $15
 ), escapes AS MATERIALIZED (
  SELECT f.*,c.project_id,c.work_item_id FROM keyed k
  CROSS JOIN LATERAL (SELECT f.* FROM report_escape_facts f WHERE f.organization_id=$1 AND f.change_id=k.change_id AND f.evidence_sequence=k.evidence_sequence ORDER BY f.change_id,f.evidence_sequence LIMIT 1) f
@@ -242,7 +243,7 @@ CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.proj
 WHERE `+IssueFilter+` AND e.created_at<$5
 UNION ALL
 SELECT true,'','','','',$5::timestamptz,'','','','','',$5::timestamptz,'',false,0::bigint
-WHERE (SELECT count(*) FROM observed)>=$14 OR (SELECT count(*) FROM landed)>=$14 OR (SELECT count(*) FROM keyed)>=$14
+WHERE (SELECT count(*) FROM observed)>=$15 OR (SELECT count(*) FROM landed)>=$15 OR (SELECT count(*) FROM keyed)>=$15
 ORDER BY exceeded DESC,observed_at,created_at,sequence LIMIT $11`, append(args, CandidateRows+1)...)
 	if err != nil {
 		return nil, pgcore.MapError(ctx, err)
@@ -314,16 +315,25 @@ SELECT EXISTS(SELECT 1 FROM states WHERE depth>$5) OR (SELECT count(*) FROM open
 	return ids, nil
 }
 
-func HistoryCandidates(ctx context.Context, db pgquery.DBTX, organization tracker.OrganizationID, projects []string, from, to time.Time) ([]int64, []string, error) {
+func HistoryCandidates(ctx context.Context, db pgquery.DBTX, organization tracker.OrganizationID, projects []string, from, to time.Time, models, stages []string) (*reportstore.EventWindow, error) {
 	if len(projects) > maxProjects {
-		return nil, nil, reportstore.ErrPopulationExceeded
+		return nil, reportstore.ErrPopulationExceeded
 	}
 	var exceeded bool
-	var ids []int64
-	var active []string
+	var window reportstore.EventWindow
 	updated, err := UpdatedWindowIssues(ctx, db, organization, projects, from)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
+	}
+	match := "NULL::text[]"
+	args := []any{organization, projects, from, to, CandidateRows + 1, maxStateNames, updated, len(projects)}
+	if len(models) > 0 || len(stages) > 0 {
+		args = append(args, models, stages)
+		match = `ARRAY(SELECT a.work_item_id FROM active a CROSS JOIN LATERAL (
+   SELECT f.model,f.role FROM report_event_facts f WHERE f.organization_id=$1 AND f.event_id=a.id LIMIT 1
+  ) f GROUP BY a.project_id,a.work_item_id
+  HAVING (coalesce(cardinality($9::text[]),0)=0 OR bool_or(coalesce(nullif(trim(f.model),''),'Unavailable')=ANY($9::text[])))
+  AND (coalesce(cardinality($10::text[]),0)=0 OR bool_or(coalesce(nullif(trim(f.role),''),'Unavailable')=ANY($10::text[]))))`
 	}
 	err = db.QueryRow(ctx, `WITH RECURSIVE states AS (
  SELECT p.project_id,first.name,1 AS depth FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL (
@@ -347,7 +357,7 @@ func HistoryCandidates(ctx context.Context, db pgquery.DBTX, organization tracke
  UNION ALL
  (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND i.workflow_state_name IS NULL ORDER BY i.project_id,i.id LIMIT $5)
 ), active AS MATERIALIZED (
- SELECT e.project_id,e.work_item_id FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=ANY($2::text[]) AND e.recorded_at>=$3 AND e.recorded_at<$4 ORDER BY e.project_id,e.recorded_at,e.id LIMIT $5
+ SELECT e.project_id,e.work_item_id,e.id FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=ANY($2::text[]) AND e.recorded_at>=$3 AND e.recorded_at<$4 ORDER BY e.project_id,e.recorded_at,e.id LIMIT $5
 ), keyed AS (
  SELECT id FROM open
  UNION SELECT unnest($7::bigint[])
@@ -357,14 +367,14 @@ func HistoryCandidates(ctx context.Context, db pgquery.DBTX, organization tracke
 )
 SELECT EXISTS(SELECT 1 FROM states WHERE depth>$6) OR (SELECT count(*) FROM open)>=$5 OR (SELECT count(*) FROM active)>=$5,
  coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::bigint[]),
- coalesce((SELECT array_agg(DISTINCT work_item_id ORDER BY work_item_id) FROM active),'{}'::text[])`, organization, projects, from, to, CandidateRows+1, maxStateNames, updated, len(projects)).Scan(&exceeded, &ids, &active)
+ coalesce((SELECT array_agg(DISTINCT work_item_id ORDER BY work_item_id) FROM active),'{}'::text[]),`+match, args...).Scan(&exceeded, &window.HistoryIDs, &window.ActiveItems, &window.MatchingItems)
 	if err != nil {
-		return nil, nil, pgcore.MapError(ctx, err)
+		return nil, pgcore.MapError(ctx, err)
 	}
-	if exceeded || len(ids) > CandidateRows {
-		return nil, nil, reportstore.ErrPopulationExceeded
+	if exceeded || len(window.HistoryIDs) > CandidateRows {
+		return nil, reportstore.ErrPopulationExceeded
 	}
-	return ids, active, nil
+	return &window, nil
 }
 
 func UsageCoverage(ctx context.Context, db pgquery.DBTX, organization tracker.OrganizationID, ids []string, current bool) (bool, error) {

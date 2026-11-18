@@ -17,7 +17,7 @@ import (
 const StaleLandings = 16
 
 const exactLandings = `SELECT i.project_id,i.native_id,c.id,c.landed_at,coalesce(tries.n,0),coalesce(tries.complete,false),c.landed_version_id,c.landed_head_sha,c.landed_merge_sha,c.landed_base_ref,coalesce(tries.observed,0)
-FROM unnest($14::text[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM change_requests c WHERE c.organization_id=$1 AND c.id=candidate.id LIMIT 1) c
+FROM unnest($15::text[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM change_requests c WHERE c.organization_id=$1 AND c.id=candidate.id LIMIT 1) c
 CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id LIMIT 1) i
 JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id
 LEFT JOIN LATERAL (
@@ -39,7 +39,7 @@ ORDER BY c.landed_at DESC,c.id LIMIT $11`
 const projectedLandings = `SELECT i.project_id,i.native_id,c.id,c.landed_at,c.landed_version_id,c.landed_head_sha,c.landed_merge_sha,c.landed_base_ref,
  t.change_id IS NOT NULL,t.landed_at,coalesce(t.attempts_observed,0),coalesce(t.success_position,0),coalesce(t.success_attempts,0),coalesce(t.success_complete,false),t.last_attempt_started_at,coalesce(t.last_attempt_id,''),
  coalesce(k.revision,0),coalesce(k.landing_revision,0),last.started_at,coalesce(last.id,'')
-FROM unnest($14::text[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM change_requests c WHERE c.organization_id=$1 AND c.id=candidate.id LIMIT 1) c
+FROM unnest($15::text[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM change_requests c WHERE c.organization_id=$1 AND c.id=candidate.id LIMIT 1) c
 CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id LIMIT 1) i
 JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id
 LEFT JOIN LATERAL (SELECT * FROM report_landing_attempts t WHERE t.organization_id=c.organization_id AND t.change_id=c.id LIMIT 1) t ON true
@@ -50,7 +50,7 @@ ORDER BY c.landed_at DESC,c.id LIMIT $11`
 
 func LandingFacts(ctx context.Context, db pgquery.DBTX, organization tracker.OrganizationID, args []any, limit int, from time.Time) ([]reportstore.LandingFact, error) {
 	projects, ok := args[1].([]string)
-	if !ok || len(args) != 14 {
+	if !ok || len(args) != 15 {
 		return nil, errors.New("report landing arguments have an unexpected shape")
 	}
 	rows, err := db.Query(ctx, projectedLandings, args...)
@@ -111,7 +111,7 @@ func LandingFacts(ctx context.Context, db pgquery.DBTX, organization tracker.Org
 	if len(staleIDs) == 0 || len(staleIDs) > StaleLandings {
 		return out, nil
 	}
-	exactArgs := append(append([]any{}, args[:13]...), staleIDs)
+	exactArgs := append(append([]any{}, args[:14]...), staleIDs)
 	rows, err = db.Query(ctx, exactLandings, exactArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("read exact report landings: %w", err)
