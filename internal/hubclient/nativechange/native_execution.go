@@ -1077,6 +1077,10 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 }
 
 func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, receipt *checkpointReceipt, immediate ...bool) error {
+	if receipt != nil && e.pending != nil && e.pending.Type == "run.observed" {
+		receipt.observation = e.pending
+		e.pending, e.observations = nil, nil
+	}
 	if err := e.flush(ctx); err != nil {
 		return err
 	}

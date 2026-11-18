@@ -42,18 +42,30 @@ func (e *nativeExecution) receiptAttempt(ctx context.Context) (tracker.NativeAtt
 }
 
 func (e *nativeExecution) reconcileObservation(ctx context.Context, observation *tracker.NativeRunEvent) error {
-	attempt, err := e.receiptAttempt(ctx)
-	if err != nil {
-		return err
+	sequence := observation.Data.Sequence
+	if e.mutationError(ctx) == nil {
+		pending, receipt := e.pending, e.pendingReceipt
+		e.pending, e.pendingReceipt = observation, nil
+		err := e.flush(ctx)
+		e.pending, e.pendingReceipt = pending, receipt
+		if err != nil {
+			return err
+		}
+	} else {
+		attempt, err := e.receiptAttempt(ctx)
+		if err != nil {
+			return err
+		}
+		first := observation.Data.Sequence
+		if len(observation.PriorEvents) != 0 {
+			first = observation.PriorEvents[0].Data.Sequence
+		}
+		if attempt.Sequence != first-1 && attempt.Sequence != observation.Data.Sequence {
+			return runner.ErrExecutionAuthorityUnavailable
+		}
+		sequence = attempt.Sequence
 	}
-	first := observation.Data.Sequence
-	if len(observation.PriorEvents) != 0 {
-		first = observation.PriorEvents[0].Data.Sequence
-	}
-	if attempt.Sequence != first-1 && attempt.Sequence != observation.Data.Sequence {
-		return runner.ErrExecutionAuthorityUnavailable
-	}
-	e.pending.Data.Sequence = attempt.Sequence + 1
-	e.pending.IdempotencyKey = attempt.AttemptID + ":" + strconv.FormatInt(e.pending.Data.Sequence, 10) + ":receipt"
+	e.pending.Data.Sequence = sequence + 1
+	e.pending.IdempotencyKey = e.data.AttemptID + ":" + strconv.FormatInt(e.pending.Data.Sequence, 10) + ":receipt"
 	return nil
 }

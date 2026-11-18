@@ -2,11 +2,9 @@ package nativechange
 
 import (
 	"context"
-	"errors"
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/evidence"
-	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -24,12 +22,10 @@ func (e *nativeExecution) RecordStep(ctx context.Context, receipt tracker.Native
 }
 
 func (e *nativeExecution) recordStep(ctx context.Context, receipt tracker.NativeStepReceipt, retention *checkpointReceipt) error {
-	if err := e.flush(ctx); err != nil {
-		if retention == nil || e.pending == nil || e.pending.Type != "run.observed" || !errors.Is(err, runner.ErrOperatorStopped) {
+	if retention == nil || e.pending == nil || e.pending.Type != "run.observed" {
+		if err := e.flush(ctx); err != nil {
 			return err
 		}
-		retention.observation = e.pending
-		e.pending, e.observations = nil, nil
 	}
 	receipt.PolicyID = e.data.PolicyID
 	receipt.ReviewState = e.stepReviewState()

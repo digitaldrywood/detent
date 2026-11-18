@@ -241,7 +241,7 @@ func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
 }
 
 func TestStoppedReceiptAfterUnacknowledgedObservation(t *testing.T) {
-	for _, delivery := range []string{"committed", "never received", "replaced lease"} {
+	for _, delivery := range []string{"committed", "never received", "gate during outage", "replaced lease"} {
 		t.Run(delivery, func(t *testing.T) {
 			var observed, received tracker.NativeRunEvent
 			var posts, reads int
@@ -249,7 +249,7 @@ func TestStoppedReceiptAfterUnacknowledgedObservation(t *testing.T) {
 				switch {
 				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/attempts/"):
 					reads++
-					if reads == 1 {
+					if reads == 1 && delivery != "gate during outage" {
 						return 0, "", ErrUnavailable
 					}
 					attempt := tracker.NativeAttempt{NativeRunData: observed.Data}
@@ -278,7 +278,11 @@ func TestStoppedReceiptAfterUnacknowledgedObservation(t *testing.T) {
 			}
 			head := nativeChangeFixtureHead("a")
 			ctx := api.WithMutationAuthority(t.Context(), e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return runner.ErrOperatorStopped })
-			err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head, WorkspaceDigest: strings.Repeat("d", 64)}, Validation: &gate.CommandResult{HeadSHA: head}})
+			recordCtx := ctx
+			if delivery == "gate during outage" {
+				recordCtx = t.Context()
+			}
+			err := e.RecordStep(recordCtx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head, WorkspaceDigest: strings.Repeat("d", 64)}, Validation: &gate.CommandResult{HeadSHA: head}})
 			if !nativeTransportUnavailable(err) {
 				t.Fatalf("receipt reconciliation during outage = %v", err)
 			}
@@ -293,7 +297,11 @@ func TestStoppedReceiptAfterUnacknowledgedObservation(t *testing.T) {
 			if delivery == "never received" {
 				want--
 			}
-			if err != nil || posts != 2 || received.Type != "run.checkpointed" || received.Data.Sequence != want || len(received.PriorEvents) != 0 || len(received.Data.Steps) != 1 || received.Data.Steps[0].Validation.HeadSHA != head {
+			wantPosts := 2
+			if delivery == "gate during outage" {
+				wantPosts++
+			}
+			if err != nil || posts != wantPosts || received.Type != "run.checkpointed" || received.Data.Sequence != want || len(received.PriorEvents) != 0 || len(received.Data.Steps) != 1 || received.Data.Steps[0].Validation.HeadSHA != head {
 				t.Fatalf("posts=%d receipt=%+v error=%v", posts, received, err)
 			}
 		})
