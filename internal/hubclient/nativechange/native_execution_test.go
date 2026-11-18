@@ -135,6 +135,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		releaseOutage  bool
 		conflict       bool
 		unreleased     bool
+		current        bool
 		preProvider    bool
 	}{
 		{name: "worker stopped"},
@@ -147,7 +148,8 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		{name: "prepared completion keeps ownership without controller", prepared: true, prepareFinish: true, retained: true},
 		{name: "released completion reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true},
 		{name: "released setup reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true, preProvider: true},
-		{name: "conflicting pending event preserves an unreleased lease", controller: true, prepared: true, retained: true, conflict: true, unreleased: true},
+		{name: "conflicting pending event preserves an unreleased lease", controller: true, prepared: true, retained: true, conflict: true, unreleased: true, current: true},
+		{name: "locally lost authority retains an unreleased pending event", controller: true, prepared: true, retained: true, conflict: true, unreleased: true},
 		{name: "terminal item with unavailable settlement", controller: true, prepared: true, retained: true, terminal: true, unavailable: true},
 		{name: "expired lease with unavailable settlement", controller: true, prepared: true, retained: true, expired: true, unavailable: true},
 	} {
@@ -241,7 +243,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 					t.Fatalf("terminal transition = %+v, %v", item, err)
 				}
 			}
-			if !test.expired {
+			if !test.expired && !test.current {
 				var err error
 				if test.terminal {
 					_, err = h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now())
@@ -294,6 +296,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 					data.Sequence++
 					e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.observed", SchemaVersion: 1, Data: data}
 					original := fixtureClient(h.native.Transport()).requests.Load()
+					var eventPosts atomic.Int32
 					fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 						if strings.HasSuffix(request.URL.Path, "/events") {
 							raw, err := io.ReadAll(request.Body)
@@ -306,6 +309,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 								return nil, err
 							}
 							if event.Type == "run.observed" {
+								eventPosts.Add(1)
 								return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"idempotency_conflict","message":"different content"}`)), Request: request}, nil
 							}
 						}
@@ -324,8 +328,13 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 								t.Error(err)
 							}
 						})
-						if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); hubErrorCode(err) != "idempotency_conflict" {
-							t.Fatalf("unresolved publication = %v", err)
+						err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
+						if test.current {
+							if hubErrorCode(err) != "idempotency_conflict" {
+								t.Fatalf("unresolved publication = %v", err)
+							}
+						} else if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || eventPosts.Load() != 0 {
+							t.Fatalf("lost lease publication = %v, posts = %d", err, eventPosts.Load())
 						}
 						if _, err := h.native.ValidateLease(t.Context(), e.claim.lease); err != nil || len(fixtureClaims(h.scheduler)) != 1 || e.pending == nil {
 							t.Fatalf("conflict discarded current authority: %v", err)
