@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/allocationpoll"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -116,28 +116,15 @@ func (s *Service) startAllocator(parent context.Context) {
 	}
 	go func() {
 		defer close(s.allocatorDone)
-		const base = 5 * time.Second
-		interval := base
-		timer := time.NewTicker(interval)
-		defer timer.Stop()
-		var after platformstore.AllocationCandidate
-		for {
-			if allocation != nil && s.provisionDue(ctx, &after) {
-				interval = base
-			} else {
-				interval = min(interval*2, time.Minute)
+		allocationpoll.Run(ctx, s.wake, s.config.Now, func(after *platformstore.AllocationCandidate) (bool, time.Time) {
+			var worked bool
+			var next time.Time
+			if allocation != nil {
+				worked, next = s.provisionDue(ctx, after)
 			}
 			s.sweepAttachments(ctx)
-			timer.Reset(interval/2 + rand.N(interval/2))
-			select {
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-			case <-s.wake:
-				interval = base
-				after = platformstore.AllocationCandidate{}
-			}
-		}
+			return worked, next
+		})
 	}()
 }
 
@@ -184,11 +171,11 @@ func (s *Service) tenantSpec(organization Organization) TenantSpec {
 	}
 }
 
-func (s *Service) provisionDue(ctx context.Context, after *platformstore.AllocationCandidate) bool {
-	due, err := s.registry.store.db.postgres.DueAllocations(ctx, *after, s.config.Now())
+func (s *Service) provisionDue(ctx context.Context, after *platformstore.AllocationCandidate) (bool, time.Time) {
+	due, next, err := s.registry.store.db.postgres.AllocationSchedule(ctx, *after, s.config.Now())
 	if err != nil {
 		s.config.Logger.WarnContext(ctx, "read due allocations", "error", err)
-		return false
+		return true, time.Time{}
 	}
 	*after = platformstore.AllocationCandidate{}
 	if len(due) == platformstore.AllocationPageSize {
@@ -214,7 +201,7 @@ func (s *Service) provisionDue(ctx context.Context, after *platformstore.Allocat
 		}
 		s.provision(ctx, org)
 	}
-	return len(due) > 0
+	return len(due) > 0, next
 }
 
 func (s *Service) provision(ctx context.Context, organization Organization) {
@@ -263,6 +250,8 @@ func (s *Service) recordFailure(ctx context.Context, organization Organization, 
 	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = $1, attempts = $2, next_attempt_at = NULLIF($3, '')::timestamptz, error_code = $4, error_detail = $5, updated_at = $6 WHERE id = $7",
 		state, attempts, next, code, detail, formatTime(s.config.Now()), organization.ID); err != nil {
 		s.config.Logger.Warn("organization provisioning state could not be recorded", "organization", organization.ID)
+	} else if next != "" {
+		s.wakeAllocator()
 	}
 }
 

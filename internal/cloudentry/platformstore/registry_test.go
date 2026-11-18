@@ -243,7 +243,7 @@ func TestDueAllocations(t *testing.T) {
 	check := func(at time.Time, after AllocationCandidate, want ...string) []AllocationCandidate {
 		t.Helper()
 		before := calls.Load()
-		rows, err := r.DueAllocations(t.Context(), after, at)
+		rows, _, err := r.AllocationSchedule(t.Context(), after, at)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -259,6 +259,10 @@ func TestDueAllocations(t *testing.T) {
 		}
 		return rows
 	}
+	rows, deadline, err := r.AllocationSchedule(t.Context(), AllocationCandidate{}, now)
+	if err != nil || len(rows) != 0 || !deadline.Equal(now.Add(time.Minute)) {
+		t.Fatalf("future retry rows=%d deadline=%v err=%v", len(rows), deadline, err)
+	}
 	check(now, AllocationCandidate{})
 	if _, err := db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='deleting' WHERE id='org_second'"); err != nil {
 		t.Fatal(err)
@@ -272,4 +276,13 @@ func TestDueAllocations(t *testing.T) {
 		t.Fatal("provisioning returned as deletion")
 	}
 	check(now.Add(time.Minute), due[0], "org_first")
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO platform.organizations(id,name,state,managed,endpoint,generation,created_at,updated_at)
+SELECT 'org_delete_'||lpad(n::text,2,'0'),'Example','deleting',true,'unix:/example/allocator.sock',1,$1,$1 FROM generate_series(1,$2::integer) n`, now, AllocationPageSize); err != nil {
+		t.Fatal(err)
+	}
+	first, deadline, err := r.AllocationSchedule(t.Context(), AllocationCandidate{}, now)
+	if err != nil || len(first) != AllocationPageSize || !deadline.Equal(now.Add(time.Minute)) {
+		t.Fatalf("first deletion page=%d retry=%v err=%v", len(first), deadline, err)
+	}
+	check(now, first[len(first)-1], "org_second")
 }

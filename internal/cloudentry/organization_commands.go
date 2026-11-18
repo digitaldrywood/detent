@@ -90,6 +90,7 @@ func (s *Service) deleteOrganizationFor(ctx context.Context, session accountSess
 	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state='deleting',updated_at=$1 WHERE id=$2 AND state='ready'", formatTime(s.config.Now()), organization.ID); err != nil {
 		return err
 	}
+	defer s.wakeAllocator()
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
 	if err := s.finishDeletion(detached, organization.ID); err != nil {
