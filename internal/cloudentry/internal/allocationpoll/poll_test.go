@@ -17,7 +17,9 @@ func TestWakeContinuesPageAndTimerHonorsRetry(t *testing.T) {
 		start := time.Now()
 		retry := start.Add(250 * time.Millisecond)
 		turn := 0
-		Run(ctx, wake, time.Now, func(after *platformstore.AllocationCandidate) (bool, time.Time) {
+		ticker := time.NewTicker(BaseInterval)
+		defer ticker.Stop()
+		Run(ctx, wake, ticker, time.Now, func(after *platformstore.AllocationCandidate) (bool, time.Time) {
 			turn++
 			switch turn {
 			case 1:

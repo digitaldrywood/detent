@@ -116,7 +116,9 @@ func (s *Service) startAllocator(parent context.Context) {
 	}
 	go func() {
 		defer close(s.allocatorDone)
-		allocationpoll.Run(ctx, s.wake, s.config.Now, func(after *platformstore.AllocationCandidate) (bool, time.Time) {
+		ticker := time.NewTicker(allocationpoll.BaseInterval)
+		defer ticker.Stop()
+		allocationpoll.Run(ctx, s.wake, ticker, s.config.Now, func(after *platformstore.AllocationCandidate) (bool, time.Time) {
 			var worked bool
 			var next time.Time
 			if allocation != nil {
