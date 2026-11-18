@@ -1,10 +1,11 @@
-package hubserver
+package coreimport_test
 
 import (
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,9 +14,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/coreimport/coreimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -26,7 +29,7 @@ func TestDoctorProposalNeutralImportRepairsOnlyUnchangedHead(t *testing.T) {
 	t.Parallel()
 	var native *pgxpool.Config
 	repository, admin := coreImportPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
-	objects := &memoryRunDetails{}
+	objects := hubtest.NewDetails()
 	content := eventstore.NewContent(objects)
 	marker := "<!-- detent:self-improvement proposal_id=example-imported -->"
 	body := strings.Repeat("x", 70000) + "\n" + marker + "\n```detent-origin\norigin_kind: doctor\nfingerprint: example-imported-fingerprint\n```"
@@ -49,12 +52,12 @@ func TestDoctorProposalNeutralImportRepairsOnlyUnchangedHead(t *testing.T) {
 			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org)}); err != nil {
 				return err
 			}
-			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"}, States: nativeFixtureStates()})
+			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"}, States: hubtest.States()})
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
-		source := coreimport.CoreWorkItemImportSource{BundlePath: coreWorkItemNeutralFixtureBody(t, org, project, false, body).Write(), OrganizationID: org, ProjectID: project, Objects: objects}
+		source := coreimport.CoreWorkItemImportSource{BundlePath: coreimporttest.WorkItems(t, os.DirFS("../../../.."), org, project, false, body).Write(), OrganizationID: org, ProjectID: project, Objects: objects}
 		if count, err := coreimport.ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
 			t.Fatalf("initial import count=%d error=%v", count, err)
 		}

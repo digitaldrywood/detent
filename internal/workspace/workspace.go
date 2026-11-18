@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/workspace/internal/model"
+	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 
 	"github.com/google/uuid"
 
@@ -39,7 +40,7 @@ const defaultHookTimeout = time.Minute
 const failedWorkspacePreservationTimeout = time.Minute
 
 const hookOutputTailBytes = 16 * 1024
-const workerScratchRelativePath = ".detent/worker-tmp"
+const workerScratchRelativePath = workpath.LegacyScratchRelativePath
 
 const quarantineTimestampFormat = "20060102T150405.000000000Z"
 const quarantineAccumulationWarningThreshold = 5
@@ -2163,26 +2164,12 @@ func ensurePrivateDirectories(base string, path string) error {
 	return nil
 }
 
-// workerScratchParent returns the directory that owns scratchPath: the
-// external scratch root, the root under the base an earlier runner shared
-// between users, or the legacy in-workspace scratch directory for attempts
-// started before scratch moved out of the workspace.
-func workerScratchParent(workspacePath string, scratchPath string) (string, bool) {
-	scratchPath = filepath.Clean(scratchPath)
-	for _, parent := range append(workerScratchRoots(workspacePath), filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))) {
-		if scratchPath == parent || pathWithin(parent, scratchPath) {
-			return parent, true
-		}
-	}
-	return "", false
-}
-
 func WorkerArtifactCleanupRoot(workspacePath, cleanupPath string) (string, error) {
 	if strings.TrimSpace(workspacePath) == "" || strings.TrimSpace(cleanupPath) == "" {
 		return workspacePath, nil
 	}
 	root := bestEffortCanonicalPath(workspacePath)
-	if parent, ok := workerScratchParent(root, cleanupPath); ok {
+	if parent, ok := workpath.WorkerScratchParent(root, cleanupPath); ok {
 		if _, err := validateWorkspacePath(parent, cleanupPath); err != nil {
 			return "", err
 		}
@@ -2199,7 +2186,7 @@ func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
 		return nil
 	}
 	workspacePath = bestEffortCanonicalPath(workspacePath)
-	scratchRoot, ok := workerScratchParent(workspacePath, scratchPath)
+	scratchRoot, ok := workpath.WorkerScratchParent(workspacePath, scratchPath)
 	if !ok {
 		return fmt.Errorf("remove worker scratch: %w", &PathError{Path: scratchPath, Root: WorkerScratchRoot(workspacePath), Reason: "worker scratch escapes root"})
 	}
@@ -2246,7 +2233,7 @@ func ReapWorkerArtifactPathProcesses(ctx context.Context, root string, path stri
 		return 0, nil
 	}
 	root = bestEffortCanonicalPath(root)
-	if _, ok := workerScratchParent(root, path); ok {
+	if _, ok := workpath.WorkerScratchParent(root, path); ok {
 		return ReapProcesses(ctx, path, grace)
 	}
 	path, err := validateWorkspacePath(root, path)
@@ -2275,7 +2262,7 @@ func ReapWorkerArtifactProcesses(ctx context.Context, root string, path string, 
 	if err != nil {
 		return 0, err
 	}
-	if _, ok := workerScratchParent(root, path); ok {
+	if _, ok := workpath.WorkerScratchParent(root, path); ok {
 		return ReapProcesses(ctx, root, grace)
 	}
 	path, err = validateWorkspacePath(root, path)

@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+const LegacyScratchRelativePath = ".detent/worker-tmp"
+
 const WorkerScratchBaseName = "detent-worker-scratch"
 
 // WorkerScratchRoot is the per-workspace parent of attempt scratch. It lives
@@ -32,6 +34,20 @@ func WorkerScratchRoots(workspacePath string) []string {
 		roots = append(roots, shared)
 	}
 	return roots
+}
+
+// WorkerScratchParent returns the directory that owns scratchPath: the
+// external scratch root, the root under the base an earlier runner shared
+// between users, or the legacy in-workspace scratch directory for attempts
+// started before scratch moved out of the workspace.
+func WorkerScratchParent(workspacePath string, scratchPath string) (string, bool) {
+	scratchPath = filepath.Clean(scratchPath)
+	for _, parent := range append(WorkerScratchRoots(workspacePath), filepath.Join(workspacePath, filepath.FromSlash(LegacyScratchRelativePath))) {
+		if scratchPath == parent || PathWithin(parent, scratchPath) {
+			return parent, true
+		}
+	}
+	return "", false
 }
 
 func WorkerScratchGroup(workspaceParent string) string {

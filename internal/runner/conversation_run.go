@@ -2,15 +2,12 @@ package runner
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -124,29 +121,15 @@ func (c *conversationRun) prepareTurn(request AgentTurnRequest) AgentTurnRequest
 		return request
 	}
 	if text, _ := c.session.PendingPrompt(); strings.TrimSpace(text) != "" {
-		request.Prompt = appendConversationData(request.Prompt, text)
+		request.Prompt = conversation.AppendData(request.Prompt, text)
 	}
 	// Files attached to those queued messages ride the same turn: images as
 	// provider image input, text files as a data block after the prompt.
 	if attachments := c.session.PendingAttachments(); len(attachments) > 0 {
 		request.Attachments = append(request.Attachments, attachments...)
-		request.Prompt = appendConversationData(request.Prompt, attachmentDataBlock(attachments))
+		request.Prompt = conversation.AppendData(request.Prompt, attachmentDataBlock(attachments))
 	}
 	return request
-}
-
-// appendConversationData appends a conversation data block after the prompt
-// the workflow built, so the instructions always precede the data.
-func appendConversationData(prompt string, data string) string {
-	prompt, data = strings.TrimSpace(prompt), strings.TrimSpace(data)
-	switch {
-	case data == "":
-		return prompt
-	case prompt == "":
-		return data
-	default:
-		return prompt + "\n\n" + data
-	}
 }
 
 // wrapUpdates translates provider updates into turn events before handing
@@ -213,7 +196,7 @@ func (c *conversationRun) observe(ctx context.Context, update AgentUpdate) {
 
 // inputRequested publishes a provider question to the conversation.
 func (c *conversationRun) inputRequested(request AgentInputRequest) error {
-	prompts, generated := conversationPrompts(request.Questions)
+	prompts, generated := conversation.ProviderPrompts(request.Questions)
 	if len(generated) > 0 {
 		c.mu.Lock()
 		if c.promptIDs == nil {
@@ -343,126 +326,7 @@ func conversationItemSummary(update AgentUpdate) string {
 		}
 		summary += ": " + detail
 	}
-	return truncateConversationText(summary, conversationSummaryLimit)
-}
-
-func truncateConversationText(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-	cut := limit
-	for cut > 0 && cut < len(value) && (value[cut]&0xC0) == 0x80 {
-		cut--
-	}
-	return value[:cut]
-}
-
-// conversationTruncated marks text the runner cut to fit the hub's limits.
-const conversationTruncated = "…"
-
-// conversationPrompts converts the provider's raw questions into the hub's
-// prompt shape. Missing identifiers are generated and an unreadable or empty
-// request becomes one free-text prompt, so a question can always be shown.
-// Every field is bounded to the limits the hub validates, so an oversized
-// question is shown truncated rather than refused: cut text ends with an
-// ellipsis, and omitted options or questions are named in the question text.
-// It also returns each id it generated or trimmed in place of the provider's
-// id, including a missing or blank one, mapped to that provider id.
-func conversationPrompts(raw json.RawMessage) (json.RawMessage, map[string]string) {
-	var questions []struct {
-		ID       string `json:"id"`
-		Header   string `json:"header"`
-		Question string `json:"question"`
-		Options  []struct {
-			Label       string `json:"label"`
-			Description string `json:"description"`
-		} `json:"options"`
-		IsOther  *bool `json:"isOther"`
-		FreeText *bool `json:"free_text"`
-	}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &questions); err != nil {
-			questions = nil
-		}
-	}
-	omittedQuestions := max(len(questions)-conversation.MaxPrompts, 0)
-	questions = questions[:min(len(questions), conversation.MaxPrompts)]
-	prompts := make([]conversation.Prompt, 0, max(len(questions), 1))
-	seen := make(map[string]struct{}, len(questions))
-	generated := make(map[string]string)
-	for i, question := range questions {
-		prompt := conversation.Prompt{ID: strings.TrimSpace(question.ID), Header: question.Header, Options: []conversation.Option{}}
-		if prompt.ID == "" || len(prompt.ID) > conversation.MaxPromptIDBytes {
-			prompt.ID = "q" + strconv.Itoa(i+1)
-		}
-		for suffix := 2; ; suffix++ {
-			if _, duplicate := seen[prompt.ID]; !duplicate {
-				break
-			}
-			prompt.ID = "q" + strconv.Itoa(i+1) + "-" + strconv.Itoa(suffix)
-		}
-		seen[prompt.ID] = struct{}{}
-		if question.ID != prompt.ID {
-			generated[prompt.ID] = question.ID
-		}
-		omittedOptions := 0
-		for _, option := range question.Options {
-			label := strings.TrimSpace(option.Label)
-			if label == "" {
-				continue
-			}
-			if len(prompt.Options) == conversation.MaxPromptOptions {
-				omittedOptions++
-				continue
-			}
-			prompt.Options = append(prompt.Options, conversation.Option{
-				Label:       boundConversationBytes(label, conversation.MaxOptionLabelBytes),
-				Description: boundConversationBytes(option.Description, conversation.MaxOptionDetailBytes),
-			})
-		}
-		switch {
-		case question.FreeText != nil:
-			prompt.FreeText = *question.FreeText
-		case question.IsOther != nil:
-			prompt.FreeText = *question.IsOther
-		default:
-			prompt.FreeText = len(prompt.Options) == 0
-		}
-		// The notes survive the bound: the question text is cut to make room
-		// for them.
-		var notes string
-		if omittedOptions > 0 {
-			prompt.FreeText = true
-			notes += fmt.Sprintf("\n\n(%d more options were omitted; answer in free text if none fits.)", omittedOptions)
-		}
-		if omittedQuestions > 0 && i == len(questions)-1 {
-			notes += fmt.Sprintf("\n\n(%d more questions were omitted.)", omittedQuestions)
-		}
-		prompt.Header = boundConversationBytes(prompt.Header, conversation.MaxPromptHeaderBytes)
-		prompt.Question = boundConversationBytes(question.Question, conversation.MaxPromptQuestionBytes-len(notes)) + notes
-		prompts = append(prompts, prompt)
-	}
-	if len(prompts) == 0 {
-		prompts = append(prompts, conversation.Prompt{ID: "q1", Question: "Input requested", Options: []conversation.Option{}, FreeText: true})
-	}
-	encoded, err := json.Marshal(prompts)
-	if err != nil {
-		return json.RawMessage(`[{"id":"q1","header":"","question":"Input requested","options":[],"free_text":true}]`), nil
-	}
-	return encoded, generated
-}
-
-// boundConversationBytes cuts value to at most limit bytes on a rune
-// boundary, ending cut text with conversationTruncated.
-func boundConversationBytes(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-	cut := max(limit-len(conversationTruncated), 0)
-	for cut > 0 && !utf8.RuneStart(value[cut]) {
-		cut--
-	}
-	return value[:cut] + conversationTruncated
+	return conversation.TruncateBytes(summary, conversationSummaryLimit)
 }
 
 // applyConversationPreferences applies the conversation's turn preferences

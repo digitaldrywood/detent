@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 )
@@ -161,7 +162,7 @@ func (s *session) BoardStatusModel(ctx context.Context, selection viewstore.Boar
 		var row viewstore.BoardStatusRecord
 		var display viewstore.BoardDisplay
 		var principal *string
-		targets, finish := boardDisplayTargets(&display)
+		targets, finish := boardviewsql.DisplayTargets(&display)
 		targets = append([]any{&row.WorkItemID, &row.ProjectedAt, &row.Sequence, &principal}, targets...)
 		if err := rows.Scan(targets...); err != nil {
 			return nil, mapError(ctx, err)

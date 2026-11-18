@@ -1,4 +1,4 @@
-package hubserver
+package boardview
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func exactBoardDisplay(row viewstore.BoardRecord, source tracker.NativeBoardCard) bool {
-	projected := projectedBoardCard(row)
+func ExactDisplay(row viewstore.BoardRecord, source tracker.NativeBoardCard) bool {
+	projected := ProjectedCard(row)
 	for _, card := range []*tracker.NativeBoardCard{&source, &projected} {
 		issue := &card.Issue
 		issue.WebURL = ""
@@ -45,4 +45,29 @@ func exactBoardDisplay(row viewstore.BoardRecord, source tracker.NativeBoardCard
 	}
 	got, err := json.Marshal(projected)
 	return err == nil && bytes.Equal(want, got)
+}
+
+func ProjectedCard(row viewstore.BoardRecord) tracker.NativeBoardCard {
+	d := row.Display
+	actor := d.Actor
+	actor.PrincipalID = row.ActorPrincipalID
+	issue := tracker.NativeIssue{
+		NativeReference: tracker.NativeReference{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, Number: d.Number, Revision: tracker.Revision(row.SourceRevision), Profile: "native"},
+		Title:           d.Title, Type: row.IssueType, State: row.Position.State, Archived: row.Archived, Terminal: row.Terminal, Priority: row.Priority, Labels: row.Labels, Assignees: row.Assignees, Actor: actor,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ClosedAt: row.ClosedAt, LatestTransitionReason: d.Reason,
+		Provenance: d.Provenance,
+	}
+	if len(issue.Labels) == 0 {
+		issue.Labels = nil
+	}
+	if len(issue.Assignees) == 0 {
+		issue.Assignees = nil
+	}
+	if row.Position.Activity != nil {
+		issue.LastActivityAt = *row.Position.Activity
+	}
+	if row.VerificationState != "" {
+		issue.Verification = &tracker.NativeVerification{State: row.VerificationState}
+	}
+	return tracker.NativeBoardCard{Issue: issue, StatusLine: d.StatusLine, Attempt: d.Attempt, Execution: d.Execution, Change: d.Change}
 }

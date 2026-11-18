@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/boardview"
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
@@ -624,7 +625,7 @@ func boardProjectionRecord(snapshot boardProjectionSnapshot, card tracker.Native
 	if issue.Verification != nil {
 		record.VerificationState = issue.Verification.State
 	}
-	record.Display.Exact = exactBoardDisplay(record, card)
+	record.Display.Exact = boardview.ExactDisplay(record, card)
 	if card.Execution != nil {
 		record.Running = !issue.Terminal && card.Execution.Running
 		record.ExpiresAt = &card.Execution.ExpiresAt

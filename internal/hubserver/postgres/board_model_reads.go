@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/searchsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -196,7 +197,7 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 			var part, number int
 			var allowed bool
 			targets := []any{&part, &allowed, &row.SourceRevision, &row.SourceEventSequence, &row.SourceProjectRevision, &row.Position.Lane, &row.Position.State, &row.Position.Priority, &row.Position.ActivityMissing, &row.Position.Activity, &row.Position.Identifier, &row.ClosedAt, &row.Running, &row.Dispatchable, &number, &row.ListBytes}
-			display, finishDisplay := boardDisplayTargets(&row.Display)
+			display, finishDisplay := boardviewsql.DisplayTargets(&row.Display)
 			page, finishPage := boardPageTargets(&row)
 			targets = append(targets, display...)
 			targets = append(targets, page...)

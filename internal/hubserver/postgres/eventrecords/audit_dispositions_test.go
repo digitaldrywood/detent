@@ -1,4 +1,4 @@
-package postgres_test
+package eventrecords_test
 
 import (
 	"context"

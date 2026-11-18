@@ -3,7 +3,6 @@ package scenariotest
 import (
 	"bytes"
 	"context"
-	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest/gitrepo"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -78,28 +78,6 @@ func (a *committingAgent) RunTurnWithTools(ctx context.Context, request runner.A
 		}
 	}
 	return a.RunTurn(ctx, request, update)
-}
-
-func nativeChangeRepositorySeed(name string, build func(context.Context, string) error) func(*testing.T) string {
-	seed := sync.OnceValues(func() (string, error) {
-		dir, err := os.MkdirTemp(nativeChangeFixtureRoot, name+"-seed-")
-		if err != nil {
-			return "", err
-		}
-		return dir, build(context.Background(), dir)
-	})
-	return func(t *testing.T) string {
-		t.Helper()
-		source, err := seed()
-		if err != nil {
-			t.Fatalf("build %s repository fixture: %v", name, err)
-		}
-		dir := nativeChangeTempDir(t)
-		if err := os.CopyFS(dir, os.DirFS(source)); err != nil {
-			t.Fatalf("copy %s repository fixture: %v", name, err)
-		}
-		return dir
-	}
 }
 
 func (e *nativePublicationFixtureExecution) SetPublicationSource(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
@@ -2710,25 +2688,6 @@ func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Respons
 	return response, err
 }
 
-func nativeChangeSeedGit(ctx context.Context, dir, input string, args ...string) error {
-	commandArgs := append([]string{"-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args...)
-	command := exec.CommandContext(ctx, "git", commandArgs...)
-	command.Dir = dir
-	command.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+dir)
-	command.Stdin = strings.NewReader(input)
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, output)
-	}
-	if len(args) > 0 && args[0] == "init" {
-		for _, setting := range [][2]string{{"maintenance.auto", "false"}, {"gc.auto", "0"}} {
-			if err := nativeChangeSeedGit(ctx, dir, "", "config", "--local", setting[0], setting[1]); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.NativeState, inMemory, requireDependencies bool, config hubserver.Config, constructors Constructors, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	newTestClient := func(t testing.TB, config Config) (*Client, error) { return createTestClient(t, config, constructors) }
 	t.Helper()
@@ -3113,39 +3072,11 @@ type changeFailingTransport struct {
 	controlsFailed  chan int
 }
 
-var nativeChangeBareRepo = nativeChangeRepositorySeed("bare", func(ctx context.Context, dir string) error {
-	if err := nativeChangeSeedGit(ctx, dir, "", "init", "--bare", "--object-format=sha1", "--template="); err != nil {
-		return err
-	}
-	if err := nativeChangeSeedGit(ctx, dir, "", "hash-object", "-w", "-t", "tree", "--stdin"); err != nil {
-		return err
-	}
-	for _, label := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
-		if err := nativeChangeSeedGit(ctx, dir, nativeChangeFixtureCommit(label), "hash-object", "-w", "-t", "commit", "--stdin"); err != nil {
-			return err
-		}
-	}
-	return nil
-})
-
-var nativeChangeSourceRepo = nativeChangeRepositorySeed("source", func(ctx context.Context, dir string) error {
-	for _, args := range [][]string{
-		{"init", "-b", "main"}, {"config", "core.autocrlf", "false"},
-		{"config", "commit.gpgsign", "false"}, {"config", "core.hooksPath", os.DevNull},
-		{"config", "user.name", "Test User"}, {"config", "user.email", "test@example.com"},
-	} {
-		if err := nativeChangeSeedGit(ctx, dir, "", args...); err != nil {
-			return err
-		}
-	}
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
-		return err
-	}
-	if err := nativeChangeSeedGit(ctx, dir, "", "add", "README.md"); err != nil {
-		return err
-	}
-	return nativeChangeSeedGit(ctx, dir, "", "commit", "-m", "initial")
-})
+var changeRepositories = gitrepo.NewFixtures(func() string { return nativeChangeFixtureRoot })
+var nativeChangeSourceRepo = changeRepositories.Source
+var nativeChangeSourceFixture = changeRepositories.Capture
+var nativeChangeFixtureHead = gitrepo.Head
+var nativeChangeTempDir = gitrepo.TempDir
 
 func (h *nativeChangeHub) publicationCI(t *testing.T) *NativeClient {
 	t.Helper()
@@ -3246,11 +3177,6 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 
 const nativeChangeRepository = "https://github.com/example/native-change"
 
-func nativeChangeFixtureHead(label string) string {
-	commit := nativeChangeFixtureCommit(label)
-	return fmt.Sprintf("%x", sha1.Sum([]byte(fmt.Sprintf("commit %d\x00%s", len(commit), commit))))
-}
-
 var nativeChangeFixtureRoot string
 var repositoryRootOnce sync.Once
 
@@ -3263,25 +3189,6 @@ func confirmIssueContract(t *testing.T, admin *NativeClient, id string) {
 	if _, err := admin.UpdateIssue(t.Context(), issue.WorkItemID, tracker.UpdateIssue{Mutation: api.NativeMutationKey(), ExpectedRevision: issue.Revision, Body: &issue.Body}); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// Windows Git appends metadata beneath worktrees; testing's long subtest
-// directory names can exhaust its path budget before Git creates that metadata.
-func nativeChangeTempDir(t *testing.T) string {
-	t.Helper()
-	if runtime.GOOS != "windows" {
-		return t.TempDir()
-	}
-	dir, err := os.MkdirTemp("", "native-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(dir); err != nil {
-			t.Error(err)
-		}
-	})
-	return dir
 }
 
 func nativeChangeGit(t *testing.T, dir string, args ...string) {
@@ -3335,35 +3242,6 @@ func (h *nativeChangeHub) candidates(t *testing.T) []connector.Issue {
 		t.Fatal(err)
 	}
 	return candidates
-}
-
-func nativeChangeFixtureCommit(label string) string {
-	return "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor Test User <test@example.com> 1 +0000\ncommitter Test User <test@example.com> 1 +0000\n\n" + label + "\n"
-}
-
-func nativeChangeSourceFixture(ctx context.Context, t *testing.T, base, head string, repositories ...string) tracker.ChangeSourceCapture {
-	t.Helper()
-	var directory string
-	if len(repositories) > 0 {
-		directory = repositories[0]
-	}
-	for _, label := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
-		if head == nativeChangeFixtureHead(label) {
-			directory = ""
-			break
-		}
-	}
-	if directory == "" {
-		directory = nativeChangeBareRepo(t)
-	}
-	command := exec.CommandContext(ctx, "git", "-C", directory, "pack-objects", "--stdout", "--revs")
-	command.Stdin = strings.NewReader(head + "\n")
-	pack, err := command.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle := append([]byte("# v2 git bundle\n"+head+" HEAD\n\n"), pack...)
-	return tracker.ChangeSourceCapture{Source: tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}, Bundle: bundle}
 }
 
 const issueContractTestSections = "\n## Acceptance criteria\nComplete the requested work.\n## Must not break\nExisting behavior.\n## How we know it worked\nRun the project checks."

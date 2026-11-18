@@ -4,35 +4,11 @@ import (
 	"context"
 	"maps"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/boardview"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func projectedBoardCard(row viewstore.BoardRecord) tracker.NativeBoardCard {
-	d := row.Display
-	actor := d.Actor
-	actor.PrincipalID = row.ActorPrincipalID
-	issue := tracker.NativeIssue{
-		NativeReference: tracker.NativeReference{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, Number: d.Number, Revision: tracker.Revision(row.SourceRevision), Profile: "native"},
-		Title:           d.Title, Type: row.IssueType, State: row.Position.State, Archived: row.Archived, Terminal: row.Terminal, Priority: row.Priority, Labels: row.Labels, Assignees: row.Assignees, Actor: actor,
-		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ClosedAt: row.ClosedAt, LatestTransitionReason: d.Reason,
-		Provenance: d.Provenance,
-	}
-	if len(issue.Labels) == 0 {
-		issue.Labels = nil
-	}
-	if len(issue.Assignees) == 0 {
-		issue.Assignees = nil
-	}
-	if row.Position.Activity != nil {
-		issue.LastActivityAt = *row.Position.Activity
-	}
-	if row.VerificationState != "" {
-		issue.Verification = &tracker.NativeVerification{State: row.VerificationState}
-	}
-	return tracker.NativeBoardCard{Issue: issue, StatusLine: d.StatusLine, Attempt: d.Attempt, Execution: d.Execution, Change: d.Change}
-}
 
 func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope hubscope.NativeScope, records []viewstore.BoardRecord, exact bool, prepared map[tracker.NativeWorkItemID]boardPreparedRecord) *boardRecordPreparation {
 	cards := make(map[tracker.NativeWorkItemID]tracker.NativeBoardCard, len(records))
@@ -47,7 +23,7 @@ func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope hubscope.
 			fallback = append(fallback, row)
 			continue
 		}
-		card := projectedBoardCard(row)
+		card := boardview.ProjectedCard(row)
 		if !scope.ReporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
 			card.Change = nil
 		}

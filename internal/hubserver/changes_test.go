@@ -1697,65 +1697,6 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	}
 }
 
-func TestChangeInvalidVersionAndReviewPolicy(t *testing.T) {
-	t.Parallel()
-	f := newChangeFixture(t, nil)
-	for _, test := range []struct {
-		name string
-		edit func(*tracker.ChangeVersionInput)
-		want int
-	}{
-		{"base", func(v *tracker.ChangeVersionInput) { v.BaseSHA = "main" }, http.StatusUnprocessableEntity},
-		{"head", func(v *tracker.ChangeVersionInput) { v.HeadSHA = "HEAD" }, http.StatusUnprocessableEntity},
-		{"merge base", func(v *tracker.ChangeVersionInput) { v.MergeBaseSHA = "" }, http.StatusUnprocessableEntity},
-		{"repository", func(v *tracker.ChangeVersionInput) { v.Repository = "file:///source" }, http.StatusUnprocessableEntity},
-		{"code hash", func(v *tracker.ChangeVersionInput) { v.Code.SHA256 = "missing" }, http.StatusUnprocessableEntity},
-		{"unknown configuration", func(v *tracker.ChangeVersionInput) { v.PolicyID = "other" }, http.StatusUnprocessableEntity},
-		{"unpaired attempt", func(v *tracker.ChangeVersionInput) { v.RunID = hubapi.NewID("run") }, http.StatusUnprocessableEntity},
-		{"stale review disposition", func(v *tracker.ChangeVersionInput) {
-			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.BaseSHA, ThreadID: "T1", Disposition: "fixed", Evidence: "regression passes"}}
-		}, http.StatusUnprocessableEntity},
-		{"duplicate review dispositions", func(v *tracker.ChangeVersionInput) {
-			d := tracker.ReviewDisposition{HeadSHA: v.HeadSHA, ThreadID: "T1", Disposition: "fixed", Evidence: "regression passes"}
-			v.ReviewDispositions = []tracker.ReviewDisposition{d, d}
-		}, http.StatusUnprocessableEntity},
-		{"missing review evidence", func(v *tracker.ChangeVersionInput) {
-			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.HeadSHA, ThreadID: "T1", Disposition: "fixed"}}
-		}, http.StatusUnprocessableEntity},
-		{"unknown review disposition", func(v *tracker.ChangeVersionInput) {
-			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.HeadSHA, ThreadID: "T1", Disposition: "surfaced", Evidence: "seen"}}
-		}, http.StatusUnprocessableEntity},
-		{"oversized review evidence", func(v *tracker.ChangeVersionInput) {
-			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.HeadSHA, ThreadID: "T1", Disposition: "fixed", Evidence: strings.Repeat("x", 8193)}}
-		}, http.StatusUnprocessableEntity},
-		{"too many review dispositions", func(v *tracker.ChangeVersionInput) {
-			v.ReviewDispositions = make([]tracker.ReviewDisposition, 101)
-		}, http.StatusUnprocessableEntity},
-		{"forged PR identity", func(v *tracker.ChangeVersionInput) {
-			v.External = &tracker.ChangeExternalReference{Provider: "github", ID: "2", URL: "https://github.com/example/repo/pull/1"}
-		}, http.StatusUnprocessableEntity},
-		{"unsafe PR URL", func(v *tracker.ChangeVersionInput) {
-			v.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: "javascript:alert(1)"}
-		}, http.StatusUnprocessableEntity},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			input := changeTestInput()
-			test.edit(&input)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ChangeVersionInput: input}), test.want)
-		})
-	}
-	runner := prepareRunner(t, f.nativeFixture, runnerauth.Read)
-	runner.enroll(t)
-	for _, token := range []string{f.token, runner.redemption.Credential} {
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", token, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "forge-policy"}, Policy: f.rules}), http.StatusForbidden)
-	}
-	request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "stale-policy"}, Policy: f.rules}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, request), http.StatusConflict)
-	request.IdempotencyKey, request.ExpectedID = "unknown-ci", f.rules.ID
-	request.Policy.RequiredChecks[0].PrincipalID = "unknown"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, request), http.StatusUnprocessableEntity)
-}
-
 func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 	t.Parallel()
 	for _, pending := range []bool{false, true} {

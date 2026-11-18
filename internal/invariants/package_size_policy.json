@@ -1,16 +1,16 @@
 {
   "packages": {
     "internal/cli": {
-      "source_files": 122,
-      "source_lines": 32983,
+      "source_files": 121,
+      "source_lines": 32930,
       "test_files": 151,
-      "test_lines": 42480
+      "test_lines": 42344
     },
     "internal/cloudentry": {
       "source_files": 62,
-      "source_lines": 12842,
-      "test_files": 41,
-      "test_lines": 15368
+      "source_lines": 12839,
+      "test_files": 40,
+      "test_lines": 15216
     },
     "internal/codex": {
       "source_files": 17,
@@ -30,47 +30,41 @@
       "test_files": 24,
       "test_lines": 10607
     },
-    "internal/hubclient/dispatch": {
-      "source_files": 21,
-      "source_lines": 2844,
-      "test_files": 38,
-      "test_lines": 12239
-    },
     "internal/hubclient/internal/scenariotest": {
-      "source_files": 44,
-      "source_lines": 17925,
+      "source_files": 40,
+      "source_lines": 17914,
       "test_files": 1,
       "test_lines": 72
     },
     "internal/hubserver": {
-      "source_files": 454,
-      "source_lines": 102127,
-      "test_files": 487,
-      "test_lines": 217479
+      "source_files": 433,
+      "source_lines": 100790,
+      "test_files": 486,
+      "test_lines": 217458
     },
     "internal/hubserver/postgres": {
-      "source_files": 260,
-      "source_lines": 49566,
-      "test_files": 53,
-      "test_lines": 16852
+      "source_files": 257,
+      "source_lines": 49223,
+      "test_files": 52,
+      "test_lines": 16826
     },
     "internal/orchestrator": {
       "source_files": 112,
-      "source_lines": 48377,
+      "source_lines": 48361,
       "test_files": 167,
       "test_lines": 81179
     },
     "internal/runner": {
       "source_files": 65,
-      "source_lines": 22031,
-      "test_files": 81,
-      "test_lines": 33312
+      "source_lines": 21808,
+      "test_files": 80,
+      "test_lines": 33204
     },
     "internal/workspace": {
       "source_files": 39,
-      "source_lines": 12574,
+      "source_lines": 12564,
       "test_files": 48,
-      "test_lines": 17489
+      "test_lines": 17031
     }
   }
 }
