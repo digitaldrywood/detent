@@ -213,8 +213,9 @@ type OpenFact struct {
 	Title         string
 	State         string
 	Terminal      bool
-	EnteredAt     *time.Time
-	FirstWorkedAt *time.Time
+	EnteredAt          *time.Time
+	FirstWorkedAt      *time.Time
+	FirstWorkedPartial bool
 }
 
 type OpenReader interface {

@@ -21,6 +21,8 @@ var reportNeighborTables = []reportNeighborTable{
 	{"issues", "project_id=$3 AND native_id=$4", nil},
 	{"change_requests", "project_id=$3", map[string]string{"id": "suffix", "work_item_id": "=$4", "current_version_id": "suffix", "landed_version_id": "suffix"}},
 	{"change_versions", "change_id IN (SELECT id FROM change_requests WHERE organization_id=$1 AND project_id=$3)", map[string]string{"id": "suffix", "change_id": "suffix", "run_id": "suffix", "attempt_id": "suffix"}},
+	{"report_landing_attempts", "change_id IN (SELECT id FROM change_requests WHERE organization_id=$1 AND project_id=$3)", map[string]string{"change_id": "suffix"}},
+	{"report_issue_state_entries", "project_id=$3", map[string]string{"work_item_id": "=$4", "state": "=state||'_'||work_item_id||'_n'||neighbor_copy"}},
 }
 
 func FreezeReportPlanner(t testing.TB, db *sql.DB, relations []string) {

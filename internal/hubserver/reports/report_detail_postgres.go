@@ -35,7 +35,9 @@ func PostgresReportOpenWork(facts []reportstore.OpenFact, at time.Time, unavaila
 			out.Stuck++
 		}
 		item := operatortool.AnalyticsAging{WorkItemID: string(fact.WorkItemID), Lane: fact.State, EnteredAt: *fact.EnteredAt, Hours: hours}
-		if fact.FirstWorkedAt != nil {
+		if fact.FirstWorkedPartial {
+			unavailable = append(unavailable, "current_open_work_age_partial")
+		} else if fact.FirstWorkedAt != nil {
 			since := at.Sub(*fact.FirstWorkedAt).Hours()
 			item.SinceTodoHours = &since
 		}

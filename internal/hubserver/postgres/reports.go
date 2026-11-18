@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportcheckpoints"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportreads"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -46,8 +47,7 @@ func (s *session) ReadOpenFacts(ctx context.Context, query reportstore.OpenQuery
 	}
 	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,i.title,state.name,coalesce(ws.terminal,false),
 	previous.recorded_at,
-	CASE WHEN (SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created' AND e.recorded_at <= $3 LIMIT 1) THEN i.created_at END,
-	(SELECT e.recorded_at FROM collaboration_events e JOIN project_workflow_states started ON started.organization_id=e.organization_id AND started.project_id=e.project_id AND started.name=e.to_state WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.recorded_at <= $3 AND started.dispatchable AND NOT started.terminal AND e.to_state NOT IN ('Backlog','Triage','Blocked','Human Review') ORDER BY e.recorded_at LIMIT 1)
+	CASE WHEN (SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created' AND e.recorded_at <= $3 LIMIT 1) THEN i.created_at END
 FROM unnest($11::bigint[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i
 LEFT JOIN LATERAL (SELECT e.to_state AS name,e.recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.recorded_at <= $3 ORDER BY e.recorded_at DESC,e.sequence DESC LIMIT 1) previous ON true
 LEFT JOIN LATERAL (SELECT e.from_state AS name FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.recorded_at > $3 ORDER BY e.recorded_at,e.sequence LIMIT 1) next ON previous.name IS NULL
@@ -68,8 +68,8 @@ ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, projects, query.At
 	for rows.Next() {
 		var fact reportstore.OpenFact
 		var project, workItem string
-		var entered, created, firstWorked pgtype.Timestamptz
-		if err := rows.Scan(&project, &workItem, &fact.Title, &fact.State, &fact.Terminal, &entered, &created, &firstWorked); err != nil {
+		var entered, created pgtype.Timestamptz
+		if err := rows.Scan(&project, &workItem, &fact.Title, &fact.State, &fact.Terminal, &entered, &created); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		fact.ProjectID, fact.WorkItemID = tracker.ProjectID(project), tracker.NativeWorkItemID(workItem)
@@ -80,10 +80,6 @@ ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, projects, query.At
 			at := created.Time.UTC()
 			fact.EnteredAt = &at
 		}
-		if firstWorked.Valid {
-			at := firstWorked.Time.UTC()
-			fact.FirstWorkedAt = &at
-		}
 		facts = append(facts, fact)
 	}
 	if err := rows.Err(); err != nil {
@@ -92,7 +88,33 @@ ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, projects, query.At
 	if len(facts) > query.Limit {
 		return nil, reportstore.ErrPopulationExceeded
 	}
-	return facts, nil
+	return facts, s.readFirstWorked(ctx, projects, query.At.UTC(), facts)
+}
+
+func (s *session) readFirstWorked(ctx context.Context, projects []string, at time.Time, facts []reportstore.OpenFact) error {
+	if len(facts) == 0 {
+		return nil
+	}
+	lags, err := reportcheckpoints.ReadLag(ctx, s.db, s.organization, projects)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	items := make([]reportcheckpoints.Item, len(facts))
+	for i, fact := range facts {
+		items[i] = reportcheckpoints.Item{Project: string(fact.ProjectID), WorkItem: string(fact.WorkItemID)}
+	}
+	first, err := reportcheckpoints.FirstWorked(ctx, s.db, s.organization, at, items, lags)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	for i := range facts {
+		if lag := lags[items[i].Project]; lag != nil && lag.Unbounded {
+			facts[i].FirstWorkedPartial = true
+		} else if worked, ok := first[items[i]]; ok {
+			facts[i].FirstWorkedAt = &worked
+		}
+	}
+	return nil
 }
 
 func (s *session) readOpenCandidates(ctx context.Context, projects []string, at time.Time) ([]int64, error) {

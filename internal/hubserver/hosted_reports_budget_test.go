@@ -79,6 +79,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 		}
 	}
 
+	pgstoretest.RefreshReportCheckpoints(t, f.service.config.TenantRepository, scope.Organization)
 	pgstoretest.SeedNeighborReportRows(t, admin, string(scope.Organization), 50)
 	freezeReportPlannerInputs(t, admin)
 	statementCounts := map[string]int{}
@@ -271,7 +272,7 @@ func reportsExplainPostgresPlan(t *testing.T, admin *sql.DB, organization tracke
 	return plans[0].Plan, raw
 }
 
-var reportsBudgetHotRelations = []string{"issues", "collaboration_events", "native_attempts", "change_requests", "change_evidence", "attempt_usage", "report_usage_current", "report_escape_facts"}
+var reportsBudgetHotRelations = []string{"issues", "collaboration_events", "native_attempts", "change_requests", "change_evidence", "attempt_usage", "report_usage_current", "report_escape_facts", "report_issue_checkpoints", "report_issue_state_entries", "report_landing_attempts"}
 var reportsBudgetPointKey = regexp.MustCompile(`\b(?:id|native_id|work_item_id|issue_id|attempt_id|change_id|source_key|sequence)\b\s*(?:=|<|>)`)
 var reportsBudgetLimit = regexp.MustCompile(`(?i)\bLIMIT\s+(?:\$([0-9]+)|([0-9]+))`)
 

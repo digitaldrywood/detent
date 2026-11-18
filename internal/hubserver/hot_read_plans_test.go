@@ -37,6 +37,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 	installReportsBudgetTrace(t, f.service)
 	seedProductionProject(t, f.service, hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}, productionProjectShape{issues: 594, attempts: 469, usage: 262, current: 131, leases: 1682, comments: 7000})
 	seedRetainedReportHistory(t, admin, "org_browser_preview", 10)
+	pgstoretest.RefreshReportCheckpoints(t, f.service.config.TenantRepository, "org_browser_preview")
 	pgstoretest.SeedNeighborReportRows(t, admin, "org_browser_preview", 50)
 	freezeReportPlannerInputs(t, admin)
 	t.Run("rules reject injected unindexed reads", func(t *testing.T) {
@@ -138,6 +139,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 			}
 			admin := hostedPostgresAdmin(t, f.service)
 			seedRetainedReportHistory(t, admin, scope.Organization, 10)
+			pgstoretest.RefreshReportCheckpoints(t, f.service.config.TenantRepository, scope.Organization)
 			pgstoretest.SeedNeighborReportRows(t, admin, string(scope.Organization), 50)
 			freezeReportPlannerInputs(t, admin)
 			for _, window := range []string{"24h", "7d", "30d"} {

@@ -1617,6 +1617,92 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("checkpoint projection matches the exact fold", func(t *testing.T) {
+		ctx := t.Context()
+		at := now.Add(time.Hour)
+		window := reportstore.OverviewQuery{Projects: []tracker.ProjectID{project}, From: now.Add(-time.Minute), Split: now, To: now.Add(2 * time.Minute), Limit: 10}
+		read := func() ([]reportstore.OpenFact, []reportstore.LandingFact) {
+			var open []reportstore.OpenFact
+			var landings []reportstore.LandingFact
+			if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				if open, err = r.(reportstore.OpenReader).ReadOpenFacts(ctx, reportstore.OpenQuery{Projects: []tracker.ProjectID{project}, At: at, Limit: 10}); err != nil {
+					return err
+				}
+				landings, err = r.(reportstore.LandingReader).ReadLandingFacts(ctx, window)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return open, landings
+		}
+		oracle := func(item tracker.NativeWorkItemID) *time.Time {
+			var first *time.Time
+			if err := admin.QueryRowContext(ctx, `SELECT min(e.recorded_at) FROM collaboration_events e JOIN project_workflow_states started ON started.organization_id=e.organization_id AND started.project_id=e.project_id AND started.name=e.to_state
+WHERE e.organization_id=$1 AND e.project_id=$2 AND e.work_item_id=$3 AND e.type='workflow.transitioned' AND e.recorded_at<=$4 AND started.dispatchable AND NOT started.terminal AND e.to_state NOT IN ('Backlog','Triage','Blocked','Human Review')`, organization, project, item, at).Scan(&first); err != nil {
+				t.Fatal(err)
+			}
+			if first != nil {
+				*first = first.UTC()
+			}
+			return first
+		}
+		check := func(name string, wantLandings []reportstore.LandingFact) []reportstore.LandingFact {
+			t.Helper()
+			open, landings := read()
+			if len(open) == 0 {
+				t.Fatalf("%s: no open facts", name)
+			}
+			for _, fact := range open {
+				want := oracle(fact.WorkItemID)
+				if fact.FirstWorkedPartial || (want == nil) != (fact.FirstWorkedAt == nil) || (want != nil && !want.Equal(*fact.FirstWorkedAt)) {
+					t.Fatalf("%s: first worked for %s = %v partial=%t, want %v", name, fact.WorkItemID, fact.FirstWorkedAt, fact.FirstWorkedPartial, want)
+				}
+			}
+			if wantLandings != nil && fmt.Sprint(landings) != fmt.Sprint(wantLandings) {
+				t.Fatalf("%s: landings = %+v, want exact %+v", name, landings, wantLandings)
+			}
+			return landings
+		}
+		exact := check("before refresh", nil)
+		if len(exact) == 0 || exact[0].Attempts == 0 {
+			t.Fatalf("exact landings = %+v", exact)
+		}
+		if steps := pgstoretest.RefreshReportCheckpoints(t, repository, organization); steps == 0 {
+			t.Fatal("checkpoint refresh made no progress")
+		}
+		var due, stored int
+		if err := admin.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM report_issue_checkpoints WHERE organization_id=$1 AND landing_revision<revision),(SELECT count(*) FROM report_landing_attempts WHERE organization_id=$1)`, organization).Scan(&due, &stored); err != nil || due != 0 || stored == 0 {
+			t.Fatalf("checkpoints due=%d stored=%d err=%v", due, stored, err)
+		}
+		check("after refresh", exact)
+		open, _ := read()
+		item := open[0].WorkItemID
+		for index, offset := range []time.Duration{-2 * time.Hour, -2 * time.Hour} {
+			event, err := content.PrepareEvent(ctx, organization, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("report_checkpoint_late_%d", index), OrganizationID: organization, ProjectID: project, AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: now.Add(offset), Data: tracker.CollaborationData{FromState: open[0].State, ToState: open[0].State}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(ctx, event); return err }); err != nil {
+				t.Fatal(err)
+			}
+			check("late tied event in the tail", nil)
+			pgstoretest.RefreshReportCheckpoints(t, repository, organization)
+			check("late tied event folded", nil)
+		}
+		for _, dispatchable := range []bool{false, true} {
+			if _, err := admin.ExecContext(ctx, `UPDATE project_workflow_states SET dispatchable=$4 WHERE organization_id=$1 AND project_id=$2 AND name=$3`, organization, project, open[0].State, dispatchable); err != nil {
+				t.Fatal(err)
+			}
+			check(fmt.Sprintf("definition dispatchable=%t", dispatchable), nil)
+		}
+		if _, err := admin.ExecContext(ctx, `UPDATE report_issue_checkpoints SET revision=revision+1 WHERE organization_id=$1`, organization); err != nil {
+			t.Fatal(err)
+		}
+		check("stale landing checkpoint uses the exact read", exact)
+		pgstoretest.RefreshReportCheckpoints(t, repository, organization)
+		check("refreshed landing checkpoint", exact)
+	})
 	t.Run("lifetime shipped spend includes earlier periods only for selected work", func(t *testing.T) {
 		ctx := t.Context()
 		err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
