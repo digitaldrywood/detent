@@ -202,7 +202,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	for index := range plans {
 		claim := request.NativeClaim
 		claim.WorkItemID = plans[index].Candidate.WorkItemID
-		plan, err := s.hydrateNativeClaimPlan(ctx, scope, claim, now, plans[index], descriptor)
+		plan, err := s.hydrateSelectedClaimCandidate(ctx, scope, claim, now, plans[index], descriptor)
 		if errors.Is(err, ErrNoClaimableWork) {
 			plans[index] = hubrecords.NativeClaimPlan{}
 			continue

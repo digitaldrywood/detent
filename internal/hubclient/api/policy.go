@@ -79,6 +79,24 @@ func (c *NativeClient) ReportObservedPolicy(ctx context.Context, descriptor poli
 }
 
 func (c *NativeClient) ReportPolicyObservation(ctx context.Context, observation policy.Observation) error {
+	if versions := c.client.runnerSyncVersions(); versions != nil {
+		raw, err := json.Marshal(observation)
+		if err != nil {
+			return err
+		}
+		digest := policy.Digest(raw)
+		state := c.heartbeatProject()
+		state.observationMu.Lock()
+		defer state.observationMu.Unlock()
+		if state.observationDigest == digest {
+			return nil
+		}
+		_, err = c.SyncRunner(ctx, runnerauth.SyncRequest{Versions: *versions, Observations: map[tracker.ProjectID]policy.Observation{c.project: observation}})
+		if err == nil {
+			state.observationDigest = digest
+		}
+		return err
+	}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/policy/observed", observation, nil)
 }
 

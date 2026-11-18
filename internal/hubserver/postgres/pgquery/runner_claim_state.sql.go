@@ -81,6 +81,11 @@ SELECT page.id AS scanned_id,
 CASE WHEN i.project_id=$1 AND a.runner_id=$2
 AND l.machine_id=$3 AND l.issue_id=page.issue_id AND l.fencing_token=page.fencing_token
 AND (page.worker_cleanup_required IS DISTINCT FROM FALSE OR page.runtime_summary_sequence IS DISTINCT FROM page.sequence) AND l.released_at IS NOT NULL AND page.cleanup_acknowledged_at IS NULL AND page.status IN ('running','interrupted','cancelled')
+AND ((page.worker_cleanup_required AND page.runtime_summary_sequence=page.sequence) OR EXISTS (
+ SELECT 1 FROM collaboration_events e
+ WHERE e.organization_id=$4 AND e.project_id=$1
+ AND e.work_item_id=i.native_id AND e.attempt_id=page.id
+))
 THEN i.native_id ELSE '' END::text AS work_item_id,
 COALESCE(page.worker_cleanup_required AND page.runtime_summary_sequence=page.sequence,false)::boolean AS cleanup_known
 FROM page
