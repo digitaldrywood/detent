@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -45,6 +46,7 @@ const (
 )
 
 type Service struct {
+	diagnostics             diagnosticstore.Windows
 	archiveEncoder          attachment.ArchiveEncoder
 	changeColumnAfter       any
 	dashboard               *dashboardDelivery

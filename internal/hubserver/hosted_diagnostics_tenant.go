@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -24,10 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
-	return s.readDiagnosticsTenant(ctx, credential, w, "")
-}
-
 func (s *Service) readDiagnosticsTenant(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow, requested tracker.ProjectID) (diagnosticsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
@@ -35,6 +32,10 @@ func (s *Service) readDiagnosticsTenant(ctx context.Context, credential hubapi.A
 }
 
 func (s *Service) diagnosticsTenantReport(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow, requested tracker.ProjectID) (diagnosticsReport, error) {
+	return s.diagnosticsReportAt(ctx, credential, w, requested, s.config.Clock().UTC(), false)
+}
+
+func (s *Service) diagnosticsReportAt(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow, requested tracker.ProjectID, observed time.Time, sampled bool) (diagnosticsReport, error) {
 	if s.config.TenantRepository == nil {
 		return diagnosticsReport{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -80,7 +81,8 @@ func (s *Service) diagnosticsTenantReport(ctx context.Context, credential hubapi
 		if requested != "" && (len(ids) != 1 || ids[0] != requested) {
 			return operatortool.ErrAccessDenied
 		}
-		snapshot, err = reader.DiagnosticsSnapshot(ctx, ids, w.From, w.To, s.config.Clock().UTC(), principal)
+		observation, err := s.diagnostics.Read(ctx, reader, organization, s.MaintenanceTenant().Generation, ids, diagnosticstore.ReportingWindow{From: w.From, To: w.To, Observed: observed, Sampled: sampled}, principal)
+		snapshot, w.To = observation.Snapshot, observation.To
 		if err != nil {
 			return err
 		}

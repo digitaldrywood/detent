@@ -17,12 +17,15 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}
-	window, err := usageRangeWindow(c.QueryParam("range"), s.config.Clock())
+	observed := s.config.Clock().UTC()
+	window, err := usageRangeWindow(c.QueryParam("range"), observed)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	w := operatortool.AnalyticsWindow{From: window.From, To: window.To, Bucket: time.Hour}
-	report, err := s.readCloudDiagnostics(ctx, credential, w)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancel()
+	report, err := s.diagnosticsReportAt(ctx, credential, w, "", observed, true)
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Diagnostics are temporarily unavailable")
 	}
@@ -30,12 +33,7 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 }
 
 func (s *Service) readCloudDiagnostics(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
-	if s.config.TenantRepository == nil {
-		return diagnosticsReport{}, hubapi.NativeWorkItemStorageUnavailable()
-	}
-	return s.readCloudDiagnosticsTenant(ctx, credential, w)
+	return s.readDiagnosticsTenant(ctx, credential, w, "")
 }
 
 func (s *Service) diagnosticsRequestMetrics(ctx context.Context) (*requestMetricsReport, error) {

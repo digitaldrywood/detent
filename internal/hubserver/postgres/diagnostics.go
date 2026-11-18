@@ -15,6 +15,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func (s *session) DiagnosticsReadVersion(ctx context.Context) (revision string, err error) {
+	err = s.db.QueryRow(ctx, `SELECT CASE WHEN current_setting('transaction_read_only')='on' AND current_setting('transaction_isolation')='repeatable read' THEN pg_current_snapshot()::text ELSE '' END`).Scan(&revision)
+	return revision, mapError(ctx, err)
+}
+
 func (s *session) DiagnosticsSnapshot(ctx context.Context, projects []tracker.ProjectID, from, to, now time.Time, principal string) (diagnosticstore.Snapshot, error) {
 	out := diagnosticstore.Snapshot{}
 	if len(projects) > 1000 || !from.Before(to) || to.Sub(from) > 90*24*time.Hour {
