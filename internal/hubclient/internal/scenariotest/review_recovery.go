@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariohooks"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest/gitrepo"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -555,7 +556,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				provider.releaseRetry()
 				if test.refusal == "source" {
 					change := publishedSource()
-					capture := scenariohooks.ReplacementSource(t, source, change.BaseSHA)
+					capture := gitrepo.ReplacementSource(t, source, change.BaseSHA)
 					replacement := h.publishCaptured(t, current.WorkItemID, change.ChangeID, capture.Source.HeadSHA, &capture, change.VersionID, change.BaseSHA)
 					handoff.CheckReplacement(t, deadline, req, h.admin, replacement, h.scheduler, SetSchedulerNow)
 					return
@@ -723,7 +724,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						if err := os.WriteFile(filepath.Join(provider.workspace, "untracked.txt"), []byte("untracked source\n"), 0o600); err != nil {
 							t.Fatal(err)
 						}
-						implementingBefore = scenariohooks.ImplementingState(t, provider.workspace)
+						implementingBefore = gitrepo.ImplementingState(t, provider.workspace)
 						if strings.TrimSpace(implementingBefore[0]) != change.BaseSHA || change.BaseSHA == change.HeadSHA || implementingBefore[2] == "" || implementingBefore[3] == "" {
 							t.Fatal("fixture lacks dirty implementing A and distinct retained B")
 						}
@@ -783,13 +784,13 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					}
 					version := detail.Versions[len(detail.Versions)-1]
 					if implementingBefore != nil {
-						for i, after := range scenariohooks.ImplementingState(t, provider.workspace) {
+						for i, after := range gitrepo.ImplementingState(t, provider.workspace) {
 							if after != implementingBefore[i] {
 								t.Fatalf("deferred completion changed implementing source: before=%q after=%q", implementingBefore[i], after)
 							}
 						}
 						for _, path := range []*string{provider.sourceWorkspace.Load(), provider.validatorWorkspace.Load()} {
-							if path == nil || *path == provider.workspace || strings.TrimSpace(scenariohooks.GitOutput(t, *path, "rev-parse", "HEAD")) != version.HeadSHA || scenariohooks.GitOutput(t, *path, "status", "--porcelain") != "" {
+							if path == nil || *path == provider.workspace || strings.TrimSpace(gitrepo.GitOutput(t, *path, "rev-parse", "HEAD")) != version.HeadSHA || gitrepo.GitOutput(t, *path, "status", "--porcelain") != "" {
 								t.Fatal("deferred completion did not review clean retained B separately from implementing A")
 							}
 						}

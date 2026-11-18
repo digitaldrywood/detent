@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type ReviewDispatch struct {
@@ -162,30 +158,6 @@ func PublishedVersion(t *testing.T, client *api.NativeClient, item tracker.Nativ
 	return nil
 }
 
-func ReplacementSource(t *testing.T, source, base string) tracker.ChangeSourceCapture {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(source, "replacement.txt"), []byte("replacement source\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	git := func(args ...string) string {
-		t.Helper()
-		cmd := exec.CommandContext(t.Context(), "git", args...)
-		cmd.Dir = source
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v, %s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	git("add", "replacement.txt")
-	git("commit", "-m", "replacement source")
-	capture, err := workspace.CaptureChangeSource(t.Context(), source, base, git("rev-parse", "HEAD"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return capture
-}
-
 func WaitForDeferredReview(t *testing.T, orch *orchestrator.Orchestrator, issueID string) {
 	t.Helper()
 	testenv.WaitUntil(t, t.Context(), func() error {
@@ -198,29 +170,6 @@ func WaitForDeferredReview(t *testing.T, orch *orchestrator.Orchestrator, issueI
 		}
 		return nil
 	})
-}
-
-func GitOutput(t *testing.T, path string, args ...string) string {
-	t.Helper()
-	output, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", path}, args...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
-	}
-	return string(output)
-}
-func ImplementingState(t *testing.T, workspace string) []string {
-	t.Helper()
-	untracked, err := os.ReadFile(filepath.Join(workspace, "untracked.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return []string{
-		GitOutput(t, workspace, "rev-parse", "HEAD"),
-		GitOutput(t, workspace, "status", "--porcelain"),
-		GitOutput(t, workspace, "diff", "--binary"),
-		GitOutput(t, workspace, "diff", "--cached", "--binary"),
-		string(untracked),
-	}
 }
 
 func BeforeReviewDispatch(t *testing.T, orch *orchestrator.Orchestrator, scheduler *dispatch.Scheduler, setNow func(*dispatch.Scheduler, time.Time)) (func(context.Context, string), func()) {
