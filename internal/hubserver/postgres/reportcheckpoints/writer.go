@@ -63,7 +63,9 @@ func Step(ctx context.Context, db pgquery.DBTX, organization tracker.Organizatio
 LEFT JOIN project_event_cursors h ON h.organization_id=p.organization_id AND h.project_id=p.id
 LEFT JOIN report_checkpoint_cursors c ON c.organization_id=p.organization_id AND c.project_id=p.id
 WHERE p.organization_id=$1 AND (c.project_id IS NULL OR NOT c.legacy_complete OR coalesce(h.sequence,0)>c.through_project_sequence
- OR EXISTS (SELECT 1 FROM report_issue_checkpoints k WHERE k.organization_id=p.organization_id AND k.project_id=p.id AND k.landing_revision<k.revision))
+ OR EXISTS (SELECT 1 FROM report_issue_checkpoints k WHERE k.organization_id=p.organization_id AND k.project_id=p.id AND k.landing_revision<k.revision)
+ OR EXISTS (SELECT 1 FROM report_issue_checkpoints k WHERE k.organization_id=p.organization_id AND k.project_id=p.id AND `+historyDue+`)
+ OR EXISTS (SELECT 1 FROM report_issue_checkpoints k WHERE k.organization_id=p.organization_id AND k.project_id=p.id AND k.history_through>0 AND k.history_policy_revision<c.history_policy_revision))
 ORDER BY p.id>$2 DESC,p.id LIMIT 1`, organization, cursor.Project).Scan(&project)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Cursor{}, false, nil
@@ -111,7 +113,7 @@ UPDATE report_checkpoint_cursors SET through_project_sequence=coalesce((SELECT t
 	}
 	err = db.QueryRow(ctx, `SELECT work_item_id,revision FROM report_issue_checkpoints WHERE organization_id=$1 AND project_id=$2 AND landing_revision<revision ORDER BY work_item_id LIMIT 1`, organization, project).Scan(&next.WorkItem, &next.Revision)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return next, true, nil
+		return next, true, historyStep(ctx, db, organization, project)
 	}
 	if err != nil {
 		return cursor, false, fmt.Errorf("select due report landing checkpoint: %w", err)

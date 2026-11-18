@@ -7,30 +7,15 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportdata"
+	"github.com/digitaldrywood/detent/internal/hubserver/reports/residence"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type AnalyticsResidenceIssue struct {
-	Id      string                    `json:"-"`
-	Created time.Time                 `json:"-"`
-	Initial string                    `json:"-"`
-	Events  []AnalyticsResidenceEvent `json:"-"`
-	Partial bool                      `json:"-"`
-}
-
-type AnalyticsResidenceEvent struct {
-	At   time.Time                 `json:"-"`
-	Kind string                    `json:"-"`
-	Data tracker.CollaborationData `json:"-"`
-}
-
-type analyticsResidenceSpan struct {
-	Lane    string    `json:"-"`
-	From    time.Time `json:"-"`
-	To      time.Time `json:"-"`
-	queueTo time.Time
-}
+type AnalyticsResidenceIssue = residence.Issue
+type AnalyticsResidenceEvent = residence.Event
+type analyticsResidenceSpan = residence.Span
 
 type AnalyticsResidenceTimeline struct {
 	Issue   AnalyticsResidenceIssue  `json:"-"`
@@ -40,6 +25,7 @@ type AnalyticsResidenceTimeline struct {
 	Entered time.Time                `json:"-"`
 	Done    []time.Time              `json:"-"`
 	rework  []AnalyticsResidenceEvent
+	seed    *reportstore.HistoryBase
 }
 
 func ProjectAnalyticsResidencePopulation(states map[string]tracker.NativeState, issues []AnalyticsResidenceIssue, clipped bool, r operatortool.AnalyticsRequest, out *NativeAnalyticsProject) error {
@@ -120,106 +106,30 @@ func WithAnalyticsLiveIssues(ctx context.Context) context.Context {
 	return context.WithValue(ctx, AnalyticsLiveIssuesKey{}, true)
 }
 
-type analyticsResidenceFold struct {
-	Issue   AnalyticsResidenceIssue `json:"-"`
-	states  map[string]tracker.NativeState
-	To      time.Time `json:"-"`
-	queueTo time.Time
-	last    time.Time
-	Started *time.Time `json:"-"`
-	State   string     `json:"-"`
-	Entered time.Time  `json:"-"`
-}
-
-type analyticsResidenceDelta struct {
-	span    analyticsResidenceSpan
-	hasSpan bool
-	Done    bool `json:"-"`
-	rework  bool
-}
-
-func newAnalyticsResidenceFold(issue AnalyticsResidenceIssue, states map[string]tracker.NativeState, to time.Time) analyticsResidenceFold {
-	fold := analyticsResidenceFold{Issue: issue, states: states, To: to, queueTo: to, last: issue.Created, State: issue.Initial, Entered: issue.Created}
-	if issue.Initial == "" {
-		fold.Issue.Partial = true
-	}
-	if states[issue.Initial].Dispatchable && analyticsResidenceGroup(issue.Initial, states) == "system" {
-		at := issue.Created
-		fold.Started = &at
-	}
-	return fold
-}
-
-func (fold *analyticsResidenceFold) append(event AnalyticsResidenceEvent) analyticsResidenceDelta {
-	delta := analyticsResidenceDelta{}
-	if event.At.Before(fold.last) {
-		fold.Issue.Partial = true
-		return delta
-	}
-	fold.last = event.At
-	if event.Kind == "scheduler.decision" {
-		if fold.State == "Rework" && fold.queueTo.After(event.At) {
-			fold.queueTo = event.At
-		}
-		return delta
-	}
-	if event.Data.FromState != fold.State || event.Data.ToState == "" {
-		fold.Issue.Partial = true
-	} else if event.Data.ToState != fold.State && fold.Started != nil {
-		delta.span = analyticsResidenceSpan{Lane: fold.State, From: hubapi.MaxTime(fold.Entered, *fold.Started), To: event.At, queueTo: hubapi.MinTime(fold.queueTo, event.At)}
-		delta.hasSpan = true
-	}
-	if event.Data.ToState == "" || event.Data.ToState == fold.State {
-		return delta
-	}
-	fold.State, fold.Entered = event.Data.ToState, event.At
-	fold.queueTo = fold.To
-	if fold.Started == nil && fold.states[fold.State].Dispatchable && analyticsResidenceGroup(fold.State, fold.states) == "system" {
-		at := event.At
-		fold.Started = &at
-	}
-	delta.Done = fold.State == "Done"
-	delta.rework = fold.State == "Rework"
-	return delta
-}
-
-func (fold *analyticsResidenceFold) finish() (analyticsResidenceSpan, bool) {
-	if fold.Started == nil || fold.Issue.Partial {
-		return analyticsResidenceSpan{}, false
-	}
-	return analyticsResidenceSpan{Lane: fold.State, From: hubapi.MaxTime(fold.Entered, *fold.Started), To: fold.To, queueTo: fold.queueTo}, true
-}
-
 func BuildAnalyticsResidenceTimeline(issue AnalyticsResidenceIssue, states map[string]tracker.NativeState, to time.Time) AnalyticsResidenceTimeline {
-	fold := newAnalyticsResidenceFold(issue, states, to)
+	fold := residence.NewFold(issue, states, to)
 	timeline := AnalyticsResidenceTimeline{}
 	for _, event := range issue.Events {
-		delta := fold.append(event)
-		if delta.hasSpan {
-			timeline.Spans = append(timeline.Spans, delta.span)
+		delta := fold.Append(event)
+		if delta.HasSpan {
+			timeline.Spans = append(timeline.Spans, delta.Span)
 		}
 		if delta.Done {
 			timeline.Done = append(timeline.Done, event.At)
 		}
-		if delta.rework {
+		if delta.Rework {
 			timeline.rework = append(timeline.rework, event)
 		}
 	}
-	if span, ok := fold.finish(); ok {
+	if span, ok := fold.Finish(); ok {
 		timeline.Spans = append(timeline.Spans, span)
 	}
-	timeline.Issue, timeline.Started, timeline.State, timeline.Entered = fold.Issue, fold.Started, fold.State, fold.Entered
+	timeline.Issue, timeline.Started, timeline.State, timeline.Entered, timeline.seed = fold.Issue, fold.Started, fold.State, fold.Entered, issue.Checkpoint
 	return timeline
 }
 
 func analyticsResidenceGroup(lane string, states map[string]tracker.NativeState) string {
-	if lane == "Backlog" || lane == "Triage" || lane == "Done" || lane == "Cancelled" || states[lane].Terminal {
-		return "excluded"
-	}
-	if lane == "Blocked" || lane == "Human Review" {
-		return "held"
-	}
-	return "system"
+	return residence.Group(lane, states)
 }
 
 func summarizeAnalyticsResidence(timelines []AnalyticsResidenceTimeline, states map[string]tracker.NativeState, from, to time.Time) (operatortool.AnalyticsResidenceSummary, []operatortool.AnalyticsIssueResidence) {
@@ -245,7 +155,7 @@ func summarizeAnalyticsResidence(timelines []AnalyticsResidenceTimeline, states 
 			if span.Lane == "Todo" || span.Lane == "Rework" {
 				end := span.To
 				if span.Lane == "Rework" {
-					end = span.queueTo
+					end = span.QueueTo
 				}
 				item.QueueSeconds += max(0, hubapi.MinTime(end, to).Sub(hubapi.MaxTime(span.From, from)).Seconds())
 			}

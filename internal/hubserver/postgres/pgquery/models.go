@@ -4632,6 +4632,7 @@ type ReportCheckpointCursor struct {
 	LegacyWorkItemID       string
 	LegacySequence         int64
 	LegacyComplete         bool
+	HistoryPolicyRevision  int64
 }
 
 type ReportEscapeFact struct {
@@ -4675,12 +4676,43 @@ type ReportEventFact struct {
 	PhaseTimingStatus       string
 }
 
+type ReportHistoryCheckpoint struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	WorkItemID          string
+	ThroughSequence     int64
+	DefinitionKey       string
+	CreatedAt           time.Time
+	InitialState        string
+	ThroughRecordedAt   time.Time
+	SegmentEvents       int32
+	SegmentMinAt        *time.Time
+	SegmentMaxAt        *time.Time
+	SegmentUnclassified bool
+	ReopenIds           []string
+	ReopenVersions      []string
+	ReopenTimes         []time.Time
+	ReopenFrom          []string
+	ReopenTo            []string
+	State               string
+	EnteredAt           time.Time
+	StartedAt           *time.Time
+	QueueCutAt          *time.Time
+	Partial             bool
+	LaneNames           []string
+	LaneSeconds         []float64
+	SystemSeconds       float64
+}
+
 type ReportIssueCheckpoint struct {
-	OrganizationID  tracker.OrganizationID
-	ProjectID       tracker.ProjectID
-	WorkItemID      string
-	Revision        int64
-	LandingRevision int64
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	WorkItemID            string
+	Revision              int64
+	LandingRevision       int64
+	HistoryPolicyRevision int64
+	HistorySequence       int64
+	HistoryThrough        int64
 }
 
 type ReportIssueStateEntry struct {

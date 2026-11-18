@@ -126,10 +126,26 @@ type WorkflowEvent struct {
 }
 
 type HistoryIssue struct {
-	WorkItemID   tracker.NativeWorkItemID
-	CreatedAt    time.Time
-	InitialState string
-	Events       []WorkflowEvent
+	WorkItemID          tracker.NativeWorkItemID
+	CreatedAt           time.Time
+	InitialState        string
+	Events              []WorkflowEvent
+	Earlier             []WorkflowEvent
+	Base                *HistoryBase
+	Omitted             int
+	OmittedPartial      bool
+	OmittedUnclassified bool
+}
+
+type HistoryBase struct {
+	Last          time.Time
+	State         string
+	Entered       time.Time
+	Started       *time.Time
+	QueueCut      *time.Time
+	Partial       bool
+	LaneSeconds   map[string]float64
+	SystemSeconds float64
 }
 
 type ProjectHistory struct {
@@ -208,11 +224,11 @@ type OpenQuery struct {
 }
 
 type OpenFact struct {
-	ProjectID     tracker.ProjectID
-	WorkItemID    tracker.NativeWorkItemID
-	Title         string
-	State         string
-	Terminal      bool
+	ProjectID          tracker.ProjectID
+	WorkItemID         tracker.NativeWorkItemID
+	Title              string
+	State              string
+	Terminal           bool
 	EnteredAt          *time.Time
 	FirstWorkedAt      *time.Time
 	FirstWorkedPartial bool

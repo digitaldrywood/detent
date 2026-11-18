@@ -1,6 +1,7 @@
 package reports
 
 import (
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -27,7 +28,7 @@ func ApplyPostgresReportQuality(out *HostedReportsReport, history []reportstore.
 			terminal[state.Name] = state.Terminal
 		}
 		for _, issue := range project.Issues {
-			for _, event := range issue.Events {
+			for _, event := range slices.Concat(issue.Earlier, issue.Events) {
 				if event.Type == "workflow.transitioned" {
 					events = append(events, QualityHistoryEvent{ID: event.ID, Item: string(issue.WorkItemID), Kind: event.Type, VersionID: event.VersionID, ToTerminal: terminal[event.ToState], At: event.At, Data: tracker.CollaborationData{FromState: event.FromState, ToState: event.ToState, ReasonDetail: event.Class.Name}})
 				}

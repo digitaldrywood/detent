@@ -89,7 +89,7 @@ func ApplyPostgresReportHistory(out *HostedReportsReport, history []reportstore.
 		eventCount := 0
 		partial := false
 		for _, item := range project.Issues {
-			issue := AnalyticsResidenceIssue{Id: string(item.WorkItemID), Created: item.CreatedAt, Initial: item.InitialState}
+			issue := AnalyticsResidenceIssue{Id: string(item.WorkItemID), Created: item.CreatedAt, Initial: item.InitialState, Checkpoint: item.Base, OmittedPartial: item.OmittedPartial}
 			for _, event := range item.Events {
 				issue.Events = append(issue.Events, AnalyticsResidenceEvent{At: event.At, Kind: event.Type, Data: tracker.CollaborationData{FromState: event.FromState, ToState: event.ToState, ReasonDetail: event.Class.Name}})
 				if event.ToState == "Rework" && !event.At.Before(w.From) && event.At.Before(w.To) {
@@ -103,7 +103,7 @@ func ApplyPostgresReportHistory(out *HostedReportsReport, history []reportstore.
 					}
 				}
 			}
-			eventCount += len(issue.Events)
+			eventCount += item.Omitted + len(issue.Events)
 			issues = append(issues, issue)
 			timeline := BuildAnalyticsResidenceTimeline(issue, states, w.To)
 			partial = partial || timeline.Issue.Partial

@@ -180,7 +180,7 @@ func (r *Repository) begin(ctx context.Context, organization tracker.Organizatio
 	}()
 	finishCallback := transactionSpan(ctx, "pg_callback")
 	db := timedQueries{DBTX: tx}
-	owner := &session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly, leaseClock: r.leaseClock, searchBudget: r.searchBudget, flushesBoardDeltas: !readOnly}
+	owner := &session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly, snapshot: isolation == pgx.RepeatableRead || isolation == pgx.Serializable, leaseClock: r.leaseClock, searchBudget: r.searchBudget, flushesBoardDeltas: !readOnly}
 	err = func() error {
 		defer finishCallback()
 		return run(owner)
@@ -258,6 +258,7 @@ type session struct {
 	organizationRecord *accessstore.Organization
 	db                 pgquery.DBTX
 	readOnly           bool
+	snapshot           bool
 	organization       tracker.OrganizationID
 	queries            *pgquery.Queries
 }

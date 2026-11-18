@@ -70,11 +70,7 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 	defer cancel()
 	prior := operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}
 	ids := projectIDs(projects)
-	priorities := make([]int, len(filter.Priorities))
-	for i, value := range filter.Priorities {
-		priorities[i] = mustAtoi(value)
-	}
-	query := reportstore.OverviewQuery{Projects: ids, Principal: reportPrincipal(credential), From: prior.From, Split: w.From, To: w.To, Limit: 5000, Filter: reportstore.Filter{Labels: filter.Labels, Priorities: priorities, Types: filter.Types, FiledBy: filter.FiledBy, Runners: filter.Runners, Models: filter.Models, Stages: filter.Stages}}
+	query := reportstore.OverviewQuery{Projects: ids, Principal: reportPrincipal(credential), From: prior.From, Split: w.From, To: w.To, Limit: 5000, Filter: filter.StoreFilter()}
 	var openFacts []reportstore.OpenFact
 	var openFactsAvailable bool
 	var facts []reportstore.OverviewFact
@@ -88,7 +84,11 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 	var usage postgresReportUsage
 	var completionCosts map[reportstore.CompletionCostItem]reportstore.CompletionCostFact
 	var priorRecorded bool
-	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return hostedReportsReport{}, hubapi.NativeWorkItemStorageUnavailable()
+	}
+	err := repository.ReadTenantSnapshot(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
 		store, ok := reader.(reportstore.Reader)
 		if !ok {
 			return errors.New("PostgreSQL report reader is unavailable")

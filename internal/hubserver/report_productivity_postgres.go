@@ -185,11 +185,7 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 	if len(projectIDsTyped) == 0 {
 		return out, nil
 	}
-	priorities := make([]int, len(filter.Priorities))
-	for i, value := range filter.Priorities {
-		priorities[i] = mustAtoi(value)
-	}
-	query := reportstore.OverviewQuery{Projects: projectIDsTyped, Principal: reportPrincipal(credential), From: prior.From, Split: w.From, To: w.To, Limit: 5000, Filter: reportstore.Filter{Labels: filter.Labels, Priorities: priorities, Types: filter.Types, FiledBy: filter.FiledBy, Runners: filter.Runners, Models: filter.Models, Stages: filter.Stages}}
+	query := reportstore.OverviewQuery{Projects: projectIDsTyped, Principal: reportPrincipal(credential), From: prior.From, Split: w.From, To: w.To, Limit: 5000, Filter: filter.StoreFilter()}
 	presentProjects := make(map[string]bool, len(projectIDsValue))
 	if err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
 		for _, project := range projectIDsValue {

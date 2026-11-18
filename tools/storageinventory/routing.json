@@ -12251,6 +12251,36 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261118135646_report_history_checkpoints.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events",
+          "hub/issues"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118141413_report_history_due_indexes.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -15735,6 +15765,8 @@
           "session.UpdateProjectModel:generated:LockActiveProject": 1,
           "session.UpdateProjectModel:generated:UpdateProjectModel": 1,
           "session.UpdateProjectModel:query-receiver": 2,
+          "session.UpdateProjectRecord:Exec": 1,
+          "session.UpdateProjectRecord:SQL": 1,
           "session.UpdateProjectRecord:generated:LockActiveProject": 1,
           "session.UpdateProjectRecord:generated:UpdateProjectMetadata": 1,
           "session.UpdateProjectRecord:generated:UpdateProjectSettings": 1,
@@ -18193,8 +18225,8 @@
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "session.ReadAnalyticsResidencePage:Query": 3,
           "session.ReadAnalyticsResidencePage:SQL": 3,
-          "session.ReadHistory:Query": 3,
-          "session.ReadHistory:SQL": 5,
+          "session.ReadHistory:Query": 2,
+          "session.ReadHistory:SQL": 2,
           "session.ReadHistoryIssueEvents:Query": 1,
           "session.ReadHistoryIssueEvents:SQL": 1
         },
@@ -18370,6 +18402,81 @@
           "hub/issues",
           "hub/leases",
           "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/reportcheckpoints/historical_blocks.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "analytics"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "historyBlockPage:Query": 1,
+          "readHistoricalBlocks:SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/reportcheckpoints/history.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "analytics",
+        "core",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "historyStep:Exec": 1,
+          "historyStep:Query": 1,
+          "historyStep:QueryRow": 3,
+          "historyStep:SQL": 6,
+          "storeHistoryBlock:Exec": 2,
+          "storeHistoryBlock:Query": 1,
+          "storeHistoryBlock:QueryRow": 1,
+          "storeHistoryBlock:SQL": 4
+        },
+        "tables": [
+          "hub/collaboration_events",
+          "hub/issues"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/reportcheckpoints/history_events.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "analytics",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "ReadHistoryEvents:Query": 1,
+          "ReadHistoryEvents:SQL": 3,
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
+        },
+        "tables": [
+          "hub/collaboration_events"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/reportcheckpoints/history_read.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "analytics",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "historyKeys.readRanges:Query": 1,
+          "historyKeys.readRanges:SQL": 1,
+          "readBlocks:Query": 1,
+          "readBlocks:SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events"
         ]
       }
     },

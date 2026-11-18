@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportdata"
+	"github.com/digitaldrywood/detent/internal/hubserver/reports/residence"
 	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -64,8 +65,8 @@ func TestReportsCompletionPopulation(t *testing.T) {
 		claim := func(hour int) AnalyticsResidenceEvent {
 			return AnalyticsResidenceEvent{At: at(hour), Kind: "scheduler.decision"}
 		}
-		todo := analyticsResidenceSpan{Lane: "Todo", From: base, To: at(2), queueTo: at(2)}
-		rework := analyticsResidenceSpan{Lane: "Rework", From: at(2), To: at(5), queueTo: at(3)}
+		todo := analyticsResidenceSpan{Lane: "Todo", From: base, To: at(2), QueueTo: at(2)}
+		rework := analyticsResidenceSpan{Lane: "Rework", From: at(2), To: at(5), QueueTo: at(3)}
 		for _, check := range []struct {
 			name    string
 			events  []AnalyticsResidenceEvent
@@ -78,29 +79,29 @@ func TestReportsCompletionPopulation(t *testing.T) {
 			{name: "mismatched source does not invent residence", events: []AnalyticsResidenceEvent{transition(2, "Todo", "Rework"), claim(3), transition(5, "In Progress", "Done")}, spans: []analyticsResidenceSpan{todo}, partial: true},
 		} {
 			t.Run(check.name, func(t *testing.T) {
-				fold := newAnalyticsResidenceFold(AnalyticsResidenceIssue{Id: "streamed", Created: base, Initial: "Todo"}, states, at(8))
+				fold := residence.NewFold(AnalyticsResidenceIssue{Id: "streamed", Created: base, Initial: "Todo"}, states, at(8))
 				var spans []analyticsResidenceSpan
 				done, reworked := 0, 0
 				for _, event := range check.events {
-					delta := fold.append(event)
-					if delta.hasSpan {
-						spans = append(spans, delta.span)
+					delta := fold.Append(event)
+					if delta.HasSpan {
+						spans = append(spans, delta.Span)
 					}
 					if delta.Done {
 						done++
 					}
-					if delta.rework {
+					if delta.Rework {
 						reworked++
 					}
 				}
 				if !reflect.DeepEqual(spans, check.spans) || fold.Issue.Partial != check.partial || fold.State != "Done" || fold.Entered != at(5) || fold.Started == nil || *fold.Started != base || done != 1 || reworked != 1 {
 					t.Fatalf("incremental residence spans=%+v partial=%t state=%q entered=%v started=%v done=%d reworked=%d", spans, fold.Issue.Partial, fold.State, fold.Entered, fold.Started, done, reworked)
 				}
-				final, ok := fold.finish()
+				final, ok := fold.Finish()
 				if ok == check.partial {
 					t.Fatalf("partial=%t final residence available=%t", check.partial, ok)
 				}
-				if ok && final != (analyticsResidenceSpan{Lane: "Done", From: at(5), To: at(8), queueTo: at(8)}) {
+				if ok && final != (analyticsResidenceSpan{Lane: "Done", From: at(5), To: at(8), QueueTo: at(8)}) {
 					t.Fatalf("final residence=%+v", final)
 				}
 			})

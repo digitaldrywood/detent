@@ -1,10 +1,8 @@
 package postgres
 
 import (
-	"cmp"
 	"context"
 	"errors"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -12,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportcheckpoints"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportreads"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -73,76 +72,45 @@ func (s *session) ReadHistory(ctx context.Context, query reportstore.OverviewQue
 	}
 	rows, err = s.db.Query(ctx, `SELECT i.project_id,i.native_id,i.created_at,coalesce(
 (SELECT e.from_state FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence LIMIT 1),
-CASE WHEN (SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created' LIMIT 1) THEN i.workflow_state_name END,'')
+CASE WHEN (SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created' LIMIT 1) THEN i.workflow_state_name END,''),coalesce(k.history_through,0),coalesce(k.history_sequence,0)
 FROM unnest($14::bigint[]) candidate(id) CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=candidate.id LIMIT 1) i
+LEFT JOIN LATERAL (SELECT k.history_through,k.history_sequence FROM report_issue_checkpoints k WHERE k.organization_id=i.organization_id AND k.project_id=i.project_id AND k.work_item_id=i.native_id LIMIT 1) k ON EXISTS (
+ SELECT 1 FROM report_checkpoint_cursors c LEFT JOIN project_event_cursors h ON h.organization_id=c.organization_id AND h.project_id=c.project_id
+ WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.legacy_complete AND c.through_project_sequence>=coalesce(h.sequence,0))
 LEFT JOIN LATERAL (SELECT ws.terminal FROM project_workflow_states ws WHERE ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name LIMIT 1) ws ON true
 WHERE `+reportreads.IssueFilter+` AND i.created_at<$5 AND (NOT coalesce(ws.terminal,false) OR i.native_updated_at>=$4 OR i.native_id=ANY($15::text[]))
 ORDER BY i.project_id,i.native_id LIMIT $11`, append(args, candidateIDs, active)...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
-	type location struct{ project, issue int }
-	locations := map[tracker.NativeWorkItemID]location{}
-	ids := []string{}
+	heads := map[string]reportcheckpoints.HistoryPosition{}
 	for rows.Next() {
 		var project tracker.ProjectID
 		var issue reportstore.HistoryIssue
-		if err := rows.Scan(&project, &issue.WorkItemID, &issue.CreatedAt, &issue.InitialState); err != nil {
+		var head reportcheckpoints.HistoryPosition
+		if err := rows.Scan(&project, &issue.WorkItemID, &issue.CreatedAt, &issue.InitialState, &head.Through, &head.Head); err != nil {
 			rows.Close()
 			return nil, mapError(ctx, err)
 		}
 		issue.Events = []reportstore.WorkflowEvent{}
 		index := projects[project]
-		locations[issue.WorkItemID] = location{index, len(out[index].Issues)}
 		out[index].Issues = append(out[index].Issues, issue)
-		ids = append(ids, string(issue.WorkItemID))
+		if !s.snapshot {
+			head = reportcheckpoints.HistoryPosition{}
+		}
+		heads[string(issue.WorkItemID)] = head
 	}
 	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
-	if len(ids) > query.Limit {
+	if len(heads) > query.Limit {
 		return nil, reportstore.ErrPopulationExceeded
 	}
-	if len(ids) == 0 {
+	if len(heads) == 0 {
 		return out, nil
 	}
-	eventLimit := min(query.Limit*100, 100000)
-	const events = `SELECT e.project_id,e.work_item_id,e.recorded_at,e.sequence,e.id,e.version_id,e.type,e.from_state,e.to_state
- FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=ANY($2::text[]) AND e.work_item_id=ANY($3::text[])
- AND e.type IN ('workflow.transitioned','scheduler.decision') AND e.recorded_at<$4`
-	pages := reportreads.FactPages("report_page", events, "project_id,work_item_id,recorded_at,sequence", eventLimit)
-	rows, err = s.db.Query(ctx, "WITH "+pages+` SELECT e.work_item_id,e.sequence,e.id,e.version_id,e.recorded_at,e.type,e.from_state,e.to_state,coalesce(f.rework_class,''),coalesce(f.rework_kind,'')
- FROM report_page e LEFT JOIN LATERAL (SELECT f.rework_class,f.rework_kind FROM report_event_facts f WHERE f.organization_id=$1 AND f.event_id=e.id LIMIT 1) f ON true`, s.organization, projectIDs, ids, query.To.UTC())
-	if err != nil {
+	if err := reportcheckpoints.ReadHistoryEvents(ctx, s.db, s.organization, query, out, heads); err != nil {
 		return nil, mapError(ctx, err)
-	}
-	sequences := make(map[string]int64)
-	count := 0
-	for rows.Next() {
-		var id tracker.NativeWorkItemID
-		var sequence int64
-		var event reportstore.WorkflowEvent
-		if err := rows.Scan(&id, &sequence, &event.ID, &event.VersionID, &event.At, &event.Type, &event.FromState, &event.ToState, &event.Class.Name, &event.Class.Kind); err != nil {
-			rows.Close()
-			return nil, mapError(ctx, err)
-		}
-		sequences[event.ID] = sequence
-		location := locations[id]
-		out[location.project].Issues[location.issue].Events = append(out[location.project].Issues[location.issue].Events, event)
-		count++
-	}
-	if err := rows.Err(); err != nil {
-		return nil, mapError(ctx, err)
-	}
-	if count > eventLimit {
-		return nil, reportstore.ErrPopulationExceeded
-	}
-	for _, project := range out {
-		for _, issue := range project.Issues {
-			slices.SortFunc(issue.Events, func(a, b reportstore.WorkflowEvent) int {
-				return cmp.Compare(sequences[a.ID], sequences[b.ID])
-			})
-		}
 	}
 	return out, nil
 }

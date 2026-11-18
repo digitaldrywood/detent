@@ -122,6 +122,14 @@ func reportsCompletions(timelines []AnalyticsResidenceTimeline, states map[strin
 		}
 		var controlled, active float64
 		issueLanes := map[string]float64{}
+		if seed := timeline.seed; seed != nil {
+			for lane, seconds := range seed.LaneSeconds {
+				if analyticsResidenceGroup(lane, states) != "excluded" {
+					issueLanes[lane] = seconds
+				}
+			}
+			controlled, active = seed.SystemSeconds, issueLanes["In Progress"]
+		}
 		for _, span := range timeline.Spans {
 			if analyticsResidenceGroup(span.Lane, states) == "excluded" {
 				continue

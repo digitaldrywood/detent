@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -28,6 +29,17 @@ type ReportsFilter struct {
 	Runners    []string
 	Models     []string
 	Stages     []string
+}
+
+func (f ReportsFilter) StoreFilter() reportstore.Filter {
+	priorities := make([]int, len(f.Priorities))
+	for i, value := range f.Priorities {
+		v, err := strconv.Atoi(value)
+		if err == nil {
+			priorities[i] = v
+		}
+	}
+	return reportstore.Filter{Labels: f.Labels, Priorities: priorities, Types: f.Types, FiledBy: f.FiledBy, Runners: f.Runners, Models: f.Models, Stages: f.Stages}
 }
 
 func ReportsQueryValues(params url.Values, name string) []string {

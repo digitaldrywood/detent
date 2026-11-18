@@ -282,6 +282,7 @@ func MarkPostgresReportCoverage(out *HostedReportsReport, history []reportstore.
 				historyIncomplete = true
 				initialStateMissing = true
 			}
+			historyIncomplete = historyIncomplete || issue.OmittedUnclassified
 			for _, event := range issue.Events {
 				historyIncomplete = historyIncomplete || event.ToState == "Rework" && event.Class.Name == ""
 			}

@@ -254,6 +254,9 @@ func (s *session) UpdateProjectRecord(ctx context.Context, record projectstore.R
 		if err := s.replaceProjectStates(ctx, record.Core.ID, record.States); err != nil {
 			return projectstore.Record{}, err
 		}
+		if _, err := s.db.Exec(ctx, `UPDATE report_checkpoint_cursors SET history_policy_revision=history_policy_revision+1 WHERE organization_id=$1 AND project_id=$2`, s.organization, record.Core.ID); err != nil {
+			return projectstore.Record{}, mapError(ctx, err)
+		}
 	}
 	updated, err := s.ProjectRecord(ctx, record.Core.ID)
 	if err != nil {
