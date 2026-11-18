@@ -542,6 +542,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		prepared     bool
 		outage       bool
 		exhausted    bool
+		published    bool
 		localWorker  bool
 		staleProcess bool
 		recovered    bool
@@ -561,7 +562,8 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		{name: "completed worker retains fresh cleanup", phase: "completed", localWorker: true, staleProcess: true, wantRenewed: true},
 		{name: "completed worker retains long finalization cleanup", phase: "completed", age: 20 * time.Minute, localWorker: true, staleProcess: true, wantRenewed: true, wantFinished: true},
 		{name: "publication outage retains completed result", phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, outage: true, wantRenewed: true, wantFinished: true},
-		{name: "publication outage bound releases completion", phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, outage: true, exhausted: true, wantRetained: true, wantFailure: true},
+		{name: "publication outage bound releases completion", published: true, phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, outage: true, exhausted: true, wantRetained: true, wantFailure: true},
+		{name: "abandoned published handoff", published: true, phase: "completed", age: 20 * time.Minute, wantRetained: true, wantFailure: true},
 		{name: "dead completed worker expires", phase: "completed", age: 20 * time.Minute, wantRetained: true, wantFailure: true},
 		{name: "prepared outcome never published", phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, wantRetained: true, wantFailure: true},
 		{name: "worker exited after completion", phase: "completed"},
@@ -600,7 +602,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 			if test.wantFailure || test.wantFinished {
 				fixtureSetNow(h.scheduler, now.Add(-test.age))
 				role := "implement"
-				if test.outage && test.exhausted {
+				if test.published {
 					role = runner.RoleCode
 				}
 				if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "test"}); err != nil {
@@ -645,8 +647,8 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 				fixtureConfigureScheduler(t, h, func(*SchedulerConfig) {})
 				fixtureInstallClaim(t, h.scheduler, nativeClaim{source: claim.source, lease: claim.lease, recovery: claim.recovery, deadline: claim.deadline}, h.descriptor, "local")
 			}
-			var outageSource *runner.NativeChange
-			if test.outage && test.exhausted {
+			var publishedSource *runner.NativeChange
+			if test.published {
 				head := nativeChangeFixtureHead("c")
 				execution.SetRepository(nativeChangeRepository)
 				execution.SetDiffSource(nativeChangeDiff(head, "README.md"))
@@ -659,9 +661,13 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 				if err := execution.PrepareFinish(t.Context(), "succeeded", "", nil); err != nil {
 					t.Fatal(err)
 				}
-				outageSource = execution.NativeChange()
-				if outageSource == nil || outageSource.VersionID == "" {
-					t.Fatalf("outage fixture did not publish recoverable source: %+v", outageSource)
+				execution.RetainCompletion()
+				review, stopReview := context.WithCancel(t.Context())
+				execution.BindReviewHandoff(review.Done())
+				stopReview()
+				publishedSource = execution.NativeChange()
+				if publishedSource == nil || publishedSource.VersionID == "" {
+					t.Fatalf("fixture did not publish recoverable source: %+v", publishedSource)
 				}
 			}
 			if test.outage {
@@ -794,7 +800,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 					h.claim(t, issue.ID)
 					resumed := h.scheduler.RunExecution(issue.ID).(runner.ChangeSourceExecution)
 					recovered, err := resumed.RecoverChangeSource(t.Context())
-					if err != nil || outageSource == nil || recovered.Version.ID != outageSource.VersionID || recovered.Version.HeadSHA != nativeChangeFixtureHead("c") || len(recovered.Bundle) == 0 {
+					if err != nil || publishedSource == nil || recovered.Version.ID != publishedSource.VersionID || recovered.Version.HeadSHA != nativeChangeFixtureHead("c") || len(recovered.Bundle) == 0 {
 						t.Fatalf("expired completion lost its published source: %+v, %v", recovered, err)
 					}
 					if err := recovered.Version.Source.Validate(recovered.Version.BaseSHA, recovered.Version.HeadSHA, recovered.Bundle); err != nil {
@@ -820,7 +826,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 					if len(page.Items) != 1 || page.Items[0].Status != "failed" || page.Items[0].TerminalFailure == nil || page.Items[0].TerminalFailure.Stage != "finalization" || page.Items[0].TerminalFailure.Error != wantError || page.Items[0].ClaimReleasedAt == nil {
 						t.Fatalf("stalled completion did not settle with its cause: %+v", page.Items)
 					}
-					if outageSource != nil {
+					if publishedSource != nil {
 						if _, held := fixtureClaims(h.scheduler)[issue.ID]; held {
 							t.Fatal("over-bound outage retained execution claim")
 						}
@@ -828,7 +834,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 						h.claim(t, issue.ID)
 						resumed := h.scheduler.RunExecution(issue.ID).(runner.ChangeSourceExecution)
 						recovered, err := resumed.RecoverChangeSource(t.Context())
-						if err != nil || recovered.Version.ID != outageSource.VersionID || recovered.Version.HeadSHA != nativeChangeFixtureHead("c") || len(recovered.Bundle) == 0 {
+						if err != nil || recovered.Version.ID != publishedSource.VersionID || recovered.Version.HeadSHA != nativeChangeFixtureHead("c") || len(recovered.Bundle) == 0 {
 							t.Fatalf("released outage source unavailable for resume: %+v, %v", recovered, err)
 						}
 						if err := recovered.Version.Source.Validate(recovered.Version.BaseSHA, recovered.Version.HeadSHA, recovered.Bundle); err != nil {

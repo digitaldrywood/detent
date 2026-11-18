@@ -543,15 +543,20 @@ func (o *Orchestrator) completeNativeChangeRun(
 	return true
 }
 
+func (o *Orchestrator) nativeCompletionExecution(event runpkg.Completion) runpkg.Execution {
+	if event.Request.Execution != nil {
+		return event.Request.Execution
+	}
+	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+		return source.RunExecution(event.IssueID)
+	}
+	return nil
+}
+
 // nativeReviewConversationRefusal returns the review-conversation landing
 // refusal recorded for exactly the version this run returned.
 func (o *Orchestrator) nativeReviewConversationRefusal(event runpkg.Completion, change *runpkg.NativeChange) string {
-	execution := event.Request.Execution
-	if execution == nil {
-		if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
-			execution = source.RunExecution(event.IssueID)
-		}
-	}
+	execution := o.nativeCompletionExecution(event)
 	if execution == nil || change == nil {
 		return ""
 	}
@@ -563,12 +568,7 @@ func (o *Orchestrator) nativeReviewConversationRefusal(event runpkg.Completion, 
 }
 
 func (o *Orchestrator) observeNativeCompletion(ctx context.Context, event runpkg.Completion, accepted bool) {
-	execution := event.Request.Execution
-	if execution == nil {
-		if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
-			execution = source.RunExecution(event.IssueID)
-		}
-	}
+	execution := o.nativeCompletionExecution(event)
 	if runtime, ok := execution.(runpkg.RuntimeExecution); ok {
 		at := time.Now().UTC()
 		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: at, Phase: "completed", Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: accepted, ObservedAt: at}}); err != nil {
@@ -583,11 +583,7 @@ func (o *Orchestrator) continueNativeLandingRun(ctx context.Context, state *Stat
 
 func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, event runpkg.Completion, running Running, reviewOnly bool) error {
 	request := event.Request
-	if request.Execution == nil {
-		if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
-			request.Execution = source.RunExecution(event.IssueID)
-		}
-	}
+	request.Execution = o.nativeCompletionExecution(event)
 	_, available := request.Execution.(runpkg.LandingExecution)
 	if reviewOnly {
 		_, available = request.Execution.(runpkg.NativeReviewContinuationExecution)
@@ -631,6 +627,9 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	request.AcquireModelPermit = nil
 	runCtx, cancel := context.WithTimeoutCause(ctx, o.cfg.MergeWorkerMaxDuration, runpkg.ErrMergeWorkerDurationExceeded)
 	runCtx, stop := context.WithCancelCause(runCtx)
+	if owner, ok := request.Execution.(interface{ BindReviewHandoff(<-chan struct{}) }); reviewOnly && ok {
+		owner.BindReviewHandoff(runCtx.Done())
+	}
 	if request.OnUsageUpdate != nil {
 		request.OnUsageUpdate = o.usageUpdateHandler(runCtx, event.IssueID, nil, running.progress)
 	}

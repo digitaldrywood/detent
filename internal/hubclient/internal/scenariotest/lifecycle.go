@@ -10,6 +10,7 @@ import (
 )
 
 type Lifecycle interface {
+	BindReviewHandoff(<-chan struct{})
 	FlushRuntime(context.Context) error
 	executioncontract.Execution
 	CompletionSnapshot() checkpoint.State
@@ -24,7 +25,6 @@ type Lifecycle interface {
 	runner.DependencyReasonExecution
 	runner.DiffExecution
 	runner.EvidenceSourceExecution
-	runner.Execution
 	runner.HostDiagnosticsExecution
 	runner.IntegrationSourceExecution
 	runner.LandingExecution
