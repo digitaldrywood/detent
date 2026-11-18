@@ -170,12 +170,12 @@ func coreReportLandingProof(ctx context.Context, tx *neutralimport.Index, source
 
 func restoreCoreReportLanding(ctx context.Context, tx *neutralimport.Index, source CoreChangeImportSource, change *tracker.ChangeRequest) error {
 	if change.CurrentVersion != "" {
-		frozen, err := readCoreQualityLanding(ctx, tx, source, change.ID, change.CurrentVersion)
+		frozen, found, err := readCoreQualityLanding(ctx, tx, source, change.ID, change.CurrentVersion)
 		if err != nil {
 			return err
 		}
-		if frozen != nil {
-			change.Landed = frozen
+		if found {
+			change.Landed = &frozen
 			return nil
 		}
 	}

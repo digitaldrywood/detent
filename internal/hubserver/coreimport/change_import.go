@@ -721,28 +721,28 @@ func importCoreVersionLandingHistory(ctx context.Context, tx *neutralimport.Inde
 	if json.Unmarshal(raw, &change) != nil || change.OrganizationID != source.OrganizationID || change.ProjectID != tracker.ProjectID(projectID) || change.WorkItemID != tracker.NativeWorkItemID(itemID) || change.ID != version.ChangeID {
 		return eventstore.ErrInvalidRecord
 	}
-	frozen, err := readCoreQualityLanding(ctx, tx, source, version.ChangeID, version.ID)
+	frozen, found, err := readCoreQualityLanding(ctx, tx, source, version.ChangeID, version.ID)
 	if err != nil {
 		return err
 	}
-	if frozen == nil {
+	if !found {
 		if err := restoreCoreReportLanding(ctx, tx, source, &change); err != nil {
 			return err
 		}
 		if change.Landed != nil && change.Landed.VersionID == version.ID {
-			frozen = change.Landed
+			frozen, found = *change.Landed, true
 		}
 	}
 	var prepared *eventstore.VersionLanding
-	if frozen != nil {
+	if found {
 		if frozen.HeadSHA != version.HeadSHA {
 			return eventstore.ErrInvalidRecord
 		}
-		row, err := content.PrepareVersionLanding(ctx, eventstore.VersionLanding{OrganizationID: source.OrganizationID, ProjectID: change.ProjectID, WorkItemID: change.WorkItemID, ChangeID: change.ID, VersionID: version.ID}, *frozen)
+		row, err := content.PrepareVersionLanding(ctx, eventstore.VersionLanding{OrganizationID: source.OrganizationID, ProjectID: change.ProjectID, WorkItemID: change.WorkItemID, ChangeID: change.ID, VersionID: version.ID}, frozen)
 		if err != nil {
 			return err
 		}
-		row, err = canonicalCoreVersionLanding(ctx, target, content, row, *frozen)
+		row, err = canonicalCoreVersionLanding(ctx, target, content, row, frozen)
 		if err != nil {
 			return err
 		}

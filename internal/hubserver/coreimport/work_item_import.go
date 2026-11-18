@@ -615,12 +615,11 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *neutralimport.Index, obj
 			return postgres.CoreWorkItemImport{}, errors.New("current comment row does not match immutable history")
 		}
 	}
-	resolved, err := resolveCoreGitHubReference(ctx, tx, source, row, current, &reference)
+	references, err := resolveCoreGitHubReferences(ctx, tx, source, row, current, &reference)
 	if err != nil {
 		return postgres.CoreWorkItemImport{}, err
 	}
-	if resolved != nil {
-		references := []tracker.ExternalReference{*resolved}
+	if len(references) > 0 {
 		for _, version := range record.Versions {
 			if version.RecordID != string(item.NativeID) || version.Revision != item.Revision {
 				continue
@@ -894,7 +893,7 @@ func (e *coreGitHubReferenceEvidence) add(raw string) {
 	}
 }
 
-func resolveCoreGitHubReference(ctx context.Context, tx *neutralimport.Index, source CoreWorkItemImportSource, row coreWorkItemImportRow, current tracker.NativeIssue, evidence *coreGitHubReferenceEvidence) (*tracker.ExternalReference, error) {
+func resolveCoreGitHubReferences(ctx context.Context, tx *neutralimport.Index, source CoreWorkItemImportSource, row coreWorkItemImportRow, current tracker.NativeIssue, evidence *coreGitHubReferenceEvidence) ([]tracker.ExternalReference, error) {
 	if !evidence.eligible || evidence.nodeID == "" {
 		return nil, nil
 	}
@@ -916,7 +915,7 @@ func resolveCoreGitHubReference(ctx context.Context, tx *neutralimport.Index, so
 	}
 	if complete != "" {
 		ref := tracker.GitHubIssueSourceReference(evidence.nodeID, complete)
-		return &ref, nil
+		return []tracker.ExternalReference{ref}, nil
 	}
 	evidence.add(githubcontract.MigrationSourceURL(row.Body))
 	_, imports := tx.Schema()["github_imports"]
@@ -984,7 +983,7 @@ func resolveCoreGitHubReference(ctx context.Context, tx *neutralimport.Index, so
 		}
 		return nil, nil
 	}
-	return &ref, nil
+	return []tracker.ExternalReference{ref}, nil
 }
 
 func readCoreImportVersions(ctx context.Context, tx *neutralimport.Index, source CoreWorkItemImportSource, item corestore.WorkItem, record *postgres.CoreWorkItemImport, pending map[eventstore.CollaborationVersionKey][]byte, references *coreGitHubReferenceEvidence) error {

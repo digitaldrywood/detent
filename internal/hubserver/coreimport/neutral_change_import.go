@@ -159,50 +159,50 @@ func readCoreNeutralArchive(ctx context.Context, source *neutralimport.Index, or
 	return raw, nil
 }
 
-func readCoreQualityLanding(ctx context.Context, source *neutralimport.Index, input CoreChangeImportSource, changeID, versionID string) (*tracker.ChangeLanding, error) {
+func readCoreQualityLanding(ctx context.Context, source *neutralimport.Index, input CoreChangeImportSource, changeID, versionID string) (tracker.ChangeLanding, bool, error) {
 	row, err := source.One(ctx, "quality_landings", map[string]string{"version_id": versionID, "change_id": changeID}, []string{"version_id"})
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return tracker.ChangeLanding{}, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return tracker.ChangeLanding{}, false, err
 	}
 	var encoded string
 	var projected sql.NullString
 	if err := row.Decode(map[string]any{"record_json": &encoded, "landed_at": &projected}); err != nil {
-		return nil, err
+		return tracker.ChangeLanding{}, false, err
 	}
 	raw, err := readCoreChangePayload(ctx, source, input, encoded)
 	if err != nil {
-		return nil, err
+		return tracker.ChangeLanding{}, false, err
 	}
 	var landing tracker.ChangeLanding
 	if json.Unmarshal(raw, &landing) != nil || landing.VersionID != versionID || landing.HeadSHA == "" || landing.MergeSHA == "" || landing.BaseRef == "" || landing.LandedAt.IsZero() {
-		return nil, eventstore.ErrInvalidRecord
+		return tracker.ChangeLanding{}, false, eventstore.ErrInvalidRecord
 	}
 	versionRow, err := source.One(ctx, "change_versions", map[string]string{"id": versionID, "change_id": changeID}, []string{"id"})
 	if err != nil {
-		return nil, err
+		return tracker.ChangeLanding{}, false, err
 	}
 	versionEncoded, err := coreNeutralPayload(versionRow)
 	if err != nil {
-		return nil, err
+		return tracker.ChangeLanding{}, false, err
 	}
 	versionRaw, err := readCoreChangePayload(ctx, source, input, versionEncoded)
 	if err != nil {
-		return nil, err
+		return tracker.ChangeLanding{}, false, err
 	}
 	var version tracker.ChangeVersion
 	if json.Unmarshal(versionRaw, &version) != nil || version.ID != versionID || version.ChangeID != changeID || version.HeadSHA != landing.HeadSHA {
-		return nil, eventstore.ErrInvalidRecord
+		return tracker.ChangeLanding{}, false, eventstore.ErrInvalidRecord
 	}
 	if projected.Valid {
 		at, err := hubapi.ParseTimeValue(projected.String)
 		if err != nil || !at.Equal(landing.LandedAt) {
-			return nil, eventstore.ErrInvalidRecord
+			return tracker.ChangeLanding{}, false, eventstore.ErrInvalidRecord
 		}
 	}
-	return &landing, nil
+	return landing, true, nil
 }
 
 func validateCoreQualityLandings(ctx context.Context, source *neutralimport.Index, input CoreChangeImportSource) error {
@@ -231,11 +231,11 @@ func validateCoreQualityLandings(ctx context.Context, source *neutralimport.Inde
 			if _, err := source.One(ctx, "change_requests", map[string]string{"id": changeID, "organization_id": string(input.OrganizationID)}, []string{"id"}); err != nil {
 				return err
 			}
-			landing, err := readCoreQualityLanding(ctx, source, input, changeID, versionID)
+			_, found, err := readCoreQualityLanding(ctx, source, input, changeID, versionID)
 			if err != nil {
 				return err
 			}
-			if landing == nil {
+			if !found {
 				return eventstore.ErrInvalidRecord
 			}
 		}
