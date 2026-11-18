@@ -567,7 +567,10 @@ func startBinary(ctx context.Context, tempDir string, checkIPC func() error) (_ 
 	processCtx, cancel := cleanupContext(ctx)
 	const supervise = `
 exec 3<&0
-"$@" < /dev/null 3<&- &
+postgres -D data -h '' -k "$PGTEST_SOCKET_DIR" \
+	-c lc_messages=C -c logging_collector=off -c fsync=off \
+	-c synchronous_commit=off -c full_page_writes=off \
+	-c "max_connections=$PGTEST_MAX_CONNECTIONS" < /dev/null 3<&- &
 postmaster=$!
 (
 	while IFS= read -r mode; do
@@ -586,10 +589,9 @@ kill -TERM "$watchdog" 2>/dev/null
 wait "$watchdog" 2>/dev/null
 exit "$status"
 `
-	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest", "postgres", "-D", "data", "-h", "", "-k", socketDir, "-c", "lc_messages=C", "-c", "logging_collector=off", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off")
-	cmd.Args = append(cmd.Args, "-c", "max_connections="+strconv.Itoa(binaryConnectionLimit()))
+	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest")
 	cmd.Dir = dir
-	cmd.Env = init.Env
+	cmd.Env = append(init.Env, "PGTEST_SOCKET_DIR="+socketDir, "PGTEST_MAX_CONNECTIONS="+strconv.Itoa(binaryConnectionLimit()))
 	cmd.Stdin = lifetime
 	procgroup.Configure(processCtx, cmd)
 	cmd.Cancel = func() error {

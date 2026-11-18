@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 func NormalizedWorkflowPolicy(raw []byte) []byte {
@@ -16,8 +17,7 @@ func WorkflowSourceGit(ctx context.Context, sourceRoot string, args ...string) (
 	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 
-	commandArgs := append([]string{"-C", sourceRoot}, args...)
-	cmd := exec.CommandContext(commandCtx, "git", commandArgs...)
+	cmd := gitexec.Command(commandCtx, sourceRoot, args...)
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return "", commandCtx.Err()

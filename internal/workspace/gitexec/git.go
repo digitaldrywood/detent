@@ -32,6 +32,12 @@ func (e *CommandError) Unwrap() error {
 	return e.Err
 }
 
+func Command(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git")
+	cmd.Args = append([]string{"git", "-C", dir}, args...)
+	return cmd
+}
+
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	return WithEnv(ctx, dir, nil, args...)
 }
@@ -49,9 +55,7 @@ func WithInput(ctx context.Context, dir string, env []string, fileOutput bool, i
 }
 
 func withInputCommand(ctx context.Context, dir string, env []string, fileOutput bool, input string, run func(context.Context, *exec.Cmd) error, args ...string) (string, error) {
-	gitArgs := append([]string{"git", "-C", dir}, args...)
-	cmd := exec.CommandContext(ctx, "git")
-	cmd.Args = gitArgs
+	cmd := Command(ctx, dir, args...)
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}
@@ -108,7 +112,7 @@ func withInputCommand(ctx context.Context, dir string, env []string, fileOutput 
 
 	return "", &CommandError{
 		Command:  "git",
-		Args:     gitArgs[1:],
+		Args:     cmd.Args[1:],
 		ExitCode: exitCode,
 		Output:   string(output),
 		Err:      err,
@@ -175,9 +179,7 @@ var HandoffDiffExcludes = []string{
 // the per-file attempt diff pins --find-renames -- gets the
 // same bounded read instead of a second copy of it.
 func WithinLimit(ctx context.Context, workspacePath string, env []string, maxBytes int, args ...string) (string, bool, error) {
-	gitArgs := append([]string{"git", "-C", workspacePath}, args...)
-	cmd := exec.CommandContext(ctx, "git")
-	cmd.Args = gitArgs
+	cmd := Command(ctx, workspacePath, args...)
 	cmd.WaitDelay = WaitDelay
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
@@ -225,7 +227,7 @@ func WithinLimit(ctx context.Context, workspacePath string, env []string, maxByt
 	combined := append(output, stderr.Bytes()...)
 	return "", false, &CommandError{
 		Command:  "git",
-		Args:     gitArgs[1:],
+		Args:     cmd.Args[1:],
 		ExitCode: exitCode,
 		Output:   string(combined),
 		Err:      waitErr,

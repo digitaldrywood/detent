@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 var (
@@ -79,8 +79,7 @@ func buildSourceRepoSeed(ctx context.Context, dir string) error {
 		{"add", "README.md"},
 		{"commit", "-m", "initial"},
 	} {
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Dir = dir
+		cmd := gitexec.Command(ctx, dir, args...)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git %v: %w\n%s", args, err, output)
 		}
@@ -148,23 +147,17 @@ func BareRemote(t *testing.T) string {
 
 	root := testenv.TempDir(t)
 	dir := filepath.Join(root, "origin.git")
-	Command(t, root, "git", "init", "--bare", "-b", "main", dir)
+	Git(t, root, "init", "--bare", "-b", "main", dir)
 	return dir
 }
 
 func Git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	return Command(t, dir, "git", args...)
-}
 
-func Command(t *testing.T, dir string, name string, args ...string) string {
-	t.Helper()
-
-	cmd := exec.CommandContext(t.Context(), name, args...)
-	cmd.Dir = dir
+	cmd := gitexec.Command(t.Context(), dir, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
 	}
 	return string(output)
 }

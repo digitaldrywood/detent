@@ -876,7 +876,7 @@ func TestPrepareWorkerScratchPreservesGitExclude(t *testing.T) {
 		t.Fatalf("write worker scratch: %v", err)
 	}
 
-	status := runCommand(t, workspacePath, "git", "status", "--short", "--untracked-files=all")
+	status := runGit(t, workspacePath, "status", "--short", "--untracked-files=all")
 	if strings.Contains(status, ".detent/worker-tmp") {
 		t.Fatalf("git status includes worker scratch:\n%s", status)
 	}
@@ -899,7 +899,7 @@ func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
 	if err := os.MkdirAll(foreign, 0o700); err != nil {
 		t.Fatalf("mkdir foreign repo: %v", err)
 	}
-	runCommand(t, foreign, "git", "init", "-b", "main")
+	runGit(t, foreign, "init", "-b", "main")
 
 	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
 		Root:       root,
@@ -938,7 +938,7 @@ func TestLocalGitRejectsExistingGitRepoFromDifferentSource(t *testing.T) {
 	if err := os.MkdirAll(foreign, 0o700); err != nil {
 		t.Fatalf("mkdir foreign repo: %v", err)
 	}
-	runCommand(t, foreign, "git", "init", "-b", "main")
+	runGit(t, foreign, "init", "-b", "main")
 
 	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
 		Root:       root,

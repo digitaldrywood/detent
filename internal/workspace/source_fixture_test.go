@@ -14,10 +14,6 @@ func runGit(t *testing.T, path string, args ...string) string {
 	t.Helper()
 	return gitfixture.Git(t, path, args...)
 }
-func runCommand(t *testing.T, path, name string, args ...string) string {
-	t.Helper()
-	return gitfixture.Command(t, path, name, args...)
-}
 func readFile(t *testing.T, path string) string { t.Helper(); return gitfixture.ReadFile(t, path) }
 func checkpointWrite(t *testing.T, root, path, content string) {
 	t.Helper()

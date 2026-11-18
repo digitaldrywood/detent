@@ -17,10 +17,19 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func makeFIFO(t *testing.T, path string) {
+	t.Helper()
+	if err := unix.Mkfifo(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T) {
 	t.Parallel()
@@ -272,7 +281,7 @@ func TestLocalGitCreateBasesNewBranchOnFetchedRemoteDefault(t *testing.T) {
 			runGit(t, source, "commit", "-m", "add local-only change")
 
 			publisher := filepath.Join(t.TempDir(), "publisher")
-			runCommand(t, t.TempDir(), "git", "clone", remote, publisher)
+			runGit(t, t.TempDir(), "clone", remote, publisher)
 			runGit(t, publisher, "config", "user.name", "Test Publisher")
 			runGit(t, publisher, "config", "user.email", "publisher@example.com")
 			if err := os.WriteFile(filepath.Join(publisher, "remote-latest.txt"), []byte("remote latest\n"), 0o600); err != nil {
@@ -596,7 +605,7 @@ func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
 	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
 	argsPath := filepath.Join(t.TempDir(), "shell-args.trace")
 	controlPath := filepath.Join(t.TempDir(), "shell.control")
-	runCommand(t, filepath.Dir(controlPath), "mkfifo", controlPath)
+	makeFIFO(t, controlPath)
 	release, err := os.OpenFile(controlPath, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -1979,7 +1988,7 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			fifoPath := filepath.Join(dir, "release")
-			runCommand(t, dir, "mkfifo", fifoPath)
+			makeFIFO(t, fifoPath)
 			release, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -2093,7 +2102,7 @@ func TestGitQueriesCompleteWhenDescendantRetainsOutput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			fifoPath := filepath.Join(dir, "release")
-			runCommand(t, dir, "mkfifo", fifoPath)
+			makeFIFO(t, fifoPath)
 			release, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 			if err != nil {
 				t.Fatal(err)

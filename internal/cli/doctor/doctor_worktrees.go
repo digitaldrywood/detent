@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 const workspaceCountWarningThreshold = 50
@@ -189,7 +190,7 @@ func CheckExternalBranchWorktrees(
 func DefaultGitWorktrees(ctx context.Context, sourceRoot string) ([]GitWorktree, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(commandCtx, "git", "-C", sourceRoot, "worktree", "list", "--porcelain", "-z")
+	cmd := gitexec.Command(commandCtx, sourceRoot, "worktree", "list", "--porcelain", "-z")
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return nil, commandCtx.Err()
