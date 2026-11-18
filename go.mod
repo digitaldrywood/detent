@@ -27,6 +27,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/creack/pty v1.1.24
+	github.com/ebitengine/purego v0.10.2
 	github.com/firebase/genkit/go v1.13.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/getkin/kin-openapi v0.146.0
@@ -98,7 +99,6 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/ebitengine/purego v0.10.2 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-openapi/jsonpointer v0.22.5 // indirect
