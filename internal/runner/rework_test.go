@@ -488,6 +488,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		resolvedPause            bool
 		checkpointRetry          string
 		missingBundleBackend     string
+		unreachableRemote        bool
 		pausedLaterConflict      bool
 		failedFinalGate          bool
 		lateConflict             bool
@@ -502,6 +503,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "resolved pause integrates target before validation with two remaining picks", resolvedPause: true},
 		{name: "Todo retry starts from current source", resolvedPause: true, checkpointRetry: "Todo"},
 		{name: "Todo retry requires unavailable Change source", resolvedPause: true, checkpointRetry: "Todo", missingBundleBackend: workspace.KindLocalGit},
+		{name: "Todo retry cannot fetch required checkpoint", resolvedPause: true, checkpointRetry: "Todo", missingBundleBackend: workspace.KindLocalGit, unreachableRemote: true},
 		{name: "Todo filesystem retry requires Git checkpoint", resolvedPause: true, checkpointRetry: "Todo", missingBundleBackend: workspace.KindFilesystem},
 		{name: "In Progress retry starts from current source", resolvedPause: true, checkpointRetry: "In Progress"},
 		{name: "Rework retry restores paused checkpoint before validation", resolvedPause: true, checkpointRetry: "Rework"},
@@ -623,26 +625,23 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
 				runRunnerGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-personal-signer"))
 			}
-			var signer, signingUnavailable string
-			var allowed string
-			var signerBefore []byte
+			readFile := func(path string) string {
+				t.Helper()
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(data)
+			}
+			var signer, signingUnavailable, signerBefore string
 			if test.signed || test.signingFail {
 				signer = filepath.Join(t.TempDir(), "signing-key")
 				if output, err := exec.CommandContext(t.Context(), "ssh-keygen", "-t", "ed25519", "-N", "", "-f", signer).CombinedOutput(); err != nil {
 					t.Fatalf("create signing fixture: %v: %s", err, output)
 				}
-				signerBefore, err = os.ReadFile(signer)
-				if err != nil {
-					t.Fatal(err)
-				}
-				public, err := os.ReadFile(signer + ".pub")
-				if err != nil {
-					t.Fatal(err)
-				}
-				allowed = filepath.Join(t.TempDir(), "allowed-signers")
-				if err := os.WriteFile(allowed, append([]byte("test@example.com "), public...), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				signerBefore = readFile(signer)
+				allowed := filepath.Join(t.TempDir(), "allowed-signers")
+				writeLocalProgressFile(t, filepath.Dir(allowed), filepath.Base(allowed), "test@example.com "+readFile(signer+".pub"))
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
 				runRunnerGit(t, source, "config", "gpg.format", "ssh")
 				runRunnerGit(t, source, "config", "user.signingkey", signer)
@@ -661,10 +660,8 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					t.Fatalf("signing fixture was not captured at startup: %+v", report)
 				}
 			}
-			configBefore, err := os.ReadFile(filepath.Join(source, ".git", "config"))
-			if err != nil {
-				t.Fatal(err)
-			}
+			configPath := filepath.Join(source, ".git", "config")
+			configBefore := readFile(configPath)
 			if test.lateConflict {
 				stageFile(info.Path, "repair.md", "preserved staged progress\n")
 			}
@@ -684,7 +681,10 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "workspace_failure"}},
 				}
 				clone := filepath.Join(t.TempDir(), "retry-source")
-				runRunnerGit(t, source, "clone", remote, clone)
+				runRunnerGit(t, source, "clone", "--no-local", remote, clone)
+				if test.unreachableRemote {
+					runRunnerGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unavailable.git"))
+				}
 				runRunnerGit(t, clone, "config", "user.name", "Test")
 				runRunnerGit(t, clone, "config", "user.email", "test@example.com")
 				retryBackend, err = workspace.NewBackend(cmp.Or(test.missingBundleBackend, workspace.KindLocalGit), workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: t.TempDir(), SourceRoot: clone, AutoBranch: true})
@@ -1007,7 +1007,11 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			_, err = r.Run(t.Context(), request)
 			if test.missingBundleBackend != "" {
-				if !errors.Is(err, bundleErr) || agent.calls != 0 {
+				var gitErr *workspace.CommandError
+				if test.unreachableRemote && !errors.As(err, &gitErr) {
+					t.Errorf("lost checkpoint fetch error: %v", err)
+				}
+				if !errors.Is(err, bundleErr) || !errors.Is(err, ErrNativeRecoveryRequired) || agent.calls != 0 {
 					t.Fatalf("unavailable Change at %s: err=%v, provider calls=%d at %q (repository HEAD %s)", original, err, agent.calls, agent.beforeHead, target)
 				}
 				return
@@ -1154,16 +1158,14 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			if test.signed {
 				runRunnerGit(t, info.Path, "verify-commit", head)
-				signerAfter, err := os.ReadFile(signer)
-				if err != nil || string(signerBefore) != string(signerAfter) {
+				if readFile(signer) != signerBefore {
 					t.Fatal("host finalization changed signer material")
 				}
 			}
 			if got := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "unrelated")); got != original {
 				t.Fatal("finalization moved unrelated ref")
 			}
-			configAfter, err := os.ReadFile(filepath.Join(source, ".git", "config"))
-			if err != nil || string(configBefore) != string(configAfter) {
+			if readFile(configPath) != configBefore {
 				t.Fatal("finalization changed host signing configuration")
 			}
 			if !test.normal && !strings.Contains(agent.request.Prompt, "runner owns native rebase") {
