@@ -317,14 +317,7 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	if input != nil && !streaming {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	var authorize func(context.Context) error
-	switch input.(type) {
-	case runnersession.Mutation:
-		authorize = nativeEffectError
-	case tracker.NativeRunEvent:
-		authorize, _ = ctx.Value(executionEventAuthorityKey{}).(func(context.Context) error)
-	}
-	if authorize != nil {
+	if authorize, ok := ctx.Value(executionEventAuthorityKey{}).(func(context.Context) error); ok {
 		if err := authorize(ctx); err != nil {
 			return err
 		}
