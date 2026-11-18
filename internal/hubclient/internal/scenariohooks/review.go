@@ -24,14 +24,18 @@ import (
 
 type ReviewDispatch struct {
 	runner.Backend
-	requests  chan runner.RunRequest
-	results   chan runner.Completion
-	reviewing atomic.Bool
+	requests   chan runner.RunRequest
+	results    chan runner.Completion
+	reviewing  atomic.Bool
+	reviewDone <-chan struct{}
 }
 
 func (r *ReviewDispatch) Run(ctx context.Context, req runner.RunRequest) (runner.RunResult, error) {
 	if req.NativeReviewContinuation == nil && !r.reviewing.Load() {
 		return r.Backend.Run(ctx, req)
+	}
+	if req.NativeReviewContinuation != nil {
+		r.reviewDone = ctx.Done()
 	}
 	r.reviewing.Store(true)
 	select {
@@ -121,10 +125,12 @@ func (r *ReviewDispatch) CheckRestored(t *testing.T, req runner.RunRequest, rest
 	owner := restored.RunExecution(req.Issue.ID).(interface {
 		execution.Execution
 		runner.CompletionExecution
+		BindReviewHandoff(<-chan struct{})
 	})
 	if err := owner.PrepareFinish(t.Context(), "succeeded", req.NativeReviewContinuation.FinalMessage, nil); err != nil {
 		t.Fatal(err)
 	}
+	owner.BindReviewHandoff(r.reviewDone)
 	if _, err := owner.ClaimState(t.Context()); err != nil {
 		t.Fatal(err)
 	}
