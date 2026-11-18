@@ -1933,7 +1933,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	defer stopHooks(&returnErr)
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
-		if sourceErr != nil && errors.Is(err, workspace.ErrCheckpointUnsafe) {
+		if sourceErr != nil {
 			return RunResult{}, errors.Join(sourceErr, err)
 		}
 		sourceRecovery := workspaceIssue.NativeRework || workspaceIssue.Source != nil && workspaceIssue.Source.Transferred
