@@ -201,7 +201,6 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	}
 
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
-	observeIdentity := r.sessionIdentityObserver(sessionID, runtimeIdentity)
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	if resolvedSelection.Effort != "" {
 		effort = resolvedSelection.Effort
@@ -274,6 +273,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			if update.Type == AgentUpdateMessageDelta {
 				output.WriteString(update.Delta)
 			}
+			previousIdentity := runResult.RuntimeIdentity
 			if update.Type == AgentUpdateTokenUsage {
 				update.Tokens = usage.normalize(update.Tokens)
 			}
@@ -294,7 +294,12 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 					return err
 				}
 			}
-			return observeIdentity(updateCtx, runResult.RuntimeIdentity)
+			if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
+				if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+					return err
+				}
+			}
+			return nil
 		}, r.turnLimit)
 		reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr))
 		removeAuditWorkspace = reapErr == nil

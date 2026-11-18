@@ -73,6 +73,10 @@ type SessionStore interface {
 	RecordUsageEvent(context.Context, store.UsageEvent) (int64, error)
 }
 
+type sessionIdentityStore interface {
+	UpdateSessionIdentity(context.Context, int64, agentidentity.Identity) error
+}
+
 type sessionProviderStore interface {
 	UpdateSessionProviderIdentity(context.Context, int64, store.SessionProviderIdentity) error
 }
@@ -1241,7 +1245,6 @@ func (r *Runner) runAgentTurn(
 	runStartedAt time.Time,
 	detentSessionID int64,
 	initialIdentity agentidentity.Identity,
-	observeIdentity func(context.Context, agentidentity.Identity) error,
 	budgetProjection *dispatchBudgetProjection,
 	budgetCostOffsetUSD float64,
 	sessionModel string,
@@ -1341,11 +1344,13 @@ func (r *Runner) runAgentTurn(
 				return err
 			}
 		}
-		if err := observeIdentity(updateCtx, result.RuntimeIdentity); err != nil {
-			return err
-		}
-		if result.RuntimeIdentity.HasRuntimeValues() && !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
-			r.logRuntimeIdentity(runRequest, detentSessionID, update, previousIdentity, result.RuntimeIdentity)
+		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
+			if err := r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity); err != nil {
+				return err
+			}
+			if result.RuntimeIdentity.HasRuntimeValues() {
+				r.logRuntimeIdentity(runRequest, detentSessionID, update, previousIdentity, result.RuntimeIdentity)
+			}
 		}
 		progress.apply(update, eventAt)
 		if targetRefObserver != nil && update.Type == AgentUpdateToolCompleted && failedAgentToolStatus(update.Status) {
@@ -2563,10 +2568,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnRequest.ToolInstructions = admissionToolInstructions
 		}
 	}
-	observeIdentity := r.sessionIdentityObserver(sessionID, runtimeIdentity)
 	runWithCheckpoint := func(request AgentTurnRequest, runReq RunRequest, identity agentidentity.Identity, costOffsetUSD float64) agentTurnExecution {
 		return r.runCheckpointedTurn(ctx, sessionCtx, checkpoint, workflow.Config.Agent, backend, request, runReq, func(turnCtx context.Context, request AgentTurnRequest, runReq RunRequest) agentTurnExecution {
-			execution := r.runAgentTurn(turnCtx, backend, request, runReq, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, targetRefObserver, runStartedAt, sessionID, identity, observeIdentity, budgetProjection, costOffsetUSD, sessionModel, backendConfig.Kind)
+			execution := r.runAgentTurn(turnCtx, backend, request, runReq, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, targetRefObserver, runStartedAt, sessionID, identity, budgetProjection, costOffsetUSD, sessionModel, backendConfig.Kind)
 			costOffsetUSD += r.usageCostUSD(sessionModel, execution.result.Tokens.InputTokens, execution.result.Tokens.CachedInputTokens, execution.result.Tokens.OutputTokens, backendConfig.Kind)
 			return execution
 		})
@@ -4015,7 +4019,6 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	checkStartedAttrs = append(checkStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_check_started", checkStartedAttrs...)
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
-	observeIdentity := r.sessionIdentityObserver(sessionID, runtimeIdentity)
 	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0, "", 0)
 	eventAt := r.now()
 	progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: runtimeIdentity}, eventAt)
@@ -4087,11 +4090,13 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 				return err
 			}
 		}
-		if err := observeIdentity(updateCtx, runResult.RuntimeIdentity); err != nil {
-			return err
-		}
-		if runResult.RuntimeIdentity.HasRuntimeValues() && !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
-			r.logRuntimeIdentity(runReq, sessionID, update, previousIdentity, runResult.RuntimeIdentity)
+		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
+			if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+				return err
+			}
+			if runResult.RuntimeIdentity.HasRuntimeValues() {
+				r.logRuntimeIdentity(runReq, sessionID, update, previousIdentity, runResult.RuntimeIdentity)
+			}
 		}
 		progress.apply(update, eventAt)
 		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
@@ -4787,9 +4792,18 @@ func (r *Runner) updateSessionResumeState(ctx context.Context, sessionID int64, 
 	})
 }
 
-func (r *Runner) sessionIdentityObserver(sessionID int64, initial agentidentity.Identity) func(context.Context, agentidentity.Identity) error {
-	writer, _ := r.store.(runnersession.IdentityWriter)
-	return runnersession.ObserveIdentity(writer, sessionID, initial)
+func (r *Runner) persistSessionIdentity(ctx context.Context, sessionID int64, identity agentidentity.Identity) error {
+	if sessionID <= 0 || identity.IsZero() {
+		return nil
+	}
+	identityStore, ok := r.store.(sessionIdentityStore)
+	if !ok {
+		return nil
+	}
+	if err := identityStore.UpdateSessionIdentity(ctx, sessionID, identity); err != nil && !transport.DeferObservation(ctx, err) {
+		return fmt.Errorf("update agent session identity: %w", err)
+	}
+	return nil
 }
 
 func (r *Runner) finishSession(
