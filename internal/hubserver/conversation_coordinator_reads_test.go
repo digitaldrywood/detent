@@ -103,6 +103,7 @@ func TestCoordinatorScreenReads(t *testing.T) {
 			f.grant(t, user, false, role.runner)
 			coordinatorReadSeedRunner(t, f, "attached", f.project, false)
 			issueID := f.seedIssue(t, 1)
+			drainTestNativeBoard(t, f.service)
 			tools, ctx := coordinatorViewerTools(t, f, record, user)
 			catalog := tools.tools()
 			if slices.ContainsFunc(catalog, func(tool runner.AgentTool) bool { return tool.Name == "repository_freshness" }) {
