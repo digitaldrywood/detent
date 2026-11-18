@@ -15,6 +15,7 @@ import (
 )
 
 type PostgresReportUsage struct {
+	Attempts       []reportstore.AttemptFact
 	Costs          map[reportstore.CostKey]float64
 	Facts          []reportstore.UsageFact
 	CostsAvailable bool
@@ -26,9 +27,19 @@ func ReadPostgresReportUsage(ctx context.Context, reader tenantstore.Reader, que
 	for _, fact := range facts {
 		keys = append(keys, reportstore.CostKey{ProjectID: fact.ProjectID, WorkItemID: fact.WorkItemID, From: w.From, To: w.To}, reportstore.CostKey{ProjectID: fact.ProjectID, WorkItemID: fact.WorkItemID, From: prior.From, To: prior.To})
 	}
+	usageQuery := query
+	usageQuery.Limit = 100000
+	if combined, ok := reader.(reportstore.AttemptUsageReader); ok {
+		result, err := combined.ReadAttemptUsageFacts(ctx, usageQuery)
+		if err != nil {
+			return PostgresReportUsage{}, err
+		}
+		if _, err := PostgresReportUsageRows(result.Usage); err != nil {
+			return PostgresReportUsage{}, err
+		}
+		return PostgresReportUsage{Attempts: result.Attempts, Costs: postgresReportIssueCosts(keys, result.Usage), Facts: result.Usage, CostsAvailable: result.Covered, UsageAvailable: result.Covered}, nil
+	}
 	if usageReader, ok := reader.(reportstore.UsageReader); ok {
-		usageQuery := query
-		usageQuery.Limit = 100000
 		rows, err := usageReader.ReadReportUsage(ctx, usageQuery)
 		if err != nil {
 			return PostgresReportUsage{}, err

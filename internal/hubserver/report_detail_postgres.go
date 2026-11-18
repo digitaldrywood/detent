@@ -108,13 +108,6 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 			}
 			openFactsAvailable = true
 		}
-		if attemptReader, ok := reader.(reportstore.AttemptReader); ok {
-			attempts, err = attemptReader.ReadAttemptFacts(ctx, reportstore.AttemptQuery{Projects: ids, Principal: query.Principal, From: prior.From, To: w.To, Filter: query.Filter, Limit: 50000})
-			attemptFactsAvailable = err == nil
-			if err != nil {
-				return err
-			}
-		}
 		historyReader, ok := reader.(reportstore.HistoryReader)
 		if !ok {
 			return errors.New("PostgreSQL report history reader is unavailable")
@@ -139,14 +132,23 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 		if err != nil {
 			return err
 		}
+		usage, err = readPostgresReportUsage(ctx, reader, query, facts, w, prior)
+		if err != nil {
+			return err
+		}
+		if _, ok := reader.(reportstore.AttemptUsageReader); ok {
+			attempts, attemptFactsAvailable = usage.Attempts, true
+		} else if attemptReader, ok := reader.(reportstore.AttemptReader); ok {
+			attempts, err = attemptReader.ReadAttemptFacts(ctx, reportstore.AttemptQuery{Projects: ids, Principal: query.Principal, From: prior.From, To: w.To, Filter: query.Filter, Limit: 50000})
+			attemptFactsAvailable = err == nil
+			if err != nil {
+				return err
+			}
+		}
 		for _, attempt := range attempts {
 			if !attempt.ProjectionKnown {
 				attemptFactsAvailable = false
 			}
-		}
-		usage, err = readPostgresReportUsage(ctx, reader, query, facts, w, prior)
-		if err != nil {
-			return err
 		}
 		costs, costAvailable = usage.Costs, usage.CostsAvailable
 

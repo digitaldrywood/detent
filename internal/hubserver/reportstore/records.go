@@ -258,6 +258,16 @@ type UsageRecord struct {
 	UpdatedAt time.Time
 }
 
+type AttemptUsageFacts struct {
+	Attempts []AttemptFact
+	Usage    []UsageFact
+	Covered  bool
+}
+
+type AttemptUsageReader interface {
+	ReadAttemptUsageFacts(context.Context, OverviewQuery) (AttemptUsageFacts, error)
+}
+
 type UsageReader interface {
 	ReadReportUsage(context.Context, OverviewQuery) ([]UsageFact, error)
 }

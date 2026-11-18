@@ -1,13 +1,16 @@
 package reports
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -208,5 +211,44 @@ func TestPostgresReportMissingImportsRemainUnknown(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type reportUsageFixture struct {
+	tenantstore.Reader
+	queries []reportstore.OverviewQuery
+	facts   reportstore.AttemptUsageFacts
+}
+
+func (r *reportUsageFixture) ReadAttemptUsageFacts(_ context.Context, q reportstore.OverviewQuery) (reportstore.AttemptUsageFacts, error) {
+	r.queries = append(r.queries, q)
+	return r.facts, nil
+}
+
+func TestReportUsageReadsTheScopedAttemptPopulationOnce(t *testing.T) {
+	split := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
+	w := operatortool.AnalyticsWindow{From: split, To: split.Add(time.Hour)}
+	prior := operatortool.AnalyticsWindow{From: split.Add(-time.Hour), To: split}
+	query := reportstore.OverviewQuery{Projects: []tracker.ProjectID{"first", "second"}, Principal: "reporter", From: prior.From, Split: split, To: w.To, Limit: 5000, Filter: reportstore.Filter{Models: []string{"example-model"}}}
+	work := []reportstore.OverviewFact{{ProjectID: "second", WorkItemID: "item"}}
+	for _, covered := range []bool{false, true} {
+		r := &reportUsageFixture{facts: reportstore.AttemptUsageFacts{
+			Attempts: []reportstore.AttemptFact{{ProjectID: "second", WorkItemID: "item", AttemptID: "attempt"}},
+			Usage:    []reportstore.UsageFact{{ProjectID: "second", WorkItemID: "item", AttemptID: "attempt", Period: split, Currency: "USD", Cost: 3}},
+			Covered:  covered,
+		}}
+		got, err := ReadPostgresReportUsage(t.Context(), r, query, work, w, prior)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantQuery := query
+		wantQuery.Limit = 100000
+		if !reflect.DeepEqual(r.queries, []reportstore.OverviewQuery{wantQuery}) {
+			t.Fatalf("usage reads = %+v, want one read with the report scope", r.queries)
+		}
+		key := reportstore.CostKey{ProjectID: "second", WorkItemID: "item", From: w.From, To: w.To}
+		if len(got.Attempts) != 1 || got.Attempts[0].AttemptID != "attempt" || got.Costs[key] != 3 || got.UsageAvailable != covered || got.CostsAvailable != covered {
+			t.Fatalf("covered=%v, report usage=%+v", covered, got)
+		}
 	}
 }

@@ -18,9 +18,19 @@ func (s *session) ReadEscapeFacts(ctx context.Context, query reportstore.Overvie
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,c.id,coalesce(e.version_id,''),e.created_at,e.actor_kind,e.actor_principal_id,f.occurrence_id,f.kind,f.cause,f.observed_at,f.instance_id,f.human_override
-FROM report_escape_facts f JOIN change_evidence e ON e.organization_id=f.organization_id AND e.change_id=f.change_id AND e.sequence=f.evidence_sequence JOIN change_requests c ON c.organization_id=e.organization_id AND c.id=e.change_id JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
-WHERE `+reportIssueFilter+` AND f.observed_at<$5 AND e.created_at<$5 AND (f.observed_at>=$4 OR c.landed_at>=$4)
+	rows, err := s.db.Query(ctx, `WITH escapes AS (
+ SELECT f.*,c.project_id,c.work_item_id FROM report_escape_facts f
+ CROSS JOIN LATERAL (SELECT c.project_id,c.work_item_id FROM change_requests c WHERE c.organization_id=f.organization_id AND c.id=f.change_id LIMIT 1) c
+ WHERE f.organization_id=$1 AND c.project_id=ANY($2::text[]) AND f.observed_at>=$4 AND f.observed_at<$5
+ UNION ALL
+ SELECT f.*,c.project_id,c.work_item_id FROM change_requests c JOIN report_escape_facts f ON f.organization_id=c.organization_id AND f.change_id=c.id
+ WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$4 AND f.observed_at<$4
+)
+SELECT i.project_id,i.native_id,f.change_id,coalesce(e.version_id,''),e.created_at,e.actor_kind,e.actor_principal_id,f.occurrence_id,f.kind,f.cause,f.observed_at,f.instance_id,f.human_override
+FROM escapes f
+CROSS JOIN LATERAL (SELECT e.version_id,e.created_at,e.actor_kind,e.actor_principal_id,e.sequence FROM change_evidence e WHERE e.organization_id=$1 AND e.change_id=f.change_id AND e.sequence=f.evidence_sequence LIMIT 1) e
+CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.project_id=f.project_id AND i.native_id=f.work_item_id LIMIT 1) i
+WHERE `+reportIssueFilter+` AND e.created_at<$5
 ORDER BY f.observed_at,e.created_at,e.sequence LIMIT $11`, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)

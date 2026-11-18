@@ -22,6 +22,20 @@ const (
 	maxReportStateNames      = 1000
 )
 
+func reportFactPages(source, order string, limit int) string {
+	first := min(limit+1, maxOverviewCandidateRows)
+	firstPage := "report_input AS NOT MATERIALIZED (" + source + "), first_page AS MATERIALIZED (SELECT * FROM report_input ORDER BY " + order + " LIMIT " + strconv.Itoa(first) + ")"
+	remaining := limit + 1 - first
+	if remaining == 0 {
+		return firstPage + ", report_page AS (SELECT * FROM first_page)"
+	}
+	reverse := strings.ReplaceAll(order, ",", " DESC,") + " DESC"
+	return firstPage + ", last_key AS (SELECT " + order + " FROM first_page ORDER BY " + reverse + " LIMIT 1)," +
+		" second_page AS MATERIALIZED (SELECT * FROM report_input WHERE (SELECT count(*) FROM first_page)=" + strconv.Itoa(first) +
+		" AND (" + order + ")>(SELECT * FROM last_key) ORDER BY " + order + " LIMIT " + strconv.Itoa(remaining) + ")," +
+		" report_page AS (SELECT * FROM first_page UNION ALL SELECT * FROM second_page)"
+}
+
 var _ reportstore.Reader = (*session)(nil)
 var _ reportstore.OpenReader = (*session)(nil)
 
@@ -105,23 +119,25 @@ func (s *session) readOpenCandidates(ctx context.Context, projects []string, at 
  SELECT s.project_id,next.name,s.depth+1 FROM states s CROSS JOIN LATERAL (
   SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name>s.name ORDER BY i.workflow_state_name LIMIT 1
  ) next WHERE s.depth<=$5
+), open_states AS MATERIALIZED (
+ SELECT s.project_id,s.name FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
+ WHERE NOT coalesce(ws.terminal,false)
 ), open AS MATERIALIZED (
- SELECT i.id FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
- CROSS JOIN LATERAL (
-  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND NOT i.archived AND i.workflow_state_name=s.name ORDER BY i.id LIMIT $4
- ) i WHERE NOT coalesce(ws.terminal,false)
+ (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND NOT i.archived
+  AND i.workflow_state_name=ANY(ARRAY(SELECT name FROM open_states))
+  AND (cardinality($2::text[])=1 OR (i.project_id,i.workflow_state_name) IN (SELECT project_id,name FROM open_states))
+  ORDER BY i.project_id,i.workflow_state_name LIMIT $4)
  UNION ALL
- SELECT i.id FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL (
-  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND NOT i.archived AND i.workflow_state_name IS NULL ORDER BY i.id LIMIT $4
- ) i
+ (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND NOT i.archived AND i.workflow_state_name IS NULL ORDER BY i.project_id LIMIT $4)
+ LIMIT $4
 ), terminal AS MATERIALIZED (
- SELECT i.id,i.project_id FROM issues i WHERE i.organization_id=$1 AND NOT i.archived AND i.terminal_entered_at IS NOT NULL AND i.terminal_entered_at>$3 ORDER BY i.terminal_entered_at,i.id LIMIT $4
+ SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND NOT i.archived AND i.terminal_entered_at>$3 ORDER BY i.project_id,i.terminal_entered_at,i.id LIMIT $4
 ), updated AS MATERIALIZED (
- SELECT i.id,i.project_id,i.archived FROM issues i WHERE i.organization_id=$1 AND i.native_updated_at>$3 ORDER BY i.native_updated_at DESC,i.id DESC LIMIT $4
+ SELECT i.id,i.archived FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND i.native_updated_at>$3 ORDER BY i.project_id,i.native_updated_at,i.id LIMIT $4
 ), keyed AS (
  SELECT id FROM open
- UNION SELECT id FROM terminal WHERE project_id=ANY($2::text[])
- UNION SELECT id FROM updated WHERE project_id=ANY($2::text[]) AND NOT archived
+ UNION SELECT id FROM terminal
+ UNION SELECT id FROM updated WHERE NOT archived
 )
 SELECT EXISTS(SELECT 1 FROM states WHERE depth>$5) OR (SELECT count(*) FROM open)>=$4 OR (SELECT count(*) FROM terminal)>=$4 OR (SELECT count(*) FROM updated)>=$4,
  coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::bigint[])`, s.organization, projects, at, maxOverviewCandidateRows+1, maxReportStateNames).Scan(&exceeded, &ids)
@@ -171,8 +187,8 @@ func (s *session) ReadOverviewFacts(ctx context.Context, query reportstore.Overv
      SELECT 1 FROM native_attempts a JOIN runner_lease_assignments r ON r.organization_id=a.organization_id AND r.lease_id=a.lease_id
      WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at < $5 AND a.updated_at >= $4 AND r.runner_id=ANY($11::text[])
    ))
- AND (coalesce(cardinality($13::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND coalesce(nullif(trim(f.model),''),'Unavailable')=ANY($13::text[])))
- AND (coalesce(cardinality($14::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND coalesce(nullif(trim(f.role),''),'Unavailable')=ANY($14::text[])))
+ AND (coalesce(cardinality($13::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND coalesce(nullif(trim(f.model),''),'Unavailable')=ANY($13::text[])))
+ AND (coalesce(cardinality($14::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND coalesce(nullif(trim(f.role),''),'Unavailable')=ANY($14::text[])))
  ORDER BY i.created_at,i.project_id,i.native_id LIMIT $12
 )
 SELECT i.project_id,i.native_id,i.title,i.created_at,coalesce(i.workflow_state_name,''),
@@ -189,13 +205,13 @@ SELECT i.project_id,i.native_id,i.title,i.created_at,coalesce(i.workflow_state_n
  CASE WHEN previous_completion.actor_envelope_known AND previous_completion.actor_kind='human' AND previous_completion.actor_agent='' THEN 'people' WHEN previous_final_runner.runner_id IS NOT NULL THEN 'runner' ELSE 'unknown' END,
  CASE WHEN previous_completion.actor_envelope_known AND previous_completion.actor_kind='human' AND previous_completion.actor_agent='' THEN previous_completion.actor_principal_id ELSE coalesce(previous_final_runner.runner_id,'') END,
  CASE WHEN previous_completion.actor_envelope_known AND previous_completion.actor_kind='human' AND previous_completion.actor_agent='' THEN previous_completion.actor_display_name ELSE coalesce(previous_final_runner.display_name,'') END,
- EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=(SELECT id FROM issues WHERE organization_id=i.organization_id AND project_id=i.project_id AND native_id=i.native_id) AND a.started_at >= $6 AND a.started_at < $5),
- EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=(SELECT id FROM issues WHERE organization_id=i.organization_id AND project_id=i.project_id AND native_id=i.native_id) AND a.started_at >= $4 AND a.started_at < $6),
- EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.to_state='Rework' AND e.recorded_at >= $6 AND e.recorded_at < $5),
- EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.to_state='Rework' AND e.recorded_at >= $4 AND e.recorded_at < $6),
- EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=(SELECT id FROM issues WHERE organization_id=i.organization_id AND project_id=i.project_id AND native_id=i.native_id) AND a.started_at >= $4 AND a.started_at < $5)
- ,EXISTS(SELECT 1 FROM change_requests c JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id AND c.landed_at >= $6 AND c.landed_at < $5 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$')
- ,EXISTS(SELECT 1 FROM change_requests c JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id AND c.landed_at >= $4 AND c.landed_at < $6 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$')
+ coalesce((SELECT true FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at >= $6 AND a.started_at < $5 LIMIT 1),false),
+ coalesce((SELECT true FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at >= $4 AND a.started_at < $6 LIMIT 1),false),
+ coalesce((SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.to_state='Rework' AND e.recorded_at >= $6 AND e.recorded_at < $5 LIMIT 1),false),
+ coalesce((SELECT true FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.to_state='Rework' AND e.recorded_at >= $4 AND e.recorded_at < $6 LIMIT 1),false),
+ coalesce((SELECT true FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at >= $4 AND a.started_at < $5 LIMIT 1),false)
+ ,coalesce((SELECT true FROM change_requests c JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id AND c.landed_at >= $6 AND c.landed_at < $5 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' LIMIT 1),false)
+ ,coalesce((SELECT true FROM change_requests c JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id AND c.landed_at >= $4 AND c.landed_at < $6 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' LIMIT 1),false)
 FROM candidates i
 LEFT JOIN LATERAL (
  SELECT e.id,e.actor_agent,e.actor_envelope_known FROM collaboration_events e
@@ -289,21 +305,19 @@ func (s *session) readOverviewCandidates(ctx context.Context, projects []string,
   SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.native_id=n.native_id AND i.project_id=ANY($2::text[])
  ) i LIMIT $6
 ), transitioned AS MATERIALIZED (
- SELECT e.project_id,e.work_item_id FROM (
-  SELECT ws.project_id,ws.name FROM project_workflow_states ws WHERE ws.organization_id=$1 AND ws.project_id=ANY($2::text[]) AND ws.terminal
-  UNION SELECT p.project_id,'Rework' FROM unnest($2::text[]) p(project_id)
- ) state CROSS JOIN LATERAL (
-  SELECT e.project_id,e.work_item_id FROM collaboration_events e
-  WHERE e.organization_id=$1 AND e.project_id=state.project_id AND e.type='workflow.transitioned' AND e.to_state=state.name AND e.recorded_at>=$3 AND e.recorded_at<$4 LIMIT $6
- ) e LIMIT $6
+ SELECT e.project_id,e.work_item_id FROM collaboration_events e
+ WHERE e.organization_id=$1 AND e.project_id=ANY($2::text[]) AND e.type='workflow.transitioned' AND e.recorded_at>=$3 AND e.recorded_at<$4
+ AND e.to_state=ANY(ARRAY(SELECT ws.name FROM project_workflow_states ws WHERE ws.organization_id=$1 AND ws.project_id=ANY($2::text[]) AND ws.terminal UNION SELECT 'Rework'))
+ AND (cardinality($2::text[])=1 OR e.to_state='Rework' OR EXISTS (SELECT 1 FROM project_workflow_states ws WHERE ws.organization_id=e.organization_id AND ws.project_id=e.project_id AND ws.name=e.to_state AND ws.terminal))
+ ORDER BY e.project_id,e.to_state,e.recorded_at,e.work_item_id LIMIT $6
 ), started AS MATERIALIZED (
- SELECT a.id FROM native_attempts a WHERE a.organization_id=$1 AND a.project_id=ANY($2::text[]) AND a.started_at>=$3 AND a.started_at<$4 ORDER BY a.project_id,a.started_at,a.started_at_submicro_ns,a.id LIMIT $6
+ SELECT a.issue_id FROM native_attempts a WHERE a.organization_id=$1 AND a.project_id=ANY($2::text[]) AND a.started_at>=$3 AND a.started_at<$4 ORDER BY a.project_id,a.started_at,a.issue_id LIMIT $6
 ), landed AS MATERIALIZED (
- SELECT c.project_id,c.work_item_id FROM change_requests c JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id
- WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$3 AND c.landed_at<$4 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ORDER BY c.project_id,c.landed_at,c.id LIMIT $6
+ SELECT c.project_id,c.work_item_id FROM change_requests c
+ WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$3 AND c.landed_at<$4 AND c.landed_head_sha=(SELECT v.head_sha FROM change_versions v WHERE v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id) AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ORDER BY c.project_id,c.landed_at,c.id LIMIT $6
 ), keyed AS (
  SELECT id FROM created UNION SELECT id FROM named
- UNION SELECT a.issue_id FROM started s CROSS JOIN LATERAL (SELECT a.issue_id FROM native_attempts a WHERE a.organization_id=$1 AND a.id=s.id LIMIT 1) a
+ UNION SELECT issue_id FROM started
  UNION SELECT i.id FROM transitioned t CROSS JOIN LATERAL (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=t.project_id AND i.native_id=t.work_item_id LIMIT 1) i
  UNION SELECT i.id FROM landed l CROSS JOIN LATERAL (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=l.project_id AND i.native_id=l.work_item_id LIMIT 1) i
 )
@@ -438,7 +452,7 @@ func (s *session) ReadAttemptFacts(ctx context.Context, query reportstore.Attemp
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
-	candidateIDs, err := s.readAttemptCandidates(ctx, query.From.UTC(), query.To.UTC())
+	candidateIDs, err := s.readAttemptCandidates(ctx, projects, query.From.UTC(), query.To.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -489,49 +503,29 @@ ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, projects, query.Principal
 	return attempts, nil
 }
 
-func (s *session) readAttemptCandidates(ctx context.Context, from, to time.Time) ([]string, error) {
+func (s *session) readAttemptCandidates(ctx context.Context, projects []string, from, to time.Time) ([]string, error) {
+	if len(projects) > maxReportProjects {
+		return nil, reportstore.ErrPopulationExceeded
+	}
 	var exceeded bool
 	var ids []string
-	err := s.db.QueryRow(ctx, `WITH RECURSIVE lease_machines AS (
- SELECT first.machine_id,1 AS depth FROM (SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 ORDER BY l.machine_id LIMIT 1) first
- UNION ALL
- SELECT next.machine_id,m.depth+1 FROM lease_machines m CROSS JOIN LATERAL (
-  SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id>m.machine_id ORDER BY l.machine_id LIMIT 1
- ) next WHERE m.depth<=$5
-), usage_projects AS (
- SELECT first.project_id,1 AS depth FROM (SELECT u.project_id FROM attempt_usage u WHERE u.organization_id=$1 ORDER BY u.project_id LIMIT 1) first
- UNION ALL
- SELECT next.project_id,p.depth+1 FROM usage_projects p CROSS JOIN LATERAL (
-  SELECT u.project_id FROM attempt_usage u WHERE u.organization_id=$1 AND u.project_id>p.project_id ORDER BY u.project_id LIMIT 1
- ) next WHERE p.depth<=$5
-), current_projects AS (
- SELECT first.project_id,1 AS depth FROM (SELECT u.project_id FROM report_usage_current u WHERE u.organization_id=$1 ORDER BY u.project_id LIMIT 1) first
- UNION ALL
- SELECT next.project_id,p.depth+1 FROM current_projects p CROSS JOIN LATERAL (
-  SELECT u.project_id FROM report_usage_current u WHERE u.organization_id=$1 AND u.project_id>p.project_id ORDER BY u.project_id LIMIT 1
- ) next WHERE p.depth<=$5
-), leased AS MATERIALIZED (
- SELECT a.id FROM lease_machines m CROSS JOIN LATERAL (
-  SELECT l.lease_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id=m.machine_id AND l.expires_at>=$2 ORDER BY l.expires_at LIMIT $4
- ) l CROSS JOIN LATERAL (
-  SELECT a.id FROM native_attempts a WHERE a.organization_id=$1 AND a.lease_id=l.lease_id LIMIT 1
- ) a WHERE m.depth<=$5
+	err := s.db.QueryRow(ctx, `WITH leased AS MATERIALIZED (
+ SELECT a.id,l.machine_id FROM leases l CROSS JOIN LATERAL (
+  SELECT a.id FROM native_attempts a WHERE a.organization_id=$1 AND a.lease_id=l.lease_id AND a.project_id=ANY($5::text[]) LIMIT 1
+ ) a WHERE l.organization_id=$1 AND (l.project_id=ANY($5::text[]) OR l.project_id IS NULL) AND l.expires_at>=$2
+ ORDER BY l.project_id,l.expires_at,l.lease_id LIMIT $4
 ), evented AS MATERIALIZED (
- SELECT e.attempt_id FROM collaboration_events e WHERE e.organization_id=$1 AND e.recorded_at>=$2 AND e.recorded_at<$3 AND nullif(e.attempt_id,'') IS NOT NULL ORDER BY e.recorded_at DESC,e.id DESC LIMIT $4
+ SELECT e.attempt_id FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=ANY($5::text[]) AND e.recorded_at>=$2 AND e.recorded_at<$3 AND e.attempt_id<>'' ORDER BY e.project_id,e.recorded_at,e.id LIMIT $4
 ), used AS MATERIALIZED (
- SELECT u.attempt_id FROM usage_projects p CROSS JOIN LATERAL (
-  SELECT u.attempt_id FROM attempt_usage u WHERE u.organization_id=$1 AND u.project_id=p.project_id AND u.period>=$2 AND u.period<$3 ORDER BY u.period,u.attempt_id LIMIT $4
- ) u WHERE p.depth<=$5
+ (SELECT u.attempt_id FROM attempt_usage u WHERE u.organization_id=$1 AND u.project_id=ANY($5::text[]) AND u.period>=$2 AND u.period<$3 ORDER BY u.project_id,u.period,u.attempt_id LIMIT $4)
  UNION ALL
- SELECT u.attempt_id FROM current_projects p CROSS JOIN LATERAL (
-  SELECT u.attempt_id FROM report_usage_current u WHERE u.organization_id=$1 AND u.project_id=p.project_id AND u.period>=$2 AND u.period<$3 ORDER BY u.period LIMIT $4
- ) u WHERE p.depth<=$5
+ (SELECT u.attempt_id FROM report_usage_current u WHERE u.organization_id=$1 AND u.project_id=ANY($5::text[]) AND u.period>=$2 AND u.period<$3 ORDER BY u.project_id,u.period,u.provider,u.model,u.attempt_id,u.source_key LIMIT $4)
+ LIMIT $4
 ), keyed AS (
  SELECT id FROM leased UNION SELECT attempt_id FROM evented UNION SELECT attempt_id FROM used
 )
-SELECT EXISTS(SELECT 1 FROM lease_machines WHERE depth>$5) OR EXISTS(SELECT 1 FROM usage_projects WHERE depth>$5) OR EXISTS(SELECT 1 FROM current_projects WHERE depth>$5)
- OR (SELECT count(*) FROM leased)>=$4 OR (SELECT count(*) FROM evented)>=$4 OR (SELECT count(*) FROM used)>=$4,
- coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::text[])`, s.organization, from, to, maxOverviewCandidateRows+1, maxReportProjects).Scan(&exceeded, &ids)
+SELECT (SELECT count(*) FROM leased)>=$4 OR (SELECT count(DISTINCT machine_id) FROM leased)>$6 OR (SELECT count(*) FROM evented)>=$4 OR (SELECT count(*) FROM used)>=$4,
+ coalesce((SELECT array_agg(id ORDER BY id) FROM keyed),'{}'::text[])`, s.organization, from, to, maxOverviewCandidateRows+1, projects, maxReportProjects).Scan(&exceeded, &ids)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
