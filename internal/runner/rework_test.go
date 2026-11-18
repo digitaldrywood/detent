@@ -1034,6 +1034,11 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				if err != nil || agent.beforeHead != target {
 					t.Fatalf("provider started at %q, want current source %s: %v", agent.beforeHead, target, err)
 				}
+				published := strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", saved.Ref))
+				if published == saved.CommitSHA {
+					t.Fatal("retry did not publish a new checkpoint")
+				}
+				runRunnerGit(t, remote, "merge-base", "--is-ancestor", saved.CommitSHA, published)
 				return
 			}
 			if test.checkpointRetry != "" {
