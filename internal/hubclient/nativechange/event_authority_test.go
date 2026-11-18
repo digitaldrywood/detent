@@ -182,7 +182,7 @@ func TestStoppedValidationReceiptAuthority(t *testing.T) {
 }
 
 func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
-	for _, mismatch := range []string{"", "producer", "runner", "files", "generation"} {
+	for _, mismatch := range []string{"", "stripped", "producer", "runner", "files", "generation"} {
 		t.Run("mismatch="+mismatch, func(t *testing.T) {
 			var stored tracker.AttemptDiff
 			var attempt tracker.NativeAttempt
@@ -215,9 +215,15 @@ func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
 					return 200, string(body), err
 				}
 				writes++
-				if writes == 1 {
+				if mismatch == "stripped" && writes == 1 {
+					return 413, `{"code":"diff_too_large"}`, nil
+				}
+				if writes == 1 || mismatch == "stripped" && writes == 2 {
 					if err := json.NewDecoder(r.Body).Decode(&stored); err != nil {
 						t.Fatal(err)
+					}
+					if mismatch == "stripped" && (len(stored.Files) != 1 || !stored.Files[0].Truncated || stored.Files[0].Patch != "") {
+						t.Fatal("expected the fallback write to omit the patch")
 					}
 					stored.AttemptID = stored.Producer.ID
 					stored.Producer.RunnerID = "runner_example"
@@ -233,7 +239,12 @@ func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
 				t.Fatalf("first delivery = %v", err)
 			}
 			err := e.flush(ctx)
-			if writes != 2 || reads != 1 || mismatch == "" && (err != nil || receipts != 1) || mismatch != "" && (err == nil || receipts != 0) {
+			wantWrites := 2
+			if mismatch == "stripped" {
+				wantWrites++
+			}
+			matches := mismatch == "" || mismatch == "stripped"
+			if writes != wantWrites || reads != 1 || matches && (err != nil || receipts != 1) || !matches && (err == nil || receipts != 0) {
 				t.Fatalf("writes=%d reads=%d receipts=%d error=%v", writes, reads, receipts, err)
 			}
 		})

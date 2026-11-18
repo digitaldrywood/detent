@@ -337,6 +337,7 @@ func (e *nativeExecution) authorizeEvent(ctx context.Context, receipt bool) erro
 }
 
 type checkpointReceipt struct {
+	postedDiff        *tracker.AttemptDiffRequest
 	observation       *tracker.NativeRunEvent
 	head              string
 	workspaceDigest   string
@@ -1038,7 +1039,15 @@ func (e *nativeExecution) postCheckpointDiff(ctx context.Context, sequence int64
 	}
 	client := e.claim.source.NativeClient()
 	authorize := func(ctx context.Context) error { return e.authorizeReceiptWrite(ctx, receipt, e.generationDiff) }
-	if _, err := client.PostExecutionDiff(ctx, e.data.AttemptID, *e.generationDiff, authorize); err != nil {
+	request := *e.generationDiff
+	posted := &request
+	if receipt != nil {
+		if receipt.postedDiff == nil || receipt.postedDiff.Generation != request.Generation {
+			receipt.postedDiff = posted
+		}
+		posted = receipt.postedDiff
+	}
+	if _, err := client.PostExecutionDiff(ctx, e.data.AttemptID, posted, authorize); err != nil {
 		var refusal *APIError
 		if receipt != nil && errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == "stale_generation" {
 			path, pathErr := api.NativeAttemptDiffPath(e.data.AttemptID)
@@ -1046,7 +1055,6 @@ func (e *nativeExecution) postCheckpointDiff(ctx context.Context, sequence int64
 				return pathErr
 			}
 			var stored tracker.AttemptDiff
-			intended := e.generationDiff
 			if readErr := client.Transport().Request(ctx, http.MethodGet, client.Scope()+path+"?at="+strconv.FormatInt(sequence, 10), nil, &stored); readErr != nil {
 				return e.executionError(ctx, readErr)
 			}
@@ -1054,10 +1062,9 @@ func (e *nativeExecution) postCheckpointDiff(ctx context.Context, sequence int64
 			if readErr != nil {
 				return readErr
 			}
-			producer := intended.Producer
+			producer := posted.Producer
 			producer.RunnerID = attempt.RunnerID
-			files, _ := tracker.NormalizeDiffFiles(intended.Files)
-			if producer.RunnerID != "" && stored.AttemptID == e.data.AttemptID && stored.Producer == producer && stored.Generation == intended.Generation && stored.BaseSHA == intended.BaseSHA && stored.HeadSHA == intended.HeadSHA && reflect.DeepEqual(stored.Files, files) {
+			if producer.RunnerID != "" && stored.AttemptID == e.data.AttemptID && stored.Producer == producer && stored.Generation == posted.Generation && stored.BaseSHA == posted.BaseSHA && stored.HeadSHA == posted.HeadSHA && reflect.DeepEqual(stored.Files, posted.Files) {
 				e.storedSeq = sequence
 				return nil
 			}
