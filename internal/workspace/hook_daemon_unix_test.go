@@ -168,6 +168,7 @@ func TestHookDaemonHostDiscovery(t *testing.T) {
 	for _, tc := range []struct{ name, hookPrefix string }{
 		{"inherited descriptor", ""},
 		{"closed descriptor", "exec 4>&-; "},
+		{"cleared environment", "unset DETENT_HOOK_OWNER DETENT_WORKSPACE; "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			attempt, finish := WithHookProcesses(t.Context())
