@@ -18,7 +18,9 @@ var ErrTenantRequired = errors.New("authenticated organization is required")
 var ErrUnbound = errors.New("protected PostgreSQL query requires a bound tenant")
 var ErrOpenResults = errors.New("PostgreSQL transaction has open results")
 
-const bindTenant = `SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true), set_config('jit', 'off', true)`
+const bindTenant = `SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true), set_config('jit', 'off', true),
+	set_config('statement_timeout', current_setting('statement_timeout'), true),
+	set_config('lock_timeout', current_setting('lock_timeout'), true)`
 
 type Scope struct{ Organization tracker.OrganizationID }
 type Options struct {
