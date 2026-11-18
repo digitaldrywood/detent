@@ -75,7 +75,7 @@ func RunDetachedHook(t *testing.T) {
 	defer reader.Close()
 	defer writer.Close()
 	child := exec.Command(os.Args[0], "-test.run=^TestDetachedHookHelper$")
-	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: os.Getenv("TEST_HOOK_KEEP_GROUP") != "1"}
 	child.Env = append(os.Environ(), "TEST_HOOK_CHILD=1", "GOCOVERDIR="+os.Getenv("TEST_HOOK_CHILD_COVER"))
 	child.ExtraFiles = []*os.File{writer}
 	if err := procgroup.Start(child); err != nil {
