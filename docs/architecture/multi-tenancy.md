@@ -201,7 +201,7 @@ config.MaxConns = int32(serving + background + 1)
 pools, err := pgtransport.Open(ctx, readerConfig, writerConfig)
 ```
 
-PostgreSQL sizes shared memory from `max_connections`, and pgx defaults `MaxConns` to the greater of 4 and the CPU count. Each direct Hub connection caches up to 128 server-side prepared statements. The cache key is parameterized SQL text. Each transaction binds its organization with `set_config(..., true)` so row security evaluates the current tenant on execution.
+PostgreSQL sizes shared memory from `max_connections`, and pgx defaults `MaxConns` to the greater of 4 and the CPU count. Each direct Hub connection caches up to 512 server-side prepared statements. The cache key is parameterized SQL text. Each transaction binds its organization with `set_config(..., true)` so row security evaluates the current tenant on execution.
 
 Each tenant transaction sets its timeouts in the same batch that binds the organization (`internal/pgtransport` `BeginBatch`): `set_config('statement_timeout', $2, true)` and `set_config('lock_timeout', $3, true)`, with values from the existing policy owner. Request and job contexts carry the total deadline that covers pool acquisition and transaction lifetime. Shutdown cancels the scheduler context, waits for in-flight steps and jobs, then closes each pool once.
 
