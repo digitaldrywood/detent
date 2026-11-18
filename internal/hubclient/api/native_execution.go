@@ -29,6 +29,12 @@ func (c *NativeClient) FencedMutation(ctx context.Context, id tracker.NativeWork
 
 type nativeMutationAuthorityKey struct{}
 
+type executionEventAuthorityKey struct{}
+
+func (c *NativeClient) AppendExecutionEvent(ctx context.Context, id tracker.NativeWorkItemID, event tracker.NativeRunEvent, authorize func(context.Context) error) error {
+	return c.AppendEvent(context.WithValue(ctx, executionEventAuthorityKey{}, authorize), id, event)
+}
+
 type nativeMutationAuthority struct {
 	scope        string
 	lease        tracker.NativeLease

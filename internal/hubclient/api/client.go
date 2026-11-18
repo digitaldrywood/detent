@@ -317,6 +317,11 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	if input != nil && !streaming {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	if authorize, ok := ctx.Value(executionEventAuthorityKey{}).(func(context.Context) error); ok {
+		if err := authorize(ctx); err != nil {
+			return err
+		}
+	}
 	response, err := httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
