@@ -141,6 +141,7 @@ GET /api/v2/organizations/:organization/readable/:project_slug/issues/:number
 GET /api/v2/organizations/:organization/release-notes
 GET /api/v2/organizations/:organization/reports
 GET /api/v2/organizations/:organization/reports/options
+GET /api/v2/organizations/:organization/runner-update/target
 GET /api/v2/organizations/:organization/runner-update/urgent
 GET /api/v2/organizations/:organization/runners
 GET /api/v2/organizations/:organization/runners/:runner
@@ -148,6 +149,7 @@ GET /api/v2/organizations/:organization/runners/:runner/capacity
 GET /api/v2/organizations/:organization/runners/:runner/routing
 GET /api/v2/organizations/:organization/runners/:runner/update
 GET /api/v2/organizations/:organization/runners/:runner/update/receipt
+GET /api/v2/organizations/:organization/runners/:runner/update/target
 GET /api/v2/organizations/:organization/secrets/:kind
 GET /api/v2/organizations/:organization/secrets/status
 GET /api/v2/organizations/:organization/slug
@@ -293,6 +295,7 @@ POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace
 POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/unbind
 POST /api/v2/organizations/:organization/runner-enrollments
 POST /api/v2/organizations/:organization/runner-enrollments/redeem
+POST /api/v2/organizations/:organization/runners/:runner/lifecycle
 POST /api/v2/organizations/:organization/runners/:runner/renew
 POST /api/v2/organizations/:organization/runners/:runner/rotate
 POST /api/v2/organizations/:organization/runners/:runner/update/apply
@@ -384,10 +387,12 @@ PUT /api/v2/organizations/:organization/projects/:project/sprite-pool
 PUT /api/v2/organizations/:organization/projects/:project/sprite-pool/allocation
 PUT /api/v2/organizations/:organization/projects/:project/work-view-preference
 PUT /api/v2/organizations/:organization/release-notes/seen
+PUT /api/v2/organizations/:organization/runner-update/target
 PUT /api/v2/organizations/:organization/runner-update/urgent
 PUT /api/v2/organizations/:organization/runners/:runner/capacity
 PUT /api/v2/organizations/:organization/runners/:runner/routing
 PUT /api/v2/organizations/:organization/runners/:runner/update/receipt
+PUT /api/v2/organizations/:organization/runners/:runner/update/target
 PUT /api/v2/organizations/:organization/secrets/:kind
 PUT /api/v2/organizations/:organization/slug
 PUT /api/v2/organizations/:organization/sprite-pool

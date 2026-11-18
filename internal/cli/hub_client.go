@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubclient"
@@ -28,7 +29,7 @@ import (
 )
 
 type hubSchedulingOptions struct {
-	lifecycleStart            func(*hubclient.Client) error
+	lifecycle                 *remoterunner.Lifecycle
 	applyProjectConfiguration func(context.Context, string, runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration
 	hubProcessReceipts        bool
 	workspaceSupport          func() workspacerunner.Support
@@ -92,11 +93,6 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	if err != nil {
 		return nil, err
 	}
-	if len(options) > 0 && options[0].lifecycleStart != nil {
-		if err := options[0].lifecycleStart(client); err != nil {
-			return nil, err
-		}
-	}
 	nativeProjects := make(map[string]tracker.ProjectID, len(clientConfig.NativeProjects))
 	for name, id := range clientConfig.NativeProjects {
 		nativeProjects[name] = tracker.ProjectID(id)
@@ -112,6 +108,9 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	var setupOptions hubSchedulingOptions
 	if len(options) > 0 {
 		setupOptions = options[0]
+		if setupOptions.lifecycle != nil {
+			client.SetRunnerRoutingObserver(setupOptions.lifecycle.ObserveRouting)
+		}
 	}
 	supportSource := setupOptions.workspaceSupport
 	if supportSource == nil {

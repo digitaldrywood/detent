@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -38,20 +37,24 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) (result error) {
 	selected := remoterunner.NewConfigOwner(cfg.Global, func(next globalconfig.Config) error { return applyGlobalRuntimeConfig(gate, logLevel, next) })
 	var manager *project.Manager
 	var scheduling orchestrator.SchedulingSource
-	var lifecycle *remoterunner.Lifecycle
+	lifecycle := cfg.lifecycle
+	if lifecycle == nil && cfg.Global.Client.IdentityFile != "" {
+		lifecycle, err = remoterunner.StartLifecycle(ctx, cfg.Global.Client, cfg.Build, cfg.Version)
+		if err != nil {
+			return err
+		}
+	}
 	ready := false
 	defer func() {
 		if lifecycle == nil {
 			return
 		}
-		reportCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer done()
 		if !ready {
-			if err := lifecycle.Report(reportCtx, runnerauth.LifecycleStartFailed, "", ""); err != nil {
-				logger.Warn("report runner startup failure", "error", err)
-			}
+			lifecycle.ReportStartupFailure(ctx)
 			return
 		}
+		reportCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer done()
 		reason := "signal"
 		if cfg.Shutdown != nil && cfg.Shutdown.updateRestart.Load() {
 			reason = "update"
@@ -64,21 +67,13 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) (result error) {
 			logger.Warn("report runner shutdown", "error", err)
 		}
 	}()
+	gate, err = buildGlobalDispatchPools(cfg.Global)
+	if err != nil {
+		return err
+	}
 	scheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
 		hubProcessReceipts: true,
-		lifecycleStart: func(client *hubclient.Client) error {
-			if cfg.Global.Client.IdentityFile != "" {
-				build := runnerRunningBuild(ctx, cfg.Build, cfg.Version)
-				owner := remoterunner.NewLifecycle(build.Version, build.Commit, client.ReportRunnerLifecycle)
-				if err := owner.Report(ctx, runnerauth.LifecycleStarting, "", ""); err != nil {
-					return err
-				}
-				lifecycle = owner
-				client.SetRunnerRoutingObserver(owner.ObserveRouting)
-			}
-			gate, err = buildGlobalDispatchPools(cfg.Global)
-			return err
-		},
+		lifecycle:          lifecycle,
 		applyProjectConfiguration: func(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
 			if manager == nil {
 				view := project.MissingConfigurationOwner(desired.ProjectID)

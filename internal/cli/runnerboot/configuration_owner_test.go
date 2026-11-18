@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cli"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -29,10 +30,26 @@ func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 	var mu sync.Mutex
 	var snapshot runnerauth.RoutingSnapshot
 	var reports []*runnerauth.ProjectConfiguration
+	var firstPath string
+	var lifecycle []runnerauth.LifecycleReport
 	var identity runnerauth.Identity
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		mu.Lock()
+		defer mu.Unlock()
+		if firstPath == "" {
+			firstPath = r.URL.Path
+		}
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/lifecycle"):
+			var report runnerauth.LifecycleReport
+			if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+				t.Error(err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			lifecycle = append(lifecycle, report)
+			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(r.URL.Path, "/capabilities"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeProviderCapacityCapability, tracker.NativeProjectConfigurationCapability, tracker.NativeHubProjectConfigurationCapability}})
 		case strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID):
@@ -46,8 +63,6 @@ func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			mu.Lock()
-			defer mu.Unlock()
 			reports = append(reports, body.ProjectConfiguration)
 			response := snapshot
 			if len(reports) == 1 && body.ProjectConfiguration != nil {
@@ -94,14 +109,27 @@ func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
-	command := cli.NewRootCommand(ctx, cli.WithVersion("dev"), cli.WithShutdownController(cli.NewShutdownController()))
+	build := buildinfo.Info{Version: "dev", Commit: strings.Repeat("a", 40)}
+	command := cli.NewRootCommand(ctx, cli.WithBuild(build), cli.WithVersion(build.Version), cli.WithShutdownController(cli.NewShutdownController()))
 	command.SetArgs([]string{"--config", configPath, "--headless"})
 	done := make(chan error, 1)
 	go func() {
 		defer close(done)
 		done <- command.ExecuteContext(ctx)
 	}()
-	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		mu.Lock()
+		defer mu.Unlock()
+		if !strings.HasSuffix(firstPath, "/lifecycle") || len(lifecycle) != 3 {
+			t.Fatalf("first Hub request %q, lifecycle reports %+v", firstPath, lifecycle)
+		}
+		start, ready, shutdown := lifecycle[0], lifecycle[1], lifecycle[2]
+		if start.State != runnerauth.LifecycleStarting || start.Version != build.Version || start.BuildRevision != build.Commit || ready.State != runnerauth.LifecycleReady || shutdown.State != runnerauth.LifecycleShuttingDown || shutdown.Reason != "signal" {
+			t.Errorf("lifecycle reports %+v", lifecycle)
+		}
+	})
 	var stopped error
 	var exited bool
 	testenv.WaitUntil(t, ctx, func() error {
