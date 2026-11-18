@@ -17,12 +17,14 @@ import (
 	"time"
 
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -476,6 +478,65 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	draft.Body = issueorigin.Stamp("Released source must not create follow-up", origin)
 	if _, err := store.CreateIntakeIssue(ctx, draft); err == nil {
 		t.Fatal("released source claim created machine intake")
+	}
+}
+
+func TestNativeUnboundMachineOccurrence(t *testing.T) {
+	t.Parallel()
+	db := testsupport.DispatchPostgresDatabase(t)
+	config := testsupport.DispatchPostgresOrganizationConfig(t, hubserver.Config{}, db)
+	h := newNativeChangeHubConfigured(t, "Human Review", hubserver.HostedProjectStates(), true, false, config)
+	for _, test := range []struct {
+		name           string
+		unrelatedTitle string
+		conn           *NativeConnector
+	}{
+		{"operator", "Document example onboarding", fixtureConnector(h.admin)},
+		{"collaborating runner", "Repair sample clock display", h.connector},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			origin := issueorigin.Origin{Kind: "worker", Fingerprint: "example-" + strings.ReplaceAll(test.name, " ", "-")}
+			body := issueorigin.Stamp("Original observation", origin)
+			owner, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: test.name, Body: body, State: "Backlog"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.projectBoard()
+			visible, found, err := test.conn.FindIntakeIssue(ctx, origin.Fingerprint)
+			if err != nil || !found || visible.ID != string(owner.WorkItemID) {
+				t.Fatalf("board owner = %q, found = %t, error = %v", visible.ID, found, err)
+			}
+			unrelated, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: test.unrelatedTitle, State: "Backlog"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(ctx, "UPDATE issues SET doctor_identity_revision=NULL WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", h.organization, h.project, unrelated.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			key := "occurrence-" + origin.Fingerprint
+			request := mutation.WithContext(ctx, mutation.Metadata{RetryIdentity: key})
+			draft := issuefiling.IssueDraft{Title: "Another observation", Body: issueorigin.Stamp("Second observation", origin)}
+			for range 2 {
+				got, err := test.conn.CreateIntakeIssue(request, draft)
+				if err != nil || !got.Reused || got.ID != string(owner.WorkItemID) || got.Body != body {
+					t.Fatalf("occurrence = %#v, want owner %s with original body, error = %v", got, owner.WorkItemID, err)
+				}
+			}
+			wantOperation := "POST " + h.admin.Scope() + "/work-items/" + string(owner.WorkItemID) + "/comments"
+			var receipts int
+			if err := db.QueryRowContext(ctx, "SELECT count(*) FROM native_commands WHERE organization_id=$1 AND operation=$2 AND command_key=$3", h.organization, wantOperation, key).Scan(&receipts); err != nil {
+				t.Fatal(err)
+			}
+			if receipts != 1 {
+				t.Fatalf("owner comment receipts for %q = %d, want 1", key, receipts)
+			}
+			h.projectBoard()
+			comments, err := h.admin.Comments(ctx, owner.WorkItemID, "")
+			if err != nil || len(comments.Items) != 1 || comments.Items[0].Body != issueorigin.Occurrence(draft.Body) {
+				t.Fatalf("replayed occurrence comments = %#v, error = %v", comments, err)
+			}
+		})
 	}
 }
 
