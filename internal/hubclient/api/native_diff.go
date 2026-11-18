@@ -30,12 +30,18 @@ func (c *NativeClient) PostAttemptDiff(ctx context.Context, attemptID string, re
 		return receipt, err
 	}
 	request.Files, _ = tracker.NormalizeDiffFiles(request.Files)
-	err = c.client.request(ctx, http.MethodPost, c.base()+path, request, &receipt)
+	post := func() error {
+		if err := nativeEffectError(ctx); err != nil {
+			return err
+		}
+		return c.client.request(ctx, http.MethodPost, c.base()+path, request, &receipt)
+	}
+	err = post()
 	if err == nil || !attemptDiffTooLarge(err) {
 		return receipt, err
 	}
 	request.Files = tracker.StripDiffPatches(request.Files)
-	err = c.client.request(ctx, http.MethodPost, c.base()+path, request, &receipt)
+	err = post()
 	return receipt, err
 }
 
