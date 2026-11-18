@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 )
 
 func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T) {
@@ -789,16 +790,35 @@ func TestHookCancellationReapsDescendants(t *testing.T) {
 }
 
 func TestHookWithExitedShell(t *testing.T) {
-
 	for _, kind := range []string{KindLocalGit, KindFilesystem} {
 		for _, mode := range []string{"success", "parent cancellation", "timeout"} {
 			t.Run(kind+"/"+mode, func(t *testing.T) {
 				root := t.TempDir()
-				useRealProcessScan(t, root)
+				pidPath := filepath.Join(root, "descendant.pid")
+				previous := hookproc.ReapProcessScanner
+				t.Cleanup(func() { hookproc.ReapProcessScanner = previous })
+				hookproc.ReapProcessScanner = func(context.Context, string) ([]int, error) {
+					data, err := os.ReadFile(pidPath)
+					if errors.Is(err, os.ErrNotExist) {
+						return nil, nil
+					}
+					if err != nil {
+						return nil, err
+					}
+					pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+					return []int{pid}, err
+				}
+				var process *os.Process
 				uses := &workspaceUses{}
 				t.Cleanup(func() {
 					if err := uses.stopHooks(t.Context(), root); err != nil {
 						t.Error(err)
+						if process != nil {
+							_ = process.Kill()
+						}
+					}
+					if process != nil {
+						_ = process.Release()
 					}
 				})
 				hooks := Hooks{Timeout: time.Minute}
@@ -814,19 +834,17 @@ func TestHookWithExitedShell(t *testing.T) {
 				t.Cleanup(cancel)
 				done := make(chan error, 1)
 				go func() {
-					done <- run(ctx, "before_run", "sleep 30 & echo $! > descendant.pid.tmp && mv descendant.pid.tmp descendant.pid", Info{Path: root, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
+					done <- run(ctx, "before_run", "mkfifo hold && { cat 0<>hold & echo $! > descendant.pid.tmp && mv descendant.pid.tmp descendant.pid; }", Info{Path: root, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
 				}()
-				pidPath := filepath.Join(root, "descendant.pid")
 				waitForFile(t, pidPath, 10*time.Second)
 				pid, err := strconv.Atoi(strings.TrimSpace(readFile(t, pidPath)))
 				if err != nil {
 					t.Fatal(err)
 				}
-				process, err := os.FindProcess(pid)
+				process, err = os.FindProcess(pid)
 				if err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(func() { _ = process.Kill() })
 				identity, err := procgroup.Inspect(&exec.Cmd{Process: process})
 				if err != nil {
 					t.Fatal(err)
