@@ -228,7 +228,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 			if len(before.Items) != 1 || before.Items[0].Signal != "dead_man" || before.Items[0].ResolvedAt != nil || before.Items[0].Evidence.ScheduledValidation == nil || before.Items[0].Evidence.ScheduledValidation.LastRunURL != "https://github.com/example-org/example-project/actions/runs/1001/attempts/1" {
 				t.Fatalf("live health producer did not publish scoped scheduled evidence: %+v", before)
 			}
-			clock.Advance(time.Second)
+			clock.Advance(healthInterval)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
 				_, err := writer.(healthstore.ScheduledWriter).RecordHealthScheduledReport(t.Context(), healthstore.ScheduledReport{OrganizationID: organization, ProjectID: fixture.project.ID, RecordedAt: clock.Now(), ScheduledValidationReport: gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1002", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1002/attempts/1", HeadSHA: strings.Repeat("b", 40), Conclusion: "success"}})
 				return err
@@ -390,7 +390,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 				details.keyReads = map[string]int{}
 				details.mu.Unlock()
 			}
-			clock.Advance(time.Second)
+			clock.Advance(healthInterval)
 			source, err := service.readHealthProjectSource(budget.Context(t.Context(), tenant), organization, healthy.project.ID, "", clock.Now())
 			if err != nil {
 				t.Fatalf("%s failed an otherwise healthy project: %v", kind, err)
@@ -420,7 +420,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 		}
 		clippedPage = read(clipped)
 		completed := *clippedPage.LastTickAt
-		clock.Advance(time.Second)
+		clock.Advance(healthInterval)
 		details.mu.Lock()
 		details.fail = true
 		details.mu.Unlock()

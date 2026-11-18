@@ -46,6 +46,49 @@ type ScheduledValidation struct {
 	LastFailed  bool
 }
 
+type ScanInterval struct {
+	next time.Time
+}
+
+func (s ScanInterval) Due(now time.Time, underway bool) bool {
+	return underway || !now.Before(s.next)
+}
+
+func (s *ScanInterval) Step(now time.Time, underway bool, visit func() error) (bool, error) {
+	if !s.Due(now, underway) {
+		return false, nil
+	}
+	err := visit()
+	if !underway && err == nil {
+		s.next = now.Add(Interval)
+	}
+	return true, err
+}
+
+func ScheduledHistory(history healthstore.ScheduledHistory) ScheduledValidation {
+	out := ScheduledValidation{FirstReport: history.FirstReport, LastGreen: history.LastGreen}
+	intervals := []time.Duration{}
+	for index, report := range history.Reports {
+		if index == 0 {
+			out.LastReport, out.LastRunURL = report.RecordedAt, report.RunURL
+		}
+		if report.Conclusion == "failure" && report.RecordedAt.After(out.LastGreen) {
+			out.Failures++
+		}
+		if index > 0 && len(intervals) < 20 {
+			if interval := history.Reports[index-1].RecordedAt.Sub(report.RecordedAt); interval > 0 {
+				intervals = append(intervals, interval)
+			}
+		}
+	}
+	if len(intervals) > 0 {
+		slices.Sort(intervals)
+		out.Cadence = intervals[len(intervals)/2]
+	}
+	out.LastFailed = out.Failures > 0
+	return out
+}
+
 type SlackFailure struct {
 	Code       string    `json:"code"`
 	StatusCode int       `json:"status_code"`
