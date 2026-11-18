@@ -65,10 +65,7 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil && ctx.Value(hookOwnerKey{}) == nil {
 		scan = Scanner(source)
 	}
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		return reapProcesses(ctx, path, grace, scan, syscall.Kill)
-	}
-	return reapVerifiedProcesses(ctx, path, grace, scan, procstart.Identity, processEnvironment, syscall.Kill)
+	return reapVerifiedProcesses(ctx, path, grace, scan, procstart.Identity, processEnvironment, nil)
 }
 
 func reapVerifiedProcesses(ctx context.Context, path string, grace time.Duration, scan Scanner, identity func(int) (string, error), environment func(int) ([]string, error), signal workspaceProcessSignaler) (int, error) {
@@ -167,7 +164,7 @@ func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, iden
 	}
 	guardedSignal := func(pid int, sig syscall.Signal) error {
 		send := signal
-		if ctx.Value(lifetimeKey{}) != nil {
+		if send == nil {
 			process, err := os.FindProcess(pid)
 			if err != nil {
 				return err

@@ -48,7 +48,8 @@ func hookSignalAllowed(owner, path string, env []string) bool {
 	if owner != "" {
 		return slices.Contains(env, HookOwnerKey+"="+owner) && slices.Contains(env, "DETENT_WORKSPACE="+path)
 	}
-	return !slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, HookOwnerKey+"=") })
+	return !slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, HookOwnerKey+"=") }) &&
+		workerScratchEnvironmentMatches(workerScratchOwnerRoots(path), env)
 }
 
 func hookDescriptorAllowed(owner, path string, env []string) bool {

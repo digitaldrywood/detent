@@ -37,7 +37,11 @@ func RunDetachedHook(t *testing.T) {
 		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chdir("/"); err != nil {
+		cwd := os.Getenv("TEST_HOOK_CWD")
+		if cwd == "" {
+			cwd = "/"
+		}
+		if err := os.Chdir(cwd); err != nil {
 			t.Fatal(err)
 		}
 		in, err := os.Open(control)

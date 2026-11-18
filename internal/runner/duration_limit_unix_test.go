@@ -175,7 +175,10 @@ func newOrphanLockAgentBackend(t *testing.T, workspacePath string, lockPath stri
 	return backend
 }
 
-func (b *orphanLockAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+func (b *orphanLockAgentBackend) RunTurn(ctx context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if req.TempDir != "" {
+		procgroup.SetTempDir(b.command, req.TempDir)
+	}
 	if err := b.command.Start(); err != nil {
 		return AgentTurnResult{}, err
 	}
