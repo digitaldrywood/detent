@@ -1241,7 +1241,6 @@ func (r *Runner) runAgentTurn(
 	runStartedAt time.Time,
 	detentSessionID int64,
 	initialIdentity agentidentity.Identity,
-	observeIdentity func(context.Context, agentidentity.Identity) error,
 	budgetProjection *dispatchBudgetProjection,
 	budgetCostOffsetUSD float64,
 	sessionModel string,
@@ -1293,6 +1292,10 @@ func (r *Runner) runAgentTurn(
 	usageReport := &turnUsageReporter{startedAt: r.now(), sourceID: "session_" + strconv.FormatInt(detentSessionID, 10)}
 	activityProfile := runRequest.activityProfile
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
+	observeIdentity := runRequest.observeIdentity
+	if observeIdentity == nil {
+		observeIdentity = r.sessionIdentityObserver(detentSessionID, initialIdentity)
+	}
 	observeProcess := r.workerProcessObserver(detentSessionID, info.Path)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
@@ -2563,10 +2566,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnRequest.ToolInstructions = admissionToolInstructions
 		}
 	}
-	observeIdentity := r.sessionIdentityObserver(sessionID, runtimeIdentity)
+	req.observeIdentity = r.sessionIdentityObserver(sessionID, runtimeIdentity)
 	runWithCheckpoint := func(request AgentTurnRequest, runReq RunRequest, identity agentidentity.Identity, costOffsetUSD float64) agentTurnExecution {
 		return r.runCheckpointedTurn(ctx, sessionCtx, checkpoint, workflow.Config.Agent, backend, request, runReq, func(turnCtx context.Context, request AgentTurnRequest, runReq RunRequest) agentTurnExecution {
-			execution := r.runAgentTurn(turnCtx, backend, request, runReq, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, targetRefObserver, runStartedAt, sessionID, identity, observeIdentity, budgetProjection, costOffsetUSD, sessionModel, backendConfig.Kind)
+			execution := r.runAgentTurn(turnCtx, backend, request, runReq, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, targetRefObserver, runStartedAt, sessionID, identity, budgetProjection, costOffsetUSD, sessionModel, backendConfig.Kind)
 			costOffsetUSD += r.usageCostUSD(sessionModel, execution.result.Tokens.InputTokens, execution.result.Tokens.CachedInputTokens, execution.result.Tokens.OutputTokens, backendConfig.Kind)
 			return execution
 		})
