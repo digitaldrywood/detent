@@ -165,14 +165,19 @@ func TestStoppedValidationReceiptAuthority(t *testing.T) {
 }
 
 func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
-	for _, mismatch := range []string{"", "producer", "files", "generation"} {
+	for _, mismatch := range []string{"", "producer", "runner", "files", "generation"} {
 		t.Run("mismatch="+mismatch, func(t *testing.T) {
 			var stored tracker.AttemptDiff
+			var attempt tracker.NativeAttempt
 			var writes, reads, receipts int
 			e := replayExecution(t, func(r *http.Request) (int, string, error) {
 				if strings.HasSuffix(r.URL.Path, "/events") {
 					receipts++
 					return 200, "{}", nil
+				}
+				if r.Method == http.MethodGet && !strings.HasSuffix(r.URL.Path, "/diff") {
+					body, err := json.Marshal(attempt)
+					return 200, string(body), err
 				}
 				if !strings.HasSuffix(r.URL.Path, "/diff") {
 					return 200, "{}", nil
@@ -180,6 +185,8 @@ func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
 				if r.Method == http.MethodGet {
 					reads++
 					switch mismatch {
+					case "runner":
+						stored.Producer.RunnerID = "runner_other"
 					case "producer":
 						stored.Producer.FencingToken++
 					case "files":
@@ -196,10 +203,13 @@ func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
 						t.Fatal(err)
 					}
 					stored.AttemptID = stored.Producer.ID
+					stored.Producer.RunnerID = "runner_example"
 					return 0, "", ErrUnavailable
 				}
 				return 409, `{"code":"stale_generation"}`, nil
 			})
+			attempt.NativeRunData = e.data
+			attempt.RunnerID = "runner_example"
 			head := nativeChangeFixtureHead("a")
 			ctx := api.WithMutationAuthority(t.Context(), e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return runner.ErrOperatorStopped })
 			if err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head}, Validation: &gate.CommandResult{HeadSHA: head}}); !nativeTransportUnavailable(err) {

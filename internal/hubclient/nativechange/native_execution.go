@@ -1042,8 +1042,14 @@ func (e *nativeExecution) postCheckpointDiff(ctx context.Context, sequence int64
 			if readErr := client.Transport().Request(ctx, http.MethodGet, client.Scope()+path+"?at="+strconv.FormatInt(sequence, 10), nil, &stored); readErr != nil {
 				return e.executionError(ctx, readErr)
 			}
+			attempt, readErr := e.receiptAttempt(ctx)
+			if readErr != nil {
+				return readErr
+			}
+			producer := intended.Producer
+			producer.RunnerID = attempt.RunnerID
 			files, _ := tracker.NormalizeDiffFiles(intended.Files)
-			if stored.AttemptID == e.data.AttemptID && stored.Producer == intended.Producer && stored.Generation == intended.Generation && stored.BaseSHA == intended.BaseSHA && stored.HeadSHA == intended.HeadSHA && reflect.DeepEqual(stored.Files, files) {
+			if producer.RunnerID != "" && stored.AttemptID == e.data.AttemptID && stored.Producer == producer && stored.Generation == intended.Generation && stored.BaseSHA == intended.BaseSHA && stored.HeadSHA == intended.HeadSHA && reflect.DeepEqual(stored.Files, files) {
 				e.storedSeq = sequence
 				return nil
 			}

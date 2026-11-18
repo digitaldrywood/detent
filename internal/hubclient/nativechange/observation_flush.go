@@ -25,21 +25,32 @@ func (e *nativeExecution) flushObservations(ctx context.Context) error {
 	return e.flush(ctx)
 }
 
-func (e *nativeExecution) reconcileObservation(ctx context.Context, observation *tracker.NativeRunEvent) error {
+func (e *nativeExecution) receiptAttempt(ctx context.Context) (tracker.NativeAttempt, error) {
+	var attempt tracker.NativeAttempt
 	path, err := nativeItemPath(e.claim.lease.WorkItemID)
 	if err != nil {
-		return err
+		return attempt, err
 	}
 	client := e.claim.source.NativeClient()
-	var attempt tracker.NativeAttempt
 	if err := client.Transport().Request(ctx, http.MethodGet, client.Scope()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); err != nil {
-		return e.executionError(ctx, err)
+		return attempt, e.executionError(ctx, err)
+	}
+	if !checkpoint.SameRun(e.data, attempt.NativeRunData) || attempt.ClaimReleasedAt != nil || attempt.Outcome != "" {
+		return attempt, runner.ErrExecutionAuthorityUnavailable
+	}
+	return attempt, nil
+}
+
+func (e *nativeExecution) reconcileObservation(ctx context.Context, observation *tracker.NativeRunEvent) error {
+	attempt, err := e.receiptAttempt(ctx)
+	if err != nil {
+		return err
 	}
 	first := observation.Data.Sequence
 	if len(observation.PriorEvents) != 0 {
 		first = observation.PriorEvents[0].Data.Sequence
 	}
-	if !checkpoint.SameRun(e.data, attempt.NativeRunData) || attempt.ClaimReleasedAt != nil || attempt.Outcome != "" || (attempt.Sequence != first-1 && attempt.Sequence != observation.Data.Sequence) {
+	if attempt.Sequence != first-1 && attempt.Sequence != observation.Data.Sequence {
 		return runner.ErrExecutionAuthorityUnavailable
 	}
 	e.pending.Data.Sequence = attempt.Sequence + 1
