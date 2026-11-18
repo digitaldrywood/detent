@@ -19,6 +19,7 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 		aged          bool
 		wantCandidate bool
 	}{
+		{name: "shared memory exhaustion retries", failure: tracker.NativeTerminalFailure{Error: "host shared memory exhausted", ErrorClass: tracker.WorkspaceSharedMemoryExhausted, Stage: "workspace_preparation"}, preProvider: true, wantCandidate: true},
 		{name: "after_create hook failure retries", failure: tracker.NativeTerminalFailure{Error: "workspace hook after_create failed (exit status 1)", ErrorClass: "workspace_hook"}, preProvider: true, wantCandidate: true},
 		{name: "published branch lookup failure retries", failure: tracker.NativeTerminalFailure{Error: "workspace preparation failed: create workspace: inspect published workspace branch: git ls-remote origin failed: exit status 128", ErrorClass: "workspace_hook"}, preProvider: true, wantCandidate: true},
 		{name: "checkpoint fetch failure retries", failure: tracker.NativeTerminalFailure{Error: "workspace preparation failed: create workspace: fetch checkpoint: git fetch --no-tags failed: exit status 128", ErrorClass: "workspace_hook"}, preProvider: true, wantCandidate: true},
@@ -79,6 +80,9 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 			}
 			if attempt.TerminalFailure == nil {
 				t.Fatal("failed attempt lost terminal failure detail")
+			}
+			if tracker.WorkspaceResourceMessage(test.failure.ErrorClass) != "" && (attempt.TerminalFailure.Error != test.failure.Error || attempt.TerminalFailure.ErrorClass != test.failure.ErrorClass || attempt.TerminalFailure.Attribution != "instance") {
+				t.Fatalf("persisted hook failure = %#v", attempt.TerminalFailure)
 			}
 			stage, attribution := attempt.TerminalFailure.Stage, attempt.TerminalFailure.Attribution
 			if test.preProvider != (stage == "pre_provider") {

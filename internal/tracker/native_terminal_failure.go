@@ -7,6 +7,29 @@ import (
 	"time"
 )
 
+const (
+	WorkspaceDiskFull                 = "workspace_disk_full"
+	WorkspaceSharedMemoryExhausted    = "workspace_shared_memory_exhausted"
+	WorkspaceFileDescriptorsExhausted = "workspace_file_descriptors_exhausted"
+	WorkspacePortUnavailable          = "workspace_port_unavailable"
+	WorkspaceDiskExhaustionMessage    = "host disk full: no space left on device"
+)
+
+func WorkspaceResourceMessage(class string) string {
+	switch class {
+	case WorkspaceDiskFull:
+		return WorkspaceDiskExhaustionMessage
+	case WorkspaceSharedMemoryExhausted:
+		return "host shared memory exhausted"
+	case WorkspaceFileDescriptorsExhausted:
+		return "host file descriptors exhausted"
+	case WorkspacePortUnavailable:
+		return "host port unavailable"
+	default:
+		return ""
+	}
+}
+
 type NativeTerminalFailure struct {
 	Publication      *PublicationFailure   `json:"publication,omitempty"`
 	Decision         *FailureAttribution   `json:"decision,omitempty"`
@@ -51,7 +74,11 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	switch f.ErrorClass {
 	case "tool_error", "provider_refusal", "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_released", "git_push", "commit", "validation", "checkpoint_recovery", "publication", "review", "review_publication", "validator", "validator_publication", "security_audit", "landing":
 	default:
-		f.ErrorClass = ""
+		if reason := WorkspaceResourceMessage(f.ErrorClass); reason != "" {
+			f.Error = reason
+		} else {
+			f.ErrorClass = ""
+		}
 	}
 	switch f.Stage {
 	case "pre_provider", "workspace_preparation", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_release", "commit", "validation", "checkpoint_recovery", "publication", "review", "review_publication", "validator", "validator_publication", "security_audit", "landing":

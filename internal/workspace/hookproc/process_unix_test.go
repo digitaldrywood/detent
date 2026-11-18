@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
@@ -585,5 +586,88 @@ func TestParseLsofCwdProcessIDs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("pids = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestHookSignalsRequireIdentityAndWorkspace(t *testing.T) {
+	const root = "/workspaces/example"
+	for _, tt := range []struct {
+		name, owner, workspace, marker  string
+		reuseBeforeTerm, reuseAfterTerm bool
+		want                            []syscall.Signal
+	}{
+		{name: "term then kill", owner: "first", workspace: root, marker: "first", want: []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}},
+		{name: "different attempt same directory", owner: "first", workspace: root, marker: "second"},
+		{name: "marker outside workspace", owner: "first", workspace: "/workspaces/another", marker: "first"},
+		{name: "out of process manager", owner: "first", workspace: root},
+		{name: "ordinary reaper protects hook", workspace: root, marker: "active"},
+		{name: "PID reused before TERM", owner: "first", workspace: root, marker: "first", reuseBeforeTerm: true},
+		{name: "PID reused after TERM", owner: "first", workspace: root, marker: "first", reuseAfterTerm: true, want: []syscall.Signal{syscall.SIGTERM}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := t.Context()
+				if tt.owner != "" {
+					ctx = context.WithValue(ctx, hookOwnerKey{}, tt.owner)
+				}
+				start := "start-1"
+				active := true
+				scan := func(context.Context, string) ([]int, error) {
+					if active {
+						return []int{12345}, nil
+					}
+					return nil, nil
+				}
+				var signals []syscall.Signal
+				reads := 0
+				environment := func(int) ([]string, error) {
+					reads++
+					if tt.reuseBeforeTerm && reads == 2 {
+						start = "start-2"
+					}
+					env := []string{"DETENT_WORKSPACE=" + tt.workspace}
+					if tt.marker != "" {
+						env = append(env, HookOwnerKey+"="+tt.marker)
+					}
+					return env, nil
+				}
+				signal := func(_ int, sig syscall.Signal) error {
+					signals = append(signals, sig)
+					if tt.reuseAfterTerm {
+						start = "start-2"
+					}
+					if sig == syscall.SIGKILL {
+						active = false
+					}
+					return nil
+				}
+				_, err := reapVerifiedProcesses(ctx, root, time.Second, scan, func(int) (string, error) { return start, nil }, environment, signal)
+				if err != nil || !reflect.DeepEqual(signals, tt.want) {
+					t.Fatalf("signals = %v, error = %v, want %v", signals, err, tt.want)
+				}
+			})
+		})
+	}
+}
+
+func TestReapGivesNewHookChildTerminationGrace(t *testing.T) {
+	const parent, child = 12001, 12002
+	type sentSignal struct {
+		pid    int
+		signal syscall.Signal
+	}
+	var signals []sentSignal
+	waits := [][]int{{parent, child}, {child}, nil}
+	_, err := reapProcessesWithWait(t.Context(), "/workspace", time.Second, func(context.Context, string) ([]int, error) { return []int{parent}, nil }, func(pid int, sig syscall.Signal) error {
+		signals = append(signals, sentSignal{pid, sig})
+		return nil
+	}, func(context.Context, string, time.Duration, Scanner) ([]int, error) {
+		next := waits[0]
+		waits = waits[1:]
+		return next, nil
+	})
+	want := []sentSignal{{parent, syscall.SIGTERM}, {child, syscall.SIGTERM}, {parent, syscall.SIGKILL}, {child, syscall.SIGKILL}}
+	if err != nil || !reflect.DeepEqual(signals, want) {
+		t.Fatalf("signals %v, error %v, want %v", signals, err, want)
 	}
 }

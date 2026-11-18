@@ -1411,19 +1411,8 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 	if !strings.HasPrefix(hookErr.LogPath, wantLogDir) {
 		t.Fatalf("HookError.LogPath = %q, want under root hook logs", hookErr.LogPath)
 	}
-	errorDetail := err.Error()
-	for _, want := range []string{
-		fmt.Sprintf("command %q", hookCommand),
-		"working directory",
-		"exit status 17",
-		"hook log",
-		"output (last",
-		"out",
-		"err",
-	} {
-		if !strings.Contains(errorDetail, want) {
-			t.Fatalf("Create() error = %q, want %q", errorDetail, want)
-		}
+	if strings.Contains(err.Error(), hookCommand) || strings.Contains(err.Error(), hookErr.Output) {
+		t.Fatal("workspace creation failure contains private hook diagnostics")
 	}
 	logContent := readFile(t, hookErr.LogPath)
 	for _, want := range []string{
