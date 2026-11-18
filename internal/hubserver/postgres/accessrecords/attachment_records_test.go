@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -76,7 +78,17 @@ func TestAttachmentReferenceBound(t *testing.T) {
 }
 
 func TestAttachmentObjectLookupProtectsTenantHistory(t *testing.T) {
-	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	r, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	counter := &pgstoretest.ReportCountingTracer{}
+	counted, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, counter), pgstoretest.SmallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := counted.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	keys := map[tracker.OrganizationID]string{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedRepository(t, r, org)
@@ -84,7 +96,7 @@ func TestAttachmentObjectLookupProtectsTenantHistory(t *testing.T) {
 		keys[org] = f.Event.PayloadObjectKey
 	}
 	for org, key := range keys {
-		if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := counted.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
 			for other, candidate := range keys {
 				exists, err := reader.AttachmentObjectExists(t.Context(), "", candidate)
 				if err != nil {
@@ -95,11 +107,28 @@ func TestAttachmentObjectLookupProtectsTenantHistory(t *testing.T) {
 				}
 			}
 			orphan := strings.Replace(key, key[len(key)-64:], strings.Repeat("0", 64), 1)
-			exists, err := reader.AttachmentObjectExists(t.Context(), "", orphan)
-			if exists {
-				t.Error("unreferenced object retained")
+			batch := make([]string, attachment.ReferenceBatchSize)
+			for i := range batch {
+				batch[i] = orphan
 			}
-			return err
+			batch[0], batch[1] = keys["org_first"], keys["org_second"]
+			before := counter.Count.Load()
+			results, err := reader.ReferencedAttachmentObjects(t.Context(), batch)
+			if err != nil {
+				return err
+			}
+			if got := counter.Count.Load() - before; got != 1 {
+				t.Errorf("%d reference statements for %d keys, want one", got, len(batch))
+			}
+			if len(results) != len(batch) {
+				t.Fatalf("got %d results for %d keys", len(results), len(batch))
+			}
+			for i, exists := range results {
+				if exists != (batch[i] == key) {
+					t.Errorf("tenant %s: reference result at %d = %v", org, i, exists)
+				}
+			}
+			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -185,5 +214,100 @@ func TestAttachmentReferencesFollowTheirSourceText(t *testing.T) {
 				t.Fatalf("unbinding deleted attachment rows=%d error=%v", deleted, err)
 			}
 		})
+	}
+}
+
+func TestDetailStoreReclaimsOnlyUnreferencedExpiredObjects(t *testing.T) {
+	t.Parallel()
+	admin := pgstoretest.Template.Database(t)
+	_, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	counter := &pgstoretest.ReportCountingTracer{}
+	repository, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, counter), pgstoretest.SmallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	now := start
+	store := repository.DetailStore(func() time.Time { return now })
+	organizations := []tracker.OrganizationID{"org_reclaim_first", "org_reclaim_second"}
+	type objects struct{ referenced, abandoned, touched, recent attachment.ArchiveReference }
+	stored := map[tracker.OrganizationID]*objects{}
+	put := func(org tracker.OrganizationID, body string) attachment.ArchiveReference {
+		t.Helper()
+		ref, err := store.StoreDetail(t.Context(), string(org), []byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ref
+	}
+	present := func(org tracker.OrganizationID, ref attachment.ArchiveReference) bool {
+		t.Helper()
+		var count int
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM hub_detail_objects WHERE organization_id=$1 AND object_key=$2`, org, ref.Key).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count == 1
+	}
+	for _, org := range organizations {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: string(org), CreatedAt: start})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		set := &objects{referenced: put(org, `{"kind":"referenced"}`), abandoned: put(org, `{"kind":"abandoned"}`), touched: put(org, `{"kind":"touched"}`)}
+		ref := set.referenced
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO archive_objects(organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,created_at) VALUES($1,'archive_reclaim',$2,$3,$4,$5,$6,$7,$8,$9,$10)`, org, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.Kind, ref.Retention, start); err != nil {
+			t.Fatal(err)
+		}
+		stored[org] = set
+	}
+	now = start.Add(8 * 24 * time.Hour)
+	for _, org := range organizations {
+		stored[org].recent = put(org, `{"kind":"recent"}`)
+		if touched := put(org, `{"kind":"touched"}`); touched != stored[org].touched {
+			t.Fatalf("re-store changed reference: %+v", touched)
+		}
+	}
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	reclaimed, err := store.Reclaim(t.Context(), organizations[0], cutoff)
+	if err != nil || reclaimed != 1 {
+		t.Fatalf("first reclaim=%d err=%v", reclaimed, err)
+	}
+	first, second := stored[organizations[0]], stored[organizations[1]]
+	if present(organizations[0], first.abandoned) || !present(organizations[0], first.referenced) || !present(organizations[0], first.touched) || !present(organizations[0], first.recent) {
+		t.Fatal("reclaim removed a referenced, re-stored or recent object, or kept the abandoned one")
+	}
+	if !present(organizations[1], second.abandoned) {
+		t.Fatal("reclaim of one organization removed another organization's object")
+	}
+	if _, err := admin.ExecContext(t.Context(), `DELETE FROM archive_objects WHERE organization_id=$1 AND id='archive_reclaim'`, organizations[0]); err != nil {
+		t.Fatal(err)
+	}
+	if reclaimed, err := store.Reclaim(t.Context(), organizations[0], cutoff); err != nil || reclaimed != 1 || present(organizations[0], first.referenced) {
+		t.Fatalf("expired reference kept its bytes: reclaimed=%d err=%v", reclaimed, err)
+	}
+	budget := postgres.DetailReclaimPage * postgres.DetailReclaimPages
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hub_detail_objects(organization_id,object_key,sha256,compressed_bytes,content_bytes,content,created_at)
+SELECT $1,'orgs/'||$1||'/blobs/sha256/aa/'||lpad(to_hex(n),64,'0'),lpad(to_hex(n),64,'0'),1,1,'\x00'::bytea,$2 FROM generate_series(1,$3::int) AS n`, organizations[1], start, budget+1); err != nil {
+		t.Fatal(err)
+	}
+	counter.Count.Store(0)
+	firstPass, err := store.Reclaim(t.Context(), organizations[1], cutoff)
+	if err != nil || firstPass == 0 || firstPass > budget {
+		t.Fatalf("first bounded reclaim=%d err=%v, want 1..%d", firstPass, err, budget)
+	}
+	if got := counter.Count.Load(); got > postgres.DetailReclaimPages*3 {
+		t.Errorf("full reclaim pass used %d statements for %d objects, want at most three per page including tenant binding", got, firstPass)
+	}
+	if secondPass, err := store.Reclaim(t.Context(), organizations[1], cutoff); err != nil || firstPass+secondPass != budget+2 {
+		t.Fatalf("continued reclaim=%d+%d err=%v, want %d abandoned objects", firstPass, secondPass, err, budget+2)
+	}
+	if !present(organizations[1], second.referenced) || !present(organizations[1], second.touched) || !present(organizations[1], second.recent) {
+		t.Fatal("bounded reclaim removed a live object")
 	}
 }

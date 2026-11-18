@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/attachmentsweep"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -600,72 +601,15 @@ func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization
 }
 
 func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organization, namespace, endpoint string) error {
-	prefix, err := attachment.OrganizationPrefix(organization.ID)
-	if err != nil {
-		return err
+	sweep := attachmentsweep.Sweep{
+		Storage: s.attachments, Now: s.config.Now,
+		Lookup: func(input attachment.ObjectLookup) (int, []byte, error) {
+			return s.serviceCall(ctx, organization, endpoint, input, nil)
+		},
+		Lock:  func() func() { return s.attachmentLocks.lock(organization.ID, true) },
+		Audit: func() error { return s.auth.audit(ctx, "entry", organization.ID, "attachment_deleted") },
 	}
-	prefix += namespace
-	return s.attachments.Walk(ctx, prefix, func(object attachment.Object) error {
-		if object.CreatedAt.After(s.config.Now().Add(-attachment.OrphanTTL)) {
-			return nil
-		}
-		input := map[string]string{"key": object.Key}
-		if namespace == "attachments/" {
-			id := strings.TrimPrefix(object.Key, prefix)
-			key, err := attachment.Key(organization.ID, id)
-			if err != nil || key != object.Key {
-				return attachment.ErrInvalid
-			}
-			input = map[string]string{"id": id}
-		}
-		referenced, err := s.attachmentObjectExists(ctx, organization, endpoint, input)
-		if err != nil {
-			return err
-		}
-		if referenced {
-			return nil
-		}
-		unlock := s.attachmentLocks.lock(organization.ID, true)
-		defer unlock()
-		current, found, err := s.attachments.Stat(ctx, object.Key)
-		if err != nil {
-			return err
-		}
-		if !found || current.CreatedAt.After(s.config.Now().Add(-attachment.OrphanTTL)) {
-			return nil
-		}
-		exists, err := s.attachmentObjectExists(ctx, organization, endpoint, input)
-		if err != nil {
-			return err
-		}
-		if exists {
-			return nil
-		}
-		if err := s.auth.audit(ctx, "entry", organization.ID, "attachment_deleted"); err != nil {
-			return err
-		}
-		return s.attachments.Delete(ctx, object.Key)
-	})
-}
-
-func (s *Service) attachmentObjectExists(ctx context.Context, organization Organization, endpoint string, input map[string]string) (bool, error) {
-	status, raw, err := s.serviceCall(ctx, organization, endpoint, input, nil)
-	if err != nil {
-		return false, err
-	}
-	if status != http.StatusOK {
-		return false, errors.New("attachment existence metadata unavailable")
-	}
-	var result struct {
-		Exists *bool `json:"exists"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return false, err
-	}
-	if result.Exists == nil {
-		return false, errors.New("attachment existence metadata missing")
-	}
-	return *result.Exists, nil
+	return sweep.Run(ctx, organization.ID, namespace)
 }
 
 func attachmentUploadResponse(c echo.Context, organization string, status int, raw []byte) error {
