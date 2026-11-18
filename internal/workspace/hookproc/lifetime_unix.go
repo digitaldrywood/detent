@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -123,8 +122,7 @@ func (l *Lifetime) candidates(ctx context.Context) ([]int, error) {
 	if err := l.checkPath(); err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, "lsof", "-nP", "-w", "-F", "p", "--", l.path())
-	data, err := workspaceScanOutput(ctx, cmd)
+	data, err := lsofOutput(ctx, "-nP", "-w", "-F", "p", "--", l.path())
 	if err != nil {
 		if active, checkErr := l.Active(); checkErr == nil && !active {
 			return nil, nil
@@ -194,10 +192,8 @@ func (l *Lifetime) holdsWriter(ctx context.Context, pid int) (bool, error) {
 	if err := l.checkPath(); err != nil {
 		return false, err
 	}
-	cmd := exec.CommandContext(ctx, "lsof", "-nP", "-w", "-a", "-p", strconv.Itoa(pid), "-d", "4", "-F", "a", "--", l.path())
-	data, err := workspaceScanOutput(ctx, cmd)
-	var exited *exec.ExitError
-	if errors.As(err, &exited) && exited.ExitCode() == 1 && ctx.Err() == nil {
+	data, err := lsofOutput(ctx, "-nP", "-w", "-a", "-p", strconv.Itoa(pid), "-d", "4", "-F", "a", "--", l.path())
+	if lsofNoMatches(err) && ctx.Err() == nil {
 		return false, nil
 	}
 	if err != nil {

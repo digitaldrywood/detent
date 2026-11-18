@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os/exec"
+	"os"
 	"runtime"
 	"slices"
 	"sync"
@@ -258,10 +258,11 @@ func (u *Registry) CheckRemoval(ctx context.Context, path string) error {
 
 func (o *Owner) Token() string { return o.token }
 
-func (o *Owner) Attach(cmd *exec.Cmd) {
-	if o != nil {
-		o.descriptor.Attach(cmd)
+func (o *Owner) ExtraFiles(files []*os.File) []*os.File {
+	if o == nil {
+		return files
 	}
+	return append(files, nil, o.descriptor.writer)
 }
 
 func (o *Owner) OnExit(finish func(context.Context) error) { o.finish = finish }

@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/procstart"
 )
+
+const defaultProcessTerminationGrace = 250 * time.Millisecond
 
 type Lifetime struct {
 	instances          hookProcessInstances
@@ -20,10 +20,6 @@ type Lifetime struct {
 	reader             *os.File
 	writer             *os.File
 	dir                string
-}
-
-func (l *Lifetime) Attach(cmd *exec.Cmd) {
-	cmd.ExtraFiles = append(cmd.ExtraFiles, nil, l.writer)
 }
 
 func (l *Lifetime) CloseWriter() error {
@@ -91,7 +87,7 @@ func (l *Lifetime) verifyWriterExits() error {
 }
 
 func (l *Lifetime) WaitClosed(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, procgroup.DefaultTerminationGrace)
+	ctx, cancel := context.WithTimeout(ctx, defaultProcessTerminationGrace)
 	defer cancel()
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
