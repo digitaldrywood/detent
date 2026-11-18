@@ -224,7 +224,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscop
 		contentFields = []cloudContentField{{name: "body", value: record.Body}}
 		if record.Escape != nil {
 			qualityEscape = *record.Escape
-			quality, err = s.prepareQualityEscapeTenant(ctx, scope, change, record, now)
+			quality, err = s.prepareQualityEscapeTenant(ctx, scope, change, record.VersionID, qualityEscape, now)
 			if err != nil {
 				return nil, hubapi.ProjectRecordError(err)
 			}

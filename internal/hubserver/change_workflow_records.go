@@ -55,12 +55,9 @@ type changeReviewWorkflow struct {
 }
 
 func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, review tracker.ChangeReview, approval hubrecords.ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
-	if scope.Credential.Scope == hubapi.APIScopeWorker || review.VersionID != change.CurrentVersion || review.Decision == "commented" {
-		return nil, nil
-	}
 	if review.Decision == "changes_requested" {
-		transition, err := s.prepareChangeWorkflowTransition(ctx, scope, change, approval, true, now)
-		if err != nil || transition == nil {
+		transition, present, err := s.prepareChangeWorkflowTransition(ctx, scope, change, approval, true, now)
+		if err != nil || !present {
 			return nil, err
 		}
 		return &changeReviewWorkflow{transition: transition, evaluatedAt: now}, nil
@@ -113,9 +110,6 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope hubscop
 }
 
 func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, check tracker.ChangeCheck, approval hubrecords.ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
-	if scope.Credential.Scope == hubapi.APIScopeWorker || version.ID != change.CurrentVersion {
-		return nil, nil
-	}
 	plan := &changeReviewWorkflow{audits: map[int64][]eventstore.AuditDisposition{}, evaluatedAt: now}
 	var evidence []eventstore.Evidence
 	var prior bool
@@ -193,11 +187,11 @@ func (s *Service) prepareChangeEvidenceWorkflow(ctx context.Context, scope hubsc
 			}
 		}
 	}
-	var err error
-	plan.transition, err = s.prepareChangeWorkflowTransition(ctx, scope, change, approval, false, now)
-	if err != nil || plan.transition == nil {
+	transition, present, err := s.prepareChangeWorkflowTransition(ctx, scope, change, approval, false, now)
+	if err != nil || !present {
 		return nil, err
 	}
+	plan.transition = transition
 	return plan, nil
 }
 
@@ -235,33 +229,33 @@ type changeWorkflowRoute struct {
 	target func(tracker.NativeProject, string) string
 }
 
-func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, approval hubrecords.ChangeVersionApproval, rework bool, now time.Time) (*changeWorkflowTransition, error) {
+func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, approval hubrecords.ChangeVersionApproval, rework bool, now time.Time) (*changeWorkflowTransition, bool, error) {
 	return s.prepareChangeWorkflowRoute(ctx, scope, change, approval, changeWorkflowRoute{rework: rework, reason: "user_requested"}, now)
 }
 
-func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, approval hubrecords.ChangeVersionApproval, route changeWorkflowRoute, now time.Time) (*changeWorkflowTransition, error) {
+func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, approval hubrecords.ChangeVersionApproval, route changeWorkflowRoute, now time.Time) (*changeWorkflowTransition, bool, error) {
 	rework := route.rework
 	if scope.Credential.Scope == hubapi.APIScopeWorker {
-		return nil, nil
+		return nil, false, nil
 	}
 	row, snapshot, err := s.readWorkItemRecord(ctx, scope, string(change.WorkItemID))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	issue, err := s.hydrateWorkItemRecord(ctx, row, snapshot)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	project, err := s.readTenantProjectRecord(ctx, scope)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := validateConfiguredWorkflowPolicy(project, approval.Policy, true); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	workflow, err := hubrecords.ProjectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), approval.Policy)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	source := strings.EqualFold(issue.State, workflow.Config.Agent.AutoPromote.SourceState)
 	if approval.Policy.Configuration == nil && approval.Policy.Authored == nil && (strings.EqualFold(issue.State, "Review") || strings.EqualFold(issue.State, "In Review")) {
@@ -270,7 +264,7 @@ func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope
 	p := &changeWorkflowTransition{plan: hubrecords.WorkItemRecordPlan{Project: project, Current: row}}
 	landing := rework && strings.EqualFold(issue.State, landingLane)
 	if issue.Archived || hubrecords.TenantProjectStateTerminal(project, issue.State) || !source && !landing || hubrecords.DispatchableProjectState(project, issue.State) && !landing {
-		return p, nil
+		return p, true, nil
 	}
 	target := landingTarget(tracker.NativeProject{States: project.States}, issue.State)
 	if rework {
@@ -280,10 +274,10 @@ func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope
 		target = route.target(tracker.NativeProject{States: project.States}, issue.State)
 	}
 	if target == "" || target == issue.State {
-		return p, nil
+		return p, true, nil
 	}
 	if err := hubrecords.ValidateNativeWorkflowTransition(project.States, issue.State, target, scope.Credential.Scope); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	p = &changeWorkflowTransition{eligible: true, plan: hubrecords.WorkItemRecordPlan{Project: project, Current: row, EventType: "workflow.transitioned"}, fields: hubrecords.WorkItemRecordFields{Body: hubapi.StringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}, dependencies: !rework}
 	sourceIssue := issue
@@ -305,12 +299,12 @@ func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if p.attempt != nil {
 		p.cancellation, err = s.prepareExpiredNativeLeaseCancellation(ctx, scope, row.ID, false)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	if p.linked != nil {
@@ -318,15 +312,15 @@ func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope
 		if p.linked.SnapshotObjectKey != "" {
 			linked, err := content.LinkedIssueSnapshot(ctx, scope.Organization, eventstore.Reference(p.linked.SnapshotObjectKey, p.linked.SnapshotSHA256, p.linked.SnapshotBytes, p.linked.SnapshotContentBytes))
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			if linked.URL != p.linked.URL {
-				return nil, artifact.ErrIntegrity
+				return nil, false, artifact.ErrIntegrity
 			}
 			issue.LinkedSource.Status, issue.LinkedSource.Snapshot = "complete", &linked
 		}
 		if issue.LinkedSource.Status != "complete" && hubrecords.DispatchableProjectState(project, target) {
-			return nil, hubapi.NativeWorkflowInvalid("Linked source intake must complete before executable work")
+			return nil, false, hubapi.NativeWorkflowInvalid("Linked source intake must complete before executable work")
 		}
 		issue.ExternalReferences = slices.DeleteFunc(slices.Clone(issue.ExternalReferences), func(ref tracker.ExternalReference) bool {
 			return ref.Provider == "github" && ref.Kind == "issue" && ref.URL == p.linked.URL
@@ -345,7 +339,7 @@ func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope
 	var workflowLabel string
 	p.policy, p.policyFound, err = s.validateTenantTransitionIssueContract(ctx, scope, &issue, &project, previous, p.request, &p.stopState, &workflowLabel)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	p.request.WorkflowLabel = workflowLabel
 	if issue.Profile == "github_compatible" && workflowLabel != "" {
@@ -356,11 +350,11 @@ func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope
 				Revision                                           int64
 			}{string(scope.Organization), string(scope.Project), change.ID, string(issue.WorkItemID), target, p.policy.PolicyID, int64(issue.Revision)})
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			p.outbound, err = s.prepareCompatibilityWorkflowLabel(ctx, scope, sourceIssue, project, workflowLabel, "change-workflow:"+key, now)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		}
 	}
@@ -368,32 +362,32 @@ func (s *Service) prepareChangeWorkflowRoute(ctx context.Context, scope hubscope
 	if issue.IssueContract != nil {
 		raw, err := json.Marshal(issue.IssueContract)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		prepared, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, raw)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		p.contract = &prepared
 		p.fields.Contract = &prepared.PayloadObjectKey
 	}
 	raw, err := json.Marshal(s.nativeIssueResponse(scope.ReporterIssue(issue)))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	p.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, RecordID: string(row.NativeID), Revision: row.Revision + 1}, raw)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: row.NativeID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: previous, ToState: target, Reason: route.reason}})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	p.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return p, err
+	return p, true, nil
 }
 
 func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, p *changeWorkflowTransition) (bool, error) {

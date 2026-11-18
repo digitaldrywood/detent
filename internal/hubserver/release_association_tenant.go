@@ -62,7 +62,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			if err != nil {
 				return nil, err
 			}
-			transition, err = s.prepareChangeWorkflowTransition(ctx, scope, change, check.approval, true, now)
+			transition, _, err = s.prepareChangeWorkflowTransition(ctx, scope, change, check.approval, true, now)
 			if err != nil {
 				return nil, err
 			}

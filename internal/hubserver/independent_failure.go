@@ -63,16 +63,16 @@ func independentRunFailures(issue tracker.NativeIssue, data tracker.NativeRunDat
 	return tracker.IndependentGateFailures(result)
 }
 
-func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, failures []failureattribution.Evidence, source string, now time.Time) (*preparedIndependentRepairs, error) {
+func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, failures []failureattribution.Evidence, source string, now time.Time) (*preparedIndependentRepairs, bool, error) {
 	if len(failures) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	plan, err := s.loadWorkItemPlan(ctx, scope, string(item), "", nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if plan.Issue.Archived || hubrecords.TenantProjectStateTerminal(plan.Project, plan.Issue.State) {
-		return nil, nil
+		return nil, false, nil
 	}
 	out := &preparedIndependentRepairs{source: plan}
 	seen := map[string]bool{}
@@ -86,7 +86,7 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 	}
 	if len(unique) > corestore.MaxPageSize {
 		out.refusal = "Independent repair batch exceeds the request limit"
-		return out, nil
+		return out, true, nil
 	}
 	nextNumber := 0
 	for _, failure := range unique {
@@ -104,10 +104,10 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 		if errors.Is(err, postgres.ErrDoctorProposalIdentitiesPending) {
 			out.repairs, out.dependencies = nil, nil
 			out.refusal = "Canonical repair identity coverage is pending"
-			return out, nil
+			return out, true, nil
 		}
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var repairPlan hubrecords.WorkItemRecordPlan
 		var original corestore.WorkItem
@@ -115,11 +115,11 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 		if selection.WorkItemID != "" {
 			repairPlan, err = s.loadWorkItemPlan(ctx, scope, string(selection.WorkItemID), "", nil)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			existing, stamped := issueorigin.Parse(repairPlan.Issue.Body)
 			if !stamped || existing.Fingerprint != origin.Fingerprint || repairPlan.Current.Revision != selection.Revision {
-				return nil, corestore.ErrSerializationFailure
+				return nil, false, corestore.ErrSerializationFailure
 			}
 			original = repairPlan.Current
 			repairPlan.Issue.Terminal = selection.Terminal
@@ -131,13 +131,13 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 				if request.Priority != nil && (repairPlan.Issue.Priority == nil || *request.Priority < *repairPlan.Issue.Priority) {
 					planned, err := s.prepareWorkItemMachinePriority(ctx, scope, repairPlan, request.Priority)
 					if err != nil {
-						return nil, err
+						return nil, false, err
 					}
 					priority = &scheduledAttributionRecord{plan: planned.plan, fields: planned.fields, version: planned.version, event: planned.event}
 				}
 				repairPlan, err = s.planWorkItemRecord(ctx, scope, repairPlan, tracker.CreateComment{Body: issueorigin.Occurrence(request.Body)})
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 			} else {
 				original = corestore.WorkItem{}
@@ -148,7 +148,7 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 		if original.NativeID == "" {
 			repairPlan, err = s.loadWorkItemPlan(ctx, scope, "", "", request)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			if nextNumber == 0 {
 				nextNumber = repairPlan.Issue.Number
@@ -157,19 +157,19 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 			nextNumber++
 			repairPlan, err = s.planWorkItemRecord(ctx, scope, repairPlan, request)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			repairPlan.Current.NativeID = repairPlan.Issue.WorkItemID
 			policy, policyFound, err = s.validateWorkItemRecordFilingTenant(ctx, scope, repairPlan)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		}
 		repair := independentRepair{priority: priority, selection: selection, target: original, policy: policy, policyFound: policyFound}
 		if out.refusal == "" {
 			repair.record, err = s.prepareScheduledAttributionRecord(ctx, scope, repairPlan, tracker.CollaborationData{})
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			out.dependencies = append(out.dependencies, repairPlan.Issue.WorkItemID)
 		}
@@ -182,11 +182,11 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 		}
 		return err
 	}); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if out.refusal != "" {
 		out.dependencies = nil
-		return out, nil
+		return out, true, nil
 	}
 	slices.Sort(out.dependencies)
 	update := plan
@@ -203,10 +203,10 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 	data := tracker.CollaborationData{Operation: "add"}
 	prepared, err := s.prepareScheduledAttributionRecord(ctx, scope, update, data)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	out.update = &prepared
-	return out, nil
+	return out, true, nil
 }
 
 func (s *Service) previewIndependentRepairs(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plan *preparedIndependentRepairs) (string, error) {

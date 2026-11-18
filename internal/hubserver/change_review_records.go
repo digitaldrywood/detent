@@ -116,11 +116,12 @@ prepareReview:
 	review := tracker.ChangeReview{SessionMachineID: sessionMachine, ImplementationReview: request.ImplementationReview, Validator: request.Validator, SecurityAudit: request.SecurityAudit, ID: hubcontent.PayloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.Actor(), CreatedAt: hubcontent.PayloadTimestamp(ctx, now)}
 	var independent *preparedIndependentRepairs
 	if request.Decision == "changes_requested" && review.VersionID == change.CurrentVersion {
-		independent, err = s.prepareIndependentRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, now)
+		prepared, present, err := s.prepareIndependentRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, now)
 		if err != nil {
 			return nil, err
 		}
-		if independent != nil {
+		if present {
+			independent = prepared
 			review.RepairDependencies, review.RepairRefusal = independent.dependencies, independent.refusal
 		}
 	}
@@ -160,12 +161,15 @@ prepareReview:
 	}); err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
-	workflowPlan, err := s.prepareChangeReviewWorkflow(ctx, scope, change, version, review, approval, now)
-	if errors.Is(err, corestore.ErrRevisionConflict) {
-		return nil, hubapi.NativeConflict(change.Revision)
-	}
-	if err != nil {
-		return nil, err
+	var workflowPlan *changeReviewWorkflow
+	if scope.Credential.Scope != hubapi.APIScopeWorker && review.VersionID == change.CurrentVersion && review.Decision != "commented" {
+		workflowPlan, err = s.prepareChangeReviewWorkflow(ctx, scope, change, version, review, approval, now)
+		if errors.Is(err, corestore.ErrRevisionConflict) {
+			return nil, hubapi.NativeConflict(change.Revision)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	evidence, err := content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: change.ID, VersionID: new(versionID), Kind: "review", CreatedAt: review.CreatedAt}, raw)
 	if err != nil {

@@ -137,11 +137,11 @@ func (s *Service) prepareStaleLandingRoutes(ctx context.Context, scope hubscope.
 		if err != nil {
 			return nil, err
 		}
-		move, err := s.prepareChangeWorkflowRoute(ctx, scope, change, approval, changeWorkflowRoute{rework: true, reason: "stale_policy", target: staleLandingTarget}, now)
+		move, present, err := s.prepareChangeWorkflowRoute(ctx, scope, change, approval, changeWorkflowRoute{rework: true, reason: "stale_policy", target: staleLandingTarget}, now)
 		if err != nil {
 			return nil, err
 		}
-		if move == nil || !move.eligible {
+		if !present || !move.eligible {
 			return nil, hubapi.NativeInvalid("The workflow allows no move from " + landingLane + " to a landing refusal lane")
 		}
 		routes.moves = append(routes.moves, move)

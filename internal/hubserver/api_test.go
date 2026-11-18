@@ -1011,8 +1011,8 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			t.Fatalf("authenticate change operator: status=%d error=%v", status, err)
 		}
 		scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
-		plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: descriptor}, false, service.config.Clock().UTC())
-		if err != nil || plan == nil || !plan.eligible {
+		plan, present, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: descriptor}, false, service.config.Clock().UTC())
+		if err != nil || !present || plan == nil || !plan.eligible {
 			t.Fatalf("prepare compatible change transition: plan=%+v error=%v", plan, err)
 		}
 		if plan.request.State != "Merging" || plan.request.WorkflowLabel != "detent:merging" || plan.outbound == nil {
@@ -1108,8 +1108,8 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 				t.Fatalf("authenticate automated transition operator: status=%d error=%v", status, err)
 			}
 			scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
-			plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: selectedPolicy}, test.rework, service.config.Clock().UTC())
-			if err != nil || plan == nil || !plan.eligible || plan.outbound != nil {
+			plan, present, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: selectedPolicy}, test.rework, service.config.Clock().UTC())
+			if err != nil || !present || plan == nil || !plan.eligible || plan.outbound != nil {
 				t.Fatalf("local automated transition refused or prepared external write: plan=%+v error=%v", plan, err)
 			}
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {

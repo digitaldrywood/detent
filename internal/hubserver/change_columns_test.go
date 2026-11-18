@@ -853,7 +853,7 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 					t.Fatal(err)
 				}
 				for i, id := range ids {
-					_, err := f.service.prepareQualityEscapeTenant(t.Context(), scope, change, tracker.DiscussChange{VersionID: version.ID, Escape: escape(id, at.Add(time.Duration(i)*time.Second))}, at.Add(3*time.Second))
+					_, err := f.service.prepareQualityEscapeTenant(t.Context(), scope, change, version.ID, *escape(id, at.Add(time.Duration(i)*time.Second)), at.Add(3*time.Second))
 					if (err == nil) != (i == 0) {
 						t.Fatalf("pending=%v event=%d reopened=%v error=%v", pending, i, err == nil, err)
 					}

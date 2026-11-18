@@ -627,11 +627,12 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				return nil, err
 			}
 			failures := independentRunFailures(issue, event.Data, effectiveCheckpoint)
-			independent, err = s.prepareIndependentRepairs(ctx, scope, issue.WorkItemID, failures, event.Data.AttemptID, s.config.Clock().UTC())
+			prepared, present, err := s.prepareIndependentRepairs(ctx, scope, issue.WorkItemID, failures, event.Data.AttemptID, s.config.Clock().UTC())
 			if err != nil {
 				return nil, err
 			}
-			if independent != nil && event.Data.Runtime != nil {
+			if present {
+				independent = prepared
 				event.Data.Runtime.RepairDependencies = independent.dependencies
 			}
 		}

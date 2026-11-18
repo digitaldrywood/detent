@@ -177,7 +177,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope h
 	candidate.CurrentVersion = version.ID
 	policyID, reviewID := changerequest.CurrentPolicyIdentities(&version, approval.Policy, approval.ReviewPolicy)
 	if changerequest.SummarizeCurrentVersion(tracker.ChangeDetail{Change: candidate, Versions: []tracker.ChangeVersion{version}}, policyID, reviewID, now, false).Status == "reviewed" {
-		transition, err = s.prepareChangeWorkflowTransition(ctx, scope, change, approval, false, now)
+		transition, _, err = s.prepareChangeWorkflowTransition(ctx, scope, change, approval, false, now)
 		if err != nil {
 			return nil, err
 		}

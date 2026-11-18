@@ -129,14 +129,14 @@ func independentReview(t *testing.T, f changeFixture, change tracker.ChangeReque
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		plan, err := f.service.prepareIndependentRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, review.CreatedAt)
+		plan, present, err := f.service.prepareIndependentRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, review.CreatedAt)
 		if errors.Is(err, corestore.ErrSerializationFailure) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		if plan != nil {
+		if present {
 			review.RepairDependencies, review.RepairRefusal = plan.dependencies, plan.refusal
 		}
 		review.Actor = scope.Actor()
@@ -156,7 +156,7 @@ func independentReview(t *testing.T, f changeFixture, change tracker.ChangeReque
 			if err != nil {
 				return err
 			}
-			if plan != nil && refusal != plan.refusal {
+			if present && refusal != plan.refusal {
 				return corestore.ErrSerializationFailure
 			}
 			if err := f.service.applyIndependentRepairs(ctx, w, scope, plan); err != nil {
@@ -192,7 +192,7 @@ func TestIndependentFailureRepairDependency(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := independentFailureScope(t, f.nativeFixture)
-	if plan, err := f.service.prepareIndependentRepairs(t.Context(), scope, f.issue.WorkItemID, review.IndependentFailures(), change.ID, review.CreatedAt); err != nil || plan == nil || plan.refusal != "Canonical repair identity coverage is pending" || len(plan.dependencies) != 0 {
+	if plan, present, err := f.service.prepareIndependentRepairs(t.Context(), scope, f.issue.WorkItemID, review.IndependentFailures(), change.ID, review.CreatedAt); err != nil || !present || plan == nil || plan.refusal != "Canonical repair identity coverage is pending" || len(plan.dependencies) != 0 {
 		t.Fatalf("uninitialized canonical ownership plan=%+v error=%v", plan, err)
 	}
 	if more, err := f.service.refreshNativeIdentity(t.Context()); err != nil || !more {

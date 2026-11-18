@@ -65,11 +65,7 @@ type preparedTenantQualityEscape struct {
 	reopen    *eventstore.Event
 }
 
-func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.DiscussChange, now time.Time) (*preparedTenantQualityEscape, error) {
-	escape := request.Escape
-	if escape == nil {
-		return nil, nil
-	}
+func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, versionID string, escape tracker.QualityEscape, now time.Time) (*preparedTenantQualityEscape, error) {
 	if err := escape.Validate(); err != nil {
 		return nil, hubapi.NativeInvalid(err.Error())
 	}
@@ -89,7 +85,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		prepared.landing, err = owner.VersionLanding(ctx, change.ID, request.VersionID)
+		prepared.landing, err = owner.VersionLanding(ctx, change.ID, versionID)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return hubapi.NativePublicInvalid("Escape must identify a landed version and an occurrence between landing and now")
 		}
@@ -103,7 +99,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		previous, err = occurrences.QualityEscapeOccurrence(ctx, change.ID, request.VersionID, escape.OccurrenceID)
+		previous, err = occurrences.QualityEscapeOccurrence(ctx, change.ID, versionID, escape.OccurrenceID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
@@ -139,7 +135,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope
 		return nil, hubapi.NativePublicInvalid("Human classification overrides require a human browser session")
 	}
 	if escape.Cause != "infrastructure" && !escape.HumanOverride {
-		if err := validateQualityBasis(landing.Quality, *escape); err != nil {
+		if err := validateQualityBasis(landing.Quality, escape); err != nil {
 			return nil, err
 		}
 	}
@@ -180,7 +176,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope
 		}
 	}
 	if escape.Kind == "scheduled_failure" {
-		witness, err := s.prepareScheduledQualityWitness(ctx, scope, *escape)
+		witness, err := s.prepareScheduledQualityWitness(ctx, scope, escape)
 		if err != nil {
 			return nil, err
 		}
