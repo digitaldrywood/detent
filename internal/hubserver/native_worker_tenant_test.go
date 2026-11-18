@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -511,9 +512,10 @@ func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
 
 type nativeLeaseWireConn struct {
 	net.Conn
-	exchanges *atomic.Int64
-	pending   []byte
-	startup   bool
+	preparation pgtest.PrepareExchanges
+	exchanges   *atomic.Int64
+	pending     []byte
+	startup     bool
 }
 
 func (c *nativeLeaseWireConn) Write(value []byte) (int, error) {
@@ -539,7 +541,7 @@ func (c *nativeLeaseWireConn) Write(value []byte) (int, error) {
 		if len(c.pending) < size {
 			break
 		}
-		if c.pending[0] == 'S' || c.pending[0] == 'Q' {
+		if coldPrepare := c.preparation.ColdSync(c.pending[:size]); !coldPrepare && (c.pending[0] == 'S' || c.pending[0] == 'Q') {
 			c.exchanges.Add(1)
 		}
 		c.pending = c.pending[size:]

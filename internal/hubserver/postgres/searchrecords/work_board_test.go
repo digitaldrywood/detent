@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,34 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestBoardViewReusesPreparedStatement(t *testing.T) {
+	admin := pgstoretest.Template.Database(t)
+	repo, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	ctx := t.Context()
+	var firstName string
+	var firstPID int
+	for call := 1; call <= 2; call++ {
+		err := repo.ReadTenant(ctx, "org_example", corestore.Serving, func(reader tenantstore.Reader) error {
+			_, err := reader.(interface {
+				BoardView(context.Context, viewstore.BoardViewSelection) (viewstore.BoardViewRows, error)
+			}).BoardView(ctx, viewstore.BoardViewSelection{ClosedPage: call, LanePreset: viewstore.LanesOpen})
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var name string
+		var pid, uses int
+		if err := pool.QueryRow(ctx, `SELECT pg_backend_pid(), name, generic_plans FROM pg_prepared_statements WHERE statement=$1`, boardviewsql.Statement(false)).Scan(&pid, &name, &uses); err != nil {
+			t.Fatal(err)
+		}
+		if uses != call || (call == 2 && (name != firstName || pid != firstPID)) {
+			t.Fatalf("call %d used statement %s on backend %d, executions %d (first %s on %d)", call, name, pid, uses, firstName, firstPID)
+		}
+		firstName, firstPID = name, pid
+	}
+}
 
 func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 	t.Parallel()

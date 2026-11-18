@@ -36,6 +36,8 @@ type Executor interface {
 
 type Transaction struct {
 	conn        *pgxpool.Conn
+	initialRead bool
+	beginSQL    string
 	scope       Scope
 	bound, done bool
 	rows        *transactionRows
@@ -76,24 +78,32 @@ func (p *Pools) BeginBatch(ctx context.Context, scope Scope, options Options, wo
 	if err != nil {
 		return nil, nil, fmt.Errorf("acquire PostgreSQL tenant connection: %w", err)
 	}
-	tx := &Transaction{conn: conn, scope: scope}
-	batch := &pgx.Batch{}
-	batch.Queue("BEGIN ISOLATION LEVEL " + string(isolation) + mode)
-	batch.Queue(`SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true), set_config('jit', 'off', true)`, string(scope.Organization))
+	tx := &Transaction{conn: conn, scope: scope, beginSQL: "BEGIN ISOLATION LEVEL " + string(isolation) + mode, initialRead: options.ReadOnly && work == nil}
+	results, err := tx.bind(ctx, work)
+	if err != nil {
+		return nil, nil, errors.Join(err, tx.Rollback(ctx))
+	}
+	return tx, results, nil
+}
+
+func (tx *Transaction) bind(ctx context.Context, work *pgx.Batch) (pgx.BatchResults, error) {
+	batch := new(pgx.Batch)
+	batch.Queue(tx.beginSQL)
+	batch.Queue(`SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true), set_config('jit', 'off', true)`, string(tx.scope.Organization))
 	if work != nil {
 		batch.QueuedQueries = append(batch.QueuedQueries, guardedBatch(work).QueuedQueries...)
 	}
-	results := conn.SendBatch(ctx, batch)
+	results := tx.conn.SendBatch(ctx, batch)
 	_, beginErr := results.Exec()
 	_, bindErr := results.Exec()
 	if err := errors.Join(beginErr, bindErr); err != nil {
 		closeErr := results.Close()
-		return nil, nil, errors.Join(fmt.Errorf("bind PostgreSQL tenant transaction: %w", err), closeErr, tx.Rollback(ctx))
+		return nil, errors.Join(fmt.Errorf("bind PostgreSQL tenant transaction: %w", err), closeErr)
 	}
 	tx.bound = true
 	tracked := &transactionBatch{BatchResults: results, tx: tx}
 	tx.batch = tracked
-	return tx, tracked, nil
+	return tracked, nil
 }
 
 func (t *Transaction) Scope() Scope { return t.scope }
@@ -110,17 +120,40 @@ func (t *Transaction) Exec(ctx context.Context, query string, args ...any) (pgco
 	if err := t.ready(); err != nil {
 		return pgconn.CommandTag{}, err
 	}
+	t.initialRead = false
 	return t.conn.Exec(ctx, query, args...)
 }
 func (t *Transaction) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
 	if err := t.ready(); err != nil {
 		return nil, err
 	}
+	first := t.initialRead
+	t.initialRead = false
 	rows, err := t.conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	tracked := &transactionRows{Rows: rows, tx: t}
+	if first {
+		tracked.retry = func() (pgx.Rows, error) {
+			t.bound = false
+			if err := t.rollbackConnection(ctx); err != nil {
+				return nil, err
+			}
+			results, err := t.bind(ctx, nil)
+			if err != nil {
+				return nil, err
+			}
+			if err := results.Close(); err != nil {
+				return nil, err
+			}
+			rows, err := t.conn.Query(ctx, query, args...)
+			if err == nil {
+				t.rows = tracked
+			}
+			return rows, err
+		}
+	}
 	t.rows = tracked
 	return tracked, nil
 }
@@ -135,6 +168,7 @@ func (t *Transaction) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.Batch
 	if err := t.ready(); err != nil {
 		return failedBatch{err}
 	}
+	t.initialRead = false
 	tracked := &transactionBatch{BatchResults: t.conn.SendBatch(ctx, guardedBatch(batch)), tx: t}
 	t.batch = tracked
 	return tracked
@@ -161,9 +195,13 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 	}
 	t.done = true
 	t.bound = false
+	defer t.conn.Release()
+	return t.rollbackConnection(ctx)
+}
+
+func (t *Transaction) rollbackConnection(ctx context.Context) error {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	defer t.conn.Release()
 	if t.rows != nil || t.batch != nil {
 		return t.conn.Conn().Close(cleanup)
 	}

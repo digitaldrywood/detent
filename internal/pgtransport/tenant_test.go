@@ -98,8 +98,18 @@ func reuse(t *testing.T, pools *pgtransport.Pools) {
 }
 func TestTenantBinding(t *testing.T) {
 	_, config := fixture(t)
+	config.MaxConns = 1
+	config.ConnConfig.RuntimeParams["plan_cache_mode"] = "force_generic_plan"
 	pools := openPools(t, config, nil)
 	reuse(t, pools)
+	txStats := begin(t, pools, pgtransport.Options{ReadOnly: true})
+	var uses int
+	if err := txStats.QueryRow(t.Context(), `SELECT generic_plans FROM pg_prepared_statements WHERE statement=$1`, `SELECT tenant FROM protected WHERE id=$1`).Scan(&uses); err != nil || uses != 3 {
+		t.Fatalf("tenant query generic plan executions = %d, err = %v", uses, err)
+	}
+	if err := txStats.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pools.Begin(t.Context(), pgtransport.Scope{}, pgtransport.Options{}); !errors.Is(err, pgtransport.ErrTenantRequired) {
 		t.Fatalf("missing tenant: %v", err)
 	}
@@ -120,6 +130,51 @@ func TestTenantBinding(t *testing.T) {
 		t.Fatalf("unbound rows=%d err=%v", count, err)
 	}
 }
+func TestInitialReadRecoversAfterColumnTypeChange(t *testing.T) {
+	admin, config := fixture(t)
+	config.MaxConns = 1
+	pools := openPools(t, config, nil)
+	for _, tenant := range []string{"first", "second"} {
+		if tenant == "second" {
+			if _, err := admin.ExecContext(t.Context(), `ALTER TABLE protected ALTER COLUMN id TYPE varchar(40)`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tx, err := pools.Begin(t.Context(), pgtransport.Scope{Organization: tracker.OrganizationID(tenant)}, pgtransport.Options{ReadOnly: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(t.Context())
+		var id, got string
+		if err := tx.QueryRow(t.Context(), `SELECT id,tenant FROM protected WHERE id=$1`, "same").Scan(&id, &got); err != nil || id != "same" || got != tenant {
+			t.Fatalf("read=%q/%q err=%v", id, got, err)
+		}
+		if err := tx.Commit(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := admin.ExecContext(t.Context(), `ALTER TABLE protected ALTER COLUMN id TYPE text`); err != nil {
+		t.Fatal(err)
+	}
+	tx := begin(t, pools, pgtransport.Options{})
+	if _, err := tx.Exec(t.Context(), `INSERT INTO protected VALUES('first','pending')`); err != nil {
+		t.Fatal(err)
+	}
+	var id, tenant string
+	err := tx.QueryRow(t.Context(), `SELECT id,tenant FROM protected WHERE id=$1`, "same").Scan(&id, &tenant)
+	if pgtransport.SQLState(err) != "0A000" {
+		t.Fatalf("read after write = %v, want invalidated plan", err)
+	}
+	if err := tx.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var persisted bool
+	if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM protected WHERE id='pending')`).Scan(&persisted); err != nil || persisted {
+		t.Fatalf("pending write persisted=%t, err=%v", persisted, err)
+	}
+
+}
+
 func TestCommitRejectsAbortedTransaction(t *testing.T) {
 	_, config := fixture(t)
 	pools := openPools(t, config, nil)

@@ -3,6 +3,7 @@ package executionrecords_test
 import (
 	"context"
 	"encoding/binary"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -21,9 +22,10 @@ type attemptWireCounts struct {
 
 type attemptWireConn struct {
 	net.Conn
-	counts  *attemptWireCounts
-	pending []byte
-	startup bool
+	preparation pgtest.PrepareExchanges
+	counts      *attemptWireCounts
+	pending     []byte
+	startup     bool
 }
 
 func (c *attemptWireConn) Write(value []byte) (int, error) {
@@ -43,8 +45,12 @@ func (c *attemptWireConn) Write(value []byte) (int, error) {
 		if len(c.pending) < size {
 			break
 		}
+		coldPrepare := c.preparation.ColdSync(c.pending[:size])
 		switch c.pending[0] {
 		case 'S':
+			if coldPrepare {
+				break
+			}
 			c.counts.exchanges.Add(1)
 		case 'Q':
 			c.counts.exchanges.Add(1)

@@ -2,11 +2,9 @@ package platformstore
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
-	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,68 +14,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type platformWireCounts struct {
-	mu                    sync.Mutex
-	statements, exchanges int
-}
-
-type platformCountedConn struct {
-	net.Conn
-	counts  *platformWireCounts
-	pending []byte
-	startup bool
-}
-
-func (c *platformCountedConn) Write(value []byte) (int, error) {
-	n, err := c.Conn.Write(value)
-	c.pending = append(c.pending, value[:n]...)
-	for {
-		if c.startup {
-			if len(c.pending) < 4 {
-				break
-			}
-			size := int(binary.BigEndian.Uint32(c.pending[:4]))
-			if len(c.pending) < size {
-				break
-			}
-			c.pending, c.startup = c.pending[size:], false
-			continue
-		}
-		if len(c.pending) < 5 {
-			break
-		}
-		size := 1 + int(binary.BigEndian.Uint32(c.pending[1:5]))
-		if len(c.pending) < size {
-			break
-		}
-		c.counts.mu.Lock()
-		switch c.pending[0] {
-		case 'S':
-			c.counts.exchanges++
-		case 'Q':
-			c.counts.exchanges++
-			c.counts.statements++
-		case 'E':
-			c.counts.statements++
-		}
-		c.counts.mu.Unlock()
-		c.pending = c.pending[size:]
-	}
-	return n, err
-}
-
 func TestPlatformKeyReadCostIsBounded(t *testing.T) {
 	db := template.Database(t)
 	initial := rolePool(t, db, postgres.PlatformRoleName, "")
 	config := initial.Config()
 	initial.Close()
-	counts := new(platformWireCounts)
+	counts := new(runtimeWireCounts)
 	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err := new(net.Dialer).DialContext(ctx, network, address)
 		if err != nil {
 			return nil, err
 		}
-		return &platformCountedConn{Conn: conn, counts: counts, startup: true}, nil
+		return &runtimeWireConn{Conn: conn, counts: counts, startup: true}, nil
 	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
@@ -133,15 +81,11 @@ func TestPlatformKeyReadCostIsBounded(t *testing.T) {
 				}},
 			} {
 				t.Run(fmt.Sprintf("%s/%d/%s", org, size, read.name), func(t *testing.T) {
-					counts.mu.Lock()
-					counts.statements, counts.exchanges = 0, 0
-					counts.mu.Unlock()
+					counts.take(t)
 					if err := read.run(); err != nil {
 						t.Fatal(err)
 					}
-					counts.mu.Lock()
-					statements, exchanges := counts.statements, counts.exchanges
-					counts.mu.Unlock()
+					statements, exchanges := counts.take(t)
 					if statements != 1 || exchanges != 1 {
 						t.Errorf("statements=%d exchanges=%d, want 1 each", statements, exchanges)
 					}

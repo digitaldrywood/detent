@@ -76,7 +76,7 @@ func TestAuthorityUsesTwoWireExchangesAndFourStatements(t *testing.T) {
 		}
 	})
 	authority := tenantauth.New(pools, nil)
-	for _, org := range []string{"first", "second", "first"} {
+	for index, org := range []string{"first", "second", "first"} {
 		counts.mu.Lock()
 		counts.exchanges = 0
 		counts.statements = 0
@@ -88,7 +88,11 @@ func TestAuthorityUsesTwoWireExchangesAndFourStatements(t *testing.T) {
 		counts.mu.Lock()
 		exchanges, statements := counts.exchanges, counts.statements
 		counts.mu.Unlock()
-		if exchanges != 2 || statements != 4 {
+		wantExchanges := 2
+		if index == 0 {
+			wantExchanges = 3
+		}
+		if exchanges != wantExchanges || statements != 4 {
 			t.Fatalf("organization=%s exchanges=%d statements=%d", org, exchanges, statements)
 		}
 		t.Logf("organization=%s exchanges=%d statements=%d", org, exchanges, statements)

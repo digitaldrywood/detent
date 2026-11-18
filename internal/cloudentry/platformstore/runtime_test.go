@@ -22,19 +22,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type runtimeWireCounts struct {
-	mu                    sync.Mutex
-	statements, exchanges int
+	mu                                   sync.Mutex
+	statements, exchanges, firstPrepares int
 }
 
 type runtimeWireConn struct {
 	net.Conn
-	counts  *runtimeWireCounts
-	pending []byte
-	startup bool
+	preparation pgtest.PrepareExchanges
+	counts      *runtimeWireCounts
+	pending     []byte
+	startup     bool
 }
 
 func (c *runtimeWireConn) Write(data []byte) (int, error) {
@@ -60,6 +62,9 @@ func (c *runtimeWireConn) Write(data []byte) (int, error) {
 		if c.pending[0] == 'Q' || c.pending[0] == 'E' {
 			c.counts.statements++
 		}
+		if c.preparation.ColdSync(c.pending[:size]) {
+			c.counts.firstPrepares++
+		}
 		if c.pending[0] == 'Q' || c.pending[0] == 'S' {
 			c.counts.exchanges++
 		}
@@ -69,10 +74,13 @@ func (c *runtimeWireConn) Write(data []byte) (int, error) {
 	return n, err
 }
 
-func (c *runtimeWireCounts) take() (int, int) {
+func (c *runtimeWireCounts) take(t *testing.T) (int, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	statements, exchanges := c.statements, c.exchanges
+	t.Helper()
+	t.Logf("wire exchanges=%d including %d initial preparations", c.exchanges, c.firstPrepares)
+	statements, exchanges := c.statements, c.exchanges-c.firstPrepares
+	c.firstPrepares = 0
 	c.statements, c.exchanges = 0, 0
 	return statements, exchanges
 }
@@ -106,12 +114,12 @@ func TestRuntimePublicationWorkDoesNotGrowWithTenants(t *testing.T) {
 SELECT 'org_scale_'||n::text,'Example','ready','unix:/example/scale.sock',1,now(),now() FROM generate_series(1,$1::integer) n ON CONFLICT DO NOTHING`, size-2); err != nil {
 			t.Fatal(err)
 		}
-		counts.take()
+		counts.take(t)
 		revision := uuid.NewString()
 		if err := r.PublishRuntime(t.Context(), revision, "entry", "example/payload", nil); err != nil {
 			t.Fatal(err)
 		}
-		if statements, exchanges := counts.take(); statements != 5 || exchanges != 5 {
+		if statements, exchanges := counts.take(t); statements != 5 || exchanges != 5 {
 			t.Fatalf("%d tenants publication: statements=%d exchanges=%d", size, statements, exchanges)
 		}
 		page, err := r.RuntimeTenantPage(t.Context(), "", 2)
@@ -124,7 +132,7 @@ SELECT 'org_scale_'||n::text,'Example','ready','unix:/example/scale.sock',1,now(
 				t.Fatalf("%s adoption=%+v error=%v", org, target, err)
 			}
 		}
-		if statements, exchanges := counts.take(); statements != 3 || exchanges != 3 {
+		if statements, exchanges := counts.take(t); statements != 3 || exchanges != 3 {
 			t.Fatalf("%d tenants page and two targets: statements=%d exchanges=%d", size, statements, exchanges)
 		}
 		t.Logf("tenants=%d publication: 5 statements/5 exchanges; page and two targets: 3 statements/3 exchanges", size)
@@ -201,12 +209,12 @@ func TestRuntimeAdoptionWorkDoesNotGrowWithPlans(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			counts.take()
+			counts.take(t)
 			update := hostedplans.HostedRuntimeUpdate{Plans: &plans, StageID: revision, Reason: "bounded catalog adoption"}
 			if err := snapshots.Adopt(t.Context(), hubmaintenance.Tenant{Organization: string(org), Generation: 1}, "", update); err != nil {
 				t.Fatal(err)
 			}
-			statements, exchanges := counts.take()
+			statements, exchanges := counts.take(t)
 			if statements > 24 || exchanges > 24 {
 				t.Fatalf("%d plans adoption: statements=%d exchanges=%d; budget=24", size, statements, exchanges)
 			}
@@ -224,7 +232,7 @@ func TestRuntimeAdoptionWorkDoesNotGrowWithPlans(t *testing.T) {
 			if err := snapshots.Adopt(t.Context(), hubmaintenance.Tenant{Organization: string(org), Generation: 1}, revision, update); err != nil {
 				t.Fatal(err)
 			}
-			statements, exchanges = counts.take()
+			statements, exchanges = counts.take(t)
 			if statements != baselineStatements+1 || exchanges != baselineExchanges+1 {
 				t.Fatalf("%d plans replacement grew: statements=%d exchanges=%d", size, statements, exchanges)
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"net"
 	"net/http"
 	"strings"
@@ -24,9 +25,11 @@ type heartbeatWire struct {
 }
 type heartbeatConn struct {
 	net.Conn
-	wire    *heartbeatWire
-	pending []byte
-	startup bool
+	preparation pgtest.PrepareExchanges
+	begins      map[string]bool
+	wire        *heartbeatWire
+	pending     []byte
+	startup     bool
 }
 
 func (c *heartbeatConn) Write(value []byte) (int, error) {
@@ -48,14 +51,26 @@ func (c *heartbeatConn) Write(value []byte) (int, error) {
 			c.startup = false
 		} else {
 			c.wire.Lock()
+			coldPrepare := c.preparation.ColdSync(c.pending[:size])
 			switch c.pending[0] {
 			case 'P':
-				if len(c.pending) > 6 && strings.HasPrefix(string(c.pending[6:]), "BEGIN ") {
+				name, sql, _ := strings.Cut(string(c.pending[5:size]), "\x00")
+				if c.begins == nil {
+					c.begins = map[string]bool{}
+				}
+				c.begins[name] = strings.HasPrefix(sql, "BEGIN ")
+			case 'B':
+				_, rest, _ := strings.Cut(string(c.pending[5:size]), "\x00")
+				name, _, _ := strings.Cut(rest, "\x00")
+				if c.begins[name] {
 					c.wire.transactions++
 				}
 			case 'E':
 				c.wire.statements++
 			case 'S':
+				if coldPrepare {
+					break
+				}
 				c.wire.exchanges++
 			case 'Q':
 				c.wire.statements++

@@ -81,7 +81,7 @@ func (c *wireCounts) counts() (int, int, int, int) {
 	return c.syncs, c.queries, c.parses, c.executes
 }
 
-func TestInitialWorkOneExchange(t *testing.T) {
+func TestInitialWorkOneExchangeAfterPreparation(t *testing.T) {
 	_, config := fixture(t)
 	counts := new(wireCounts)
 	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -92,7 +92,7 @@ func TestInitialWorkOneExchange(t *testing.T) {
 		return &countedConn{Conn: conn, counts: counts, startup: true}, nil
 	}
 	pools := openPools(t, config, nil)
-	for _, tenant := range []tracker.OrganizationID{"first", "second"} {
+	for index, tenant := range []tracker.OrganizationID{"first", "second"} {
 		counts.reset()
 		work := &pgx.Batch{}
 		work.Queue(`SELECT tenant FROM protected WHERE id=$1`, "same")
@@ -114,17 +114,20 @@ func TestInitialWorkOneExchange(t *testing.T) {
 			t.Fatal(err)
 		}
 		syncs, queries, parses, executes := counts.counts()
-		if got != string(tenant) || rows != 1 || syncs != 1 || queries != 0 || parses != 4 || executes != 4 {
+		wantSyncs, wantParses := 1, 0
+		if index == 0 {
+			wantSyncs, wantParses = 2, 4
+		}
+		if got != string(tenant) || rows != 1 || syncs != wantSyncs || queries != 0 || parses != wantParses || executes != 4 {
 			t.Fatalf("tenant=%s rows=%d Sync=%d Q=%d Parse=%d Execute=%d", got, rows, syncs, queries, parses, executes)
 		}
 		if err := tx.Commit(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		syncs, queries, _, _ = counts.counts()
-		if syncs+queries != 2 {
+		if syncs+queries != wantSyncs+1 {
 			t.Fatalf("full exchanges=%d", syncs+queries)
 		}
-		t.Logf("tenant=%s BEGIN+bind+two protected reads: statements=4 exchanges=1; including COMMIT: statements=5 exchanges=2", tenant)
 	}
 }
 func TestCancellationDuringProtectedRead(t *testing.T) {

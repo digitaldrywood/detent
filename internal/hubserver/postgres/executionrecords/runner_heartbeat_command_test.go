@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"net"
 	"strings"
 	"sync"
@@ -30,9 +31,10 @@ type heartbeatWire struct {
 }
 type heartbeatConn struct {
 	net.Conn
-	wire    *heartbeatWire
-	pending []byte
-	startup bool
+	preparation pgtest.PrepareExchanges
+	wire        *heartbeatWire
+	pending     []byte
+	startup     bool
 }
 
 func (c *heartbeatConn) Write(value []byte) (int, error) {
@@ -54,10 +56,14 @@ func (c *heartbeatConn) Write(value []byte) (int, error) {
 			c.startup = false
 		} else {
 			c.wire.Lock()
+			coldPrepare := c.preparation.ColdSync(c.pending[:size])
 			switch c.pending[0] {
 			case 'E':
 				c.wire.statements++
 			case 'S':
+				if coldPrepare {
+					break
+				}
 				c.wire.exchanges++
 			case 'Q':
 				c.wire.statements++
