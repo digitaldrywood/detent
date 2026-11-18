@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) Process(ctx context.Context) (bool, error) {
@@ -18,6 +19,14 @@ func (s *Service) Process(ctx context.Context) (bool, error) {
 		return false, s.deps.Disabled
 	}
 	organization := s.deps.Organization
+	if probe, ok := s.deps.Repository.(interface {
+		GitHubOutboundDue(context.Context, tracker.OrganizationID, time.Time) (bool, error)
+	}); ok {
+		due, err := probe.GitHubOutboundDue(ctx, organization, s.deps.Now())
+		if err != nil || !due {
+			return false, err
+		}
+	}
 	var row projectstore.GitHubOutbound
 	err := s.deps.Repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		var err error

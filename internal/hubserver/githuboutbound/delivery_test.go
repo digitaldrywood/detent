@@ -131,10 +131,17 @@ func TestGitHubOutboundPollJitter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		wake := make(chan time.Time)
 		var waits []time.Duration
-		jitter := []float64{0, 0.5, 1}
+		jitter := []float64{0, 0.5, 1, 1}
 		deps := outboundDeps()
 		deps.OutboxPollInterval = 10 * time.Second
 		service := New(deps)
+		service.deps.Backend = &recordingOutboxBackend{}
+		deliveries := []bool{false, false, true, false}
+		service.deps.Process = func(context.Context) (bool, error) {
+			next := deliveries[0]
+			deliveries = deliveries[1:]
+			return next, nil
+		}
 		service.deps.Jitter = func() float64 { value := jitter[0]; jitter = jitter[1:]; return value }
 		service.deps.NewTimer = func(delay time.Duration) Timer {
 			waits = append(waits, delay)
@@ -145,12 +152,12 @@ func TestGitHubOutboundPollJitter(t *testing.T) {
 		done := make(chan struct{})
 		defer func() { cancel(); <-done }()
 		go func() { defer close(done); worker.run(ctx) }()
-		for index, want := range []time.Duration{5 * time.Second, 7500 * time.Millisecond, 10 * time.Second} {
+		for index, want := range []time.Duration{5 * time.Second, 15 * time.Second, 40 * time.Second, 10 * time.Second} {
 			synctest.Wait()
 			if len(waits) != index+1 || waits[index] != want {
 				t.Fatalf("poll waits=%v want next=%v", waits, want)
 			}
-			if index < 2 {
+			if index < 3 {
 				wake <- time.Now()
 			}
 		}

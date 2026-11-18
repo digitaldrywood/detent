@@ -10,14 +10,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/digitaldrywood/detent/internal/pgtransport"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/maintenanceprobe"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgcore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/projectreads"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -30,7 +30,10 @@ type PoolConfig struct {
 
 const defaultBoardSearchBudget = 750 * time.Millisecond
 
+type idleProbe = maintenanceprobe.Reader
+
 type Repository struct {
+	idleProbe
 	leaseClock     func() time.Time
 	searchBudget   time.Duration
 	pool           *pgxpool.Pool
@@ -66,7 +69,9 @@ func NewRepository(ctx context.Context, pool *pgxpool.Pool, config PoolConfig, l
 	if searchBudget <= 0 {
 		searchBudget = defaultBoardSearchBudget
 	}
-	return &Repository{leaseClock: clock, searchBudget: searchBudget, pool: pool, runtime: runtime, serving: make(chan struct{}, serving), background: make(chan struct{}, config.BackgroundConnections)}, nil
+	repository := &Repository{leaseClock: clock, searchBudget: searchBudget, pool: pool, runtime: runtime, serving: make(chan struct{}, serving), background: make(chan struct{}, config.BackgroundConnections)}
+	repository.idleProbe = maintenanceprobe.New(runtime.reader, repository.acquire)
+	return repository, nil
 }
 
 func (r *Repository) SetBoardCommitNotifier(notify func()) {

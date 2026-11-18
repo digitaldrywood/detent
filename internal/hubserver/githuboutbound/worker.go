@@ -37,8 +37,10 @@ func (w *Worker) Start(parent context.Context) {
 }
 
 func (w *Worker) run(ctx context.Context) {
+	interval := w.service.deps.OutboxPollInterval
+	base := interval
 	wait := func() time.Duration {
-		return RetryDelay(1, w.service.deps.OutboxPollInterval, w.service.deps.OutboxPollInterval, w.service.deps.Jitter())
+		return RetryDelay(1, interval, interval, w.service.deps.Jitter())
 	}
 	timer := w.service.deps.NewTimer(wait())
 	defer timer.Stop()
@@ -47,8 +49,10 @@ func (w *Worker) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-w.wake:
+			interval = base
 		case <-timer.Ticks:
 		}
+		worked := false
 		for range 64 {
 			var github func(context.Context) (bool, error)
 			if w.service.deps.Backend != nil {
@@ -61,9 +65,15 @@ func (w *Worker) run(ctx context.Context) {
 			if err != nil && ctx.Err() == nil {
 				w.service.deps.Logger.WarnContext(ctx, "outbox delivery failed", "error", err)
 			}
+			worked = worked || processed
 			if !processed || ctx.Err() != nil {
 				break
 			}
+		}
+		if worked {
+			interval = base
+		} else if interval < time.Minute {
+			interval = min(2*interval, time.Minute)
 		}
 		timer.Reset(wait())
 	}
