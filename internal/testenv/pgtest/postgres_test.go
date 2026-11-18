@@ -380,21 +380,53 @@ func TestUnconfiguredPostgresFails(t *testing.T) {
 }
 
 func TestBinarySetupFailureCleanup(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir)
-	t.Setenv("TMP", dir)
-	t.Setenv("TEMP", dir)
-	t.Setenv("PATH", dir)
-	_, err := openServer(t.Context(), "binary")
-	if err == nil {
-		t.Fatal("missing initdb did not fail setup")
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatal("failed binary setup left cluster files")
+	for _, tc := range []struct {
+		name      string
+		checkErr  error
+		fake      bool
+		wantCause error
+	}{
+		{name: "missing initdb", wantCause: exec.ErrNotFound},
+		{name: "shared memory denied", checkErr: os.ErrPermission, fake: true, wantCause: os.ErrPermission},
+		{name: "initdb failed", fake: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, bin := t.TempDir(), t.TempDir()
+			t.Setenv("PATH", bin)
+			initdb := filepath.Join(bin, "initdb")
+			if tc.fake {
+				const script = "#!/bin/sh\n: > \"$0.called\"\necho 'bootstrap failed' >&2\nexit 29\n"
+				if err := os.WriteFile(initdb, []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, _, err := startBinary(t.Context(), dir, func() error { return tc.checkErr })
+			if tc.wantCause != nil {
+				if !errors.Is(err, tc.wantCause) {
+					t.Fatalf("startup error = %v, want %v", err, tc.wantCause)
+				}
+			} else {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 29 || !strings.Contains(err.Error(), "bootstrap failed") {
+					t.Fatalf("lost initdb failure: %v", err)
+				}
+			}
+			if tc.checkErr != nil && !strings.Contains(err.Error(), Environment) {
+				t.Fatalf("missing loopback configuration guidance: %v", err)
+			}
+			_, statErr := os.Stat(initdb + ".called")
+			if tc.fake && tc.checkErr == nil {
+				if statErr != nil {
+					t.Fatalf("initdb invocation: %v", statErr)
+				}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("unexpected initdb invocation: %v", statErr)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("failed binary setup left %v: %v", entries, err)
+			}
+		})
 	}
 }
 
@@ -944,7 +976,7 @@ func TestBinaryDurabilitySettingsAndURLPreservation(t *testing.T) {
 				}
 				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 				var stop func(context.Context) error
-				selection, stop, err = startBinary(ctx, os.TempDir())
+				selection, stop, err = startBinary(ctx, os.TempDir(), checkBinaryIPC)
 				if err != nil {
 					t.Fatal(err)
 				}

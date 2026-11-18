@@ -256,7 +256,7 @@ func TestBinaryStartupExit(t *testing.T) {
 		}
 	})
 	go func() {
-		_, stop, err := startBinary(ctx, os.TempDir())
+		_, stop, err := startBinary(ctx, os.TempDir(), func() error { return nil })
 		if stop != nil {
 			err = errors.Join(err, stop(ctx))
 		}

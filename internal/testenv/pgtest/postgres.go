@@ -480,7 +480,7 @@ func openServerAt(ctx context.Context, selection, tempDir string) (_ *server, re
 	disposable := selection == "binary"
 	if disposable {
 		var err error
-		selection, stop, err = startBinary(ctx, tempDir)
+		selection, stop, err = startBinary(ctx, tempDir, checkBinaryIPC)
 		if err != nil {
 			return nil, err
 		}
@@ -535,7 +535,10 @@ func socketParent(dir string) string {
 	return "/tmp"
 }
 
-func startBinary(ctx context.Context, tempDir string) (_ string, _ func(context.Context) error, resultErr error) {
+func startBinary(ctx context.Context, tempDir string, checkIPC func() error) (_ string, _ func(context.Context) error, resultErr error) {
+	if err := checkIPC(); err != nil {
+		return "", nil, fmt.Errorf("native PostgreSQL requires System V shared memory (set %s to a disposable loopback PostgreSQL URL): %w", Environment, err)
+	}
 	dir, err := os.MkdirTemp(tempDir, "pg-")
 	if err != nil {
 		return "", nil, err
