@@ -22,6 +22,7 @@ func TestRunnerCompletionPublicationWireBudget(t *testing.T) {
 	if _, err := first.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_completion_receipt() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.command_key='rollback_completion' THEN RAISE EXCEPTION 'fixture publication rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_completion_receipt BEFORE INSERT ON native_commands FOR EACH ROW EXECUTE FUNCTION reject_completion_receipt()`); err != nil {
 		t.Fatal(err)
 	}
+	rollbackService := runnerPublicationRollbackService(t, first)
 	var expected [2]int
 	for tenantIndex, fixture := range []runnerPGFixture{first, second} {
 		org := tracker.OrganizationID("org_startup")
@@ -51,7 +52,7 @@ func TestRunnerCompletionPublicationWireBudget(t *testing.T) {
 			data.Usage = []tracker.NativeUsage{{Provider: "example", Model: "example-model", Input: 17, CachedInput: 2, Output: 3, BillingMode: "metered", Currency: "USD", Revision: 1, From: attempt.StartedAt, To: ended, ReportedAt: ended, ReportedCostMicros: &paid, CostSource: "runner_report", CostCoverage: "complete"}}
 			finish := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "rollback_completion"}, Type: "run.finished", SchemaVersion: 1, OccurredAt: ended, Data: data}
 			path := fmt.Sprintf("/api/v2/organizations/%s/projects/prj_runner/work-items/%s/events", org, lease.WorkItemID)
-			response := performHubAPIRequest(t, fixture.service, http.MethodPost, path, fixture.tokens[index], finish)
+			response := performHubAPIRequest(t, rollbackService, http.MethodPost, path, fixture.tokens[index], finish)
 			if response.Code < 500 {
 				t.Fatalf("publication rejection status=%d body=%s diagnostics=%s", response.Code, response.Body.String(), logs.String())
 			}

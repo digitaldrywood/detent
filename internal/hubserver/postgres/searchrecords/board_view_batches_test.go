@@ -28,7 +28,15 @@ type boardViewStatements struct {
 	captured map[bool][]any
 }
 
-func (s *boardViewStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+func (*boardViewStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (*boardViewStatements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (s *boardViewStatements) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
 	for _, reporter := range []bool{false, true} {
 		if data.SQL == boardviewsql.Statement(reporter) {
 			s.mu.Lock()
@@ -36,8 +44,9 @@ func (s *boardViewStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, 
 			s.mu.Unlock()
 		}
 	}
-	return ctx
 }
+
+func (*boardViewStatements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 func (s *boardViewStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 

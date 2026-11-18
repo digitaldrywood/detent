@@ -65,7 +65,7 @@ func TestExplicitConnectionAuthority(t *testing.T) {
 				}
 				return
 			}
-			if config.ConnConfig.DefaultQueryExecMode != pgx.QueryExecModeCacheStatement || config.ConnConfig.StatementCacheCapacity != 128 || config.ConnConfig.DescriptionCacheCapacity != 0 {
+			if config.ConnConfig.DefaultQueryExecMode != pgx.QueryExecModeCacheStatement || config.ConnConfig.StatementCacheCapacity != 512 || config.ConnConfig.DescriptionCacheCapacity != 0 {
 				t.Fatal("native execution is not enforced")
 			}
 			if config.ConnConfig.Password != "fixture" || config.ConnConfig.User != "example" || config.ConnConfig.Port != 6432 {
