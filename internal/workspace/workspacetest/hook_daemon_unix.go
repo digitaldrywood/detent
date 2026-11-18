@@ -57,6 +57,7 @@ func RunDetachedHook(t *testing.T) {
 			t.Fatal(err)
 		}
 		ready.Close()
+		dropDescriptor := os.Getenv("TEST_HOOK_DROP_DESCRIPTOR") == "1"
 		var request [1]byte
 		for {
 			_, err := io.ReadFull(in, request[:])
@@ -65,6 +66,12 @@ func RunDetachedHook(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if dropDescriptor {
+				if err := syscall.Close(4); err != nil {
+					t.Fatal(err)
+				}
+				dropDescriptor = false
 			}
 			if err := os.WriteFile(control+".reply", []byte("served\n"+os.Getenv("DETENT_WORKER_SCRATCH")), 0600); err != nil {
 				t.Fatal(err)

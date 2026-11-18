@@ -4708,7 +4708,7 @@ func (r *Runner) withWorkspaceHooks(ctx context.Context) (context.Context, func(
 	return ctx, func(primary *error) {
 		if err := stop(); err != nil {
 			if *primary != nil {
-				r.logger.Warn("workspace hook cleanup incomplete", "error", err)
+				*primary = errors.Join(*primary, err)
 				return
 			}
 			*primary = fmt.Errorf("%w: %w", ErrWorkerProcessReap, err)
