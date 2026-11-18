@@ -281,7 +281,7 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 						}
 						seen = true
 					} else {
-						if report != nil && *report != (workspacesession.Capabilities{}) {
+						if report == nil || *report != (workspacesession.Capabilities{}) {
 							t.Fatalf("no lane advertised capabilities: %+v", report)
 						}
 						seen = true

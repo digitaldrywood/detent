@@ -1,4 +1,4 @@
-package cli
+package remoterunner
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -22,7 +23,7 @@ func workspaceLaneEnabled(capabilities workspacesession.Capabilities) bool {
 	return capabilities.Files
 }
 
-func workspaceLaneCapabilities(ctx context.Context, cfg globalconfig.Config, support workspacerunner.Support) workspacesession.Capabilities {
+func WorkspaceLaneCapabilities(ctx context.Context, cfg globalconfig.Config, support workspacerunner.Support) workspacesession.Capabilities {
 	client := cfg.Client
 	capabilities := workspacerunner.Capabilities(support)
 	if strings.TrimSpace(client.IdentityFile) == "" || len(client.NativeProjects) == 0 || !workspaceLaneEnabled(capabilities) {
@@ -62,11 +63,13 @@ func workspaceSessionIDs(machineID tracker.MachineID, generation string) func() 
 	}
 }
 
-func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling orchestrator.SchedulingSource, generation string, logger *slog.Logger, support workspacerunner.Support) []*workspacerunner.Lane {
+type backendFactory func(context.Context, workflowconfig.Config, string, *slog.Logger, ...workspace.CommitIdentity) (workspace.Backend, error)
+
+func NewWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling orchestrator.SchedulingSource, generation string, logger *slog.Logger, support workspacerunner.Support, buildBackend backendFactory) []*workspacerunner.Lane {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if !workspaceLaneEnabled(workspaceLaneCapabilities(ctx, cfg, support)) {
+	if !workspaceLaneEnabled(WorkspaceLaneCapabilities(ctx, cfg, support)) {
 		return nil
 	}
 	scheduler, ok := scheduling.(workspaceLaneScheduler)
@@ -86,7 +89,7 @@ func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling 
 			logger.Warn("workspace.lane_skipped", "project_id", name, "reason", "no hub client for the project")
 			continue
 		}
-		lane, err := newWorkspaceLane(ctx, projects, name, native, machineID, sessionIDs, logger, support)
+		lane, err := newWorkspaceLane(ctx, projects, name, native, machineID, sessionIDs, logger, support, buildBackend)
 		if err != nil {
 			logger.Warn("workspace.lane_skipped", "project_id", name, "error", err)
 			continue
@@ -105,6 +108,7 @@ func newWorkspaceLane(
 	sessionIDs func() (string, error),
 	logger *slog.Logger,
 	support workspacerunner.Support,
+	buildBackend backendFactory,
 ) (*workspacerunner.Lane, error) {
 	selected, found := workspaceLaneProject(projects, projectID)
 	if !found {
@@ -129,7 +133,7 @@ func newWorkspaceLane(
 	if err != nil {
 		return nil, err
 	}
-	backend, err := buildWorkspaceBackendContext(ctx, workflow.Config, selected.Workdir, logger)
+	backend, err := buildBackend(ctx, workflow.Config, selected.Workdir, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +174,7 @@ func workspaceLaneProject(projects []globalconfig.Project, projectID string) (gl
 	return globalconfig.Project{}, false
 }
 
-func runWorkspaceLane(ctx context.Context, lane *workspacerunner.Lane, logger *slog.Logger) {
+func RunWorkspaceLane(ctx context.Context, lane *workspacerunner.Lane, logger *slog.Logger) {
 	if err := lane.Run(ctx); err != nil && ctx.Err() == nil {
 		logger.Warn("workspace.lane_stopped", "error", err)
 	}

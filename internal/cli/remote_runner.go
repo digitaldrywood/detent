@@ -42,19 +42,23 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	var manager *project.Manager
 	var scheduling orchestrator.SchedulingSource
 	support := workspacerunner.DefaultSupport()
-	capabilities := workspaceLaneCapabilities(ctx, cfg.Global, support)
+	capabilities := remoterunner.WorkspaceLaneCapabilities(ctx, cfg.Global, support)
 	var serving atomic.Int64
-
-	scheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
-		hubProcessReceipts: true,
-		httpClient:         cfg.remoteHubHTTPClient,
-		workspaceSupport:   func() workspacerunner.Support { return support },
-		workspaceCapabilities: func() workspacesession.Capabilities {
+	var reportWorkspaceCapabilities func() workspacesession.Capabilities
+	if cfg.Global.Client.IdentityFile != "" {
+		reportWorkspaceCapabilities = func() workspacesession.Capabilities {
 			if serving.Load() == 0 {
 				return workspacesession.Capabilities{}
 			}
 			return capabilities
-		},
+		}
+	}
+
+	scheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
+		hubProcessReceipts:    true,
+		httpClient:            cfg.remoteHubHTTPClient,
+		workspaceSupport:      func() workspacerunner.Support { return support },
+		workspaceCapabilities: reportWorkspaceCapabilities,
 		applyProjectConfiguration: func(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
 			if manager == nil {
 				view := project.MissingConfigurationOwner(desired.ProjectID)
@@ -157,12 +161,12 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			stop()
 			workers.Wait()
 		}()
-		lanes := newWorkspaceLanes(runCtx, cfg.Global, scheduling, rand.Text(), logger, support)
+		lanes := remoterunner.NewWorkspaceLanes(runCtx, cfg.Global, scheduling, rand.Text(), logger, support, buildWorkspaceBackendContext)
 		serving.Store(int64(len(lanes)))
 		for _, lane := range lanes {
 			workers.Go(func() {
 				defer serving.Add(-1)
-				runWorkspaceLane(runCtx, lane, logger)
+				remoterunner.RunWorkspaceLane(runCtx, lane, logger)
 			})
 		}
 		workers.Go(func() { update.Run(runCtx) })
