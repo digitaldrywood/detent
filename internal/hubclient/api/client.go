@@ -210,7 +210,9 @@ func New(config Config) (*Client, error) {
 			return nil, errors.New("runner identity belongs to a different Hub")
 		}
 		client.runner = NewRunnerState(config.IdentityFile)
-		client.httpClient = clientWithoutRedirects(httpClient)
+		transport := *httpClient
+		transport.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client.httpClient = &transport
 	}
 	return client, nil
 }
@@ -323,7 +325,6 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 		authorize, _ = ctx.Value(executionEventAuthorityKey{}).(func(context.Context) error)
 	}
 	if authorize != nil {
-		httpClient = clientWithoutRedirects(httpClient)
 		if err := authorize(ctx); err != nil {
 			return err
 		}
@@ -410,12 +411,6 @@ func (c *Client) bearerToken(ctx context.Context) (string, error) {
 		return "", errors.New("hub token is unavailable")
 	}
 	return "Bearer " + token, nil
-}
-
-func clientWithoutRedirects(client *http.Client) *http.Client {
-	copied := *client
-	copied.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &copied
 }
 
 // clientWithTimeout returns an HTTP client whose own Timeout cannot cut a
