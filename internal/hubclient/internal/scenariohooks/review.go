@@ -257,3 +257,12 @@ func BeforeReviewDispatch(t *testing.T, orch *orchestrator.Orchestrator, schedul
 		}
 	}
 }
+
+func ReviewRecoveryClock(stopped bool) (func() time.Time, func()) {
+	if !stopped {
+		return time.Now, nil
+	}
+	var elapsed atomic.Int64
+	now := func() time.Time { return time.Now().Add(time.Duration(elapsed.Load())) }
+	return now, func() { elapsed.Add(int64(time.Minute)) }
+}
