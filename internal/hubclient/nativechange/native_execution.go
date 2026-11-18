@@ -1182,7 +1182,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	if (e.pending.Type == "run.checkpointed" || e.pending.Type == "run.finished") && e.storedSeq != e.pending.Data.Sequence && e.releaseDelivery == nil {
 		if err := e.postCheckpointDiff(ctx, e.pending.Data.Sequence, receipt); err != nil {
-			if receipt != nil || nativeTransportUnavailable(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || e.mutationError(ctx) != nil {
+			if receipt != nil && receipt.postedDiff != nil || nativeTransportUnavailable(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || e.mutationError(ctx) != nil {
 				return err
 			}
 			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", e.pending.Data.Sequence, "error", err)

@@ -42,7 +42,7 @@ func (e *nativeExecution) recordStep(ctx context.Context, receipt tracker.Native
 		steps = append(steps, receipt)
 	}
 	e.data.Steps = steps
-	if retention != nil && receipt.Validation != nil {
+	if retention != nil && receipt.Validation.TimingStage == "finalization" {
 		runtime := tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: e.scheduler.now().UTC()}
 		if e.data.Runtime != nil {
 			runtime = *e.data.Runtime
