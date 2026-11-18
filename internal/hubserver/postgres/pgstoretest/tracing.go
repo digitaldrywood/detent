@@ -2,6 +2,7 @@ package pgstoretest
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/multitracer"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func CapturedBindArgs(data pgx.TraceQueryStartData) []any {
+	for i, arg := range data.Args {
+		switch arg.(type) {
+		case pgx.QueryExecMode, pgx.QueryResultFormats, pgx.QueryResultFormatsByOID:
+		default:
+			return slices.Clone(data.Args[i:])
+		}
+	}
+	return nil
+}
 
 type ReportCountingTracer struct {
 	Count atomic.Int64

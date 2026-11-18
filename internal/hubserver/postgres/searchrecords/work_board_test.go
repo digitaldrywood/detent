@@ -800,7 +800,7 @@ func (p *boardRetentionQueries) TraceQueryStart(ctx context.Context, _ *pgx.Conn
 	if !p.active || !strings.Contains(data.SQL, "native_board_deltas") {
 		return ctx
 	}
-	query := boardRetentionQuery{sql: data.SQL, args: append([]any(nil), data.Args...)}
+	query := boardRetentionQuery{sql: data.SQL, args: pgstoretest.CapturedBindArgs(data)}
 	if strings.HasPrefix(data.SQL, "SELECT ") {
 		p.selector = query
 	}

@@ -880,7 +880,7 @@ type accessAuditQueryTrace struct {
 func (p *accessAuditQueryTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	if strings.Contains(data.SQL, "SELECT public.prune_") && strings.Contains(data.SQL, "access_audits(") {
 		p.mu.Lock()
-		p.statement, p.args = data.SQL, append([]any(nil), data.Args...)
+		p.statement, p.args = data.SQL, pgstoretest.CapturedBindArgs(data)
 		p.mu.Unlock()
 		if p.armed.CompareAndSwap(true, false) {
 			p.started <- conn.PgConn().PID()
