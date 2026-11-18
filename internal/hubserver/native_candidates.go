@@ -15,24 +15,24 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-func (s *Service) nativeClaimAnsweredExclusion(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan, now time.Time) (*tracker.NativeAnsweredExclusion, error) {
+func (s *Service) nativeClaimAnsweredExclusion(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan, now time.Time) (tracker.NativeAnsweredExclusion, error) {
 	if !nativeClaimAnswerRequired(plan) || plan.LatestAttempt.ClaimDisposition == nil {
-		return nil, nil
+		return tracker.NativeAnsweredExclusion{}, nil
 	}
 	switch kind := *plan.LatestAttempt.ClaimDisposition; kind {
 	case "human_action", "permission_wait", "recorded_acceptance":
-		return &tracker.NativeAnsweredExclusion{Kind: kind, AttemptID: plan.LatestAttempt.ID}, nil
+		return tracker.NativeAnsweredExclusion{Kind: kind, AttemptID: plan.LatestAttempt.ID}, nil
 	case "":
 		if plan.Project.Core.Profile != "native" {
-			return nil, nil
+			return tracker.NativeAnsweredExclusion{}, nil
 		}
 		awaiting, err := s.nativePublishedReviewAwaiting(ctx, scope, plan.Candidate.WorkItemID, plan.LatestAttempt.ID, now)
 		if err != nil || !awaiting {
-			return nil, err
+			return tracker.NativeAnsweredExclusion{}, err
 		}
-		return &tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: plan.LatestAttempt.ID}, nil
+		return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: plan.LatestAttempt.ID}, nil
 	}
-	return nil, nil
+	return tracker.NativeAnsweredExclusion{}, nil
 }
 
 func (s *Service) nativePublishedReviewAwaiting(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, attemptID string, now time.Time) (bool, error) {

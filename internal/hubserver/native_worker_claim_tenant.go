@@ -1561,7 +1561,7 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope hubscope.Nat
 	}
 	if exclusion, err := s.nativeClaimAnsweredExclusion(ctx, scope, plan, now); err != nil {
 		return hubrecords.NativeClaimPlan{}, err
-	} else if exclusion != nil {
+	} else if exclusion.Kind != "" {
 		return hubrecords.NativeClaimPlan{}, errNativeClaimPlanRefused
 	}
 	plan.Issue.State = hubapi.ValueOrEmpty(plan.Item.WorkflowStateName)

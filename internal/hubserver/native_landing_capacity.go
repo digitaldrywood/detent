@@ -35,10 +35,7 @@ type nativeLandingRenewal struct {
 	evaluatedAt time.Time
 }
 
-func (s *Service) prepareNativeLandingRenewal(ctx context.Context, scope hubscope.NativeScope, leaseID string, capacity int) (*nativeLandingRenewal, error) {
-	if capacity <= 0 {
-		return nil, nil
-	}
+func (s *Service) prepareNativeLandingRenewal(ctx context.Context, scope hubscope.NativeScope, leaseID string) (*nativeLandingRenewal, error) {
 	p := &nativeLandingRenewal{evaluatedAt: s.config.Clock().UTC()}
 	var item corestore.WorkItem
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {

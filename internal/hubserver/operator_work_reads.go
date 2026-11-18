@@ -346,12 +346,8 @@ func (s *Service) readOperatorEvidence(ctx context.Context, scope hubscope.Nativ
 	} else {
 		evidence.ChangeSequence, evidence.Issue.ChangeSequence = sequence, sequence
 		evidence.Unavailable = append(evidence.Unavailable, "native_attempt")
-		detail, err := s.readExplanationCurrentChange(ctx, scope, issue.WorkItemID, now)
-		if err != nil {
+		if err := s.attachExplanationCurrentChange(ctx, scope, issue.WorkItemID, now, &evidence); err != nil {
 			return evidence, nil, false, err
-		}
-		if detail != nil {
-			attachRuntimeChangeDetail(&evidence, *detail)
 		}
 	}
 	var failures []nativeFailure

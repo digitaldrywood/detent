@@ -18,10 +18,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readExplanationCurrentChange(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, now time.Time) (*tracker.ChangeDetail, error) {
+func (s *Service) attachExplanationCurrentChange(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, now time.Time, evidence *tracker.NativeRuntimeEvidence) error {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nil, hubapi.NativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	var change eventstore.Change
 	var version *eventstore.Version
@@ -52,22 +52,23 @@ func (s *Service) readExplanationCurrentChange(ctx context.Context, scope hubsco
 		return err
 	})
 	if err != nil {
-		return nil, hubapi.ProjectRecordError(err)
+		return hubapi.ProjectRecordError(err)
 	}
 	if change.ID == "" {
-		return nil, nil
+		return nil
 	}
 	detail, err := s.hydrateCurrentChangeDetail(ctx, scope, item, change, version, policy, now)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.authorizeBulkExportItem(ctx, r, scope, item)
 	})
 	if err != nil {
-		return nil, hubapi.ProjectRecordError(err)
+		return hubapi.ProjectRecordError(err)
 	}
-	return &detail, nil
+	attachRuntimeChangeDetail(evidence, detail)
+	return nil
 }
 
 func attachRuntimeChangeDetail(result *tracker.NativeRuntimeEvidence, detail tracker.ChangeDetail) {

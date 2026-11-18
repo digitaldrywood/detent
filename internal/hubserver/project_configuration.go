@@ -605,11 +605,11 @@ type configurationHeartbeat struct {
 	policy           *policystore.Observation
 }
 
-func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential hubapi.APICredential, projectID tracker.ProjectID, reported *runnerauth.ProjectConfiguration) (*configurationHeartbeat, error) {
+func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential hubapi.APICredential, projectID tracker.ProjectID, reported *runnerauth.ProjectConfiguration, p *configurationHeartbeat) (bool, error) {
 	if projectID == "" {
-		return nil, nil
+		return false, nil
 	}
-	p := &configurationHeartbeat{reported: reported}
+	p.reported = reported
 	assigned := false
 	err := s.config.TenantRepository.ReadTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		identity, err := r.RunnerIdentityByCredential(ctx, credential.ID)
@@ -656,36 +656,36 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	if !assigned {
-		return nil, nil
+		return false, nil
 	}
 	org := credential.Runner.OrganizationID
 	if p.initialize {
 		if reported == nil {
-			return nil, nil
+			return false, nil
 		}
 		approval, err := s.readTenantProjectPolicy(ctx, org, projectID)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 		p.view = runnerauth.ProjectConfiguration{ProjectID: string(projectID), Authority: "hub_configuration", Registered: true, Source: "cloud_workflow", EffectivePolicy: &approval.Policy, SelectedPolicy: &approval.Policy, ObservedAt: s.config.Clock().UTC()}
 		p.view.ConfigRevision, err = projectConfigurationDigest(p.view)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 		p.payload, err = s.prepareConfigurationPayload(ctx, org, p.view)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 	} else {
 		if err := s.readConfigurationPayload(ctx, org, eventstore.Reference(p.record.PayloadObjectKey, p.record.PayloadSHA256, p.record.PayloadBytes, p.record.PayloadContentBytes), &p.view); err != nil {
-			return nil, err
+			return false, err
 		}
 		if p.command.Status != "pending" && p.approved.PolicyID != "" && p.approved.PolicyID != p.record.PolicyID && !bindingCounterpart(p.approved.PolicyID, p.view.AllowLocalBinding, &p.view, reported) {
 			if err := s.retargetConfigurationPolicy(ctx, org, projectID, p); err != nil {
-				return nil, err
+				return false, err
 			}
 		}
 	}
@@ -697,15 +697,15 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 			} else {
 				var limit *hostedplans.LimitError
 				if errors.As(err, &limit) {
-					return nil, err
+					return false, err
 				}
 				var failure *hubapi.NativeError
 				if errors.As(err, &failure) {
 					if failure.Code != "policy_not_approved" {
-						return nil, err
+						return false, err
 					}
 				} else {
-					return nil, errors.Join(errConfigurationPayloadUnavailable, err)
+					return false, errors.Join(errConfigurationPayloadUnavailable, err)
 				}
 			}
 		}
@@ -716,25 +716,25 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 		observation.RunnerRevision = 0
 		raw, err := json.Marshal(observation)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 		ref, _, err := attachment.PrepareArchive(string(org), 1, bytes.NewReader(raw))
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 		if ref.SHA256 != p.command.Observation.SHA256 {
 			p.observation, err = s.prepareConfigurationPayload(ctx, org, observation)
 			if err != nil {
-				return nil, err
+				return false, err
 			}
 		}
 
 	}
 	if p.command.Status != "pending" {
-		return p, nil
+		return true, nil
 	}
 	if err := s.readConfigurationPayload(ctx, org, p.command.Intent, &p.intent); err != nil {
-		return nil, err
+		return false, err
 	}
 	p.view = p.intent.Previous
 	p.view.Pending = true
@@ -761,7 +761,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			var failure *hubapi.NativeError
 			if !errors.As(err, &failure) || failure.Code != "policy_not_approved" {
-				return nil, err
+				return false, err
 			}
 		}
 		if err != nil || p.intent.Desired.EffectivePolicy == nil || approved.Policy.ID != p.intent.Desired.EffectivePolicy.ID {
@@ -770,7 +770,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 		}
 	}
 	if authErr != nil && !errors.Is(authErr, operatortool.ErrAccessDenied) && !errors.Is(authErr, corestore.ErrRevisionConflict) {
-		return nil, authErr
+		return false, authErr
 	}
 	p.deliver = authErr == nil
 	var result runnerauth.ProjectConfiguration
@@ -791,7 +791,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 		}
 	}
 	if !p.settle {
-		return p, nil
+		return true, nil
 	}
 	result.Pending = false
 	result.RequestID = p.command.RequestID
@@ -800,18 +800,18 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 	p.view = result
 	p.payload, err = s.prepareConfigurationPayload(ctx, org, result)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	now := s.config.Clock().UTC()
 	p.completion, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: org, ActorID: p.command.ActorID, Operation: "configuration result " + p.command.Operation, CommandKey: p.command.RequestID, RequestHash: p.command.RequestHash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
-		return nil, errors.Join(errConfigurationPayloadUnavailable, err)
+		return false, errors.Join(errConfigurationPayloadUnavailable, err)
 	}
-	return p, err
+	return true, nil
 }
 
 func (s *Service) retargetConfigurationPolicy(ctx context.Context, organization tracker.OrganizationID, projectID tracker.ProjectID, p *configurationHeartbeat) error {
@@ -856,9 +856,6 @@ func configurationRuntimeMatches(actual, desired runnerauth.ProjectConfiguration
 }
 
 func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, projectID tracker.ProjectID, p *configurationHeartbeat, snapshot *runnerauth.RoutingSnapshot) error {
-	if p == nil {
-		return nil
-	}
 	owner, ok := w.(postgres.ConfigurationWriter)
 	if !ok {
 		return hubapi.ErrProjectServiceUnavailable

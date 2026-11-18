@@ -133,13 +133,13 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			return s.nativeAPIError(c, err)
 		}
 	}
-	configuration, err := s.prepareConfigurationHeartbeat(ctx, credential, projectID, request.ProjectConfiguration)
+	var configuration configurationHeartbeat
+	hasConfiguration, err := s.prepareConfigurationHeartbeat(ctx, credential, projectID, request.ProjectConfiguration, &configuration)
 	if err != nil {
 		if !errors.Is(err, errConfigurationPayloadUnavailable) {
 			return s.nativeAPIError(c, err)
 		}
 		s.config.Logger.Warn("project configuration payload unavailable", "runner_id", credential.Runner.RunnerID, "error", err)
-		configuration = nil
 	}
 	admissionDecisions, err := s.prepareRunnerAdmissionDecisions(ctx, credential, request.ProjectConfiguration)
 	if err != nil {
@@ -334,8 +334,10 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		}
 
 		snapshot = runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, HostMetricsAcknowledged: acknowledgments}
-		if err := s.applyConfigurationHeartbeat(ctx, w, identity, projectID, configuration, &snapshot); err != nil {
-			return err
+		if hasConfiguration {
+			if err := s.applyConfigurationHeartbeat(ctx, w, identity, projectID, &configuration, &snapshot); err != nil {
+				return err
+			}
 		}
 		if updateReleasePublished {
 			snapshot.TargetRunnerVersion = strings.TrimPrefix(updateTarget, "v")

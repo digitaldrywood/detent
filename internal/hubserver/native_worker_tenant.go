@@ -202,9 +202,12 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Lease TTL is invalid"))
 	}
 	scope := hubscope.NativeRequestScope(c)
-	landing, err := s.prepareNativeLandingRenewal(c.Request().Context(), scope, c.Param("lease"), request.LandingCapacity)
-	if err != nil {
-		return s.nativeAPIError(c, err)
+	var landing *nativeLandingRenewal
+	if request.LandingCapacity > 0 {
+		landing, err = s.prepareNativeLandingRenewal(c.Request().Context(), scope, c.Param("lease"))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	var lease leasestore.Lease
 	var details NativeLeaseResponseDetails

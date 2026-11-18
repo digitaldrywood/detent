@@ -201,7 +201,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 		return err
 	}
 	plan.Descriptor = descriptor
-	var answered *tracker.NativeAnsweredExclusion
+	var answered tracker.NativeAnsweredExclusion
 	if answeredPlan.SnapshotLoaded {
 		answered, err = s.nativeClaimAnsweredExclusion(ctx, scope, answeredPlan, now)
 		if err != nil {
@@ -317,8 +317,8 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 			if dependencyPartial {
 				entry.Unavailable = append(entry.Unavailable, "unresolved_dependencies")
 			}
-		case answered != nil:
-			entry.Outcome, entry.ReasonCode, entry.Reason, entry.AnsweredExclusion = "skipped", "no_claimable_work", nativeAnsweredExclusionReason(*answered), answered
+		case answered.Kind != "":
+			entry.Outcome, entry.ReasonCode, entry.Reason, entry.AnsweredExclusion = "skipped", "no_claimable_work", nativeAnsweredExclusionReason(answered), &answered
 			entry.Unavailable = append(entry.Unavailable, "other_native_candidate_exclusions")
 		case source.Loaded && claimSourceRefusal(source, runner) != "":
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", claimSourceRefusal(source, runner)
