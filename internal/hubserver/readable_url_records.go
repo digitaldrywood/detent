@@ -176,16 +176,8 @@ func (s *Service) readableLegacyRecordPath(ctx context.Context, credential hubap
 }
 
 func (s *Service) readableOrganizationSlug(ctx context.Context) (string, error) {
-	var slug string
-	if s.config.AccessRepository == nil {
-		return "", hubapi.NativeWorkItemStorageUnavailable()
-	}
-	err := s.accessRead(ctx, tracker.OrganizationID(s.appOrganizationID()), func(r tenantstore.Reader) error {
-		organization, err := r.AccessOrganization(ctx)
-		slug = organization.Slug
-		return err
-	})
-	return slug, err
+	organization, err := s.lookupOrganization(ctx, tracker.OrganizationID(s.appOrganizationID()))
+	return organization.Slug, err
 }
 
 func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APICredential, parts []string) (string, string, string, error) {

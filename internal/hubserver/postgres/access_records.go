@@ -125,12 +125,11 @@ func (s *session) AccessOrganization(ctx context.Context) (accessstore.Organizat
 	if s.organizationRecord != nil {
 		return *s.organizationRecord, nil
 	}
-	var row accessstore.Organization
-	err := s.db.QueryRow(ctx, `SELECT organization_id,name,slug,local,created_at FROM organizations WHERE organization_id=$1`+s.accessLock(), s.organization).Scan(&row.OrganizationID, &row.Name, &row.Slug, &row.Local, &row.CreatedAt)
+	row, err := s.lookups().AccessOrganization(ctx)
 	if err == nil && s.credentials != nil {
 		s.organizationRecord = &row
 	}
-	return row, mapError(ctx, err)
+	return row, err
 }
 
 func (s *session) CreateAccessOrganization(ctx context.Context, row accessstore.Organization) error {

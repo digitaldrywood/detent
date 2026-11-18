@@ -348,11 +348,12 @@ func (s *Service) servePostgresAppShell(c echo.Context, path string) error {
 }
 
 func (s *Service) readPostgresAccessOrganization(ctx context.Context) (accessstore.Organization, error) {
-	var organization accessstore.Organization
-	err := s.accessRead(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), func(r tenantstore.Reader) error {
-		var err error
-		organization, err = r.AccessOrganization(ctx)
-		return err
-	})
-	return organization, err
+	return s.lookupOrganization(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+}
+
+func (s *Service) lookupOrganization(ctx context.Context, org tracker.OrganizationID) (accessstore.Organization, error) {
+	if s.config.AccessRepository == nil {
+		return accessstore.Organization{}, hubapi.NativeWorkItemStorageUnavailable()
+	}
+	return tenantstore.LookupOrganization(ctx, s.config.AccessRepository, org)
 }

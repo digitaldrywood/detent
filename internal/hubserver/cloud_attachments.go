@@ -191,7 +191,6 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 	if err := c.Bind(&input); err != nil {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attachment id"))
 	}
-	var exists bool
 	if input.Key != "" {
 		digest := input.Key[strings.LastIndex(input.Key, "/")+1:]
 		key, err := attachment.ArchiveKey(claims.Audience, digest)
@@ -199,11 +198,7 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 			return s.nativeAPIError(c, hubapi.NativeInvalid("Invalid archive key"))
 		}
 	}
-	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(claims.Audience), corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		exists, err = r.AttachmentObjectExists(ctx, input.ID, input.Key)
-		return err
-	})
+	exists, err := tenantstore.LookupAttachment(ctx, s.config.TenantRepository, tracker.OrganizationID(claims.Audience), input.ID, input.Key)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

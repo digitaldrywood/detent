@@ -1,56 +1,61 @@
 package postgres
 
-import "context"
+import (
+	"context"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/rowlookup"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func (s *session) lookups() rowlookup.Reader {
+	return rowlookup.Reader{Organization: s.organization, ForShare: !s.readOnly, Scan: func(ctx context.Context, query string, args []any, dest ...any) error {
+		return s.db.QueryRow(ctx, query, args...).Scan(dest...)
+	}}
+}
+
+var _ tenantstore.LookupRepository = (*Repository)(nil)
+
+type rowLookups interface {
+	AccessOrganization(context.Context) (accessstore.Organization, error)
+	AttachmentObjectExists(context.Context, string, string) (bool, error)
+}
+
+func (r *Repository) LookupOrganization(ctx context.Context, org tracker.OrganizationID) (accessstore.Organization, error) {
+	return readLookup(ctx, r, org, func(reader rowLookups) (accessstore.Organization, error) { return reader.AccessOrganization(ctx) })
+}
+
+func (r *Repository) LookupAttachment(ctx context.Context, org tracker.OrganizationID, id, key string) (bool, error) {
+	return readLookup(ctx, r, org, func(reader rowLookups) (bool, error) { return reader.AttachmentObjectExists(ctx, id, key) })
+}
+
+func readLookup[T any](ctx context.Context, r *Repository, org tracker.OrganizationID, read func(rowLookups) (T, error)) (T, error) {
+	var zero T
+	if request, ok := ctx.Value(readRequestKey{}).(*readRequest); ok {
+		if request.repository != r || request.session.organization != org {
+			return zero, corestore.ErrTenantMismatch
+		}
+		return read(request.session)
+	}
+	finish := transactionSpan(ctx, "pg_admission")
+	release, err := r.acquire(ctx, corestore.Serving)
+	finish()
+	if err != nil {
+		return zero, err
+	}
+	defer release()
+	return read(rowlookup.Reader{Organization: org, Scan: func(ctx context.Context, query string, args []any, dest ...any) error {
+		started := time.Now()
+		err := r.runtime.pools.ReadRow(ctx, pgtransport.Scope{Organization: org}, query, args, dest...)
+		observeStatement(ctx, started, query)
+		return err
+	}})
+}
 
 func (s *session) AttachmentObjectExists(ctx context.Context, id, key string) (bool, error) {
-	var exists bool
-	if key == "" {
-		err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=$1 AND id=$2 AND object_deleted_at IS NULL)`, s.organization, id).Scan(&exists)
-		return exists, mapError(ctx, err)
-	}
-	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ai_credit_reason_references WHERE organization_id=$1 AND object_key=$2) OR
-EXISTS (SELECT 1 FROM archive_objects WHERE organization_id=$1 AND object_key=$2) OR
-EXISTS (SELECT 1 FROM attachments WHERE organization_id=$1 AND object_key=$2 AND object_deleted_at IS NULL) OR
-EXISTS (SELECT 1 FROM attempt_diff_body_references WHERE organization_id=$1 AND object_key=$2) OR
-EXISTS (SELECT 1 FROM change_evidence WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM change_landing_receipts WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM change_requests WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM change_review_policy_revisions WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM change_versions WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM change_versions WHERE organization_id=$1 AND source_object_key=$2) OR
-EXISTS (SELECT 1 FROM collaboration_events WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM core_work_events WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM collaboration_versions WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM conversation_content_objects WHERE organization_id=$1 AND object_key=$2) OR
-EXISTS (SELECT 1 FROM cost_import_rows WHERE organization_id=$1 AND object_key=$2) OR
-EXISTS (SELECT 1 FROM cost_observation_revisions WHERE organization_id=$1 AND object_key=$2) OR
-EXISTS (SELECT 1 FROM github_import_records WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM health_findings WHERE organization_id=$1 AND evidence_object_key=$2) OR
-EXISTS (SELECT 1 FROM hosted_audit WHERE organization_id=$1 AND mutation_object_key=$2) OR
-EXISTS (SELECT 1 FROM hosted_billing_audit WHERE organization_id=$1 AND object_key=$2) OR
-EXISTS (SELECT 1 FROM hosted_billing_retired WHERE organization_id=$1 AND object_key=$2) OR
-EXISTS (SELECT 1 FROM hosted_plan_audit WHERE organization_id=$1 AND object_key=$2) OR
-EXISTS (SELECT 1 FROM issues WHERE organization_id=$1 AND body_object_key=$2) OR
-EXISTS (SELECT 1 FROM issues WHERE organization_id=$1 AND issue_contract_object_key=$2) OR
-EXISTS (SELECT 1 FROM issues WHERE organization_id=$1 AND report_context_object_key=$2) OR
-EXISTS (SELECT 1 FROM linked_issue_sources WHERE organization_id=$1 AND snapshot_object_key=$2) OR
-EXISTS (SELECT 1 FROM native_attempts WHERE organization_id=$1 AND artifacts_object_key=$2) OR
-EXISTS (SELECT 1 FROM native_attempts WHERE organization_id=$1 AND checkpoint_object_key=$2) OR
-EXISTS (SELECT 1 FROM native_attempts WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM native_board_deltas WHERE organization_id=$1 AND current_object_key=$2) OR
-EXISTS (SELECT 1 FROM native_board_deltas WHERE organization_id=$1 AND previous_object_key=$2) OR
-EXISTS (SELECT 1 FROM native_board_items WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM native_commands WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM native_comments WHERE organization_id=$1 AND body_object_key=$2) OR
-EXISTS (SELECT 1 FROM onboarding_issue_intake WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM policy_revisions WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM project_actions WHERE organization_id=$1 AND command_object_key=$2) OR
-EXISTS (SELECT 1 FROM projects WHERE organization_id=$1 AND model_selection_object_key=$2) OR
-EXISTS (SELECT 1 FROM projects WHERE organization_id=$1 AND states_object_key=$2) OR
-EXISTS (SELECT 1 FROM projects WHERE organization_id=$1 AND workflow_object_key=$2) OR
-EXISTS (SELECT 1 FROM runner_audit_dispositions WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM runner_session_history WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM runner_sessions WHERE organization_id=$1 AND payload_object_key=$2) OR
-EXISTS (SELECT 1 FROM team_thread_posts WHERE organization_id=$1 AND body_object_key=$2)`, s.organization, key).Scan(&exists)
-	return exists, mapError(ctx, err)
+	return s.lookups().AttachmentObjectExists(ctx, id, key)
 }

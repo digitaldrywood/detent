@@ -18,6 +18,8 @@ var ErrTenantRequired = errors.New("authenticated organization is required")
 var ErrUnbound = errors.New("protected PostgreSQL query requires a bound tenant")
 var ErrOpenResults = errors.New("PostgreSQL transaction has open results")
 
+const bindTenant = `SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true), set_config('jit', 'off', true)`
+
 type Scope struct{ Organization tracker.OrganizationID }
 type Options struct {
 	Isolation pgx.TxIsoLevel
@@ -79,7 +81,7 @@ func (p *Pools) BeginBatch(ctx context.Context, scope Scope, options Options, wo
 	tx := &Transaction{conn: conn, scope: scope}
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN ISOLATION LEVEL " + string(isolation) + mode)
-	batch.Queue(`SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true), set_config('jit', 'off', true)`, string(scope.Organization))
+	batch.Queue(bindTenant, string(scope.Organization))
 	if work != nil {
 		batch.QueuedQueries = append(batch.QueuedQueries, guardedBatch(work).QueuedQueries...)
 	}
@@ -175,4 +177,14 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 		return nil
 	}
 	return err
+}
+
+func (p *Pools) ReadRow(ctx context.Context, scope Scope, sql string, args []any, dest ...any) error {
+	if strings.TrimSpace(string(scope.Organization)) == "" {
+		return ErrTenantRequired
+	}
+	batch := &pgx.Batch{}
+	batch.Queue(bindTenant+", set_config('transaction_read_only', 'on', true)", string(scope.Organization))
+	batch.Queue(sql, args...).QueryRow(func(row pgx.Row) error { return row.Scan(dest...) })
+	return p.reader.SendBatch(ctx, batch).Close()
 }

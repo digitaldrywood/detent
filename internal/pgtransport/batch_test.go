@@ -10,9 +10,12 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -230,5 +233,66 @@ func TestResultsHideConnections(t *testing.T) {
 				t.Error("retained result exposes a released connection")
 			}
 		})
+	}
+}
+
+func TestReadRowOneExchange(t *testing.T) {
+	_, config := fixture(t)
+	config.MaxConns = 1
+	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return false }
+	counts := new(wireCounts)
+	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := new(net.Dialer).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &countedConn{Conn: conn, counts: counts, startup: true}, nil
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	pools, err := pgtransport.Adopt(pool, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Ping(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var previousPID int
+	for _, org := range []tracker.OrganizationID{"first", "second", "first"} {
+		scope := pgtransport.Scope{Organization: org}
+		var visible string
+		var pid int
+		const sql = "SELECT string_agg(tenant, ',' ORDER BY tenant), pg_backend_pid() FROM protected"
+		counts.reset()
+		if err := pools.ReadRow(t.Context(), scope, sql, nil, &visible, &pid); err != nil {
+			t.Fatal(err)
+		}
+		syncs, queries, _, executes := counts.counts()
+		if visible != string(org) || previousPID != 0 && previousPID != pid {
+			t.Fatalf("scope=%s visible=%s pid=%d previous=%d", org, visible, pid, previousPID)
+		}
+		previousPID = pid
+		if exchanges, statements := syncs+queries, executes+queries; exchanges != 1 || statements != 2 {
+			t.Errorf("scope=%s statements=%d exchanges=%d, want 2 and 1", org, statements, exchanges)
+		}
+	}
+	if err := pools.ReadRow(t.Context(), pgtransport.Scope{}, "SELECT 1", nil, new(int)); !errors.Is(err, pgtransport.ErrTenantRequired) {
+		t.Errorf("empty scope returned %v", err)
+	}
+	var state *pgconn.PgError
+	err = pools.ReadRow(t.Context(), pgtransport.Scope{Organization: "first"}, "INSERT INTO protected VALUES ('first','another') RETURNING id", nil, new(string))
+	if !errors.As(err, &state) || state.Code != "25006" {
+		t.Fatalf("read-only lookup allowed a write or failed for a different reason: %v", err)
+	}
+	var visible, pid int
+	var scope string
+	if err := pool.QueryRow(pgtest.UnboundProbe(t.Context()), "SELECT count(*), pg_backend_pid(), coalesce(current_setting('detent.organization_id', true), '') FROM protected").Scan(&visible, &pid, &scope); err != nil {
+		t.Fatal(err)
+	}
+	if visible != 0 || scope != "" || pid != previousPID {
+		t.Fatalf("released connection pid=%d scope=%q visible=%d, expected pid=%d with no visible rows", pid, scope, visible, previousPID)
 	}
 }
