@@ -3997,14 +3997,15 @@
     "internal/hubserver/postgres/board_model_reads.go": {
       "disposition": "target-adapter",
       "families": [
-        "board"
+        "board",
+        "core"
       ],
       "inventory": {
         "operations": {
           "boardModelMetadataSQL:SQL": 1,
           "session.BoardModelPages:Query": 3,
           "session.BoardModelPages:QueryRow": 1,
-          "session.BoardModelPages:SQL": 4,
+          "session.BoardModelPages:SQL": 3,
           "session.beginBoardSearch:QueryRow": 2,
           "session.beginBoardSearch:SQL": 1,
           "session.boardModelQuery:SQL": 1,
@@ -4012,6 +4013,8 @@
           "session.boardSearchModelPages:SQL": 2
         },
         "tables": [
+          "hub/issues",
+          "hub/native_board_dirty",
           "hub/native_board_items",
           "hub/native_board_sequences"
         ]
@@ -4080,7 +4083,7 @@
           "session.BoardStatusModel:Query": 1,
           "session.BoardStatusModel:SQL": 1,
           "session.BoardSummaryModel:Query": 1,
-          "session.boardSummaryQuery:SQL": 1,
+          "session.boardSummaryQuery:SQL": 3,
           "session.replaceBoardSummary:Exec": 2,
           "session.replaceBoardSummary:SQL": 3
         },
@@ -4108,10 +4111,15 @@
       ],
       "inventory": {
         "operations": {
+          "boardViewDependencyRows:SQL": 1,
+          "boardViewLinkRows:SQL": 2,
+          "boardViewReasonRows:SQL": 1,
           "boardViewRow:SQL": 1,
-          "boardViewSQL:SQL": 1
+          "boardViewSQL:SQL": 1,
+          "boardViewStateRows:SQL": 1
         },
         "tables": [
+          "hub/native_board_dirty",
           "hub/projects"
         ]
       }
@@ -19763,16 +19771,18 @@
           "session.BoardDeliveryState:SQL": 1,
           "session.BoardDeltas:Query": 1,
           "session.BoardDeltas:SQL": 1,
-          "session.BoardItem:QueryRow": 1,
-          "session.BoardItem:SQL": 1,
           "session.BoardLanes:Query": 1,
           "session.BoardLanes:QueryRow": 1,
           "session.BoardLanes:SQL": 3,
+          "session.BoardProjectionVersion:QueryRow": 1,
+          "session.BoardProjectionVersion:SQL": 1,
           "session.BoardSequence:QueryRow": 1,
           "session.BoardSequence:SQL": 1,
           "session.BoardView:Query": 1,
           "session.NextBoardCandidate:QueryRow": 1,
           "session.NextBoardCandidate:SQL": 1,
+          "session.boardItemVersion:QueryRow": 1,
+          "session.boardItemVersion:SQL": 1,
           "session.boardPage:Query": 1,
           "session.boardPage:QueryRow": 1,
           "session.boardPage:SQL": 2,
@@ -19803,13 +19813,16 @@
           "appendBoardDeltaSQL:SQL": 1,
           "boardSequenceHeadSQL:SQL": 1,
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
-          "session.ReplaceBoardItem:Exec": 5,
+          "session.ReplaceBoardItem:Exec": 4,
           "session.ReplaceBoardItem:QueryRow": 2,
-          "session.ReplaceBoardItem:SQL": 7,
+          "session.ReplaceBoardItem:SQL": 6,
           "session.ReplaceBoardItem:generated:LockWorkItem": 1,
           "session.ReplaceBoardItem:query-receiver": 1,
           "session.TrimBoardDeltas:QueryRow": 2,
           "session.TrimBoardDeltas:SQL": 1,
+          "session.acknowledgeBoardRefresh:Exec": 1,
+          "session.acknowledgeBoardRefresh:QueryRow": 1,
+          "session.acknowledgeBoardRefresh:SQL": 2,
           "session.adjustBoardWorkspaceCount:Exec": 1,
           "session.adjustBoardWorkspaceCount:SQL": 1,
           "session.flushBoardDeltas:Exec": 1,
