@@ -351,7 +351,7 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 	requests := make([]tracker.NativeClaim, contenders)
 	tokens := make([]string, contenders)
 	for i := range contenders {
-		issue := work.create(t, fmt.Sprintf("Plan work %d", i))
+		issue := work.createIndependent(t, fmt.Sprintf("Plan work %d", i))
 		tokens[i] = work.worker(t, fmt.Sprintf("plan-runner-%d", i))
 		credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), work.project.OrganizationID, apikey.HashToken(tokens[i]), "", "")
 		if err != nil || status != http.StatusOK {
