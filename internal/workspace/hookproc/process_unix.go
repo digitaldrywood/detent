@@ -105,7 +105,14 @@ func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, iden
 			return false, scratchProcessInspectionError(ctx, pid, "workspace ownership", err, func(context.Context) (bool, error) { return sameProcess(pid) })
 		}
 		if !hookSignalAllowed(owner, path, env) {
-			return false, nil
+			lifetime, ok := ctx.Value(lifetimeKey{}).(*Lifetime)
+			if !ok || !hookDescriptorAllowed(owner, path, env) {
+				return false, nil
+			}
+			held, err := lifetime.holdsWriter(ctx, pid)
+			if err != nil || !held {
+				return false, err
+			}
 		}
 		return sameProcess(pid)
 	}

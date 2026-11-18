@@ -100,6 +100,13 @@ func TestHookDescriptorCandidates(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	marker, err := lifetime.reader.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marker.Mode().Perm()&0222 != 0 {
+		t.Fatal("another service can open the ownership descriptor for writing")
+	}
 	root := t.TempDir()
 	for _, proc := range []string{"1000000001", "1000000002"} {
 		if err := os.MkdirAll(filepath.Join(root, proc, "fd"), 0700); err != nil {
