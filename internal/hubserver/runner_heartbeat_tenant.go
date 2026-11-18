@@ -448,11 +448,13 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		return s.nativeAPIError(c, err)
 	}
 	s.advanceRunnerCleanupCursor(cleanupKey, cleanupNext)
-	task, err := s.readGitHubBatchTaskRecord(ctx, hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID, Credential: credential})
+	task, hasTask, err := s.readGitHubBatchTaskRecord(ctx, hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID, Credential: credential})
 	if err != nil {
 		s.config.Logger.Warn("GitHub intake task unavailable", "organization_id", credential.Runner.OrganizationID, "project_id", projectID, "runner_id", credential.Runner.RunnerID, "error", err)
+	} else if hasTask {
+		snapshot.GitHubIntake = &task
 	} else {
-		snapshot.GitHubIntake = task
+		snapshot.GitHubIntake = nil
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, snapshot)
