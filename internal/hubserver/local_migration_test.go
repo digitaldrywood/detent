@@ -43,7 +43,7 @@ func TestLocalBoardMigrationToLanding(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		var result localboard.Result
 		decodeHubResponse(t, response, &result)
-		imported = append(imported, readWorkItem(t, f, result.WorkItemID, ""))
+		imported = append(imported, readWorkItemWithoutBoardRefresh(t, f, result.WorkItemID, ""))
 	}
 	if len(imported) != 2 || imported[0].State != "Todo" || imported[1].State != "Backlog" || !reflect.DeepEqual(imported[1].Dependencies, []tracker.NativeWorkItemID{imported[0].WorkItemID}) {
 		t.Fatalf("imported lanes and dependencies = %+v", imported)
@@ -93,7 +93,7 @@ func TestLocalBoardMigrationToLanding(t *testing.T) {
 		t.Fatalf("landing lost imported change identity: %+v", change)
 	}
 	for i, want := range []string{"Done", "Backlog"} {
-		item := readWorkItem(t, f, imported[i].WorkItemID, "")
+		item := readWorkItemWithoutBoardRefresh(t, f, imported[i].WorkItemID, "")
 		if item.State != want || item.Terminal != (i == 0) || !reflect.DeepEqual(item.Dependencies, imported[i].Dependencies) {
 			t.Fatalf("after landing item = %+v, want lane %s and original dependencies", item, want)
 		}
