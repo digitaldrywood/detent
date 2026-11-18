@@ -456,6 +456,9 @@ func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
 				if _, err := admin.ExecContext(t.Context(), `DELETE FROM native_work_item_page_dirty WHERE organization_id=$1`, org); err != nil {
 					t.Fatal(err)
 				}
+				if _, err := admin.ExecContext(t.Context(), "ANALYZE issues, collaboration_versions, native_board_dirty, native_work_item_page_dirty"); err != nil {
+					t.Fatal(err)
+				}
 				service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org)}
 				scheduler, err := service.newReadModelMaintenance()
 				if err != nil {

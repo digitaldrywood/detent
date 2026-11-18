@@ -415,10 +415,11 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 	f.waitState(t, id, "ready")
 	eve := newBrowser(t, f.service.Handler())
 	eve.Login("/auth/oidc/start", "user_eve:")
-	blocked := organizationFromLocation(t, f.create(t, eve, "Echo").Header.Get("Location"))
-	f.waitState(t, blocked, "ready")
-	if response, _ := member.Get("/organizations/" + id + "/app/bootstrap"); response.StatusCode != http.StatusOK {
-		t.Fatal("first organization unavailable after second became ready")
+	second := organizationFromLocation(t, f.create(t, eve, "Echo").Header.Get("Location"))
+	f.waitState(t, second, "ready")
+	member.Login("/organizations/"+id+"/organization", "user_member:porg_"+id)
+	if response, _ := member.Get("/delta/app/bootstrap"); response.StatusCode != http.StatusOK {
+		t.Fatalf("first organization bootstrap after second became ready: HTTP %d", response.StatusCode)
 	}
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
@@ -427,7 +428,7 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 	if f.launcher.starts < 2 {
 		t.Fatalf("restart did not relaunch ready tenants: %d starts", f.launcher.starts)
 	}
-	f.waitState(t, blocked, "ready")
+	f.waitState(t, second, "ready")
 }
 
 func TestProvisioningTenantStartKeepsSlowChild(t *testing.T) {

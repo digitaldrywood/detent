@@ -76,11 +76,14 @@ func TestColdHostedViewValidatesOrganizationKey(t *testing.T) {
 
 func TestSecretRewrapStepIsBoundedAndTenantScoped(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	prior := secretTestKeys(t, "1", "1")
 	service := &Service{config: Config{AccessRepository: repository, SecretKeys: secretTestKeys(t, "2", "1", "2"), Clock: func() time.Time { return now }}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO platform.organizations(id,provider_id,name,state,endpoint,generation,created_at,updated_at) VALUES ($1,'provider_'||$1,$1,'ready',$1,1,$2,$2)`, org, now); err != nil {
+			t.Fatal(err)
+		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: now}); err != nil {
 				return err
@@ -144,7 +147,7 @@ func TestSecretRewrapStepIsBoundedAndTenantScoped(t *testing.T) {
 		for i, kind := range []string{"a_bad", "first", "second"} {
 			outcome, err := host.MaintainSecret(budget.Context(t.Context(), tenant), org, 1, cfg)
 			if outcome.Items != 1 {
-				t.Fatalf("org %s step %d used %d items", org, i, outcome.Items)
+				t.Fatalf("org %s step %d used %d items: %v", org, i, outcome.Items, err)
 			}
 			if (err != nil) != (i == 0) {
 				t.Fatalf("org %s item %d error = %v", org, i, err)

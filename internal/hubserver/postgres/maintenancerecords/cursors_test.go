@@ -86,10 +86,22 @@ func TestHostedMaintenanceCursorPersistence(t *testing.T) {
 			t.Fatalf("restored view read interrupted write: %+v %v", cursor, err)
 		}
 	})
-	t.Run("ready generation changes before request binding", func(t *testing.T) {
+	t.Run("revocation during a read cannot expose newer rows or authorize another request", func(t *testing.T) {
 		ctx, admin, _, ids, views := setupCursorViews(t)
 		org := ids[0]
-		if _, err := admin.ExecContext(ctx, "UPDATE platform.organizations SET generation=2 WHERE id=$1", org); err != nil {
+		if err := views[0].ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := admin.ExecContext(ctx, `WITH revoked AS (
+                UPDATE platform.organizations SET generation=2 WHERE id=$1 RETURNING id
+            ) UPDATE public.organizations SET name='Replacement' FROM revoked WHERE organization_id=revoked.id`, org)
+			if err != nil {
+				return err
+			}
+			row, err := r.AccessOrganization(ctx)
+			if err == nil && row.Name != string(org) {
+				t.Errorf("admitted read saw name %q after revocation", row.Name)
+			}
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		for i, view := range views {
