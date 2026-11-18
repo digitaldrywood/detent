@@ -24,11 +24,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func makeFIFO(t *testing.T, path string) {
+func openFIFO(t *testing.T, path string) *os.File {
 	t.Helper()
 	if err := unix.Mkfifo(path, 0o666); err != nil {
 		t.Fatal(err)
 	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return file
 }
 
 func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T) {
@@ -605,11 +610,7 @@ func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
 	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
 	argsPath := filepath.Join(t.TempDir(), "shell-args.trace")
 	controlPath := filepath.Join(t.TempDir(), "shell.control")
-	makeFIFO(t, controlPath)
-	release, err := os.OpenFile(controlPath, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	release := openFIFO(t, controlPath)
 	defer release.Close()
 	shellPath := filepath.Join(t.TempDir(), "custom-sh")
 	shellScript := "#!/bin/sh\nprintf '%s\\n' \"$0|$1|$2\" > " + shellQuote(argsPath) + "\nread -r release < " + shellQuote(controlPath) + "\nexec /bin/sh \"$@\"\n"
@@ -1988,11 +1989,7 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			fifoPath := filepath.Join(dir, "release")
-			makeFIFO(t, fifoPath)
-			release, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
+			release := openFIFO(t, fifoPath)
 			defer release.Close()
 			donePath := filepath.Join(dir, "done")
 			script := fmt.Sprintf(`#!/bin/sh
@@ -2102,11 +2099,7 @@ func TestGitQueriesCompleteWhenDescendantRetainsOutput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			fifoPath := filepath.Join(dir, "release")
-			makeFIFO(t, fifoPath)
-			release, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
+			release := openFIFO(t, fifoPath)
 			defer release.Close()
 			donePath := filepath.Join(dir, "done")
 			script := fmt.Sprintf(`#!/bin/sh

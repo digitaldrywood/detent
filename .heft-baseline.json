@@ -3,7 +3,7 @@
   "packages": {
     "github.com/digitaldrywood/detent/internal/cli": {
       "files": 118,
-      "loc": 30336,
+      "loc": 29962,
       "test-files": 147,
       "test-funcs": 609
     },
@@ -15,7 +15,7 @@
       "files": 48
     },
     "github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest": {
-      "loc": 17439
+      "loc": 17435
     },
     "github.com/digitaldrywood/detent/internal/hubserver": {
       "files": 432,
@@ -35,12 +35,12 @@
     },
     "github.com/digitaldrywood/detent/internal/runner": {
       "files": 65,
-      "loc": 20286,
+      "loc": 20119,
       "test-files": 79,
-      "test-funcs": 429
+      "test-funcs": 424
     },
     "github.com/digitaldrywood/detent/internal/workspace": {
-      "loc": 11637,
+      "loc": 11630,
       "test-files": 47
     }
   }
