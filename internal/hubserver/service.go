@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportcheckpoints"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -674,6 +675,7 @@ func (s *Service) ReadModelMaintenanceFeatures() []hubmaintenance.Feature {
 		s.HealthPageMaintenanceFeature(),
 		s.ProjectPageMaintenanceFeature(),
 		s.UsageMaintenanceFeature(),
+		reportcheckpoints.MaintenanceFeature(s.config.TenantRepository),
 		{Name: "github-intake", Bytes: 64 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
 				return hubmaintenance.Outcome{}, err

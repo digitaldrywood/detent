@@ -6,7 +6,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportcheckpoints"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type ReportEventProjectionImport struct {
@@ -173,4 +175,14 @@ func (r *Repository) ImportReportChangeLandings(ctx context.Context, records []R
 	return r.internalWrite(ctx, organization, func(s *session) error {
 		return s.importReportLandings(ctx, records)
 	})
+}
+
+func (r *Repository) RefreshReportCheckpoints(ctx context.Context, organization tracker.OrganizationID, cursor reportcheckpoints.Cursor) (reportcheckpoints.Cursor, bool, error) {
+	next, processed := cursor, false
+	err := r.internalWrite(ctx, organization, func(s *session) error {
+		var err error
+		next, processed, err = reportcheckpoints.Step(ctx, s.db, s.organization, cursor)
+		return err
+	})
+	return next, processed, err
 }
