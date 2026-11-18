@@ -19,12 +19,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
-	hubtransport "github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/runnersession"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestAppServerEarlyTurnRejection(t *testing.T) {
@@ -1737,49 +1733,63 @@ func TestAppServerRunTurnEnforcesStallTimeout(t *testing.T) {
 	}
 }
 
-func TestAppServerStreamTurnResetsTimeoutAfterActivity(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		turn, stall time.Duration
-	}{
-		{"stall", time.Hour, time.Second}, {"turn", time.Second, 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				transport := &deadlineRecordingAppServerTransport{fakeAppServerTransport: newFakeAppServerTransport([]Message{
-					notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"still working"}`),
-					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
-				})}
-				server, err := NewAppServer(staticTransportFactory{transport: transport})
-				if err != nil {
-					t.Fatal(err)
-				}
-				process := procgroup.Identity{PID: 123, StartedAt: time.Now()}
-				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-				defer cancel()
-				var observation runnersession.WorkerObservation
-				var registered bool
-				err = server.streamTurn(ctx, transport, "thread-1", "turn-1", tc.turn, tc.stall, nil, nil, func(update Update) error {
-					identity := process
-					if update.Type == UpdateTurnCompleted {
-						identity = procgroup.Identity{}
-					}
-					return observation.Report(ctx, 1, identity, "", "", func(_ context.Context, _ int64, registration store.WorkerProcessRegistration) error {
-						if update.Type != UpdateTurnCompleted {
-							return hubtransport.ErrUnavailable
-						}
-						registered = registration.PID == process.PID && registration.StartedAt.Equal(process.StartedAt)
-						return nil
-					})
-				})
-				if err != nil || !registered {
-					t.Fatalf("stream completed with registration=%t, error=%v", registered, err)
-				}
-				if len(transport.deadlines) != 2 || !transport.deadlines[1].After(transport.deadlines[0]) {
-					t.Fatalf("activity did not reset deadline: %v", transport.deadlines)
-				}
-			})
-		})
+func TestAppServerStreamTurnResetsStallTimeoutAfterActivity(t *testing.T) {
+	t.Parallel()
+
+	transport := &deadlineRecordingAppServerTransport{
+		fakeAppServerTransport: newFakeAppServerTransport([]Message{
+			notificationMessage(t, "item/agentMessage/delta", `{
+				"threadId":"thread-1",
+				"turnId":"turn-1",
+				"itemId":"item-1",
+				"delta":"still working"
+			}`),
+			notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+		}),
+	}
+	server, err := NewAppServer(staticTransportFactory{transport: transport})
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	if err := server.streamTurn(context.Background(), transport, "thread-1", "turn-1", time.Hour, time.Second, nil, nil, nil); err != nil {
+		t.Fatalf("streamTurn() error = %v", err)
+	}
+	if len(transport.deadlines) != 2 {
+		t.Fatalf("Receive() deadlines = %v, want two stall deadlines", transport.deadlines)
+	}
+	if !transport.deadlines[1].After(transport.deadlines[0]) {
+		t.Fatalf("Receive() deadlines = %v, want activity to reset stall deadline", transport.deadlines)
+	}
+}
+
+func TestAppServerStreamTurnResetsTurnTimeoutAfterActivity(t *testing.T) {
+	t.Parallel()
+
+	transport := &deadlineRecordingAppServerTransport{
+		fakeAppServerTransport: newFakeAppServerTransport([]Message{
+			notificationMessage(t, "item/agentMessage/delta", `{
+				"threadId":"thread-1",
+				"turnId":"turn-1",
+				"itemId":"item-1",
+				"delta":"still working"
+			}`),
+			notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+		}),
+	}
+	server, err := NewAppServer(staticTransportFactory{transport: transport})
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	if err := server.streamTurn(context.Background(), transport, "thread-1", "turn-1", time.Second, 0, nil, nil, nil); err != nil {
+		t.Fatalf("streamTurn() error = %v", err)
+	}
+	if len(transport.deadlines) != 2 {
+		t.Fatalf("Receive() deadlines = %v, want two turn timeout deadlines", transport.deadlines)
+	}
+	if !transport.deadlines[1].After(transport.deadlines[0]) {
+		t.Fatalf("Receive() deadlines = %v, want activity to reset turn timeout deadline", transport.deadlines)
 	}
 }
 

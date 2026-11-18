@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -240,7 +239,6 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		removeAuditWorkspace = false
 		turns++
 		execution.WorkerProcess = procgroup.Identity{}
-		observeProcess := r.workerProcessObserver(sessionID, r.securityAuditRoot)
 		currentTurn, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(cacheCtx, backend, AgentTurnRequest{
 			Workspace:        auditWorkspace,
 			Prompt:           prompt,
@@ -266,7 +264,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			if update.WorkerProcess.PID > 0 {
 				execution.WorkerProcess = update.WorkerProcess
 			}
-			if err := observeProcess(updateCtx, update, auditWorkspace); err != nil {
+			if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, auditWorkspace); err != nil {
 				return err
 			}
 			r.persistSessionProviderIdentity(updateCtx, sessionID, update)
@@ -290,7 +288,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 				}
 			}
 			if req.OnUsageUpdate != nil {
-				if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity, RateLimits: runResult.RateLimits}); err != nil && !transport.DeferObservation(updateCtx, err) {
+				if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity, RateLimits: runResult.RateLimits}); err != nil {
 					return err
 				}
 			}

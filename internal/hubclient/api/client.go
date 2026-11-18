@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
-	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -28,7 +27,7 @@ const maxResponseBytes = 1 << 20
 
 var (
 	ErrNoClaimableWork = errors.New("no Hub work is claimable")
-	ErrUnavailable     = transport.ErrUnavailable
+	ErrUnavailable     = errors.New("hub unavailable")
 )
 
 type responseSizeError struct {
@@ -133,13 +132,6 @@ type APIError struct {
 	CurrentRevision tracker.Revision
 	Rejection       *runnerauth.PublicationRejection
 	retryAfter      time.Time
-}
-
-func (e *APIError) Unwrap() error {
-	if e != nil && e.Status >= 400 && e.Status < 500 {
-		return transport.ErrRejected
-	}
-	return nil
 }
 
 func (e *APIError) Error() string {

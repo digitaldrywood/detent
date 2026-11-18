@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
@@ -25,7 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-var ErrExecutionAuthorityUnavailable = transport.ErrAuthorityUnavailable
+var ErrExecutionAuthorityUnavailable = errors.New("execution authority unavailable")
 var ErrNativeRecoveryRequired = errors.New("native checkpoint requires recovery")
 var ErrChangeSourceVersionSuperseded = errors.New("the transferred version differs from the current Change; re-read source recovery and reconcile the selected version before transfer")
 
