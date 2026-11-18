@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -242,6 +243,7 @@ type Issue struct {
 	ReleaseDelivery         *tracker.ReleaseDelivery
 	Source                  *ChangeSource
 	Checkpoint              *CheckpointRef
+	RetainedCheckpoint      *CheckpointRef
 	RequireCheckpoint       bool
 	Landing                 *LandOptions
 	NoChangeNeeded          bool
@@ -677,8 +679,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, err
 		}
 	}
-	if issue.Checkpoint != nil {
-		checkpoint := *issue.Checkpoint
+	if ref := cmp.Or(issue.Checkpoint, issue.RetainedCheckpoint); ref != nil {
+		checkpoint := *ref
 		release, err := l.acquireSourceOperation(ctx)
 		if err != nil {
 			return Info{}, err
@@ -688,13 +690,14 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err != nil {
 			return Info{}, err
 		}
+		retainProgress := issue.Checkpoint == nil && checkpoint.Transaction == nil
 		if checkpoint.Transaction != nil && !issue.NativeRework && !issue.RequireCheckpoint && checkpoint.Ref == CheckpointRefName(issue) {
 			issue.Checkpoint, issue.FreshCheckout = nil, true
 		} else if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
 			return Info{}, err
 		} else if _, isDir, err := pathExists(info.Path); err != nil {
 			return Info{}, err
-		} else if !issue.FreshCheckout && isDir && l.isSourceWorktree(ctx, info.Path) && checkpointMatches(ctx, info.Path, &checkpoint) {
+		} else if !issue.FreshCheckout && isDir && l.isSourceWorktree(ctx, info.Path) && (retainProgress || checkpointMatches(ctx, info.Path, &checkpoint)) {
 			issue.Checkpoint = nil
 		} else {
 			issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
@@ -781,14 +784,13 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err != nil {
 			return Info{}, err
 		}
-		created = created || restored
-		info.Created = created
+		info.Created = created || restored
 	}
 	if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
 		return Info{}, err
 	}
 
-	if created {
+	if info.Created {
 		if err := l.runHook(ctx, "after_create", l.hooks.AfterCreate, info, issue); err != nil {
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
