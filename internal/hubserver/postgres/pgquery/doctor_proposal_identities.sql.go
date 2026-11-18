@@ -180,7 +180,7 @@ func (q *Queries) LookupDoctorProposalIdentity(ctx context.Context, arg LookupDo
 const lookupEarliestDoctorProposalIdentity = `-- name: LookupEarliestDoctorProposalIdentity :one
 WITH scope AS MATERIALIZED (
  SELECT p.organization_id,p.id,(p.duplicate_source_sequence+p.content_settings_revision)::bigint AS source_sequence,
- NOT EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=p.organization_id AND i.project_id=p.id AND NOT i.archived AND i.doctor_identity_revision IS DISTINCT FROM i.revision) AS complete
+ coalesce((SELECT false FROM issues i WHERE i.organization_id=$1 AND i.project_id=$2 AND NOT i.archived AND i.doctor_identity_revision IS DISTINCT FROM i.revision ORDER BY i.native_id LIMIT 1),true)::boolean AS complete
  FROM projects p WHERE p.organization_id=$1 AND p.id=$2 AND p.deleted_at IS NULL AND p.profile='native'
 ), states AS MATERIALIZED (
  SELECT true AS has_state,w.name AS state_name,w.terminal FROM project_workflow_states w JOIN scope s ON s.organization_id=w.organization_id AND s.id=w.project_id

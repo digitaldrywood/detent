@@ -12178,6 +12178,26 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/migrations/20261118013024_report_candidate_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "event",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_requests",
+          "hub/collaboration_events",
+          "hub/issues",
+          "hub/leases",
+          "hub/native_attempts"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -18095,7 +18115,7 @@
           "session.ReadAnalyticsResidencePage:Query": 3,
           "session.ReadAnalyticsResidencePage:SQL": 3,
           "session.ReadHistory:Query": 3,
-          "session.ReadHistory:SQL": 3,
+          "session.ReadHistory:SQL": 5,
           "session.ReadHistoryIssueEvents:Query": 1,
           "session.ReadHistoryIssueEvents:SQL": 1,
           "session.readHistoryCandidates:QueryRow": 1,
@@ -18264,15 +18284,15 @@
           "session.ReadAnalyticsUsagePage:Query": 1,
           "session.ReadAnalyticsUsagePage:QueryRow": 1,
           "session.ReadAnalyticsUsagePage:SQL": 2,
-          "session.ReadReportUsage:Query": 1,
-          "session.ReadReportUsage:SQL": 1,
-          "session.ReadReportUsageCoverage:Query": 2,
-          "session.ReadReportUsageCoverage:SQL": 2,
           "session.RecordAttemptUsage:QueryRow": 4,
           "session.RecordAttemptUsage:SQL": 2,
           "session.ReplayAttemptUsage:Exec": 3,
           "session.ReplayAttemptUsage:QueryRow": 3,
           "session.ReplayAttemptUsage:SQL": 6,
+          "session.readAttemptUsageCoverage:Query": 2,
+          "session.readAttemptUsageCoverage:SQL": 5,
+          "session.readAttemptUsageRows:Query": 1,
+          "session.readAttemptUsageRows:SQL": 3,
           "session.refreshReportUsage:Exec": 1,
           "session.refreshReportUsage:SQL": 3
         },
@@ -18281,8 +18301,7 @@
           "hub/collaboration_events",
           "hub/issues",
           "hub/leases",
-          "hub/native_attempts",
-          "hub/runner_identities"
+          "hub/native_attempts"
         ]
       }
     },

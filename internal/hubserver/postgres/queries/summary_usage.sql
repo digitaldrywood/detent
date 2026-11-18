@@ -28,25 +28,27 @@ WITH requested AS MATERIALIZED (
   WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=r.project_id AND i.native_id=r.work_item_id LIMIT 1
  ) i
  WHERE sqlc.arg(principal)::text='' OR i.actor_principal_id=sqlc.arg(principal)
+), attempt_ids AS MATERIALIZED (
+ SELECT a.issue_id,a.id FROM native_attempts a
+ WHERE a.organization_id=sqlc.arg(organization_id) AND a.issue_id=ANY(ARRAY(SELECT id FROM items))
+ ORDER BY a.issue_id,a.started_at,a.started_at_submicro_ns,a.id LIMIT 50001
 ), attempts AS MATERIALIZED (
- SELECT i.project_id,i.work_item_id,a.id AS attempt_id
- FROM items i CROSS JOIN LATERAL (
-  SELECT a.id FROM native_attempts a
-  WHERE a.organization_id=sqlc.arg(organization_id) AND a.issue_id=i.id
-  ORDER BY a.started_at,a.id LIMIT 50001
- ) a
- LIMIT 50001
+ SELECT i.project_id,i.work_item_id,a.id AS attempt_id FROM attempt_ids a JOIN items i ON i.id=a.issue_id
+), sources AS NOT MATERIALIZED (
+ SELECT c.resource_id,c.source_key,c.project_id,c.revision FROM cost_sources c
+ WHERE c.organization_id=sqlc.arg(organization_id) AND c.bucket='runner_api' AND c.resource_id=ANY(ARRAY(SELECT attempt_id FROM attempts))
+), first_sources AS MATERIALIZED (
+ SELECT * FROM sources ORDER BY resource_id,source_key LIMIT 50000
+), next_sources AS MATERIALIZED (
+ SELECT * FROM sources WHERE (SELECT count(*) FROM first_sources)=50000 AND (resource_id,source_key)>(
+  SELECT resource_id,source_key FROM first_sources ORDER BY resource_id DESC,source_key DESC LIMIT 1
+ ) ORDER BY resource_id,source_key LIMIT 50001
 ), source_rows AS MATERIALIZED (
  SELECT a.project_id,a.work_item_id,a.attempt_id,c.source_key,c.revision,
  u.revision AS projected_revision,u.complete,u.period,u.cost_estimate,
  c.project_id=a.project_id AND u.project_id=a.project_id AND u.attempt_id=a.attempt_id AS scoped
- FROM attempts a CROSS JOIN LATERAL (
-  SELECT c.source_key,c.project_id,c.revision FROM cost_sources c
-  WHERE c.organization_id=sqlc.arg(organization_id) AND c.resource_id=a.attempt_id AND c.bucket='runner_api'
-  ORDER BY c.source_key LIMIT 100001
- ) c
- LEFT JOIN report_usage_current u ON u.organization_id=sqlc.arg(organization_id) AND u.source_key=c.source_key
- LIMIT 100001
+ FROM (SELECT * FROM first_sources UNION ALL SELECT * FROM next_sources) c JOIN attempts a ON a.attempt_id=c.resource_id
+ LEFT JOIN LATERAL (SELECT u.project_id,u.attempt_id,u.revision,u.complete,u.period,u.cost_estimate FROM report_usage_current u WHERE u.organization_id=sqlc.arg(organization_id) AND u.source_key=c.source_key LIMIT 1) u ON true
 ), source_costs AS MATERIALIZED (
  SELECT attempt_id,count(*) AS source_count,
  bool_and(coalesce(complete AND projected_revision=revision AND scoped,false)) AS complete,
@@ -55,14 +57,18 @@ WITH requested AS MATERIALIZED (
  FROM source_rows GROUP BY attempt_id
 ), import_attempts AS MATERIALIZED (
  SELECT a.* FROM attempts a LEFT JOIN source_costs c ON c.attempt_id=a.attempt_id WHERE c.attempt_id IS NULL
+), imports AS NOT MATERIALIZED (
+ SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin,u.cost_estimate FROM attempt_usage u
+ WHERE u.organization_id=sqlc.arg(organization_id) AND u.attempt_id=ANY(ARRAY(SELECT attempt_id FROM import_attempts))
+), first_imports AS MATERIALIZED (
+ SELECT * FROM imports ORDER BY attempt_id,period,provider,model,currency,usage_origin LIMIT 50000
+), next_imports AS MATERIALIZED (
+ SELECT * FROM imports WHERE (SELECT count(*) FROM first_imports)=50000 AND (attempt_id,period,provider,model,currency,usage_origin)>(
+  SELECT attempt_id,period,provider,model,currency,usage_origin FROM first_imports ORDER BY attempt_id DESC,period DESC,provider DESC,model DESC,currency DESC,usage_origin DESC LIMIT 1
+ ) ORDER BY attempt_id,period,provider,model,currency,usage_origin LIMIT 50001
 ), import_rows AS MATERIALIZED (
  SELECT a.attempt_id,a.project_id=u.project_id AS scoped,u.period,u.cost_estimate,u.currency
- FROM import_attempts a CROSS JOIN LATERAL (
-  SELECT u.project_id,u.period,u.cost_estimate,u.currency FROM attempt_usage u
-  WHERE u.organization_id=sqlc.arg(organization_id) AND u.attempt_id=a.attempt_id
-  ORDER BY u.period,u.provider,u.model LIMIT 100001
- ) u
- LIMIT 100001
+ FROM (SELECT * FROM first_imports UNION ALL SELECT * FROM next_imports) u JOIN import_attempts a ON a.attempt_id=u.attempt_id
 ), import_costs AS MATERIALIZED (
  SELECT attempt_id,count(*) AS actual,
  bool_and(scoped AND upper(currency)='USD') AS scoped,

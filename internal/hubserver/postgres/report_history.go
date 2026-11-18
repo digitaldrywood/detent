@@ -1,8 +1,10 @@
 package postgres
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -89,7 +91,7 @@ ORDER BY i.project_id,i.native_id LIMIT $11`, append(args, candidateIDs)...)
 	}
 	type location struct{ project, issue int }
 	locations := map[tracker.NativeWorkItemID]location{}
-	ids, itemProjects := []string{}, []string{}
+	ids := []string{}
 	for rows.Next() {
 		var project tracker.ProjectID
 		var issue reportstore.HistoryIssue
@@ -101,7 +103,7 @@ ORDER BY i.project_id,i.native_id LIMIT $11`, append(args, candidateIDs)...)
 		index := projects[project]
 		locations[issue.WorkItemID] = location{index, len(out[index].Issues)}
 		out[index].Issues = append(out[index].Issues, issue)
-		ids, itemProjects = append(ids, string(issue.WorkItemID)), append(itemProjects, string(project))
+		ids = append(ids, string(issue.WorkItemID))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
@@ -113,24 +115,26 @@ ORDER BY i.project_id,i.native_id LIMIT $11`, append(args, candidateIDs)...)
 		return out, nil
 	}
 	eventLimit := min(query.Limit*100, 100000)
-	rows, err = s.db.Query(ctx, `SELECT e.work_item_id,e.id,e.version_id,e.recorded_at,e.type,e.from_state,e.to_state,coalesce(f.rework_class,''),coalesce(f.rework_kind,'')
-FROM unnest($2::text[],$3::text[]) AS item(project_id,work_item_id)
-CROSS JOIN LATERAL (SELECT e.organization_id,e.project_id,e.work_item_id,e.sequence,e.id,e.version_id,e.recorded_at,e.type,e.from_state,e.to_state FROM collaboration_events e
- WHERE e.organization_id=$1 AND e.project_id=item.project_id AND e.work_item_id=item.work_item_id AND e.recorded_at<$4 AND e.type IN ('workflow.transitioned','scheduler.decision')
- ORDER BY e.sequence LIMIT $5) e
-LEFT JOIN LATERAL (SELECT f.rework_class,f.rework_kind FROM report_event_facts f WHERE f.organization_id=e.organization_id AND f.event_id=e.id LIMIT 1) f ON true
-ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $5`, s.organization, itemProjects, ids, query.To.UTC(), eventLimit+1)
+	const events = `SELECT e.project_id,e.work_item_id,e.recorded_at,e.sequence,e.id,e.version_id,e.type,e.from_state,e.to_state
+ FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=ANY($2::text[]) AND e.work_item_id=ANY($3::text[])
+ AND e.type IN ('workflow.transitioned','scheduler.decision') AND e.recorded_at<$4`
+	pages := reportFactPages(events, "project_id,work_item_id,recorded_at,sequence", eventLimit)
+	rows, err = s.db.Query(ctx, "WITH "+pages+` SELECT e.work_item_id,e.sequence,e.id,e.version_id,e.recorded_at,e.type,e.from_state,e.to_state,coalesce(f.rework_class,''),coalesce(f.rework_kind,'')
+ FROM report_page e LEFT JOIN LATERAL (SELECT f.rework_class,f.rework_kind FROM report_event_facts f WHERE f.organization_id=$1 AND f.event_id=e.id LIMIT 1) f ON true`, s.organization, projectIDs, ids, query.To.UTC())
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
+	sequences := make(map[string]int64)
 	count := 0
 	for rows.Next() {
 		var id tracker.NativeWorkItemID
+		var sequence int64
 		var event reportstore.WorkflowEvent
-		if err := rows.Scan(&id, &event.ID, &event.VersionID, &event.At, &event.Type, &event.FromState, &event.ToState, &event.Class.Name, &event.Class.Kind); err != nil {
+		if err := rows.Scan(&id, &sequence, &event.ID, &event.VersionID, &event.At, &event.Type, &event.FromState, &event.ToState, &event.Class.Name, &event.Class.Kind); err != nil {
 			rows.Close()
 			return nil, mapError(ctx, err)
 		}
+		sequences[event.ID] = sequence
 		location := locations[id]
 		out[location.project].Issues[location.issue].Events = append(out[location.project].Issues[location.issue].Events, event)
 		count++
@@ -140,6 +144,13 @@ ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $5`, s.organization, itemP
 	}
 	if count > eventLimit {
 		return nil, reportstore.ErrPopulationExceeded
+	}
+	for _, project := range out {
+		for _, issue := range project.Issues {
+			slices.SortFunc(issue.Events, func(a, b reportstore.WorkflowEvent) int {
+				return cmp.Compare(sequences[a.ID], sequences[b.ID])
+			})
+		}
 	}
 	return out, nil
 }
@@ -158,23 +169,25 @@ func (s *session) readHistoryCandidates(ctx context.Context, projects []string, 
  SELECT s.project_id,next.name,s.depth+1 FROM states s CROSS JOIN LATERAL (
   SELECT i.workflow_state_name AS name FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND i.workflow_state_name>s.name ORDER BY i.workflow_state_name LIMIT 1
  ) next WHERE s.depth<=$6
+), open_states AS MATERIALIZED (
+ SELECT s.project_id,s.name FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
+ WHERE NOT coalesce(ws.terminal,false)
 ), open AS MATERIALIZED (
- SELECT i.id FROM states s LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=s.project_id AND ws.name=s.name
- CROSS JOIN LATERAL (
-  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=s.project_id AND i.workflow_state_name=s.name LIMIT $5
- ) i WHERE NOT coalesce(ws.terminal,false)
+ (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[])
+  AND i.workflow_state_name=ANY(ARRAY(SELECT name FROM open_states))
+  AND (cardinality($2::text[])=1 OR (i.project_id,i.workflow_state_name) IN (SELECT project_id,name FROM open_states))
+  ORDER BY i.project_id,i.workflow_state_name LIMIT $5)
  UNION ALL
- SELECT i.id FROM unnest($2::text[]) p(project_id) CROSS JOIN LATERAL (
-  SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=p.project_id AND i.workflow_state_name IS NULL LIMIT $5
- ) i
+ (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND i.workflow_state_name IS NULL ORDER BY i.project_id LIMIT $5)
+ LIMIT $5
 ), updated AS MATERIALIZED (
- SELECT i.id,i.project_id FROM issues i WHERE i.organization_id=$1 AND i.native_updated_at>=$3 ORDER BY i.native_updated_at DESC,i.id DESC LIMIT $5
+ SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND i.native_updated_at>=$3 ORDER BY i.project_id,i.native_updated_at,i.id LIMIT $5
 ), active AS MATERIALIZED (
- SELECT e.project_id,e.work_item_id FROM collaboration_events e WHERE e.organization_id=$1 AND e.recorded_at>=$3 AND e.recorded_at<$4 ORDER BY e.recorded_at DESC,e.id DESC LIMIT $5
+ SELECT e.project_id,e.work_item_id FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=ANY($2::text[]) AND e.recorded_at>=$3 AND e.recorded_at<$4 ORDER BY e.project_id,e.recorded_at,e.id LIMIT $5
 ), keyed AS (
  SELECT id FROM open
- UNION SELECT id FROM updated WHERE project_id=ANY($2::text[])
- UNION SELECT i.id FROM (SELECT DISTINCT project_id,work_item_id FROM active WHERE project_id=ANY($2::text[])) a CROSS JOIN LATERAL (
+ UNION SELECT id FROM updated
+ UNION SELECT i.id FROM (SELECT DISTINCT project_id,work_item_id FROM active) a CROSS JOIN LATERAL (
   SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=a.project_id AND i.native_id=a.work_item_id LIMIT 1
  ) i
 )

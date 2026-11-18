@@ -75,16 +75,15 @@ func (s *session) readLandingCandidates(ctx context.Context, projects []string, 
 	err := s.db.QueryRow(ctx, `WITH landed AS MATERIALIZED (
  SELECT c.id FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$3 AND c.landed_at<$4 ORDER BY c.project_id,c.landed_at,c.id LIMIT $5
 ), reopened AS MATERIALIZED (
- SELECT e.project_id,e.work_item_id FROM unnest($2::text[]) p(id) CROSS JOIN LATERAL (
-  SELECT e.project_id,e.work_item_id FROM collaboration_events e
-  WHERE e.organization_id=$1 AND e.project_id=p.id AND e.type='workflow.transitioned' AND e.from_state='Done' AND e.recorded_at>=$3 AND e.recorded_at<$4 LIMIT $5
- ) e LIMIT $5
+ SELECT e.project_id,e.work_item_id FROM collaboration_events e
+ WHERE e.organization_id=$1 AND e.project_id=ANY($2::text[]) AND e.type='workflow.transitioned' AND e.from_state='Done' AND e.recorded_at>=$3 AND e.recorded_at<$4
+ ORDER BY e.project_id,e.recorded_at,e.work_item_id LIMIT $5
 ), reopened_changes AS MATERIALIZED (
- SELECT c.id FROM (SELECT DISTINCT project_id,work_item_id FROM reopened) r CROSS JOIN LATERAL (
-  SELECT c.id FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=r.project_id AND c.work_item_id=r.work_item_id AND c.landed_at<$4 LIMIT $5
- ) c LIMIT $5
+ SELECT c.id FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[])
+ AND c.work_item_id=ANY(ARRAY(SELECT DISTINCT work_item_id FROM reopened)) AND c.landed_at<$4
+ ORDER BY c.project_id,c.work_item_id,c.landed_at,c.id LIMIT $5
 ), escaped AS MATERIALIZED (
- SELECT f.change_id FROM report_escape_facts f WHERE f.organization_id=$1 AND f.observed_at>=$3 AND f.observed_at<$4 ORDER BY f.observed_at,f.change_id LIMIT $5
+ SELECT f.change_id FROM report_escape_facts f WHERE f.organization_id=$1 AND f.observed_at>=$3 AND f.observed_at<$4 AND EXISTS (SELECT 1 FROM change_requests c WHERE c.organization_id=f.organization_id AND c.id=f.change_id AND c.project_id=ANY($2::text[])) ORDER BY f.observed_at,f.change_id LIMIT $5
 )
 SELECT (SELECT count(*) FROM landed)>=$5 OR (SELECT count(*) FROM reopened)>=$5 OR (SELECT count(*) FROM reopened_changes)>=$5 OR (SELECT count(*) FROM escaped)>=$5,
  coalesce((SELECT array_agg(id ORDER BY id) FROM (SELECT id FROM landed UNION SELECT id FROM reopened_changes UNION SELECT change_id FROM escaped) keyed),'{}'::text[])`, s.organization, projects, from, to, maxOverviewCandidateRows+1).Scan(&exceeded, &ids)

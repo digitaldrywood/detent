@@ -2186,6 +2186,77 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		}
 	})
 
+	t.Run("history pages preserve issue sequence and selected projects", func(t *testing.T) {
+		selected := tracker.ProjectID("project_report_pages")
+		at := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
+		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: selected, Name: "Example pages", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Done"}}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `INSERT INTO issues(organization_id,project_id,native_id,number,title,workflow_state_name,created_at,native_updated_at)
+ VALUES($1,$2,'report_pages_item',1,'Example','Todo',$3,$3)`, organization, selected, at.Add(-48*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+ SELECT $1,$2,'report_pages_item','report_page_'||n,n,'workflow.transitioned',1,'Todo',CASE WHEN n=50002 THEN 'Rework' ELSE 'Done' END,
+ CASE WHEN n=50002 THEN $3::timestamptz+interval '1 hour' ELSE $3::timestamptz-n*interval '1 second' END,
+ 'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1 FROM generate_series(1,50002) n`, organization, selected, at); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+			reader := r.(reportstore.HistoryReader)
+			query := reportstore.OverviewQuery{Projects: []tracker.ProjectID{selected}, From: at, To: at.Add(time.Hour), Limit: 501}
+			history, err := reader.ReadHistory(ctx, query)
+			if err != nil {
+				return err
+			}
+			if len(history) != 1 || len(history[0].Issues) != 1 {
+				t.Fatalf("unexpected history population for %s", selected)
+			}
+			events := history[0].Issues[0].Events
+			if len(events) != 50001 {
+				t.Fatalf("history events = %d, want 50001", len(events))
+			}
+			for i, event := range events {
+				if event.ID != fmt.Sprintf("report_page_%d", i+1) {
+					t.Fatalf("sequence %d returned %s", i+1, event.ID)
+				}
+			}
+			query.Limit = 500
+			if _, err := reader.ReadHistory(ctx, query); !errors.Is(err, reportstore.ErrPopulationExceeded) {
+				t.Fatalf("50001 events at the 50000 limit: %v", err)
+			}
+			query.Projects = []tracker.ProjectID{project}
+			query.From = at.Add(-24 * time.Hour)
+			if _, err = reader.ReadHistory(ctx, query); err != nil {
+				return err
+			}
+			boundary := query.To
+			query.Projects = []tracker.ProjectID{selected, project}
+			for _, test := range []struct {
+				from, to time.Time
+				want     bool
+			}{{query.From, boundary, false}, {boundary, boundary.Add(time.Hour), true}} {
+				query.From, query.Split, query.To = test.from, test.from, test.to
+				facts, err := r.(reportstore.Reader).ReadOverviewFacts(ctx, query)
+				if err != nil {
+					return err
+				}
+				matched := slices.ContainsFunc(facts, func(fact reportstore.OverviewFact) bool {
+					return fact.ProjectID == selected && fact.WorkItemID == "report_pages_item"
+				})
+				if matched != test.want {
+					t.Fatalf("overview includes issue = %t for [%s,%s), want %t", matched, test.from, test.to, test.want)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 }
 
 type analyticsAttemptQueryCapture struct {
