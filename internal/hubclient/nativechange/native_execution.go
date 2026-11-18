@@ -63,6 +63,7 @@ type nativeExecution struct {
 	pending           *tracker.NativeRunEvent
 	pendingReceipt    *checkpointReceipt
 	observations      []tracker.NativeRunEvent
+	guardCause        func() error
 	cancel            context.CancelCauseFunc
 	// diffSource computes the stored attempt diff the execution posts before
 	// every checkpoint and before the finish. It is
@@ -187,6 +188,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	guarded := api.WithMutationAuthority(bound, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(bound) })
 	e.cancelMu.Lock()
 	e.cancel = cancel
+	e.guardCause = func() error { return context.Cause(bound) }
 	e.cancelMu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -773,6 +775,19 @@ func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminal
 const terminalWorkerCloseTimeout = 10 * time.Second
 
 func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (err error) {
+	caller := ctx
+	ctx = api.WithMutationAuthority(ctx, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error {
+		e.cancelMu.Lock()
+		defer e.cancelMu.Unlock()
+		cause := api.MutationEffectError(caller)
+		if e.guardCause != nil {
+			cause = errors.Join(cause, e.guardCause())
+		}
+		if reason == runner.FinalStateOperatorStopped {
+			cause = errors.Join(cause, runner.ErrOperatorStopped)
+		}
+		return cause
+	})
 	defer func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -862,6 +877,30 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 			}
 			if expired {
 				return runner.ErrExecutionAuthorityUnavailable
+			}
+			if errors.Is(finishErr, runner.ErrOperatorStopped) && !errors.Is(finishErr, runner.ErrExecutionAuthorityUnavailable) && e.pendingReceipt == nil {
+				if attempt.Outcome == "" {
+					data := attempt.NativeRunData
+					data.Sequence++
+					data.Outcome = "interrupted"
+					data.Handoff = nil
+					if data.Runtime != nil {
+						data.Runtime.Phase = "completed"
+						for _, step := range data.Steps {
+							if step.Step == "validation" && step.Validation != nil && attempt.Checkpoint != nil && step.Source.HeadSHA == attempt.Checkpoint.HeadSHA {
+								data.Runtime.Validation = step.Validation
+							}
+						}
+					}
+					event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":interrupted:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
+					authorize := func(ctx context.Context) error { return e.authorizeEvent(ctx, true) }
+					if err := e.claim.source.NativeClient().AppendExecutionEvent(ctx, e.claim.lease.WorkItemID, event, authorize); err != nil {
+						return e.executionError(ctx, err)
+					}
+					attempt.NativeRunData = data
+				}
+				e.data, e.pending, e.observations = attempt.NativeRunData, nil, nil
+				finishErr = nil
 			}
 		}
 		return finishErr

@@ -767,3 +767,60 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestReleaseStoppedClaimWithPendingCheckpoint(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Stop with a pending checkpoint")
+	h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID).(fixtureLifecycle)
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	guarded, stop, err := execution.Guard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop = sync.OnceFunc(stop)
+	defer stop()
+	if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "example"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.PrepareFinish(guarded, "cancelled", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	head := strings.Repeat("c", 40)
+	execution.SetDiffSource(nativeChangeDiff(head, "example.go"))
+	transport := fixtureClient(h.native.Transport()).requests.Load()
+	checkpoints := 0
+	fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/events") {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				return nil, err
+			}
+			req.Body = io.NopCloser(strings.NewReader(string(body)))
+			var event tracker.NativeRunEvent
+			if err := json.Unmarshal(body, &event); err != nil {
+				return nil, err
+			}
+			if event.Type == "run.checkpointed" {
+				checkpoints++
+				if checkpoints == 1 {
+					return nil, errors.New("checkpoint delivery interrupted")
+				}
+			}
+		}
+		return transport.RoundTrip(req)
+	}))
+	if err := execution.Checkpoint(guarded, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil || checkpoints != 1 {
+		t.Fatalf("checkpoint setup: posts=%d error=%v", checkpoints, err)
+	}
+	cancel(runner.ErrOperatorStopped)
+	stop()
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, runner.FinalStateOperatorStopped); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+	if err != nil || checkpoints != 1 || len(recovery.Attempts) != 1 || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Checkpoint != nil {
+		t.Fatalf("checkpoint POSTs=%d attempts=%+v error=%v", checkpoints, recovery.Attempts, err)
+	}
+}
