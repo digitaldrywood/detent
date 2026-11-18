@@ -40,6 +40,7 @@ type nativeExecution struct {
 	workerMu          sync.Mutex
 	workerCloseMu     sync.Mutex
 	cancelMu          sync.Mutex
+	reviewDone        <-chan struct{}
 	workers           []func(context.Context) error
 	workerLauncher    func(context.Context, runner.RunRequest) (runner.RunResult, error)
 	reasonGenerator   runner.DependencyReasonGenerator
@@ -101,6 +102,12 @@ type nativeExecution struct {
 	recoveredSource *tracker.NativeChangeReference
 	mergeResolution bool
 	releaseDelivery *tracker.ReleaseDeliveryStatus
+}
+
+func (e *nativeExecution) BindReviewHandoff(done <-chan struct{}) {
+	e.cancelMu.Lock()
+	defer e.cancelMu.Unlock()
+	e.reviewDone = done
 }
 
 func (e *nativeExecution) RetainCompletion() {
