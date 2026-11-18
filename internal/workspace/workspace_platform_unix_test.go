@@ -794,14 +794,21 @@ func TestHookWithExitedShell(t *testing.T) {
 		for _, mode := range []string{"success", "parent cancellation", "timeout"} {
 			t.Run(kind+"/"+mode, func(t *testing.T) {
 				root := t.TempDir()
+				useRealProcessScan(t, root)
+				uses := &workspaceUses{}
+				t.Cleanup(func() {
+					if err := uses.stopHooks(t.Context(), root); err != nil {
+						t.Error(err)
+					}
+				})
 				hooks := Hooks{Timeout: time.Minute}
 				if mode == "timeout" {
 					hooks.Timeout = 500 * time.Millisecond
 				}
 				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-				run := (&LocalGit{root: root, hooks: hooks, logger: logger}).runHook
+				run := (&LocalGit{root: root, hooks: hooks, logger: logger, uses: uses}).runHook
 				if kind == KindFilesystem {
-					run = (&Filesystem{root: root, hooks: hooks, logger: logger}).runHook
+					run = (&Filesystem{root: root, hooks: hooks, logger: logger, uses: uses}).runHook
 				}
 				ctx, cancel := context.WithCancel(t.Context())
 				t.Cleanup(cancel)
