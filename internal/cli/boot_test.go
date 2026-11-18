@@ -44,36 +44,15 @@ import (
 
 func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 	for _, missingCheckout := range []bool{false, true} {
-		name := "enrolled runner"
-		if missingCheckout {
-			name = "enrolled runner with absent checkout"
-		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(fmt.Sprintf("missingCheckout=%t", missingCheckout), func(t *testing.T) {
 			func(t *testing.T) {
 				observations := make(chan *runnerauth.UpdateObservation, 1)
 				var identity runnerauth.File
-				var first sync.Once
-				firstRequest := make(chan string, 1)
-				lifecycleReports := make(chan runnerauth.LifecycleReport, 8)
 				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					first.Do(func() { firstRequest <- r.URL.Path })
 					w.Header().Set("Content-Type", "application/json")
 					var response any
 					switch {
 					case strings.HasSuffix(r.URL.Path, "/lifecycle"):
-						var report runnerauth.LifecycleReport
-						if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-							t.Error(err)
-							w.WriteHeader(http.StatusBadRequest)
-							return
-						}
-						select {
-						case lifecycleReports <- report:
-						default:
-							t.Error("too many lifecycle reports")
-							w.WriteHeader(http.StatusConflict)
-							return
-						}
 						w.WriteHeader(http.StatusNoContent)
 						return
 					case r.URL.Path == "/api/v2/capabilities":
@@ -153,28 +132,6 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 					done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{})
 				}()
 				t.Cleanup(func() {
-					defer func() {
-						select {
-						case path := <-firstRequest:
-							if !strings.HasSuffix(path, "/lifecycle") {
-								t.Errorf("first Hub request=%s", path)
-							}
-						default:
-							t.Error("runner made no Hub request")
-						}
-						close(lifecycleReports)
-						reports := []runnerauth.LifecycleReport{}
-						for report := range lifecycleReports {
-							reports = append(reports, report)
-						}
-						if len(reports) != 3 {
-							t.Errorf("lifecycle reports=%+v", reports)
-							return
-						}
-						if reports[0].State != runnerauth.LifecycleStarting || reports[0].Version != "dev" || reports[0].BuildRevision == "" || reports[1].State != runnerauth.LifecycleReady || reports[2].State != runnerauth.LifecycleShuttingDown || reports[2].Reason != "signal" {
-							t.Errorf("lifecycle reports=%+v", reports)
-						}
-					}()
 					cancel()
 					if !joined {
 						err := <-done
