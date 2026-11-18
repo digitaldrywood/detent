@@ -374,7 +374,7 @@ func TestDirtyCheckpointReworkMakesProgress(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			source := initRunnerSourceRepo(t)
-			gitfixture.AddOrigin(t, source)
+			gitfixture.AddOrigin(t, source, runRunnerGit)
 			backend := newReworkWorkspace(t, source, filepath.Join(t.TempDir(), "workspaces"))
 			issue := connector.Issue{ID: "work", Identifier: "example#1", State: "Rework"}
 			ownedIssue := workspaceIssue("default", issue)
@@ -564,7 +564,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			source := initRunnerSourceRepo(t)
-			remote := gitfixture.AddOrigin(t, source)
+			remote := gitfixture.AddOrigin(t, source, runRunnerGit)
 			backend := newReworkWorkspace(t, source, filepath.Join(t.TempDir(), "workspaces"))
 			issue := connector.Issue{ID: "native", Identifier: "native#141", State: "Rework"}
 			if test.normal {
@@ -625,23 +625,15 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
 				runRunnerGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-personal-signer"))
 			}
-			readFile := func(path string) string {
-				t.Helper()
-				data, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				return string(data)
-			}
 			var signer, signingUnavailable, signerBefore string
 			if test.signed || test.signingFail {
 				signer = filepath.Join(t.TempDir(), "signing-key")
 				if output, err := exec.CommandContext(t.Context(), "ssh-keygen", "-t", "ed25519", "-N", "", "-f", signer).CombinedOutput(); err != nil {
 					t.Fatalf("create signing fixture: %v: %s", err, output)
 				}
-				signerBefore = readFile(signer)
+				signerBefore = gitfixture.ReadFile(t, signer)
 				allowed := filepath.Join(t.TempDir(), "allowed-signers")
-				writeLocalProgressFile(t, filepath.Dir(allowed), filepath.Base(allowed), "test@example.com "+readFile(signer+".pub"))
+				writeLocalProgressFile(t, filepath.Dir(allowed), filepath.Base(allowed), "test@example.com "+gitfixture.ReadFile(t, signer+".pub"))
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
 				runRunnerGit(t, source, "config", "gpg.format", "ssh")
 				runRunnerGit(t, source, "config", "user.signingkey", signer)
@@ -661,7 +653,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 			}
 			configPath := filepath.Join(source, ".git", "config")
-			configBefore := readFile(configPath)
+			configBefore := gitfixture.ReadFile(t, configPath)
 			if test.lateConflict {
 				stageFile(info.Path, "repair.md", "preserved staged progress\n")
 			}
@@ -1177,14 +1169,14 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			if test.signed {
 				runRunnerGit(t, info.Path, "verify-commit", head)
-				if readFile(signer) != signerBefore {
+				if gitfixture.ReadFile(t, signer) != signerBefore {
 					t.Fatal("host finalization changed signer material")
 				}
 			}
 			if got := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "unrelated")); got != original {
 				t.Fatal("finalization moved unrelated ref")
 			}
-			if readFile(configPath) != configBefore {
+			if gitfixture.ReadFile(t, configPath) != configBefore {
 				t.Fatal("finalization changed host signing configuration")
 			}
 			if !test.normal && !strings.Contains(agent.request.Prompt, "runner owns native rebase") {

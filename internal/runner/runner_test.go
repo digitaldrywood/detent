@@ -7939,25 +7939,28 @@ func runAgentGit(ctx context.Context, dir string, args ...string) error {
 
 func initRunnerSourceRepo(t *testing.T) string {
 	t.Helper()
-
-	dir := t.TempDir()
-	runRunnerGit(t, dir, "init", "-b", "main")
-	runRunnerGit(t, dir, "config", "maintenance.autoDetach", "false")
-	runRunnerGit(t, dir, "config", "core.autocrlf", "false")
-	runRunnerGit(t, dir, "config", "user.name", "Test User")
-	runRunnerGit(t, dir, "config", "user.email", "test@example.com")
-	runRunnerGit(t, dir, "config", "commit.gpgsign", "false")
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
-		t.Fatalf("write README.md: %v", err)
-	}
-	runRunnerGit(t, dir, "add", "README.md")
-	runRunnerGit(t, dir, "commit", "-m", "initial")
-	return dir
+	return gitfixture.SourceRepo(t, runRunnerGit)
 }
 
 func runRunnerGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	return gitfixture.Git(t, dir, args...)
+	ctx := testenv.WaitContext(t, t.Context())
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	procgroup.Configure(ctx, cmd)
+	outputFile, err := os.CreateTemp(t.TempDir(), "git-output-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = outputFile, outputFile
+	runErr := cmd.Run()
+	if err := outputFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output := gitfixture.ReadFile(t, outputFile.Name())
+	if runErr != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(cmd.Args[1:], " "), runErr, output)
+	}
+	return output
 }
 
 func containsRunnerString(values []string, want string) bool {
