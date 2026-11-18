@@ -17,7 +17,7 @@ import (
 type Authority interface {
 	Authorize(context.Context) error
 	ExecutionError(context.Context, error) error
-	Checkpoint(context.Context, tracker.NativeCheckpoint) error
+	Checkpoint(context.Context, tracker.NativeCheckpoint, func(context.Context) error) error
 	CheckSource(tracker.ChangeDetail, tracker.AttemptDiffRequest) error
 }
 type Result struct{ Receipt *tracker.NativePRPublication }
@@ -178,6 +178,10 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 			if kind == "git_push" && state == "pending" {
 				checkpoint.ExpectedHeadSHA = publication.ExpectedHeadSHA
 			}
+			var verifyReceipt func(context.Context) error
+			if checkpoint.EffectState == "pending" && checkpoint.ExternalEffect == kind && checkpoint.HeadSHA == version.HeadSHA && (state == "confirmed" || state == "ambiguous") {
+				verifyReceipt = authorize
+			}
 			checkpoint.ExternalEffect, checkpoint.EffectState = kind, state
 			checkpoint.Publication = nil
 			checkpoint.EffectID = binding.EffectID(kind)
@@ -185,7 +189,7 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 			if state == "none" {
 				checkpoint.ExternalEffect, checkpoint.EffectID, checkpoint.ExpectedHeadSHA = "none", "", ""
 			}
-			if err := host.Checkpoint(ctx, checkpoint); err != nil {
+			if err := host.Checkpoint(ctx, checkpoint, verifyReceipt); err != nil {
 				return err
 			}
 			if kind == "pr_create" && state == "confirmed" {
@@ -218,7 +222,7 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 		}
 		checkpoint := *executionState.Data.Handoff
 		checkpoint.Publication = receipt
-		if err := host.Checkpoint(ctx, checkpoint); err != nil {
+		if err := host.Checkpoint(ctx, checkpoint, nil); err != nil {
 			return Result{}, err
 		}
 		return Result{Receipt: receipt}, nil

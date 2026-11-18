@@ -269,8 +269,12 @@ func (a publicationAuthority) Authorize(ctx context.Context) error {
 func (a publicationAuthority) ExecutionError(ctx context.Context, err error) error {
 	return a.execution.executionError(ctx, err)
 }
-func (a publicationAuthority) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
-	return a.execution.append(ctx, "run.checkpointed", "", &checkpoint)
+func (a publicationAuthority) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint, verifyReceipt func(context.Context) error) error {
+	var receipt *checkpointReceipt
+	if verifyReceipt != nil {
+		receipt = &checkpointReceipt{head: checkpoint.HeadSHA, verifyPublication: verifyReceipt}
+	}
+	return a.execution.appendEvent(ctx, "run.checkpointed", "", &checkpoint, receipt)
 }
 func (a publicationAuthority) CheckSource(detail tracker.ChangeDetail, diff tracker.AttemptDiffRequest) error {
 	return a.execution.requireRecoveredSource(detail, diff)

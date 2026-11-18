@@ -11,6 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -95,6 +96,68 @@ func TestReplayEventRequiresCurrentAuthority(t *testing.T) {
 				}
 				if posts != 0 || !errors.Is(err, want) {
 					t.Fatalf("event posts=%d error=%v, want zero and %v", posts, err, want)
+				}
+			})
+		})
+	}
+}
+
+func TestStoppedValidationReceiptAuthority(t *testing.T) {
+	for _, stage := range []string{"source changed", "lease expires before event", "receipt delivery recovers", "unsent observations"} {
+		t.Run(stage, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var diffs, events int
+				var sent tracker.NativeRunEvent
+				e := replayExecution(t, func(r *http.Request) (int, string, error) {
+					switch {
+					case strings.HasSuffix(r.URL.Path, "/diff"):
+						diffs++
+						if stage == "lease expires before event" {
+							<-time.After(time.Minute)
+						}
+					case strings.HasSuffix(r.URL.Path, "/events"):
+						events++
+						if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+							return 0, "", err
+						}
+						if stage == "receipt delivery recovers" && events == 1 {
+							return 0, "", ErrUnavailable
+						}
+					}
+					return 200, "{}", nil
+				})
+				head := nativeChangeFixtureHead("a")
+				if stage == "source changed" {
+					e.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("b"), "changed.go"))
+				}
+				if stage == "unsent observations" {
+					e.claim.lease.RunDetailBatching = true
+					if err := e.append(t.Context(), "run.observed", "", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx := api.WithMutationAuthority(t.Context(), e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return runner.ErrOperatorStopped })
+				err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head}, Validation: &gate.CommandResult{HeadSHA: head}})
+				switch stage {
+				case "unsent observations":
+					if err != nil || events != 1 || sent.Type != "run.checkpointed" || sent.Data.Sequence != 1 || len(sent.PriorEvents) != 0 {
+						t.Fatalf("buffered observations: sent=%s sequence=%d prior=%d events=%d error=%v", sent.Type, sent.Data.Sequence, len(sent.PriorEvents), events, err)
+					}
+				case "source changed":
+					if !errors.Is(err, runner.ErrOperatorStopped) || diffs != 0 || events != 0 {
+						t.Fatalf("changed source: diffs=%d events=%d error=%v", diffs, events, err)
+					}
+				case "lease expires before event":
+					if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || diffs != 1 || events != 0 {
+						t.Fatalf("expired lease: diffs=%d events=%d error=%v", diffs, events, err)
+					}
+				case "receipt delivery recovers":
+					if !nativeTransportUnavailable(err) {
+						t.Fatalf("first receipt delivery = %v", err)
+					}
+					if err := e.flush(ctx); err != nil || events != 2 || diffs != 1 {
+						t.Fatalf("receipt retry: diffs=%d events=%d error=%v", diffs, events, err)
+					}
 				}
 			})
 		})

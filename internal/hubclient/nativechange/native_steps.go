@@ -14,10 +14,14 @@ func (e *nativeExecution) RecordStep(ctx context.Context, receipt tracker.Native
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.recordStep(ctx, receipt)
+	var retention *checkpointReceipt
+	if receipt.Step == "validation" && receipt.Validation != nil && receipt.Source.HeadSHA != "" && receipt.Validation.HeadSHA == receipt.Source.HeadSHA {
+		retention = &checkpointReceipt{head: receipt.Source.HeadSHA}
+	}
+	return e.recordStep(ctx, receipt, retention)
 }
 
-func (e *nativeExecution) recordStep(ctx context.Context, receipt tracker.NativeStepReceipt) error {
+func (e *nativeExecution) recordStep(ctx context.Context, receipt tracker.NativeStepReceipt, retention *checkpointReceipt) error {
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
@@ -45,7 +49,7 @@ func (e *nativeExecution) recordStep(ctx context.Context, receipt tracker.Native
 	if receipt.Step == "agent_turn" || receipt.Step == "commit" {
 		checkpoint = &receipt.Source
 	}
-	return e.append(ctx, "run.checkpointed", "", checkpoint)
+	return e.appendEvent(ctx, "run.checkpointed", "", checkpoint, retention)
 }
 
 func (e *nativeExecution) Step(ctx context.Context, binding tracker.NativeStepReceipt) (tracker.NativeStepReceipt, error) {
@@ -68,7 +72,7 @@ func (e *nativeExecution) Step(ctx context.Context, binding tracker.NativeStepRe
 				if err != nil {
 					return tracker.NativeStepReceipt{}, err
 				}
-				return restored, e.recordStep(ctx, receipt)
+				return restored, e.recordStep(ctx, receipt, nil)
 			}
 		}
 	}

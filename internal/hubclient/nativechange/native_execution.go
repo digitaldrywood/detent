@@ -60,6 +60,7 @@ type nativeExecution struct {
 	publication       *tracker.NativePRPublication
 	rejected          *tracker.NativeRunEvent
 	pending           *tracker.NativeRunEvent
+	pendingReceipt    *checkpointReceipt
 	observations      []tracker.NativeRunEvent
 	cancel            context.CancelCauseFunc
 	// diffSource computes the stored attempt diff the execution posts before
@@ -306,14 +307,42 @@ func (e *nativeExecution) leaseValidity() time.Duration {
 	return current.Deadline.Sub(e.scheduler.now())
 }
 
-func (e *nativeExecution) authorizeEvent(ctx context.Context) error {
+func (e *nativeExecution) authorizeEvent(ctx context.Context, receipt bool) error {
 	if err := api.MutationEffectError(ctx); err != nil {
-		return err
+		if !receipt || ctx.Err() != nil || !errors.Is(err, runner.ErrOperatorStopped) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			return err
+		}
 	}
 	if e.leaseValidity() <= 0 {
 		return runner.ErrExecutionAuthorityUnavailable
 	}
 	return nil
+}
+
+type checkpointReceipt struct {
+	head              string
+	verifyPublication func(context.Context) error
+}
+
+func (e *nativeExecution) authorizeReceiptWrite(ctx context.Context, receipt *checkpointReceipt, diff *tracker.AttemptDiffRequest) error {
+	err := e.authorizeEvent(ctx, false)
+	if !errors.Is(err, runner.ErrOperatorStopped) || receipt == nil || diff == nil || diff.HeadSHA != receipt.head {
+		return err
+	}
+	if err := e.authorizeEvent(ctx, true); err != nil {
+		return err
+	}
+	if receipt.verifyPublication != nil {
+		if err := receipt.verifyPublication(ctx); err != nil {
+			return err
+		}
+	} else if e.diffSource != nil {
+		current, ok := e.diffSource(ctx)
+		if !ok || current.HeadSHA != receipt.head {
+			return runner.ErrOperatorStopped
+		}
+	}
+	return e.authorizeEvent(ctx, true)
 }
 
 func (e *nativeExecution) renew(ctx context.Context, capacity int) error {
@@ -933,10 +962,14 @@ func (e *nativeExecution) diffForSequence(sequence int64) *tracker.AttemptDiffRe
 // running and its lease is therefore the producer; the generation is the run
 // event sequence the diff belongs to, which is why the post happens before the
 // event and not after it.
-func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnosticErr error) {
+func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) error {
+	return e.postCheckpointDiff(ctx, sequence, nil)
+}
+
+func (e *nativeExecution) postCheckpointDiff(ctx context.Context, sequence int64, receipt *checkpointReceipt) (diagnosticErr error) {
 	done := e.diagnosticOperation("native.postDiff")
 	defer func() { done(diagnosticErr) }()
-	if err := api.MutationEffectError(ctx); err != nil {
+	if err := e.authorizeEvent(ctx, receipt != nil); err != nil {
 		return err
 	}
 	if e.generationDiff == nil || e.generationDiff.Generation.Seq != sequence {
@@ -954,7 +987,9 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 			return e.executionError(ctx, err)
 		}
 	}
-	if _, err := e.claim.source.NativeClient().PostAttemptDiff(ctx, e.data.AttemptID, *e.generationDiff); err != nil {
+	client := e.claim.source.NativeClient()
+	authorize := func(ctx context.Context) error { return e.authorizeReceiptWrite(ctx, receipt, e.generationDiff) }
+	if _, err := client.PostExecutionDiff(ctx, e.data.AttemptID, *e.generationDiff, authorize); err != nil {
 		err = e.executionError(ctx, err)
 		if !nativeTransportUnavailable(err) {
 			e.generationDiff = nil
@@ -966,6 +1001,10 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 }
 
 func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, immediate ...bool) error {
+	return e.appendEvent(ctx, kind, outcome, checkpoint, nil, immediate...)
+}
+
+func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, receipt *checkpointReceipt, immediate ...bool) error {
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
@@ -988,6 +1027,15 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 			data.Usage[i].To, data.Usage[i].ReportedAt = at, at
 			data.Usage[i].Revision = data.Sequence + 1
 		}
+	}
+	prior := e.observations
+	if receipt != nil && len(prior) != 0 {
+		if errors.Is(api.MutationEffectError(ctx), runner.ErrOperatorStopped) {
+			data.Sequence = prior[0].Data.Sequence - 1
+		} else if err := e.flushObservations(ctx); err != nil {
+			return err
+		}
+		prior = nil
 	}
 	data.Sequence++
 	data.Outcome = outcome
@@ -1012,7 +1060,7 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 		e.runtimeDirty = false
 		return nil
 	}
-	event.PriorEvents = append([]tracker.NativeRunEvent(nil), e.observations...)
+	event.PriorEvents = slices.Clone(prior)
 	encoded, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -1021,7 +1069,7 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	if err := json.Unmarshal(encoded, &event); err != nil {
 		return err
 	}
-	e.pending = &event
+	e.pending, e.pendingReceipt = &event, receipt
 	return e.flush(ctx)
 }
 
@@ -1031,7 +1079,11 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	done := e.diagnosticOperation("append." + e.pending.Type)
 	defer func() { done(err) }()
-	if err := e.authorizeEvent(ctx); err != nil {
+	receipt := e.pendingReceipt
+	if receipt != nil && (e.pending.Type != "run.checkpointed" || len(e.pending.PriorEvents) != 0 || !checkpoint.SameRun(e.data, e.pending.Data) || e.data.LeaseID != e.claim.lease.ID || e.data.FencingToken != e.claim.lease.FencingToken) {
+		receipt = nil
+	}
+	if err := e.authorizeEvent(ctx, receipt != nil); err != nil {
 		return err
 	}
 	if e.remaining() <= 0 {
@@ -1040,7 +1092,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 		}
 	}
 	if (e.pending.Type == "run.checkpointed" || e.pending.Type == "run.finished") && e.storedSeq != e.pending.Data.Sequence && e.releaseDelivery == nil {
-		if err := e.postDiff(ctx, e.pending.Data.Sequence); err != nil {
+		if err := e.postCheckpointDiff(ctx, e.pending.Data.Sequence, receipt); err != nil {
 			if nativeTransportUnavailable(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || api.MutationEffectError(ctx) != nil {
 				return err
 			}
@@ -1086,7 +1138,11 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("encode pending runtime: %w", err)
 	}
-	if err := e.claim.source.NativeClient().AppendExecutionEvent(ctx, e.claim.lease.WorkItemID, *e.pending, e.authorizeEvent); err != nil {
+	authorize := func(ctx context.Context) error {
+		diff := e.diffForSequence(e.pending.Data.Sequence)
+		return e.authorizeReceiptWrite(ctx, receipt, diff)
+	}
+	if err := e.claim.source.NativeClient().AppendExecutionEvent(ctx, e.claim.lease.WorkItemID, *e.pending, authorize); err != nil {
 		var refusal *APIError
 		if e.preparedOutcome != "" && errors.As(err, &refusal) && refusal.Status == http.StatusConflict && (refusal.Code == "run_sequence_conflict" || refusal.Code == "idempotency_conflict") {
 			path, pathErr := nativeItemPath(e.claim.lease.WorkItemID)
@@ -1164,7 +1220,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if e.data.Handoff == nil {
 		e.data.Handoff = checkpoint
 	}
-	e.pending = nil
+	e.pending, e.pendingReceipt = nil, nil
 	e.observations = nil
 	e.runtimeDirty = false
 	if runtime != nil && !bytes.Equal(previousRuntime, publishedRuntime) {
