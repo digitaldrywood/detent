@@ -1914,19 +1914,25 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}()
 		}
 	}
-	releaseWorkspace := func() {}
+	var releaseRestored []func()
+	defer func() {
+		for _, release := range releaseRestored {
+			release()
+		}
+	}()
 	if usage, ok := runWorkspace.(workspace.Usage); ok {
 		release, err := usage.Use(ctx, workspaceIssue)
 		if err != nil {
 			return RunResult{}, err
 		}
-		releaseWorkspace = release
+		defer release()
 	}
-	defer func() { releaseWorkspace() }()
 	r.logWorkerEvent(req.Issue, "worker_workspace_create_started", telemetry.WorkAttemptIDKey, req.WorkAttemptID)
 	if err := r.publishWorkspaceCreateStarted(req); err != nil {
 		return RunResult{}, err
 	}
+	ctx, stopHooks := r.withWorkspaceHooks(ctx)
+	defer stopHooks(&returnErr)
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
 		sourceRecovery := workspaceIssue.NativeRework || workspaceIssue.Source != nil && workspaceIssue.Source.Transferred
@@ -2807,8 +2813,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					if err != nil {
 						turnErr = errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
 					} else {
-						releaseWorkspace()
-						releaseWorkspace = release
+						releaseRestored = append(releaseRestored, release)
 					}
 				}
 				if turnErr == nil {
@@ -2832,17 +2837,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnErr = errors.Join(turnErr, err)
 		}
 		if turnErr == nil && result.FinalState == FinalStateCompleted && req.reviewSource != nil {
-			releaseWorkspace()
-			releaseWorkspace = func() {}
 			feedback, reviewErr := req.reviewSource(afterRunCtx, &result)
-			if usage, ok := runWorkspace.(workspace.Usage); ok {
-				release, err := usage.Use(afterRunCtx, workspaceIssue)
-				if err != nil {
-					reviewErr = errors.Join(reviewErr, err)
-				} else {
-					releaseWorkspace = release
-				}
-			}
 			turnErr = reviewErr
 			if feedback != "" && reviewErr == nil {
 				resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
@@ -3814,7 +3809,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		req.workspacePrepared = false
 	}
-	if usage, ok := runWorkspace.(workspace.Usage); ok {
+	if usage, ok := runWorkspace.(workspace.Usage); ok && !req.workspacePrepared {
 		release, err := usage.Use(ctx, workspaceIssue)
 		if err != nil {
 			return gate.ValidatorResult{}, err
@@ -3822,6 +3817,8 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		defer release()
 	}
 	r.logWorkerEvent(req.Issue, "worker_check_workspace_create_started")
+	ctx, stopHooks := r.withWorkspaceHooks(ctx)
+	defer stopHooks(&returnErr)
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
 		return gate.ValidatorResult{}, fmt.Errorf("create workspace: %w", err)
@@ -4703,6 +4700,19 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 		}
 	}
 	return nil
+}
+
+func (r *Runner) withWorkspaceHooks(ctx context.Context) (context.Context, func(*error)) {
+	ctx, stop := workspace.WithHookProcesses(ctx)
+	return ctx, func(primary *error) {
+		if err := stop(); err != nil {
+			if *primary != nil {
+				r.logger.Warn("workspace hook cleanup incomplete", "error", err)
+				return
+			}
+			*primary = fmt.Errorf("%w: %w", ErrWorkerProcessReap, err)
+		}
+	}
 }
 
 func (r *Runner) reapWorkspaceProcessesAfterTurn(
