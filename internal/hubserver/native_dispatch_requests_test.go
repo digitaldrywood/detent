@@ -827,12 +827,14 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
-		name       string
-		outcome    string
-		checkpoint string
-		candidate  bool
+		name         string
+		outcome      string
+		checkpoint   string
+		candidate    bool
+		retryInPlace bool
 	}{
 		{name: "failed", outcome: "failed", candidate: true},
+		{name: "failed in dispatchable In Progress without Todo route", outcome: "failed", candidate: true, retryInPlace: true},
 		{name: "cancelled", outcome: "cancelled", candidate: true},
 		{name: "interrupted", outcome: "interrupted", candidate: true},
 		{name: "successful dirty source without disposition", outcome: "succeeded", checkpoint: "dirty", candidate: true},
@@ -842,6 +844,10 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newDispatchGuardFixture(t)
+			if test.retryInPlace {
+				configureDispatchGuardState(t, f, tracker.NativeState{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}})
+				moveDispatchGuardFixture(t, f, "In Progress")
+			}
 			event := tracker.NativeRunEvent{
 				Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
 				Data: tracker.NativeRunData{

@@ -210,6 +210,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "Done", Terminal: true},
 	}
+	noTodoRoute := append([]connector.WorkflowState(nil), customRework...)
+	noTodoRoute[1].Transitions = []string{"Done", "Merging", "Fixing"}
 	checkpoint := DiffStats{Status: "clean", HeadSHA: strings.Repeat("c", 40), RecoveryStateExpected: true, RecoveryStateAvailable: true}
 	checkpointDeadline := fmt.Errorf("worker cancellation: deadline_exceeded (source: orchestrator.parent_context)\nrun agent turn: %w\nresolve cleanup ownership source: git rev-parse --git-common-dir failed: %w", runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)
 	yes, no := true, false
@@ -405,6 +407,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "Rework completion with new commits under requested changes stays in Rework", change: waiting, startHead: strings.Repeat("e", 40), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantState: "Rework", wantSameState: true},
 		{name: "unfinished source free completion with checkpoint returns to Rework", states: unfinishedWorkflow, change: &runpkg.NativeChange{}, humanReview: &no, diffStats: checkpoint, wantSettled: true, wantContinue: true, wantState: "Rework"},
 		{name: "recorded failed completion with retained checkpoint returns to Rework", states: unfinishedWorkflow, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, turnStarted: true, wantContinue: true, wantState: "Rework", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "unattributed failure without Todo route retries in configured lane", states: noTodoRoute, reworkState: "Fixing", humanReview: &no, runErr: errors.New("worker failed"), turnStarted: true, machineAttempt: 3, wantContinue: true, wantState: "Fixing"},
+		{name: "unattributed failure without outgoing retry retries in place", states: noRecoveryLane, humanReview: &no, runErr: errors.New("worker failed"), turnStarted: true, machineAttempt: 4, wantContinue: true, wantSameState: true, wantState: "In Progress"},
 		{name: "recorded failed completion without checkpoint returns to Todo", states: fourLanes, humanReview: &no, runErr: checkpointDeadline, turnStarted: true, wantContinue: true, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "retained failed checkpoint uses configured Rework", states: customRework, reworkState: "Fixing", humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, wantContinue: true, wantState: "Fixing", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "retained failed checkpoint refuses nondispatchable Rework", states: noDispatchRework, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, wantDeferred: true},

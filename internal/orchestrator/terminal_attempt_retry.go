@@ -342,19 +342,7 @@ func (o *Orchestrator) retryMachineFailure(ctx context.Context, state *State, is
 			return fmt.Errorf("read retry workflow: %w", err)
 		}
 		var allowed bool
-		preferred := target
-		target, allowed = nativeRetryLane(states, issue.State, issue.State)
-		if !allowed {
-			target, allowed = nativeRetryLane(states, issue.State, preferred)
-		}
-		if !allowed {
-			for _, candidate := range states {
-				target, allowed = nativeRetryLane(states, issue.State, candidate.Name)
-				if allowed {
-					break
-				}
-			}
-		}
+		target, allowed = nativeMachineRetryLane(states, issue.State, issue.State, target)
 		if !allowed {
 			return errors.New("no dispatchable retry lane is reachable")
 		}
