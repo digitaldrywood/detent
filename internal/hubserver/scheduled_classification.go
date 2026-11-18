@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -151,15 +150,21 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		now := s.config.Clock().UTC()
-		window, limit := time.Unix(0, 0).UTC(), int64(math.MaxInt64)
-		if plans := s.database.plansService().Plans(); plans != nil {
-			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
+		billing := s.database.plansService()
+		plans := billing.Plans()
+		var limit int64
+		if plans == nil {
+			defaults := hostedplans.PilotPlans()
+			plans = &defaults
+			limit = defaults.Plans[0].Allowances["api_mutations"]
+		} else {
+			entitlement, err := hubapi.FeatureResult(billing.EntitlementRecord(ctx, w, now))
 			if err != nil {
 				return err
 			}
 			limit = entitlement.Allowances["api_mutations"]
-			window = time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 		}
+		window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 		usage, err := w.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: scope.Organization, ID: "scheduled-ci/" + policy.Digest(identity), WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
 		if err != nil {
 			return err

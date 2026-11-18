@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -183,6 +184,25 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if test.name == "Go test" {
+				service.database.hostedRuntime.Store(nil)
+				defaults := hostedplans.PilotPlans()
+				limit := defaults.Plans[0].Allowances["api_mutations"]
+				err := storage.WriteTenant(t.Context(), "org_example", corestore.Serving, func(w tenantstore.Writer) error {
+					usage, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: "org_example", ID: "existing-usage", WindowStart: time.Unix(0, 0).UTC(), Metric: "api_mutations", Amount: limit}, limit)
+					if err == nil && !usage.Applied {
+						t.Fatal("default budget fixture did not consume its allowance")
+					}
+					return err
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				distinct := input
+				distinct.JobID = "500"
+				requireNativeStatus(t, call("prj_first", distinct), http.StatusTooManyRequests)
+			}
+
 			input.HeadSHA = strings.Repeat("b", 40)
 			response = call("prj_first", input)
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
