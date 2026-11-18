@@ -1316,6 +1316,20 @@
         ]
       }
     },
+    "internal/cloudentry/platformstore/allocator.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "platform"
+      ],
+      "inventory": {
+        "operations": {
+          "Repository.AllocationSchedule:SQL": 1
+        },
+        "tables": [
+          "registry/organizations"
+        ]
+      }
+    },
     "internal/cloudentry/platformstore/entry.go": {
       "atomic_groups": [
         "platform-oauth",
@@ -1622,9 +1636,6 @@
         "operations": {
           "Service.admissionLoad:QueryRowContext": 1,
           "Service.admissionLoad:SQL": 1,
-          "Service.deletingOrganizations:QueryContext": 1,
-          "Service.deletingOrganizations:SQL": 1,
-          "Service.dueOrganizations:QueryContext": 1,
           "Service.finishDeletion:ExecContext": 1,
           "Service.finishDeletion:SQL": 1,
           "Service.pendingOrganizations:QueryContext": 1,
@@ -5731,9 +5742,6 @@
       ],
       "inventory": {
         "operations": {
-          "session.ClaimIntegrationPage:Exec": 1,
-          "session.ClaimIntegrationPage:QueryRow": 2,
-          "session.ClaimIntegrationPage:SQL": 3,
           "session.IntegrationPage:Query": 1,
           "session.IntegrationPage:QueryRow": 1,
           "session.IntegrationPage:SQL": 2,
@@ -6048,6 +6056,45 @@
         "operations": {
           "session.LocalBoardImportAllowanceUsage:generated:LocalBoardImportAllowanceUsage": 1,
           "session.LocalBoardImportAllowanceUsage:query-receiver": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/maintenanceprobe/families.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "access",
+        "activity",
+        "analytics",
+        "billing",
+        "board",
+        "core",
+        "delivery",
+        "event",
+        "lease",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "ClaimIntegrationPage:QueryRow": 1,
+          "Reader.MaintenanceDue:SQL": 1,
+          "Reader.SweepDue:QueryRow": 1,
+          "Reader.SweepDue:SQL": 3,
+          "claimIntegrationPage:SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/maintenanceprobe/probe.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "Reader.GitHubOutboundDeadline:QueryRow": 1,
+          "Reader.GitHubOutboundDeadline:SQL": 1,
+          "Reader.due:QueryRow": 1
         },
         "tables": []
       }
@@ -12187,6 +12234,115 @@
         "tables": [
           "hub/collaboration_events",
           "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118143440_allocator_due_organizations.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "platform"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/organizations"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118143723_outbound_due_probe.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118144803_maintenance_due_work.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "access",
+        "activity",
+        "analytics",
+        "billing",
+        "board",
+        "core",
+        "delivery",
+        "event",
+        "lease",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/attempt_usage",
+          "hub/change_evidence",
+          "hub/change_issue_links",
+          "hub/change_versions",
+          "hub/collaboration_events",
+          "hub/health_detector_ticks",
+          "hub/health_findings",
+          "hub/health_slack_deliveries",
+          "hub/issues",
+          "hub/leases",
+          "hub/native_attempts",
+          "hub/native_board_dirty",
+          "hub/native_board_items",
+          "hub/native_comments",
+          "hub/onboarding_issue_intake",
+          "hub/organizations",
+          "hub/project_policies",
+          "hub/projects",
+          "hub/slack_integrations"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118163727_maintenance_probe_scope_and_deadlines.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "access",
+        "activity",
+        "analytics",
+        "billing",
+        "board",
+        "core",
+        "delivery",
+        "event",
+        "lease",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/attempt_usage",
+          "hub/change_evidence",
+          "hub/change_issue_links",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/collaboration_events",
+          "hub/health_detector_ticks",
+          "hub/health_findings",
+          "hub/health_slack_deliveries",
+          "hub/issues",
+          "hub/leases",
+          "hub/native_attempts",
+          "hub/native_board_dirty",
+          "hub/native_board_items",
+          "hub/native_comments",
+          "hub/onboarding_issue_intake",
+          "hub/organizations",
+          "hub/project_policies",
+          "hub/projects",
+          "hub/slack_integrations"
         ]
       }
     },
