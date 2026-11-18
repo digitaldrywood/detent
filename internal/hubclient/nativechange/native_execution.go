@@ -321,6 +321,7 @@ func (e *nativeExecution) authorizeEvent(ctx context.Context, receipt bool) erro
 }
 
 type checkpointReceipt struct {
+	observation       *tracker.NativeRunEvent
 	head              string
 	verifyPublication func(context.Context) error
 }
@@ -1103,6 +1104,12 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	if err := e.authorizeEvent(ctx, receipt != nil); err != nil {
 		return err
+	}
+	if receipt != nil && receipt.observation != nil {
+		if err := e.reconcileObservation(ctx, receipt.observation); err != nil {
+			return err
+		}
+		receipt.observation = nil
 	}
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {

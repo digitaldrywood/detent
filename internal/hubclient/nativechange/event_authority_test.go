@@ -212,3 +212,63 @@ func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
 		})
 	}
 }
+
+func TestStoppedReceiptAfterUnacknowledgedObservation(t *testing.T) {
+	for _, delivery := range []string{"committed", "never received", "replaced lease"} {
+		t.Run(delivery, func(t *testing.T) {
+			var observed, received tracker.NativeRunEvent
+			var posts, reads int
+			e := replayExecution(t, func(r *http.Request) (int, string, error) {
+				switch {
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/attempts/"):
+					reads++
+					if reads == 1 {
+						return 0, "", ErrUnavailable
+					}
+					attempt := tracker.NativeAttempt{NativeRunData: observed.Data}
+					if delivery == "never received" {
+						attempt.Sequence--
+					}
+					if delivery == "replaced lease" {
+						attempt.FencingToken++
+					}
+					body, err := json.Marshal(attempt)
+					return 200, string(body), err
+				case strings.HasSuffix(r.URL.Path, "/events"):
+					posts++
+					if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+						t.Fatal(err)
+					}
+					if received.Type == "run.observed" {
+						observed = received
+						return 0, "", ErrUnavailable
+					}
+				}
+				return 200, "{}", nil
+			})
+			if err := e.append(t.Context(), "run.observed", "", nil, true); !nativeTransportUnavailable(err) {
+				t.Fatal(err)
+			}
+			head := nativeChangeFixtureHead("a")
+			ctx := api.WithMutationAuthority(t.Context(), e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return runner.ErrOperatorStopped })
+			err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head}, Validation: &gate.CommandResult{HeadSHA: head}})
+			if !nativeTransportUnavailable(err) {
+				t.Fatalf("receipt reconciliation during outage = %v", err)
+			}
+			err = e.flush(ctx)
+			if delivery == "replaced lease" {
+				if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || posts != 1 {
+					t.Fatalf("replaced owner: posts=%d error=%v", posts, err)
+				}
+				return
+			}
+			want := observed.Data.Sequence + 1
+			if delivery == "never received" {
+				want--
+			}
+			if err != nil || posts != 2 || received.Type != "run.checkpointed" || received.Data.Sequence != want || len(received.PriorEvents) != 0 || len(received.Data.Steps) != 1 || received.Data.Steps[0].Validation.HeadSHA != head {
+				t.Fatalf("posts=%d receipt=%+v error=%v", posts, received, err)
+			}
+		})
+	}
+}
