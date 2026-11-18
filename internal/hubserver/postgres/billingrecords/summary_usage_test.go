@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/usagecost"
 )
@@ -106,14 +107,16 @@ func TestSummaryUsageRestrictsHistoryBeforePopulationLimit(t *testing.T) {
 		}
 		t.Run(string(org)+"/batch empty attempts at the exact row limit", func(t *testing.T) {
 			counter := &pgstoretest.ReportCountingTracer{}
-			tx, err := pgstoretest.TracedFeaturePool(t, pool, counter).Begin(t.Context())
+			traced := pgstoretest.TracedFeaturePool(t, pool, counter)
+			pools, err := pgtransport.Adopt(traced, traced)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := pools.Begin(t.Context(), pgtransport.Scope{Organization: org}, pgtransport.Options{ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tx.Rollback(t.Context())
-			if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", org); err != nil {
-				t.Fatal(err)
-			}
 			attempts := []reportstore.AttemptFact{{AttemptID: "attempt_summary", ProjectID: "prj_1"}}
 			for i := range 64 {
 				attempts = append(attempts, reportstore.AttemptFact{AttemptID: fmt.Sprintf("empty-%d", i), ProjectID: "prj_1"})
