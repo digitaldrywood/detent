@@ -48,10 +48,50 @@ func (l *Lifetime) Capture(ctx context.Context, path, owner string) (bool, error
 	ctx = l.withOwner(ctx, owner)
 	verified, _ := verifiedProcessTargets(ctx, path, ReapProcessScanner, procstart.Identity, processEnvironment, syscall.Kill)
 	pids, err := verified(ctx, path)
-	if err != nil || len(pids) > 0 {
-		return len(pids) > 0, err
+	return l.unidentifiedWriter || len(l.witnesses) > 0 || len(pids) > 0, err
+}
+
+type writerSnapshotKey struct{}
+
+func (l *Lifetime) recordWriters(ctx context.Context) (context.Context, error) {
+	holders, err := l.candidates(ctx)
+	ctx = context.WithValue(ctx, writerSnapshotKey{}, holders)
+	matched := false
+	for _, pid := range holders {
+		start, inspectErr := procstart.Identity(pid)
+		if errors.Is(inspectErr, procstart.ErrNotRunning) {
+			continue
+		}
+		if inspectErr != nil {
+			err = errors.Join(err, inspectErr)
+			continue
+		}
+		writer, inspectErr := l.holdsWriter(ctx, pid)
+		if inspectErr != nil || !writer {
+			err = errors.Join(err, inspectErr)
+			continue
+		}
+		current, inspectErr := procstart.Matches(pid, start)
+		if inspectErr != nil || !current {
+			err = errors.Join(err, inspectErr)
+			continue
+		}
+		matched = true
+		if l.starts[pid] != start {
+			if l.witnesses == nil {
+				l.witnesses = make(map[int]string)
+			}
+			l.witnesses[pid] = start
+		}
 	}
-	return l.Active()
+	if !matched || err != nil {
+		active, activeErr := l.Active()
+		if active || activeErr != nil {
+			l.unidentifiedWriter = true
+		}
+		err = errors.Join(err, activeErr)
+	}
+	return ctx, err
 }
 
 func (l *Lifetime) Active() (bool, error) {
@@ -64,6 +104,9 @@ func (l *Lifetime) Active() (bool, error) {
 }
 
 func (l *Lifetime) candidates(ctx context.Context) ([]int, error) {
+	if snapshot, ok := ctx.Value(writerSnapshotKey{}).([]int); ok {
+		return snapshot, nil
+	}
 	active, err := l.Active()
 	if err != nil || !active {
 		return nil, err
