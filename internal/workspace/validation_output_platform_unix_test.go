@@ -342,12 +342,28 @@ func TestValidationScratchRemovalPreservesReceipt(t *testing.T) {
 				}
 				events = append(events, "remove")
 				if attempts == 1 || test.persistent {
+					entries, err := os.ReadDir(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, entry := range entries {
+						if err := os.RemoveAll(filepath.Join(path, entry.Name())); err != nil {
+							t.Fatal(err)
+						}
+					}
 					created := make(chan error, 1)
 					go func() { created <- os.WriteFile(filepath.Join(path, "late-entry"), nil, 0o600) }()
 					if err := <-created; err != nil {
 						return err
 					}
-					return &os.PathError{Op: "unlinkat", Path: path, Err: test.errno}
+					err = os.Remove(path)
+					if !errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, syscall.EEXIST) {
+						t.Fatalf("remove directory with late entry: %v", err)
+					}
+					if test.errno == syscall.EEXIST {
+						return &os.PathError{Op: "unlinkat", Path: path, Err: syscall.EEXIST}
+					}
+					return err
 				}
 				return os.RemoveAll(path)
 			}
