@@ -118,7 +118,7 @@ func (s *Service) startAllocator(parent context.Context) {
 		defer close(s.allocatorDone)
 		const base = 5 * time.Second
 		interval := base
-		timer := time.NewTimer(interval)
+		timer := time.NewTicker(interval)
 		defer timer.Stop()
 		var after platformstore.AllocationCandidate
 		for {
