@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -38,13 +39,27 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	var foreign artifact.Reservation
 	var foreignReceipt artifact.Reference
-	for _, suffix := range []string{"a", "b"} {
-		t.Run(suffix, func(t *testing.T) {
+	for _, fixture := range []struct {
+		suffix string
+		minute int
+	}{{"a", 0}, {"b", 4}} {
+		t.Run(fixture.suffix, func(t *testing.T) {
+			suffix := fixture.suffix
 			organization := tracker.OrganizationID("org_" + strings.Repeat(suffix, 32))
 			project := tracker.ProjectID("prj_" + strings.Repeat("c", 32))
 			cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
-			now := time.Now().UTC()
-			cfg.Clock = func() time.Time { return now }
+			var databaseTime time.Time
+			if err := admin.QueryRowContext(t.Context(), `SELECT clock_timestamp()`).Scan(&databaseTime); err != nil {
+				t.Fatal(err)
+			}
+			start := databaseTime.UTC().Truncate(time.Hour).Add(time.Duration(fixture.minute)*time.Minute + 15*time.Second)
+			if start.Before(databaseTime) {
+				start = start.Add(time.Hour)
+			}
+			clock := hubtest.NewClock(start)
+			cfg.Clock = clock.Now
+			cfg.Postgres.LeaseClock = clock.Now
+			now := clock.Now()
 			cfg.Hosted.OrganizationID = string(organization)
 			cfg.SecretKeys = secretTestKeys(t, "1", "1")
 			seedHostedStartup(t, cfg)
@@ -124,7 +139,8 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: organization, ProjectID: project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: descriptor.ID, BoundAt: now}); err != nil {
 					return err
 				}
-				now = lease.RenewedAt
+				now := lease.RenewedAt
+				clock.Set(now)
 				reservation.LeaseID, reservation.FencingToken = lease.LeaseID, lease.FencingToken
 				if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
 					return err
@@ -183,21 +199,36 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				{"renewed while locking", false, http.StatusNoContent},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					originalNow := now
-					defer func() { service.config.TenantRepository = repository; now = originalNow }()
-					service.config.TenantRepository = artifactLeaseClockRepository{Repository: repository, renew: !tc.expired, afterLock: func(lease leasestore.Lease) {
-						now = lease.RenewedAt
+					beforeLock := clock.Now()
+					requestClock := hubtest.NewClock(beforeLock)
+					fixture := &Service{config: service.config, database: service.database, echo: echo.New()}
+					fixture.config.Clock = requestClock.Now
+					fixture.config.TenantRepository = artifactLeaseClockRepository{Repository: repository, afterLock: func(ctx context.Context, w tenantstore.Writer, lease leasestore.Lease) (leasestore.Lease, error) {
 						if tc.expired {
-							now = lease.ExpiresAt
-						} else {
-							originalNow = now
+							requestClock.Set(lease.ExpiresAt)
+							return lease, nil
 						}
+						renewAt := beforeLock.Add(30 * time.Second)
+						clock.Set(renewAt)
+						requestClock.Set(renewAt)
+						renewed, err := w.Renew(ctx, leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, time.Minute)
+						if err == nil && (!renewed.RenewedAt.Equal(renewAt) || !renewed.ExpiresAt.After(lease.ExpiresAt)) {
+							t.Errorf("renewed lease interval = [%v, %v), want renewal at %v extending expiry past %v", renewed.RenewedAt, renewed.ExpiresAt, renewAt, lease.ExpiresAt)
+						}
+						return renewed, err
 					}}
-					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reservation), tc.status)
+					fixture.registerArtifactRoutes(fixture.echo)
+					response := httptest.NewRecorder()
+					fixture.echo.ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path, workerToken, reservation))
+					requireNativeStatus(t, response, tc.status)
+					if !requestClock.Now().After(beforeLock) {
+						t.Fatal("request did not reach the lease lock")
+					}
 				})
 			}
 
 			t.Run("authorization bound", func(t *testing.T) {
+				now := clock.Now()
 				rows := func(expired bool) int {
 					t.Helper()
 					var count int
@@ -218,10 +249,10 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				if got := rows(false); got != artifactstore.UploadAuthorizationLimit {
 					t.Fatalf("live authorizations=%d, want %d", got, artifactstore.UploadAuthorizationLimit)
 				}
-				if _, err := admin.ExecContext(t.Context(), `UPDATE artifact_upload_authorizations SET created_at=$2::timestamptz-interval '2 hours',expires_at=$2::timestamptz-interval '1 hour' WHERE organization_id=$1 AND kind='screenshot'`, organization, now); err != nil {
+				if _, err := admin.ExecContext(t.Context(), `UPDATE artifact_upload_authorizations SET created_at=CURRENT_TIMESTAMP-interval '2 hours',expires_at=CURRENT_TIMESTAMP-interval '1 hour' WHERE organization_id=$1 AND kind='screenshot'`, organization); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_upload_authorizations(organization_id,project_id,service_id,idempotency_key,work_item_id,run_id,attempt_id,kind,bytes,created_at,expires_at) SELECT $1,$2,$3,'backlog-'||n,$4,$5,$6,'video',1,$7::timestamptz-interval '2 hours',$7::timestamptz-interval '1 hour' FROM generate_series(1,300) n`, organization, project, reservation.ServiceID, reservation.WorkItemID, reservation.RunID, reservation.AttemptID, now); err != nil {
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_upload_authorizations(organization_id,project_id,service_id,idempotency_key,work_item_id,run_id,attempt_id,kind,bytes,created_at,expires_at) SELECT $1,$2,$3,'backlog-'||n,$4,$5,$6,'video',1,CURRENT_TIMESTAMP-interval '2 hours',CURRENT_TIMESTAMP-interval '1 hour' FROM generate_series(1,300) n`, organization, project, reservation.ServiceID, reservation.WorkItemID, reservation.RunID, reservation.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 				backlog := rows(true)
@@ -258,6 +289,7 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 			})
 
 			t.Run("cross-attempt key", func(t *testing.T) {
+				now := clock.Now()
 				attacker := reservation
 				attacker.WorkItemID, attacker.AttemptID, attacker.RunID = artifact.NewID("wi"), artifact.NewID("attempt"), artifact.NewID("run")
 				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -277,6 +309,7 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 					}
 					attacker.LeaseID, attacker.FencingToken = lease.LeaseID, lease.FencingToken
 					now = lease.RenewedAt
+					clock.Set(now)
 					_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attacker.AttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: attacker.RunID, Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: "example/attacker"})
 					return err
 				}); err != nil {
@@ -345,14 +378,16 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reservation), http.StatusConflict)
 			t.Run("receipts", func(t *testing.T) {
-				foreignReceipt = testPostgresArtifactReceipts(t, admin, service, reservation, foreignReceipt, workerToken, now)
+				clock.Set(clock.Now().Truncate(time.Minute).Add(time.Minute))
+				foreignReceipt = testPostgresArtifactReceipts(t, admin, service, reservation, foreignReceipt, workerToken, clock)
 			})
 		})
 	}
 }
 
-func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service, reservation artifact.Reservation, foreign artifact.Reference, workerToken string, now time.Time) artifact.Reference {
+func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service, reservation artifact.Reservation, foreign artifact.Reference, workerToken string, clock *hubtest.Clock) artifact.Reference {
 	t.Helper()
+	now := clock.Now()
 	organization, project := tracker.OrganizationID(reservation.OrganizationID), tracker.ProjectID(reservation.ProjectID)
 	const publisherID = "credential_publisher"
 	publisherToken := "publisher_" + string(organization)
@@ -562,12 +597,12 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 		t.Fatal(err)
 	}
 	t.Run("later window replay", func(t *testing.T) {
-		originalClock := service.config.Clock
-		defer func() { service.config.Clock = originalClock }()
-		service.config.Clock = func() time.Time { return now.Add(2 * time.Minute) }
+		replayAt := now.Add(2 * time.Minute)
+		clock.Set(replayAt)
+		defer clock.Set(now)
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, reference), http.StatusNoContent)
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-			usages, err := r.BillingUsages(t.Context(), window.Add(2*time.Minute), 64)
+			usages, err := r.BillingUsages(t.Context(), replayAt, 64)
 			if len(usages) != 0 {
 				t.Errorf("replay charged a new window: %+v", usages)
 			}
@@ -589,32 +624,28 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 
 type artifactLeaseClockRepository struct {
 	tenantstore.Repository
-	renew     bool
-	afterLock func(leasestore.Lease)
+	afterLock artifactLeaseLockHook
 }
+
+type artifactLeaseLockHook func(context.Context, tenantstore.Writer, leasestore.Lease) (leasestore.Lease, error)
 
 func (r artifactLeaseClockRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error {
-		return write(&artifactLeaseClockWriter{Writer: w, renew: r.renew, afterLock: r.afterLock})
+		return write(artifactLeaseClockWriter{Writer: w, afterLock: r.afterLock})
 	})
 }
 
 type artifactLeaseClockWriter struct {
 	tenantstore.Writer
-	renew     bool
-	afterLock func(leasestore.Lease)
+	afterLock artifactLeaseLockHook
 }
 
-func (w *artifactLeaseClockWriter) LockLease(ctx context.Context, id string) (leasestore.Lease, error) {
+func (w artifactLeaseClockWriter) LockLease(ctx context.Context, id string) (leasestore.Lease, error) {
 	lease, err := w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
-	if err == nil && w.renew {
-		w.renew = false
-		lease, err = w.Renew(ctx, leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, time.Minute)
+	if err != nil {
+		return lease, err
 	}
-	if err == nil {
-		w.afterLock(lease)
-	}
-	return lease, err
+	return w.afterLock(ctx, w.Writer, lease)
 }
 
 type postgresArtifactFixture struct {
