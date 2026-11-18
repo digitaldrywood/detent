@@ -66,7 +66,8 @@ func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, iden
 	starts := map[int]string{}
 	owner, _ := ctx.Value(hookOwnerKey{}).(string)
 	confirmed := map[int]string{}
-	if lifetime, ok := ctx.Value(lifetimeKey{}).(*Lifetime); ok {
+	lifetime, _ := ctx.Value(lifetimeKey{}).(*Lifetime)
+	if lifetime != nil {
 		confirmed = lifetime.starts
 	}
 	for pid, start := range confirmed {
@@ -102,8 +103,15 @@ func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, iden
 		}
 		return sameProcess(pid)
 	}
+	observeWriters := lifetime != nil
 	verified := func(ctx context.Context, path string) ([]int, error) {
+		var writerErr error
+		if observeWriters {
+			ctx, writerErr = lifetime.recordWriters(ctx)
+			observeWriters = false
+		}
 		candidates, err := ScanOwned(ctx, path, scan)
+		err = errors.Join(err, writerErr)
 		var fresh bool
 		for _, pid := range candidates {
 			if _, seen := starts[pid]; seen {

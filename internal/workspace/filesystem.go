@@ -172,11 +172,8 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	}
 	hookErr := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue)
 	result.Processes, err = f.uses.reapHooks(ctx, info.Path)
-	if hookErr != nil {
-		return result, hookErr
-	}
-	if err != nil {
-		return result, err
+	if hookErr != nil || err != nil {
+		return result, errors.Join(hookErr, err)
 	}
 	if err := removeWorkspacePath(f.root, info.Path); err != nil {
 		return CleanupResult{}, fmt.Errorf("remove filesystem workspace: %w", err)
