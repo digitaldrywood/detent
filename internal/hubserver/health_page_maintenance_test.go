@@ -327,8 +327,9 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 		}
 		clock.Advance(time.Second)
 		for range 20 {
-			if outcome, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil || !outcome.Progress || outcome.Items != budget.Items {
-				t.Fatalf("health composite step outcome=%+v err=%v: it may make durable source progress and reserves the whole envelope", outcome, err)
+			due, probeErr := service.database.postgres.MaintenanceDue(ctx, tenant.Organization, "health-pages", clock.Now(), false)
+			if outcome, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil || probeErr != nil || outcome.Progress != due || outcome.Items != budget.Items {
+				t.Fatalf("health step outcome=%+v due=%t probe error=%v step error=%v", outcome, due, probeErr, err)
 			}
 		}
 		clippedPage, healthyPage := read(clipped), read(healthy)

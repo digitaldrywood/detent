@@ -18,6 +18,15 @@ func TestHealthDiagnosticsReadsPerInterval(t *testing.T) {
 	h := hubfixture.Open(t, hubfixture.Config{Clock: clock.Now})
 	organizations := []tracker.OrganizationID{hubfixture.Primary, hubfixture.Secondary}
 	for _, org := range organizations {
+		tenant := hubmaintenance.Tenant{Organization: string(org), Generation: 1}
+		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}
+		feature := h.Service.HealthPageMaintenanceFeature()
+		for _, want := range []bool{true, false} {
+			out, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget)
+			if err != nil || out.Progress != want {
+				t.Fatalf("%s empty detector cycle progress=%t want=%t err=%v", org, out.Progress, want, err)
+			}
+		}
 		hubfixture.NewNative(t, h, org, "Example project")
 	}
 	feature := h.Service.HealthPageMaintenanceFeature()

@@ -63,11 +63,10 @@ func (s *Service) HealthPageMaintenanceFeature() hubmaintenance.Feature {
 		if rows < 1 {
 			return hubmaintenance.Outcome{}, corestore.ErrInvalidPage
 		}
-		continuing := !state.cursor.startedAt.IsZero()
-		observed := s.maintainHealthSources(ctx, organization, &state.cursor, hubmaintenance.Budget{Items: rows, Bytes: budget.Bytes})
+		scanned, observed := s.maintainHealthSources(ctx, organization, &state.cursor, hubmaintenance.Budget{Items: rows, Bytes: budget.Bytes})
 		page, projectErr := s.MaintainHealthPage(ctx, organization)
 		delivery, deliveryErr := s.processSlackDelivery(ctx, organization)
-		return hubmaintenance.Outcome{Progress: page || delivery || continuing || !state.cursor.startedAt.IsZero(), Items: healthFixedUnits + healthRowScans*rows}, errors.Join(observed, projectErr, deliveryErr)
+		return hubmaintenance.Outcome{Progress: page || delivery || scanned, Items: healthFixedUnits + healthRowScans*rows}, errors.Join(observed, projectErr, deliveryErr)
 	}}
 }
 
@@ -162,16 +161,16 @@ func healthFingerprint(signal, kind, id string) string {
 	return newHealthFinding(signal, "", kind, id, "", "", nil, healthEvidence{}).Fingerprint
 }
 
-func (s *Service) maintainHealthSources(ctx context.Context, organization tracker.OrganizationID, cursor *healthMaintenanceCursor, budget hubmaintenance.Budget) error {
+func (s *Service) maintainHealthSources(ctx context.Context, organization tracker.OrganizationID, cursor *healthMaintenanceCursor, budget hubmaintenance.Budget) (bool, error) {
 	if budget.Items < 1 {
-		return corestore.ErrInvalidPage
+		return false, corestore.ErrInvalidPage
 	}
 	if s.runDetailStore() == nil {
-		return hubapi.NativeWorkItemStorageUnavailable()
+		return false, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	now := s.config.Clock().UTC()
 	if cursor.startedAt.IsZero() && !cursor.projectScan.Due(now, cursor.project != "") && !cursor.runnerScan.Due(now, cursor.runner.RunnerID != "") {
-		return nil
+		return false, nil
 	}
 	ctx = detailbatch.WithStore(ctx, hubmaintenance.LimitDetails(s.runDetailStore()))
 	if cursor.startedAt.IsZero() {
@@ -207,7 +206,7 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 		*cursor = next
 	}
 
-	return combined
+	return combined == nil, combined
 }
 
 func healthScheduledHistory(history healthstore.ScheduledHistory) healthScheduledValidation {
