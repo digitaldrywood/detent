@@ -16,10 +16,8 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
-	"github.com/digitaldrywood/detent/internal/procstart"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
-	"golang.org/x/sys/unix"
 )
 
 func RunDetachedHook(t *testing.T) {
@@ -51,15 +49,7 @@ func RunDetachedHook(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer in.Close()
-		pid := os.Getpid()
-		start, err := procstart.Identity(pid)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(control+".pid.tmp", []byte(strconv.Itoa(pid)+"\n"+start), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(control+".pid.tmp", control+".pid"); err != nil {
+		if err := os.WriteFile(control+".pid", []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
 			t.Fatal(err)
 		}
 		ready := os.NewFile(3, "ready")
@@ -99,16 +89,6 @@ func RunDetachedHook(t *testing.T) {
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: os.Getenv("TEST_HOOK_KEEP_GROUP") != "1"}
 	child.Env = append(os.Environ(), "TEST_HOOK_CHILD=1", "GOCOVERDIR="+os.Getenv("TEST_HOOK_CHILD_COVER"))
 	child.ExtraFiles = []*os.File{writer}
-	if os.Getenv("TEST_HOOK_DROP_DESCRIPTOR") == "1" {
-		var stat unix.Stat_t
-		flags, err := unix.FcntlInt(4, unix.F_GETFL, 0)
-		if err != nil || unix.Fstat(4, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFIFO || flags&unix.O_ACCMODE != unix.O_WRONLY {
-			t.Fatal("fixture did not inherit the hook writer")
-		}
-		lifetime := os.NewFile(4, "hook writer")
-		defer lifetime.Close()
-		child.ExtraFiles = append(child.ExtraFiles, lifetime)
-	}
 	if err := procgroup.Start(child); err != nil {
 		t.Fatal(err)
 	}
@@ -149,23 +129,7 @@ func DetachedHook(t *testing.T) Daemon {
 		defer lock.Close()
 		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 			t.Error(err)
-			return
 		}
-		pid, start, err := daemonIdentity(control)
-		if errors.Is(err, os.ErrNotExist) {
-			return
-		}
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		testenv.WaitUntil(t, context.WithoutCancel(t.Context()), func() error {
-			alive, err := procstart.Matches(pid, start)
-			if alive {
-				return errors.New("waiting for detached fixture exit")
-			}
-			return err
-		})
 	})
 	executable, err := os.Executable()
 	if err != nil {
@@ -173,19 +137,6 @@ func DetachedHook(t *testing.T) Daemon {
 	}
 	command := "GOCOVERDIR=" + shellQuote(t.TempDir()) + " TEST_HOOK_CHILD_COVER=" + shellQuote(t.TempDir()) + " TEST_HOOK_CONTROL=" + shellQuote(control) + " " + shellQuote(executable) + " -test.run='^TestDetachedHookHelper$'"
 	return Daemon{Command: command, control: control}
-}
-
-func daemonIdentity(control string) (int, string, error) {
-	data, err := os.ReadFile(control + ".pid")
-	if err != nil {
-		return 0, "", err
-	}
-	rawPID, start, ok := strings.Cut(string(data), "\n")
-	if !ok || start == "" {
-		return 0, "", errors.New("missing detached fixture start identity")
-	}
-	pid, err := strconv.Atoi(rawPID)
-	return pid, start, err
 }
 
 func (d Daemon) Alive(t *testing.T) bool {
@@ -237,10 +188,14 @@ func UseDaemonCandidates(t *testing.T, daemons ...Daemon) {
 	hookproc.ReapProcessScanner = func(context.Context, string) ([]int, error) {
 		var candidates []int
 		for _, d := range daemons {
-			pid, _, err := daemonIdentity(d.control)
+			data, err := os.ReadFile(d.control + ".pid")
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
+			if err != nil {
+				return nil, err
+			}
+			pid, err := strconv.Atoi(string(data))
 			if err != nil {
 				return nil, err
 			}
