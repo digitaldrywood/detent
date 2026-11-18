@@ -393,11 +393,6 @@ func browserHostedStatus(t *testing.T, r *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	requireNativeStatus(t, r, want)
 }
-func projectRecordPostgresWithAdmin(t *testing.T, count int) (*postgres.Repository, *sql.DB) {
-	t.Helper()
-	admin := hubtest.Database(t)
-	return hubtest.RepositoryOn(t, admin, hubtest.WithMaxConnections(count)), admin
-}
 func startupConnection(t *testing.T, admin *sql.DB, group, attributes string) pgtransport.Connection {
 	t.Helper()
 	return hubtest.PostgresConfig(t, admin).Connection

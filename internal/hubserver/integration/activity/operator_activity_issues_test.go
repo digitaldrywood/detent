@@ -434,6 +434,13 @@ func TestActivityIssueRead(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					_, err = f.admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+ SELECT organization_id,project_id,work_item_id,id||'_comment_'||n,100000+n,'comment.created',schema_version,actor_kind,actor_principal_id,from_state,to_state,$4::timestamptz-interval '2 hours'-n*interval '1 second',
+ payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events CROSS JOIN generate_series(1,5000) AS volume(n)
+ WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='workflow.transitioned' AND sequence<1000`, scope.organization, scope.project, item, now)
+					if err != nil {
+						t.Fatal(err)
+					}
 					if _, err := f.admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
 						t.Fatal(err)
 					}
@@ -502,10 +509,18 @@ func assertActivityIssueOwnerStatements(t *testing.T, pool *pgxpool.Pool, organi
 			}
 			bound = float64(len(ids) * (activitystore.HistoryLimit + 1))
 		}
-		if strings.HasPrefix(statement.query, "WITH recent AS MATERIALIZED(SELECT * FROM issues") {
+		if strings.HasPrefix(statement.query, "SELECT id FROM issues WHERE organization_id=$1 AND native_updated_at>=$2") {
 			kind, relation = "candidates", "issues"
-			if statement.args[3] != activitystore.PopulationLimit {
+			if statement.args[2] != activitystore.PopulationLimit+1 {
 				t.Fatalf("activity candidates lost their population bound: %v", statement.args)
+			}
+			bound = float64(activitystore.PopulationLimit + 1)
+		}
+		if strings.HasPrefix(statement.query, "SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name") {
+			kind, relation = "terminal", "issues"
+			ids, ok := statement.args[2].([]int64)
+			if !ok || len(ids) > activitystore.PopulationLimit || statement.args[3] != activitystore.PopulationLimit {
+				t.Fatalf("activity terminal issues lost their candidate bound: %v", statement.args)
 			}
 			bound = float64(activitystore.PopulationLimit)
 		}
@@ -555,7 +570,7 @@ func assertActivityIssueOwnerStatements(t *testing.T, pool *pgxpool.Pool, organi
 			t.Fatalf("activity %s owner work=%g bound=%g plan=%s", kind, work, bound, raw)
 		}
 	}
-	if found["history"] != historyExpected || found["selected"] != historyExpected || !found["candidates"] {
+	if found["history"] != historyExpected || found["selected"] != historyExpected || !found["candidates"] || !found["terminal"] {
 		t.Fatalf("activity source owners were not observed: %v", found)
 	}
 }
