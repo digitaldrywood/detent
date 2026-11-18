@@ -19,6 +19,7 @@ func (r *RunnerState) RememberHeartbeat(path string, report MachineHeartbeatRepo
 	r.routingMu.Lock()
 	defer r.routingMu.Unlock()
 	r.heartbeatPath = path
+	report.BackendIsolation = nil
 	r.heartbeat = report
 	r.hostMetricsSupported = supported
 }

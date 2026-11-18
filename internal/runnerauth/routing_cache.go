@@ -18,11 +18,20 @@ type routingCache struct {
 	Snapshot  RoutingSnapshot `json:"snapshot"`
 }
 
+var ErrRoutingIdentity = errors.New("unexpected runner routing identity or revision")
+
 func RoutingCachePath(identityPath string) string {
 	return identityPath + ".routing.json"
 }
 
-func validateLocalHostServices(services []string) error {
+func (r Routing) validateLocal() error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	return ValidateLocalHostServices(r.HostServices)
+}
+
+func ValidateLocalHostServices(services []string) error {
 	for _, service := range services {
 		path, ok := strings.CutPrefix(service, "unix:")
 		if !ok {
@@ -42,23 +51,30 @@ func validateLocalHostServices(services []string) error {
 	return nil
 }
 
-func SaveRoutingCache(identityPath string, snapshot RoutingSnapshot) (resultErr error) {
+func PrepareRoutingCache(identity File, snapshot RoutingSnapshot) (routingCache, error) {
+	if snapshot.RunnerID != identity.Identity.RunnerID || snapshot.Revision < 1 {
+		return routingCache{}, ErrRoutingIdentity
+	}
+	snapshot.Routing = snapshot.Routing.Normalized()
+	if err := snapshot.Routing.validateLocal(); err != nil {
+		return routingCache{}, err
+	}
+	return routingCache{Schema: 1, HubURL: identity.HubURL, MachineID: string(identity.Identity.MachineID), Snapshot: snapshot}, nil
+}
+
+func SaveRoutingCache(identityPath string, snapshot RoutingSnapshot) error {
 	identity, err := Load(identityPath)
 	if err != nil {
 		return err
 	}
-	snapshot.Routing = snapshot.Routing.Normalized()
-	snapshot.ProjectConfiguration = nil
-	snapshot.ProjectConfigurationRequest = nil
-	if snapshot.RunnerID != identity.Identity.RunnerID || snapshot.Revision < 1 {
-		return errors.New("runner routing cache belongs to another runner or has no revision")
-	}
-	if err := snapshot.Routing.Validate(); err != nil {
+	cache, err := PrepareRoutingCache(identity, snapshot)
+	if err != nil {
 		return err
 	}
-	if err := validateLocalHostServices(snapshot.Routing.HostServices); err != nil {
-		return err
-	}
+	return cache.Save(identityPath)
+}
+
+func (value routingCache) Save(identityPath string) (resultErr error) {
 	path := RoutingCachePath(identityPath)
 	if info, err := os.Lstat(path); err == nil {
 		if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
@@ -67,7 +83,8 @@ func SaveRoutingCache(identityPath string, snapshot RoutingSnapshot) (resultErr 
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	value := routingCache{Schema: 1, HubURL: identity.HubURL, MachineID: string(identity.Identity.MachineID), Snapshot: snapshot}
+	value.Snapshot.ProjectConfiguration = nil
+	value.Snapshot.ProjectConfigurationRequest = nil
 	encoded, err := json.Marshal(value)
 	if err != nil || len(encoded) > 64<<10 {
 		return errors.New("runner routing cache exceeds its size limit")
@@ -124,10 +141,7 @@ func LoadRoutingCache(identityPath string) (snapshot RoutingSnapshot, resultErr 
 		return RoutingSnapshot{}, errors.New("runner routing cache does not match the runner identity")
 	}
 	value.Snapshot.Routing = value.Snapshot.Routing.Normalized()
-	if err := value.Snapshot.Routing.Validate(); err != nil {
-		return RoutingSnapshot{}, err
-	}
-	if err := validateLocalHostServices(value.Snapshot.Routing.HostServices); err != nil {
+	if err := value.Snapshot.Routing.validateLocal(); err != nil {
 		return RoutingSnapshot{}, err
 	}
 	return value.Snapshot, nil

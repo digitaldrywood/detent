@@ -34,9 +34,11 @@ type RunnerState struct {
 	configurations       map[tracker.ProjectID]runnerauth.ProjectConfiguration
 	routingMu            sync.Mutex
 	routing              *runnerauth.RoutingSnapshot
+	probeGeneration      uint64
 	routingChanged       chan struct{}
 	localPolicies        map[tracker.ProjectID]string
 	heartbeat            MachineHeartbeatReport
+	status               heartbeatStatus
 	heartbeatPath        string
 	hostMetricsSupported bool
 	mu                   sync.Mutex
@@ -354,7 +356,7 @@ func EnrollRunner(ctx context.Context, path string, organization tracker.Organiz
 		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
 			return identity, err
 		}
-		request := runnerauth.Redemption{IsolationTier: machine.IsolationTier, BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
+		request := runnerauth.Redemption{IsolationTier: machine.IsolationTier, BackendIsolation: machine.isolationObservation().Report, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
 		request.SpriteName = runnerSpriteName(machine.Hostname)
 		if err := client.runnerRequest(ctx, enrollment, http.MethodPost, base+"/runner-enrollments/redeem", request, &identity); err != nil {
 			return identity, err
@@ -555,7 +557,11 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 	problems := machine.Problems
 	var rejected bool
 	if c.client.runner != nil {
-		problems, rejected = c.client.runner.heartbeatProblems(ctx, machine)
+		problems, rejected = c.client.runner.prepareHeartbeatStatus(ctx, &machine)
+	} else {
+		probe := machine.isolationObservation()
+		machine.BackendIsolation = probe.Report
+		problems = append(slices.Clone(problems), probe.Problems...)
 	}
 	request := HeartbeatPayload(machine, problems, rejected)
 	request.ChangeCursor = changeCursor
@@ -572,34 +578,31 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 	metricsSupported := c.hostMetricsSupported()
 	c.client.runner.RememberHeartbeat(c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, metricsSupported)
 
-	snapshot.Routing = snapshot.Routing.Normalized()
 	identity, err := runnerauth.Load(c.client.runner.path)
 	if err != nil {
 		return err
 	}
-	if snapshot.RunnerID != identity.Identity.RunnerID || snapshot.Revision < 1 {
-		return errors.Join(ErrUnavailable, errors.New("hub returned an unexpected runner routing identity"))
-	}
-	if err := snapshot.Routing.Validate(); err != nil {
-		c.client.runner.RejectSettings(true)
+	cache, err := runnerauth.PrepareRoutingCache(identity, snapshot)
+	if err != nil {
+		if !errors.Is(err, runnerauth.ErrRoutingIdentity) {
+			c.client.runner.RejectSettings(true)
+		}
 		return errors.Join(ErrUnavailable, err)
 	}
+	snapshot = cache.Snapshot
 	if machine.HostMetricsAcknowledged != nil && len(machine.HostMetrics) > 0 {
 		*machine.HostMetricsAcknowledged = snapshot.HostMetricsAcknowledged
 	}
 	c.ApplyHeartbeatChanges(snapshot.Changes)
-	c.client.runner.ApplyRouting(snapshot)
-	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
-		c.client.runner.RejectSettings(true)
+	probeRoutingChanged := c.client.runner.ApplyRouting(snapshot)
+	if err := cache.Save(c.client.runner.path); err != nil {
 		slog.Default().Warn("runner routing cache not updated", "error", err)
-	} else {
-		c.client.runner.RejectSettings(false)
 	}
 	reported, err := snapshot.Routing.Availability.Capacity(time.Now(), capacity)
 	if err != nil {
 		return err
 	}
-	if refresh && reported != machine.Capacity {
+	if (refresh && reported != machine.Capacity) || (probeRoutingChanged && len(request.BackendIsolation) > 0) {
 		machine.Capacity = reported
 		machine.HostMetrics = nil
 		return c.heartbeatMachine(ctx, machine, capacity, false)
@@ -615,12 +618,20 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 	return commandErr
 }
 
-func (r *RunnerState) ApplyRouting(snapshot runnerauth.RoutingSnapshot) {
+func (r *RunnerState) ApplyRouting(snapshot runnerauth.RoutingSnapshot) bool {
 	snapshot.Routing.Availability.Windows = slices.Clone(snapshot.Routing.Availability.Windows)
 	snapshot.Routing.Availability.WindowSlots = maps.Clone(snapshot.Routing.Availability.WindowSlots)
 	r.routingMu.Lock()
 	defer r.routingMu.Unlock()
 	previous := r.routing
+	previousPolicy := isolationpolicy.Policy{Tier: isolationpolicy.Sandbox}
+	if previous != nil {
+		previousPolicy.Tier, previousPolicy.HostServices = previous.Routing.IsolationTier, previous.Routing.HostServices
+	}
+	probeRoutingChanged := !previousPolicy.MatchesProbeRouting(snapshot.Routing.IsolationTier, snapshot.Routing.HostServices)
+	if probeRoutingChanged {
+		r.probeGeneration++
+	}
 	changes := snapshot.Changes
 	modeChanged := previous != nil && (previous.Changes == nil) != (changes == nil)
 	if modeChanged || changes != nil && (changes.Reset || len(changes.Items) > 0 || changes.Claimable || previous == nil || previous.Changes == nil || changes.Claimable != previous.Changes.Claimable) {
@@ -651,6 +662,8 @@ func (r *RunnerState) ApplyRouting(snapshot runnerauth.RoutingSnapshot) {
 		r.configurations[tracker.ProjectID(snapshot.ProjectConfiguration.ProjectID)] = *snapshot.ProjectConfiguration
 	}
 	r.routing = &snapshot
+	r.settingsRejected = false
+	return probeRoutingChanged
 }
 
 func (r *RunnerState) availability() (runnerauth.Availability, error) {

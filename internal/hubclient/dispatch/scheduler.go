@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/claim"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -45,7 +46,7 @@ type SchedulerConfig struct {
 	GitHubDiscovery    func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
 	GitHubIntake       func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	Problems           func() []runnerauth.Problem
-	IsolationReport    func(context.Context) (isolationpolicy.Report, []runnerauth.Problem)
+	IsolationReport    func(context.Context, isolationpolicy.Policy) (isolationpolicy.Report, []runnerauth.Problem)
 	ProviderReports    func() ([]providercapacity.Report, error)
 	OrganizationID     tracker.OrganizationID
 	NativeProjects     map[string]tracker.ProjectID
@@ -87,9 +88,11 @@ type Scheduler struct {
 	githubDiscovery       func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
 	githubIntake          func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	problems              func() []runnerauth.Problem
-	isolationReport       func(context.Context) (isolationpolicy.Report, []runnerauth.Problem)
-	lastIsolationAt       time.Time
-	lastIsolation         isolationpolicy.Report
+	isolationReport       func(context.Context, isolationpolicy.Policy) (isolationpolicy.Report, []runnerauth.Problem)
+	nextProbeOrder        uint64
+	publishedProbeOrder   uint64
+	lastIsolation         *api.IsolationProbe
+	lastCompleteProbeAt   time.Time
 	providerReports       func() ([]providercapacity.Report, error)
 	claimPolicies         map[string]claimPolicy
 	nativeProjects        map[string]*NativeConnector
@@ -171,6 +174,9 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
 		checkoutRepository: config.CheckoutRepository,
 		leaseHold:          config.LeaseHold,
+	}
+	if config.IsolationReport != nil {
+		scheduler.machine.CurrentIsolation = scheduler.currentIsolation
 	}
 	if scheduler.leaseHold == nil {
 		scheduler.leaseHold = defaultLeaseHold()

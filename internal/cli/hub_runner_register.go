@@ -17,6 +17,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -156,7 +157,8 @@ func newHubRunnerRegisterCommandWithUser(version, goos string, lookupEnv func(st
 					return err
 				}
 			}
-			backendReport, _ := probeRunnerIsolation(cmd.Context(), configuration)
+			policy := api.NewRunnerState(configuration.Client.IdentityFile).IsolationProbePolicy()
+			backendReport, _ := probeRunnerIsolation(cmd.Context(), configuration, policy)
 			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{IsolationTier: isolationTier, Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev"), BackendIsolation: backendReport})
 			if err != nil {
 				return err

@@ -183,7 +183,7 @@ func TestProbeRunnerIsolationWorkflowFailures(t *testing.T) {
 				ctx, stop = context.WithDeadline(ctx, time.Now().Add(-time.Second))
 				defer stop()
 			}
-			report, problems := probeRunnerIsolation(ctx, globalconfig.Config{Projects: []globalconfig.Project{{ID: "example-project", Workdir: root, Workflow: workflow, WorkflowRef: test.ref}}})
+			report, problems := probeRunnerIsolation(ctx, globalconfig.Config{Projects: []globalconfig.Project{{ID: "example-project", Workdir: root, Workflow: workflow, WorkflowRef: test.ref}}}, isolation.Policy{Tier: isolation.Sandbox})
 			if len(report) != 0 || (len(problems) != 0) != test.wantProblem {
 				t.Fatalf("report=%v problems=%+v", report, problems)
 			}

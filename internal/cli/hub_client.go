@@ -216,12 +216,12 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			}
 			return problems
 		},
-		IsolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
+		IsolationReport: func(ctx context.Context, policy isolation.Policy) (isolation.Report, []runnerauth.Problem) {
 			current := cfg
 			if setupOptions.runtimeConfig != nil {
 				current = setupOptions.runtimeConfig()
 			}
-			return probeRunnerIsolation(ctx, current)
+			return probeRunnerIsolation(ctx, current, policy)
 		},
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,

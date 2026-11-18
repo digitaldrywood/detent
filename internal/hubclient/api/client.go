@@ -91,6 +91,7 @@ type Machine struct {
 	CapacityConfig          *runnerauth.CapacityConfig          `json:"-"`
 	LocalChecks             *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
 	Problems                []runnerauth.Problem                `json:"-"`
+	CurrentIsolation        func() IsolationProbe               `json:"-"`
 	BackendIsolation        isolationpolicy.Report              `json:"-"`
 	ProviderReports         []providercapacity.Report           `json:"provider_reports,omitempty"`
 	ID                      tracker.MachineID                   `json:"id"`

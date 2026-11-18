@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/claim"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -159,15 +160,12 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 			capacityConfig = s.capacityConfiguration(ctx, nil)
 		}
 	}
-	var report isolation.Report
 	var problems []runnerauth.Problem
 	if s.problems != nil {
 		problems = s.problems()
 	}
 	if s.isolationReport != nil {
-		var isolationProblems []runnerauth.Problem
-		report, isolationProblems = s.probeIsolation(ctx)
-		problems = append(problems, isolationProblems...)
+		s.probeIsolation(ctx, s.client.Enrollment().IsolationProbeRouting())
 	}
 	if last.IsZero() {
 		var required []string
@@ -230,12 +228,9 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	if s.providerReports != nil {
 		s.machine.ProviderReports = append([]providercapacity.Report{}, reports...)
 	}
-	if s.isolationReport != nil {
-		s.machine.BackendIsolation = report
-	}
-	s.machine.Problems = problems
 	machine := s.machine
 	s.mu.Unlock()
+	machine.Problems = problems
 	if s.availableCapacity != nil {
 		machine.Capacity = max(0, min(machine.Capacity, s.availableCapacity(ctx, machine.Capacity)))
 	}
@@ -329,7 +324,21 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	return nil
 }
 
-func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
+func (s *Scheduler) currentIsolation() api.IsolationProbe {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastIsolation == nil {
+		return api.IsolationProbe{}
+	}
+	return *s.lastIsolation
+}
+
+func (s *Scheduler) probeIsolation(ctx context.Context, routing api.ProbeRouting) {
+	s.mu.Lock()
+	s.nextProbeOrder++
+	order := s.nextProbeOrder
+	s.mu.Unlock()
+
 	probeCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if s.leaseHold != nil {
@@ -340,9 +349,20 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 			defer release()
 		}
 	}
-	report, problems := s.isolationReport(probeCtx)
+	report, problems := s.isolationReport(probeCtx, routing.Policy)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previous := s.lastIsolation
+	if previous != nil {
+		olderRouting := routing.Generation < previous.Routing.Generation
+		olderProbe := routing.Generation == previous.Routing.Generation && order < s.publishedProbeOrder
+		if olderRouting || olderProbe {
+			return
+		}
+		if previous.Report == nil || !previous.Routing.Matches(routing) {
+			s.lastCompleteProbeAt = time.Time{}
+		}
+	}
 	probeErr := probeCtx.Err()
 	incomplete := slices.ContainsFunc(problems, func(p runnerauth.Problem) bool { return p.Code == "backend_probe_failed" })
 	if probeErr != nil || incomplete {
@@ -360,23 +380,22 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 			}
 		}
 		problem.ReportedAt = s.now().UTC()
-		if s.lastIsolation != nil {
-			report = reuseIncompleteIsolation(report, s.lastIsolation, problems, probeErr != nil)
-			s.lastIsolation = report
+		if previous != nil && !s.lastCompleteProbeAt.IsZero() {
+			report = reuseIncompleteIsolation(report, previous.Report, problems, probeErr != nil)
 			problem.CachedCapabilities = true
 			problems = slices.DeleteFunc(problems, func(p runnerauth.Problem) bool {
 				return p.Code == "backend_probe_failed"
 			})
-			problem.Message += " Reported capabilities combine completed checks with cached capabilities; the last complete runner isolation probe finished at " + s.lastIsolationAt.UTC().Format(time.RFC3339Nano) + "."
+			problem.Message += " Reported capabilities combine completed checks with cached capabilities; the last complete runner isolation probe finished at " + s.lastCompleteProbeAt.UTC().Format(time.RFC3339Nano) + "."
 		} else {
 			problem.Message += " No completed runner isolation probe is cached; reported capabilities contain only completed backend checks."
 		}
 		problems = append(problems, problem)
 	} else {
-		s.lastIsolation = report
-		s.lastIsolationAt = s.now().UTC()
+		s.lastCompleteProbeAt = s.now().UTC()
 	}
-	return report, problems
+	s.publishedProbeOrder = order
+	s.lastIsolation = &api.IsolationProbe{Routing: routing, Report: report, Problems: problems}
 }
 
 func reuseIncompleteIsolation(current, cached isolation.Report, problems []runnerauth.Problem, interrupted bool) isolation.Report {

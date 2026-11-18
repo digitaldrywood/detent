@@ -43,6 +43,10 @@ type Policy struct {
 	HostServices        []string `json:"host_services,omitempty"`
 }
 
+func (p Policy) MatchesProbeRouting(tier string, services []string) bool {
+	return p.Tier == tier && slices.Equal(p.HostServices, services)
+}
+
 type Report map[string][]string
 
 func (r Report) Validate() error {

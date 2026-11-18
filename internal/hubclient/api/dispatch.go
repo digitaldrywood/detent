@@ -79,9 +79,16 @@ func (c *Client) FlushHostMetrics(ctx context.Context, summaries []hostmetrics.S
 	previous.Problems = slices.Clone(c.runner.problems)
 	previous.SettingsRejected = c.runner.settingsRejected
 	previous.ProjectConfiguration = nil
+	status := c.runner.status
 	c.runner.routingMu.Unlock()
 	if path == "" || !supported {
 		return nil, nil
+	}
+	if status.currentIsolation != nil {
+		policy, _ := c.runner.isolationSettings()
+		report, problems := status.report(policy)
+		previous.BackendIsolation = report
+		previous.Problems = c.runner.ObserveProblems(problems, time.Now())
 	}
 	previous.HostMetrics = summaries
 	var response struct {

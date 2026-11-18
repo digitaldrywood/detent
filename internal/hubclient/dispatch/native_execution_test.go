@@ -316,7 +316,7 @@ func TestDedicatedClaimRenewalDoesNotWaitForOtherWork(t *testing.T) {
 			fixtureClient(h.native.Transport()).renewals.Store(observedTransport)
 			switch operation {
 			case "machine report":
-				h.scheduler.isolationReport = func(context.Context) (isolation.Report, []runnerauth.Problem) {
+				h.scheduler.isolationReport = func(context.Context, isolation.Policy) (isolation.Report, []runnerauth.Problem) {
 					close(entered)
 					<-release
 					return nil, nil

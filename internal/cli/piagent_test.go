@@ -108,7 +108,7 @@ func TestProbePiIsolation(t *testing.T) {
 
 func TestProbeRunnerIsolationSkipsUnloadableProject(t *testing.T) {
 	cfg := globalconfig.Config{Projects: []globalconfig.Project{{ID: "unbound", Workdir: filepath.Join(t.TempDir(), "missing")}}}
-	report, problems := probeRunnerIsolation(t.Context(), cfg)
+	report, problems := probeRunnerIsolation(t.Context(), cfg, isolation.Policy{Tier: isolation.Sandbox})
 	if _, ok := report["unbound/workflow"]; ok || len(report) != 0 {
 		t.Fatalf("report = %#v, want no entry for the unloadable project", report)
 	}

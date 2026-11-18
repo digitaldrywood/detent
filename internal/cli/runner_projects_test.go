@@ -293,7 +293,7 @@ func TestRunnerCloudProjects(t *testing.T) {
 									t.Fatal("preparation discarded pending source")
 								}
 								if providerCommand != "" {
-									report, problems := probeRunnerIsolation(t.Context(), applied)
+									report, problems := probeRunnerIsolation(t.Context(), applied, client.Enrollment().IsolationProbePolicy())
 									if !slices.Contains(report["orders/codex"], isolation.NativeTrusted) || len(problems) != 0 {
 										t.Fatalf("configured provider disappeared after preparation: report=%v problems=%+v", report, problems)
 									}

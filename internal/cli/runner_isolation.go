@@ -43,17 +43,9 @@ func runnerIsolationPolicy(identityPath string) func() (isolation.Policy, error)
 	}
 }
 
-func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolation.Report, []runnerauth.Problem) {
+func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config, routing isolation.Policy) (isolation.Report, []runnerauth.Problem) {
 	report := isolation.Report{}
 	problems := []runnerauth.Problem{}
-	tier := isolation.Sandbox
-	var services []string
-	if cfg.Client.IdentityFile != "" {
-		if snapshot, err := runnerauth.LoadRoutingCache(cfg.Client.IdentityFile); err == nil {
-			services = snapshot.Routing.HostServices
-			tier = snapshot.Routing.IsolationTier
-		}
-	}
 	sprite := runner.SpriteSocketPresent()
 	for _, configured := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, configured)
@@ -64,7 +56,7 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 		for _, backend := range workflow.Config.AgentBackendConfigs() {
 			key := configured.ID + "/" + backend.ID
 			var unavailable error
-			report[key], _ = probeBackendTiers(ctx, backend, isolation.Policy{Tier: tier, WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, sprite, func(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) error {
+			report[key], _ = probeBackendTiers(ctx, backend, isolation.Policy{Tier: routing.Tier, WritableRoots: []string{configured.Workdir}, HostServices: routing.HostServices, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, sprite, func(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) error {
 				if policy.Tier == isolation.Sandbox && unavailable != nil {
 					return unavailable
 				}
@@ -75,7 +67,7 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 					}
 					unavailable = err
 				}
-				if err != nil && (policy.Tier == isolation.NativeTrusted || policy.Tier == tier) {
+				if err != nil && (policy.Tier == isolation.NativeTrusted || policy.Tier == routing.Tier) {
 					p := backendReadinessProblem(key, backend.Kind, policy.Tier, runtime.GOOS, err)
 					p.ProjectID = configured.ID
 					problems = append(problems, p)
@@ -190,6 +182,9 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	}
 	policy.WritableRoots = []string{inside}
 	if err := policy.Validate(); err != nil {
+		return err
+	}
+	if err := runnerauth.ValidateLocalHostServices(policy.HostServices); err != nil {
 		return err
 	}
 	ctx = isolation.WithPolicy(ctx, policy)

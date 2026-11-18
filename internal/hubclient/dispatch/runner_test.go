@@ -213,7 +213,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 						acquired++
 						return func() { held = false; released++ }, nil
 					},
-					IsolationReport: func(context.Context) (isolation.Report, []runnerauth.Problem) {
+					IsolationReport: func(context.Context, isolation.Policy) (isolation.Report, []runnerauth.Problem) {
 						if !held {
 							t.Error("isolation probe ran without keeping the Sprite awake")
 						}
@@ -265,8 +265,8 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 				if probes != 2 || acquired != 2 || released != 2 || held {
 					t.Fatalf("recovery probes=%d acquired=%d released=%d held=%t", probes, acquired, released, held)
 				}
-				if !scheduler.machine.BackendIsolation.Supports(isolation.NativeTrusted) {
-					t.Fatalf("recovered report = %#v", scheduler.machine.BackendIsolation)
+				if !isolation.Report(view.Runners[0].BackendIsolation).Supports(isolation.NativeTrusted) {
+					t.Fatalf("recovered fleet report = %#v", view.Runners[0].BackendIsolation)
 				}
 			})
 		}
@@ -721,9 +721,10 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 }
 
 func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
-	defer server.Close()
-	client, err := newTestClient(t, Config{URL: server.URL, TokenSource: func() string { return "test-token" }})
+	transport := executionRoundTrip(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+	})
+	client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "test-token" }, HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,7 +739,7 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 	scheduler := &Scheduler{client: client, now: time.Now, heartbeatInterval: time.Second, machine: Machine{ID: "machine", Capacity: 1}, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": time.Now().Add(-time.Minute)}, leaseHold: func(context.Context) (func(), error) {
 		held.Store(true)
 		return func() { held.Store(false) }, nil
-	}, isolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
+	}, isolationReport: func(ctx context.Context, _ isolation.Policy) (isolation.Report, []runnerauth.Problem) {
 		if !held.Load() {
 			t.Error("isolation probe ran without keeping the Sprite awake")
 		}

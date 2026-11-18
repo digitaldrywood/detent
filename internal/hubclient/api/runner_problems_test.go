@@ -64,19 +64,19 @@ func TestRunnerHostServicesReachable(t *testing.T) {
 func TestHeartbeatProblemsClear(t *testing.T) {
 	source := &RunnerState{routing: &runnerauth.RoutingSnapshot{Routing: runnerauth.Routing{IsolationTier: isolation.Sandbox}}}
 	machine := Machine{BackendIsolation: isolation.Report{"codex": {isolation.NativeTrusted}}}
-	first, _ := source.heartbeatProblems(t.Context(), machine)
-	second, _ := source.heartbeatProblems(t.Context(), machine)
+	first, _ := source.prepareHeartbeatStatus(t.Context(), &machine)
+	second, _ := source.prepareHeartbeatStatus(t.Context(), &machine)
 	if len(first) != 1 || len(second) != 1 || !first[0].FirstSeen.Equal(second[0].FirstSeen) {
 		t.Fatalf("problem timestamps changed: %+v %+v", first, second)
 	}
 	source.RejectSettings(true)
 	machine.BackendIsolation["codex"] = []string{isolation.Sandbox, isolation.NativeTrusted}
-	problems, rejected := source.heartbeatProblems(t.Context(), machine)
+	problems, rejected := source.prepareHeartbeatStatus(t.Context(), &machine)
 	if len(problems) != 0 || !rejected {
 		t.Fatalf("problems=%+v rejected=%v", problems, rejected)
 	}
 	source.RejectSettings(false)
-	_, rejected = source.heartbeatProblems(t.Context(), machine)
+	_, rejected = source.prepareHeartbeatStatus(t.Context(), &machine)
 	if rejected {
 		t.Fatal("settings rejection did not clear")
 	}
@@ -92,7 +92,7 @@ func TestHeartbeatIncompleteProbe(t *testing.T) {
 			if cached {
 				machine.BackendIsolation["example-project/codex"] = []string{isolation.NativeTrusted}
 			}
-			problems, _ := source.heartbeatProblems(t.Context(), machine)
+			problems, _ := source.prepareHeartbeatStatus(t.Context(), &machine)
 			found := false
 			for _, got := range problems {
 				if got.Code == "backend_missing" || got.FixCommand != "" || strings.Contains(strings.ToLower(got.FixHint), "install") {

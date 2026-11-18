@@ -10,13 +10,17 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -43,6 +47,12 @@ func TestRunnerRequestsDoNotFollowCredentialRedirects(t *testing.T) {
 
 func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	t.Parallel()
+	t.Run("unwritable cache", func(t *testing.T) { testRunnerRouting(t, true) })
+	t.Run("writable cache", func(t *testing.T) { testRunnerRouting(t, false) })
+}
+
+func testRunnerRouting(t *testing.T, unwritable bool) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "private", "runner.json")
 	file, err := runnerauth.Initialize(path, "https://hub.example.test")
 	if err != nil {
@@ -56,17 +66,27 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	now := time.Now().UTC()
 	closed := runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun " + now.Add(time.Hour).Format("15:04") + "-" + now.Add(2*time.Hour).Format("15:04")}}
 	snapshot := runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 3, Availability: closed}.Normalized()}
+	snapshot.Routing.IsolationTier = isolation.NativeTrusted
+	servicePath := filepath.Join(t.TempDir(), "service.sock")
+	snapshot.Routing.HostServices = []string{"unix:" + filepath.ToSlash(strings.TrimPrefix(servicePath, filepath.VolumeName(servicePath)))}
 	inventory := []skills.ProviderSkill{{Name: "plan", Scope: "project", Path: ".agents/skills/plan/SKILL.md", Invocation: "$plan", Enabled: true, UserInvocable: true}}
 	var capacities []int
+	var afterHeartbeat func()
+	var rejected bool
+	var reportedIsolation isolation.Report
+	var reportedProblems []runnerauth.Problem
 	claims := 0
 	transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 		body := `{}`
 		if strings.HasSuffix(request.URL.Path, "/capabilities") {
-			body = `{"features":["runner_project_skills"]}`
+			body = `{"features":["runner_project_skills","runner_host_metrics"]}`
 		} else if strings.HasSuffix(request.URL.Path, "/heartbeat") {
 			var report struct {
-				Capacity int                    `json:"capacity"`
-				Skills   []skills.ProviderSkill `json:"skills"`
+				Capacity  int                    `json:"capacity"`
+				Skills    []skills.ProviderSkill `json:"skills"`
+				Rejected  bool                   `json:"settings_rejected"`
+				Isolation isolation.Report       `json:"backend_isolation"`
+				Problems  []runnerauth.Problem   `json:"problems"`
 			}
 			if err := json.NewDecoder(request.Body).Decode(&report); err != nil {
 				return nil, err
@@ -75,45 +95,164 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 				t.Errorf("heartbeat skill inventory = %#v, want %#v", report.Skills, inventory)
 			}
 			capacities = append(capacities, report.Capacity)
+			rejected = report.Rejected
+			reportedIsolation = report.Isolation
+			reportedProblems = report.Problems
 			encoded, err := json.Marshal(snapshot)
 			if err != nil {
 				return nil, err
 			}
 			body = string(encoded)
+			if afterHeartbeat != nil {
+				afterHeartbeat()
+				afterHeartbeat = nil
+			}
 		} else if strings.HasSuffix(request.URL.Path, "/claims") {
 			claims++
 			body = `{"isolation_policy":{"tier":"sandbox"}}`
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 	})
-	client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	native, err := client.Native("org_test", "prj_test")
-	if err != nil {
-		t.Fatal(err)
+	newRunner := func(t *testing.T) *NativeClient {
+		t.Helper()
+		client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		native, err := client.Native("org_test", "prj_test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return native
 	}
 	machine := Machine{ID: file.Identity.MachineID, Capacity: 3, Version: "test", Skills: &inventory}
-	if err := native.RegisterMachine(t.Context(), machine); err != nil {
-		t.Fatal(err)
+	cache := runnerauth.RoutingCachePath(path)
+	if unwritable {
+		if err := os.Mkdir(cache, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if len(capacities) == 0 || capacities[0] != 0 || capacities[len(capacities)-1] != 0 {
-		t.Fatalf("closed capacities = %v", capacities)
+	register := func(t *testing.T, native *NativeClient) {
+		t.Helper()
+		before := claims
+		if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrUnavailable) || claims != before {
+			t.Fatalf("claim before heartbeat = %v, calls = %d", err, claims)
+		}
+		bootstrap := native.client.Enrollment().IsolationProbeRouting()
+		if bootstrap.Tier != isolation.Sandbox || len(bootstrap.HostServices) != 0 {
+			t.Fatalf("empty-cache probe policy = %+v", bootstrap)
+		}
+		detail := runnerauth.NewProblem("tier_unavailable")
+		detail.Message = "Backend sandbox probe failed: sandbox tooling is unavailable."
+		machine.CurrentIsolation = func() IsolationProbe {
+			return IsolationProbe{Routing: bootstrap, Report: isolation.Report{"example/codex": {isolation.Sandbox}, "example/workflow": {}}, Problems: []runnerauth.Problem{detail}}
+		}
+		if err := native.RegisterMachine(t.Context(), machine); err != nil {
+			t.Fatal(err)
+		}
+		policy := native.client.Enrollment().IsolationProbeRouting()
+		if policy.Tier != isolation.NativeTrusted || !reflect.DeepEqual(policy.HostServices, snapshot.Routing.HostServices) {
+			t.Errorf("probe policy after heartbeat = %+v, want %s with %v", policy, isolation.NativeTrusted, snapshot.Routing.HostServices)
+		}
+		checkWithdrawal := func() {
+			t.Helper()
+			if len(reportedIsolation) != 0 {
+				t.Errorf("heartbeat advertised isolation from the previous routing: %v", reportedIsolation)
+			}
+			if !slices.ContainsFunc(reportedProblems, func(p runnerauth.Problem) bool { return p.Code == detail.Code && p.Message == detail.Message }) {
+				t.Errorf("heartbeat lost the probe reason: %+v", reportedProblems)
+			}
+			if !slices.ContainsFunc(reportedProblems, func(p runnerauth.Problem) bool { return p.Code == "settings_invalid" }) {
+				t.Errorf("heartbeat lost the workflow failure: %+v", reportedProblems)
+			}
+		}
+		checkWithdrawal()
+		if _, err := native.client.FlushHostMetrics(t.Context(), []hostmetrics.Summary{{SampleCount: 1}}); err != nil {
+			t.Fatal(err)
+		}
+		checkWithdrawal()
+		if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+			t.Fatal(err)
+		}
+		checkWithdrawal()
+		machine.CurrentIsolation = func() IsolationProbe {
+			return IsolationProbe{Routing: policy, Report: isolation.Report{"example/codex": {isolation.NativeTrusted}}}
+		}
+		if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+			t.Fatal(err)
+		}
+		if !reportedIsolation.Supports(isolation.NativeTrusted) || reportedIsolation.Supports(isolation.Sandbox) || rejected {
+			t.Errorf("heartbeat after probe = %v, rejected = %t", reportedIsolation, rejected)
+		}
+		if slices.ContainsFunc(reportedProblems, func(p runnerauth.Problem) bool { return p.Code == detail.Code || p.Code == "settings_invalid" }) {
+			t.Errorf("recovered probe retained startup problems: %+v", reportedProblems)
+		}
+		if got := native.client.RoutingRevision(); got != snapshot.Revision {
+			t.Fatalf("applied revision = %d, want %d", got, snapshot.Revision)
+		}
 	}
-	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
-		t.Fatalf("closed claim = %v, calls = %d", err, claims)
+	native := newRunner(t)
+	register(t, native)
+	accepted := snapshot
+	type invalidRouting struct {
+		name     string
+		capacity int
+		service  string
 	}
-	restarted, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
-	if err != nil {
-		t.Fatal(err)
+	invalid := []invalidRouting{{name: "invalid capacity", capacity: -1}}
+	if runtime.GOOS != "windows" {
+		directory := t.TempDir()
+		link := filepath.Join(directory, "service.sock")
+		if err := os.Symlink(filepath.Join(directory, "target.sock"), link); err != nil {
+			t.Fatal(err)
+		}
+		invalid = append(invalid,
+			invalidRouting{name: "directory", capacity: 3, service: "unix:" + directory},
+			invalidRouting{name: "symlink", capacity: 3, service: "unix:" + link},
+		)
 	}
-	native, err = restarted.Native("org_test", "prj_test")
-	if err != nil {
-		t.Fatal(err)
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot.Revision++
+			snapshot.Routing.CapacityLimit = test.capacity
+			snapshot.Routing.Availability = runnerauth.Availability{}
+			if test.service != "" {
+				snapshot.Routing.HostServices = []string{test.service}
+			}
+			if err := native.HeartbeatMachine(t.Context(), machine); !errors.Is(err, ErrUnavailable) {
+				t.Errorf("invalid routing returned %v, want unavailable", err)
+			}
+			if rejected || native.client.RoutingRevision() != accepted.Revision {
+				t.Errorf("applied revision = %d, rejected = %t; want %d, false", native.client.RoutingRevision(), rejected, accepted.Revision)
+			}
+			if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
+				t.Errorf("closed claim = %v, calls = %d", err, claims)
+			}
+			snapshot = accepted
+			for _, wantRejected := range []bool{true, false} {
+				if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+					t.Fatal(err)
+				}
+				if rejected != wantRejected {
+					t.Errorf("heartbeat settings_rejected = %t, want %t", rejected, wantRejected)
+				}
+			}
+		})
 	}
-	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
-		t.Fatalf("cached claim = %v, calls = %d", err, claims)
+	for _, capacity := range capacities {
+		if capacity != 0 {
+			t.Fatalf("closed capacities = %v", capacities)
+		}
+	}
+	if !unwritable {
+		native = newRunner(t)
+		policy := native.client.Enrollment().IsolationProbePolicy()
+		if policy.Tier != isolation.NativeTrusted || !reflect.DeepEqual(policy.HostServices, accepted.Routing.HostServices) {
+			t.Fatalf("startup policy from cache = %+v", policy)
+		}
+		if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
+			t.Fatalf("cached claim = %v, calls = %d", err, claims)
+		}
 	}
 	snapshot.Revision++
 	snapshot.Routing.Availability = runnerauth.Availability{}
@@ -122,6 +261,28 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	}
 	if capacities[len(capacities)-1] != 3 {
 		t.Fatalf("reopened capacities = %v", capacities)
+	}
+	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); err != nil || claims != 1 {
+		t.Fatalf("open claim = %v, calls = %d", err, claims)
+	}
+	if unwritable {
+		t.Run("replacement with empty cache", func(t *testing.T) {
+			if err := os.Remove(cache); err != nil {
+				t.Fatal(err)
+			}
+			replacement := newRunner(t)
+			register(t, replacement)
+			if err := replacement.HeartbeatMachine(t.Context(), machine); err != nil {
+				t.Fatal(err)
+			}
+			if rejected || capacities[len(capacities)-1] != 3 {
+				t.Fatalf("replacement rejected = %t, capacities = %v", rejected, capacities)
+			}
+			if _, err := replacement.Claim(t.Context(), tracker.NativeClaim{}); err != nil || claims != 2 {
+				t.Fatalf("replacement claim = %v, calls = %d", err, claims)
+			}
+		})
+		return
 	}
 	for _, test := range []struct {
 		name  string
@@ -151,15 +312,31 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 				t.Fatalf("cached capacities = %v, want [%d]", capacities, test.want)
 			}
 			if test.want == 0 {
-				if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
+				if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 1 {
 					t.Fatalf("zero-count claim = %v, calls = %d", err, claims)
 				}
 			}
 		})
 	}
-	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); err != nil || claims != 1 {
-		t.Fatalf("open claim = %v, calls = %d", err, claims)
-	}
+	t.Run("policy changes on capacity acknowledgment", func(t *testing.T) {
+		capacities = nil
+		routing := native.client.Enrollment().IsolationProbeRouting()
+		machine.CurrentIsolation = func() IsolationProbe {
+			return IsolationProbe{Routing: routing, Report: isolation.Report{"example/codex": {isolation.Sandbox}}}
+		}
+		snapshot.Revision++
+		snapshot.Routing.Availability.WindowSlots = map[string]int{"Mon-Sun 00:00-24:00": 2}
+		afterHeartbeat = func() {
+			snapshot.Revision++
+			snapshot.Routing.HostServices = nil
+		}
+		if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(capacities, []int{3, 2, 2}) || len(reportedIsolation) != 0 {
+			t.Fatalf("capacities = %v, final capabilities = %v", capacities, reportedIsolation)
+		}
+	})
 }
 
 func TestUnchangedCredentialReadLeavesLockMetadataUnwritten(t *testing.T) {

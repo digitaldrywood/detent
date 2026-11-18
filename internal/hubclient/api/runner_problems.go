@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -86,25 +87,107 @@ func runnerHostServicesReachable(ctx context.Context, services []string) bool {
 	return true
 }
 
-func (r *RunnerState) heartbeatProblems(ctx context.Context, machine Machine) ([]runnerauth.Problem, bool) {
+type ProbeRouting struct {
+	isolation.Policy
+	Generation uint64
+}
+
+func (p ProbeRouting) Matches(other ProbeRouting) bool {
+	return p.Generation == other.Generation && p.MatchesProbeRouting(other.Tier, other.HostServices)
+}
+
+type IsolationProbe struct {
+	Routing  ProbeRouting
+	Report   isolation.Report
+	Problems []runnerauth.Problem
+}
+
+func (r *RunnerState) probeRouting(routing runnerauth.Routing) ProbeRouting {
+	return ProbeRouting{
+		Policy:     isolation.Policy{Tier: routing.IsolationTier, HostServices: slices.Clone(routing.HostServices)},
+		Generation: r.probeGeneration,
+	}
+}
+
+func (r *RunnerState) isolationSettings() (ProbeRouting, bool) {
+	if r == nil {
+		return ProbeRouting{}, false
+	}
 	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
 	var routing runnerauth.Routing
 	if r.routing != nil {
 		routing = r.routing.Routing
-	} else if snapshot, err := runnerauth.LoadRoutingCache(r.path); err == nil {
-		routing = snapshot.Routing
+	} else if r.path != "" {
+		if snapshot, err := runnerauth.LoadRoutingCache(r.path); err == nil {
+			routing = snapshot.Routing
+		}
 	}
-	rejected := r.settingsRejected
+	return r.probeRouting(routing), r.settingsRejected
+}
+
+func (r *RunnerState) IsolationProbePolicy() isolation.Policy {
+	return r.IsolationProbeRouting().Policy
+}
+
+func (r *RunnerState) IsolationProbeRouting() ProbeRouting {
+	policy, _ := r.isolationSettings()
+	if policy.Tier == "" {
+		policy.Tier = isolation.Sandbox
+	}
+	return policy
+}
+
+type heartbeatStatus struct {
+	currentIsolation func() IsolationProbe
+	problems         []runnerauth.Problem
+}
+
+func (m Machine) isolationObservation() IsolationProbe {
+	if m.CurrentIsolation != nil {
+		return m.CurrentIsolation()
+	}
+	return IsolationProbe{Report: m.BackendIsolation}
+}
+
+func (r *RunnerState) prepareHeartbeatStatus(ctx context.Context, machine *Machine) ([]runnerauth.Problem, bool) {
+	policy, rejected := r.isolationSettings()
+	if machine.CurrentIsolation == nil {
+		probe := IsolationProbe{Routing: policy, Report: machine.BackendIsolation}
+		if probe.Routing.Tier == "" {
+			probe.Routing.Tier = isolation.Sandbox
+		}
+		machine.CurrentIsolation = func() IsolationProbe { return probe }
+	}
+	status := heartbeatStatus{currentIsolation: machine.CurrentIsolation, problems: slices.Clone(machine.Problems)}
+	if !runnerHostServicesReachable(ctx, policy.HostServices) {
+		status.problems = append(status.problems, runnerauth.NewProblem("host_service_unreachable"))
+	}
+	r.routingMu.Lock()
+	r.status = status
 	r.routingMu.Unlock()
-	problems := slices.Clone(machine.Problems)
-	if routing.IsolationTier == "" {
+	report, problems := status.report(policy)
+	machine.BackendIsolation = report
+	return r.ObserveProblems(problems, time.Now()), rejected
+}
+
+func (s heartbeatStatus) report(policy ProbeRouting) (isolation.Report, []runnerauth.Problem) {
+	problems := slices.Clone(s.problems)
+	if policy.Tier == "" {
 		problems = append(problems, runnerauth.NewProblem("settings_invalid"))
-		routing.IsolationTier = isolation.Sandbox
+		policy.Tier = isolation.Sandbox
 	}
-	for _, generic := range IsolationProblems(machine.BackendIsolation, routing.IsolationTier, problems) {
+	probe := s.currentIsolation()
+	capabilities := probe.Report
+	if !probe.Routing.Matches(policy) {
+		capabilities = nil
+		probe = probe.failuresAfterRoutingChange()
+	}
+	problems = append(problems, probe.Problems...)
+	for _, generic := range IsolationProblems(probe.Report, policy.Tier, problems) {
 		matched := false
 		for i := range problems {
-			if problems[i].Code == generic.Code && (problems[i].Subject == generic.Subject || generic.Subject == routing.IsolationTier) {
+			if problems[i].Code == generic.Code && (problems[i].Subject == generic.Subject || generic.Subject == policy.Tier) {
 				if generic.Code == "tier_unavailable" {
 					problems[i].FixHint = generic.FixHint
 				}
@@ -115,15 +198,27 @@ func (r *RunnerState) heartbeatProblems(ctx context.Context, machine Machine) ([
 			problems = append(problems, generic)
 		}
 	}
+	return capabilities, problems
+}
+
+func (probe IsolationProbe) failuresAfterRoutingChange() IsolationProbe {
+	failures := maps.Clone(probe.Report)
+	maps.DeleteFunc(failures, func(_ string, tiers []string) bool { return len(tiers) > 0 })
+	problems := slices.Clone(probe.Problems)
+	problem := runnerauth.NewProblem("backend_probe_failed")
+	problem.Subject = "backend_isolation"
+	problem.Check = "runner isolation probe"
+	problem.Message = "Runner isolation settings changed since the last probe."
 	for i := range problems {
-		if problems[i].ReportedAt.IsZero() {
-			problems[i].ReportedAt = time.Now()
+		if problems[i].CachedCapabilities {
+			problems[i].CachedCapabilities = false
+			problems[i].Message = problem.Message
 		}
 	}
-	if !runnerHostServicesReachable(ctx, routing.HostServices) {
-		problems = append(problems, runnerauth.NewProblem("host_service_unreachable"))
+	if len(probe.Report) > 0 && len(failures) == 0 {
+		problems = append(problems, problem)
 	}
-	return r.ObserveProblems(problems, time.Now()), rejected
+	return IsolationProbe{Report: failures, Problems: problems}
 }
 
 func (r *RunnerState) RejectSettings(rejected bool) {

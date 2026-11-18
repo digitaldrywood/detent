@@ -43,7 +43,7 @@ func TestProbeRunnerIsolationNativeFailures(t *testing.T) {
 			if err := os.WriteFile(workflow, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			report, problems := probeRunnerIsolation(t.Context(), globalconfig.Config{Projects: []globalconfig.Project{{ID: "example-project", Workdir: root, Workflow: workflow}}})
+			report, problems := probeRunnerIsolation(t.Context(), globalconfig.Config{Projects: []globalconfig.Project{{ID: "example-project", Workdir: root, Workflow: workflow}}}, isolation.Policy{Tier: isolation.Sandbox})
 			if len(report) != 1 || report.Supports(isolation.NativeTrusted) || report.Supports(isolation.Sandbox) {
 				t.Fatalf("failed native checks advertised capability: %#v", report)
 			}
@@ -53,6 +53,39 @@ func TestProbeRunnerIsolationNativeFailures(t *testing.T) {
 			problem := problems[0]
 			if problem.ProjectID != "example-project" || !strings.HasSuffix(problem.Check, test.failingCommand) || !strings.Contains(problem.ErrorOutput, test.output) {
 				t.Fatalf("native failure lost actionable diagnostic: %+v", problem)
+			}
+		})
+	}
+}
+
+func TestProbeRunnerIsolationRoutedHostServices(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("CODEX_HOME", root)
+	t.Setenv("DETENT_SERVICE_MANAGER", "test")
+	script := filepath.Join(root, "codex-probe")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.160.0'; fi\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workflow := filepath.Join(root, "WORKFLOW.md")
+	content := "---\ntracker:\n  kind: hub_native\ncodex:\n  command: " + strconv.Quote(strconv.Quote(script)+" app-server") + "\nworkspace:\n  root: " + filepath.Join(root, "workspaces") + "\n---\nTest prompt\n"
+	if err := os.WriteFile(workflow, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := globalconfig.Config{Projects: []globalconfig.Project{{ID: "example-project", Workdir: root, Workflow: workflow}}}
+	for _, test := range []struct {
+		name, service string
+		sandbox       bool
+	}{
+		{"exact socket", "unix:" + filepath.Join(root, "service.sock"), true},
+		{"unsupported TCP grant", "tcp:127.0.0.1:8080", false},
+		{"socket path now a directory", "unix:" + root, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report, problems := probeRunnerIsolation(t.Context(), cfg, isolation.Policy{Tier: isolation.Sandbox, HostServices: []string{test.service}})
+			wantSandbox := test.sandbox && isolation.SandboxAvailable()
+			if !report.Supports(isolation.NativeTrusted) || report.Supports(isolation.Sandbox) != wantSandbox || (len(problems) == 0) != wantSandbox {
+				t.Fatalf("capability report = %v, problems = %+v, want sandbox = %t", report, problems, wantSandbox)
 			}
 		})
 	}

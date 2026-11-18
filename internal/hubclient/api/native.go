@@ -316,7 +316,7 @@ func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) err
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
 		Skills                *[]skills.ProviderSkill        `json:"skills,omitempty"`
 		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
-	}{machine.BackendIsolation, machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.Skills, machine.CheckoutRepository}
+	}{machine.isolationObservation().Report, machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.Skills, machine.CheckoutRepository}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
 }
 
