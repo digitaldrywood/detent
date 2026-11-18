@@ -117,6 +117,7 @@ func TestAttachmentObjectLookupProtectsTenantHistory(t *testing.T) {
 			if err != nil {
 				return err
 			}
+			t.Logf("%s: %d reference statements for %d swept keys", org, counter.Count.Load()-before, len(batch))
 			if got := counter.Count.Load() - before; got != 1 {
 				t.Errorf("%d reference statements for %d keys, want one", got, len(batch))
 			}
@@ -255,7 +256,10 @@ func TestDetailStoreReclaimsOnlyUnreferencedExpiredObjects(t *testing.T) {
 	}
 	for _, org := range organizations {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: string(org), CreatedAt: start})
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: string(org), CreatedAt: start}); err != nil {
+				return err
+			}
+			return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org), AllocationGeneration: 1})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -285,11 +289,66 @@ func TestDetailStoreReclaimsOnlyUnreferencedExpiredObjects(t *testing.T) {
 	if !present(organizations[1], second.abandoned) {
 		t.Fatal("reclaim of one organization removed another organization's object")
 	}
+	for _, org := range organizations {
+		counter.Count.Store(0)
+		n, err := store.Reclaim(t.Context(), org, cutoff)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if org == organizations[0] && (n != 0 || counter.Count.Load() != 2) {
+			t.Fatalf("idle reclaim deleted %d and ran %d statements, want only tenant binding and due probe", n, counter.Count.Load())
+		}
+	}
 	if _, err := admin.ExecContext(t.Context(), `DELETE FROM archive_objects WHERE organization_id=$1 AND id='archive_reclaim'`, organizations[0]); err != nil {
 		t.Fatal(err)
 	}
 	if reclaimed, err := store.Reclaim(t.Context(), organizations[0], cutoff); err != nil || reclaimed != 1 || present(organizations[0], first.referenced) {
 		t.Fatalf("expired reference kept its bytes: reclaimed=%d err=%v", reclaimed, err)
+	}
+	readPage := func(org tracker.OrganizationID) attachment.ReclaimPage {
+		t.Helper()
+		var page attachment.ReclaimPage
+		if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
+			var err error
+			page, err = r.ArchiveReclaimPage(t.Context(), now)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return page
+	}
+	page := readPage(organizations[0])
+	if len(page.Changed) != 1 || page.Changed[0].Key != first.referenced.Key || len(readPage(organizations[1]).Changed) != 0 {
+		t.Fatalf("reference loss escaped its tenant: %+v", page)
+	}
+	ack := func(receipt attachment.ReclaimReceipt) {
+		t.Helper()
+		if err := repository.WriteTenant(t.Context(), organizations[0], corestore.Background, func(w tenantstore.Writer) error { return w.CompleteArchiveReclaim(t.Context(), receipt) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt := attachment.ReclaimReceipt{Next: first.referenced.Key, Checked: page.Changed}
+	later := now.Add(time.Hour)
+	receipt.Checked[0].Due = &later
+	ack(receipt)
+	if got := readPage(organizations[0]); len(got.Changed) != 0 || got.After != receipt.Next {
+		t.Fatalf("premature retry or lost cursor: %+v", got)
+	}
+	now = later
+	if got := readPage(organizations[0]); len(got.Changed) != 1 || got.Changed[0].Key != first.referenced.Key {
+		t.Fatalf("deferred key lost: %+v", got)
+	}
+	receipt.After, receipt.Next = receipt.Next, ""
+	receipt.Checked[0].Due = nil
+	receipt.Checked[0].Revision++
+	ack(receipt)
+	if len(readPage(organizations[0]).Changed) != 1 {
+		t.Fatal("stale receipt cleared a different revision")
+	}
+	receipt.Checked[0].Revision--
+	ack(receipt)
+	if len(readPage(organizations[0]).Changed) != 0 {
+		t.Fatal("completed candidate was replayed")
 	}
 	budget := postgres.DetailReclaimPage * postgres.DetailReclaimPages
 	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hub_detail_objects(organization_id,object_key,sha256,compressed_bytes,content_bytes,content,created_at)
@@ -304,8 +363,8 @@ SELECT $1,'orgs/'||$1||'/blobs/sha256/aa/'||lpad(to_hex(n),64,'0'),lpad(to_hex(n
 	if got := counter.Count.Load(); got > postgres.DetailReclaimPages*3 {
 		t.Errorf("full reclaim pass used %d statements for %d objects, want at most three per page including tenant binding", got, firstPass)
 	}
-	if secondPass, err := store.Reclaim(t.Context(), organizations[1], cutoff); err != nil || firstPass+secondPass != budget+2 {
-		t.Fatalf("continued reclaim=%d+%d err=%v, want %d abandoned objects", firstPass, secondPass, err, budget+2)
+	if secondPass, err := store.Reclaim(t.Context(), organizations[1], cutoff); err != nil || firstPass+secondPass != budget+1 {
+		t.Fatalf("continued reclaim=%d+%d err=%v, want %d abandoned objects", firstPass, secondPass, err, budget+1)
 	}
 	if !present(organizations[1], second.referenced) || !present(organizations[1], second.touched) || !present(organizations[1], second.recent) {
 		t.Fatal("bounded reclaim removed a live object")

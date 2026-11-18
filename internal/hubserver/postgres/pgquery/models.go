@@ -144,6 +144,13 @@ type ArchiveObjectOwner struct {
 	CreatedAt      time.Time
 }
 
+type ArchiveReclaimCandidate struct {
+	OrganizationID tracker.OrganizationID
+	ObjectKey      string
+	Revision       pgtype.Int8
+	DueAt          time.Time
+}
+
 type ArchiveUsageCounter struct {
 	OrganizationID     tracker.OrganizationID
 	CompressedBytes    int64
@@ -1779,6 +1786,7 @@ type HostedTenant struct {
 	NoticeSeekWorkItemID string
 	NoticeSeekUserID     string
 	NoticeSeekRevision   int64
+	ArchiveReclaimAfter  string
 }
 
 type HostedTransaction struct {
@@ -1873,6 +1881,7 @@ type HubDetailObject struct {
 	ContentBytes    int64
 	Content         []byte
 	CreatedAt       time.Time
+	ReclaimPending  bool
 }
 
 type HubServerIdentity struct {

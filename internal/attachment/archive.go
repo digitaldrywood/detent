@@ -18,12 +18,17 @@ import (
 const ReferenceBatchSize = 256
 
 type ObjectLookup struct {
-	ID   string   `json:"id,omitempty"`
-	Key  string   `json:"key,omitempty"`
-	Keys []string `json:"keys,omitempty"`
+	Page    bool            `json:"page,omitempty"`
+	Receipt *ReclaimReceipt `json:"receipt,omitempty"`
+	ID      string          `json:"id,omitempty"`
+	Key     string          `json:"key,omitempty"`
+	Keys    []string        `json:"keys,omitempty"`
 }
 
 func (q ObjectLookup) Valid(organization string) bool {
+	if q.Page || q.Receipt != nil {
+		return q.Key == "" && q.ID == "" && q.Keys == nil && (q.Page && q.Receipt == nil || !q.Page && q.Receipt.Valid(organization))
+	}
 	keys := q.Keys
 	if keys == nil {
 		if q.Key == "" {

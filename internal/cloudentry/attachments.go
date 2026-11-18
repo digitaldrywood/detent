@@ -549,26 +549,55 @@ func (s *Service) removeAttachment(ctx context.Context, organization Organizatio
 }
 
 func (s *Service) sweepAttachments(ctx context.Context) {
-	if s.attachments == nil || s.config.Now().Before(s.attachmentSweepAt) {
+	if s.attachments == nil {
 		return
 	}
-	s.attachmentSweepAt = s.config.Now().Add(time.Hour)
-	organizations, err := s.registry.List(ctx)
+	now := s.config.Now()
+	if s.attachmentSweepOrg == "" {
+		s.attachmentSweepInventory = !now.Before(s.attachmentSweepAt)
+		if !s.attachmentSweepInventory && !s.attachmentSweepPending {
+			return
+		}
+		s.attachmentSweepPending = false
+	}
+	organization, err := scanOrganization(s.registry.store.db.QueryRowContext(ctx, organizationSelect+" WHERE state='ready' AND id>$1 ORDER BY id LIMIT 1", s.attachmentSweepOrg))
+	if errors.Is(err, ErrOrganizationNotFound) {
+		s.attachmentSweepOrg = ""
+		if s.attachmentSweepInventory {
+			s.attachmentSweepAt = now.Add(time.Hour)
+		}
+		return
+	}
 	if err != nil {
 		s.config.Logger.Warn("attachment retention registry unavailable")
+		s.attachmentSweepOrg = ""
+		s.attachmentSweepPending = false
+		s.attachmentSweepAt = s.config.Now().Add(time.Hour)
 		return
 	}
-	for _, organization := range organizations {
-		if organization.State != "ready" {
-			continue
-		}
-		if err := s.sweepOrganizationAttachments(ctx, organization); err != nil {
-			s.config.Logger.Warn("attachment retention failed", "organization", organization.ID)
-		}
+	s.attachmentSweepOrg = organization.ID
+	more, err := s.sweepOrganizationPage(ctx, organization, s.attachmentSweepInventory)
+	s.attachmentSweepPending = s.attachmentSweepPending || more
+	if err != nil {
+		s.config.Logger.Warn("attachment retention failed", "organization", organization.ID)
 	}
 }
 
 func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization Organization) error {
+	_, err := s.sweepOrganizationPage(ctx, organization, true)
+	return err
+}
+
+func (s *Service) sweepOrganizationPage(ctx context.Context, organization Organization, inventory bool) (bool, error) {
+	if inventory {
+		if err := s.sweepExpiredAttachments(ctx, organization); err != nil {
+			return false, err
+		}
+	}
+	return s.attachmentSweeper(ctx, organization, "/internal/v1/attachments/exists").Archives(ctx, organization.ID, inventory)
+}
+
+func (s *Service) sweepExpiredAttachments(ctx context.Context, organization Organization) error {
 	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/attachments/expired", struct{}{}, nil)
 	if err != nil {
 		return err
@@ -591,17 +620,16 @@ func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization
 	for _, objects := range []struct{ prefix, endpoint string }{
 		{"attachments/", "/internal/v1/attachments/exists"},
 		{"attempt-diffs/", "/internal/v1/diff-bodies/exists"},
-		{"blobs/sha256/", "/internal/v1/attachments/exists"},
 	} {
-		if err := s.sweepAttachmentOrphans(ctx, organization, objects.prefix, objects.endpoint); err != nil {
+		if err := s.attachmentSweeper(ctx, organization, objects.endpoint).Run(ctx, organization.ID, objects.prefix); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organization, namespace, endpoint string) error {
-	sweep := attachmentsweep.Sweep{
+func (s *Service) attachmentSweeper(ctx context.Context, organization Organization, endpoint string) attachmentsweep.Sweep {
+	return attachmentsweep.Sweep{
 		Storage: s.attachments, Now: s.config.Now,
 		Lookup: func(input attachment.ObjectLookup) (int, []byte, error) {
 			return s.serviceCall(ctx, organization, endpoint, input, nil)
@@ -609,7 +637,6 @@ func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organ
 		Lock:  func() func() { return s.attachmentLocks.lock(organization.ID, true) },
 		Audit: func() error { return s.auth.audit(ctx, "entry", organization.ID, "attachment_deleted") },
 	}
-	return sweep.Run(ctx, organization.ID, namespace)
 }
 
 func attachmentUploadResponse(c echo.Context, organization string, status int, raw []byte) error {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentreclaim"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -187,22 +188,9 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 	if err := c.Bind(&input); err != nil || !input.Valid(claims.Audience) {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attachment lookup"))
 	}
-	var exists bool
-	var references []bool
-	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(claims.Audience), corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		if input.Keys != nil {
-			references, err = r.ReferencedAttachmentObjects(ctx, input.Keys)
-		} else {
-			exists, err = r.AttachmentObjectExists(ctx, input.ID, input.Key)
-		}
-		return err
-	})
+	result, err := attachmentreclaim.Lookup(ctx, s.config.TenantRepository, tracker.OrganizationID(claims.Audience), input, s.config.Clock())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if input.Keys != nil {
-		return c.JSON(http.StatusOK, references)
-	}
-	return c.JSON(http.StatusOK, map[string]bool{"exists": exists})
+	return c.JSON(http.StatusOK, result)
 }

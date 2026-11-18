@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,21 +48,25 @@ func (s Sweep) exists(input attachment.ObjectLookup) (bool, error) {
 	return *result.Exists, nil
 }
 
-func (s Sweep) remove(ctx context.Context, key string, input attachment.ObjectLookup) error {
+func (s Sweep) remove(ctx context.Context, key string, input attachment.ObjectLookup) (*time.Time, error) {
 	unlock := s.Lock()
 	defer unlock()
 	current, found, err := s.Storage.Stat(ctx, key)
-	if err != nil || !found || !s.expired(current) {
-		return err
+	if err != nil || !found {
+		return nil, err
+	}
+	if !s.expired(current) {
+		due := current.CreatedAt.Add(attachment.OrphanTTL)
+		return &due, nil
 	}
 	exists, err := s.exists(input)
 	if err != nil || exists {
-		return err
+		return nil, err
 	}
 	if err := s.Audit(); err != nil {
-		return err
+		return nil, err
 	}
-	return s.Storage.Delete(ctx, key)
+	return nil, s.Storage.Delete(ctx, key)
 }
 
 func (s Sweep) Run(ctx context.Context, organization, namespace string) error {
@@ -71,7 +76,8 @@ func (s Sweep) Run(ctx context.Context, organization, namespace string) error {
 	}
 	prefix += namespace
 	if namespace == "blobs/sha256/" {
-		return s.archives(ctx, prefix)
+		_, err := s.Archives(ctx, organization, true)
+		return err
 	}
 	return s.Storage.Walk(ctx, prefix, func(object attachment.Object) error {
 		if !s.expired(object) {
@@ -90,47 +96,74 @@ func (s Sweep) Run(ctx context.Context, organization, namespace string) error {
 		if err != nil || exists {
 			return err
 		}
-		return s.remove(ctx, object.Key, input)
+		_, err = s.remove(ctx, object.Key, input)
+		return err
 	})
 }
 
-func (s Sweep) archives(ctx context.Context, prefix string) error {
-	keys := make([]string, 0, attachment.ReferenceBatchSize)
-	flush := func() error {
-		if len(keys) == 0 {
-			return nil
-		}
-		var referenced []*bool
-		if err := s.lookup(attachment.ObjectLookup{Keys: keys}, &referenced); err != nil {
-			return err
-		}
-		if len(referenced) != len(keys) {
-			return errors.New("incomplete archive reference response")
-		}
-		for i, exists := range referenced {
-			if exists == nil {
-				return errors.New("missing archive reference result")
-			}
-			if !*exists {
-				if err := s.remove(ctx, keys[i], attachment.ObjectLookup{Key: keys[i]}); err != nil {
-					return err
-				}
-			}
-		}
-		keys = keys[:0]
-		return nil
+func (s Sweep) Archives(ctx context.Context, organization string, inventory bool) (bool, error) {
+	var page *attachment.ReclaimPage
+	if err := s.lookup(attachment.ObjectLookup{Page: true}, &page); err != nil {
+		return false, err
 	}
-	err := s.Storage.Walk(ctx, prefix, func(object attachment.Object) error {
-		if s.expired(object) {
+	if page == nil || page.Changed == nil || len(page.Changed) > attachment.ReferenceBatchSize {
+		return false, errors.New("invalid archive reconciliation page")
+	}
+	var objects []attachment.Object
+	next := page.After
+	if inventory {
+		var err error
+		objects, next, err = s.Storage.ArchivePage(ctx, organization, page.After)
+		if err != nil {
+			return false, err
+		}
+	}
+	receipt := attachment.ReclaimReceipt{After: page.After, Next: next, Checked: page.Changed}
+	if !receipt.Valid(organization) {
+		return false, attachment.ErrInvalid
+	}
+	changed := make(map[string]int, len(page.Changed))
+	keys := make([]string, 0, len(page.Changed)+len(objects))
+	for i, candidate := range page.Changed {
+		changed[candidate.Key] = i
+		keys = append(keys, candidate.Key)
+	}
+	for _, object := range objects {
+		if _, already := changed[object.Key]; !already && s.expired(object) {
 			keys = append(keys, object.Key)
 		}
-		if len(keys) == cap(keys) {
-			return flush()
-		}
-		return nil
-	})
-	if err != nil {
-		return err
 	}
-	return flush()
+	for batch := range slices.Chunk(keys, attachment.ReferenceBatchSize) {
+		var referenced []*bool
+		if err := s.lookup(attachment.ObjectLookup{Keys: batch}, &referenced); err != nil {
+			return false, err
+		}
+		if len(referenced) != len(batch) || slices.Contains(referenced, nil) {
+			return false, errors.New("incomplete archive reference response")
+		}
+		for i, exists := range referenced {
+			if *exists {
+				continue
+			}
+			key := batch[i]
+			due, err := s.remove(ctx, key, attachment.ObjectLookup{Key: key})
+			if err != nil {
+				return false, err
+			}
+			if position, ok := changed[key]; ok {
+				receipt.Checked[position].Due = due
+			}
+		}
+	}
+	if next == page.After && len(page.Changed) == 0 {
+		return false, nil
+	}
+	var completed bool
+	if err := s.lookup(attachment.ObjectLookup{Receipt: &receipt}, &completed); err != nil {
+		return false, err
+	}
+	if !completed {
+		return false, errors.New("archive reconciliation receipt refused")
+	}
+	return len(page.Changed) == attachment.ReferenceBatchSize, nil
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -81,11 +82,15 @@ func NewSpaces(t *testing.T, public bool) *Spaces {
 			}{}
 			var keys []string
 			for key := range f.Objects {
-				if strings.HasPrefix(key, r.URL.Query().Get("prefix")) {
+				if strings.HasPrefix(key, r.URL.Query().Get("prefix")) && key > r.URL.Query().Get("start-after") {
 					keys = append(keys, key)
 				}
 			}
 			sort.Strings(keys)
+			if n, err := strconv.Atoi(r.URL.Query().Get("max-keys")); err == nil && n > 0 && len(keys) > n {
+				keys = keys[:n]
+				result.Truncated = true
+			}
 			for _, key := range keys {
 				object := f.Objects[key]
 				result.Items = append(result.Items, item{Key: key, LastModified: object.Created.UTC().Format(time.RFC3339), Size: len(object.Content)})

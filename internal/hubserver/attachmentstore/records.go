@@ -35,6 +35,7 @@ type Reference struct {
 
 type Reader interface {
 	ArchiveReader
+	ArchiveReclaimPage(context.Context, time.Time) (attachment.ReclaimPage, error)
 	ReferencedAttachmentObjects(context.Context, []string) ([]bool, error)
 	AttachmentObjectExists(context.Context, string, string) (bool, error)
 	Attachment(context.Context, tracker.ProjectID, string) (Record, error)
@@ -48,6 +49,7 @@ type LockingReader interface {
 type Writer interface {
 	ArchiveWriter
 	Reader
+	CompleteArchiveReclaim(context.Context, attachment.ReclaimReceipt) error
 	CreateAttachment(context.Context, Record) error
 	DeleteIconAttachment(context.Context, tracker.ProjectID, string, time.Time) error
 	BindAttachment(context.Context, Reference) error

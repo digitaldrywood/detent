@@ -34,6 +34,7 @@ type Storage interface {
 	Open(context.Context, string) (io.ReadCloser, error)
 	Delete(context.Context, string) error
 	Walk(context.Context, string, func(Object) error) error
+	ArchivePage(context.Context, string, string) ([]Object, string, error)
 	Stat(context.Context, string) (Object, bool, error)
 }
 
@@ -214,4 +215,40 @@ func (s *spaces) verify(ctx context.Context) (resultErr error) {
 		return errors.New("attachments bucket must refuse anonymous reads")
 	}
 	return nil
+}
+
+func (s *spaces) ArchivePage(ctx context.Context, organization, after string) ([]Object, string, error) {
+	prefix, err := OrganizationPrefix(organization)
+	if err != nil || after != "" && !(ObjectLookup{Key: after}).Valid(organization) {
+		return nil, "", ErrInvalid
+	}
+	prefix += "blobs/sha256/"
+	input := &s3.ListObjectsV2Input{Bucket: aws.String(s.config.Bucket), Prefix: aws.String(s.prefix + prefix), MaxKeys: aws.Int32(ReferenceBatchSize)}
+	if after != "" {
+		input.StartAfter = aws.String(s.prefix + after)
+	}
+	page, err := s.client.ListObjectsV2(ctx, input)
+	if err != nil {
+		return nil, "", err
+	}
+	if page.IsTruncated == nil || len(page.Contents) > ReferenceBatchSize {
+		return nil, "", ErrInvalid
+	}
+	objects := make([]Object, 0, len(page.Contents))
+	last := after
+	for _, item := range page.Contents {
+		key, valid := strings.CutPrefix(aws.ToString(item.Key), s.prefix)
+		if !valid || key <= last || item.LastModified == nil || !(ObjectLookup{Key: key}).Valid(organization) {
+			return nil, "", ErrInvalid
+		}
+		objects = append(objects, Object{Key: key, CreatedAt: *item.LastModified})
+		last = key
+	}
+	if aws.ToBool(page.IsTruncated) {
+		if last == after {
+			return nil, "", ErrInvalid
+		}
+		return objects, last, nil
+	}
+	return objects, "", nil
 }

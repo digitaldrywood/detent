@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -19,10 +18,8 @@ const (
 )
 
 type DetailStore struct {
-	repository   *Repository
-	now          func() time.Time
-	mu           sync.Mutex
-	reclaimAfter string
+	repository *Repository
+	now        func() time.Time
 }
 
 func (r *Repository) DetailStore(now func() time.Time) *DetailStore {
@@ -42,41 +39,40 @@ WHERE stored.sha256=excluded.sha256 AND stored.content=excluded.content`, s.orga
 	return nil
 }
 
-func (s *session) reclaimDetailObjects(ctx context.Context, cutoff time.Time, after string, limit int) (string, int, error) {
+func (s *session) reclaimDetailObjects(ctx context.Context, cutoff time.Time) (int, int, error) {
 	var keys []string
-	err := s.db.QueryRow(ctx, `SELECT ARRAY(SELECT object_key FROM hub_detail_objects WHERE organization_id=$1 AND object_key>$2 AND created_at<$3 ORDER BY object_key LIMIT $4 FOR UPDATE)`, s.organization, after, cutoff, limit).Scan(&keys)
+	err := s.db.QueryRow(ctx, `SELECT ARRAY(SELECT object_key FROM hub_detail_objects
+WHERE organization_id=$1 AND reclaim_pending AND created_at<$2 ORDER BY created_at,object_key
+LIMIT $3 FOR UPDATE SKIP LOCKED)`, s.organization, cutoff, DetailReclaimPage).Scan(&keys)
 	if err != nil || len(keys) == 0 {
-		return "", 0, mapError(ctx, err)
+		return 0, 0, mapError(ctx, err)
 	}
-	tag, err := s.db.Exec(ctx, `DELETE FROM hub_detail_objects WHERE organization_id=$1 AND created_at<$3 AND object_key IN (
- SELECT c.key FROM unnest($2::text[]) AS c(key) WHERE NOT (`+attachmentReferenced+`))`, s.organization, keys, cutoff)
-	if err != nil {
-		return "", 0, mapError(ctx, err)
-	}
-	reclaimed := int(tag.RowsAffected())
-	if len(keys) < limit {
-		return "", reclaimed, nil
-	}
-	return keys[len(keys)-1], reclaimed, nil
+	var reclaimed int
+	err = s.db.QueryRow(ctx, `WITH live AS MATERIALIZED (
+ SELECT DISTINCT object_key FROM attachment_object_references WHERE organization_id=$1 AND object_key=ANY($2::text[])
+), kept AS (
+ UPDATE hub_detail_objects SET reclaim_pending=false WHERE organization_id=$1 AND object_key IN (SELECT object_key FROM live)
+), removed AS (
+ DELETE FROM hub_detail_objects WHERE organization_id=$1 AND object_key=ANY($2) AND created_at<$3
+ AND NOT EXISTS (SELECT 1 FROM live WHERE live.object_key=hub_detail_objects.object_key) RETURNING 1
+) SELECT count(*) FROM removed`, s.organization, keys, cutoff).Scan(&reclaimed)
+	return len(keys), reclaimed, mapError(ctx, err)
 }
 
 func (d *DetailStore) Reclaim(ctx context.Context, organization tracker.OrganizationID, cutoff time.Time) (int, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	reclaimed := 0
 	for range DetailReclaimPages {
-		var next string
-		var count int
+		var scanned, count int
 		err := d.repository.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
 			var err error
-			next, count, err = s.reclaimDetailObjects(ctx, cutoff, d.reclaimAfter, DetailReclaimPage)
+			scanned, count, err = s.reclaimDetailObjects(ctx, cutoff)
 			return err
 		})
 		if err != nil {
 			return reclaimed, err
 		}
-		reclaimed, d.reclaimAfter = reclaimed+count, next
-		if next == "" {
+		reclaimed += count
+		if scanned < DetailReclaimPage {
 			break
 		}
 	}

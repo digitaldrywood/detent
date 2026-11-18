@@ -1,5 +1,6 @@
 {
   "tables": {
+    "archive_reclaim_candidates": {"class": "derived_with_retention", "retention": "A hosted archive reference removal schedules the old key for checking. A completed sweep clears that revision or reschedules until orphan grace expires. Hosted tenant deletion cascades."},
     "hub_detail_objects": {"class": "immutable_payload", "retention": "PutDetailObject stores content-addressed detail archives for a Hub without object storage and refreshes the orphan grace on replay; native retention Reclaim deletes objects older than the attachment orphan TTL that no reference catalog row names, a bounded page budget per pass; organization deletion cascades"},
     "github_pull_request_refresh": {"class": "hot_state", "retention": "RequestGitHubPullRequests, CompleteGitHubPullRequestRefresh and RecordGitHubPullRequestSource own current refresh requests and observations; organization deletion cascades"},
     "health_scheduled_reports": {"class": "immutable_payload", "retention": "RecordHealthScheduledReport retains immutable per-project repository run and attempt receipts; conflicting replay is rejected and project identity is retained"},
