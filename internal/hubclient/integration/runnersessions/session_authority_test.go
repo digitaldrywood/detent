@@ -1,4 +1,4 @@
-package api
+package runnersessions_test
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnersession"
@@ -30,9 +32,9 @@ func (e sessionCallbackExecution) Recovery() tracker.NativeRecovery {
 	return tracker.NativeRecovery{Lease: e.lease}
 }
 
-func sessionCallbackClient(t *testing.T, send executionRoundTrip) *RunnerSessions {
+func sessionCallbackClient(t *testing.T, send testsupport.RoundTrip) *api.RunnerSessions {
 	t.Helper()
-	client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{Transport: send}})
+	client, err := api.New(api.Config{URL: "http://hub.test", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{Transport: send}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +42,7 @@ func sessionCallbackClient(t *testing.T, send executionRoundTrip) *RunnerSession
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewRunnerSessions(native)
+	return api.NewRunnerSessions(native)
 }
 
 func TestRevokedLocalSessionCallback(t *testing.T) {
@@ -69,7 +71,7 @@ func TestRevokedLocalSessionCallback(t *testing.T) {
 			callbacks := run.LocalRunCallbacks(runner.RunRequest{Execution: sessionCallbackExecution{lease: lease}})
 			guard, revoke := context.WithCancelCause(t.Context())
 			defer revoke(nil)
-			guarded := WithMutationAuthority(guard, sessions.Scope(), lease, func() error { return context.Cause(guard) })
+			guarded := api.WithMutationAuthority(guard, sessions.Scope(), lease, func() error { return context.Cause(guard) })
 			processCtx, stop := context.WithCancel(context.WithoutCancel(guarded))
 			t.Cleanup(stop)
 			cmd := exec.CommandContext(processCtx, os.Args[0], "-test.run=^TestRevokedLocalSessionCallback$")
@@ -138,7 +140,7 @@ func TestRunnerSessionBudgetRechecksAuthority(t *testing.T) {
 			}
 			return rec.Result(), nil
 		})
-		ctx := WithMutationAuthority(context.WithoutCancel(guard), sessions.Scope(), tracker.NativeLease{ID: "lease_example", FencingToken: 1}, func() error { return context.Cause(guard) })
+		ctx := api.WithMutationAuthority(context.WithoutCancel(guard), sessions.Scope(), tracker.NativeLease{ID: "lease_example", FencingToken: 1}, func() error { return context.Cause(guard) })
 		_, err := sessions.StartSession(ctx, store.SessionStart{})
 		if !errors.Is(err, runner.ErrOperatorStopped) || posts != 1 {
 			t.Fatalf("budget replay error=%v posts=%d, want operator stop and only the refused request", err, posts)
