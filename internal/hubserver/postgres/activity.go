@@ -60,9 +60,9 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
  CROSS JOIN LATERAL (SELECT id,project_id,native_id,number,title,workflow_state_name,native_created_at,native_updated_at,archived,actor_principal_id FROM issues i WHERE i.organization_id=$1 AND i.id=recent.id LIMIT 1) i
  WHERE i.project_id=ANY($2) AND NOT i.archived AND ($5='' OR i.actor_principal_id=$5)
 ) SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(i.workflow_state_name,''),i.native_created_at
- FROM recent_issues i JOIN projects p ON p.organization_id=$1 AND p.id=i.project_id
- JOIN project_workflow_states w ON w.organization_id=$1 AND w.project_id=i.project_id AND w.name=i.workflow_state_name
- WHERE p.deleted_at IS NULL AND w.terminal ORDER BY i.native_updated_at DESC,i.native_id LIMIT $6`, s.organization, projects, recent, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
+ FROM recent_issues i CROSS JOIN LATERAL (SELECT p.name FROM projects p WHERE p.organization_id=$1 AND p.id=i.project_id AND p.deleted_at IS NULL LIMIT 1) p
+ CROSS JOIN LATERAL (SELECT 1 FROM project_workflow_states w WHERE w.organization_id=$1 AND w.project_id=i.project_id AND w.name=i.workflow_state_name AND w.terminal LIMIT 1) w
+ ORDER BY i.native_updated_at DESC,i.native_id LIMIT $6`, s.organization, projects, recent, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -300,13 +300,13 @@ func (s *session) activityAttempts(ctx context.Context, f activitystore.Filter, 
  CASE WHEN a.status='running' THEN least(coalesce(l.released_at,l.expires_at),l.expires_at) ELSE a.updated_at END AS finished_at,
  a.status='running' AND l.released_at IS NULL AND l.renewed_at<=$4 AND l.expires_at>$4,
  coalesce(f.role,''),coalesce(f.duration_seconds,0),coalesce(f.phase_timing_status,'')<>'complete'
- FROM attempt_items a JOIN projects p ON p.organization_id=$1 AND p.id=a.project_id
- JOIN leases l ON l.organization_id=$1 AND l.lease_id=a.lease_id
- LEFT JOIN runner_lease_assignments r ON r.organization_id=$1 AND r.lease_id=a.lease_id
- LEFT JOIN provider_reservations pr ON pr.organization_id=$1 AND pr.lease_id=a.lease_id
+ FROM attempt_items a CROSS JOIN LATERAL (SELECT p.name FROM projects p WHERE p.organization_id=$1 AND p.id=a.project_id AND p.deleted_at IS NULL LIMIT 1) p
+ CROSS JOIN LATERAL (SELECT l.session_id,l.released_at,l.renewed_at,l.expires_at FROM leases l WHERE l.organization_id=$1 AND l.lease_id=a.lease_id LIMIT 1) l
+ LEFT JOIN LATERAL (SELECT r.runner_id FROM runner_lease_assignments r WHERE r.organization_id=$1 AND r.lease_id=a.lease_id LIMIT 1) r ON true
+ LEFT JOIN LATERAL (SELECT pr.requirement_role FROM provider_reservations pr WHERE pr.organization_id=$1 AND pr.lease_id=a.lease_id LIMIT 1) pr ON true
  LEFT JOIN LATERAL (SELECT latest_event_id FROM report_attempt_facts af WHERE af.organization_id=$1 AND af.attempt_id=a.id AND a.status<>'running' LIMIT 1) af ON true
- LEFT JOIN report_event_facts f ON f.organization_id=$1 AND f.event_id=af.latest_event_id
- WHERE p.deleted_at IS NULL AND ($6='' OR r.runner_id=$6)
+ LEFT JOIN LATERAL (SELECT f.role,f.duration_seconds,f.phase_timing_status FROM report_event_facts f WHERE f.organization_id=$1 AND f.event_id=af.latest_event_id LIMIT 1) f ON true
+ WHERE ($6='' OR r.runner_id=$6)
  ORDER BY finished_at DESC,a.id DESC`, s.organization, ids, projects, f.Now, f.Principal, f.RunnerID, len(ids))
 	if err != nil {
 		return mapError(ctx, err)

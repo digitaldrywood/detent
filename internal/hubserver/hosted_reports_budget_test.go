@@ -215,18 +215,7 @@ func reportsAssertPostgresPlans(t *testing.T, admin *sql.DB, organization tracke
 	for i, statement := range statements {
 		plans[i] = pgstoretest.ReportStatement{Query: statement.query, Args: statement.args}
 	}
-	report, err := pgstoretest.CheckReportRequest(t.Context(), admin, string(organization), plans, reportsBudgetHotRelations, pgstoretest.ReportRequestBudgets[request])
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, problem := range report.Problems {
-		t.Errorf("actual %s read violates report source bounds: %s", request, problem)
-	}
-	for _, relation := range required {
-		if !report.Relations[relation] {
-			t.Errorf("actual report did not exercise %s facts", relation)
-		}
-	}
+	pgstoretest.AssertReportRequest(t, admin, string(organization), plans, reportsBudgetHotRelations, request, required...)
 }
 
 func reportsExplainPostgresPlan(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statement tracedStatement, planner ...string) (reportsBudgetPlan, []byte) {

@@ -15304,6 +15304,33 @@
         ]
       }
     },
+    "internal/hubserver/postgres/pgstoretest/activityplans.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "access",
+        "activity",
+        "core",
+        "event",
+        "fleet",
+        "lease",
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "assertActivityMetadataPlans:BeginTx": 1,
+          "assertActivityMetadataPlans:ExecContext": 2,
+          "assertActivityMetadataPlans:SQL": 5,
+          "checkActivityMetadataScans:Query": 4
+        },
+        "tables": [
+          "hub/collaboration_events",
+          "hub/leases",
+          "hub/organizations",
+          "hub/projects",
+          "hub/provider_reservations"
+        ]
+      }
+    },
     "internal/hubserver/postgres/pgstoretest/history.go": {
       "disposition": "non-storage",
       "families": [
@@ -15365,12 +15392,12 @@
         "operations": {
           "CheckReportRequest:Query": 4,
           "ExplainReportPlan:BeginTx": 1,
-          "ExplainReportPlan:ExecContext": 3,
-          "ExplainReportPlan:Query": 1,
-          "ExplainReportPlan:QueryRowContext": 1,
-          "ExplainReportPlan:SQL": 1,
           "WaitForReportSeed:QueryRowContext": 1,
           "WaitForReportSeed:SQL": 1,
+          "explainReportPlanTx:ExecContext": 3,
+          "explainReportPlanTx:Query": 1,
+          "explainReportPlanTx:QueryRowContext": 1,
+          "explainReportPlanTx:SQL": 1,
           "reportSeedVisible:QueryRowContext": 1,
           "reportSeedVisible:SQL": 1
         },
