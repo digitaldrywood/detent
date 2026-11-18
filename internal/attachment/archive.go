@@ -15,6 +15,33 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 )
 
+const ReferenceBatchSize = 256
+
+type ObjectLookup struct {
+	ID   string   `json:"id,omitempty"`
+	Key  string   `json:"key,omitempty"`
+	Keys []string `json:"keys,omitempty"`
+}
+
+func (q ObjectLookup) Valid(organization string) bool {
+	keys := q.Keys
+	if keys == nil {
+		if q.Key == "" {
+			return true
+		}
+		keys = []string{q.Key}
+	} else if q.ID != "" || q.Key != "" || len(keys) == 0 || len(keys) > ReferenceBatchSize {
+		return false
+	}
+	for _, key := range keys {
+		expected, err := ArchiveKey(organization, key[strings.LastIndex(key, "/")+1:])
+		if err != nil || expected != key {
+			return false
+		}
+	}
+	return true
+}
+
 const ArchiveRetention = "organization"
 const ArchiveReadLifetime = 5 * time.Minute
 const MaxArchiveBytes = 32 << 20

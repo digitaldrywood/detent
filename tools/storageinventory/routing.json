@@ -3438,34 +3438,12 @@
       "inventory": {
         "operations": {
           "session.AttachmentObjectExists:QueryRow": 2,
-          "session.AttachmentObjectExists:SQL": 2
+          "session.AttachmentObjectExists:SQL": 2,
+          "session.ReferencedAttachmentObjects:QueryRow": 1,
+          "session.ReferencedAttachmentObjects:SQL": 1
         },
         "tables": [
-          "hub/attachments",
-          "hub/change_evidence",
-          "hub/change_landing_receipts",
-          "hub/change_requests",
-          "hub/change_versions",
-          "hub/collaboration_events",
-          "hub/collaboration_versions",
-          "hub/github_import_records",
-          "hub/health_findings",
-          "hub/hosted_audit",
-          "hub/hosted_billing_audit",
-          "hub/hosted_billing_retired",
-          "hub/hosted_plan_audit",
-          "hub/issues",
-          "hub/linked_issue_sources",
-          "hub/native_attempts",
-          "hub/native_board_deltas",
-          "hub/native_board_items",
-          "hub/native_commands",
-          "hub/native_comments",
-          "hub/onboarding_issue_intake",
-          "hub/policy_revisions",
-          "hub/project_actions",
-          "hub/projects",
-          "hub/team_thread_posts"
+          "hub/attachments"
         ]
       }
     },
@@ -5071,7 +5049,7 @@
           "session.putDetailObject:Exec": 1,
           "session.putDetailObject:SQL": 1,
           "session.reclaimDetailObjects:Exec": 1,
-          "session.reclaimDetailObjects:Query": 1,
+          "session.reclaimDetailObjects:QueryRow": 1,
           "session.reclaimDetailObjects:SQL": 2
         },
         "tables": []

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
-	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -184,29 +183,26 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 	if !ok || claims.Kind != cloudassert.KindService {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	var input struct {
-		ID  string `json:"id"`
-		Key string `json:"key"`
-	}
-	if err := c.Bind(&input); err != nil {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attachment id"))
+	var input attachment.ObjectLookup
+	if err := c.Bind(&input); err != nil || !input.Valid(claims.Audience) {
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attachment lookup"))
 	}
 	var exists bool
-	if input.Key != "" {
-		digest := input.Key[strings.LastIndex(input.Key, "/")+1:]
-		key, err := attachment.ArchiveKey(claims.Audience, digest)
-		if err != nil || key != input.Key {
-			return s.nativeAPIError(c, hubapi.NativeInvalid("Invalid archive key"))
-		}
-	}
+	var references []bool
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(claims.Audience), corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		exists, err = r.AttachmentObjectExists(ctx, input.ID, input.Key)
+		if input.Keys != nil {
+			references, err = r.ReferencedAttachmentObjects(ctx, input.Keys)
+		} else {
+			exists, err = r.AttachmentObjectExists(ctx, input.ID, input.Key)
+		}
 		return err
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-
+	if input.Keys != nil {
+		return c.JSON(http.StatusOK, references)
+	}
 	return c.JSON(http.StatusOK, map[string]bool{"exists": exists})
 }
