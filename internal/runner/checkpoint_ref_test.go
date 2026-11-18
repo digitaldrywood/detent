@@ -487,7 +487,7 @@ func TestCheckpointRefCoversChangeSource(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := checkpointRefCoversChangeSource(test.err, test.recovery, test.landing, test.fresh); got != test.want {
+			if got := checkpointRefCoversChangeSource(test.err, nativeRestorableCheckpoint(test.recovery, nil), test.landing, test.fresh); got != test.want {
 				t.Fatalf("covers = %t, want %t", got, test.want)
 			}
 		})
