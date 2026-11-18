@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -187,7 +188,11 @@ func TestBoardPreparedStatementReuse(t *testing.T) {
 	admin := pgstoretest.Template.Database(t)
 	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	runtime := pgstoretest.RuntimeFor(t, pool, pool)
-	tx := pgstoretest.TenantTx(t, runtime, pool, "org_example")
+	tx, err := runtime.Begin(t.Context(), "org_example", pgtransport.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(t.Context())
 	query := boardviewsql.Statement(false)
 	args := []any{"org_example", []string{"prj_example"}, []string{"prj_example"}, "", false, "credential", "principal", "member", 2, []string{}, false, viewstore.LanesOpen, nil, "", false, []string{}, []string{}}
 	var first time.Time

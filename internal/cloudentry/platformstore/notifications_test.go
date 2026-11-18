@@ -75,3 +75,56 @@ func TestConstructorRejectsUnconfiguredPoolBeforeConnect(t *testing.T) {
 		t.Fatal("constructor connected before validating native execution")
 	}
 }
+
+func TestPlatformWriteReturningAfterColumnTypeChange(t *testing.T) {
+	for _, path := range []string{"standalone", "transaction", "batch"} {
+		t.Run(path, func(t *testing.T) {
+			ctx := t.Context()
+			admin := template.Database(t)
+			r := repository(t, admin, testConfig(t))
+			if _, err := admin.ExecContext(ctx, "CREATE TABLE platform.example_writes (id text); GRANT SELECT,INSERT ON platform.example_writes TO detent_platform_v2"); err != nil {
+				t.Fatal(err)
+			}
+			const statement = "INSERT INTO platform.example_writes VALUES ($1) RETURNING id,pg_backend_pid()"
+			var backend int
+			for _, key := range []string{"before", "after"} {
+				if key == "after" {
+					if _, err := admin.ExecContext(ctx, "ALTER TABLE platform.example_writes ALTER COLUMN id TYPE varchar(20)"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var id string
+				var pid int
+				var err error
+				if path == "standalone" {
+					err = r.QueryRowEntry(ctx, corestore.Serving, statement, key).Scan(&id, &pid)
+				} else {
+					tx, beginErr := r.BeginEntry(ctx, corestore.Serving, false)
+					if beginErr != nil {
+						t.Fatal(beginErr)
+					}
+					defer tx.Rollback(ctx)
+					if path == "batch" {
+						batch := &pgx.Batch{}
+						batch.Queue(statement, key)
+						results := tx.SendBatch(ctx, batch)
+						err = errors.Join(results.QueryRow().Scan(&id, &pid), results.Close())
+					} else {
+						err = tx.QueryRow(ctx, statement, key).Scan(&id, &pid)
+					}
+					if err == nil {
+						err = tx.Commit(ctx)
+					}
+				}
+				if err != nil || id != key || (key == "after" && pid != backend) {
+					t.Fatalf("%s: returning %q backend=%d previous=%d error=%v", key, id, pid, backend, err)
+				}
+				backend = pid
+			}
+			var n int
+			if err := admin.QueryRowContext(ctx, "SELECT count(*) FROM platform.example_writes WHERE id='after'").Scan(&n); err != nil || n != 1 {
+				t.Fatalf("committed rows=%d error=%v", n, err)
+			}
+		})
+	}
+}

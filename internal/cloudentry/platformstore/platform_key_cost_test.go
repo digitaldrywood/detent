@@ -13,12 +13,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type platformWireCounts struct {
-	mu                    sync.Mutex
-	statements, exchanges int
+	mu                                  sync.Mutex
+	statements, exchanges, preparations int
 }
 
 type platformCountedConn struct {
@@ -26,6 +27,7 @@ type platformCountedConn struct {
 	counts  *platformWireCounts
 	pending []byte
 	startup bool
+	trace   pgtest.FrontendTrace
 }
 
 func (c *platformCountedConn) Write(value []byte) (int, error) {
@@ -51,19 +53,22 @@ func (c *platformCountedConn) Write(value []byte) (int, error) {
 			break
 		}
 		c.counts.mu.Lock()
-		switch c.pending[0] {
-		case 'S':
-			c.counts.exchanges++
-		case 'Q':
-			c.counts.exchanges++
-			c.counts.statements++
-		case 'E':
-			c.counts.statements++
-		}
+		cost := c.trace.Count(c.pending[:size])
+		c.counts.exchanges += cost.ExecutionExchanges
+		c.counts.preparations += cost.FirstPrepareExchanges
+		c.counts.statements += cost.Statements
 		c.counts.mu.Unlock()
 		c.pending = c.pending[size:]
 	}
 	return n, err
+}
+
+func (c *platformWireCounts) take() (int, int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	statements, exchanges, preparations := c.statements, c.exchanges, c.preparations
+	c.statements, c.exchanges, c.preparations = 0, 0, 0
+	return statements, exchanges, preparations
 }
 
 func TestPlatformKeyReadCostIsBounded(t *testing.T) {
@@ -133,15 +138,18 @@ func TestPlatformKeyReadCostIsBounded(t *testing.T) {
 				}},
 			} {
 				t.Run(fmt.Sprintf("%s/%d/%s", org, size, read.name), func(t *testing.T) {
-					counts.mu.Lock()
-					counts.statements, counts.exchanges = 0, 0
-					counts.mu.Unlock()
+					counts.take()
 					if err := read.run(); err != nil {
 						t.Fatal(err)
 					}
-					counts.mu.Lock()
-					statements, exchanges := counts.statements, counts.exchanges
-					counts.mu.Unlock()
+					statements, exchanges, preparations := counts.take()
+					wantPreparations := 0
+					if org == "org_first" && size == 2 {
+						wantPreparations = 1
+					}
+					if preparations != wantPreparations {
+						t.Errorf("first-use exchanges=%d, want %d", preparations, wantPreparations)
+					}
 					if statements != 1 || exchanges != 1 {
 						t.Errorf("statements=%d exchanges=%d, want 1 each", statements, exchanges)
 					}

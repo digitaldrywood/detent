@@ -38,6 +38,7 @@ type Transaction struct {
 	conn        *pgxpool.Conn
 	scope       Scope
 	bound, done bool
+	readOnly    bool
 	rows        *transactionRows
 	batch       *transactionBatch
 }
@@ -76,14 +77,14 @@ func (p *Pools) BeginBatch(ctx context.Context, scope Scope, options Options, wo
 	if err != nil {
 		return nil, nil, fmt.Errorf("acquire PostgreSQL tenant connection: %w", err)
 	}
-	tx := &Transaction{conn: conn, scope: scope}
+	tx := &Transaction{conn: conn, scope: scope, readOnly: options.ReadOnly}
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN ISOLATION LEVEL " + string(isolation) + mode)
 	batch.Queue(`SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true), set_config('jit', 'off', true)`, string(scope.Organization))
 	if work != nil {
 		batch.QueuedQueries = append(batch.QueuedQueries, guardedBatch(work).QueuedQueries...)
 	}
-	results := conn.SendBatch(ctx, batch)
+	results := tx.sendBatch(ctx, batch)
 	_, beginErr := results.Exec()
 	_, bindErr := results.Exec()
 	if err := errors.Join(beginErr, bindErr); err != nil {
@@ -110,13 +111,13 @@ func (t *Transaction) Exec(ctx context.Context, query string, args ...any) (pgco
 	if err := t.ready(); err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	return t.conn.Exec(ctx, query, args...)
+	return t.conn.Exec(ctx, query, t.queryArgs(args)...)
 }
 func (t *Transaction) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
 	if err := t.ready(); err != nil {
 		return nil, err
 	}
-	rows, err := t.conn.Query(ctx, query, args...)
+	rows, err := t.conn.Query(ctx, query, t.queryArgs(args)...)
 	if err != nil {
 		return nil, err
 	}
@@ -135,10 +136,24 @@ func (t *Transaction) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.Batch
 	if err := t.ready(); err != nil {
 		return failedBatch{err}
 	}
-	tracked := &transactionBatch{BatchResults: t.conn.SendBatch(ctx, guardedBatch(batch)), tx: t}
+	tracked := &transactionBatch{BatchResults: t.sendBatch(ctx, guardedBatch(batch)), tx: t}
 	t.batch = tracked
 	return tracked
 }
+func (t *Transaction) queryArgs(args []any) []any {
+	if t.readOnly {
+		return args
+	}
+	return WriteArgs(args)
+}
+
+func (t *Transaction) sendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
+	if t.readOnly {
+		return t.conn.SendBatch(ctx, batch)
+	}
+	return sendWriteBatch(ctx, t.conn.Conn(), batch)
+}
+
 func (t *Transaction) Commit(ctx context.Context) error {
 	if err := t.ready(); err != nil {
 		if errors.Is(err, ErrOpenResults) {

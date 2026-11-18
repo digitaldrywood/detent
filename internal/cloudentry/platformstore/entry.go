@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 )
 
 type EntryTransaction struct {
@@ -36,6 +37,9 @@ func (r *Repository) beginEntry(ctx context.Context, readOnly bool, release func
 	if err != nil {
 		release()
 		return nil, mapError(ctx, err)
+	}
+	if !readOnly {
+		tx = pgtransport.UncachedWrites(tx)
 	}
 	return &EntryTransaction{Tx: tx, release: release}, nil
 }

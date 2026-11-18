@@ -20426,6 +20426,34 @@
         "tables": []
       }
     },
+    "internal/pgtransport/write_batch.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "writeBatch.Close:Exec": 1,
+          "writeBatch.QueryRow:Query": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/pgtransport/write_tx.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "writeTx.Begin:Begin": 1,
+          "writeTx.Exec:Exec": 1,
+          "writeTx.Query:Query": 1,
+          "writeTx.QueryRow:QueryRow": 1
+        },
+        "tables": []
+      }
+    },
     "internal/projectsettings/settings.go": {
       "disposition": "local-only",
       "families": [

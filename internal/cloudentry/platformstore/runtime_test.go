@@ -3,11 +3,11 @@ package platformstore
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
+
 	"errors"
 	"fmt"
 	"net"
-	"sync"
+
 	"testing"
 	"time"
 
@@ -25,71 +25,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type runtimeWireCounts struct {
-	mu                    sync.Mutex
-	statements, exchanges int
-}
-
-type runtimeWireConn struct {
-	net.Conn
-	counts  *runtimeWireCounts
-	pending []byte
-	startup bool
-}
-
-func (c *runtimeWireConn) Write(data []byte) (int, error) {
-	n, err := c.Conn.Write(data)
-	c.pending = append(c.pending, data[:n]...)
-	for {
-		if c.startup {
-			if len(c.pending) < 4 || len(c.pending) < int(binary.BigEndian.Uint32(c.pending[:4])) {
-				break
-			}
-			c.pending = c.pending[int(binary.BigEndian.Uint32(c.pending[:4])):]
-			c.startup = false
-			continue
-		}
-		if len(c.pending) < 5 {
-			break
-		}
-		size := 1 + int(binary.BigEndian.Uint32(c.pending[1:5]))
-		if len(c.pending) < size {
-			break
-		}
-		c.counts.mu.Lock()
-		if c.pending[0] == 'Q' || c.pending[0] == 'E' {
-			c.counts.statements++
-		}
-		if c.pending[0] == 'Q' || c.pending[0] == 'S' {
-			c.counts.exchanges++
-		}
-		c.counts.mu.Unlock()
-		c.pending = c.pending[size:]
-	}
-	return n, err
-}
-
-func (c *runtimeWireCounts) take() (int, int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	statements, exchanges := c.statements, c.exchanges
-	c.statements, c.exchanges = 0, 0
-	return statements, exchanges
-}
-
 func TestRuntimePublicationWorkDoesNotGrowWithTenants(t *testing.T) {
 	admin := template.Database(t)
 	base := rolePool(t, admin, postgres.PlatformRoleName, "")
 	native := base.Config()
 	base.Close()
-	counts := &runtimeWireCounts{}
+	counts := &platformWireCounts{}
 	dial := native.ConnConfig.DialFunc
 	native.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err := dial(ctx, network, address)
 		if err != nil {
 			return nil, err
 		}
-		return &runtimeWireConn{Conn: conn, counts: counts, startup: true}, nil
+		return &platformCountedConn{Conn: conn, counts: counts, startup: true}, nil
 	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), native)
 	if err != nil {
@@ -111,8 +59,8 @@ SELECT 'org_scale_'||n::text,'Example','ready','unix:/example/scale.sock',1,now(
 		if err := r.PublishRuntime(t.Context(), revision, "entry", "example/payload", nil); err != nil {
 			t.Fatal(err)
 		}
-		if statements, exchanges := counts.take(); statements != 5 || exchanges != 5 {
-			t.Fatalf("%d tenants publication: statements=%d exchanges=%d", size, statements, exchanges)
+		if statements, exchanges, preparations := counts.take(); statements != 5 || exchanges != 5 || preparations != 0 {
+			t.Fatalf("%d tenants publication: statements=%d exchanges=%d preparations=%d", size, statements, exchanges, preparations)
 		}
 		page, err := r.RuntimeTenantPage(t.Context(), "", 2)
 		if err != nil || len(page) != 2 || page[0].Organization != "org_first" || page[1].Organization != "org_scale_1" {
@@ -124,8 +72,12 @@ SELECT 'org_scale_'||n::text,'Example','ready','unix:/example/scale.sock',1,now(
 				t.Fatalf("%s adoption=%+v error=%v", org, target, err)
 			}
 		}
-		if statements, exchanges := counts.take(); statements != 3 || exchanges != 3 {
-			t.Fatalf("%d tenants page and two targets: statements=%d exchanges=%d", size, statements, exchanges)
+		wantPreparations := 0
+		if size == 4 {
+			wantPreparations = 2
+		}
+		if statements, exchanges, preparations := counts.take(); statements != 3 || exchanges != 3 || preparations != wantPreparations {
+			t.Fatalf("%d tenants page and two targets: statements=%d exchanges=%d preparations=%d", size, statements, exchanges, preparations)
 		}
 		t.Logf("tenants=%d publication: 5 statements/5 exchanges; page and two targets: 3 statements/3 exchanges", size)
 	}
@@ -161,14 +113,14 @@ func TestRuntimeAdoptionWorkDoesNotGrowWithPlans(t *testing.T) {
 	base := rolePool(t, admin, postgres.RuntimeRoleName, "")
 	native := base.Config()
 	base.Close()
-	counts := &runtimeWireCounts{}
+	counts := &platformWireCounts{}
 	dial := native.ConnConfig.DialFunc
 	native.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err := dial(ctx, network, address)
 		if err != nil {
 			return nil, err
 		}
-		return &runtimeWireConn{Conn: conn, counts: counts, startup: true}, nil
+		return &platformCountedConn{Conn: conn, counts: counts, startup: true}, nil
 	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), native)
 	if err != nil {
@@ -206,7 +158,7 @@ func TestRuntimeAdoptionWorkDoesNotGrowWithPlans(t *testing.T) {
 			if err := snapshots.Adopt(t.Context(), hubmaintenance.Tenant{Organization: string(org), Generation: 1}, "", update); err != nil {
 				t.Fatal(err)
 			}
-			statements, exchanges := counts.take()
+			statements, exchanges, _ := counts.take()
 			if statements > 24 || exchanges > 24 {
 				t.Fatalf("%d plans adoption: statements=%d exchanges=%d; budget=24", size, statements, exchanges)
 			}
@@ -224,7 +176,7 @@ func TestRuntimeAdoptionWorkDoesNotGrowWithPlans(t *testing.T) {
 			if err := snapshots.Adopt(t.Context(), hubmaintenance.Tenant{Organization: string(org), Generation: 1}, revision, update); err != nil {
 				t.Fatal(err)
 			}
-			statements, exchanges = counts.take()
+			statements, exchanges, _ = counts.take()
 			if statements != baselineStatements+1 || exchanges != baselineExchanges+1 {
 				t.Fatalf("%d plans replacement grew: statements=%d exchanges=%d", size, statements, exchanges)
 			}

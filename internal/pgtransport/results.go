@@ -1,8 +1,11 @@
 package pgtransport
 
 import (
+	"errors"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type transactionRows struct {
@@ -28,13 +31,22 @@ type transactionRow struct{ rows pgx.Rows }
 
 func (r transactionRow) Scan(dest ...any) error {
 	defer r.rows.Close()
+	for _, target := range dest {
+		if _, ok := target.(*pgtype.DriverBytes); ok {
+			return errors.New("cannot scan a single PostgreSQL row into DriverBytes")
+		}
+	}
 	if !r.rows.Next() {
 		if err := r.rows.Err(); err != nil {
 			return err
 		}
 		return pgx.ErrNoRows
 	}
-	return r.rows.Scan(dest...)
+	if err := r.rows.Scan(dest...); err != nil {
+		return err
+	}
+	r.rows.Close()
+	return r.rows.Err()
 }
 
 type transactionBatch struct {

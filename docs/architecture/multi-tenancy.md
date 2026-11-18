@@ -201,7 +201,7 @@ config.MaxConns = int32(serving + background + 1)
 pools, err := pgtransport.Open(ctx, readerConfig, writerConfig)
 ```
 
-PostgreSQL sizes shared memory from `max_connections`, and pgx defaults `MaxConns` to the greater of 4 and the CPU count. Direct connections use pgx’s statement cache with up to 256 entries per physical connection. For a transaction pooler such as PgBouncer, set `default_query_exec_mode: exec` under `postgres` in the Hub YAML and `default_query_exec_mode=exec` in the platform DSN. This selects the extended protocol with unnamed statements. Tenant binding is transaction-local in both modes. A transaction pooler requires this setting on every runtime pool because successive transactions can run on different backends.
+PostgreSQL sizes shared memory from `max_connections`, and pgx defaults `MaxConns` to the greater of 4 and the CPU count. Direct connections cache read-only tenant and platform transactions and typed platform reads, with up to 256 named statements per physical connection. Writable transactions, including their initial and subsequent batches, and standalone platform calls that accept arbitrary SQL use unnamed statements. PostgreSQL describes their current result columns during execution, so the first write after a live column type change can commit on the same connection. Transaction intent selects the mode even when readers and writers share a pool. For a transaction pooler such as PgBouncer, set `default_query_exec_mode: exec` under `postgres` in the Hub YAML and `default_query_exec_mode=exec` in the platform DSN. This selects the extended protocol with unnamed statements. Tenant binding is transaction-local in both modes. A transaction pooler requires this setting on every runtime pool because successive transactions can run on different backends.
 
 PostgreSQL retains its default `plan_cache_mode=auto` so it can choose custom or generic plans per statement. On each direct connection, pgx can spend one extra wire exchange preparing new statements in a batch. Subsequent uses need only the execution exchange while those entries remain cached. Production releases stop the Hub during migrations and start it with fresh pools. If a column changes type while a connection remains live, its first read can return SQLSTATE `0A000` (cached plan must not change result type). pgx invalidates the entry. After rollback, the next transaction on that connection can prepare and read the new type. The Hub never replays a transaction to recover from this error because replay could repeat side effects.
 
@@ -267,7 +267,7 @@ A change that touches hosted serving, tenancy, scheduling, connection pools or b
 - PostgreSQL 17, `set_config` with `is_local`: https://www.postgresql.org/docs/17/functions-admin.html
 - PgBouncer pooling modes and session features: https://www.pgbouncer.org/features.html
 - pgxpool configuration: https://pkg.go.dev/github.com/jackc/pgx/v5/pgxpool
-- pgx query execution modes: https://pkg.go.dev/github.com/jackc/pgx/v5#QueryExecMode
+- pgx v5.9.2 query execution modes: https://pkg.go.dev/github.com/jackc/pgx/v5@v5.9.2#QueryExecMode
 - Go `context`: https://pkg.go.dev/context and https://go.dev/blog/context
 - Go, Defer, Panic, and Recover: https://go.dev/blog/defer-panic-and-recover
 - Go `net/http` Handler panics and `ErrAbortHandler`: https://pkg.go.dev/net/http#Handler

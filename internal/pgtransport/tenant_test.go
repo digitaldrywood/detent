@@ -519,3 +519,62 @@ func TestGuardExpiresLocalBindings(t *testing.T) {
 		t.Errorf("batch semicolon commit: violations=%d", violations)
 	}
 }
+
+func TestWriteReturningAfterColumnTypeChange(t *testing.T) {
+	for _, path := range []string{"query", "initial batch", "transaction batch"} {
+		t.Run(path, func(t *testing.T) {
+			admin, config := fixture(t)
+			pools := openPools(t, config, nil)
+			ctx := t.Context()
+			const statement = "INSERT INTO protected (tenant,id) VALUES ('first',$1) RETURNING id,pg_backend_pid()"
+			var backend int
+			for _, key := range []string{"before", "after"} {
+				if key == "after" {
+					if _, err := admin.ExecContext(ctx, "ALTER TABLE protected ALTER COLUMN id TYPE varchar(20)"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				work := &pgx.Batch{}
+				work.Queue(statement, key)
+				var tx *pgtransport.Transaction
+				var results pgx.BatchResults
+				var row pgx.Row
+				if path == "initial batch" {
+					var err error
+					tx, results, err = pools.BeginBatch(ctx, pgtransport.Scope{Organization: "first"}, pgtransport.Options{}, work)
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					tx = begin(t, pools, pgtransport.Options{})
+					if path == "transaction batch" {
+						results = tx.SendBatch(ctx, work)
+					}
+				}
+				defer tx.Rollback(ctx)
+				if results != nil {
+					row = results.QueryRow()
+				} else {
+					row = tx.QueryRow(ctx, statement, key)
+				}
+				var id string
+				var pid int
+				err := row.Scan(&id, &pid)
+				if results != nil {
+					err = errors.Join(err, results.Close())
+				}
+				if err != nil || id != key || (key == "after" && pid != backend) {
+					t.Fatalf("%s: returning %q backend=%d previous=%d error=%v", key, id, pid, backend, err)
+				}
+				backend = pid
+				if err := tx.Commit(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var n int
+			if err := admin.QueryRowContext(ctx, "SELECT count(*) FROM protected WHERE tenant='first' AND id='after'").Scan(&n); err != nil || n != 1 {
+				t.Fatalf("committed rows=%d error=%v", n, err)
+			}
+		})
+	}
+}

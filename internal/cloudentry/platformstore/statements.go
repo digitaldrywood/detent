@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 )
 
 func (r *Repository) ExecEntry(ctx context.Context, workload corestore.Workload, query string, args ...any) (pgconn.CommandTag, error) {
@@ -15,7 +16,7 @@ func (r *Repository) ExecEntry(ctx context.Context, workload corestore.Workload,
 		return pgconn.CommandTag{}, err
 	}
 	defer release()
-	tag, err := r.pool.Exec(ctx, query, args...)
+	tag, err := r.pool.Exec(ctx, query, pgtransport.WriteArgs(args)...)
 	return tag, mapError(ctx, err)
 }
 func (r *Repository) QueryEntry(ctx context.Context, workload corestore.Workload, query string, args ...any) (pgx.Rows, error) {
@@ -23,7 +24,7 @@ func (r *Repository) QueryEntry(ctx context.Context, workload corestore.Workload
 	if err != nil {
 		return nil, err
 	}
-	rows, err := r.pool.Query(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, pgtransport.WriteArgs(args)...)
 	if err != nil {
 		release()
 		return nil, mapError(ctx, err)
@@ -37,7 +38,7 @@ func (r *Repository) QueryRowEntry(ctx context.Context, workload corestore.Workl
 			return err
 		}
 		defer release()
-		return mapError(ctx, r.pool.QueryRow(ctx, query, args...).Scan(dest...))
+		return mapError(ctx, r.pool.QueryRow(ctx, query, pgtransport.WriteArgs(args)...).Scan(dest...))
 	}}
 }
 
@@ -62,14 +63,16 @@ func (r *entryRows) Next() bool {
 func (*entryRows) Conn() *pgx.Conn { return nil }
 
 func (r *Repository) QueryHealth(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
-	rows, err := r.pool.Query(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, pgtransport.WriteArgs(args)...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
 	return &entryRows{Rows: rows, release: func() {}, classify: func(err error) error { return mapError(ctx, err) }}, nil
 }
 func (r *Repository) QueryHealthRow(ctx context.Context, query string, args ...any) pgx.Row {
-	return entryRow{scan: func(dest ...any) error { return mapError(ctx, r.pool.QueryRow(ctx, query, args...).Scan(dest...)) }}
+	return entryRow{scan: func(dest ...any) error {
+		return mapError(ctx, r.pool.QueryRow(ctx, query, pgtransport.WriteArgs(args)...).Scan(dest...))
+	}}
 }
 
 func (r *entryRows) Err() error             { return r.classify(r.Rows.Err()) }
