@@ -3,9 +3,7 @@ package runner
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -57,10 +55,6 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 				failure.Error += ": " + unavailable.Error()
 			}
 		}
-		if class := WorkspaceResourceClass(err); class != "" {
-			failure.ErrorClass = class
-			failure.Error = tracker.WorkspaceResourceMessage(class)
-		}
 	case failure.Stage == "" && errors.Is(err, ErrNativeRecoveryRequired):
 		failure.ErrorClass = "source_recovery"
 	case errors.Is(err, ErrMergeWorkerStartupTimeout), failure.Operation == "initialize", failure.ErrorClass == "backend_startup":
@@ -79,44 +73,4 @@ func isGitPush(args []string) bool {
 		args = args[2:]
 	}
 	return len(args) > 0 && args[0] == "push"
-}
-
-func WorkspaceResourceClass(err error) string {
-	var hook *workspace.HookError
-	if !errors.Is(err, ErrWorkspacePreparation) && !errors.As(err, &hook) {
-		return ""
-	}
-	var command *workspace.CommandError
-	var detail string
-	switch {
-	case errors.As(err, &hook):
-		detail, err = hook.Output, hook.Err
-	case errors.As(err, &command):
-		detail, err = command.Output, command.Err
-	default:
-		detail = err.Error()
-	}
-	var operation *os.SyscallError
-	if errors.As(err, &operation) && operation.Syscall == "shmget" && errors.Is(operation, syscall.ENOSPC) {
-		return tracker.WorkspaceSharedMemoryExhausted
-	}
-	for line := range strings.SplitSeq(strings.ToLower(detail), "\n") {
-		switch {
-		case strings.Contains(line, "no space left on device") && (strings.Contains(line, "shared memory") || strings.Contains(line, "shmget")):
-			return tracker.WorkspaceSharedMemoryExhausted
-		case strings.Contains(line, "too many open files"):
-			return tracker.WorkspaceFileDescriptorsExhausted
-		case strings.Contains(line, "address already in use"):
-			return tracker.WorkspacePortUnavailable
-		}
-	}
-	switch {
-	case errors.Is(err, syscall.EMFILE), errors.Is(err, syscall.ENFILE):
-		return tracker.WorkspaceFileDescriptorsExhausted
-	case errors.Is(err, syscall.EADDRINUSE):
-		return tracker.WorkspacePortUnavailable
-	case errors.Is(err, syscall.ENOSPC), strings.Contains(strings.ToLower(detail), "no space left on device"):
-		return tracker.WorkspaceDiskFull
-	}
-	return ""
 }

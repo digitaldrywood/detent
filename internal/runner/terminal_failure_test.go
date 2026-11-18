@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -30,8 +29,6 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 		{"workspace", fmt.Errorf("%w: /private/worktree token=secret-value", ErrWorkspacePreparation), "workspace_hook", "workspace preparation failed: [redacted] [redacted]", ""},
 		{"hook diagnostic", &workspace.HookError{Hook: "after_create", Command: "SECRET=private-value missing-script", Dir: "/private/worktree", ExitCode: 127, Output: "script not found token=secret-value WORKSPACE_VALUE=private-value\nprivate continuation"}, "workspace_hook", "workspace hook after_create failed (exit status 127)", ""},
 		{"missing hook shell", &workspace.HookError{Hook: "after_create", ExitCode: -1, Err: &shell.UnavailableError{Shell: "bash"}}, "workspace_hook", `workspace hook after_create failed (exit status -1): hook_shell_unavailable: shell "bash" is unavailable on this runner`, ""},
-		{"cleanup errno after hook failure", errors.Join(&workspace.HookError{Hook: "after_create", ExitCode: 1}, syscall.EMFILE), "workspace_hook", "workspace hook after_create failed (exit status 1)", ""},
-		{"classified hook output", &workspace.HookError{Hook: "after_create", Output: "private fixture detail: shmget: no space left on device", ExitCode: 1}, tracker.WorkspaceSharedMemoryExhausted, "host shared memory exhausted", ""},
 		{"unlabelled hook output", &workspace.HookError{Hook: "after_create", ExitCode: 127, Output: "correcthorsebatterystaple"}, "workspace_hook", "workspace hook after_create failed (exit status 127)", ""},
 		{"issue configuration", &IssueConfigurationError{Field: "effort", Reason: "unsupported value"}, "issue_configuration", "agent override rejected: effort: unsupported value", ""},
 		{"workspace recovery", fmt.Errorf("%w: %w", ErrWorkspacePreparation, ErrNativeRecoveryRequired), "workspace_hook", "workspace preparation failed: native checkpoint requires recovery", ""},

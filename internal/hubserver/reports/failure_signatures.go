@@ -135,7 +135,7 @@ func FailureFromAttempt(a tracker.NativeRunData, status string) (string, string)
 }
 
 func nativeFailureClass(f tracker.NativeTerminalFailure) string {
-	if f.ErrorClass == "backend_startup" || f.ErrorClass == "protocol" || f.ErrorClass == "workspace_hook" || tracker.WorkspaceResourceMessage(f.ErrorClass) != "" || f.Operation == "initialize" || f.RPCCode != nil {
+	if f.ErrorClass == "backend_startup" || f.ErrorClass == "protocol" || f.ErrorClass == "workspace_hook" || f.Operation == "initialize" || f.RPCCode != nil {
 		return "infrastructure"
 	}
 	return "attempt"

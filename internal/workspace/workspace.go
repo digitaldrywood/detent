@@ -22,7 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 	"github.com/digitaldrywood/detent/internal/workspace/internal/model"
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 
@@ -41,6 +40,7 @@ const (
 const defaultHookTimeout = time.Minute
 const failedWorkspacePreservationTimeout = time.Minute
 
+const hookOutputTailBytes = 16 * 1024
 const workerScratchRelativePath = workpath.LegacyScratchRelativePath
 
 const quarantineTimestampFormat = "20060102T150405.000000000Z"
@@ -235,7 +235,6 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
-	hookOwner                  *hookOwner
 	CleanupInUse               bool
 	cleanupPublishedReviewHead string
 
@@ -331,7 +330,34 @@ type HookError struct {
 }
 
 func (e *HookError) Error() string {
-	return fmt.Sprintf("%s: %s (exit status %d)", ErrHookFailed, e.Hook, e.ExitCode)
+	parts := []string{}
+	if e.Command != "" {
+		parts = append(parts, fmt.Sprintf("command %q", e.Command))
+	}
+	if e.Dir != "" {
+		parts = append(parts, fmt.Sprintf("working directory %q", e.Dir))
+	}
+	if e.ExitCode >= 0 {
+		parts = append(parts, fmt.Sprintf("exit status %d", e.ExitCode))
+	}
+	if e.LogPath != "" {
+		parts = append(parts, fmt.Sprintf("hook log %q", e.LogPath))
+	}
+
+	detail := ""
+	if len(parts) > 0 {
+		detail = " (" + strings.Join(parts, "; ") + ")"
+	}
+
+	output := hookOutputTail(e.Output, hookOutputTailBytes)
+	if output != "" {
+		detail += fmt.Sprintf("\noutput (last %d KiB):\n%s", hookOutputTailBytes/1024, output)
+	}
+
+	if e.Err != nil {
+		return fmt.Sprintf("%s: %s: %v%s", ErrHookFailed, e.Hook, e.Err, detail)
+	}
+	return fmt.Sprintf("%s: %s exited with status %d%s", ErrHookFailed, e.Hook, e.ExitCode, detail)
 }
 
 func (e *HookError) Unwrap() error {
@@ -904,9 +930,6 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		return result, err
 	}
 	if !exists {
-		if err := l.uses.stopHooks(ctx, info.Path); err != nil {
-			return result, err
-		}
 		_, pruneErr := l.runGit(ctx, "worktree", "prune")
 		if pruneErr != nil {
 			return result, pruneErr
@@ -924,22 +947,13 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		l.deleteCheckpointRef(ctx, issue)
 		return result, nil
 	}
-	if _, err := l.uses.removableHooks(ctx, info.Path); err != nil {
-		return result, err
-	}
-	var hookErr error
+	result.Processes = reapWorkspaceProcesses(WithProcessSource(ctx, l.processSource), info.Path, l.logger)
 	if isDir && l.isSourceWorktree(ctx, info.Path) {
-		hookErr = l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, issue)
+		if err := l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, issue); err != nil {
+			l.logger.Warn("workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
+		}
 	}
 
-	result.Processes, err = l.uses.reapHooks(ctx, info.Path)
-	if hookErr != nil {
-		return result, hookErr
-	}
-	if err != nil {
-		return result, err
-	}
-	result.Processes += reapWorkspaceProcesses(WithProcessSource(ctx, l.processSource), info.Path, l.logger)
 	if err := l.beginWorkspaceCleanup(ctx, info, issue, isDir); err != nil {
 		return result, err
 	}
@@ -1532,9 +1546,6 @@ func (l *LocalGit) unreferencedDetachedHead(ctx context.Context, path string, cu
 }
 
 func (l *LocalGit) removeCleanWorktree(ctx context.Context, path string) error {
-	if err := l.uses.stopHooks(ctx, path); err != nil {
-		return err
-	}
 	_, err := l.runGit(ctx, "worktree", "remove", path)
 	if err == nil {
 		return nil
@@ -1561,9 +1572,6 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 	}
 	if metadata.commonDir != sourceCommon {
 		return "", fmt.Errorf("refusing to quarantine worktree not managed by source: %s", path)
-	}
-	if err := l.uses.stopHooks(ctx, path); err != nil {
-		return "", err
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
 	if err != nil {
@@ -1602,9 +1610,9 @@ func (l *LocalGit) preserveFailedWorkspace(ctx context.Context, path string, cau
 			slog.Any("error", err),
 		)
 		if preserved {
-			return fmt.Errorf("%w; workspace quarantined at %q but failed to release its branch: %v", cause, quarantinePath, err)
+			return errors.Join(cause, fmt.Errorf("workspace quarantined at %q but failed to release its branch: %w", quarantinePath, err))
 		}
-		return fmt.Errorf("%w; quarantine failed workspace %q: %v", cause, path, err)
+		return errors.Join(cause, fmt.Errorf("quarantine failed workspace %q: %w", path, err))
 	}
 	if !preserved {
 		return cause
@@ -1640,11 +1648,8 @@ func (l *LocalGit) preserveFailedWorkspace(ctx context.Context, path string, cau
 
 func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (string, bool, error) {
 	exists, isDir, err := pathExists(path)
-	if err != nil {
+	if err != nil || !exists {
 		return "", false, err
-	}
-	if !exists {
-		return "", false, l.uses.stopHooks(ctx, path)
 	}
 	linkedWorktree := false
 	if isDir {
@@ -1660,9 +1665,6 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 
 	path, err = validateWorkspacePath(l.root, path)
 	if err != nil {
-		return "", false, err
-	}
-	if err := l.uses.stopHooks(ctx, path); err != nil {
 		return "", false, err
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
@@ -1989,9 +1991,6 @@ func (l *LocalGit) isSourceWorktree(ctx context.Context, path string) bool {
 }
 
 func (l *LocalGit) removePath(ctx context.Context, path string) error {
-	if err := l.uses.stopHooks(ctx, path); err != nil {
-		return err
-	}
 	exists, _, err := pathExists(path)
 	if err != nil {
 		return err
@@ -2349,11 +2348,6 @@ func (l *LocalGit) executeHook(ctx context.Context, name string, command string,
 		slog.String("command", command),
 	)
 
-	owner, ownerErr := l.uses.hookOwner(ctx, info.Path)
-	if ownerErr != nil {
-		return ownerErr
-	}
-	issue.hookOwner = owner
 	var output []byte
 	var err error
 	exitCode := -1
@@ -2365,9 +2359,6 @@ func (l *LocalGit) executeHook(ctx context.Context, name string, command string,
 		}
 	} else {
 		output, err = runHookCommand(hookCtx, command, l.hooks, info, issue)
-	}
-	if finishErr := owner.commandFinished(ctx); finishErr != nil && err == nil {
-		err = finishErr
 	}
 	if err == nil {
 		return nil
@@ -2404,6 +2395,8 @@ func (l *LocalGit) executeHook(ctx context.Context, name string, command string,
 		slog.String("command", command),
 		slog.Int("exit_code", exitCode),
 		slog.String("log_path", logPath),
+		slog.String("output_tail", hookOutputTail(string(output), hookOutputTailBytes)),
+		slog.Any("error", err),
 	)
 	return hookErr
 }
@@ -2451,6 +2444,16 @@ func (l *LocalGit) writeHookLog(
 
 func hookLogFileName(name string, at time.Time, pid int) string {
 	return at.Format("20060102T150405.000000000Z") + "-" + SafeKey(name) + fmt.Sprintf("-%d.log", pid)
+}
+
+func hookOutputTail(output string, limit int) string {
+	if limit <= 0 || output == "" {
+		return ""
+	}
+	if len(output) <= limit {
+		return output
+	}
+	return "[truncated to last " + strconv.Itoa(limit/1024) + " KiB]\n" + output[len(output)-limit:]
 }
 
 func (l *LocalGit) runGit(ctx context.Context, args ...string) (string, error) {
@@ -2604,13 +2607,10 @@ func hookEnv(info Info, issue Issue, stripGitHubTokens bool) []string {
 	env := make([]string, 0, len(os.Environ())+len(workspaceEnvironmentKeys))
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if key == hookproc.HookOwnerKey || stripGitHubTokens && isGitHubTokenKey(key) {
+		if stripGitHubTokens && isGitHubTokenKey(key) {
 			continue
 		}
 		env = append(env, entry)
-	}
-	if issue.hookOwner != nil {
-		env = append(env, hookproc.HookOwnerKey+"="+issue.hookOwner.token)
 	}
 	variables := EnvironmentVariables(info, issue)
 	for _, key := range workspaceEnvironmentKeys {

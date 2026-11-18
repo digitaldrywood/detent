@@ -47,9 +47,6 @@ func (f NativeTerminalFailure) InfrastructureDecision() *FailureAttribution {
 			return &FailureAttribution{Outcome: "instance", Reason: "backend protocol unavailable"}
 		}
 	}
-	if reason := WorkspaceResourceMessage(f.ErrorClass); reason != "" {
-		return &FailureAttribution{Outcome: "instance", Reason: reason}
-	}
 	switch f.ErrorClass {
 	case "provider_refusal":
 		return &FailureAttribution{Outcome: "instance", Reason: "provider account refused turn"}

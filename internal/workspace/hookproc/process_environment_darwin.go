@@ -15,7 +15,7 @@ import (
 func scratchEnvironmentProcessIDs(ctx context.Context, root string) ([]int, error) {
 	processes, err := unix.SysctlKinfoProcSlice("kern.proc.uid", os.Geteuid())
 	if err != nil {
-		return nil, fmt.Errorf("list workspace process candidates via kern.proc.uid: %w", err)
+		return nil, err
 	}
 	return darwinScratchEnvironmentProcessIDs(ctx, root, processes,
 		func(pid int) ([]byte, error) {
@@ -75,12 +75,4 @@ func darwinProcessEnvironment(data []byte) []string {
 		}
 	}
 	return strings.Split(string(data), "\x00")
-}
-
-func processEnvironment(pid int) ([]string, error) {
-	data, err := unix.SysctlRaw("kern.procargs2", pid)
-	if err != nil {
-		return nil, err
-	}
-	return darwinProcessEnvironment(data), nil
 }

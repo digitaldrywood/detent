@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"syscall"
 	"testing"
 	"time"
 
@@ -209,37 +207,25 @@ func TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker(t *testing.T) {
 	orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 	state := newState(cfg)
 	base := time.Date(2026, 9, 24, 18, 12, 0, 0, time.UTC)
-	hook := func(output string) error {
-		return &workspace.HookError{Hook: "after_create", Command: "make setup", Output: output, Err: errors.New("exit status 1")}
-	}
-	for index, test := range []struct {
-		err    error
-		reason string
-	}{
-		{&workspace.CommandError{Command: "git", Args: []string{"write-tree"}, Output: "write temporary git index: no space left on device", Err: errors.New("exit status 128")}, telemetry.WorkspaceDiskExhaustionMessage},
-		{hook("after_create: no space left on device"), telemetry.WorkspaceDiskExhaustionMessage},
-		{hook("could not create shared memory segment: No space left on device"), "host shared memory exhausted"},
-		{&workspace.HookError{Hook: "after_create", Err: os.NewSyscallError("shmget", syscall.ENOSPC)}, "host shared memory exhausted"},
-		{hook("open: too many open files"), "host file descriptors exhausted"},
-		{hook("bind: address already in use"), "host port unavailable"},
-	} {
-		attempt := index + 1
+	for attempt := 1; attempt <= 3; attempt++ {
 		at := base.Add(time.Duration(attempt) * time.Minute)
 		state.Running[issue.ID] = Running{Issue: issue, Attempt: attempt, WorkAttemptID: int64(attempt), StartedAt: at.Add(-time.Second)}
-		err := fmt.Errorf("%w: create workspace: %w", runpkg.ErrWorkspacePreparation, test.err)
+		var cause error
+		if attempt == 1 {
+			cause = &workspace.CommandError{Command: "git", Args: []string{"write-tree"}, Output: "write temporary git index: no space left on device", Err: errors.New("exit status 128")}
+		} else {
+			cause = &workspace.HookError{Hook: "after_create", Command: "make setup", Output: "after_create: no space left on device", Err: errors.New("exit status 1")}
+		}
+		err := fmt.Errorf("%w: create workspace: %w", runpkg.ErrWorkspacePreparation, cause)
 		orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: err, CompletedAt: at})
-		maximum := min(5*time.Minute, 10*time.Second<<attempt)
-		if retry, ok := state.Retry[issue.ID]; !ok || retry.DueAt.Before(at.Add(maximum-maximum/8)) || retry.DueAt.After(at.Add(maximum)) || retry.Error != test.reason {
+		maximum := 10 * time.Second << attempt
+		if retry, ok := state.Retry[issue.ID]; !ok || retry.DueAt.Before(at.Add(maximum-maximum/8)) || retry.DueAt.After(at.Add(maximum)) || retry.Error != telemetry.WorkspaceDiskExhaustionMessage {
 			t.Fatalf("attempt %d did not use infrastructure backoff: %#v", attempt, state.Retry)
 		}
 		if len(state.ForgeUnavailable) != 0 || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
 			t.Fatalf("attempt %d charged issue or forge: forge=%#v blocked=%#v comments=%#v", attempt, state.ForgeUnavailable, state.Blocked, tracker.comments)
 		}
-		completion := attempts.completions[len(attempts.completions)-1]
-		if completion.ErrorMessage != test.reason {
-			t.Fatalf("durable error = %q, want %q", completion.ErrorMessage, test.reason)
-		}
-		if got := completion.TerminalState; got != store.WorkAttemptTerminalCapacity {
+		if got := attempts.completions[len(attempts.completions)-1].TerminalState; got != store.WorkAttemptTerminalCapacity {
 			t.Fatalf("attempt %d terminal state = %q, want capacity", attempt, got)
 		}
 	}

@@ -459,19 +459,6 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	var process ValidationProcess
 	var groupID int
 	defer func() {
-		if owner := issue.hookOwner; owner != nil {
-			status := gate.CommandResult{ExitCode: result.ExitCode, StartedAt: result.StartedAt, FinishedAt: result.FinishedAt, DurationNS: result.DurationNS}
-			owner.finish = func(cleanup context.Context) error {
-				if err := CleanupWorkerScratch(info.Path, scratch); err != nil {
-					return err
-				}
-				if process != nil {
-					return process.Finished(cleanup, status, nil)
-				}
-				return nil
-			}
-			return
-		}
 		cleanupCtx := context.WithoutCancel(ctx)
 		var cleanupErr error
 		if process != nil || toolcache.ManagedBuildFromContext(ctx) != "" {
@@ -525,9 +512,6 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	if paged {
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
-	if issue.hookOwner != nil {
-		issue.hookOwner.descriptor.Attach(cmd)
-	}
 	if err := cmd.Start(); err != nil {
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
@@ -542,9 +526,6 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		}
 	}
 	err = cmd.Wait()
-	if issue.hookOwner != nil && errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
-		err = nil
-	}
 	result.FinishedAt = time.Now().UTC()
 	result.DurationNS = time.Since(started).Nanoseconds()
 	result.Output = tracker.RedactGateOutput(output.String())

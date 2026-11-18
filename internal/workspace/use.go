@@ -12,7 +12,6 @@ type Usage interface {
 }
 
 type workspaceUses struct {
-	hooks map[string]map[*hookOwner]struct{}
 	mu    sync.Mutex
 	paths map[string]chan struct{}
 }

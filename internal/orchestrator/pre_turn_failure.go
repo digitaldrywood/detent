@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -13,21 +14,35 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func (o *Orchestrator) handleWorkspaceResourceExhaustion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+func workspaceDiskExhausted(err error) bool {
+	if !errors.Is(err, runpkg.ErrWorkspacePreparation) {
+		return false
+	}
+	if errors.Is(err, syscall.ENOSPC) || strings.Contains(strings.ToLower(err.Error()), "no space left on device") {
+		return true
+	}
+	var commandErr *workspace.CommandError
+	if errors.As(err, &commandErr) && strings.Contains(strings.ToLower(commandErr.Output), "no space left on device") {
+		return true
+	}
+	var hookErr *workspace.HookError
+	return errors.As(err, &hookErr) && strings.Contains(strings.ToLower(hookErr.Output), "no space left on device")
+}
+
+func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
 	if decision, ok := runpkg.FailureDecision(event.Err); ok && decision.Outcome != "instance" {
 		return false
 	}
-	reason := tracker.WorkspaceResourceMessage(runpkg.WorkspaceResourceClass(event.Err))
-	if reason == "" || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
+	if !workspaceDiskExhausted(event.Err) || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
 		return false
 	}
 	o.finishForgeAvailabilityProbe(state, event, running)
 	complete := func() {
 		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalCapacity,
-			workAttemptErrorWorkspace, reason, "waiting", reason)
+			workAttemptErrorWorkspace, event.Err.Error(), "waiting", telemetry.WorkspaceDiskExhaustionMessage)
 		releaseBackendCapacityProbe(state, running)
 	}
 	if !o.nativeWorkflow() {
@@ -42,17 +57,13 @@ func (o *Orchestrator) handleWorkspaceResourceExhaustion(ctx context.Context, st
 		complete()
 	}
 	attempt := nextAttempt(running.Attempt)
-	if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, reason, running.WorkerHost); err != nil {
+	if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, telemetry.WorkspaceDiskExhaustionMessage, running.WorkerHost); err != nil {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return true
 	}
-	eventName := "workspace_host_resource_exhausted"
-	if reason == telemetry.WorkspaceDiskExhaustionMessage {
-		eventName = "workspace_host_disk_full"
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{At: event.CompletedAt, Event: eventName, Message: reason + "; retrying " + issueLabel(running.Issue)})
+	recordStateEvent(state, telemetry.ActivityEvent{At: event.CompletedAt, Event: "workspace_host_disk_full", Message: telemetry.WorkspaceDiskExhaustionMessage + "; retrying " + issueLabel(running.Issue)})
 	if o.logger != nil {
-		o.logger.Log(ctx, slog.LevelWarn, "workspace preparation waiting for host capacity", "reason", reason, "issue_id", running.Issue.ID, "worker_host", running.WorkerHost, "retry_at", state.Retry[running.Issue.ID].DueAt)
+		o.logger.Log(ctx, slog.LevelWarn, "workspace preparation waiting for host disk space", "issue_id", running.Issue.ID, "worker_host", running.WorkerHost, "retry_at", state.Retry[running.Issue.ID].DueAt, "error", event.Err)
 	}
 	return true
 }

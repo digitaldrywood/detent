@@ -28,15 +28,12 @@ func TestCertainFailureBypassesDecision(t *testing.T) {
 }
 
 func TestFailureEvidenceBounds(t *testing.T) {
-	for _, test := range []struct {
-		err    error
-		suffix string
-	}{
-		{&workspace.HookError{Hook: "after_create", ExitCode: 2, Output: "private hook output"}, ""},
-		{&workspace.CommandError{Command: "git", ExitCode: 128, Output: strings.Repeat("x", 9000) + "tail"}, "tail"},
+	for _, err := range []error{
+		&workspace.HookError{Hook: "after_create", ExitCode: 2, Output: strings.Repeat("x", 9000) + "tail"},
+		&workspace.CommandError{Command: "git", ExitCode: 128, Output: strings.Repeat("x", 9000) + "tail"},
 	} {
-		evidence := failureEvidence(test.err, strings.Repeat("s", 600))
-		if len(evidence.OutputTail) > 8000 || len(evidence.Step) > 512 || !strings.HasSuffix(evidence.OutputTail, test.suffix) || test.suffix == "" && evidence.OutputTail != "" || evidence.ExitCode == nil || evidence.RecentOtherIssueSuccess != nil || evidence.SourceChangedConfiguration != nil {
+		evidence := failureEvidence(err, strings.Repeat("s", 600))
+		if len(evidence.OutputTail) > 8000 || len(evidence.Step) > 512 || !strings.HasSuffix(evidence.OutputTail, "tail") || evidence.ExitCode == nil || evidence.RecentOtherIssueSuccess != nil || evidence.SourceChangedConfiguration != nil {
 			t.Fatalf("bad failure evidence: step=%d tail=%d exit=%v", len(evidence.Step), len(evidence.OutputTail), evidence.ExitCode)
 		}
 	}

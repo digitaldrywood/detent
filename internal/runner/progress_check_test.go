@@ -409,7 +409,7 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 						<-start
 						_, release, err := r.progressWorkspace(t.Context(), RunRequest{Issue: connector.Issue{ID: "example", Identifier: "example#1"}, Execution: execution}, evidence)
 						if err == nil {
-							release(&err)
+							release()
 						}
 						results <- err
 					}()
@@ -556,7 +556,7 @@ func TestProgressPreparationNeverFallsBackWithoutRetainedSource(t *testing.T) {
 			}
 			_, release, err := r.progressWorkspace(t.Context(), RunRequest{Issue: connector.Issue{ID: "example"}, Execution: test.execution}, progresscheck.Request{SourceSHA: test.sourceSHA, BaseSHA: "base"})
 			if release != nil {
-				release(&err)
+				release()
 			}
 			if err != nil || backend.created || backend.seeded {
 				t.Fatalf("unavailable retained source reached fallback: err=%v created=%t seeded=%t", err, backend.created, backend.seeded)

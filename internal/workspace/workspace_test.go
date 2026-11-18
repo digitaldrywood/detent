@@ -686,11 +686,35 @@ func TestLocalGitQuarantineWorkspaceCount(t *testing.T) {
 	}
 }
 
-func TestHookErrorOmitsPrivateDiagnostics(t *testing.T) {
+func TestHookErrorErrorIncludesBoundedOutputTail(t *testing.T) {
 	t.Parallel()
-	err := &HookError{Hook: "after_create", Command: "private command", Dir: "private path", Output: "private output", Err: errors.New("private cause"), ExitCode: 17}
-	if got, want := err.Error(), fmt.Sprintf("%s: after_create (exit status 17)", ErrHookFailed); got != want {
-		t.Fatalf("hook failure = %q, want %q", got, want)
+
+	output := "prefix-" + strings.Repeat("x", hookOutputTailBytes) + "-tail"
+	err := (&HookError{
+		Hook:     "after_create",
+		Command:  "bootstrap",
+		Dir:      "/workspaces/DD-TAIL",
+		ExitCode: 1,
+		LogPath:  "/workspaces/.detent/hook-logs/DD-TAIL/hook.log",
+		Output:   output,
+		Err:      errors.New("exit status 1"),
+	}).Error()
+
+	for _, want := range []string{
+		"command \"bootstrap\"",
+		"working directory \"/workspaces/DD-TAIL\"",
+		"exit status 1",
+		"hook log \"/workspaces/.detent/hook-logs/DD-TAIL/hook.log\"",
+		"output (last 16 KiB)",
+		"truncated to last 16 KiB",
+		"-tail",
+	} {
+		if !strings.Contains(err, want) {
+			t.Fatalf("HookError.Error() = %q, want %q", err, want)
+		}
+	}
+	if strings.Contains(err, "prefix-") {
+		t.Fatalf("HookError.Error() includes truncated prefix: %q", err)
 	}
 }
 

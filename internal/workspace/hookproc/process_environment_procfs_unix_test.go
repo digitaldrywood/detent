@@ -89,31 +89,3 @@ func TestWorkspaceProcessIDsRejectsRootAlias(t *testing.T) {
 		})
 	}
 }
-
-func TestHookDescriptorCandidates(t *testing.T) {
-	lifetime, err := NewLifetime()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := lifetime.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	root := t.TempDir()
-	for _, proc := range []string{"1000000001", "1000000002"} {
-		if err := os.MkdirAll(filepath.Join(root, proc, "fd"), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Symlink(lifetime.path(), filepath.Join(root, "1000000001", "fd", "4")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "1000000002", "fd", "4"), nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := lifetime.procDescriptorHolders(t.Context(), root)
-	if err != nil || !reflect.DeepEqual(got, []int{1000000001}) {
-		t.Fatalf("holders = %v, error = %v", got, err)
-	}
-}

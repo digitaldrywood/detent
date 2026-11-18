@@ -125,10 +125,6 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	}
 	if info.Created {
 		if err := f.runHook(ctx, "after_create", f.hooks.AfterCreate, info, issue); err != nil {
-			if stopErr := f.uses.stopHooks(ctx, info.Path); stopErr != nil {
-				f.logger.Warn("workspace hook cleanup incomplete", "error", stopErr)
-				return Info{}, err
-			}
 			if cleanupErr := removeWorkspacePath(f.root, info.Path); cleanupErr != nil {
 				f.logger.Warn("failed to clean filesystem workspace after after_create hook error", slog.String("path", info.Path), slog.Any("error", cleanupErr))
 			}
@@ -162,7 +158,7 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 		return CleanupResult{}, err
 	}
 	if !exists {
-		return result, f.uses.stopHooks(ctx, info.Path)
+		return result, nil
 	}
 	if err := f.checkPreservedWorkspace(info); err != nil {
 		return result, err
@@ -170,18 +166,10 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
-	if _, err := f.uses.removableHooks(ctx, info.Path); err != nil {
-		return result, err
+	result.Processes = reapWorkspaceProcesses(WithProcessSource(ctx, f.processSource), info.Path, f.logger)
+	if err := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue); err != nil {
+		f.logger.Warn("filesystem workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
 	}
-	hookErr := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue)
-	result.Processes, err = f.uses.reapHooks(ctx, info.Path)
-	if hookErr != nil {
-		return result, hookErr
-	}
-	if err != nil {
-		return result, err
-	}
-	result.Processes += reapWorkspaceProcesses(WithProcessSource(ctx, f.processSource), info.Path, f.logger)
 	if err := removeWorkspacePath(f.root, info.Path); err != nil {
 		return CleanupResult{}, fmt.Errorf("remove filesystem workspace: %w", err)
 	}
@@ -418,15 +406,7 @@ func (f *Filesystem) runHook(ctx context.Context, name string, command string, i
 
 	f.logger.Info("running filesystem workspace hook", slog.String("hook", name), slog.String("path", info.Path), slog.String("command", command))
 
-	owner, ownerErr := f.uses.hookOwner(ctx, info.Path)
-	if ownerErr != nil {
-		return ownerErr
-	}
-	issue.hookOwner = owner
 	output, err := runHookCommand(hookCtx, command, f.hooks, info, issue)
-	if finishErr := owner.commandFinished(ctx); finishErr != nil && err == nil {
-		err = finishErr
-	}
 	if err == nil {
 		return nil
 	}
@@ -455,6 +435,8 @@ func (f *Filesystem) runHook(ctx context.Context, name string, command string, i
 		slog.String("command", command),
 		slog.Int("exit_code", exitCode),
 		slog.String("log_path", logPath),
+		slog.String("output_tail", hookOutputTail(string(output), hookOutputTailBytes)),
+		slog.Any("error", err),
 	)
 	return hookErr
 }
