@@ -34,7 +34,7 @@ type Storage interface {
 	Open(context.Context, string) (io.ReadCloser, error)
 	Delete(context.Context, string) error
 	Walk(context.Context, string, func(Object) error) error
-	ArchivePage(context.Context, string, string) ([]Object, string, error)
+	ObjectPage(context.Context, string, string, string) ([]Object, string, error)
 	Stat(context.Context, string) (Object, bool, error)
 }
 
@@ -217,12 +217,21 @@ func (s *spaces) verify(ctx context.Context) (resultErr error) {
 	return nil
 }
 
-func (s *spaces) ArchivePage(ctx context.Context, organization, after string) ([]Object, string, error) {
+func (s *spaces) ObjectPage(ctx context.Context, organization, namespace, after string) ([]Object, string, error) {
 	prefix, err := OrganizationPrefix(organization)
-	if err != nil || after != "" && !(ObjectLookup{Key: after}).Valid(organization) {
+	if err != nil || namespace != "blobs/sha256/" && namespace != "attachments/" && namespace != "attempt-diffs/" {
 		return nil, "", ErrInvalid
 	}
-	prefix += "blobs/sha256/"
+	prefix += namespace
+	validKey := func(key string) bool {
+		if !strings.HasPrefix(key, prefix) || key == prefix {
+			return false
+		}
+		return namespace != "blobs/sha256/" || (ObjectLookup{Key: key}).Valid(organization)
+	}
+	if after != "" && !validKey(after) {
+		return nil, "", ErrInvalid
+	}
 	input := &s3.ListObjectsV2Input{Bucket: aws.String(s.config.Bucket), Prefix: aws.String(s.prefix + prefix), MaxKeys: aws.Int32(ReferenceBatchSize)}
 	if after != "" {
 		input.StartAfter = aws.String(s.prefix + after)
@@ -238,7 +247,7 @@ func (s *spaces) ArchivePage(ctx context.Context, organization, after string) ([
 	last := after
 	for _, item := range page.Contents {
 		key, valid := strings.CutPrefix(aws.ToString(item.Key), s.prefix)
-		if !valid || key <= last || item.LastModified == nil || !(ObjectLookup{Key: key}).Valid(organization) {
+		if !valid || key <= last || item.LastModified == nil || !validKey(key) {
 			return nil, "", ErrInvalid
 		}
 		objects = append(objects, Object{Key: key, CreatedAt: *item.LastModified})

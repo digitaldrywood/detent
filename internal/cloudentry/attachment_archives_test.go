@@ -692,45 +692,28 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		store.Mu.Lock()
-		for _, archive := range []attachment.ArchiveReference{ref, orphan, retried} {
-			object := store.Objects[archive.Key]
-			object.Created = time.Now().Add(-2 * attachment.OrphanTTL)
-			store.Objects[archive.Key] = object
-		}
-		store.Mu.Unlock()
+		store.AgeArchives(ref, orphan, retried)
 		if _, err := owner.StoreDetail(t.Context(), org, []byte("retried detail")); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
 			t.Fatal(err)
 		}
-		store.Mu.Lock()
-		_, exists := store.Objects[ref.Key]
-		_, orphanExists := store.Objects[orphan.Key]
-		_, retriedExists := store.Objects[retried.Key]
-		_, freshExists := store.Objects[fresh.Key]
-		store.Mu.Unlock()
-		if !exists || orphanExists || !retriedExists || !freshExists {
-			t.Fatalf("archive retention: committed=%v orphan=%v retried=%v in-flight=%v", exists, orphanExists, retriedExists, freshExists)
+		if !store.Contains(ref.Key) || store.Contains(orphan.Key) || !store.Contains(retried.Key) || !store.Contains(fresh.Key) {
+			t.Fatal("incorrect retention of committed, orphan, retried or in-flight archive")
 		}
-		store.Mu.Lock()
-		for _, archive := range []attachment.ArchiveReference{retried, fresh} {
-			object := store.Objects[archive.Key]
-			object.Created = time.Now().Add(-2 * attachment.OrphanTTL)
-			store.Objects[archive.Key] = object
-		}
-		store.Mu.Unlock()
+		store.AgeArchives(retried, fresh)
 		if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
 			t.Fatal(err)
 		}
-		store.Mu.Lock()
-		_, retriedExists = store.Objects[retried.Key]
-		_, freshExists = store.Objects[fresh.Key]
-		store.Mu.Unlock()
-		if retriedExists || freshExists {
+		if store.Contains(retried.Key) || store.Contains(fresh.Key) {
 			t.Fatal("uncommitted detail survived orphan retention")
 		}
+		publisher := &Service{config: f.service.config, registry: f.service.registry, attachments: storage}
+		store.CheckConcurrentArchivePublication(t, f.database, storage, org, tenantDetailStore{publisher, organization}, func(ctx context.Context, storage attachment.Storage) error {
+			entry := &Service{config: f.service.config, registry: f.service.registry, auth: f.service.auth, attachments: storage}
+			return entry.sweepOrganizationAttachments(ctx, organization)
+		})
 		if previous.Key != "" && (ref.Key == previous.Key || ref.SHA256 != previous.SHA256) {
 			t.Fatal("organization deduplication boundary failed")
 		}

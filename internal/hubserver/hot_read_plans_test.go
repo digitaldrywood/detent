@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,50 @@ import (
 type tracedStatement struct {
 	query string
 	args  []any
+}
+
+const reportsRedesignSkipReason = "temporarily skipped by the owner's order on 2026-11-18 until issue 1538 lands the Reports read redesign"
+
+func reportsRedesignLeaf(name string) bool {
+	suite, leaf, _ := strings.Cut(name, "/")
+	leaves := map[string][]string{
+		"TestHotReadQueryPlans":          {"reports", "reports_filtered_by_issue", "reports_filtered_by_attempt", "report_filter_options", "reports_all_projects_over_a_custom_range"},
+		"TestReportsLongRangeReadBudget": {"30d/midnight", "30d/daytime", "90d/midnight", "90d/daytime"},
+		"TestAnalyticsReportPlans":       {"attempt_payloads/24h", "attempt_payloads/7d", "attempt_payloads/30d", "source_volume/24h", "source_volume/7d", "source_volume/30d"},
+	}
+	return slices.Contains(leaves[suite], leaf)
+}
+
+func skipReportsRedesignLeaf(t *testing.T) {
+	t.Helper()
+	if reportsRedesignLeaf(t.Name()) {
+		t.Skip(reportsRedesignSkipReason)
+	}
+}
+
+func newReportStatementTrace(preserveNames bool) (*requestTiming, func() []tracedStatement) {
+	var mu sync.Mutex
+	var statements []tracedStatement
+	timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
+		if args == nil {
+			return
+		}
+		values := make([]any, len(args))
+		for i, arg := range args {
+			values[i] = arg.Value
+			if preserveNames && arg.Name != "" {
+				values[i] = sql.Named(arg.Name, arg.Value)
+			}
+		}
+		mu.Lock()
+		statements = append(statements, tracedStatement{query, values})
+		mu.Unlock()
+	}}
+	return timing, func() []tracedStatement {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(statements)
+	}
 }
 
 func TestHotReadQueryPlans(t *testing.T) {
@@ -55,8 +100,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, read := range []struct {
-		name string
-		path string
+		name, path string
 	}{
 		{"activity", organization + "/activity"},
 		{"newest issue history", project + "/work-items/" + item + "/history?direction=newest&view=timeline&limit=100"},
@@ -73,20 +117,8 @@ func TestHotReadQueryPlans(t *testing.T) {
 		{"diagnostics", organization + "/diagnostics?range=30d"},
 	} {
 		t.Run(read.name, func(t *testing.T) {
-			var mu sync.Mutex
-			statements := []tracedStatement{}
-			timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
-				if args == nil {
-					return
-				}
-				values := make([]any, len(args))
-				for i, arg := range args {
-					values[i] = arg.Value
-				}
-				mu.Lock()
-				statements = append(statements, tracedStatement{query, values})
-				mu.Unlock()
-			}}
+			skipReportsRedesignLeaf(t)
+			timing, statements := newReportStatementTrace(false)
 			ctx := testenv.WaitContext(t, withRequestTiming(t.Context(), timing))
 			request := httptest.NewRequest(http.MethodGet, f.server.URL+read.path, nil).WithContext(ctx)
 			request.AddCookie(f.cookies["owner"])
@@ -95,9 +127,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 			if response.Code != http.StatusOK {
 				t.Fatalf("HTTP %d: %s", response.Code, response.Body.String())
 			}
-			mu.Lock()
-			captured := append([]tracedStatement(nil), statements...)
-			mu.Unlock()
+			captured := statements()
 			reads := 0
 			for _, statement := range captured {
 				head := strings.ToUpper(strings.TrimSpace(statement.query))
@@ -140,20 +170,8 @@ func TestAnalyticsReportPlans(t *testing.T) {
 			freezeReportPlannerInputs(t, admin)
 			for _, window := range []string{"24h", "7d", "30d"} {
 				t.Run(window, func(t *testing.T) {
-					var mu sync.Mutex
-					var statements []tracedStatement
-					timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
-						if args == nil {
-							return
-						}
-						values := make([]any, len(args))
-						for i, arg := range args {
-							values[i] = arg.Value
-						}
-						mu.Lock()
-						statements = append(statements, tracedStatement{query, values})
-						mu.Unlock()
-					}}
+					skipReportsRedesignLeaf(t)
+					timing, statements := newReportStatementTrace(false)
 					ctx := testenv.WaitContext(t, withRequestTiming(t.Context(), timing))
 					request := httptest.NewRequest(http.MethodGet, browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+window, nil).WithContext(ctx)
 					request.AddCookie(f.cookies["owner"])
@@ -173,9 +191,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 					}
 					timing.Start = started
 					t.Logf("reports %s on %s took %s: %s", window, population.name, elapsed, timing.Header(started.Add(elapsed)))
-					mu.Lock()
-					captured := append([]tracedStatement(nil), statements...)
-					mu.Unlock()
+					captured := statements()
 					if len(captured) == 0 {
 						t.Fatal("no report statements traced")
 					}

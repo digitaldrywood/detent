@@ -51,7 +51,10 @@ func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry
 
 func newSeparateDatabaseEntryFixture(t *testing.T, logger *slog.Logger) entryFixture {
 	t.Helper()
-	return newEntryFixtureOn(t, nil, logger, nil)
+	db := entryPostgresDatabase(t)
+	f := newEntryFixtureOn(t, nil, logger, []func(*Config){entryPostgresConfig(t, db)})
+	f.database = db
+	return f
 }
 
 func newEntryFixtureOn(t *testing.T, database *sql.DB, logger *slog.Logger, configureEntry []func(*Config), configure ...func(*hubserver.Config)) entryFixture {

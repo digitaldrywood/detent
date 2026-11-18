@@ -187,6 +187,17 @@ func StoreArchive(ctx context.Context, storage ArchiveStorage, organization stri
 	if archiveStored(ctx, storage, ref) {
 		return nil
 	}
+	return writeArchive(ctx, storage, ref, data)
+}
+
+func RefreshArchive(ctx context.Context, storage ArchiveStorage, organization string, ref ArchiveReference, data []byte) error {
+	if ref.Validate(organization) != nil || int64(len(data)) != ref.CompressedSize || artifact.Digest(data) != ref.SHA256 {
+		return ErrInvalid
+	}
+	return writeArchive(ctx, storage, ref, data)
+}
+
+func writeArchive(ctx context.Context, storage ArchiveStorage, ref ArchiveReference, data []byte) error {
 	if err := storage.PutArchive(ctx, ref, data); err != nil {
 		return artifact.ErrStorage
 	}

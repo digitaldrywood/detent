@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -144,15 +145,16 @@ type healthProjectWaitCursor struct {
 }
 
 type healthMaintenanceCursor struct {
-	project                tracker.ProjectID
-	runner                 runnerstore.UpdateProjectionCursor
-	item                   healthWaitItemCursor
-	conversation, question string
-	finding                string
-	startedAt              time.Time
-	cycleFailed            bool
-	completed              [5]bool
-	projectWait            healthProjectWaitCursor
+	project                 tracker.ProjectID
+	runner                  runnerstore.UpdateProjectionCursor
+	item                    healthWaitItemCursor
+	conversation, question  string
+	finding                 string
+	startedAt               time.Time
+	projectScan, runnerScan healthsignals.ScanInterval
+	cycleFailed             bool
+	completed               [5]bool
+	projectWait             healthProjectWaitCursor
 }
 
 func healthFingerprint(signal, kind, id string) string {
@@ -166,18 +168,26 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 	if s.runDetailStore() == nil {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
+	now := s.config.Clock().UTC()
+	if cursor.startedAt.IsZero() && !cursor.projectScan.Due(now, cursor.project != "") && !cursor.runnerScan.Due(now, cursor.runner.RunnerID != "") {
+		return nil
+	}
 	ctx = detailbatch.WithStore(ctx, hubmaintenance.LimitDetails(s.runDetailStore()))
 	if cursor.startedAt.IsZero() {
-		cursor.startedAt = s.config.Clock().UTC()
+		cursor.startedAt = now
 	}
 
-	projectErr := s.maintainHealthProject(ctx, organization, &cursor.project)
-	runnerErr := s.maintainHealthRunner(ctx, organization, &cursor.runner)
+	projectRead, projectErr := cursor.projectScan.Step(now, cursor.project != "", func() error {
+		return s.maintainHealthProject(ctx, organization, &cursor.project)
+	})
+	runnerRead, runnerErr := cursor.runnerScan.Step(now, cursor.runner.RunnerID != "", func() error {
+		return s.maintainHealthRunner(ctx, organization, &cursor.runner)
+	})
 	itemErr := s.maintainHealthWaitItems(ctx, organization, &cursor.item, min(budget.Items, corestore.MaxPageSize))
 	questionErr := s.maintainHealthQuestions(ctx, organization, &cursor.conversation, &cursor.question, min(budget.Items, corestore.MaxPageSize))
 	findingErr := s.maintainRetiredHealthSubjects(ctx, organization, &cursor.finding, &cursor.projectWait, min(budget.Items, corestore.MaxPageSize))
-	cursor.completed[0] = cursor.completed[0] || cursor.project == ""
-	cursor.completed[1] = cursor.completed[1] || cursor.runner.RunnerID == ""
+	cursor.completed[0] = cursor.completed[0] || projectRead && cursor.project == ""
+	cursor.completed[1] = cursor.completed[1] || runnerRead && cursor.runner.RunnerID == ""
 	cursor.completed[2] = cursor.completed[2] || cursor.item == (healthWaitItemCursor{})
 	cursor.completed[3] = cursor.completed[3] || cursor.conversation == ""
 	cursor.completed[4] = cursor.completed[4] || cursor.finding == "" && cursor.projectWait.finding.ID == ""
@@ -189,34 +199,18 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 				return writer.PutHealthTick(ctx, postgres.PutHealthTickInput{OrganizationID: organization, LastTickAt: cursor.startedAt})
 			})
 		}
-		*cursor = healthMaintenanceCursor{}
+		next := healthMaintenanceCursor{project: cursor.project, runner: cursor.runner}
+		if !cursor.cycleFailed && combined == nil {
+			next.projectScan, next.runnerScan = cursor.projectScan, cursor.runnerScan
+		}
+		*cursor = next
 	}
 
 	return combined
 }
 
 func healthScheduledHistory(history healthstore.ScheduledHistory) healthScheduledValidation {
-	out := healthScheduledValidation{FirstReport: history.FirstReport, LastGreen: history.LastGreen}
-	intervals := []time.Duration{}
-	for index, report := range history.Reports {
-		if index == 0 {
-			out.LastReport, out.LastRunURL = report.RecordedAt, report.RunURL
-		}
-		if report.Conclusion == "failure" && report.RecordedAt.After(out.LastGreen) {
-			out.Failures++
-		}
-		if index > 0 && len(intervals) < 20 {
-			if interval := history.Reports[index-1].RecordedAt.Sub(report.RecordedAt); interval > 0 {
-				intervals = append(intervals, interval)
-			}
-		}
-	}
-	if len(intervals) > 0 {
-		slices.Sort(intervals)
-		out.Cadence = intervals[len(intervals)/2]
-	}
-	out.LastFailed = out.Failures > 0
-	return out
+	return healthsignals.ScheduledHistory(history)
 }
 
 func (s *Service) maintainHealthRunner(ctx context.Context, organization tracker.OrganizationID, after *runnerstore.UpdateProjectionCursor) error {

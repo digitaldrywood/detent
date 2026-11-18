@@ -22,7 +22,16 @@ func (s *Service) tenantContent(ctx context.Context, organization Organization, 
 		return nil, err
 	}
 	if request.Write {
-		return nil, attachment.StoreArchive(ctx, storage, organization.ID, request.Reference, request.Data)
+		return nil, s.refreshTenantArchive(ctx, storage, organization.ID, request.Reference, request.Data)
 	}
 	return attachment.ReadArchiveObject(ctx, storage, organization.ID, request.Reference)
+}
+
+func (s *Service) refreshTenantArchive(ctx context.Context, storage attachment.ArchiveStorage, organization string, ref attachment.ArchiveReference, data []byte) error {
+	guard, err := s.lockAttachmentObject(ctx, ref.Key)
+	if err != nil {
+		return err
+	}
+	defer s.unlockAttachmentObject(ctx, guard)
+	return attachment.RefreshArchive(ctx, storage, organization, ref, data)
 }

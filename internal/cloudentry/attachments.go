@@ -319,6 +319,15 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 	if err := s.auth.audit(ctx, principal, organization.ID, "attachment_uploaded"); err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
 	}
+	guard, err := s.lockAttachmentObject(ctx, key)
+	if err != nil {
+		return attachmentError(c, http.StatusServiceUnavailable, "attachment_storage_unavailable", "Attachment storage is unavailable")
+	}
+	defer func() {
+		if guard != nil {
+			s.unlockAttachmentObject(ctx, guard)
+		}
+	}()
 	if err := s.attachments.Put(ctx, key, upload.File, upload.Size, upload.ContentType, upload.SHA256); err != nil && (requestID == "" || !s.attachmentUploadStored(ctx, key, upload.Metadata)) {
 		return attachmentError(c, http.StatusBadGateway, "attachment_storage_unavailable", "Attachment storage is unavailable")
 	}
@@ -340,8 +349,14 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
+	s.unlockAttachmentObject(ctx, guard)
+	guard = nil
 	if err := s.auth.audit(cleanup, principal, organization.ID, "attachment_deleted"); err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
+	}
+	guard, err = s.lockAttachmentObject(cleanup, key)
+	if err != nil {
+		return attachmentError(c, http.StatusServiceUnavailable, "attachment_storage_unavailable", "Attachment storage is unavailable")
 	}
 	if err := s.attachments.Delete(cleanup, key); err != nil {
 		return attachmentError(c, http.StatusBadGateway, "attachment_storage_unavailable", "Attachment cleanup failed")
@@ -535,6 +550,11 @@ func (s *Service) removeAttachment(ctx context.Context, organization Organizatio
 	if err := s.auth.audit(ctx, principal, organization.ID, "attachment_deleted"); err != nil {
 		return err
 	}
+	guard, err := s.lockAttachmentObject(ctx, key)
+	if err != nil {
+		return err
+	}
+	defer s.unlockAttachmentObject(ctx, guard)
 	if err := s.attachments.Delete(ctx, key); err != nil {
 		return err
 	}
@@ -549,37 +569,22 @@ func (s *Service) removeAttachment(ctx context.Context, organization Organizatio
 }
 
 func (s *Service) sweepAttachments(ctx context.Context) {
-	if s.attachments == nil {
-		return
-	}
 	now := s.config.Now()
-	if s.attachmentSweepOrg == "" {
-		s.attachmentSweepInventory = !now.Before(s.attachmentSweepAt)
-		if !s.attachmentSweepInventory && !s.attachmentSweepPending {
-			return
-		}
-		s.attachmentSweepPending = false
-	}
-	organization, err := scanOrganization(s.registry.store.db.QueryRowContext(ctx, organizationSelect+" WHERE state='ready' AND id>$1 ORDER BY id LIMIT 1", s.attachmentSweepOrg))
-	if errors.Is(err, ErrOrganizationNotFound) {
-		s.attachmentSweepOrg = ""
-		if s.attachmentSweepInventory {
-			s.attachmentSweepAt = now.Add(time.Hour)
-		}
+	if s.attachments == nil || now.Before(s.attachmentSweepAt) {
 		return
 	}
+	repo := s.registry.store.db.postgres
+	visited, err := repo.VisitDueAttachmentOrganization(ctx, now, func(id string, inventory bool) (bool, error) {
+		org, err := s.readyOrganization(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		return s.sweepOrganizationPage(ctx, org, inventory)
+	})
 	if err != nil {
-		s.config.Logger.Warn("attachment retention registry unavailable")
-		s.attachmentSweepOrg = ""
-		s.attachmentSweepPending = false
-		s.attachmentSweepAt = s.config.Now().Add(time.Hour)
-		return
-	}
-	s.attachmentSweepOrg = organization.ID
-	more, err := s.sweepOrganizationPage(ctx, organization, s.attachmentSweepInventory)
-	s.attachmentSweepPending = s.attachmentSweepPending || more
-	if err != nil {
-		s.config.Logger.Warn("attachment retention failed", "organization", organization.ID)
+		s.config.Logger.Warn("attachment retention failed", "error", err)
+	} else if !visited {
+		s.attachmentSweepAt = now.Add(time.Hour)
 	}
 }
 
@@ -589,43 +594,19 @@ func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization
 }
 
 func (s *Service) sweepOrganizationPage(ctx context.Context, organization Organization, inventory bool) (bool, error) {
-	if inventory {
-		if err := s.sweepExpiredAttachments(ctx, organization); err != nil {
-			return false, err
-		}
+	retention := attachmentsweep.Retention{
+		Registry: s.registry.store.db.postgres,
+		Expired: func() (int, []byte, error) {
+			return s.serviceCall(ctx, organization, "/internal/v1/attachments/expired", struct{}{}, nil)
+		},
+		Remove: func(record attachment.Metadata) error {
+			unlock := s.attachmentLocks.lock(organization.ID, true)
+			defer unlock()
+			return s.removeAttachment(ctx, organization, record, "entry")
+		},
+		Sweeper: func(endpoint string) attachmentsweep.Sweep { return s.attachmentSweeper(ctx, organization, endpoint) },
 	}
-	return s.attachmentSweeper(ctx, organization, "/internal/v1/attachments/exists").Archives(ctx, organization.ID, inventory)
-}
-
-func (s *Service) sweepExpiredAttachments(ctx context.Context, organization Organization) error {
-	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/attachments/expired", struct{}{}, nil)
-	if err != nil {
-		return err
-	}
-	if status != http.StatusOK {
-		return errors.New("attachment retention metadata unavailable")
-	}
-	var records []attachment.Metadata
-	if err := json.Unmarshal(raw, &records); err != nil {
-		return err
-	}
-	for _, record := range records {
-		unlock := s.attachmentLocks.lock(organization.ID, true)
-		err := s.removeAttachment(ctx, organization, record, "entry")
-		unlock()
-		if err != nil {
-			return err
-		}
-	}
-	for _, objects := range []struct{ prefix, endpoint string }{
-		{"attachments/", "/internal/v1/attachments/exists"},
-		{"attempt-diffs/", "/internal/v1/diff-bodies/exists"},
-	} {
-		if err := s.attachmentSweeper(ctx, organization, objects.endpoint).Run(ctx, organization.ID, objects.prefix); err != nil {
-			return err
-		}
-	}
-	return nil
+	return retention.Visit(ctx, organization.ID, inventory)
 }
 
 func (s *Service) attachmentSweeper(ctx context.Context, organization Organization, endpoint string) attachmentsweep.Sweep {
@@ -634,8 +615,20 @@ func (s *Service) attachmentSweeper(ctx context.Context, organization Organizati
 		Lookup: func(input attachment.ObjectLookup) (int, []byte, error) {
 			return s.serviceCall(ctx, organization, endpoint, input, nil)
 		},
-		Lock:  func() func() { return s.attachmentLocks.lock(organization.ID, true) },
-		Audit: func() error { return s.auth.audit(ctx, "entry", organization.ID, "attachment_deleted") },
+		Lock: func(key string) (func(), func() error, error) {
+			unlock := s.attachmentLocks.lock(organization.ID, true)
+			release, audit, err := s.registry.store.db.postgres.LockAttachmentForSweep(ctx, key, organization.ID, formatTime(s.config.Now()))
+			if err != nil {
+				unlock()
+				return nil, nil, err
+			}
+			return func() {
+				defer unlock()
+				if err := release(); err != nil {
+					s.config.Logger.Error("release attachment sweep lock", "error", err)
+				}
+			}, audit, nil
+		},
 	}
 }
 

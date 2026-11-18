@@ -16,7 +16,8 @@ type ArchiveContentStore interface {
 }
 
 type ArchiveContents struct {
-	Storage ArchiveStorage
+	Storage      ArchiveStorage
+	WriteArchive func(context.Context, ArchiveStorage, string, ArchiveReference, []byte) error
 }
 
 func (s ArchiveContents) PublishContent(ctx context.Context, organization string, content []byte) (ArchiveReference, error) {
@@ -27,7 +28,11 @@ func (s ArchiveContents) PublishContent(ctx context.Context, organization string
 	if err != nil {
 		return ArchiveReference{}, err
 	}
-	if err := StoreArchive(ctx, s.Storage, organization, ref, data); err != nil {
+	write := s.WriteArchive
+	if write == nil {
+		write = StoreArchive
+	}
+	if err := write(ctx, s.Storage, organization, ref, data); err != nil {
 		return ArchiveReference{}, err
 	}
 	return ref, nil

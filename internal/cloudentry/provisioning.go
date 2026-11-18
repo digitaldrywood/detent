@@ -157,7 +157,7 @@ func (s *Service) wakeAllocator() {
 func (s *Service) tenantSpec(organization Organization) TenantSpec {
 	return TenantSpec{
 		Icons:           tenantIconStore{service: s, allocation: organization},
-		ArchiveContents: attachment.ArchiveContents{Storage: archiveStorage(s.attachments)},
+		ArchiveContents: attachment.ArchiveContents{Storage: archiveStorage(s.attachments), WriteArchive: s.refreshTenantArchive},
 		Organization:    organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
 		Socket: strings.TrimPrefix(organization.Endpoint, "unix:"), PublicURL: s.config.PublicURL, Issuer: s.config.Issuer,
 		PublicKey: cloudassert.PublicKeyOf(s.config.SigningKey),

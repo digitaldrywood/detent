@@ -312,30 +312,34 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 		store.Objects[reused] = spacesObject{Content: []byte("reused"), Created: time.Now()}
 		store.Mu.Unlock()
 	}
-	organization, err := f.service.readyOrganization(t.Context(), "org_alpha")
+	alpha, err := f.service.readyOrganization(t.Context(), "org_alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
+	if err := f.service.sweepOrganizationAttachments(t.Context(), alpha); err != nil {
 		t.Fatal(err)
 	}
-	store.Mu.Lock()
-	_, reusedExists := store.Objects[reused]
-	store.Mu.Unlock()
-	if !reusedExists {
+	if !store.Contains(reused) {
 		t.Fatal("sweep deleted an object refreshed after it was listed")
 	}
-	store.Mu.Lock()
-	_, oldExists := store.Objects[keys[0]]
-	_, newExists := store.Objects[keys[1]]
-	_, betaExists := store.Objects[keys[2]]
-	store.Mu.Unlock()
+	oldExists, newExists, betaExists := store.Contains(keys[0]), store.Contains(keys[1]), store.Contains(keys[2])
 	if oldExists || !newExists || !betaExists {
 		t.Fatalf("old=%v new=%v other org=%v", oldExists, newExists, betaExists)
 	}
 	if walks.visits == 0 || walks.blocked != 0 {
 		t.Fatalf("organization readers blocked during %d of %d sweep visits", walks.blocked, walks.visits)
 	}
+	late, err := attachment.Key("org_beta", ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.database.ExecContext(t.Context(), `UPDATE platform.organizations SET archive_reclaim_at='-infinity',archive_inventory_at='-infinity' WHERE id IN ('org_alpha','org_beta')`); err != nil {
+		t.Fatal(err)
+	}
+	store.CheckSweepAcrossRestarts(t, []string{keys[0], late}, func() {
+		restarted := &Service{config: f.service.config, registry: f.service.registry, auth: f.service.auth, attachments: storage}
+		restarted.sweepAttachments(t.Context())
+	})
 	f.service.attachments = storage
 	f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
@@ -577,8 +581,9 @@ type lockProbeStorage struct {
 	blocked      int
 }
 
-func (s *lockProbeStorage) Walk(ctx context.Context, prefix string, visit func(attachment.Object) error) error {
-	return s.Storage.Walk(ctx, prefix, func(object attachment.Object) error {
+func (s *lockProbeStorage) ObjectPage(ctx context.Context, organization, namespace, after string) ([]attachment.Object, string, error) {
+	objects, next, err := s.Storage.ObjectPage(ctx, organization, namespace, after)
+	for _, object := range objects {
 		s.visits++
 		s.locks.mu.Lock()
 		entry := s.locks.entries[s.organization]
@@ -593,6 +598,6 @@ func (s *lockProbeStorage) Walk(ctx context.Context, prefix string, visit func(a
 		if refresh := s.refresh[object.Key]; refresh != nil {
 			refresh()
 		}
-		return visit(object)
-	})
+	}
+	return objects, next, err
 }

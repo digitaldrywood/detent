@@ -3624,24 +3624,28 @@ type PlatformOauthSpentRefreshToken struct {
 }
 
 type PlatformOrganization struct {
-	ID             string
-	ProviderID     string
-	Name           string
-	State          string
-	Endpoint       string
-	Generation     int64
-	Managed        bool
-	CreatorSubject string
-	CreatorEmail   string
-	Step           string
-	Attempts       int64
-	NextAttemptAt  *time.Time
-	ErrorCode      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	ErrorDetail    string
-	Slug           string
-	CheckoutPrice  string
+	ID                     string
+	ProviderID             string
+	Name                   string
+	State                  string
+	Endpoint               string
+	Generation             int64
+	Managed                bool
+	CreatorSubject         string
+	CreatorEmail           string
+	Step                   string
+	Attempts               int64
+	NextAttemptAt          *time.Time
+	ErrorCode              string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ErrorDetail            string
+	Slug                   string
+	CheckoutPrice          string
+	ArchiveReclaimAt       time.Time
+	ArchiveInventoryAt     time.Time
+	AttachmentReclaimAfter string
+	DiffReclaimAfter       string
 }
 
 type PlatformOrganizationEvent struct {

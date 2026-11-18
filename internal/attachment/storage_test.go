@@ -255,46 +255,49 @@ func TestArchivePageSeeksWithinOneOrganization(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var calls int
-		client := s3.NewFromConfig(aws.Config{
-			Region: "test", Credentials: credentials.NewStaticCredentialsProvider("fixture", "fixture", ""),
-			HTTPClient: &http.Client{Transport: storageTransport(func(r *http.Request) (*http.Response, error) {
-				query := r.URL.Query()
-				if query.Get("max-keys") != "256" || query.Get("prefix") != "private/orgs/"+org+"/blobs/sha256/" {
-					t.Fatal("unbounded or unscoped inventory request")
-				}
-				calls++
-				key, truncated := first, "true"
-				switch calls {
-				case 1:
-					if query.Has("start-after") {
-						t.Fatal("first page had a cursor")
+		for _, ns := range []string{"blobs/sha256/", "attachments/", "attempt-diffs/"} {
+			first, second := strings.Replace(first, "blobs/sha256/", ns, 1), strings.Replace(second, "blobs/sha256/", ns, 1)
+			var calls int
+			client := s3.NewFromConfig(aws.Config{
+				Region: "test", Credentials: credentials.NewStaticCredentialsProvider("fixture", "fixture", ""),
+				HTTPClient: &http.Client{Transport: storageTransport(func(r *http.Request) (*http.Response, error) {
+					query := r.URL.Query()
+					if query.Get("max-keys") != "256" || query.Get("prefix") != "private/orgs/"+org+"/"+ns {
+						t.Fatal("unbounded or unscoped inventory request")
 					}
-				case 2:
-					if query.Get("start-after") != "private/"+first {
-						t.Fatal("continuation did not seek beyond the first page")
+					calls++
+					key, truncated := first, "true"
+					switch calls {
+					case 1:
+						if query.Has("start-after") {
+							t.Fatal("first page had a cursor")
+						}
+					case 2:
+						if query.Get("start-after") != "private/"+first {
+							t.Fatal("continuation did not seek beyond the first page")
+						}
+						key, truncated = second, "false"
+					default:
+						t.Fatal("one archive page sent multiple listing requests")
 					}
-					key, truncated = second, "false"
-				default:
-					t.Fatal("one archive page sent multiple listing requests")
-				}
-				return storageResponse(http.StatusOK, "<ListBucketResult><IsTruncated>"+truncated+"</IsTruncated><Contents><Key>private/"+key+"</Key><LastModified>2026-01-01T00:00:00Z</LastModified></Contents></ListBucketResult>"), nil
-			})},
-		}, func(o *s3.Options) {
-			o.BaseEndpoint = aws.String("https://objects.example.test")
-			o.UsePathStyle = true
-		})
-		store := &spaces{client: client, config: Config{Bucket: "bucket"}, prefix: "private/"}
-		objects, next, err := store.ArchivePage(t.Context(), org, "")
-		if err != nil || len(objects) != 1 || objects[0].Key != first || next != first {
-			t.Fatalf("first page=%v next=%q err=%v", objects, next, err)
-		}
-		objects, next, err = store.ArchivePage(t.Context(), org, next)
-		if err != nil || len(objects) != 1 || objects[0].Key != second || next != "" {
-			t.Fatalf("last page=%v next=%q err=%v", objects, next, err)
-		}
-		if _, _, err := store.ArchivePage(t.Context(), "org_foreign", first); !errors.Is(err, ErrInvalid) || calls != 2 {
-			t.Fatalf("foreign cursor err=%v listing calls=%d", err, calls)
+					return storageResponse(http.StatusOK, "<ListBucketResult><IsTruncated>"+truncated+"</IsTruncated><Contents><Key>private/"+key+"</Key><LastModified>2026-01-01T00:00:00Z</LastModified></Contents></ListBucketResult>"), nil
+				})},
+			}, func(o *s3.Options) {
+				o.BaseEndpoint = aws.String("https://objects.example.test")
+				o.UsePathStyle = true
+			})
+			store := &spaces{client: client, config: Config{Bucket: "bucket"}, prefix: "private/"}
+			objects, next, err := store.ObjectPage(t.Context(), org, ns, "")
+			if err != nil || len(objects) != 1 || objects[0].Key != first || next != first {
+				t.Fatalf("first page=%v next=%q err=%v", objects, next, err)
+			}
+			objects, next, err = store.ObjectPage(t.Context(), org, ns, next)
+			if err != nil || len(objects) != 1 || objects[0].Key != second || next != "" {
+				t.Fatalf("last page=%v next=%q err=%v", objects, next, err)
+			}
+			if _, _, err := store.ObjectPage(t.Context(), "org_foreign", ns, first); !errors.Is(err, ErrInvalid) || calls != 2 {
+				t.Fatalf("foreign cursor err=%v listing calls=%d", err, calls)
+			}
 		}
 	}
 }

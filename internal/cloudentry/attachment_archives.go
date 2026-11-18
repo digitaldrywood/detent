@@ -67,6 +67,11 @@ func (s *Service) uploadArchive(c echo.Context) error {
 	if err := s.auth.audit(ctx, authorized.Principal, organization.ID, "archive_uploaded"); err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Archive audit is unavailable")
 	}
+	guard, err := s.lockAttachmentObject(ctx, ref.Key)
+	if err != nil {
+		return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
+	}
+	defer s.unlockAttachmentObject(ctx, guard)
 	if err := attachment.StoreArchive(ctx, storage, organization.ID, ref, data); err != nil {
 		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
 	}

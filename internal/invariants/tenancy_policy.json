@@ -371,7 +371,7 @@
     },
     "internal/update/update.go": {
       "import:os/exec": 1,
-      "process:exec.CommandContext": 4
+      "process:exec.CommandContext": 3
     },
     "internal/update/worker_artifacts.go": {
       "import:os/exec": 1

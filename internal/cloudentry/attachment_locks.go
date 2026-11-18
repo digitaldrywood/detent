@@ -1,6 +1,11 @@
 package cloudentry
 
-import "sync"
+import (
+	"context"
+	"sync"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
+)
 
 type attachmentLocks struct {
 	mu      sync.Mutex
@@ -41,5 +46,15 @@ func (l *attachmentLocks) lock(organization string, write bool) func() {
 			delete(l.entries, organization)
 		}
 		l.mu.Unlock()
+	}
+}
+
+func (s *Service) lockAttachmentObject(ctx context.Context, key string) (*platformstore.EntryTransaction, error) {
+	return s.registry.store.db.postgres.LockAttachment(ctx, entryWorkload(ctx), key)
+}
+
+func (s *Service) unlockAttachmentObject(ctx context.Context, g *platformstore.EntryTransaction) {
+	if err := g.Rollback(ctx); err != nil {
+		s.config.Logger.Error("release attachment object lock", "error", err)
 	}
 }

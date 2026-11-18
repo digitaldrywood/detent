@@ -197,7 +197,7 @@ var upgradeOrderPending = []int64{
 	20261116222700,
 	20261116222800,
 	20261116234027,
-	20261117043721, 20261118021624, 20261118085855,
+	20261117043721, 20261118021624, 20261118085855, 20261118143315, 20261118155804, 20261118155810,
 }
 
 var upgradeOrderTenants = []struct {
@@ -467,6 +467,28 @@ func TestMigrateAppliesPendingVersionsBelowPopulatedHead(t *testing.T) {
 					t.Fatalf("uninitialized quality evidence mutated=%v", err)
 				}
 			}
+			if interrupted {
+				partial := fstest.MapFS{}
+				for _, file := range files {
+					data, err := fs.ReadFile(source, file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if file == "20261118155804_attachment_reclaim_indexes.sql" {
+						const second = "DROP INDEX CONCURRENTLY IF EXISTS platform.organizations_ready_archive_reclaim;"
+						data = []byte(strings.Replace(string(data), second, "SELECT 1/0;\n"+second, 1))
+					}
+					partial[file] = &fstest.MapFile{Data: data}
+				}
+				err := Migrate(t.Context(), config, partial)
+				var failure *pgconn.PgError
+				if !errors.As(err, &failure) || failure.Code != "22012" {
+					t.Fatalf("interrupted attachment index build: %v", err)
+				}
+				if _, err := db.ExecContext(t.Context(), `UPDATE pg_index SET indisvalid=false WHERE indexrelid='hub_detail_reclaim_due'::regclass`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := Migrate(t.Context(), config, source); err != nil {
 				t.Fatal(err)
 			}
@@ -541,7 +563,7 @@ func TestMigrateAppliesPendingVersionsBelowPopulatedHead(t *testing.T) {
 			if got := catalogSnapshot(t, db); !slices.Equal(got, want) {
 				t.Errorf("upgraded catalog differs from a fresh install:\n%s", catalogDifference(want, got))
 			}
-			for _, name := range []string{"collaboration_events_visible_history", "project_artifact_retained_uploads", "doctor_proposal_unknown_heads", "doctor_proposal_identity_state", "native_command_operator_project_active", "native_attempts_local_identity_idx", "native_attempts_local_identity_unknown_idx"} {
+			for _, name := range []string{"collaboration_events_visible_history", "project_artifact_retained_uploads", "doctor_proposal_unknown_heads", "doctor_proposal_identity_state", "native_command_operator_project_active", "native_attempts_local_identity_idx", "native_attempts_local_identity_unknown_idx", "hub_detail_reclaim_due", "platform.organizations_ready_archive_reclaim", "archive_reclaim_due"} {
 				var valid bool
 				if err := db.QueryRowContext(t.Context(), `SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid=$1::regclass`, name).Scan(&valid); err != nil || !valid {
 					t.Errorf("index %s valid=%t error=%v", name, valid, err)

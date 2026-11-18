@@ -44,6 +44,11 @@ func (s *Service) storeDiffBody(ctx context.Context, organization, project strin
 	if int64(len(patch)) != ref.Bytes || diffbody.Digest(patch) != ref.SHA256 {
 		return errors.New("diff body integrity mismatch")
 	}
+	guard, err := s.lockAttachmentObject(ctx, ref.Key)
+	if err != nil {
+		return err
+	}
+	defer s.unlockAttachmentObject(ctx, guard)
 	putErr := s.attachments.Put(ctx, ref.Key, strings.NewReader(patch), ref.Bytes, "text/plain; charset=utf-8", ref.SHA256)
 	stored, err := s.readDiffBody(ctx, organization, project, ref)
 	if err != nil {

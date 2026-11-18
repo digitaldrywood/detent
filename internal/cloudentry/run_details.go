@@ -38,10 +38,7 @@ func (d tenantDetailStore) StoreDetail(ctx context.Context, organization string,
 	if err != nil {
 		return attachment.ArchiveReference{}, err
 	}
-	if err := storage.PutArchive(ctx, ref, compressed); err != nil {
-		return attachment.ArchiveReference{}, err
-	}
-	if err := attachment.StoreArchive(ctx, storage, organization, ref, compressed); err != nil {
+	if err := d.service.refreshTenantArchive(ctx, storage, organization, ref, compressed); err != nil {
 		return attachment.ArchiveReference{}, err
 	}
 	return ref, nil

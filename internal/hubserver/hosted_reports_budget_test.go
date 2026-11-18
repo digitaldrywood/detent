@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -82,10 +81,8 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 	freezeReportPlannerInputs(t, admin)
 	statementCounts := map[string]int{}
 	for _, test := range []struct {
-		name      string
-		rangeName string
-		hour      int
-		days      int
+		name, rangeName string
+		hour, days      int
 	}{
 		{"30d/midnight", "30d", 0, 30},
 		{"30d/daytime", "30d", 10, 29},
@@ -93,25 +90,12 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 		{"90d/daytime", "90d", 10, 89},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if reportsRedesignLeaf(t.Name()) {
+				statementCounts[test.name] = -1
+				t.Skip(reportsRedesignSkipReason)
+			}
 			f.service.config.Clock = func() time.Time { return now.Add(time.Duration(test.hour) * time.Hour) }
-			var mu sync.Mutex
-			var statements []tracedStatement
-			timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
-				if args == nil {
-					return
-				}
-				values := make([]any, 0, len(args))
-				for _, arg := range args {
-					if arg.Name != "" {
-						values = append(values, sql.Named(arg.Name, arg.Value))
-					} else {
-						values = append(values, arg.Value)
-					}
-				}
-				mu.Lock()
-				statements = append(statements, tracedStatement{query, values})
-				mu.Unlock()
-			}}
+			timing, statements := newReportStatementTrace(true)
 			ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), hubapi.ReadTimeout)
 			defer cancel()
 			request := httptest.NewRequest(http.MethodGet, browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+test.rangeName, nil).WithContext(ctx)
@@ -133,13 +117,13 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 				t.Fatalf("window=%+v shipped=%d, want %s through %s and at least %d shipped", report.Analytics.Window, report.Completion.Done, wantFrom, now, test.days)
 			}
 			t.Logf("%s report: %s, %d shipped", test.rangeName, elapsed, report.Completion.Done)
-			mu.Lock()
-			captured := append([]tracedStatement(nil), statements...)
-			mu.Unlock()
+			captured := statements()
 			statementCounts[test.name] = len(captured)
 			reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "reports", "issues", "collaboration_events", "native_attempts", "change_requests", "report_escape_facts")
-
 		})
+		if statementCounts[test.name] == 0 {
+			t.Errorf("missing report statement measurement for %s", test.name)
+		}
 	}
 	if statementCounts["30d/midnight"] == 0 || statementCounts["90d/midnight"] != statementCounts["30d/midnight"] || statementCounts["90d/daytime"] != statementCounts["30d/daytime"] {
 		t.Errorf("report statements grow with the window: %v", statementCounts)

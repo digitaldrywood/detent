@@ -30,7 +30,7 @@ func TestAttemptDiffObjectStorage(t *testing.T) {
 	}
 	checked := false
 	checkStatus := http.StatusNoContent
-	s := &Service{attachments: storage, config: Config{
+	s := &Service{registry: newEntryFixture(t).service.registry, attachments: storage, config: Config{
 		Now:        time.Now,
 		Issuer:     "entry",
 		SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)),

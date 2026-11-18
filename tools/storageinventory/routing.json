@@ -934,6 +934,19 @@
         "tables": []
       }
     },
+    "internal/cloudentry/internal/harness/attachment_publication.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "Spaces.CheckConcurrentArchivePublication:QueryRowContext": 1,
+          "Spaces.CheckConcurrentArchivePublication:SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/cloudentry/internal/harness/browser.go": {
       "disposition": "non-storage",
       "families": [
@@ -977,7 +990,7 @@
       ],
       "inventory": {
         "operations": {
-          "NewSpaces:Query": 7
+          "NewSpaces:Query": 9
         },
         "tables": []
       }
@@ -1313,6 +1326,40 @@
         "tables": [
           "auth/sessions",
           "registry/platform_members"
+        ]
+      }
+    },
+    "internal/cloudentry/platformstore/attachment_lock.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "artifact-service",
+        "platform"
+      ],
+      "inventory": {
+        "operations": {
+          "Repository.LockAttachment:Exec": 1,
+          "Repository.LockAttachment:SQL": 1,
+          "Repository.LockAttachmentForSweep:Exec": 1,
+          "Repository.LockAttachmentForSweep:SQL": 1
+        },
+        "tables": [
+          "auth/audit"
+        ]
+      }
+    },
+    "internal/cloudentry/platformstore/attachment_sweep.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "artifact-service",
+        "platform"
+      ],
+      "inventory": {
+        "operations": {
+          "Repository.VisitAttachmentPrefixes:SQL": 2,
+          "Repository.VisitDueAttachmentOrganization:SQL": 2
+        },
+        "tables": [
+          "registry/organizations"
         ]
       }
     },
@@ -3437,35 +3484,18 @@
       ],
       "inventory": {
         "operations": {
+          "session.ArchiveReclaimPage:QueryRow": 1,
+          "session.ArchiveReclaimPage:SQL": 1,
           "session.AttachmentObjectExists:QueryRow": 2,
-          "session.AttachmentObjectExists:SQL": 2
+          "session.AttachmentObjectExists:SQL": 2,
+          "session.CompleteArchiveReclaim:Exec": 1,
+          "session.CompleteArchiveReclaim:SQL": 1,
+          "session.ReferencedAttachmentObjects:QueryRow": 1,
+          "session.ReferencedAttachmentObjects:SQL": 1
         },
         "tables": [
           "hub/attachments",
-          "hub/change_evidence",
-          "hub/change_landing_receipts",
-          "hub/change_requests",
-          "hub/change_versions",
-          "hub/collaboration_events",
-          "hub/collaboration_versions",
-          "hub/github_import_records",
-          "hub/health_findings",
-          "hub/hosted_audit",
-          "hub/hosted_billing_audit",
-          "hub/hosted_billing_retired",
-          "hub/hosted_plan_audit",
-          "hub/issues",
-          "hub/linked_issue_sources",
-          "hub/native_attempts",
-          "hub/native_board_deltas",
-          "hub/native_board_items",
-          "hub/native_commands",
-          "hub/native_comments",
-          "hub/onboarding_issue_intake",
-          "hub/policy_revisions",
-          "hub/project_actions",
-          "hub/projects",
-          "hub/team_thread_posts"
+          "hub/hosted_tenant"
         ]
       }
     },
@@ -5070,8 +5100,7 @@
           "session.detailObject:SQL": 1,
           "session.putDetailObject:Exec": 1,
           "session.putDetailObject:SQL": 1,
-          "session.reclaimDetailObjects:Exec": 1,
-          "session.reclaimDetailObjects:Query": 1,
+          "session.reclaimDetailObjects:QueryRow": 2,
           "session.reclaimDetailObjects:SQL": 2
         },
         "tables": []
@@ -12209,6 +12238,88 @@
         "tables": [
           "hub/collaboration_events",
           "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118143315_attachment_reclaim_candidates.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "artifact-service",
+        "lifecycle",
+        "platform"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/hosted_tenant",
+          "hub/organizations"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118155804_attachment_reclaim_indexes.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "artifact-service",
+        "lifecycle",
+        "platform"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/organizations"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118155810_attachment_reclaim_reference_changes.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "access",
+        "activity",
+        "billing",
+        "board",
+        "collaboration",
+        "core",
+        "event",
+        "lease",
+        "policy",
+        "source",
+        "workspace"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/attachments",
+          "hub/change_evidence",
+          "hub/change_landing_receipts",
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/collaboration_events",
+          "hub/collaboration_versions",
+          "hub/github_import_records",
+          "hub/health_findings",
+          "hub/hosted_audit",
+          "hub/hosted_billing_audit",
+          "hub/hosted_billing_retired",
+          "hub/hosted_plan_audit",
+          "hub/hosted_tenant",
+          "hub/issues",
+          "hub/linked_issue_sources",
+          "hub/native_attempts",
+          "hub/native_board_deltas",
+          "hub/native_board_items",
+          "hub/native_commands",
+          "hub/native_comments",
+          "hub/onboarding_issue_intake",
+          "hub/policy_revisions",
+          "hub/project_actions",
+          "hub/projects",
+          "hub/team_thread_posts"
         ]
       }
     },

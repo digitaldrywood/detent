@@ -16,8 +16,7 @@ type Sweep struct {
 	Storage attachment.Storage
 	Now     func() time.Time
 	Lookup  func(attachment.ObjectLookup) (int, []byte, error)
-	Lock    func() func()
-	Audit   func() error
+	Lock    func(key string) (unlock func(), audit func() error, err error)
 }
 
 func (s Sweep) expired(object attachment.Object) bool {
@@ -49,7 +48,10 @@ func (s Sweep) exists(input attachment.ObjectLookup) (bool, error) {
 }
 
 func (s Sweep) remove(ctx context.Context, key string, input attachment.ObjectLookup) (*time.Time, error) {
-	unlock := s.Lock()
+	unlock, audit, err := s.Lock(key)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	current, found, err := s.Storage.Stat(ctx, key)
 	if err != nil || !found {
@@ -63,42 +65,41 @@ func (s Sweep) remove(ctx context.Context, key string, input attachment.ObjectLo
 	if err != nil || exists {
 		return nil, err
 	}
-	if err := s.Audit(); err != nil {
+	if err := audit(); err != nil {
 		return nil, err
 	}
 	return nil, s.Storage.Delete(ctx, key)
 }
 
-func (s Sweep) Run(ctx context.Context, organization, namespace string) error {
-	prefix, err := attachment.OrganizationPrefix(organization)
+func (s Sweep) Page(ctx context.Context, organization, namespace, after string) (string, error) {
+	objects, next, err := s.Storage.ObjectPage(ctx, organization, namespace, after)
 	if err != nil {
-		return err
+		return "", err
 	}
-	prefix += namespace
-	if namespace == "blobs/sha256/" {
-		_, err := s.Archives(ctx, organization, true)
-		return err
-	}
-	return s.Storage.Walk(ctx, prefix, func(object attachment.Object) error {
+	for _, object := range objects {
 		if !s.expired(object) {
-			return nil
+			continue
 		}
 		input := attachment.ObjectLookup{Key: object.Key}
 		if namespace == "attachments/" {
-			id := strings.TrimPrefix(object.Key, prefix)
+			id := strings.TrimPrefix(object.Key, "orgs/"+organization+"/attachments/")
 			key, err := attachment.Key(organization, id)
 			if err != nil || key != object.Key {
-				return attachment.ErrInvalid
+				return "", attachment.ErrInvalid
 			}
 			input = attachment.ObjectLookup{ID: id}
 		}
 		exists, err := s.exists(input)
-		if err != nil || exists {
-			return err
+		if err != nil {
+			return "", err
 		}
-		_, err = s.remove(ctx, object.Key, input)
-		return err
-	})
+		if !exists {
+			if _, err := s.remove(ctx, object.Key, input); err != nil {
+				return "", err
+			}
+		}
+	}
+	return next, nil
 }
 
 func (s Sweep) Archives(ctx context.Context, organization string, inventory bool) (bool, error) {
@@ -113,7 +114,7 @@ func (s Sweep) Archives(ctx context.Context, organization string, inventory bool
 	next := page.After
 	if inventory {
 		var err error
-		objects, next, err = s.Storage.ArchivePage(ctx, organization, page.After)
+		objects, next, err = s.Storage.ObjectPage(ctx, organization, "blobs/sha256/", page.After)
 		if err != nil {
 			return false, err
 		}

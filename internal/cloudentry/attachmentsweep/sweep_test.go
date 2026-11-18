@@ -19,7 +19,7 @@ type bucket struct {
 	listings int
 }
 
-func (b *bucket) ArchivePage(_ context.Context, org, after string) ([]attachment.Object, string, error) {
+func (b *bucket) ObjectPage(_ context.Context, org, namespace, after string) ([]attachment.Object, string, error) {
 	b.listings++
 	objects := b.objects[org]
 	start := sort.Search(len(objects), func(i int) bool { return objects[i].Key > after })
@@ -63,7 +63,10 @@ func TestArchiveSweepBatchesTenantRequests(t *testing.T) {
 		last := b.objects[org][count-1].Key
 		page := attachment.ReclaimPage{Changed: []attachment.ReclaimCandidate{{Key: last, Revision: 1}}}
 		locked := false
-		s := Sweep{Now: func() time.Time { return now }, Storage: b, Lock: func() func() { locked = true; return func() { locked = false } }, Audit: func() error { return nil }, Lookup: func(input attachment.ObjectLookup) (int, []byte, error) {
+		s := Sweep{Now: func() time.Time { return now }, Storage: b, Lock: func(string) (func(), func() error, error) {
+			locked = true
+			return func() { locked = false }, func() error { return nil }, nil
+		}, Lookup: func(input attachment.ObjectLookup) (int, []byte, error) {
 			if !input.Valid(org) {
 				t.Fatalf("invalid or foreign lookup in %s", org)
 			}
@@ -97,7 +100,7 @@ func TestArchiveSweepBatchesTenantRequests(t *testing.T) {
 			return http.StatusOK, data, err
 		}}
 		for pass := range 3 {
-			if err := s.Run(t.Context(), org, "blobs/sha256/"); err != nil {
+			if _, err := s.Archives(t.Context(), org, true); err != nil {
 				t.Fatal(err)
 			}
 			if pass == 0 && (page.After == "" || final != 1) {
