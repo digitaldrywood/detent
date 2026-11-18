@@ -141,7 +141,7 @@ func TestRunnerSessionLifetimeReapsWorkerAndRecordsCause(t *testing.T) {
 	}
 	backend := &durationWorkerAgentBackend{identity: identity, expireSession: durationLimit.Expire}
 	var reaped procgroup.Identity
-	var workspaceReaped string
+	var scratchReaped string
 	var logs bytes.Buffer
 	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 25}}, Prompt: "Work"},
@@ -155,7 +155,7 @@ func TestRunnerSessionLifetimeReapsWorkerAndRecordsCause(t *testing.T) {
 			return procgroup.TerminationOutcomeKilled, nil
 		},
 		ReapWorkspaceProcesses: func(_ context.Context, path string, _ time.Duration) (int, error) {
-			workspaceReaped = path
+			scratchReaped = path
 			return 2, nil
 		},
 	})
@@ -170,8 +170,8 @@ func TestRunnerSessionLifetimeReapsWorkerAndRecordsCause(t *testing.T) {
 	if reaped != identity {
 		t.Fatalf("reaped identity = %#v, want %#v", reaped, identity)
 	}
-	if workspaceReaped != workspacePath {
-		t.Fatalf("reaped workspace = %q, want %q", workspaceReaped, workspacePath)
+	if len(processStore.workerProcesses) == 0 || scratchReaped == "" || scratchReaped != processStore.workerProcesses[0].CleanupPath {
+		t.Fatalf("reaped scratch = %q, registrations = %v", scratchReaped, processStore.workerProcesses)
 	}
 	for _, want := range []string{
 		"event=worker_orphan_processes_reaped",
@@ -246,7 +246,7 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 					PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt,
 				}},
 			}
-			workspaceReaped := ""
+			scratchReaped := ""
 			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Prompt: "Work"},
 				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: workspacePath, Key: "issue-terminal-worker"}},
@@ -257,7 +257,7 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 					return procgroup.TerminationOutcomeAlreadyExited, nil
 				},
 				ReapWorkspaceProcesses: func(_ context.Context, path string, _ time.Duration) (int, error) {
-					workspaceReaped = path
+					scratchReaped = path
 					return 0, nil
 				},
 			})
@@ -274,8 +274,8 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 			if len(processStore.reaps) != 1 || processStore.reaps[0].Reason != tt.wantReason || processStore.reaps[0].Outcome != store.WorkerProcessOutcomeAlreadyExited {
 				t.Fatalf("reap records = %#v, want reason %q", processStore.reaps, tt.wantReason)
 			}
-			if workspaceReaped != workspacePath {
-				t.Fatalf("reaped workspace = %q, want %q", workspaceReaped, workspacePath)
+			if len(processStore.workerProcesses) == 0 || scratchReaped == "" || scratchReaped != processStore.workerProcesses[0].CleanupPath {
+				t.Fatalf("reaped scratch = %q, registrations = %v", scratchReaped, processStore.workerProcesses)
 			}
 			for _, want := range []string{
 				"event=worker_orphan_processes_reaped",

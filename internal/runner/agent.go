@@ -1162,6 +1162,7 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 		return AgentTurnResult{}, cleanupScratch, fmt.Errorf("prepare worker github environment: %w", err)
 	}
 	result, runErr := run(ctx, request)
+	result.workerScratchPath = tempDir
 	return result, cleanupScratch, runErr
 }
 
@@ -1384,7 +1385,7 @@ func (r *Runner) runAgentTurn(
 		runRequest.Issue,
 		workerProcessReapReason(ctx, turnErr),
 		func() error {
-			return r.reapWorkspaceProcessesAfterTurn(ctx, info.Path, detentSessionID, runRequest.WorkAttemptID, runRequest.Issue, turnErr, workerProcessObserved)
+			return r.reapWorkspaceProcessesAfterTurn(ctx, info.Path, turnResult.workerScratchPath, detentSessionID, runRequest.WorkAttemptID, runRequest.Issue, turnErr, workerProcessObserved)
 		},
 	)
 	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
@@ -4117,7 +4118,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		req.Issue,
 		workerProcessReapReason(sessionCtx, turnErr),
 		func() error {
-			return r.reapWorkspaceProcessesAfterTurn(sessionCtx, info.Path, sessionID, runReq.WorkAttemptID, req.Issue, turnErr, workerProcessObserved)
+			return r.reapWorkspaceProcessesAfterTurn(sessionCtx, info.Path, turnResult.workerScratchPath, sessionID, runReq.WorkAttemptID, req.Issue, turnErr, workerProcessObserved)
 		},
 	)
 	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
@@ -4717,7 +4718,7 @@ func (r *Runner) withWorkspaceHooks(ctx context.Context) (context.Context, func(
 
 func (r *Runner) reapWorkspaceProcessesAfterTurn(
 	ctx context.Context,
-	workspacePath string,
+	workspacePath, scratchPath string,
 	sessionID int64,
 	workAttemptID int64,
 	issue connector.Issue,
@@ -4728,7 +4729,7 @@ func (r *Runner) reapWorkspaceProcessesAfterTurn(
 		ctx = context.Background()
 	}
 	combined := errors.Join(context.Cause(ctx), turnErr)
-	if !workerProcessObserved && !workerSessionCanceled(combined) {
+	if scratchPath == "" || (!workerProcessObserved && !workerSessionCanceled(combined)) {
 		return nil
 	}
 
@@ -4736,7 +4737,7 @@ func (r *Runner) reapWorkspaceProcessesAfterTurn(
 	if reap == nil {
 		reap = workspace.ReapProcesses
 	}
-	reaped, err := reap(context.WithoutCancel(ctx), workspacePath, r.workerReapGrace)
+	reaped, err := reap(context.WithoutCancel(ctx), scratchPath, r.workerReapGrace)
 	attrs := []any{
 		telemetry.WorkAttemptIDKey, workAttemptID,
 		telemetry.DetentSessionIDKey, sessionID,
