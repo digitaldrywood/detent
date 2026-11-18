@@ -22,7 +22,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
-const minimumWorkspaceProcessScanTimeout = 30 * time.Second
+const (
+	defaultProcessTerminationGrace     = 250 * time.Millisecond
+	minimumWorkspaceProcessScanTimeout = 30 * time.Second
+)
 
 func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, error) {
 	path = strings.TrimSpace(path)
@@ -446,24 +449,17 @@ func linuxWorkspaceProcessIDs(path string) ([]int, error) {
 	return pids, nil
 }
 
-func lsofOutput(ctx context.Context, args ...string) ([]byte, error) {
-	return workspaceScanOutput(ctx, exec.CommandContext(ctx, "lsof", args...))
-}
-
-func lsofNoMatches(err error) bool {
-	var exited *exec.ExitError
-	return errors.As(err, &exited) && exited.ExitCode() == 1
-}
-
 func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 	// List every process's working directory and match by prefix in Go.
 	// lsof +D walks the whole tree, which on a multi-gigabyte worktree
 	// outlives every scan deadline; -d cwd alone is one row per process.
 	// -O disables lsof's per-operation fork timeout machinery: on macOS its
 	// global filesystem lookup overhead can exhaust the deadline before output.
-	output, err := lsofOutput(ctx, "-O", "-w", "-d", "cwd", "-F", "pn")
+	cmd := exec.CommandContext(ctx, "lsof", "-O", "-w", "-d", "cwd", "-F", "pn") // #nosec G204 -- fixed arguments, no shell.
+	output, err := workspaceScanOutput(ctx, cmd)
 	if err != nil && len(output) == 0 {
-		if lsofNoMatches(err) {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return nil, nil
 		}
 		return nil, err

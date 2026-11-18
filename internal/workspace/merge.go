@@ -522,7 +522,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	if paged {
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
-	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
+	issue.hookOwner.Attach(cmd)
 	if err := cmd.Start(); err != nil {
 		return result, fmt.Errorf("start validation command: %w", err)
 	}

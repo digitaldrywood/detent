@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
+	"github.com/digitaldrywood/detent/internal/workspace/workspacetest"
 )
 
 type hookTestWorkspace struct {
@@ -52,8 +53,8 @@ func (*leaseExecution) Recovery() tracker.NativeRecovery                        
 func TestRunTeardownStopsDetachedHook(t *testing.T) {
 	for _, mode := range []string{"success", "cancellation", "drain", "lease loss", "lease loss with incomplete cleanup"} {
 		t.Run(mode, func(t *testing.T) {
-			daemon := detachedHook(t)
-			useDaemonCandidates(t, daemon)
+			daemon := workspacetest.DetachedHook(t)
+			workspacetest.UseDaemonCandidates(t, daemon)
 			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: daemon.Command, BeforeRun: ":"}})
 			if err != nil {
 				t.Fatal(err)
@@ -158,8 +159,8 @@ func TestProgressHookStopsBeforeCheckoutRelease(t *testing.T) {
 		{"completed work", nil}, {"preparation failed", errors.New("fixture head unavailable")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service := detachedHook(t)
-			useDaemonCandidates(t, service)
+			service := workspacetest.DetachedHook(t)
+			workspacetest.UseDaemonCandidates(t, service)
 			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: service.Command}})
 			if err != nil {
 				t.Fatal(err)

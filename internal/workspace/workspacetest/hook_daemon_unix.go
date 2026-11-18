@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package hooklifetime_test
+package workspacetest
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func runDetachedHook(t *testing.T) {
+func RunDetachedHook(t *testing.T) {
 	control := os.Getenv("TEST_HOOK_CONTROL")
 	if control == "" {
 		return
@@ -121,12 +121,12 @@ func runDetachedHook(t *testing.T) {
 	}
 }
 
-type daemon struct {
+type Daemon struct {
 	Command string
 	control string
 }
 
-func detachedHook(t *testing.T) daemon {
+func DetachedHook(t *testing.T) Daemon {
 	t.Helper()
 	control := filepath.Join(t.TempDir(), "control")
 	if err := syscall.Mkfifo(control, 0600); err != nil {
@@ -171,8 +171,8 @@ func detachedHook(t *testing.T) daemon {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := "GOCOVERDIR=" + shellQuote(t.TempDir()) + " TEST_HOOK_CHILD_COVER=" + shellQuote(t.TempDir()) + " TEST_HOOK_CONTROL=" + shellQuote(control) + " " + shellQuote(executable) + " -test.run='^TestDetachedHookHelper$'"
-	return daemon{Command: command, control: control}
+	command := "GOCOVERDIR=" + ShellQuote(t.TempDir()) + " TEST_HOOK_CHILD_COVER=" + ShellQuote(t.TempDir()) + " TEST_HOOK_CONTROL=" + ShellQuote(control) + " " + ShellQuote(executable) + " -test.run='^TestDetachedHookHelper$'"
+	return Daemon{Command: command, control: control}
 }
 
 func daemonIdentity(control string) (int, string, error) {
@@ -188,7 +188,7 @@ func daemonIdentity(control string) (int, string, error) {
 	return pid, start, err
 }
 
-func (d daemon) Alive(t *testing.T) bool {
+func (d Daemon) Alive(t *testing.T) bool {
 	t.Helper()
 	lock, err := os.Open(d.control + ".lock")
 	if err != nil {
@@ -202,7 +202,7 @@ func (d daemon) Alive(t *testing.T) bool {
 	return err != nil
 }
 
-func (d daemon) Request(t *testing.T) string {
+func (d Daemon) Request(t *testing.T) string {
 	t.Helper()
 	if !d.Alive(t) {
 		t.Fatal("service exited before receiving work")
@@ -228,9 +228,9 @@ func (d daemon) Request(t *testing.T) string {
 	return scratch
 }
 
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+func ShellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
-func useDaemonCandidates(t *testing.T, daemons ...daemon) {
+func UseDaemonCandidates(t *testing.T, daemons ...Daemon) {
 	t.Helper()
 	previous := hookproc.ReapProcessScanner
 	t.Cleanup(func() { hookproc.ReapProcessScanner = previous })

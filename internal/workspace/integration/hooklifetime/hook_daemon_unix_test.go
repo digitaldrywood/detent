@@ -16,17 +16,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 	"github.com/digitaldrywood/detent/internal/workspace/internal/gitfixture"
+	"github.com/digitaldrywood/detent/internal/workspace/workspacetest"
 )
 
 func TestMain(m *testing.M) { os.Exit(gitfixture.RunTests(m)) }
 
-func TestDetachedHookHelper(t *testing.T) { runDetachedHook(t) }
+func TestDetachedHookHelper(t *testing.T) { workspacetest.RunDetachedHook(t) }
 
 func TestHookDaemonWorkspaceTeardown(t *testing.T) {
 	for _, mode := range []string{"remove", "failed removal hook", "failed creation quarantine", "fresh checkout quarantine"} {
 		t.Run(mode, func(t *testing.T) {
-			daemon := detachedHook(t)
-			useDaemonCandidates(t, daemon)
+			daemon := workspacetest.DetachedHook(t)
+			workspacetest.UseDaemonCandidates(t, daemon)
 			hook := daemon.Command
 			if mode == "failed creation quarantine" {
 				hook += "; echo evidence > evidence; exit 19"
@@ -94,7 +95,7 @@ func TestCheckoutRemovalPreservesForeignProcesses(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
 
-			service := detachedHook(t)
+			service := workspacetest.DetachedHook(t)
 			hooks := workspace.Hooks{AfterCreate: service.Command}
 			var backend interface {
 				workspace.IssueCleaner
@@ -124,7 +125,7 @@ func TestCheckoutRemovalPreservesForeignProcesses(t *testing.T) {
 				issue.Terminal = true
 				issue.LandedHeadSHA = strings.TrimSpace(gitfixture.Git(t, info.Path, "rev-parse", "HEAD"))
 			}
-			other := detachedHook(t)
+			other := workspacetest.DetachedHook(t)
 			scratch, err := workspace.PrepareWorkerScratch(t.Context(), info.Path)
 			if err != nil {
 				t.Fatal(err)
@@ -134,7 +135,7 @@ func TestCheckoutRemovalPreservesForeignProcesses(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			otherCommand := "unset DETENT_HOOK_OWNER DETENT_WORKSPACE; TEST_HOOK_CWD=" + shellQuote(info.Path) + " DETENT_WORKER_SCRATCH=" + shellQuote(scratch) + " " + other.Command
+			otherCommand := "unset DETENT_HOOK_OWNER DETENT_WORKSPACE; TEST_HOOK_CWD=" + workspacetest.ShellQuote(info.Path) + " DETENT_WORKER_SCRATCH=" + workspacetest.ShellQuote(scratch) + " " + other.Command
 			otherBackend, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: root, Hooks: workspace.Hooks{AfterCreate: otherCommand}})
 			if err != nil {
 				t.Fatal(err)
@@ -184,9 +185,9 @@ func TestCheckoutRemovalPreservesForeignProcesses(t *testing.T) {
 }
 
 func TestHookOwnershipSurvivesMissingWorkspace(t *testing.T) {
-	first := detachedHook(t)
-	second := detachedHook(t)
-	useDaemonCandidates(t, first, second)
+	first := workspacetest.DetachedHook(t)
+	second := workspacetest.DetachedHook(t)
+	workspacetest.UseDaemonCandidates(t, first, second)
 	fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: "TEST_HOOK_IGNORE_TERM=1 " + first.Command, BeforeRun: second.Command}})
 	if err != nil {
 		t.Fatal(err)
@@ -219,8 +220,8 @@ func TestHookOwnershipSurvivesMissingWorkspace(t *testing.T) {
 }
 
 func TestHookCleanupRetainsOwnerAfterInspectionFailure(t *testing.T) {
-	daemon := detachedHook(t)
-	useDaemonCandidates(t, daemon)
+	daemon := workspacetest.DetachedHook(t)
+	workspacetest.UseDaemonCandidates(t, daemon)
 	ctx, cancel := context.WithCancel(t.Context())
 	attempt, finish := workspace.WithHookProcesses(ctx)
 	fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: "echo setup > evidence; " + daemon.Command, BeforeRemove: "echo stopping > removed"}})
@@ -285,15 +286,15 @@ func TestObservedHookDropsDescriptor(t *testing.T) {
 					t.Errorf("cleanup after fixture exit: %v", err)
 				}
 			})
-			daemon := detachedHook(t)
-			useDaemonCandidates(t, daemon)
+			daemon := workspacetest.DetachedHook(t)
+			workspacetest.UseDaemonCandidates(t, daemon)
 			if !tc.captured {
 				hookproc.ReapProcessScanner = func(context.Context, string) ([]int, error) { return nil, nil }
 			}
 			hook := "unset DETENT_HOOK_OWNER DETENT_WORKSPACE; TEST_HOOK_DROP_DESCRIPTOR=1 " + daemon.Command
 			if tc.other {
-				other := detachedHook(t)
-				useDaemonCandidates(t, other)
+				other := workspacetest.DetachedHook(t)
+				workspacetest.UseDaemonCandidates(t, other)
 				hook += " && " + other.Command
 			}
 			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{
@@ -342,7 +343,7 @@ func TestHookDaemonHostDiscovery(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			daemon := detachedHook(t)
+			daemon := workspacetest.DetachedHook(t)
 			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: tc.hookPrefix + daemon.Command}})
 			if err != nil {
 				t.Fatal(err)
@@ -374,8 +375,8 @@ func TestManagedHookServiceLivesThroughWork(t *testing.T) {
 		{"hook process group", "TEST_HOOK_KEEP_GROUP=1 "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			daemon := detachedHook(t)
-			useDaemonCandidates(t, daemon)
+			daemon := workspacetest.DetachedHook(t)
+			workspacetest.UseDaemonCandidates(t, daemon)
 			cacheRoot := t.TempDir()
 			cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "owner"))
 			if err != nil {
