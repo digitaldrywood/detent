@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportreads"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -18,39 +19,7 @@ func (s *session) ReadEscapeFacts(ctx context.Context, query reportstore.Overvie
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `WITH escapes AS (
- SELECT f.*,c.project_id,c.work_item_id FROM report_escape_facts f
- CROSS JOIN LATERAL (SELECT c.project_id,c.work_item_id FROM change_requests c WHERE c.organization_id=f.organization_id AND c.id=f.change_id LIMIT 1) c
- WHERE f.organization_id=$1 AND c.project_id=ANY($2::text[]) AND f.observed_at>=$4 AND f.observed_at<$5
- UNION ALL
- SELECT f.*,c.project_id,c.work_item_id FROM change_requests c JOIN report_escape_facts f ON f.organization_id=c.organization_id AND f.change_id=c.id
- WHERE c.organization_id=$1 AND c.project_id=ANY($2::text[]) AND c.landed_at>=$4 AND f.observed_at<$4
-)
-SELECT i.project_id,i.native_id,f.change_id,coalesce(e.version_id,''),e.created_at,e.actor_kind,e.actor_principal_id,f.occurrence_id,f.kind,f.cause,f.observed_at,f.instance_id,f.human_override
-FROM escapes f
-CROSS JOIN LATERAL (SELECT e.version_id,e.created_at,e.actor_kind,e.actor_principal_id,e.sequence FROM change_evidence e WHERE e.organization_id=$1 AND e.change_id=f.change_id AND e.sequence=f.evidence_sequence LIMIT 1) e
-CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.project_id=f.project_id AND i.native_id=f.work_item_id LIMIT 1) i
-WHERE `+reportIssueFilter+` AND e.created_at<$5
-ORDER BY f.observed_at,e.created_at,e.sequence LIMIT $11`, args...)
-	if err != nil {
-		return nil, mapError(ctx, err)
-	}
-	defer rows.Close()
-	out := []reportstore.EscapeFact{}
-	for rows.Next() {
-		var fact reportstore.EscapeFact
-		if err := rows.Scan(&fact.ProjectID, &fact.WorkItemID, &fact.ChangeID, &fact.VersionID, &fact.CreatedAt, &fact.ActorKind, &fact.ActorID, &fact.OccurrenceID, &fact.Kind, &fact.Cause, &fact.ObservedAt, &fact.InstanceID, &fact.HumanOverride); err != nil {
-			return nil, mapError(ctx, err)
-		}
-		out = append(out, fact)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, mapError(ctx, err)
-	}
-	if len(out) > query.Limit {
-		return nil, reportstore.ErrPopulationExceeded
-	}
-	return out, nil
+	return reportreads.EscapeFacts(ctx, s.db, s.organization, args, query.Limit)
 }
 
 func (s *session) ReadAnalyticsWorkflowPage(ctx context.Context, q eventstore.AnalyticsWorkflowQuery) (eventstore.AnalyticsWorkflowPage, error) {

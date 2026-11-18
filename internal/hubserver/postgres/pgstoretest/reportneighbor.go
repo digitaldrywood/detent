@@ -23,6 +23,21 @@ var reportNeighborTables = []reportNeighborTable{
 	{"change_versions", "change_id IN (SELECT id FROM change_requests WHERE organization_id=$1 AND project_id=$3)", map[string]string{"id": "suffix", "change_id": "suffix", "run_id": "suffix", "attempt_id": "suffix"}},
 }
 
+func FreezeReportPlanner(t testing.TB, db *sql.DB, relations []string) {
+	t.Helper()
+	joined := strings.Join(relations, ",")
+	statements := make([]string, 0, len(relations)+3)
+	for _, relation := range relations {
+		statements = append(statements, "ALTER TABLE "+relation+" SET (autovacuum_enabled=false, toast.autovacuum_enabled=false)")
+	}
+	statements = append(statements, "VACUUM (FREEZE) "+joined, "VACUUM (ANALYZE) "+joined, `DO $$DECLARE lagging text; BEGIN SELECT string_agg(relname||' '||relallvisible||'/'||relpages,',') INTO lagging FROM pg_class WHERE oid=ANY(string_to_array('`+joined+`',',')::regclass[]) AND relallvisible<relpages; IF lagging IS NOT NULL THEN RAISE EXCEPTION 'planner inputs not all-visible after VACUUM: %', lagging; END IF; END$$`)
+	for _, statement := range statements {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func SeedNeighborReportRows(t testing.TB, db *sql.DB, organization string, copies int) {
 	t.Helper()
 	if err := seedNeighborReportRows(t.Context(), db, organization, copies); err != nil {

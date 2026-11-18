@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportreads"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -75,58 +75,11 @@ func (s *session) readAttemptUsageRows(ctx context.Context, query reportstore.Ov
 	if len(attempts) == 0 {
 		return []reportstore.UsageFact{}, nil
 	}
-	ids := reportAttemptIDs(attempts)
-	projects := make([]string, len(attempts))
-	owners := make(map[string]*reportstore.AttemptFact, len(attempts))
-	for i := range attempts {
-		projects[i] = string(attempts[i].ProjectID)
-		owners[ids[i]] = &attempts[i]
-	}
 	current, err := s.hasCostSources(ctx)
 	if err != nil {
 		return nil, err
 	}
-	usage := `SELECT u.* FROM (
- SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency,'attempt' AS source_kind,u.usage_origin AS source_key
- FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) AND u.period>=$3 AND u.period<$4`
-	if current {
-		usage += `
- AND coalesce((SELECT false FROM report_usage_current unknown WHERE unknown.organization_id=u.organization_id AND unknown.attempt_id=u.attempt_id AND unknown.provider=u.provider AND unknown.model=u.model AND unknown.usage_kind IS NULL LIMIT 1),true)
- UNION ALL
- SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,coalesce(u.currency,c.currency) AS currency,'current' AS source_kind,u.source_key AS source_key
- FROM report_usage_current u CROSS JOIN LATERAL (SELECT c.currency FROM cost_sources c WHERE c.organization_id=u.organization_id AND c.source_key=u.source_key LIMIT 1) c
- WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) AND u.period>=$3 AND u.period<$4
- AND (u.usage_kind IS DISTINCT FROM 'cumulative' OR coalesce((SELECT false FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model LIMIT 1),true))`
-	}
-	usage += `
- ) u WHERE upper(u.currency)='USD' AND (u.attempt_id,u.project_id) IN (SELECT s.attempt_id,s.project_id FROM ROWS FROM (unnest($2::text[]),unnest($5::text[])) AS s(attempt_id,project_id))`
-	const order = "period,attempt_id,provider,model,source_kind,source_key,currency"
-	pages := reportFactPages(usage, order, query.Limit)
-	rows, err := s.db.Query(ctx, "WITH "+pages+` SELECT project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency FROM report_page ORDER BY `+order, s.organization, ids, query.From.UTC(), query.To.UTC(), projects)
-	if err != nil {
-		return nil, mapError(ctx, err)
-	}
-	defer rows.Close()
-	out := []reportstore.UsageFact{}
-	for rows.Next() {
-		var fact reportstore.UsageFact
-		if err := rows.Scan(&fact.ProjectID, &fact.AttemptID, &fact.Period, &fact.Provider, &fact.Model, &fact.Input, &fact.CachedInput, &fact.Output, &fact.Cost, &fact.Currency); err != nil {
-			return nil, mapError(ctx, err)
-		}
-		attempt := owners[fact.AttemptID]
-		if attempt == nil || attempt.ProjectID != fact.ProjectID {
-			return nil, corestore.ErrTenantMismatch
-		}
-		fact.WorkItemID, fact.RunnerID, fact.RunnerName = attempt.WorkItemID, attempt.RunnerID, attempt.RunnerName
-		out = append(out, fact)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, mapError(ctx, err)
-	}
-	if len(out) > query.Limit {
-		return nil, reportstore.ErrPopulationExceeded
-	}
-	return out, nil
+	return reportreads.UsageRows(ctx, s.db, s.organization, query.From.UTC(), query.To.UTC(), query.Limit, attempts, current)
 }
 
 func (r *Repository) ImportReportUsageFact(ctx context.Context, record reportstore.UsageRecord) error {
@@ -248,76 +201,7 @@ func (s *session) readAttemptUsageCoverage(ctx context.Context, ids []string) (b
 	if err != nil {
 		return false, err
 	}
-	if !current {
-		return s.readImportedUsageCoverage(ctx, ids, true)
-	}
-	const sources = `SELECT c.source_key,c.resource_id,c.revision FROM cost_sources c WHERE c.organization_id=$1 AND c.bucket='runner_api' AND c.resource_id=ANY($2::text[])`
-	rows, err := s.db.Query(ctx, "WITH "+reportFactPages(sources, "resource_id,source_key", 100000)+`
- SELECT c.resource_id,u.complete AND u.revision=c.revision AND a.usage_pending_sequence=0 AND (u.usage_kind IS NOT NULL OR NOT EXISTS(SELECT 1 FROM attempt_usage active WHERE active.organization_id=u.organization_id AND active.attempt_id=u.attempt_id AND active.provider=u.provider AND active.model=u.model AND active.usage_sequence>0)) FROM report_page c CROSS JOIN LATERAL (SELECT a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=c.resource_id LIMIT 1) a LEFT JOIN report_usage_current u ON u.organization_id=$1 AND u.source_key=c.source_key`, s.organization, ids)
-	if err != nil {
-		return false, mapError(ctx, err)
-	}
-	seen := map[string]bool{}
-	complete := true
-	count := 0
-	for rows.Next() {
-		var id string
-		var known pgtype.Bool
-		if err := rows.Scan(&id, &known); err != nil {
-			rows.Close()
-			return false, mapError(ctx, err)
-		}
-		seen[id] = true
-		complete = complete && known.Valid && known.Bool
-		count++
-	}
-	if err := rows.Err(); err != nil {
-		return false, mapError(ctx, err)
-	}
-	if count > 100000 {
-		return false, reportstore.ErrPopulationExceeded
-	}
-	missing := []string{}
-	for _, id := range ids {
-		if !seen[id] {
-			missing = append(missing, id)
-		}
-	}
-	if len(missing) == 0 {
-		return complete, nil
-	}
-	return s.readImportedUsageCoverage(ctx, missing, complete)
-}
-
-func (s *session) readImportedUsageCoverage(ctx context.Context, missing []string, complete bool) (bool, error) {
-	const facts = `SELECT u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[])`
-	rows, err := s.db.Query(ctx, "WITH "+reportFactPages(facts, "attempt_id,period,provider,model,currency,usage_origin", 100000)+`, counted AS (SELECT f.attempt_id,count(*) AS actual,count(*) FILTER(WHERE f.usage_origin='import') AS historical FROM report_page f GROUP BY f.attempt_id)
- SELECT f.attempt_id,f.actual,f.historical,coalesce(c.row_count,0),a.usage_pending_sequence FROM counted f CROSS JOIN LATERAL (SELECT a.usage_pending_sequence FROM native_attempts a WHERE a.organization_id=$1 AND a.id=f.attempt_id LIMIT 1) a LEFT JOIN report_usage_import_coverage c ON c.organization_id=$1 AND c.attempt_id=f.attempt_id`, s.organization, missing)
-	if err != nil {
-		return false, mapError(ctx, err)
-	}
-	imported := map[string]bool{}
-	count := 0
-	for rows.Next() {
-		var id string
-		var actual, historical, expected, pending int
-		if err := rows.Scan(&id, &actual, &historical, &expected, &pending); err != nil {
-			rows.Close()
-			return false, mapError(ctx, err)
-		}
-		count += actual
-		imported[id] = historical == expected && (expected > 0 || actual > 0 && historical == 0) && pending == 0
-	}
-	if err := rows.Err(); err != nil {
-		return false, mapError(ctx, err)
-	}
-	if count > 100000 {
-		return false, reportstore.ErrPopulationExceeded
-	}
-	for _, id := range missing {
-		complete = complete && imported[id]
-	}
-	return complete, nil
+	return reportreads.UsageCoverage(ctx, s.db, s.organization, ids, current)
 }
 
 func (r *Repository) VerifyReportUsageImport(ctx context.Context, organization tracker.OrganizationID, attempt, sha string, expected int64) error {

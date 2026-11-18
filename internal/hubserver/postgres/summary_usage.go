@@ -2,11 +2,11 @@ package postgres
 
 import (
 	"context"
-	"math"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportreads"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -43,35 +43,9 @@ func (s *session) ReadCompletionCosts(ctx context.Context, query reportstore.Com
 	if len(query.Items) == 0 {
 		return []reportstore.CompletionCostFact{}, nil
 	}
-	projects, items := make([]string, len(query.Items)), make([]string, len(query.Items))
-	seen := make(map[reportstore.CompletionCostItem]bool, len(query.Items))
-	for i, item := range query.Items {
-		if item.ProjectID == "" || item.WorkItemID == "" || seen[item] {
-			return nil, corestore.ErrInvalidPage
-		}
-		seen[item] = true
-		projects[i], items[i] = string(item.ProjectID), string(item.WorkItemID)
-	}
-	rows, err := s.queries.ReadCompletionCosts(ctx, pgquery.ReadCompletionCostsParams{
-		OrganizationID: s.organization, ProjectIds: projects, WorkItemIds: items, Principal: query.Principal,
-		CurrentTo: query.CurrentTo.UTC(), PriorTo: query.PriorTo.UTC(),
-	})
+	current, err := s.hasCostSources(ctx)
 	if err != nil {
-		return nil, mapError(ctx, err)
+		return nil, err
 	}
-	out := make([]reportstore.CompletionCostFact, 0, len(rows))
-	for _, row := range rows {
-		if row.Exceeded {
-			return nil, reportstore.ErrPopulationExceeded
-		}
-		if row.Cost < 0 || row.PriorCost < 0 || math.IsInf(row.Cost, 0) || math.IsNaN(row.Cost) || math.IsInf(row.PriorCost, 0) || math.IsNaN(row.PriorCost) {
-			return nil, corestore.ErrInvalidPage
-		}
-		item := reportstore.CompletionCostItem{ProjectID: row.ProjectID, WorkItemID: tracker.NativeWorkItemID(row.WorkItemID)}
-		if !seen[item] {
-			return nil, corestore.ErrTenantMismatch
-		}
-		out = append(out, reportstore.CompletionCostFact{CompletionCostItem: item, Cost: row.Cost, PriorCost: row.PriorCost, Complete: row.Complete})
-	}
-	return out, nil
+	return reportreads.CompletionCosts(ctx, s.queries, s.organization, query, current)
 }

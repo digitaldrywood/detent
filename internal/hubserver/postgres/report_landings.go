@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/reportreads"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 )
 
@@ -42,7 +43,7 @@ LEFT JOIN LATERAL (
  )
  SELECT success.n,success.n IS NOT NULL AND NOT EXISTS(SELECT 1 FROM numbered a WHERE a.n<=success.n AND NOT coalesce(a.landing_receipt,false)) AS complete,(SELECT count(*) FROM candidate_attempts) observed FROM success
 ) tries ON true
-WHERE `+reportIssueFilter+` AND c.landed_at<$5 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'
+WHERE `+reportreads.IssueFilter+` AND c.landed_at<$5 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'
 ORDER BY c.landed_at DESC,c.id LIMIT $11`, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)

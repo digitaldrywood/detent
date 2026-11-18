@@ -34,15 +34,15 @@ WITH requested AS MATERIALIZED (
  ORDER BY a.issue_id,a.started_at,a.started_at_submicro_ns,a.id LIMIT 50001
 ), attempts AS MATERIALIZED (
  SELECT i.project_id,i.work_item_id,a.id AS attempt_id FROM attempt_ids a JOIN items i ON i.id=a.issue_id
-), sources AS NOT MATERIALIZED (
+), first_sources AS MATERIALIZED (
  SELECT c.resource_id,c.source_key,c.project_id,c.revision FROM cost_sources c
  WHERE c.organization_id=sqlc.arg(organization_id) AND c.bucket='runner_api' AND c.resource_id=ANY(ARRAY(SELECT attempt_id FROM attempts))
-), first_sources AS MATERIALIZED (
- SELECT * FROM sources ORDER BY resource_id,source_key LIMIT 50000
+ ORDER BY c.resource_id,c.source_key LIMIT 50000
 ), next_sources AS MATERIALIZED (
- SELECT * FROM sources WHERE (SELECT count(*) FROM first_sources)=50000 AND (resource_id,source_key)>(
+ SELECT c.resource_id,c.source_key,c.project_id,c.revision FROM cost_sources c
+ WHERE c.organization_id=sqlc.arg(organization_id) AND c.bucket='runner_api' AND c.resource_id=ANY(ARRAY(SELECT attempt_id FROM attempts)) AND (SELECT count(*) FROM first_sources)=50000 AND (c.resource_id,c.source_key)>(
   SELECT resource_id,source_key FROM first_sources ORDER BY resource_id DESC,source_key DESC LIMIT 1
- ) ORDER BY resource_id,source_key LIMIT 50001
+ ) ORDER BY c.resource_id,c.source_key LIMIT 50001
 ), source_rows AS MATERIALIZED (
  SELECT a.project_id,a.work_item_id,a.attempt_id,c.source_key,c.revision,
  u.revision AS projected_revision,u.complete,u.period,u.cost_estimate,
@@ -57,15 +57,15 @@ WITH requested AS MATERIALIZED (
  FROM source_rows GROUP BY attempt_id
 ), import_attempts AS MATERIALIZED (
  SELECT a.* FROM attempts a LEFT JOIN source_costs c ON c.attempt_id=a.attempt_id WHERE c.attempt_id IS NULL
-), imports AS NOT MATERIALIZED (
+), first_imports AS MATERIALIZED (
  SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin,u.cost_estimate FROM attempt_usage u
  WHERE u.organization_id=sqlc.arg(organization_id) AND u.attempt_id=ANY(ARRAY(SELECT attempt_id FROM import_attempts))
-), first_imports AS MATERIALIZED (
- SELECT * FROM imports ORDER BY attempt_id,period,provider,model,currency,usage_origin LIMIT 50000
+ ORDER BY u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin LIMIT 50000
 ), next_imports AS MATERIALIZED (
- SELECT * FROM imports WHERE (SELECT count(*) FROM first_imports)=50000 AND (attempt_id,period,provider,model,currency,usage_origin)>(
+ SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin,u.cost_estimate FROM attempt_usage u
+ WHERE u.organization_id=sqlc.arg(organization_id) AND u.attempt_id=ANY(ARRAY(SELECT attempt_id FROM import_attempts)) AND (SELECT count(*) FROM first_imports)=50000 AND (u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin)>(
   SELECT attempt_id,period,provider,model,currency,usage_origin FROM first_imports ORDER BY attempt_id DESC,period DESC,provider DESC,model DESC,currency DESC,usage_origin DESC LIMIT 1
- ) ORDER BY attempt_id,period,provider,model,currency,usage_origin LIMIT 50001
+ ) ORDER BY u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin LIMIT 50001
 ), import_rows AS MATERIALIZED (
  SELECT a.attempt_id,a.project_id=u.project_id AS scoped,u.period,u.cost_estimate,u.currency
  FROM (SELECT * FROM first_imports UNION ALL SELECT * FROM next_imports) u JOIN import_attempts a ON a.attempt_id=u.attempt_id
@@ -88,6 +88,58 @@ WITH requested AS MATERIALIZED (
  FROM attempt_costs GROUP BY project_id,work_item_id
 ), limits AS MATERIALIZED (
  SELECT (SELECT count(*) FROM attempts)>50000 OR (SELECT count(*) FROM source_rows)>100000 OR (SELECT count(*) FROM import_rows)>100000 AS exceeded
+)
+SELECT i.project_id,i.work_item_id,
+ coalesce(t.cost,0)::double precision AS cost,coalesce(t.prior_cost,0)::double precision AS prior_cost,
+ coalesce(t.complete,true)::boolean AS complete,(SELECT exceeded FROM limits)::boolean AS exceeded
+FROM items i LEFT JOIN totals t ON t.project_id=i.project_id AND t.work_item_id=i.work_item_id
+ORDER BY i.project_id,i.work_item_id;
+
+-- name: ReadCompletionImportCosts :many
+WITH requested AS MATERIALIZED (
+ SELECT p.project_id,p.work_item_id
+ FROM ROWS FROM(unnest(sqlc.arg(project_ids)::text[]),unnest(sqlc.arg(work_item_ids)::text[])) AS p(project_id,work_item_id)
+), items AS MATERIALIZED (
+ SELECT i.project_id,i.native_id AS work_item_id,i.id
+ FROM requested r CROSS JOIN LATERAL (
+  SELECT i.project_id,i.native_id,i.id,i.actor_principal_id FROM issues i
+  WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=r.project_id AND i.native_id=r.work_item_id LIMIT 1
+ ) i
+ WHERE sqlc.arg(principal)::text='' OR i.actor_principal_id=sqlc.arg(principal)
+), attempt_ids AS MATERIALIZED (
+ SELECT a.issue_id,a.id FROM native_attempts a
+ WHERE a.organization_id=sqlc.arg(organization_id) AND a.issue_id=ANY(ARRAY(SELECT id FROM items))
+ ORDER BY a.issue_id,a.started_at,a.started_at_submicro_ns,a.id LIMIT 50001
+), attempts AS MATERIALIZED (
+ SELECT i.project_id,i.work_item_id,a.id AS attempt_id FROM attempt_ids a JOIN items i ON i.id=a.issue_id
+), first_imports AS MATERIALIZED (
+ SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin,u.cost_estimate FROM attempt_usage u
+ WHERE u.organization_id=sqlc.arg(organization_id) AND u.attempt_id=ANY(ARRAY(SELECT attempt_id FROM attempts))
+ ORDER BY u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin LIMIT 50000
+), next_imports AS MATERIALIZED (
+ SELECT u.project_id,u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin,u.cost_estimate FROM attempt_usage u
+ WHERE u.organization_id=sqlc.arg(organization_id) AND u.attempt_id=ANY(ARRAY(SELECT attempt_id FROM attempts)) AND (SELECT count(*) FROM first_imports)=50000 AND (u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin)>(
+  SELECT attempt_id,period,provider,model,currency,usage_origin FROM first_imports ORDER BY attempt_id DESC,period DESC,provider DESC,model DESC,currency DESC,usage_origin DESC LIMIT 1
+ ) ORDER BY u.attempt_id,u.period,u.provider,u.model,u.currency,u.usage_origin LIMIT 50001
+), import_rows AS MATERIALIZED (
+ SELECT a.attempt_id,a.project_id=u.project_id AS scoped,u.period,u.cost_estimate,u.currency
+ FROM (SELECT * FROM first_imports UNION ALL SELECT * FROM next_imports) u JOIN attempts a ON a.attempt_id=u.attempt_id
+), import_costs AS MATERIALIZED (
+ SELECT attempt_id,count(*) AS actual,
+ bool_and(scoped AND upper(currency)='USD') AS scoped,
+ coalesce(sum(cost_estimate) FILTER(WHERE scoped AND upper(currency)='USD' AND period<sqlc.arg(current_to)::timestamptz),0)::double precision AS cost,
+ coalesce(sum(cost_estimate) FILTER(WHERE scoped AND upper(currency)='USD' AND period<sqlc.arg(prior_to)::timestamptz),0)::double precision AS prior_cost
+ FROM import_rows GROUP BY attempt_id
+), attempt_costs AS MATERIALIZED (
+ SELECT a.project_id,a.work_item_id,coalesce(u.cost,0) AS cost,coalesce(u.prior_cost,0) AS prior_cost,
+ coalesce(u.scoped AND u.actual=v.row_count AND v.row_count>0,false) AS complete
+ FROM attempts a LEFT JOIN import_costs u ON u.attempt_id=a.attempt_id
+ LEFT JOIN report_usage_import_coverage v ON v.organization_id=sqlc.arg(organization_id) AND v.attempt_id=a.attempt_id
+), totals AS MATERIALIZED (
+ SELECT project_id,work_item_id,sum(cost)::double precision AS cost,sum(prior_cost)::double precision AS prior_cost,bool_and(complete) AS complete
+ FROM attempt_costs GROUP BY project_id,work_item_id
+), limits AS MATERIALIZED (
+ SELECT (SELECT count(*) FROM attempts)>50000 OR (SELECT count(*) FROM import_rows)>100000 AS exceeded
 )
 SELECT i.project_id,i.work_item_id,
  coalesce(t.cost,0)::double precision AS cost,coalesce(t.prior_cost,0)::double precision AS prior_cost,

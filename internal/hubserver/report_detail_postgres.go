@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/labstack/echo/v4"
 
@@ -145,11 +146,7 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 				return err
 			}
 		}
-		for _, attempt := range attempts {
-			if !attempt.ProjectionKnown {
-				attemptFactsAvailable = false
-			}
-		}
+		attemptFactsAvailable = attemptFactsAvailable && !slices.ContainsFunc(attempts, func(attempt reportstore.AttemptFact) bool { return !attempt.ProjectionKnown })
 		costs, costAvailable = usage.Costs, usage.CostsAvailable
 
 		completionCosts, err = readPostgresReportCompletionCosts(ctx, reader, query, facts, w, prior, compare)
