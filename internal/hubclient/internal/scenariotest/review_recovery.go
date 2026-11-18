@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariohooks"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -156,7 +157,8 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			h := newPlannerHub(t, "In Review", []tracker.NativeState{
+			clock, advanceToReplacement := scenariohooks.ReviewRecoveryClock(test.stopped)
+			h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Blocked", "Merging", "Rework"}},
 				{Name: "In Review", Transitions: []string{"In Progress"}},
@@ -164,7 +166,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "In Review"}},
 				{Name: "Done", Terminal: true},
 				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Merging"}},
-			}, factories)
+			}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock}, factories)
 			gateCommand := "true"
 			gateMarker := filepath.Join(t.TempDir(), "source-gate")
 			if test.hostHandoff || test.name == "healthy" {
@@ -501,6 +503,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: completions, Runner: agent, Logger: logger}
 			if test.stopped {
 				cfg.PollInterval = 0
+				dependencies.Now = sync.OnceValue(clock)
 			}
 			if test.expiredHeartbeat || test.refusal == "source" {
 				cfg.OverloadRetryDelay, cfg.MaxRetryBackoff = time.Millisecond, time.Millisecond
@@ -631,6 +634,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						}
 						completions.Release(stopOrchestrator)
 						provider.releaseRetry()
+						advanceToReplacement()
 						candidate := h.claim(t, issue.ID)
 						replacement := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 						result, err := agent.Run(t.Context(), runner.RunRequest{Execution: replacement, Issue: candidate, Mode: runner.RunModeImplement})
