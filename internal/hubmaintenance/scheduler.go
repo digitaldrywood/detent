@@ -58,7 +58,7 @@ type Scheduler struct {
 	cursor      string
 	family      int
 	wake        chan struct{}
-	wait        func(context.Context, time.Duration) error
+	wait        func(context.Context, time.Duration) (bool, error)
 }
 
 func New(registry Registry, features []Feature) (*Scheduler, error) {
@@ -99,16 +99,16 @@ func (s *Scheduler) Wake() {
 	}
 }
 
-func (s *Scheduler) waitForWake(ctx context.Context, duration time.Duration) error {
+func (s *Scheduler) waitForWake(ctx context.Context, duration time.Duration) (bool, error) {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	case <-s.wake:
-		return nil
+		return true, nil
 	case <-timer.C:
-		return nil
+		return false, nil
 	}
 }
 
@@ -120,8 +120,13 @@ func (s *Scheduler) Run(ctx context.Context, report func(error)) error {
 	interval := time.Second
 	idleFamilies := 0
 	for {
-		if err := s.wait(ctx, jitteredWake(interval)); err != nil {
+		woke, err := s.wait(ctx, jitteredWake(interval))
+		if err != nil {
 			return err
+		}
+		if woke {
+			interval = time.Second
+			idleFamilies = 0
 		}
 		turn, err := s.tick(ctx)
 		if err != nil && ctx.Err() == nil && report != nil {

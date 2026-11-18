@@ -52,17 +52,17 @@ func TestRunUsesOneJitteredWakeAndKeepsWorkingAfterErrors(t *testing.T) {
 	}
 	wakes := make(chan time.Duration)
 	advance := make(chan struct{})
-	scheduler.wait = func(ctx context.Context, duration time.Duration) error {
+	scheduler.wait = func(ctx context.Context, duration time.Duration) (bool, error) {
 		select {
 		case wakes <- duration:
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		}
 		select {
 		case <-advance:
-			return nil
+			return false, nil
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		}
 	}
 	reported := make(chan error, 2)
@@ -95,13 +95,13 @@ func TestEmptyRotationsBackOffAndResumeOnWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	var waits []time.Duration
-	scheduler.wait = func(_ context.Context, d time.Duration) error {
+	scheduler.wait = func(_ context.Context, d time.Duration) (bool, error) {
 		waits = append(waits, d)
 		worked = len(waits) == 3
 		if len(waits) == 4 {
-			return context.Canceled
+			return false, context.Canceled
 		}
-		return nil
+		return false, nil
 	}
 	if err := scheduler.Run(t.Context(), nil); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
@@ -110,5 +110,41 @@ func TestEmptyRotationsBackOffAndResumeOnWork(t *testing.T) {
 		if waits[i] < want*9/10 || waits[i] > want*11/10 {
 			t.Fatalf("wait %d = %v, want jitter around %v", i, waits[i], want)
 		}
+	}
+}
+
+func TestWakeServesWholeRotationAtBaseCadence(t *testing.T) {
+	var visited map[string]bool
+	var features []Feature
+	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"} {
+		features = append(features, Feature{Name: name, Bytes: 1, Step: func(context.Context, Tenant, Budget) (Outcome, error) {
+			if visited != nil {
+				visited[name] = true
+			}
+			return Outcome{}, nil
+		}})
+	}
+	s, err := New(registry(1), features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.wait = func(ctx context.Context, d time.Duration) (bool, error) {
+		if visited == nil && d > 50*time.Second {
+			visited = map[string]bool{}
+			s.Wake()
+			return s.waitForWake(ctx, d)
+		}
+		if visited != nil {
+			if len(visited) == len(features) {
+				return false, context.Canceled
+			}
+			if d > 1100*time.Millisecond {
+				t.Fatalf("wait %v after wake with %d/%d families served", d, len(visited), len(features))
+			}
+		}
+		return false, nil
+	}
+	if err := s.Run(t.Context(), nil); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
 	}
 }
