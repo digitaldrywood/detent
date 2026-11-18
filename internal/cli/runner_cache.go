@@ -22,10 +22,6 @@ type runnerBuildCache struct {
 
 var errNativeBuildCache = errors.New("runner uses the native Go build cache")
 
-func newRunnerBuildCache(ctx context.Context, cfg BootConfig) (*runnerBuildCache, error) {
-	return resolveRunnerBuildCache(ctx, cfg, toolcache.Resolve)
-}
-
 func resolveRunnerBuildCache(ctx context.Context, cfg BootConfig, resolve func(context.Context) (toolcache.Paths, error)) (*runnerBuildCache, error) {
 	if !cfg.Global.Client.Configured() || cfg.Global.Client.IdentityFile == "" || runtimeStoreIsMemory(runtimeStorePath(cfg)) || os.Getenv("GOCACHEPROG") != "" {
 		return nil, errNativeBuildCache
@@ -63,10 +59,6 @@ func (c *runnerBuildCache) observe() *toolcache.Report {
 	}
 	copy := *report
 	return &copy
-}
-
-func (c *runnerBuildCache) trim(ctx context.Context, policy toolcache.Policy, now time.Time) error {
-	return c.trimForVolume(ctx, policy, now, runnerStorageVolume)
 }
 
 func (c *runnerBuildCache) trimForVolume(ctx context.Context, policy toolcache.Policy, now time.Time, volume func(string) (uint64, uint64, error)) error {

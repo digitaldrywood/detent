@@ -2,84 +2,15 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
-	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/storagecatalog"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
-	var configPath, bundlePath, mappingBundlePath, organization, repositoryRoot string
-	cmd := &cobra.Command{
-		Use:          "import-core-postgres",
-		Short:        "Import tenant core records from a verified neutral bundle",
-		Example:      "detent hub import-core-postgres --entry-config /etc/detent/cloud.yaml --bundle /secure-export/tenant --organization org_example --repository-root /opt/detent/source",
-		Args:         NoArgs,
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			output, err := OutputForCommand(cmd)
-			if err != nil {
-				return err
-			}
-			config, archiveConfig, err := readTenantImportConfig(configPath, lookupEnv)
-			if err != nil {
-				return err
-			}
-			logger, _, err := serveLogger(cmd, lookupEnv, cmd.ErrOrStderr())
-			if err != nil {
-				return err
-			}
-			catalog, err := readPlatformImportCatalog(repositoryRoot)
-			if err != nil {
-				return err
-			}
-			storage, err := attachment.NewStorage(cmd.Context(), archiveConfig, nil)
-			if err != nil {
-				return err
-			}
-			archive, ok := storage.(attachment.ArchiveStorage)
-			if !ok {
-				return errors.New("tenant import requires immutable archive storage")
-			}
-			result, err := hubserver.ImportTenantCoreCopy(cmd.Context(), *config, hubserver.TenantCoreImportSource{BundlePath: bundlePath, MappingBundlePath: mappingBundlePath, OrganizationID: tracker.OrganizationID(organization), Catalog: catalog, Logger: logger, Objects: tenantImportDetails{organization: organization, storage: archive}})
-			if err != nil {
-				return err
-			}
-			if !result.CoreImportComplete {
-				return output.Write(func(writer io.Writer) error {
-					_, err := fmt.Fprintf(writer, "Recovered historical work items: %d; full tenant import is incomplete\n", result.WorkItems)
-					return err
-				}, result)
-			}
-			return output.Write(func(writer io.Writer) error {
-				_, err := fmt.Fprintf(writer, "Imported tenant core records: hub_identities=%d projects=%d access_rows=%d policy_revisions=%d current_policies=%d review_policies=%d monthly_policies=%d work_items=%d dependencies=%d cost_source_rows=%d cost_current_sources=%d cost_history_rows=%d execution_rows=%d monthly_admissions=%d monthly_leases=%d changes=%d conversation_rows=%d conversation_prices=%d conversation_usage=%d credit_accounts=%d credit_packs=%d credit_transactions=%d\n", result.HubIdentityRows, result.Projects, result.AccessRows, result.PolicyRevisions, result.CurrentPolicies, result.ReviewPolicies, result.MonthlyPolicies, result.WorkItems, result.Dependencies, result.CostSourceRows, result.CostCurrentSources, result.CostHistoryRows, result.ExecutionRows, result.MonthlyAdmissions, result.MonthlyLeases, result.Changes, result.ConversationRows, result.ConversationPrices, result.ConversationUsage, result.CreditAccounts, result.CreditPacks, result.CreditTransactions)
-				return err
-			}, result)
-		},
-	}
-	cmd.Flags().StringVar(&configPath, "entry-config", "", "shared entry PostgreSQL and archive configuration")
-	cmd.Flags().StringVar(&bundlePath, "bundle", "", "verified neutral tenant export directory")
-	cmd.Flags().StringVar(&mappingBundlePath, "mapping-bundle", "", "verified post-native identity source for historical recovery into an existing project")
-	cmd.Flags().StringVar(&organization, "organization", "", "source organization identifier")
-	cmd.Flags().StringVar(&repositoryRoot, "repository-root", "", "checked-out Detent source tree for the mapping catalog")
-	for _, flag := range []string{"entry-config", "bundle", "organization", "repository-root"} {
-		if err := cmd.MarkFlagRequired(flag); err != nil {
-			panic(err)
-		}
-	}
-	return cmd
-}
 
 func readTenantImportConfig(path string, lookupEnv func(string) string) (*postgres.Config, attachment.Config, error) {
 	raw, err := os.ReadFile(path)
@@ -104,46 +35,4 @@ func readTenantImportConfig(path string, lookupEnv func(string) string) (*postgr
 	archive.AccessKeyID = lookupEnv("DETENT_ATTACHMENTS_ACCESS_KEY_ID")
 	archive.SecretAccessKey = lookupEnv("DETENT_ATTACHMENTS_SECRET_ACCESS_KEY")
 	return config, archive, nil
-}
-
-type tenantImportDetails struct {
-	organization string
-	storage      attachment.ArchiveStorage
-}
-
-func (d tenantImportDetails) StoreDetail(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
-	if organization != d.organization {
-		return attachment.ArchiveReference{}, attachment.ErrInvalid
-	}
-	ref, compressed, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
-	if err != nil {
-		return attachment.ArchiveReference{}, err
-	}
-	if err := attachment.StoreArchive(ctx, d.storage, organization, ref, compressed); err != nil {
-		return attachment.ArchiveReference{}, err
-	}
-	return ref, nil
-}
-
-func (d tenantImportDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	if organization != d.organization {
-		return nil, attachment.ErrInvalid
-	}
-	return attachment.ReadArchive(ctx, d.storage, organization, ref)
-}
-
-func readPlatformImportCatalog(repositoryRoot string) (storagecatalog.Catalog, error) {
-	absolute, err := filepath.Abs(repositoryRoot)
-	if err != nil {
-		return storagecatalog.Catalog{}, err
-	}
-	files := os.DirFS(absolute)
-	catalog, err := storagecatalog.Read(files, "tools/storageinventory/mappings/v1.json")
-	if err != nil {
-		return storagecatalog.Catalog{}, fmt.Errorf("read platform import mapping catalog: %w", err)
-	}
-	if err := catalog.ValidateInventory(files); err != nil {
-		return storagecatalog.Catalog{}, fmt.Errorf("validate platform import mapping catalog: %w", err)
-	}
-	return catalog, nil
 }

@@ -61,7 +61,3 @@ func (s *recordingTmuxWindowStatus) Update(_ context.Context, snapshot telemetry
 	s.updates <- snapshot
 	return nil
 }
-
-func (*recordingTmuxWindowStatus) Close(context.Context) error {
-	return nil
-}

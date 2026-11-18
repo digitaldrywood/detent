@@ -12,8 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/pause"
 )
 
-const defaultPauseExitPollInterval = 30 * time.Second
-
 type pauseMonitorDeps struct {
 	read             func() (globalconfig.Config, error)
 	write            func(globalconfig.Config) error
@@ -26,24 +24,7 @@ type pauseMonitorDeps struct {
 	setPauseStatus   func(pause.ExitStatus)
 	clearPauseStatus func(string)
 	now              func() time.Time
-	interval         time.Duration
 	logger           *slog.Logger
-}
-
-func runPauseMonitor(ctx context.Context, deps pauseMonitorDeps) {
-	deps = normalizePauseMonitorDeps(deps)
-	checkPauseExitConditions(ctx, deps)
-
-	ticker := time.NewTicker(deps.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			checkPauseExitConditions(ctx, deps)
-		}
-	}
 }
 
 func checkPauseExitConditions(ctx context.Context, deps pauseMonitorDeps) {
@@ -285,9 +266,6 @@ func normalizePauseMonitorDeps(deps pauseMonitorDeps) pauseMonitorDeps {
 	}
 	if deps.now == nil {
 		deps.now = time.Now
-	}
-	if deps.interval <= 0 {
-		deps.interval = defaultPauseExitPollInterval
 	}
 	if deps.logger == nil {
 		deps.logger = slog.Default()
