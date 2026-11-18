@@ -12212,6 +12212,42 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261118091938_report_candidate_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "event",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_requests",
+          "hub/collaboration_events",
+          "hub/issues",
+          "hub/leases"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261118121352_report_issue_checkpoints.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_requests",
+          "hub/issues",
+          "hub/projects"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -15131,8 +15167,10 @@
       "inventory": {
         "operations": {
           "Queries.ReadCompletionCosts:Query": 1,
+          "Queries.ReadCompletionImportCosts:Query": 1,
           "Queries.ReadSummaryUsage:Query": 1,
           "readCompletionCosts:SQL": 1,
+          "readCompletionImportCosts:SQL": 1,
           "readSummaryUsage:SQL": 1
         },
         "tables": [
@@ -15353,6 +15391,29 @@
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
         },
         "tables": []
+      }
+    },
+    "internal/hubserver/postgres/pgstoretest/reportneighbor.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "FreezeReportPlanner:ExecContext": 1,
+          "FreezeReportPlanner:SQL": 1,
+          "reportNeighborColumns:QueryContext": 1,
+          "reportNeighborColumns:SQL": 1,
+          "seedNeighborReportRows:BeginTx": 1,
+          "seedNeighborReportRows:ExecContext": 4,
+          "seedNeighborReportRows:QueryRowContext": 1,
+          "seedNeighborReportRows:SQL": 4
+        },
+        "tables": [
+          "hub/change_evidence",
+          "hub/change_requests",
+          "hub/issues"
+        ]
       }
     },
     "internal/hubserver/postgres/pgstoretest/reportplans.go": {
@@ -17631,6 +17692,7 @@
         "operations": {
           "SQL": 1,
           "query:ReadCompletionCosts:many": 1,
+          "query:ReadCompletionImportCosts:many": 1,
           "query:ReadSummaryUsage:many": 1
         },
         "tables": [
@@ -18129,11 +18191,9 @@
           "session.ReadAnalyticsResidencePage:Query": 3,
           "session.ReadAnalyticsResidencePage:SQL": 3,
           "session.ReadHistory:Query": 3,
-          "session.ReadHistory:SQL": 3,
+          "session.ReadHistory:SQL": 5,
           "session.ReadHistoryIssueEvents:Query": 1,
-          "session.ReadHistoryIssueEvents:SQL": 1,
-          "session.readHistoryCandidates:QueryRow": 1,
-          "session.readHistoryCandidates:SQL": 1
+          "session.ReadHistoryIssueEvents:SQL": 1
         },
         "tables": [
           "hub/collaboration_events",
@@ -18186,17 +18246,12 @@
       ],
       "inventory": {
         "operations": {
-          "session.ReadLandingFacts:Query": 1,
-          "session.ReadLandingFacts:SQL": 1,
           "session.readLandingCandidates:QueryRow": 1,
           "session.readLandingCandidates:SQL": 1
         },
         "tables": [
           "hub/change_requests",
-          "hub/change_versions",
-          "hub/collaboration_events",
-          "hub/issues",
-          "hub/native_attempts"
+          "hub/collaboration_events"
         ]
       }
     },
@@ -18242,9 +18297,7 @@
           "session.ReadAnalyticsLandingPage:QueryRow": 1,
           "session.ReadAnalyticsLandingPage:SQL": 3,
           "session.ReadAnalyticsWorkflowPage:Query": 1,
-          "session.ReadAnalyticsWorkflowPage:SQL": 1,
-          "session.ReadEscapeFacts:Query": 1,
-          "session.ReadEscapeFacts:SQL": 1
+          "session.ReadAnalyticsWorkflowPage:SQL": 1
         },
         "tables": [
           "hub/change_evidence",
@@ -18298,15 +18351,13 @@
           "session.ReadAnalyticsUsagePage:Query": 1,
           "session.ReadAnalyticsUsagePage:QueryRow": 1,
           "session.ReadAnalyticsUsagePage:SQL": 2,
-          "session.ReadReportUsage:Query": 1,
-          "session.ReadReportUsage:SQL": 1,
-          "session.ReadReportUsageCoverage:Query": 2,
-          "session.ReadReportUsageCoverage:SQL": 2,
           "session.RecordAttemptUsage:QueryRow": 4,
           "session.RecordAttemptUsage:SQL": 2,
           "session.ReplayAttemptUsage:Exec": 3,
           "session.ReplayAttemptUsage:QueryRow": 3,
           "session.ReplayAttemptUsage:SQL": 6,
+          "session.hasCostSources:QueryRow": 1,
+          "session.hasCostSources:SQL": 1,
           "session.refreshReportUsage:Exec": 1,
           "session.refreshReportUsage:SQL": 3
         },
@@ -18315,8 +18366,123 @@
           "hub/collaboration_events",
           "hub/issues",
           "hub/leases",
+          "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/reportcheckpoints/landings.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "analytics",
+        "core",
+        "event",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "LandingFacts:Query": 2,
+          "exactLandings:SQL": 1,
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "projectedLandings:SQL": 1
+        },
+        "tables": [
+          "hub/change_requests",
+          "hub/change_versions",
+          "hub/collaboration_events",
+          "hub/issues",
+          "hub/native_attempts"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/reportcheckpoints/read.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "analytics",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "FirstWorked:Query": 1,
+          "FirstWorked:SQL": 1,
+          "ReadLag:Query": 1,
+          "ReadLag:SQL": 3,
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "readEntries:Query": 1,
+          "readEntries:SQL": 1,
+          "readTail:Query": 1
+        },
+        "tables": [
+          "hub/collaboration_events"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/reportcheckpoints/writer.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "analytics",
+        "core",
+        "event",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "Step:Exec": 3,
+          "Step:QueryRow": 3,
+          "Step:SQL": 10,
+          "Tries:SQL": 1,
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "landingPage:Exec": 1,
+          "landingPage:QueryRow": 1,
+          "landingPage:SQL": 2
+        },
+        "tables": [
+          "hub/change_requests",
+          "hub/collaboration_events",
+          "hub/issues",
           "hub/native_attempts",
-          "hub/runner_identities"
+          "hub/projects"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/reportreads/reads.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "analytics",
+        "core",
+        "event",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "AttemptCandidates:QueryRow": 1,
+          "AttemptCandidates:SQL": 1,
+          "EscapeFacts:Query": 1,
+          "EscapeFacts:QueryRow": 1,
+          "EscapeFacts:SQL": 2,
+          "HistoryCandidates:QueryRow": 1,
+          "HistoryCandidates:SQL": 1,
+          "OpenCandidates:QueryRow": 1,
+          "OpenCandidates:SQL": 1,
+          "StartedWindowAttempts:SQL": 1,
+          "UpdatedWindowIssues:SQL": 1,
+          "UsageCoverage:Query": 1,
+          "UsageCoverage:SQL": 3,
+          "UsageRows:Query": 1,
+          "UsageRows:SQL": 4,
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "importedUsageCoverage:Query": 1,
+          "importedUsageCoverage:SQL": 2,
+          "keyset:Query": 1,
+          "usageWindowAttempts:SQL": 1
+        },
+        "tables": [
+          "hub/attempt_usage",
+          "hub/change_evidence",
+          "hub/change_requests",
+          "hub/collaboration_events",
+          "hub/issues",
+          "hub/leases",
+          "hub/native_attempts"
         ]
       }
     },
@@ -18348,10 +18514,6 @@
           "session.ReadOpenFacts:SQL": 1,
           "session.ReadOverviewFacts:Query": 1,
           "session.ReadOverviewFacts:SQL": 1,
-          "session.readAttemptCandidates:QueryRow": 1,
-          "session.readAttemptCandidates:SQL": 1,
-          "session.readOpenCandidates:QueryRow": 1,
-          "session.readOpenCandidates:SQL": 1,
           "session.readOverviewCandidates:QueryRow": 1,
           "session.readOverviewCandidates:SQL": 1
         },
@@ -19627,7 +19789,6 @@
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
-          "session.ReadCompletionCosts:generated:ReadCompletionCosts": 1,
           "session.ReadCompletionCosts:query-receiver": 1,
           "session.ReadSummaryUsage:generated:ReadSummaryUsage": 1,
           "session.ReadSummaryUsage:query-receiver": 1
@@ -22227,7 +22388,7 @@
       "family": "billing"
     },
     "public/hosted_release_preferences": {
-      "contract": "Preserve each hosted member’s latest observed release version and build time.",
+      "contract": "Preserve each hosted member\u2019s latest observed release version and build time.",
       "disposition": "target-only",
       "family": "delivery"
     },

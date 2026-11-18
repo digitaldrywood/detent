@@ -4625,6 +4625,15 @@ type ReportAttemptFact struct {
 	OutcomeEventID *string
 }
 
+type ReportCheckpointCursor struct {
+	OrganizationID         tracker.OrganizationID
+	ProjectID              tracker.ProjectID
+	ThroughProjectSequence int64
+	LegacyWorkItemID       string
+	LegacySequence         int64
+	LegacyComplete         bool
+}
+
 type ReportEscapeFact struct {
 	OrganizationID   tracker.OrganizationID
 	ChangeID         string
@@ -4664,6 +4673,34 @@ type ReportEventFact struct {
 	ProcessRunnerID         string
 	ProcessMachineID        string
 	PhaseTimingStatus       string
+}
+
+type ReportIssueCheckpoint struct {
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	WorkItemID      string
+	Revision        int64
+	LandingRevision int64
+}
+
+type ReportIssueStateEntry struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	State          string
+	FirstEnteredAt time.Time
+}
+
+type ReportLandingAttempt struct {
+	OrganizationID       tracker.OrganizationID
+	ChangeID             string
+	LandedAt             time.Time
+	AttemptsObserved     int32
+	SuccessPosition      pgtype.Int4
+	SuccessAttempts      pgtype.Int4
+	SuccessComplete      bool
+	LastAttemptStartedAt *time.Time
+	LastAttemptID        string
 }
 
 type ReportUsageCurrent struct {
