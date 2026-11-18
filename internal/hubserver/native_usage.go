@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/maintenancefeatures"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
@@ -206,6 +207,9 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 			current.sourceTurn = false
 			current.afterProject = ""
 			current.afterAttempt = ""
+		}
+		if due, err := maintenancefeatures.SweepDue(ctx, s.config.TenantRepository, selected.Organization, "usage", &current.sourcesAfter, usageRefreshRows); err != nil || !due {
+			return hubmaintenance.Outcome{}, err
 		}
 		organization := tracker.OrganizationID(selected.Organization)
 		refresh := func() (hubmaintenance.Outcome, error) {

@@ -63,10 +63,11 @@ func (s *Service) HealthPageMaintenanceFeature() hubmaintenance.Feature {
 		if rows < 1 {
 			return hubmaintenance.Outcome{}, corestore.ErrInvalidPage
 		}
+		continuing := !state.cursor.startedAt.IsZero()
 		observed := s.maintainHealthSources(ctx, organization, &state.cursor, hubmaintenance.Budget{Items: rows, Bytes: budget.Bytes})
-		_, projectErr := s.MaintainHealthPage(ctx, organization)
-		_, deliveryErr := s.processSlackDelivery(ctx, organization)
-		return hubmaintenance.Outcome{Progress: true, Items: healthFixedUnits + healthRowScans*rows}, errors.Join(observed, projectErr, deliveryErr)
+		page, projectErr := s.MaintainHealthPage(ctx, organization)
+		delivery, deliveryErr := s.processSlackDelivery(ctx, organization)
+		return hubmaintenance.Outcome{Progress: page || delivery || continuing || !state.cursor.startedAt.IsZero(), Items: healthFixedUnits + healthRowScans*rows}, errors.Join(observed, projectErr, deliveryErr)
 	}}
 }
 

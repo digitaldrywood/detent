@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/maintenancefeatures"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -86,20 +87,8 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 }
 
 func (s *Service) boardFeature(name string, bytes int64, dirtyOnly bool) hubmaintenance.Feature {
-	var sweep tracker.NativeWorkItemID
-	return hubmaintenance.Feature{Name: name, Bytes: bytes, Lead: dirtyOnly, Step: func(ctx context.Context, selected hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
-		if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-			return hubmaintenance.Outcome{}, err
-		}
-		var dirty tracker.NativeWorkItemID
-		cursor := &sweep
-		if dirtyOnly {
-			cursor = &dirty
-		}
-		return hubmaintenance.Drain(ctx, min(budget.Items, boardMaintenanceBatch), cursor, func(after tracker.NativeWorkItemID, attempted []tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, bool, error) {
-			return s.maintainBudgetedBoardRecord(ctx, tracker.OrganizationID(selected.Organization), bytes, dirtyOnly, after, attempted...)
-		})
-	}}
+	return maintenancefeatures.Board(name, bytes, dirtyOnly, boardMaintenanceBatch, s.config.TenantRepository, s.maintainBudgetedBoardRecord)
+
 }
 
 func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {

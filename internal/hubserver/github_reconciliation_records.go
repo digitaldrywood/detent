@@ -6,6 +6,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/githubreconcile"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/maintenancefeatures"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -14,6 +15,9 @@ func (s *Service) githubReconcileService() *githubreconcile.Service {
 	if s.database != nil {
 		organization = s.database.hostedOrganization
 	}
+	return s.githubReconcileServiceFor(organization)
+}
+func (s *Service) githubReconcileServiceFor(organization tracker.OrganizationID) *githubreconcile.Service {
 	return githubreconcile.New(githubreconcile.Deps{Repository: s.config.TenantRepository, Organization: organization, Backend: s.config.ReconcileBackend, Importer: s.config.ImportBackend, Ready: s.database != nil, Unavailable: hubapi.ErrPostgresFeatureUnavailable, Now: s.config.Clock, Jitter: s.config.deps.Jitter, Interval: s.config.ReconcileInterval,
 		Integration: func(ctx context.Context, org tracker.OrganizationID, project tracker.ProjectID) (githubreconcile.Integration, error) {
 			scope, err := s.gitHubIntegrationScope(ctx, org, project)
@@ -27,12 +31,7 @@ func (s *Service) maintainGitHubReconciliationRecords(ctx context.Context) error
 	return s.githubReconcileService().Maintain(ctx)
 }
 func (s *Service) GitHubReconciliationMaintenanceFeature() hubmaintenance.Feature {
-	return hubmaintenance.Feature{Name: "github-reconciliation", Bytes: 4 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
-		if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-			return hubmaintenance.Outcome{}, err
-		}
-		return hubmaintenance.Outcome{Progress: true, Items: 1}, s.maintainGitHubReconciliationRecords(ctx)
-	}}
+	return maintenancefeatures.Service("github-reconciliation", 4<<20, s.config.ReconcileBackend != nil, s.githubReconcileServiceFor)
 }
 
 func (s *Service) maintainGitHubPullRequestRefresh(ctx context.Context) error {

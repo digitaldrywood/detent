@@ -119,7 +119,7 @@ func (s *session) InvalidateOnboardingPage(ctx context.Context, project tracker.
 	}
 	if _, err := s.db.Exec(ctx, `WITH access AS (INSERT INTO project_onboarding_page_access(organization_id) VALUES($1) ON CONFLICT DO NOTHING)
  INSERT INTO project_onboarding_page_viewers(organization_id,project_id,viewer_key,`+onboardingViewerColumns+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
- ON CONFLICT(organization_id,project_id,viewer_key) DO UPDATE SET generation=DEFAULT`, s.organization, project, key, v.ID, v.Hash, v.SessionHash, v.Scope, v.UserID, v.Membership, v.Principal, v.Role, v.KeyScope, v.KeyKind, v.ProjectAccess, v.RunnerID, v.EntryKind, v.EntryAccess, v.EntryID, v.EntryBinding, v.EntryPermission, v.NativeOnly, projects, blocked); err != nil {
+ ON CONFLICT(organization_id,project_id,viewer_key) DO UPDATE SET generation=DEFAULT,attempted_at='-infinity'`, s.organization, project, key, v.ID, v.Hash, v.SessionHash, v.Scope, v.UserID, v.Membership, v.Principal, v.Role, v.KeyScope, v.KeyKind, v.ProjectAccess, v.RunnerID, v.EntryKind, v.EntryAccess, v.EntryID, v.EntryBinding, v.EntryPermission, v.NativeOnly, projects, blocked); err != nil {
 		return mapError(ctx, err)
 	}
 	_, err := s.db.Exec(ctx, `DELETE FROM project_onboarding_pages WHERE organization_id=$1 AND project_id=$2 AND viewer_key=$3`, s.organization, project, key)

@@ -35,8 +35,9 @@ type Registry interface {
 }
 
 type Outcome struct {
-	Progress bool
-	Items    int
+	Progress   bool
+	Items      int
+	CursorOnly bool
 }
 
 type Feature struct {
@@ -269,7 +270,7 @@ func (s *Scheduler) serve(ctx context.Context, envelope *tickEnvelope, feature F
 					failures <- fmt.Errorf("maintenance tenant %s feature %s: %w", tenant.Organization, feature.Name, err)
 					continue
 				}
-				if outcome.Progress {
+				if outcome.Progress && !outcome.CursorOnly {
 					progress.Store(true)
 				}
 			}

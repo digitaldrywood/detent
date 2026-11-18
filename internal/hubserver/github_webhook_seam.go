@@ -35,6 +35,9 @@ func (s *Service) githubWebhookService() *githubwebhook.Service {
 	if s.database != nil {
 		organization = s.database.hostedOrganization
 	}
+	return s.githubWebhookServiceFor(organization)
+}
+func (s *Service) githubWebhookServiceFor(organization tracker.OrganizationID) *githubwebhook.Service {
 	return githubwebhook.New(githubwebhook.Deps{
 		Repository:       s.config.TenantRepository,
 		Organization:     organization,

@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/maintenancefeatures"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -666,7 +667,7 @@ func (s *Service) MaintenanceTenant() hubmaintenance.Tenant {
 }
 
 func (s *Service) ReadModelMaintenanceFeatures() []hubmaintenance.Feature {
-	return []hubmaintenance.Feature{
+	return maintenancefeatures.ProbeFeatures([]hubmaintenance.Feature{
 		s.boardFeature("board-dirty", hubmaintenance.ByteLimit/hubmaintenance.TenantLimit, true),
 		s.WorkItemPageMaintenanceFeature(),
 		s.IntegrationPageMaintenanceFeature(),
@@ -674,21 +675,11 @@ func (s *Service) ReadModelMaintenanceFeatures() []hubmaintenance.Feature {
 		s.HealthPageMaintenanceFeature(),
 		s.ProjectPageMaintenanceFeature(),
 		s.UsageMaintenanceFeature(),
-		{Name: "github-intake", Bytes: 64 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
-			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-				return hubmaintenance.Outcome{}, err
-			}
-			return hubmaintenance.Outcome{Progress: s.config.ImportBackend != nil, Items: 1}, s.maintainGitHubBatches(ctx)
-		}},
+		maintenancefeatures.Single("github-intake", 64<<20, s.config.ImportBackend != nil, s.maintainGitHubBatchesFor),
 		s.GitHubReconciliationMaintenanceFeature(),
-		{Name: "github-webhooks", Bytes: 4 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
-			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-				return hubmaintenance.Outcome{}, err
-			}
-			return hubmaintenance.Outcome{Progress: true, Items: 1}, s.maintainGitHubWebhookRecords(ctx)
-		}},
+		maintenancefeatures.Service("github-webhooks", 4<<20, true, s.githubWebhookServiceFor),
 		s.boardFeature("board", BoardMaintenanceBytes, false),
-	}
+	}, s.config.TenantRepository, s.config.Clock, s.config.ImportBackend != nil, s.config.ReconcileBackend != nil)
 }
 
 func (s *Service) runPostgresMaintenance(ctx context.Context) {
@@ -719,6 +710,7 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-s.boardRefresh:
+			s.maintenance.Wake()
 			refreshUnread()
 			s.maintainPostgresChangeReviews(ctx)
 		case <-searchRefresh.C:

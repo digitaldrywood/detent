@@ -16,6 +16,14 @@ import (
 const githubBatchMaintenanceLimit = 100
 
 func (s *Service) maintainGitHubBatches(ctx context.Context) error {
+	var org tracker.OrganizationID
+	if s.database != nil {
+		org = s.database.hostedOrganization
+	}
+	return s.maintainGitHubBatchesFor(ctx, org)
+}
+
+func (s *Service) maintainGitHubBatchesFor(ctx context.Context, organization tracker.OrganizationID) error {
 	if s.config.ImportBackend == nil {
 		return nil
 	}
@@ -23,7 +31,6 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 		return hubapi.ErrPostgresFeatureUnavailable
 	}
 	var project tracker.ProjectID
-	organization := s.database.hostedOrganization
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		gitHubIntakeReader, ok := r.(projectstore.GitHubIntakeReader)

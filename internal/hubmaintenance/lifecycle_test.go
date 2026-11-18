@@ -88,7 +88,7 @@ func TestRunUsesOneJitteredWakeAndKeepsWorkingAfterErrors(t *testing.T) {
 func TestEmptyRotationsBackOffAndResumeOnWork(t *testing.T) {
 	worked := false
 	feature := Feature{Name: "example", Bytes: 1, Step: func(ctx context.Context, tenant Tenant, _ Budget) (Outcome, error) {
-		return Outcome{Progress: worked && tenant.Organization == "org_00000"}, nil
+		return Outcome{Progress: true, Items: 1, CursorOnly: !worked || tenant.Organization != "org_00000"}, nil
 	}}
 	scheduler, err := New(registry(2), []Feature{feature})
 	if err != nil {

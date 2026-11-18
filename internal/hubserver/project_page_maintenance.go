@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/maintenancefeatures"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -35,8 +36,11 @@ func (s *Service) ProjectPageMaintenanceFeature() hubmaintenance.Feature {
 		if current.generation != tenant.Generation {
 			current = cursor{generation: tenant.Generation}
 		}
-		next, worked, err := s.MaintainProjectPage(ctx, tracker.OrganizationID(tenant.Organization), current.after)
-		current.after = next
+		due, err := maintenancefeatures.SweepDue(ctx, s.config.TenantRepository, tenant.Organization, "project-pages", &current.after, 1)
+		var worked bool
+		if due && err == nil {
+			current.after, worked, err = s.MaintainProjectPage(ctx, tracker.OrganizationID(tenant.Organization), current.after)
+		}
 		mu.Lock()
 		cursors[tenant.Organization] = current
 		mu.Unlock()
