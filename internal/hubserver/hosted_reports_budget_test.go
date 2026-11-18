@@ -221,8 +221,19 @@ func freezeReportPlannerInputs(t *testing.T, admin *sql.DB) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := admin.ExecContext(t.Context(), "VACUUM (ANALYZE) "+strings.Join(reportsBudgetHotRelations, ",")); err != nil {
-		t.Fatal(err)
+	for _, vacuum := range []string{"VACUUM (FREEZE) ", "VACUUM (ANALYZE) "} {
+		if _, err := admin.ExecContext(t.Context(), vacuum+strings.Join(reportsBudgetHotRelations, ",")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, relation := range reportsBudgetHotRelations {
+		var pages, visible int64
+		if err := admin.QueryRowContext(t.Context(), "SELECT relpages,relallvisible FROM pg_class WHERE oid=$1::regclass", relation).Scan(&pages, &visible); err != nil {
+			t.Fatal(err)
+		}
+		if visible != pages {
+			t.Fatalf("planner input %s has %d of %d pages all-visible after VACUUM", relation, visible, pages)
+		}
 	}
 }
 
