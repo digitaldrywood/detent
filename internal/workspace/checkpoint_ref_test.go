@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/workspace/internal/gitfixture"
 )
 
 func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
@@ -30,6 +32,8 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 		{name: "completed source finalizes apart from survivors", validate: owned, finalize: true},
 		{name: "clean environment templates restore elsewhere", validate: owned, templates: map[string]string{".env.example": "API_TOKEN=''\n", ".envrc.example": "export API_TOKEN=''\n"}},
 		{name: "unfinished two-commit rework restores exact transaction", validate: owned, transaction: &portableReworkCheckpointCase{}},
+		{name: "outside Rework starts from current source", validate: owned, transaction: &portableReworkCheckpointCase{outsideRework: true}},
+		{name: "Rework refuses another transaction branch", validate: owned, transaction: &portableReworkCheckpointCase{explicit: true, restoreBranch: "feature/unrelated"}},
 		{name: "native alias drift", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias"}},
 		{name: "published checkpoint with retained legacy cache", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias", cached: true}},
 		{name: "matching explicit branch across aliases", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias", explicit: true}},
@@ -261,52 +265,20 @@ func writeCheckpointFile(t *testing.T, dir, path, content string) {
 }
 
 type portableReworkCheckpointCase struct {
-	resolved bool
-	baseline bool
-	alias    string
-	legacy   string
-	explicit bool
-	cached   bool
+	outsideRework bool
+	restoreBranch string
+	resolved      bool
+	baseline      bool
+	alias         string
+	legacy        string
+	explicit      bool
+	cached        bool
 }
 
 func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, issue Issue, first, second, remote string, test portableReworkCheckpointCase) {
 	t.Helper()
 	issue.NativeRework = true
-	if test.baseline {
-		if err := os.Mkdir(filepath.Join(first, ".detent"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		writeCheckpointFile(t, first, ".detent/fixture.md", "tracked baseline\n")
-		writeCheckpointFile(t, first, ".env.local", "EXAMPLE=fixture\n")
-		runGit(t, first, "add", "--force", ".detent/fixture.md", ".env.local")
-	}
-	for path, content := range map[string]string{"later.txt": "initial text\n", "binary.dat": "initial\x00binary", "name.txt": "rename contents\n"} {
-		writeCheckpointFile(t, first, path, content)
-	}
-	runGit(t, first, "add", ".")
-	runGit(t, first, "commit", "-m", "shared conflict fixture")
-	runGit(t, first, "push", "origin", "main")
-	runGit(t, second, "fetch", "origin")
-	runGit(t, info.Path, "merge", "--ff-only", "main")
-	writeCheckpointFile(t, info.Path, "README.md", "first source\n")
-	runGit(t, info.Path, "add", "README.md")
-	runGit(t, info.Path, "commit", "-m", "first source")
-	writeCheckpointFile(t, info.Path, "later.txt", "later source\n")
-	writeCheckpointFile(t, info.Path, "binary.dat", "source\x00binary")
-	runGit(t, info.Path, "mv", "name.txt", "source-name.txt")
-	runGit(t, info.Path, "add", ".")
-	runGit(t, info.Path, "commit", "-m", "remaining source")
-	writeCheckpointFile(t, info.Path, "pending.txt", "unplayed source\n")
-	runGit(t, info.Path, "add", "pending.txt")
-	runGit(t, info.Path, "commit", "-m", "unplayed source")
-	original := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
-	writeCheckpointFile(t, first, "README.md", "first target\n")
-	writeCheckpointFile(t, first, "later.txt", "later target\n")
-	writeCheckpointFile(t, first, "binary.dat", "target\x00binary")
-	runGit(t, first, "mv", "name.txt", "target-name.txt")
-	runGit(t, first, "add", ".")
-	runGit(t, first, "commit", "-m", "conflicting target")
-	runGit(t, first, "push", "origin", "main")
+	original := gitfixture.ConflictingReworkHistory(t, first, second, info.Path, test.baseline)
 	prepared, err := source.PrepareRework(t.Context(), info, issue, MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() })
 	if err != nil || prepared.Status != MergePrepareStatusConflict {
 		t.Fatalf("prepare = %#v, %v", prepared, err)
@@ -343,6 +315,40 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	}
 	if _, pushed, err := source.PushCheckpointRef(t.Context(), info, issue, checkpoint, func(ctx context.Context) error { return ctx.Err() }); err != nil || pushed {
 		t.Fatalf("unchanged transaction republished: %v, %v", pushed, err)
+	}
+
+	if test.outsideRework || test.restoreBranch != "" {
+		issue.NativeRework = !test.outsideRework
+		issue.BranchName = test.restoreBranch
+		issue.Checkpoint = &CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, TreeSHA: checkpoint.TreeSHA}
+		restored, err := source.Create(t.Context(), issue)
+		if test.restoreBranch != "" {
+			if !errors.Is(err, ErrCheckpointUnsafe) {
+				t.Fatalf("mismatched transaction branch: got %v, want ErrCheckpointUnsafe", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := runGit(t, restored.Path, "rev-parse", "HEAD"), runGit(t, remote, "rev-parse", "main"); got != want {
+			t.Fatalf("workspace HEAD = %s, want current base %s", got, want)
+		}
+		if status := runGit(t, restored.Path, "status", "--porcelain"); status != "" {
+			t.Fatalf("current base has checkpoint changes: %s", status)
+		}
+		for _, name := range []string{"rebase-merge", "rebase-apply", "MERGE_HEAD"} {
+			if _, err := os.Stat(filepath.Join(linkedWorktreeGitDir(t, restored.Path), name)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("expected %s to be absent: %v", name, err)
+			}
+		}
+		if _, _, err := source.RestoreCheckpointForFinalization(t.Context(), restored, issue, *issue.Checkpoint); !errors.Is(err, ErrCheckpointUnsafe) {
+			t.Fatalf("finalization of an unfinished transaction: got %v, want ErrCheckpointUnsafe", err)
+		}
+		if got := strings.TrimSpace(runGit(t, remote, "rev-parse", checkpoint.Ref)); got != checkpoint.CommitSHA {
+			t.Fatalf("retained checkpoint = %s, want %s", got, checkpoint.CommitSHA)
+		}
+		return
 	}
 
 	failures := []string{"staged secret", "unresolved secret", "staged size", "executable replay", "capture failure", "push failure", "lost ownership", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "excluded index path"}
@@ -382,9 +388,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 				runGit(t, info.Path, "add", "staged.txt")
 				writeCheckpointFile(t, info.Path, "staged.txt", before)
 			case "executable replay":
-				if err := os.WriteFile(filepath.Join(dir, "rebase-merge", "git-rebase-todo"), []byte("exec false\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				writeCheckpointFile(t, dir, "rebase-merge/git-rebase-todo", "exec false\n")
 			case "capture failure":
 				if err := os.Remove(filepath.Join(dir, "rebase-merge", "stopped-sha")); err != nil {
 					t.Fatal(err)
@@ -447,12 +451,8 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 			if _, err := runGitAtWithInput(t.Context(), info.Path, nil, false, "0 "+strings.Repeat("0", 40)+"\tbinary.dat\x00"+index, "update-index", "-z", "--index-info"); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(dir, "rebase-merge", "git-rebase-todo"), []byte(todo), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "rebase-merge", "stopped-sha"), []byte(stopped), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeCheckpointFile(t, dir, "rebase-merge/git-rebase-todo", todo)
+			writeCheckpointFile(t, dir, "rebase-merge/stopped-sha", stopped)
 			runGit(t, info.Path, "remote", "set-url", "--push", "origin", remote)
 		})
 	}
@@ -542,7 +542,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 		}
 	}
 	if test.alias != "" {
-		for _, rejection := range []string{"wrong project", "wrong issue", "explicit unrelated branch", "non-rework", "manifest digest"} {
+		for _, rejection := range []string{"wrong project", "wrong issue", "explicit unrelated branch", "non-rework wrong issue", "manifest digest"} {
 			t.Run(rejection, func(t *testing.T) {
 				foreign := issue
 				switch rejection {
@@ -552,8 +552,8 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 					foreign.ID = "wi_other"
 				case "explicit unrelated branch":
 					foreign.BranchName = "feature/unrelated"
-				case "non-rework":
-					foreign.NativeRework = false
+				case "non-rework wrong issue":
+					foreign.NativeRework, foreign.ID = false, "wi_other"
 				case "manifest digest":
 					if err := restorer.fetchCheckpointRef(t.Context(), foreign.Checkpoint); err != nil {
 						t.Fatal(err)

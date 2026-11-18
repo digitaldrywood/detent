@@ -196,3 +196,40 @@ func WriteFile(t *testing.T, root, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func ConflictingReworkHistory(t *testing.T, source, second, worktree string, excludedBaseline bool) string {
+	t.Helper()
+	if excludedBaseline {
+		WriteFile(t, source, ".detent/fixture.md", "tracked baseline\n")
+		WriteFile(t, source, ".env.local", "EXAMPLE=fixture\n")
+		Git(t, source, "add", "--force", ".detent/fixture.md", ".env.local")
+	}
+	for path, content := range map[string]string{"later.txt": "initial text\n", "binary.dat": "initial\x00binary", "name.txt": "rename contents\n"} {
+		WriteFile(t, source, path, content)
+	}
+	Git(t, source, "add", ".")
+	Git(t, source, "commit", "-m", "shared conflict fixture")
+	Git(t, source, "push", "origin", "main")
+	Git(t, second, "fetch", "origin")
+	Git(t, worktree, "merge", "--ff-only", "main")
+	WriteFile(t, worktree, "README.md", "first source\n")
+	Git(t, worktree, "add", "README.md")
+	Git(t, worktree, "commit", "-m", "first source")
+	WriteFile(t, worktree, "later.txt", "later source\n")
+	WriteFile(t, worktree, "binary.dat", "source\x00binary")
+	Git(t, worktree, "mv", "name.txt", "source-name.txt")
+	Git(t, worktree, "add", ".")
+	Git(t, worktree, "commit", "-m", "remaining source")
+	WriteFile(t, worktree, "pending.txt", "unplayed source\n")
+	Git(t, worktree, "add", "pending.txt")
+	Git(t, worktree, "commit", "-m", "unplayed source")
+	original := strings.TrimSpace(Git(t, worktree, "rev-parse", "HEAD"))
+	WriteFile(t, source, "README.md", "first target\n")
+	WriteFile(t, source, "later.txt", "later target\n")
+	WriteFile(t, source, "binary.dat", "target\x00binary")
+	Git(t, source, "mv", "name.txt", "target-name.txt")
+	Git(t, source, "add", ".")
+	Git(t, source, "commit", "-m", "conflicting target")
+	Git(t, source, "push", "origin", "main")
+	return original
+}
