@@ -306,6 +306,16 @@ func (e *nativeExecution) leaseValidity() time.Duration {
 	return current.Deadline.Sub(e.scheduler.now())
 }
 
+func (e *nativeExecution) authorizeEvent(ctx context.Context) error {
+	if err := api.MutationEffectError(ctx); err != nil {
+		return err
+	}
+	if e.leaseValidity() <= 0 {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
+	return nil
+}
+
 func (e *nativeExecution) renew(ctx context.Context, capacity int) error {
 	remaining := e.leaseValidity()
 	if remaining <= 0 {
@@ -1011,13 +1021,13 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	done := e.diagnosticOperation("append." + e.pending.Type)
 	defer func() { done(err) }()
+	if err := e.authorizeEvent(ctx); err != nil {
+		return err
+	}
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {
 			return e.executionError(ctx, err)
 		}
-	}
-	if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-		return err
 	}
 	if (e.pending.Type == "run.checkpointed" || e.pending.Type == "run.finished") && e.storedSeq != e.pending.Data.Sequence && e.releaseDelivery == nil {
 		if err := e.postDiff(ctx, e.pending.Data.Sequence); err != nil {
@@ -1066,7 +1076,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("encode pending runtime: %w", err)
 	}
-	if err := e.claim.source.NativeClient().AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
+	if err := e.claim.source.NativeClient().AppendExecutionEvent(ctx, e.claim.lease.WorkItemID, *e.pending, e.authorizeEvent); err != nil {
 		var refusal *APIError
 		if e.preparedOutcome != "" && errors.As(err, &refusal) && refusal.Status == http.StatusConflict && (refusal.Code == "run_sequence_conflict" || refusal.Code == "idempotency_conflict") {
 			path, pathErr := nativeItemPath(e.claim.lease.WorkItemID)
