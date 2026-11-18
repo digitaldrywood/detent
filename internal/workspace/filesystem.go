@@ -80,6 +80,9 @@ func NewFilesystem(opts FilesystemOptions) (*Filesystem, error) {
 }
 
 func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
+	if issue.RequireCheckpoint {
+		return Info{}, fmt.Errorf("%w: filesystem workspace cannot restore a Git checkpoint", ErrCheckpointUnsafe)
+	}
 	info, err := f.infoForIssue(issue)
 	if err != nil {
 		return Info{}, err
@@ -96,12 +99,11 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	if exists && !isDir {
 		return Info{}, fmt.Errorf("workspace path exists and is not a directory: %s", info.Path)
 	}
-	created := false
-	if !exists {
+	info.Created = !exists
+	if info.Created {
 		if err := root.MkdirAll(info.Key, 0o700); err != nil {
 			return Info{}, fmt.Errorf("create filesystem workspace: %w", err)
 		}
-		created = true
 	}
 	if err := root.MkdirAll(filepath.Join(info.Key, "artifacts"), 0o700); err != nil {
 		return Info{}, fmt.Errorf("create artifact directory: %w", err)
@@ -119,8 +121,7 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 			return Info{}, fmt.Errorf("create output workspace: %w", err)
 		}
 	}
-	info.Created = created
-	if created {
+	if info.Created {
 		if err := f.runHook(ctx, "after_create", f.hooks.AfterCreate, info, issue); err != nil {
 			if stopErr := f.uses.Stop(ctx, info.Path); stopErr != nil {
 				f.logger.Warn("workspace hook cleanup incomplete", "error", stopErr)
@@ -279,10 +280,7 @@ func (f *Filesystem) infoForIssue(issue Issue) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	return Info{
-		Path: path,
-		Key:  key,
-	}, nil
+	return Info{Path: path, Key: key}, nil
 }
 
 func (f *Filesystem) IssueRecoveryState(ctx context.Context, issue Issue) (RecoveryState, error) {
