@@ -428,7 +428,6 @@ type AgentResume struct {
 }
 
 type AgentTurnResult struct {
-	workerScratchPath  string
 	ReportedCostMicros *int64
 	CostSource         string
 	ThreadID           string
