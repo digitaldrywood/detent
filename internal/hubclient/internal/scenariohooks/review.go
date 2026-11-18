@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -127,10 +128,10 @@ func (r *ReviewDispatch) CheckRestored(t *testing.T, req runner.RunRequest, rest
 		runner.CompletionExecution
 		BindReviewHandoff(<-chan struct{})
 	})
+	owner.BindReviewHandoff(r.reviewDone)
 	if err := owner.PrepareFinish(t.Context(), "succeeded", req.NativeReviewContinuation.FinalMessage, nil); err != nil {
 		t.Fatal(err)
 	}
-	owner.BindReviewHandoff(r.reviewDone)
 	if _, err := owner.ClaimState(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -197,4 +198,62 @@ func WaitForDeferredReview(t *testing.T, orch *orchestrator.Orchestrator, issueI
 		}
 		return nil
 	})
+}
+
+func GitOutput(t *testing.T, path string, args ...string) string {
+	t.Helper()
+	output, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", path}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+func ImplementingState(t *testing.T, workspace string) []string {
+	t.Helper()
+	untracked, err := os.ReadFile(filepath.Join(workspace, "untracked.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []string{
+		GitOutput(t, workspace, "rev-parse", "HEAD"),
+		GitOutput(t, workspace, "status", "--porcelain"),
+		GitOutput(t, workspace, "diff", "--binary"),
+		GitOutput(t, workspace, "diff", "--cached", "--binary"),
+		string(untracked),
+	}
+}
+
+func BeforeReviewDispatch(t *testing.T, orch *orchestrator.Orchestrator, scheduler *dispatch.Scheduler, setNow func(*dispatch.Scheduler, time.Time)) (func(context.Context, string), func()) {
+	result := make(chan error, 1)
+	var once sync.Once
+	afterRead := func(ctx context.Context, id string) {
+		state, err := orch.State(ctx)
+		if err != nil || !state.Retry[id].CompletionDeferred {
+			return
+		}
+		once.Do(func() {
+			owner := scheduler.RunExecution(id).(execution.Execution)
+			runtime := owner.CompletionData().Runtime
+			if runtime == nil || runtime.Phase != "completed" {
+				result <- errors.New("missing completed implementation heartbeat")
+				return
+			}
+			now := runtime.HeartbeatAt.Add(2 * time.Minute)
+			setNow(scheduler, now)
+			_, err := scheduler.RenewClaimHeartbeat(ctx, id, now)
+			setNow(scheduler, time.Time{})
+			result <- err
+		})
+	}
+	return afterRead, func() {
+		t.Helper()
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatalf("renew during deferred review before dispatch: %v", err)
+			}
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("expected a deferred review read before dispatch")
+		}
+	}
 }

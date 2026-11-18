@@ -526,6 +526,10 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				t.Cleanup(stop)
 				return stop
 			}
+			var waitHeartbeat func()
+			if test.expiredHeartbeat {
+				h.connector.afterCurrentReview, waitHeartbeat = scenariohooks.BeforeReviewDispatch(t, orch, h.scheduler, SetSchedulerNow)
+			}
 			stopOrchestrator := start(orch)
 			publishedSource := func() *runner.NativeChange { return scenariohooks.PublishedVersion(t, h.admin, current.WorkItemID) }
 			freshScheduler := func() *Scheduler {
@@ -541,6 +545,9 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			ticker := time.NewTicker(20 * time.Millisecond)
 			defer ticker.Stop()
 			if handoff, ok := dependencies.Runner.(*scenariohooks.ReviewDispatch); ok {
+				if waitHeartbeat != nil {
+					waitHeartbeat()
+				}
 				req := handoff.Next(t, deadline)
 				provider.releaseRetry()
 				if test.refusal == "source" {
@@ -560,28 +567,6 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				scenariohooks.WaitForDeferredReview(t, orch, issue.ID)
 			}
 			deferred := false
-			readGit := func(path string, args ...string) string {
-				t.Helper()
-				output, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", path}, args...)...).CombinedOutput()
-				if err != nil {
-					t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
-				}
-				return string(output)
-			}
-			implementingState := func() []string {
-				t.Helper()
-				untracked, err := os.ReadFile(filepath.Join(provider.workspace, "untracked.txt"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				return []string{
-					readGit(provider.workspace, "rev-parse", "HEAD"),
-					readGit(provider.workspace, "status", "--porcelain"),
-					readGit(provider.workspace, "diff", "--binary"),
-					readGit(provider.workspace, "diff", "--cached", "--binary"),
-					string(untracked),
-				}
-			}
 			var implementingBefore []string
 			for {
 				state, err := orch.State(deadline)
@@ -734,7 +719,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						if err := os.WriteFile(filepath.Join(provider.workspace, "untracked.txt"), []byte("untracked source\n"), 0o600); err != nil {
 							t.Fatal(err)
 						}
-						implementingBefore = implementingState()
+						implementingBefore = scenariohooks.ImplementingState(t, provider.workspace)
 						if strings.TrimSpace(implementingBefore[0]) != change.BaseSHA || change.BaseSHA == change.HeadSHA || implementingBefore[2] == "" || implementingBefore[3] == "" {
 							t.Fatal("fixture lacks dirty implementing A and distinct retained B")
 						}
@@ -794,13 +779,13 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					}
 					version := detail.Versions[len(detail.Versions)-1]
 					if implementingBefore != nil {
-						for i, after := range implementingState() {
+						for i, after := range scenariohooks.ImplementingState(t, provider.workspace) {
 							if after != implementingBefore[i] {
 								t.Fatalf("deferred completion changed implementing source: before=%q after=%q", implementingBefore[i], after)
 							}
 						}
 						for _, path := range []*string{provider.sourceWorkspace.Load(), provider.validatorWorkspace.Load()} {
-							if path == nil || *path == provider.workspace || strings.TrimSpace(readGit(*path, "rev-parse", "HEAD")) != version.HeadSHA || readGit(*path, "status", "--porcelain") != "" {
+							if path == nil || *path == provider.workspace || strings.TrimSpace(scenariohooks.GitOutput(t, *path, "rev-parse", "HEAD")) != version.HeadSHA || scenariohooks.GitOutput(t, *path, "status", "--porcelain") != "" {
 								t.Fatal("deferred completion did not review clean retained B separately from implementing A")
 							}
 						}
