@@ -15368,7 +15368,11 @@
           "ExplainReportPlan:ExecContext": 3,
           "ExplainReportPlan:Query": 1,
           "ExplainReportPlan:QueryRowContext": 1,
-          "ExplainReportPlan:SQL": 1
+          "ExplainReportPlan:SQL": 1,
+          "WaitForReportSeed:QueryRowContext": 1,
+          "WaitForReportSeed:SQL": 1,
+          "reportSeedVisible:QueryRowContext": 1,
+          "reportSeedVisible:SQL": 1
         },
         "tables": []
       }
