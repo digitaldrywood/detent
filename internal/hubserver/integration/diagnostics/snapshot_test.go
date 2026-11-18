@@ -184,3 +184,42 @@ func TestDiagnosticsSnapshotKeepsTenantResults(t *testing.T) {
 		})
 	}
 }
+
+func TestDiagnosticsReporterSeesClippingWithoutMatchingRows(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Hour)
+	w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
+	for _, test := range []struct {
+		name      string
+		seed      func(*testing.T, tenant)
+		residence bool
+	}{
+		{"open issues", func(t *testing.T, f tenant) {
+			seedSQL(t, f, `INSERT INTO issues(organization_id,project_id,native_id,number,title,workflow_state_name) SELECT $1,$2,'clip-item-'||n,1000000+n,'Diagnostic item','Todo' FROM generate_series(1,50001)n`, f.organization, project)
+			seedItem(t, f, project, "reporter-item", "Todo", now.Add(-3*time.Hour))
+			seedSQL(t, f, `UPDATE issues SET actor_principal_id='reporter_example' WHERE organization_id=$1 AND native_id='reporter-item'`, f.organization)
+		}, true},
+		{"leases", func(t *testing.T, f tenant) {
+			seedItem(t, f, project, "lease-item", "Todo", now.Add(-3*time.Hour))
+			seedSQL(t, f, `INSERT INTO machines(organization_id,id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES($1,'diagnostics-machine','example',1,'example',$2,$2,$2)`, f.organization, now.Add(-2*time.Hour))
+			seedSQL(t, f, `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at) SELECT $1,'clip-lease-'||n,i.id,'diagnostics-machine','clip-session-'||n,1,$3,$3,$3::timestamptz+interval '2 hours',$3::timestamptz+interval '1 hour' FROM generate_series(1,50001)n JOIN issues i ON i.organization_id=$1 AND i.native_id=$2`, f.organization, "lease-item", now.Add(-2*time.Hour))
+		}, false},
+	} {
+		for _, f := range tenants(t) {
+			t.Run(test.name+"/"+string(f.organization), func(t *testing.T) {
+				test.seed(t, f)
+				var snapshot diagnosticstore.Snapshot
+				if err := f.repository.ReadTenantSnapshot(t.Context(), f.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					snapshot, err = r.(diagnosticstore.Reader).DiagnosticsSnapshot(t.Context(), []tracker.ProjectID{project}, w.From, w.To, w.To, "reporter_example")
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if !snapshot.Partial || snapshot.ResidencePartial != test.residence || len(snapshot.Leases) != 0 {
+					t.Fatalf("partial=%t residence=%t leases=%d issues=%d, want clipped without matching rows", snapshot.Partial, snapshot.ResidencePartial, len(snapshot.Leases), len(snapshot.Issues))
+				}
+			})
+		}
+	}
+}

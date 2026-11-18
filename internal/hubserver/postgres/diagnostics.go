@@ -24,24 +24,27 @@ func (s *session) DiagnosticsSnapshot(ctx context.Context, projects []tracker.Pr
 	for i, id := range projects {
 		ids[i] = string(id)
 	}
-	rows, err := s.db.Query(ctx, `WITH open_issues AS MATERIALIZED (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2) AND NOT i.archived ORDER BY i.project_id,i.workflow_state_name,i.id LIMIT $5)
-SELECT i.project_id,i.native_id,coalesce(i.workflow_state_name,''),i.native_created_at,(SELECT count(*) FROM open_issues)>=$5
-FROM open_issues c CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=c.id LIMIT 1) i
-WHERE $4='' OR i.actor_principal_id=$4 ORDER BY c.id LIMIT $3`, s.organization, ids, diagnosticstore.Limit+1, principal, maxOverviewCandidateRows+1)
+	rows, err := s.db.Query(ctx, `WITH open_issues AS MATERIALIZED (SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2) AND NOT i.archived ORDER BY i.project_id,i.workflow_state_name,i.id LIMIT $5
+),selected AS MATERIALIZED (SELECT c.id,i.project_id,i.native_id,coalesce(i.workflow_state_name,'') AS state,i.native_created_at FROM open_issues c CROSS JOIN LATERAL (SELECT * FROM issues i WHERE i.organization_id=$1 AND i.id=c.id LIMIT 1) i
+ WHERE $4='' OR i.actor_principal_id=$4 ORDER BY c.id LIMIT $3
+) SELECT 0 AS id,'' AS project_id,'' AS native_id,'' AS state,'epoch'::timestamptz AS native_created_at,(SELECT count(*) FROM open_issues)>=$5 AS clipped UNION ALL SELECT s.*,false FROM selected s ORDER BY id`, s.organization, ids, diagnosticstore.Limit+1, principal, maxOverviewCandidateRows+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var row diagnosticstore.Issue
+		var id int64
 		var truncated bool
-		if err := rows.Scan(&row.ProjectID, &row.WorkItemID, &row.State, &row.CreatedAt, &truncated); err != nil {
+		if err := rows.Scan(&id, &row.ProjectID, &row.WorkItemID, &row.State, &row.CreatedAt, &truncated); err != nil {
 			return out, mapError(ctx, err)
 		}
-		if truncated || row.State == "" {
+		if truncated || row.WorkItemID != "" && row.State == "" {
 			out.ResidencePartial, out.Partial = true, true
 		}
-		out.Issues = append(out.Issues, row)
+		if row.WorkItemID != "" {
+			out.Issues = append(out.Issues, row)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return out, mapError(ctx, err)
@@ -77,23 +80,25 @@ WHERE $4='' OR i.actor_principal_id=$4 ORDER BY c.id LIMIT $3`, s.organization, 
 		return cmp.Or(a.RecordedAt.Compare(b.RecordedAt), cmp.Compare(a.ID, b.ID))
 	})
 
-	rows, err = s.db.Query(ctx, `WITH RECURSIVE lease_machines AS ( SELECT first.machine_id,1 AS depth FROM (SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 ORDER BY l.machine_id LIMIT 1) first UNION ALL SELECT next.machine_id,m.depth+1 FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id>m.machine_id ORDER BY l.machine_id LIMIT 1 ) next WHERE m.depth<=$8 ), windowed AS MATERIALIZED ( SELECT l.lease_id FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.lease_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id=m.machine_id AND l.expires_at>$3 ORDER BY l.expires_at LIMIT $7 ) l WHERE m.depth<=$8 LIMIT $7 )
-SELECT l.acquired_at,least(coalesce(l.released_at,l.expires_at),l.expires_at),EXISTS(SELECT 1 FROM lease_machines WHERE depth>$8) OR (SELECT count(*) FROM windowed)>=$7
-FROM windowed w CROSS JOIN LATERAL (SELECT * FROM leases l WHERE l.organization_id=$1 AND l.lease_id=w.lease_id LIMIT 1) l
+	rows, err = s.db.Query(ctx, `WITH RECURSIVE lease_machines AS ( SELECT first.machine_id,1 AS depth FROM (SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 ORDER BY l.machine_id LIMIT 1) first UNION ALL SELECT next.machine_id,m.depth+1 FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id>m.machine_id ORDER BY l.machine_id LIMIT 1 ) next WHERE m.depth<=$8 ), windowed AS MATERIALIZED ( SELECT l.lease_id FROM lease_machines m CROSS JOIN LATERAL ( SELECT l.lease_id FROM leases l WHERE l.organization_id=$1 AND l.machine_id=m.machine_id AND l.expires_at>$3 ORDER BY l.expires_at LIMIT $7 ) l WHERE m.depth<=$8 LIMIT $7 ), selected AS MATERIALIZED (
+SELECT l.lease_id,l.acquired_at,least(coalesce(l.released_at,l.expires_at),l.expires_at) AS finished_at FROM windowed w CROSS JOIN LATERAL (SELECT * FROM leases l WHERE l.organization_id=$1 AND l.lease_id=w.lease_id LIMIT 1) l
 CROSS JOIN LATERAL (SELECT i.project_id,i.actor_principal_id FROM issues i WHERE i.organization_id=$1 AND i.id=l.issue_id LIMIT 1) i
-WHERE i.project_id=ANY($2) AND ($6='' OR i.actor_principal_id=$6) AND l.acquired_at<$4 AND least(coalesce(l.released_at,l.expires_at),l.expires_at)>$3 ORDER BY l.acquired_at,l.lease_id LIMIT $5`, s.organization, ids, from, to, diagnosticstore.Limit+1, principal, maxOverviewCandidateRows+1, maxReportProjects)
+WHERE i.project_id=ANY($2) AND ($6='' OR i.actor_principal_id=$6) AND l.acquired_at<$4 AND least(coalesce(l.released_at,l.expires_at),l.expires_at)>$3 ORDER BY l.acquired_at,l.lease_id LIMIT $5
+) SELECT '' AS lease_id,$3::timestamptz AS acquired_at,$3::timestamptz AS finished_at,EXISTS(SELECT 1 FROM lease_machines WHERE depth>$8) OR (SELECT count(*) FROM windowed)>=$7 AS clipped UNION ALL SELECT s.*,false FROM selected s ORDER BY acquired_at,lease_id`, s.organization, ids, from, to, diagnosticstore.Limit+1, principal, maxOverviewCandidateRows+1, maxReportProjects)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var row diagnosticstore.Lease
+		var lease string
 		var truncated bool
-		if err := rows.Scan(&row.AcquiredAt, &row.FinishedAt, &truncated); err != nil {
+		if err := rows.Scan(&lease, &row.AcquiredAt, &row.FinishedAt, &truncated); err != nil {
 			return out, mapError(ctx, err)
 		}
-		out.Partial = out.Partial || truncated
-		out.Leases = append(out.Leases, row)
+		if out.Partial = out.Partial || truncated; lease != "" {
+			out.Leases = append(out.Leases, row)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return out, mapError(ctx, err)
