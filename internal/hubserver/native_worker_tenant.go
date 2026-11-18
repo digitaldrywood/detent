@@ -642,8 +642,12 @@ func (s *Service) writeNativeLeaseResponse(c echo.Context, lease leasestore.Leas
 	if details.WorkItemID == "" {
 		return s.nativeAPIError(c, corestore.ErrNotFound)
 	}
-	return c.JSON(http.StatusOK, tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: details.IsolationPolicy,
+	return c.JSON(http.StatusOK, s.nativeLeaseResponse(lease, details))
+}
+
+func (s *Service) nativeLeaseResponse(lease leasestore.Lease, details NativeLeaseResponseDetails) tracker.NativeLease {
+	return tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: details.IsolationPolicy,
 		ProviderReservation: details.ProviderReservation, ServerTime: s.config.Clock().UTC(), PolicyID: details.PolicyID,
 		ID: tracker.LeaseID(lease.LeaseID), WorkItemID: details.WorkItemID, MachineID: tracker.MachineID(lease.MachineID), SessionID: lease.SessionID,
-		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
+		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt}
 }

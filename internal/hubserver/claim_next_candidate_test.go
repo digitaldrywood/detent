@@ -28,11 +28,12 @@ import (
 type claimCandidateProbeKey struct{}
 
 type claimCandidateProbe struct {
-	wire       heartbeatWire
-	once       sync.Once
-	writes     int
-	reads      nativePreviewReadCounts
-	candidates []claimstore.Candidate
+	wire            heartbeatWire
+	once            sync.Once
+	writes          int
+	reads           nativePreviewReadCounts
+	unreadableFirst bool
+	candidates      []claimstore.Candidate
 }
 
 type claimCandidateRepository struct {
@@ -63,6 +64,14 @@ func (r claimCandidateReader) CandidatePage(ctx context.Context, query claimstor
 	return page, err
 }
 
+func (r claimCandidateReader) ClaimPreviewPlanRows(ctx context.Context, project tracker.ProjectID, candidates []claimstore.Candidate) ([]tenantstore.ClaimPreviewPlanRow, error) {
+	rows, err := r.nativePreviewCountingReader.ClaimPreviewPlanRows(ctx, project, candidates)
+	if err == nil && len(rows) > 0 && r.probe.unreadableFirst {
+		rows[0].Version.PayloadObjectKey = ""
+	}
+	return rows, err
+}
+
 func (r *claimCandidateRepository) WriteRunnerCommand(ctx context.Context, organization tracker.OrganizationID, credential, runner string, write func(context.Context, tenantstore.Writer) error) error {
 	if probe, ok := ctx.Value(claimCandidateProbeKey{}).(*claimCandidateProbe); ok {
 		probe.once.Do(func() {
@@ -85,6 +94,7 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 	}{
 		{"uncontended", 1, 2, 1},
 		{"second candidate", 2, 2, 1},
+		{"unreadable first", 2, 3, 1},
 		{"more items", 2, 8, 1},
 		{"exhausted page", 16, 8, 1},
 		{"two organizations", 16, 8, 2},
@@ -146,6 +156,7 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 						t.Fatalf("authenticate runner: status=%d error=%v", status, err)
 					}
 					workers[organizationIndex*test.runners+index] = claimer{
+						probe:   claimCandidateProbe{unreadableFirst: test.name == "unreadable first"},
 						scope:   hubscope.NativeScope{Organization: organization.ID, Project: f.project.ID, Credential: credential},
 						request: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID, SessionID: fmt.Sprintf("session-%d-%d", organizationIndex, index), TTLSeconds: 60, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: []string{"Todo"}},
 					}
@@ -200,6 +211,9 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 				}
 				lease := result.lease
 				position := worker.probe.writes - 1
+				if worker.probe.unreadableFirst {
+					position++
+				}
 				if position < 0 || position >= len(worker.probe.candidates) || worker.probe.candidates[position].ID != lease.IssueID {
 					t.Errorf("claim did not follow selected candidate order: writes=%d lease=%+v", worker.probe.writes, lease)
 				}
