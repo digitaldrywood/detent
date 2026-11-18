@@ -62,11 +62,20 @@ func reapVerifiedProcesses(ctx context.Context, path string, grace time.Duration
 	return reapProcesses(ctx, path, grace, verified, guardedSignal)
 }
 
+type hookSignals interface {
+	prepare(int) (func(), error)
+	signal(int, syscall.Signal) error
+}
+
 func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, identity func(int) (string, error), environment func(int) ([]string, error), signal workspaceProcessSignaler) (Scanner, workspaceProcessSignaler) {
 	starts := map[int]string{}
 	owner, _ := ctx.Value(hookOwnerKey{}).(string)
 	confirmed := map[int]string{}
 	lifetime, _ := ctx.Value(lifetimeKey{}).(*Lifetime)
+	var bindings hookSignals
+	if owner != "" && signal == nil {
+		bindings = platformHookSignals(lifetime)
+	}
 	if lifetime != nil {
 		confirmed = lifetime.starts
 	}
@@ -150,17 +159,36 @@ func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, iden
 			if confirmed[pid] != "" {
 				check = sameProcess
 			}
+			var accept func()
+			var tokenErr error
+			if bindings != nil {
+				accept, tokenErr = bindings.prepare(pid)
+			}
 			ok, inspectErr := check(pid)
 			err = errors.Join(err, inspectErr)
-			if ok {
-				confirmed[pid] = starts[pid]
-				owned = append(owned, pid)
+			if !ok {
+				continue
 			}
+			if tokenErr != nil {
+				if lifetime != nil {
+					lifetime.recordWitness(pid, starts[pid])
+				}
+				err = errors.Join(err, tokenErr)
+				continue
+			}
+			if accept != nil {
+				accept()
+			}
+			confirmed[pid] = starts[pid]
+			owned = append(owned, pid)
 		}
 		return owned, err
 	}
 	guardedSignal := func(pid int, sig syscall.Signal) error {
 		send := signal
+		if bindings != nil {
+			send = bindings.signal
+		}
 		if send == nil {
 			process, err := os.FindProcess(pid)
 			if err != nil {
