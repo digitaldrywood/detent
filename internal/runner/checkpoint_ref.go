@@ -126,7 +126,11 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 	defer c.mu.Unlock()
 	pushCtx, cancel := context.WithTimeout(ctx, checkpointTimeout)
 	defer cancel()
-	next, pushed, err := c.publisher.PushCheckpointRef(pushCtx, c.info, c.issue, c.last, c.execution.Validate)
+	parent := c.last
+	if parent.CommitSHA == "" && c.issue.RetainedCheckpoint != nil {
+		parent = *c.issue.RetainedCheckpoint
+	}
+	next, pushed, err := c.publisher.PushCheckpointRef(pushCtx, c.info, c.issue, parent, c.execution.Validate)
 	c.failed = err != nil
 	if err != nil {
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_checkpoint_ref_failed", "reason", reason, "error", err)
@@ -136,8 +140,7 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 		c.last = next
 		r.logWorkerEvent(req.Issue, "worker_checkpoint_ref_pushed", "reason", reason, "ref", next.Ref, "commit_sha", next.CommitSHA, "head_sha", next.HeadSHA)
 	}
-	state := r.workspaceRecoveryState(c.backend, pushCtx, c.info, c.issue, "checkpoint_ref")
-	if state != nil {
+	if state := r.workspaceRecoveryState(c.backend, pushCtx, c.info, c.issue, "checkpoint_ref"); state != nil {
 		checkpoint := executionCheckpoint(state)
 		c.captured = &checkpoint
 	}
@@ -250,8 +253,7 @@ func recordCheckpointRef(ctx context.Context, c *checkpointRefs, execution Execu
 		if err != nil {
 			c.failed = true
 		} else if checkpoint.GitRef() {
-			saved := checkpoint
-			c.saved = &saved
+			c.saved = &checkpoint
 		}
 	}
 	return err
