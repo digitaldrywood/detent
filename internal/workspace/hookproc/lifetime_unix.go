@@ -111,6 +111,9 @@ func (l *Lifetime) candidates(ctx context.Context) ([]int, error) {
 	if err != nil || !active {
 		return nil, err
 	}
+	if runtime.GOOS == "darwin" {
+		return l.darwinWriters(ctx, 0)
+	}
 	if runtime.GOOS == "linux" {
 		pids, err := l.procDescriptorHolders(ctx, "/proc")
 		if len(pids) != 0 || err != nil {
@@ -168,6 +171,10 @@ func (l *Lifetime) procDescriptorHolders(ctx context.Context, root string) ([]in
 }
 
 func (l *Lifetime) holdsWriter(ctx context.Context, pid int) (bool, error) {
+	if runtime.GOOS == "darwin" {
+		writers, err := l.darwinWriters(ctx, pid)
+		return slices.Contains(writers, pid), err
+	}
 	if runtime.GOOS == "linux" {
 		marker, err := l.reader.Stat()
 		if err != nil || !hookDescriptorMatches("/proc", pid, marker) {
