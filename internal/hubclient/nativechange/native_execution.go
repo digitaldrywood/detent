@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -990,8 +991,25 @@ func (e *nativeExecution) postCheckpointDiff(ctx context.Context, sequence int64
 	client := e.claim.source.NativeClient()
 	authorize := func(ctx context.Context) error { return e.authorizeReceiptWrite(ctx, receipt, e.generationDiff) }
 	if _, err := client.PostExecutionDiff(ctx, e.data.AttemptID, *e.generationDiff, authorize); err != nil {
+		var refusal *APIError
+		if receipt != nil && errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == "stale_generation" {
+			path, pathErr := api.NativeAttemptDiffPath(e.data.AttemptID)
+			if pathErr != nil {
+				return pathErr
+			}
+			var stored tracker.AttemptDiff
+			intended := e.generationDiff
+			if readErr := client.Transport().Request(ctx, http.MethodGet, client.Scope()+path+"?at="+strconv.FormatInt(sequence, 10), nil, &stored); readErr != nil {
+				return e.executionError(ctx, readErr)
+			}
+			files, _ := tracker.NormalizeDiffFiles(intended.Files)
+			if stored.AttemptID == e.data.AttemptID && stored.Producer == intended.Producer && stored.Generation == intended.Generation && stored.BaseSHA == intended.BaseSHA && stored.HeadSHA == intended.HeadSHA && reflect.DeepEqual(stored.Files, files) {
+				e.storedSeq = sequence
+				return nil
+			}
+		}
 		err = e.executionError(ctx, err)
-		if !nativeTransportUnavailable(err) {
+		if receipt == nil && !nativeTransportUnavailable(err) {
 			e.generationDiff = nil
 		}
 		return err
@@ -1093,7 +1111,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	if (e.pending.Type == "run.checkpointed" || e.pending.Type == "run.finished") && e.storedSeq != e.pending.Data.Sequence && e.releaseDelivery == nil {
 		if err := e.postCheckpointDiff(ctx, e.pending.Data.Sequence, receipt); err != nil {
-			if nativeTransportUnavailable(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || api.MutationEffectError(ctx) != nil {
+			if receipt != nil || nativeTransportUnavailable(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || api.MutationEffectError(ctx) != nil {
 				return err
 			}
 			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", e.pending.Data.Sequence, "error", err)

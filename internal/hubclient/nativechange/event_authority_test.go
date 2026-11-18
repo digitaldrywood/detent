@@ -163,3 +163,52 @@ func TestStoppedValidationReceiptAuthority(t *testing.T) {
 		})
 	}
 }
+
+func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
+	for _, mismatch := range []string{"", "producer", "files", "generation"} {
+		t.Run("mismatch="+mismatch, func(t *testing.T) {
+			var stored tracker.AttemptDiff
+			var writes, reads, receipts int
+			e := replayExecution(t, func(r *http.Request) (int, string, error) {
+				if strings.HasSuffix(r.URL.Path, "/events") {
+					receipts++
+					return 200, "{}", nil
+				}
+				if !strings.HasSuffix(r.URL.Path, "/diff") {
+					return 200, "{}", nil
+				}
+				if r.Method == http.MethodGet {
+					reads++
+					switch mismatch {
+					case "producer":
+						stored.Producer.FencingToken++
+					case "files":
+						stored.Files[0].Patch = "+different"
+					case "generation":
+						stored.Generation.Seq++
+					}
+					body, err := json.Marshal(stored)
+					return 200, string(body), err
+				}
+				writes++
+				if writes == 1 {
+					if err := json.NewDecoder(r.Body).Decode(&stored); err != nil {
+						t.Fatal(err)
+					}
+					stored.AttemptID = stored.Producer.ID
+					return 0, "", ErrUnavailable
+				}
+				return 409, `{"code":"stale_generation"}`, nil
+			})
+			head := nativeChangeFixtureHead("a")
+			ctx := api.WithMutationAuthority(t.Context(), e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return runner.ErrOperatorStopped })
+			if err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head}, Validation: &gate.CommandResult{HeadSHA: head}}); !nativeTransportUnavailable(err) {
+				t.Fatalf("first delivery = %v", err)
+			}
+			err := e.flush(ctx)
+			if writes != 2 || reads != 1 || mismatch == "" && (err != nil || receipts != 1) || mismatch != "" && (err == nil || receipts != 0) {
+				t.Fatalf("writes=%d reads=%d receipts=%d error=%v", writes, reads, receipts, err)
+			}
+		})
+	}
+}
