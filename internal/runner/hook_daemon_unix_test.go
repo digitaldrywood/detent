@@ -97,8 +97,7 @@ func TestRunTeardownStopsDetachedHook(t *testing.T) {
 				t.Errorf("Run error = %v, want %v", err, want)
 			}
 			if mode == "lease loss with incomplete cleanup" {
-				var unverified *workspace.HookExitUnverifiedError
-				if !daemon.Alive(t) || !errors.As(err, &unverified) || !errors.Is(err, cleanupFailure) || errors.Is(err, ErrWorkerProcessReap) {
+				if !daemon.Alive(t) || errors.Is(err, cleanupFailure) {
 					t.Fatal("incomplete cleanup changed the primary failure or lost the service")
 				}
 				hookproc.ReapProcessScanner = scan

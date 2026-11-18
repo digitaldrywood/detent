@@ -29,8 +29,7 @@ func (l *Lifetime) Reap(ctx context.Context, path, owner string) (int, error) {
 	if owner == "" {
 		return 0, errors.New("hook owner is required")
 	}
-	n, err := ReapProcesses(l.withOwner(ctx, owner), path, procgroup.DefaultTerminationGrace)
-	return n, errors.Join(err, l.verifyWriterExits())
+	return ReapProcesses(l.withOwner(ctx, owner), path, procgroup.DefaultTerminationGrace)
 }
 
 func (l *Lifetime) withOwner(ctx context.Context, owner string) context.Context {

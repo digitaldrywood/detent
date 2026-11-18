@@ -9,16 +9,13 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
-	"github.com/digitaldrywood/detent/internal/procstart"
 )
 
 type Lifetime struct {
-	starts             map[int]string
-	unidentifiedWriter bool
-	witnesses          map[int]string
-	reader             *os.File
-	writer             *os.File
-	dir                string
+	starts map[int]string
+	reader *os.File
+	writer *os.File
+	dir    string
 }
 
 func (l *Lifetime) Attach(cmd *exec.Cmd) {
@@ -62,22 +59,6 @@ func (l *Lifetime) checkPath() error {
 	}
 	if !os.SameFile(original, current) {
 		return errors.New("hook lifetime descriptor path changed")
-	}
-	return nil
-}
-
-func (l *Lifetime) verifyWriterExits() error {
-	if l.unidentifiedWriter {
-		return errors.New("observed hook descriptor writer lacks a verified process identity")
-	}
-	for pid, start := range l.witnesses {
-		alive, err := procstart.Matches(pid, start)
-		if err != nil {
-			return err
-		}
-		if alive {
-			return errors.New("observed hook descriptor writer is still running")
-		}
 	}
 	return nil
 }

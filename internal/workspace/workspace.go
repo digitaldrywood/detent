@@ -932,8 +932,11 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	}
 
 	result.Processes, err = l.uses.reapHooks(ctx, info.Path)
-	if hookErr != nil || err != nil {
-		return result, errors.Join(hookErr, err)
+	if hookErr != nil {
+		return result, hookErr
+	}
+	if err != nil {
+		return result, err
 	}
 	if err := l.beginWorkspaceCleanup(ctx, info, issue, isDir); err != nil {
 		return result, err

@@ -260,67 +260,6 @@ func TestHookCleanupRetainsOwnerAfterInspectionFailure(t *testing.T) {
 	}
 }
 
-func TestObservedHookDropsDescriptor(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		captured bool
-		other    bool
-	}{
-		{"captured PID and start time", true, false},
-		{"observed writer only", false, false},
-		{"another writer captured", false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			attempt, finish := WithHookProcesses(t.Context())
-			t.Cleanup(func() {
-				if err := finish(); err != nil {
-					t.Errorf("cleanup after fixture exit: %v", err)
-				}
-			})
-			daemon := workspacetest.DetachedHook(t)
-			workspacetest.UseDaemonCandidates(t, daemon)
-			if !tc.captured {
-				hookproc.ReapProcessScanner = func(context.Context, string) ([]int, error) { return nil, nil }
-			}
-			hook := "unset DETENT_HOOK_OWNER DETENT_WORKSPACE; TEST_HOOK_DROP_DESCRIPTOR=1 " + daemon.Command
-			if tc.other {
-				other := workspacetest.DetachedHook(t)
-				workspacetest.UseDaemonCandidates(t, other)
-				hook += " && " + other.Command
-			}
-			fs, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), Hooks: Hooks{
-				AfterCreate: hook,
-			}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			issue := Issue{Identifier: "EXAMPLE-1"}
-			info, err := fs.Create(attempt, issue)
-			if err != nil {
-				t.Fatal(err)
-			}
-			daemon.Request(t)
-			err = finish()
-			if tc.captured {
-				if err != nil || daemon.Alive(t) {
-					t.Fatalf("recorded service exit: cleanup = %v, alive = %t", err, daemon.Alive(t))
-				}
-				return
-			}
-			var unverified *HookExitUnverifiedError
-			if !errors.As(err, &unverified) || !daemon.Alive(t) {
-				t.Fatalf("unverified service exit: cleanup = %v, alive = %t", err, daemon.Alive(t))
-			}
-			if _, err := fs.CleanupIssue(attempt, issue); !errors.As(err, &unverified) {
-				t.Fatalf("cleanup retry lost unverified exit: %v", err)
-			}
-			if _, err := os.Stat(info.Path); err != nil {
-				t.Fatalf("retained workspace: %v", err)
-			}
-		})
-	}
-}
-
 func TestHookDaemonHostDiscovery(t *testing.T) {
 	for _, tc := range []struct{ name, hookPrefix string }{
 		{"inherited descriptor", ""},

@@ -15,16 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 )
 
-type HookExitUnverifiedError struct {
-	Err error
-}
-
-func (e *HookExitUnverifiedError) Error() string {
-	return "workspace hook process exit unverified: " + e.Err.Error()
-}
-
-func (e *HookExitUnverifiedError) Unwrap() error { return e.Err }
-
 type hookLifetime struct {
 	mu        sync.Mutex
 	processes map[*hookOwner]struct{}
@@ -149,11 +139,8 @@ func (o *hookOwner) commandFinished(ctx context.Context, commandErr error) error
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	active, err := o.descriptor.Capture(cleanup, o.path, o.token)
-	if err != nil {
-		return &HookExitUnverifiedError{Err: err}
-	}
-	if active {
-		return nil
+	if err != nil || active {
+		return err
 	}
 	return o.release(cleanup)
 }
@@ -169,16 +156,16 @@ func (o *hookOwner) stopLocked(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	if o.running {
-		return 0, &HookExitUnverifiedError{Err: ErrWorkspacePreserved}
+		return 0, ErrWorkspacePreserved
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	count, err := o.descriptor.Reap(cleanup, o.path, o.token)
 	if err != nil {
-		return count, &HookExitUnverifiedError{Err: err}
+		return count, fmt.Errorf("stop workspace hook processes: %w", err)
 	}
 	if err := o.descriptor.WaitClosed(cleanup); err != nil {
-		return count, &HookExitUnverifiedError{Err: err}
+		return count, err
 	}
 	return count, o.release(cleanup)
 }
