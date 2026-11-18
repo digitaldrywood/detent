@@ -3,10 +3,10 @@ package nativechange
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/runner"
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/evidence"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -18,7 +18,7 @@ func (e *nativeExecution) RecordStep(ctx context.Context, receipt tracker.Native
 	defer e.mu.Unlock()
 	var retention *checkpointReceipt
 	if receipt.Step == "validation" && receipt.Validation != nil && receipt.Source.HeadSHA != "" && receipt.Validation.HeadSHA == receipt.Source.HeadSHA {
-		retention = &checkpointReceipt{head: receipt.Source.HeadSHA}
+		retention = &checkpointReceipt{head: receipt.Source.HeadSHA, workspaceDigest: receipt.Source.WorkspaceDigest}
 	}
 	return e.recordStep(ctx, receipt, retention)
 }

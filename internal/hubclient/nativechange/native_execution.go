@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/runtimeevidence"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runner/attemptdiff"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -325,6 +326,7 @@ func (e *nativeExecution) authorizeEvent(ctx context.Context, receipt bool) erro
 type checkpointReceipt struct {
 	observation       *tracker.NativeRunEvent
 	head              string
+	workspaceDigest   string
 	verifyPublication func(context.Context) error
 }
 
@@ -340,9 +342,12 @@ func (e *nativeExecution) authorizeReceiptWrite(ctx context.Context, receipt *ch
 		if err := receipt.verifyPublication(ctx); err != nil {
 			return err
 		}
-	} else if e.diffSource != nil {
-		current, ok := e.diffSource(ctx)
-		if !ok || current.HeadSHA != receipt.head {
+	} else {
+		if e.diffSource == nil || receipt.workspaceDigest == "" {
+			return runner.ErrOperatorStopped
+		}
+		current, ok := e.diffSource(attemptdiff.Verify(ctx))
+		if !ok || current.WorkspaceDigest != receipt.workspaceDigest || !diff.SameContent(current) {
 			return runner.ErrOperatorStopped
 		}
 	}

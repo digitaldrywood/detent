@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner/attemptdiff"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -281,37 +282,8 @@ type ChangeSourceExecution interface {
 	RecoverChangeSource(context.Context) (workspace.ChangeSource, error)
 }
 
-// attemptDiffSource returns the source for one run's worktree. A diff is
-// best-effort: a failure is logged and reported as "nothing to post", so a
-// worktree the runner cannot read never fails the run it is describing.
-// A run with no pull request base is diffed against the base resolved when
-// the source is made, so every generation of one run shares a base.
 func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, issue workspace.Issue) AttemptDiffSource {
-	base := strings.TrimSpace(issue.BaseRef)
-	if base == "" {
-		base = workspace.AttemptBase(ctx, info.Path)
-	}
-	return func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
-		diffs, err := workspace.GitFileDiffs(ctx, info.Path, base, tracker.MaxDiffBytes)
-		if err != nil {
-			r.logger.Warn("attempt diff unavailable", "issue_id", issue.ID, "workspace_path", info.Path, "error", err)
-			return tracker.AttemptDiffRequest{}, false
-		}
-		request := tracker.AttemptDiffRequest{BaseSHA: diffs.BaseSHA, HeadSHA: diffs.HeadSHA, Files: make([]tracker.AttemptDiffFile, 0, len(diffs.Files))}
-		for _, file := range diffs.Files {
-			request.Files = append(request.Files, tracker.AttemptDiffFile{
-				Path: file.Path, OldPath: file.OldPath, Status: file.Status,
-				Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch,
-			})
-		}
-		if diffs.Truncated {
-			// The whole patch output exceeded the bound, so the counts are
-			// posted without patches rather than with a patch set that stops
-			// partway through the change.
-			request.Files = tracker.StripDiffPatches(request.Files)
-		}
-		return request, true
-	}
+	return attemptdiff.New(ctx, r.logger, info, issue)
 }
 
 func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -800,6 +772,16 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 						validationIssue.PullRequestHeadSHA = strings.TrimSpace(head)
 						binding, bindingErr := r.sourceStep(ctx, req, backend, info, issue, "validation")
 						var previous tracker.NativeStepReceipt
+						if diffs, ok := req.Execution.(DiffExecution); ok && bindingErr == nil && binding.Source.WorkspaceDigest != "" {
+							source := req.attemptDiffSource
+							if source == nil {
+								source = r.attemptDiffSource(ctx, info, issue)
+							}
+							req.attemptDiffSource = attemptdiff.BindValidation(ctx, source, binding.Source, func(ctx context.Context) *workspace.RecoveryState {
+								return r.workspaceRecoveryState(backend, ctx, info, issue, "validation")
+							})
+							diffs.SetDiffSource(req.attemptDiffSource)
+						}
 						if bindingErr == nil {
 							previous, bindingErr = loadStep(ctx, req.Execution, binding)
 						}
@@ -891,7 +873,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 				if current, available := source(ctx); available {
 					return current, true
 				}
-				return finalDiff, true
+				cached := finalDiff
+				cached.WorkspaceDigest = ""
+				return cached, true
 			})
 		}
 	}

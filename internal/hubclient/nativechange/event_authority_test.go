@@ -48,7 +48,11 @@ func replayExecution(t *testing.T, send func(*http.Request) (int, string, error)
 	fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: time.Now().Add(time.Minute)}, descriptor, "example")
 	e := scheduler.RunExecution(string(lease.WorkItemID)).(*nativeExecution)
 	e.data.Identity = &tracker.NativeExecutionIdentity{Role: "review", Backend: "codex", Model: "example"}
-	e.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("a"), "initial.go"))
+	e.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+		diff, ok := nativeChangeDiff(nativeChangeFixtureHead("a"), "initial.go")(ctx)
+		diff.WorkspaceDigest = strings.Repeat("d", 64)
+		return diff, ok
+	})
 	return e
 }
 
@@ -137,7 +141,7 @@ func TestStoppedValidationReceiptAuthority(t *testing.T) {
 					}
 				}
 				ctx := api.WithMutationAuthority(t.Context(), e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return runner.ErrOperatorStopped })
-				err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head}, Validation: &gate.CommandResult{HeadSHA: head}})
+				err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head, WorkspaceDigest: strings.Repeat("d", 64)}, Validation: &gate.CommandResult{HeadSHA: head}})
 				switch stage {
 				case "unsent observations":
 					if err != nil || events != 1 || sent.Type != "run.checkpointed" || sent.Data.Sequence != 1 || len(sent.PriorEvents) != 0 {
@@ -212,7 +216,7 @@ func TestStoppedReceiptReconcilesStoredDiff(t *testing.T) {
 			attempt.RunnerID = "runner_example"
 			head := nativeChangeFixtureHead("a")
 			ctx := api.WithMutationAuthority(t.Context(), e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return runner.ErrOperatorStopped })
-			if err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head}, Validation: &gate.CommandResult{HeadSHA: head}}); !nativeTransportUnavailable(err) {
+			if err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head, WorkspaceDigest: strings.Repeat("d", 64)}, Validation: &gate.CommandResult{HeadSHA: head}}); !nativeTransportUnavailable(err) {
 				t.Fatalf("first delivery = %v", err)
 			}
 			err := e.flush(ctx)
@@ -261,7 +265,7 @@ func TestStoppedReceiptAfterUnacknowledgedObservation(t *testing.T) {
 			}
 			head := nativeChangeFixtureHead("a")
 			ctx := api.WithMutationAuthority(t.Context(), e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return runner.ErrOperatorStopped })
-			err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head}, Validation: &gate.CommandResult{HeadSHA: head}})
+			err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head, WorkspaceDigest: strings.Repeat("d", 64)}, Validation: &gate.CommandResult{HeadSHA: head}})
 			if !nativeTransportUnavailable(err) {
 				t.Fatalf("receipt reconciliation during outage = %v", err)
 			}
@@ -278,6 +282,55 @@ func TestStoppedReceiptAfterUnacknowledgedObservation(t *testing.T) {
 			}
 			if err != nil || posts != 2 || received.Type != "run.checkpointed" || received.Data.Sequence != want || len(received.PriorEvents) != 0 || len(received.Data.Steps) != 1 || received.Data.Steps[0].Validation.HeadSHA != head {
 				t.Fatalf("posts=%d receipt=%+v error=%v", posts, received, err)
+			}
+		})
+	}
+}
+
+func TestStoppedGateRequiresVerifiedWorkspace(t *testing.T) {
+	for _, stage := range []string{"no live source", "different workspace digest", "missing gate digest", "files change before receipt", "base changes before receipt"} {
+		t.Run(stage, func(t *testing.T) {
+			var diffs, events int
+			e := replayExecution(t, func(r *http.Request) (int, string, error) {
+				if strings.HasSuffix(r.URL.Path, "/diff") {
+					diffs++
+				}
+				if strings.HasSuffix(r.URL.Path, "/events") {
+					events++
+				}
+				return 200, "{}", nil
+			})
+			head := nativeChangeFixtureHead("a")
+			original, _ := e.diffSource(t.Context())
+			e.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+				if diffs != 0 && stage == "files change before receipt" {
+					return nativeChangeDiff(head, "different.go")(ctx)
+				}
+				current := original
+				if stage == "different workspace digest" {
+					current.WorkspaceDigest = strings.Repeat("e", 64)
+				}
+				if diffs != 0 && stage == "base changes before receipt" {
+					current.BaseSHA = nativeChangeFixtureHead("c")
+				}
+				return current, true
+			})
+			if stage == "no live source" {
+				e.lastDiff = &original
+				e.SetDiffSource(nil)
+			}
+			digest := strings.Repeat("d", 64)
+			if stage == "missing gate digest" {
+				digest = ""
+			}
+			ctx := api.WithMutationAuthority(t.Context(), e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return runner.ErrOperatorStopped })
+			err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head, WorkspaceDigest: digest}, Validation: &gate.CommandResult{HeadSHA: head}})
+			wantDiffs := 0
+			if strings.Contains(stage, "before receipt") {
+				wantDiffs = 1
+			}
+			if !errors.Is(err, runner.ErrOperatorStopped) || diffs != wantDiffs || events != 0 {
+				t.Fatalf("diffs=%d events=%d error=%v", diffs, events, err)
 			}
 		})
 	}

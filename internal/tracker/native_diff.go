@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -90,12 +91,17 @@ type AttemptDiffFile struct {
 // carries no idempotency key: the generation is the idempotency record, and a
 // seq at or below the stored one is refused as stale_generation.
 type AttemptDiffRequest struct {
-	PostedBytes int64             `json:"posted_bytes,omitempty"`
-	Producer    DiffProducer      `json:"producer"`
-	Generation  DiffGeneration    `json:"generation"`
-	BaseSHA     string            `json:"base_sha"`
-	HeadSHA     string            `json:"head_sha"`
-	Files       []AttemptDiffFile `json:"files"`
+	WorkspaceDigest string            `json:"-"`
+	PostedBytes     int64             `json:"posted_bytes,omitempty"`
+	Producer        DiffProducer      `json:"producer"`
+	Generation      DiffGeneration    `json:"generation"`
+	BaseSHA         string            `json:"base_sha"`
+	HeadSHA         string            `json:"head_sha"`
+	Files           []AttemptDiffFile `json:"files"`
+}
+
+func (d AttemptDiffRequest) SameContent(other AttemptDiffRequest) bool {
+	return d.BaseSHA == other.BaseSHA && d.HeadSHA == other.HeadSHA && reflect.DeepEqual(d.Files, other.Files)
 }
 
 // AttemptDiff is one stored generation of one attempt's worktree.
