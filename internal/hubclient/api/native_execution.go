@@ -29,10 +29,10 @@ func (c *NativeClient) FencedMutation(ctx context.Context, id tracker.NativeWork
 
 type nativeMutationAuthorityKey struct{}
 
-type executionEventAuthorityKey struct{}
+type executionWriteAuthorityKey struct{}
 
 func (c *NativeClient) AppendExecutionEvent(ctx context.Context, id tracker.NativeWorkItemID, event tracker.NativeRunEvent, authorize func(context.Context) error) error {
-	return c.AppendEvent(context.WithValue(ctx, executionEventAuthorityKey{}, authorize), id, event)
+	return c.AppendEvent(context.WithValue(ctx, executionWriteAuthorityKey{}, authorize), id, event)
 }
 
 type nativeMutationAuthority struct {

@@ -319,8 +319,8 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	switch input.(type) {
 	case runnersession.Mutation:
 		authorize = nativeEffectError
-	case tracker.NativeRunEvent:
-		authorize, _ = ctx.Value(executionEventAuthorityKey{}).(func(context.Context) error)
+	case tracker.NativeRunEvent, tracker.AttemptDiffRequest:
+		authorize, _ = ctx.Value(executionWriteAuthorityKey{}).(func(context.Context) error)
 	}
 	if authorize != nil {
 		httpClient = clientWithoutRedirects(httpClient)
