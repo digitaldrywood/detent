@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -96,13 +97,13 @@ type dispatchWaitPostgresTrace struct {
 
 func (p *dispatchWaitPostgresTrace) record(statement string) {
 	p.queries.Add(1)
-	if strings.HasPrefix(strings.TrimSpace(statement), "SELECT i.id,i.revision,i.number,i.native_id,") {
+	if strings.HasPrefix(strings.TrimSpace(statement), "WITH candidates AS (") {
 		p.candidates.Add(1)
 	}
 }
 func (p *dispatchWaitPostgresTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	p.record(data.SQL)
-	if strings.HasPrefix(strings.TrimSpace(data.SQL), "SELECT i.id,i.revision,i.number,i.native_id,") {
+	if strings.HasPrefix(strings.TrimSpace(data.SQL), "WITH candidates AS (") {
 		p.capture(data.SQL, data.Args)
 		return context.WithValue(ctx, dispatchCandidateQueryKey{}, true)
 	}
@@ -114,8 +115,14 @@ func (p *dispatchWaitPostgresTrace) TraceQueryEnd(ctx context.Context, _ *pgx.Co
 	}
 }
 func (p *dispatchWaitPostgresTrace) capture(statement string, args []any) {
+	values := args
+	if len(args) == 1 {
+		if named, ok := args[0].(pgx.NamedArgs); ok {
+			values = slices.Collect(maps.Values(named))
+		}
+	}
 	var argumentBytes int64
-	for _, arg := range args {
+	for _, arg := range values {
 		switch value := arg.(type) {
 		case string:
 			argumentBytes += int64(len(value))
@@ -144,7 +151,7 @@ func (p *dispatchWaitPostgresTrace) TraceBatchStart(ctx context.Context, _ *pgx.
 	return ctx
 }
 func (p *dispatchWaitPostgresTrace) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	if strings.HasPrefix(strings.TrimSpace(data.SQL), "SELECT i.id,i.revision,i.number,i.native_id,") {
+	if strings.HasPrefix(strings.TrimSpace(data.SQL), "WITH candidates AS (") {
 		p.capture(data.SQL, data.Args)
 		if data.Err == nil {
 			p.rows.Add(data.CommandTag.RowsAffected())

@@ -16,6 +16,7 @@ func TestRunnerCancellationPublicationWireBudget(t *testing.T) {
 	if _, err := first.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_runner_release() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF OLD.release_reason='fixture_reject' AND NEW.released_at IS NOT NULL THEN RAISE EXCEPTION 'fixture release rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_runner_release BEFORE UPDATE ON leases FOR EACH ROW EXECUTE FUNCTION reject_runner_release()`); err != nil {
 		t.Fatal(err)
 	}
+	rollbackService := runnerPublicationRollbackService(t, first)
 	var expected [2]int
 	for tenantIndex, fixture := range []runnerPGFixture{first, second} {
 		org := tracker.OrganizationID("org_startup")
@@ -32,7 +33,7 @@ func TestRunnerCancellationPublicationWireBudget(t *testing.T) {
 			if _, err := fixture.admin.ExecContext(t.Context(), `UPDATE leases SET release_reason='fixture_reject' WHERE organization_id=$1 AND lease_id=$2`, org, lease.ID); err != nil {
 				t.Fatal(err)
 			}
-			response := performHubAPIRequest(t, fixture.service, http.MethodPost, path, fixture.tokens[index], request)
+			response := performHubAPIRequest(t, rollbackService, http.MethodPost, path, fixture.tokens[index], request)
 			if response.Code < 500 {
 				t.Fatalf("release rejection status=%d body=%s diagnostics=%s", response.Code, response.Body.String(), logs.String())
 			}

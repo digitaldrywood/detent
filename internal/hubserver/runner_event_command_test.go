@@ -274,6 +274,12 @@ FROM refs r LEFT JOIN archive_objects a ON a.organization_id=$1 AND a.object_key
 	}
 }
 
+func runnerPublicationRollbackService(t *testing.T, fixture runnerPGFixture) *Service {
+	t.Helper()
+	repository := projectRecordRepositoryFor(t, fixture.admin, 3, fixture.service.config.Clock)
+	return openLocalPostgresHubTestService(t, repository, Config{RunDetails: fixture.service.runDetailStore(), Logger: fixture.service.config.Logger})
+}
+
 func newRunnerEventWireFixtures(t *testing.T) (runnerPGFixture, runnerPGFixture, *postgres.Repository, *heartbeatWire, *bytes.Buffer) {
 	t.Helper()
 	f := newRunnerPGFixture(t)
