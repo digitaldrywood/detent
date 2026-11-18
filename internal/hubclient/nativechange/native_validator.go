@@ -25,6 +25,13 @@ func (e *nativeExecution) ReviewVersion(ctx context.Context) (runner.NativeValid
 	return e.validationVersion(ctx, "review")
 }
 
+type reviewRefusal string
+
+func (r reviewRefusal) Error() string {
+	return runner.ErrNativeRecoveryRequired.Error() + ": " + string(r)
+}
+func (r reviewRefusal) Unwrap() error { return runner.ErrNativeRecoveryRequired }
+
 func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.NativeChangeReference) error {
 	if err := e.Validate(ctx); err != nil {
 		return err
@@ -33,19 +40,38 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 	defer e.mu.Unlock()
 	if e.change != nil && e.change.NoChange != nil {
 		if expected.ChangeID != "" || expected.VersionID != "" || expected.HeadSHA != e.change.HeadSHA {
-			return fmt.Errorf("%w: no-change review source changed", runner.ErrNativeRecoveryRequired)
+			return reviewRefusal("no_change_source_mismatch")
 		}
 		return nil
 	}
-	if e.change == nil || e.change.Landing != nil || e.change.ChangeID != expected.ChangeID || e.change.VersionID != expected.VersionID || e.change.HeadSHA != expected.HeadSHA || e.preparedDisposition == nil || e.preparedDisposition.Status != "complete" || e.preparedDisposition.Blockers || e.preparedDisposition.HumanAction || e.preparedDisposition.ReasonCode != "" {
-		return fmt.Errorf("%w: published review source or disposition changed", runner.ErrNativeRecoveryRequired)
+	switch {
+	case e.change == nil:
+		return reviewRefusal("change_missing")
+	case e.change.Landing != nil:
+		return reviewRefusal("change_landed")
+	case e.change.ChangeID != expected.ChangeID:
+		return reviewRefusal("change_id_mismatch")
+	case e.change.VersionID != expected.VersionID:
+		return reviewRefusal("version_id_mismatch")
+	case e.change.HeadSHA != expected.HeadSHA:
+		return reviewRefusal("head_mismatch")
+	case e.preparedDisposition == nil:
+		return reviewRefusal("disposition_missing")
+	case e.preparedDisposition.Status != "complete":
+		return reviewRefusal("disposition_incomplete")
+	case e.preparedDisposition.Blockers:
+		return reviewRefusal("disposition_blockers")
+	case e.preparedDisposition.HumanAction:
+		return reviewRefusal("disposition_human_action")
+	case e.preparedDisposition.ReasonCode != "":
+		return reviewRefusal("disposition_reason")
 	}
 	detail, err := e.claim.source.NativeClient().RuntimeChange(ctx, e.claim.lease.WorkItemID, expected.ChangeID)
 	if err != nil {
 		return &runner.NativeImplementationReviewError{Err: err}
 	}
 	if detail.Change.ID != expected.ChangeID || detail.Change.CurrentVersion != expected.VersionID || detail.Change.CurrentLanding() != nil || detail.Change.ProjectID != e.claim.source.NativeClient().ProjectID() || detail.Change.WorkItemID != e.claim.lease.WorkItemID {
-		return fmt.Errorf("%w: published review version is no longer current", runner.ErrNativeRecoveryRequired)
+		return reviewRefusal("version_not_current")
 	}
 	for _, version := range detail.Versions {
 		if version.ID != expected.VersionID {
@@ -61,12 +87,12 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 			}
 		}
 		if version.HeadSHA != expected.HeadSHA || version.PolicyID != e.data.PolicyID || version.Policy.ID != e.data.PolicyID || owner.PolicyID != e.data.PolicyID || version.AttemptID != owner.AttemptID || version.RunID != owner.RunID || e.lastDiff == nil || version.BaseSHA != e.lastDiff.BaseSHA || version.HeadSHA != e.lastDiff.HeadSHA {
-			return fmt.Errorf("%w: published review source differs from its owner", runner.ErrNativeRecoveryRequired)
+			return reviewRefusal("source_owner_mismatch")
 		}
 		e.stepReviews = &detail
 		return nil
 	}
-	return fmt.Errorf("%w: published review version is unavailable", runner.ErrNativeRecoveryRequired)
+	return reviewRefusal("version_missing")
 }
 
 func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (runner.NativeValidation, error) {

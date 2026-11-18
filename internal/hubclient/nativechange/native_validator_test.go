@@ -3,6 +3,7 @@ package nativechange
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -104,21 +105,40 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 			}
 			for _, test := range []struct {
 				name    string
+				code    string
 				mutate  func(*tracker.ChangeDetail)
 				prepare func(*nativeExecution)
 			}{
-				{name: "head", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].HeadSHA = nativeChangeFixtureHead("d") }},
-				{name: "base", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].BaseSHA = nativeChangeFixtureHead("b") }},
-				{name: "policy", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].PolicyID = "policy_other" }},
-				{name: "frozen policy", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].Policy.ID = "policy_other" }},
-				{name: "item", mutate: func(d *tracker.ChangeDetail) { d.Change.WorkItemID = "wi_other" }},
-				{name: "project", mutate: func(d *tracker.ChangeDetail) { d.Change.ProjectID = "prj_other" }},
-				{name: "attempt", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].AttemptID = "attempt_other" }},
-				{name: "run", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].RunID = "run_other" }},
-				{name: "unrecovered source", prepare: func(e *nativeExecution) { e.recoveredSource = nil }},
-				{name: "unrecorded source owner", prepare: func(e *nativeExecution) { e.claim.recovery.Attempts = nil }},
+				{name: "missing change", code: "change_missing", prepare: func(e *nativeExecution) { e.change = nil }},
+				{name: "landing", code: "change_landed", prepare: func(e *nativeExecution) { e.change.Landing = &runner.NativeLanding{} }},
+				{name: "change id", code: "change_id_mismatch", prepare: func(e *nativeExecution) { e.change.ChangeID = "private id" }},
+				{name: "version id", code: "version_id_mismatch", prepare: func(e *nativeExecution) { e.change.VersionID = "private version" }},
+				{name: "published head", code: "head_mismatch", prepare: func(e *nativeExecution) { e.change.HeadSHA = "private head" }},
+				{name: "missing disposition", code: "disposition_missing", prepare: func(e *nativeExecution) { e.preparedDisposition = nil }},
+				{name: "incomplete disposition", code: "disposition_incomplete", prepare: func(e *nativeExecution) { e.preparedDisposition.Status = "private status" }},
+				{name: "blockers", code: "disposition_blockers", prepare: func(e *nativeExecution) { e.preparedDisposition.Blockers = true }},
+				{name: "human action", code: "disposition_human_action", prepare: func(e *nativeExecution) { e.preparedDisposition.HumanAction = true }},
+				{name: "reason", code: "disposition_reason", prepare: func(e *nativeExecution) { e.preparedDisposition.ReasonCode = "private reason" }},
+				{name: "no change", code: "no_change_source_mismatch", prepare: func(e *nativeExecution) { e.change.NoChange = &tracker.NativeNoChangeCompletion{} }},
+				{name: "changed current version", code: "version_not_current", mutate: func(d *tracker.ChangeDetail) { d.Change.CurrentVersion = "new" }},
+				{name: "landed current version", code: "version_not_current", mutate: func(d *tracker.ChangeDetail) { d.Change.Landed = &tracker.ChangeLanding{VersionID: ref.VersionID} }},
+				{name: "unavailable version", code: "version_missing", mutate: func(d *tracker.ChangeDetail) { d.Versions = nil }},
+				{name: "head", code: "source_owner_mismatch", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].HeadSHA = nativeChangeFixtureHead("d") }},
+				{name: "base", code: "source_owner_mismatch", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].BaseSHA = nativeChangeFixtureHead("b") }},
+				{name: "policy", code: "source_owner_mismatch", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].PolicyID = "policy_other" }},
+				{name: "frozen policy", code: "source_owner_mismatch", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].Policy.ID = "policy_other" }},
+				{name: "item", code: "", mutate: func(d *tracker.ChangeDetail) { d.Change.WorkItemID = "wi_other" }},
+				{name: "project", code: "", mutate: func(d *tracker.ChangeDetail) { d.Change.ProjectID = "prj_other" }},
+				{name: "attempt", code: "source_owner_mismatch", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].AttemptID = "attempt_other" }},
+				{name: "run", code: "source_owner_mismatch", mutate: func(d *tracker.ChangeDetail) { d.Versions[0].RunID = "run_other" }},
+				{name: "unrecovered source", code: "source_owner_mismatch", prepare: func(e *nativeExecution) { e.recoveredSource = nil }},
+				{name: "unrecorded source owner", code: "source_owner_mismatch", prepare: func(e *nativeExecution) { e.claim.recovery.Attempts = nil }},
 			} {
 				t.Run(test.name, func(t *testing.T) {
+					savedChange, savedDisposition := second.change, second.preparedDisposition
+					change, disposition := *savedChange, *savedDisposition
+					second.change, second.preparedDisposition = &change, &disposition
+					t.Cleanup(func() { second.change, second.preparedDisposition = savedChange, savedDisposition })
 					source, recovery := second.recoveredSource, second.claim.recovery
 					t.Cleanup(func() { second.recoveredSource, second.claim.recovery = source, recovery })
 					if test.prepare != nil {
@@ -138,6 +158,7 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 						response.Body.Close()
 						if test.mutate != nil && page.Detail != nil && len(page.Detail.Versions) != 0 {
 							test.mutate(page.Detail)
+							page.Read.VersionID = page.Detail.Change.CurrentVersion
 						}
 						body, err := json.Marshal(page)
 						if err != nil {
@@ -147,8 +168,17 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 						return response, nil
 					}))
 					t.Cleanup(func() { fixtureClient(h.native.Transport()).requests.Store(transport) })
-					if err := second.PrepareReview(t.Context(), ref); err == nil {
-						t.Fatalf("mismatched %s accepted: %v", test.name, err)
+					err := second.PrepareReview(t.Context(), ref)
+					if test.code == "" {
+						var readErr *runner.NativeImplementationReviewError
+						if !errors.As(err, &readErr) || !errors.Is(err, ErrUnavailable) {
+							t.Fatalf("invalid Hub response = %v, want unavailable review", err)
+						}
+						return
+					}
+					var check reviewRefusal
+					if !errors.Is(err, runner.ErrNativeRecoveryRequired) || !errors.As(err, &check) || string(check) != test.code || err.Error() != runner.ErrNativeRecoveryRequired.Error()+": "+test.code {
+						t.Fatalf("review refusal = %v, want recovery with fixed check %q", err, test.code)
 					}
 				})
 			}
