@@ -4591,7 +4591,7 @@ func (r *Runner) workerProcessObserver(sessionID int64, cleanupRoot string) func
 		if !ok {
 			return nil
 		}
-		return worker.Report(ctx, sessionID, update.WorkerProcess, cleanupRoot, path, owner.UpdateSessionWorkerProcess)
+		return worker.Report(ctx, sessionID, store.WorkerProcessIdentity(update.WorkerProcess), cleanupRoot, path, owner.UpdateSessionWorkerProcess)
 	}
 }
 
