@@ -179,7 +179,7 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 				}
 				return []runner.AgentModel{{ID: "opus", Model: "design-model"}}, nil
 			}, nil)
-			workspaces, err := workspace.NewFilesystem(workspace.FilesystemOptions{ProcessSource: emptyProcessSource, Root: t.TempDir()})
+			workspaces, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
 			}

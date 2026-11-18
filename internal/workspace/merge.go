@@ -457,7 +457,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		return result, err
 	}
 	var process ValidationProcess
-	var groupID int
+	var startedCommand bool
 	defer func() {
 		if owner := issue.hookOwner; owner != nil {
 			status := gate.CommandResult{ExitCode: result.ExitCode, StartedAt: result.StartedAt, FinishedAt: result.FinishedAt, DurationNS: result.DurationNS}
@@ -472,14 +472,11 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 			}
 			return
 		}
-		cleanupCtx := context.WithoutCancel(ctx)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedWorkspacePreservationTimeout)
+		defer cancel()
 		var cleanupErr error
-		if process != nil || toolcache.ManagedBuildFromContext(ctx) != "" {
-			cleanupErr = procgroup.Cleanup(groupID)
-			if groupID > 0 {
-				_, err := ReapWorkerArtifactPathProcesses(cleanupCtx, info.Path, scratch, procgroup.DefaultTerminationGrace)
-				cleanupErr = errors.Join(cleanupErr, err)
-			}
+		if startedCommand && (process != nil || toolcache.ManagedBuildFromContext(ctx) != "") {
+			_, cleanupErr = ReapWorkerArtifactPathProcesses(cleanupCtx, info.Path, scratch, procgroup.DefaultTerminationGrace)
 		}
 		if cleanupErr == nil {
 			cleanupErr = CleanupWorkerScratch(info.Path, scratch)
@@ -531,7 +528,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	if err := cmd.Start(); err != nil {
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
-	groupID = procgroup.GroupID(cmd)
+	startedCommand = true
 	if process != nil {
 		identity, registrationErr := procgroup.Inspect(cmd)
 		if registrationErr == nil {

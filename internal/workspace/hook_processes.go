@@ -122,7 +122,7 @@ func (u *workspaceUses) stopHooks(ctx context.Context, path string) error {
 	return err
 }
 
-func (o *hookOwner) commandFinished(ctx context.Context) error {
+func (o *hookOwner) commandFinished(ctx context.Context, commandErr error) error {
 	if o == nil {
 		return nil
 	}
@@ -130,6 +130,10 @@ func (o *hookOwner) commandFinished(ctx context.Context) error {
 	defer o.mu.Unlock()
 	o.running = false
 	if err := o.descriptor.CloseWriter(); err != nil {
+		return err
+	}
+	if commandErr != nil {
+		_, err := o.stopLocked(ctx)
 		return err
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -144,6 +148,10 @@ func (o *hookOwner) commandFinished(ctx context.Context) error {
 func (o *hookOwner) stop(ctx context.Context) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	return o.stopLocked(ctx)
+}
+
+func (o *hookOwner) stopLocked(ctx context.Context) (int, error) {
 	if o.closed {
 		return 0, nil
 	}
