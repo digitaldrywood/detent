@@ -12235,7 +12235,8 @@
       "disposition": "target-schema",
       "families": [
         "core",
-        "event"
+        "event",
+        "lease"
       ],
       "inventory": {
         "operations": {
@@ -12243,7 +12244,9 @@
         },
         "tables": [
           "hub/change_requests",
+          "hub/collaboration_events",
           "hub/issues",
+          "hub/native_attempts",
           "hub/projects"
         ]
       }

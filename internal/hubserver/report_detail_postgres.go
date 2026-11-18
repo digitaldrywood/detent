@@ -140,11 +140,10 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubap
 		if _, ok := reader.(reportstore.AttemptUsageReader); ok {
 			attempts, attemptFactsAvailable = usage.Attempts, true
 		} else if attemptReader, ok := reader.(reportstore.AttemptReader); ok {
-			attempts, err = attemptReader.ReadAttemptFacts(ctx, reportstore.AttemptQuery{Projects: ids, Principal: query.Principal, From: prior.From, To: w.To, Filter: query.Filter, Limit: 50000})
-			attemptFactsAvailable = err == nil
-			if err != nil {
+			if attempts, err = attemptReader.ReadAttemptFacts(ctx, reportstore.AttemptQuery{Projects: ids, Principal: query.Principal, From: prior.From, To: w.To, Filter: query.Filter, Limit: 50000}); err != nil {
 				return err
 			}
+			attemptFactsAvailable = true
 		}
 		attemptFactsAvailable = attemptFactsAvailable && !slices.ContainsFunc(attempts, func(attempt reportstore.AttemptFact) bool { return !attempt.ProjectionKnown })
 		costs, costAvailable = usage.Costs, usage.CostsAvailable

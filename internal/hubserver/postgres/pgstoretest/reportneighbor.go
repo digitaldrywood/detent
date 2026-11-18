@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -69,7 +70,7 @@ func seedNeighborReportRows(ctx context.Context, db *sql.DB, organization string
 		if table.keys != nil {
 			repeat = copies
 		}
-		statement := fmt.Sprintf(`INSERT INTO %s(%s) OVERRIDING SYSTEM VALUE SELECT %s FROM %s CROSS JOIN generate_series(1,%d) neighbor_copy WHERE organization_id=$1 AND $3::text<>'' AND $4::text<>'' AND %s`, table.relation, strings.Join(columns, ","), strings.Join(values, ","), table.relation, repeat, table.where)
+		statement := strings.Join([]string{"INSERT INTO ", table.relation, "(", strings.Join(columns, ","), ") OVERRIDING SYSTEM VALUE SELECT ", strings.Join(values, ","), " FROM ", table.relation, " CROSS JOIN generate_series(1,", strconv.Itoa(repeat), ") neighbor_copy WHERE organization_id=$1 AND $3::text<>'' AND $4::text<>'' AND ", table.where}, "")
 		if _, err := tx.ExecContext(ctx, statement, organization, ReportNeighborOrganization, project, item); err != nil {
 			return fmt.Errorf("copy neighbor %s rows: %w", table.relation, err)
 		}

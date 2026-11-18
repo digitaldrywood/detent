@@ -2,6 +2,7 @@ package reportcheckpoints
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -50,7 +51,7 @@ ORDER BY c.landed_at DESC,c.id LIMIT $11`
 func LandingFacts(ctx context.Context, db pgquery.DBTX, organization tracker.OrganizationID, args []any, limit int, from time.Time) ([]reportstore.LandingFact, error) {
 	projects, ok := args[1].([]string)
 	if !ok || len(args) != 14 {
-		return nil, fmt.Errorf("report landing arguments have an unexpected shape")
+		return nil, errors.New("report landing arguments have an unexpected shape")
 	}
 	rows, err := db.Query(ctx, projectedLandings, args...)
 	if err != nil {
