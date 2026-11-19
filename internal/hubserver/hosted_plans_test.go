@@ -2219,7 +2219,7 @@ func exerciseHostedPlanFreeDefault(t *testing.T, service *Service) {
 	t.Helper()
 	f := newNativeFixture(t, service, "", "free-default")
 	for i := range 3 {
-		issue := f.create(t, fmt.Sprintf("Free plan work %d", i))
+		issue := f.createIndependent(t, fmt.Sprintf("Free plan work %d", i))
 		token, request := hostedPlanWorkRequest(t, f, issue, fmt.Sprintf("free-default-%d", i))
 		_, err := claimHostedPlanWork(t, f, token, request)
 		if i < 2 {
