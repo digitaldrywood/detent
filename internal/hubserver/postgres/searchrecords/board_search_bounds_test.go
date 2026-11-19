@@ -191,13 +191,23 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 		if !timedOut(err) || errors.Is(err, searchstore.ErrBusy) {
 			t.Fatalf("caller deadline error=%v, want a timeout that is not a busy search", err)
 		}
-		finished := make(chan error, 1)
+		searchCtx, cancelSearch := context.WithCancel(ctx)
+		finished := make(chan struct{})
+		var searchErr error
 		go func() {
-			finished <- patient.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.BoardPage(ctx, selection); return err })
+			defer close(finished)
+			searchErr = patient.ReadTenant(searchCtx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.BoardPage(searchCtx, selection)
+				return err
+			})
 		}()
+		t.Cleanup(func() {
+			cancelSearch()
+			<-finished
+		})
 		testenv.WaitUntil(t, ctx, func() error {
 			var cancelled bool
-			if err := blocker.QueryRowContext(ctx, `SELECT coalesce(bool_or(pg_cancel_backend(pid)),false) FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%FROM native_work_item_search%'`).Scan(&cancelled); err != nil {
+			if err := f.admin.QueryRowContext(ctx, `SELECT coalesce(bool_or(pg_cancel_backend(pid)),false) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%FROM native_work_item_search%'`).Scan(&cancelled); err != nil {
 				return err
 			}
 			if !cancelled {
@@ -205,10 +215,10 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			}
 			return nil
 		})
-		err = <-finished
+		<-finished
 		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "57014" || errors.Is(err, searchstore.ErrBusy) {
-			t.Fatalf("administrative cancellation error=%v, want SQLSTATE 57014 that is not a busy search", err)
+		if !errors.As(searchErr, &pgErr) || pgErr.Code != "57014" || errors.Is(searchErr, searchstore.ErrBusy) {
+			t.Fatalf("administrative cancellation error=%v, want SQLSTATE 57014 that is not a busy search", searchErr)
 		}
 	})
 	t.Run("principal concurrency cap", func(t *testing.T) {
