@@ -166,6 +166,22 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion
 			decodeHubResponse(t, response, &version)
+			sourcePath := f.path + "/versions/" + version.ID + "/source"
+			checkSource := func(stage, credential string, want int) {
+				t.Helper()
+				download := performHubAPIRequest(t, f.service, http.MethodGet, sourcePath, credential, nil)
+				if download.Code != want {
+					t.Errorf("%s: source download status = %d, want %d", stage, download.Code, want)
+					return
+				}
+				if want == http.StatusOK && !bytes.Equal(download.Body.Bytes(), bundle) {
+					t.Errorf("%s: downloaded source differs from the published bundle", stage)
+				}
+			}
+			if test.revoked {
+				checkSource("original lease holder", a.redemption.Credential, http.StatusOK)
+				checkSource("another runner holds the lease", b.redemption.Credential, http.StatusNotFound)
+			}
 			if test.replacement || test.stopped {
 				event.IdempotencyKey, event.Data.Sequence = "published-checkpoint", 3
 				event.Data.Handoff.WorktreeState = "clean"
@@ -439,7 +455,16 @@ func TestNativeSourceTransfer(t *testing.T) {
 				runnerPath := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runners/" + a.binding.RunnerID
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, runnerPath, testHubAdminToken, nil), http.StatusNoContent)
 				foreign := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign-source")
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.path+"/versions/"+version.ID+"/source", foreign.token, nil), http.StatusUnauthorized)
+				approveHubTestPolicy(t, f.service, foreign.base+"/policy", hubTestPolicy())
+				foreignRunner := prepareRunner(t, foreign, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+				foreignRunner.enroll(t)
+				foreignRunner.reportCapacity(t)
+				foreignClaim := claim
+				foreignClaim.WorkItemID = foreign.create(t, "foreign work").WorkItemID
+				foreignClaim.MachineID, foreignClaim.SessionID = foreignRunner.binding.MachineID, "foreign"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreign.base+"/claims", foreignRunner.redemption.Credential, foreignClaim), http.StatusOK)
+				checkSource("foreign operator", foreign.token, http.StatusUnauthorized)
+				checkSource("foreign runner with its own lease", foreignRunner.redemption.Credential, http.StatusUnauthorized)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/source-recovery", token, request)
 			if response.Code >= 500 {
@@ -713,23 +738,39 @@ func TestNativeSourceTransfer(t *testing.T) {
 				}
 				return
 			}
+			if test.revoked {
+				checkSource("before the replacement claims", b.redemption.Credential, http.StatusNotFound)
+				claim.MachineID = b.binding.MachineID
+				previousFence := lease.FencingToken
+				for _, end := range []string{"release", "expiry"} {
+					claim.SessionID = "destination-" + end
+					response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", b.redemption.Credential, claim)
+					requireNativeStatus(t, response, http.StatusOK)
+					var replacement tracker.NativeLease
+					decodeHubResponse(t, response, &replacement)
+					if replacement.WorkItemID != lease.WorkItemID || replacement.FencingToken <= previousFence {
+						t.Fatalf("replacement lease does not own the work item with a fresh fence: %+v", replacement)
+					}
+					previousFence = replacement.FencingToken
+					leasePath := f.base + "/leases/" + string(replacement.ID)
+					mutation := tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, leasePath+"/validate", b.redemption.Credential, mutation), http.StatusOK)
+					checkSource("with a current lease before "+end, b.redemption.Credential, http.StatusOK)
+					if end == "release" {
+						mutation.Reason = "completed"
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, leasePath+"/release", b.redemption.Credential, mutation), http.StatusNoContent)
+					} else {
+						clock.Advance(replacement.ExpiresAt.Sub(clock.Now()))
+					}
+					checkSource("after "+end, b.redemption.Credential, http.StatusNotFound)
+				}
+				checkSource("authorized operator after expiry", testHubAdminToken, http.StatusOK)
+				checkSource("authorized project reader after expiry", f.token, http.StatusOK)
+				return
+			}
 			claim.MachineID, claim.SessionID = b.binding.MachineID, "destination"
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", b.redemption.Credential, claim)
 			requireNativeStatus(t, response, http.StatusOK)
-			if test.revoked {
-				var replacement tracker.NativeLease
-				decodeHubResponse(t, response, &replacement)
-				if replacement.WorkItemID != lease.WorkItemID || replacement.FencingToken <= lease.FencingToken {
-					t.Fatalf("replacement lease does not own the work item with a fresh fence: %+v", replacement)
-				}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/validate", b.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken}), http.StatusOK)
-				response = performHubAPIRequest(t, f.service, http.MethodGet, f.path+"/versions/"+version.ID+"/source", b.redemption.Credential, nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				if !bytes.Equal(response.Body.Bytes(), bundle) {
-					t.Fatal("replacement runner restored different source")
-				}
-				return
-			}
 			event.IdempotencyKey, event.Data.Sequence = "late-owner", 4
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusConflict)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", a.redemption.Credential, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "late-publication", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedVersionID: version.ID, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusConflict)

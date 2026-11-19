@@ -20,6 +20,7 @@ type Deps struct {
 	CurrentTime    func() (time.Time, error)
 	Context        func(context.Context) context.Context
 	ReadChange     func(context.Context, hubapi.Scope, string, string) (tracker.ChangeRequest, error)
+	SourceAccess   func(context.Context, tracker.NativeWorkItemID) error
 	ReadVersion    func(context.Context, tracker.OrganizationID, string, string) (eventstore.Version, error)
 	Receipt        func(context.Context, hubapi.Scope, string, string, string) (json.RawMessage, bool, error)
 	RecordError    func(error) error
