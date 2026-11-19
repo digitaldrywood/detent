@@ -455,16 +455,16 @@ func (s *session) ProgressDependencies(ctx context.Context, project tracker.Proj
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT selected.blocker_project_id,selected.blocker_issue_id,blocker.native_id,selected.created_at
+	rows, err := s.db.Query(ctx, `SELECT selected.blocker_project_id,selected.blocker_issue_id,blocker.native_id,selected.created_at,blocker.native_source_key,blocker.workflow_state_name
 FROM (SELECT blocker_project_id,blocker_issue_id,created_at FROM issue_dependencies WHERE organization_id=$1 AND dependent_project_id=$2 AND dependent_issue_id=$3 AND provenance='progress_check' AND (blocker_project_id,blocker_issue_id)>($4::text,$5::bigint) ORDER BY blocker_project_id,blocker_issue_id LIMIT $6) selected
-CROSS JOIN LATERAL (SELECT native_id FROM issues WHERE organization_id=$1 AND project_id=selected.blocker_project_id AND id=selected.blocker_issue_id OFFSET 0) blocker
+CROSS JOIN LATERAL (SELECT native_id,native_source_key,workflow_state_name FROM issues WHERE organization_id=$1 AND project_id=selected.blocker_project_id AND id=selected.blocker_issue_id OFFSET 0) blocker
 ORDER BY selected.blocker_project_id,selected.blocker_issue_id`, s.organization, project, anchor.ID, cursor.ProjectID, cursor.IssueID, limit+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
 	result, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (corestore.ProgressDependency, error) {
 		var result corestore.ProgressDependency
-		err := row.Scan(&result.ProjectID, &result.IssueID, &result.WorkItemID, &result.CreatedAt)
+		err := row.Scan(&result.ProjectID, &result.IssueID, &result.WorkItemID, &result.CreatedAt, &result.NativeSourceKey, &result.WorkflowStateName)
 		return result, err
 	})
 	return result, mapError(ctx, err)
