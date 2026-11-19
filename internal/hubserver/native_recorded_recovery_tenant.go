@@ -102,7 +102,7 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 		return nil, err
 	}
 	prior, valid := recordedBlockedLane(issue, attempt, report, transition)
-	if !valid || issueContractWorkerHumanAction(row, issue) != nil || claimapi.RecordedHumanHold(attempt.TerminalFailure, attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
+	if !valid || issueContractWorkerHumanAction(row, issue) != nil || claimapi.RecordedHumanHold(attempt.Status, attempt.TerminalFailure, attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
 		return nil, corestore.ErrRevisionConflict
 	}
 	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt)
@@ -123,7 +123,7 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 	if bound.ProjectID != scope.Project || bound.PolicyID != attempt.PolicyID {
 		return nil, corestore.ErrRevisionConflict
 	}
-	machine := claimapi.RecordedMachineFailure(attempt.TerminalFailure, attempt.Disposition)
+	machine := claimapi.RecordedMachineFailure(attempt.Status, attempt.TerminalFailure, attempt.Disposition)
 	dependencies, ok := claimapi.RecordedRecoveryDependencies(attempt.Disposition, string(scope.Project))
 	staleBase := attempt.Disposition != nil && attempt.Disposition.ReasonCode == "stale_base"
 	if !ok || !machine && !staleBase && len(dependencies) == 0 {
@@ -188,11 +188,11 @@ func (s *Service) recordedWorkerMachineHold(ctx context.Context, scope hubscope.
 	if err != nil {
 		return nil, err
 	}
-	if claimapi.RecordedHumanHold(run.TerminalFailure, run.Disposition, run.CompletionBody, request.ReasonDetail) {
+	if claimapi.RecordedHumanHold(attempt.Status, run.TerminalFailure, run.Disposition, run.CompletionBody, request.ReasonDetail) {
 		return nil, nil
 	}
 	dependencies, valid := claimapi.RecordedRecoveryDependencies(run.Disposition, string(scope.Project))
-	if !claimapi.RecordedMachineFailure(run.TerminalFailure, run.Disposition) || !valid || len(dependencies) != 0 || run.Disposition != nil && run.Disposition.ReasonCode == "stale_base" {
+	if !claimapi.RecordedMachineFailure(attempt.Status, run.TerminalFailure, run.Disposition) || !valid || len(dependencies) != 0 || run.Disposition != nil && run.Disposition.ReasonCode == "stale_base" {
 		return nil, nil
 	}
 	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt)
@@ -343,7 +343,7 @@ func recordedBlockedLane(issue tracker.NativeIssue, attempt tracker.NativeAttemp
 		lane.AggregateID != issue.WorkItemID || lane.ProjectID != issue.ProjectID || lane.OrganizationID != issue.OrganizationID ||
 		lane.Data.Revision != issue.Revision || lane.Data.ToState != issue.State || lane.Data.Reason != "worker_progress" ||
 		lane.Data.BlockerAttemptID != "" && lane.Data.BlockerAttemptID != attempt.AttemptID ||
-		lane.RecordedAt.Before(attempt.StartedAt) || attempt.Identity == nil && !claimapi.RecordedMachineFailure(attempt.TerminalFailure, nil) || attempt.WorkItemRevision <= 0 ||
+		lane.RecordedAt.Before(attempt.StartedAt) || attempt.Identity == nil && !claimapi.RecordedMachineFailure(attempt.Status, attempt.TerminalFailure, nil) || attempt.WorkItemRevision <= 0 ||
 		max(report.Data.Revision, attempt.WorkItemRevision) > issue.Revision {
 		return "", false
 	}
