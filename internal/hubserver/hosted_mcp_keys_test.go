@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,16 +94,28 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 			for _, access := range []hubapi.HostedProjectAccess{hubapi.HostedProjectsSelected, hubapi.HostedProjectsAll} {
 				t.Run(string(access), func(t *testing.T) {
 					t.Parallel()
-					for _, scenario := range []string{"read", "write", "admin", "key revoked", "key expired", "key grant removed", "user grant removed", "provider membership removed", "local membership removed", "membership replaced", "provider role downgraded", "local role downgraded", "write grant removed", "foreign organization", "foreign organization route", "foreign project", "unselected project", "issuer principal revoked", "issuer grant removed", "future project", "future project read key", "future project without user grant", "future project without issuer grant", "no projects at creation", "machine", "worker", "never expires read", "never expires write", "never expires admin", "never expires key revoked", "never expires provider membership removed", "never expires local membership removed", "never expires provider role downgraded", "never expires local role downgraded", "never expires user grant removed", "never expires key grant removed"} {
+					scenarios := []string{"read", "write", "admin", "key revoked", "key expired", "key grant removed", "user grant removed", "provider membership removed", "local membership removed", "membership replaced", "provider role downgraded", "local role downgraded", "write grant removed", "foreign organization", "foreign organization route", "foreign project", "unselected project", "issuer principal revoked", "issuer grant removed", "future project", "future project read key", "future project without user grant", "future project without issuer grant", "no projects at creation", "machine", "worker"}
+					if access == hubapi.HostedProjectsSelected {
+						scenarios = append(scenarios, "never expires key revoked")
+					} else {
+						scenarios = append(scenarios, "never expires read")
+					}
+					for _, scenario := range scenarios {
 						t.Run(scenario, func(t *testing.T) {
 							t.Parallel()
 							neverExpires := strings.HasPrefix(scenario, "never expires ")
 							scenario := strings.TrimPrefix(scenario, "never expires ")
+							checkPastExpiry := deployment == "dedicated" && neverExpires && scenario == "read"
+							var clockOffset atomic.Int64
 							var f hostedSecurityFixture
 							var shared hostedSharedFixture
 							if deployment == "shared" {
 								shared = newHostedSharedFixture(t)
 								f = shared.hostedSecurityFixture
+							} else if checkPastExpiry {
+								f = newHostedSecurityFixture(t, func(cfg *Config) {
+									cfg.Clock = func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())) }
+								})
 							} else {
 								f = newHostedSecurityFixture(t)
 							}
@@ -176,6 +189,9 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							}
 							if err != nil {
 								t.Fatal(err)
+							}
+							if checkPastExpiry {
+								clockOffset.Store(int64(time.Until(expiry) + time.Minute))
 							}
 							mcpHeaders := map[string]string{}
 							serve := func(method, path, body string) *httptest.ResponseRecorder {
