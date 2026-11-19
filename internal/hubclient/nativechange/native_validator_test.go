@@ -1,9 +1,11 @@
 package nativechange
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -11,11 +13,14 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
@@ -188,6 +193,141 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestRecordValidatorRecoversCommittedLegacyReview(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	previousPolicy := h.descriptor.ID
+	h.descriptor.Gates.Validator = true
+	h.descriptor = h.descriptor.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previousPolicy, Policy: h.descriptor}); err != nil {
+		t.Fatal(err)
+	}
+	issue := h.createInProgress(t, "Recover committed validator review")
+	item := tracker.NativeWorkItemID(issue.ID)
+	h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	head := nativeChangeFixtureHead("c")
+	execution.SetRepository(nativeChangeRepository)
+	execution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+		return nativeChangeSourceFixture(ctx, t, base, head), nil
+	})
+	execution.SetDiffSource(nativeChangeDiff(head, "README.md"))
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "example"}); err != nil {
+		t.Fatal(err)
+	}
+	sessions := api.NewRunnerSessions(h.native)
+	ctx := sessions.BindExecution(t.Context(), execution)
+	finishSession := func(role string) int64 {
+		t.Helper()
+		now := h.clock()
+		id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: issue.ID, StartedAt: now, AgentRole: role, Model: "example"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: now, FinalState: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sessions.RecordUsageEvent(ctx, store.UsageEvent{IssueID: issue.ID, SessionID: id, StartedAt: now, FinishedAt: now, Outcome: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sessions.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{IssueID: issue.ID, SessionID: id, StartedAt: now, FinishedAt: now, PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	if err := execution.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: finishSession(runner.RoleCode)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.PrepareFinish(ctx, "succeeded", "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", nil); err != nil {
+		t.Fatal(err)
+	}
+	change := execution.NativeChange()
+	input, err := execution.ValidatorVersion(ctx)
+	if err != nil || input.Version == nil {
+		t.Fatalf("validator input: %v", err)
+	}
+	version := input.Version
+	result := gate.ValidatorResult{
+		VersionID: version.ID, SessionID: finishSession("validator"), Submitted: true, Verdict: "pass", Score: 1,
+		Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: version.Source.DiffSHA256,
+		CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "go test ./...", Behavior: "The test checks the completed work"}},
+	}
+	command := tracker.ReviewChange{
+		Mutation:          tracker.Mutation{IdempotencyKey: fmt.Sprintf("%s:validator:%d", execution.data.AttemptID, result.SessionID), LeaseID: execution.claim.lease.ID, FencingToken: execution.claim.lease.FencingToken},
+		ExpectedVersionID: version.ID, Decision: "approved", Validator: &result,
+	}
+	raw, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.CriteriaEvidence[0].Behavior += strings.Repeat("x", maxResponseBytes-len(raw))
+	for i := range 201 {
+		if _, err := h.admin.DiscussChange(t.Context(), item, change.ChangeID, tracker.DiscussChange{Mutation: nativeMutationKey(), Body: fmt.Sprintf("Retained discussion %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.admin.Change(t.Context(), item, change.ChangeID); err == nil {
+		t.Fatal("legacy detail read accepted more than 200 records")
+	} else {
+		var refusal *APIError
+		if !errors.As(err, &refusal) || refusal.Code != "change_detail_too_large" {
+			t.Fatal(err)
+		}
+	}
+	cfg := fixtureClient(h.native.Transport()).config
+	transport := cfg.HTTPClient.Transport
+	posts := 0
+	cfg.HTTPClient = &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Query().Get("view") == "validator_receipt" {
+			r = r.Clone(r.Context())
+			r.URL.RawQuery = ""
+		}
+		response, err := transport.RoundTrip(r)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasSuffix(r.URL.Path, "/capabilities") {
+			response.Body.Close()
+			response.Body = io.NopCloser(strings.NewReader(`{"version":"0.190.2","features":["native_runtime_evidence"]}`))
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews") && response.StatusCode == http.StatusOK {
+			posts++
+			ack, err := io.ReadAll(response.Body)
+			response.Body.Close()
+			if err != nil {
+				return nil, err
+			}
+			t.Logf("committed inline review request=%d bytes acknowledgement=%d bytes", r.ContentLength, len(ack))
+			if len(ack) <= maxResponseBytes {
+				t.Errorf("committed review acknowledgement has %d bytes", len(ack))
+			}
+			response.Body = io.NopCloser(bytes.NewReader(ack))
+		}
+		return response, nil
+	})}
+	client, err := newTestClient(t, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := client.Native(h.organization, h.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution.claim.source = fixtureConnector(legacy)
+	if err := execution.RecordValidator(ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	if posts != 1 || execution.stepReviews == nil || len(execution.stepReviews.Reviews) != 1 {
+		t.Fatal("runner did not recover the single committed review")
+	}
+	review := execution.stepReviews.Reviews[0]
+	if review.Validator == nil || review.Validator.SessionID != result.SessionID || review.SessionMachineID != execution.claim.lease.MachineID || !reflect.DeepEqual(review.Validator.CriteriaEvidence, result.CriteriaEvidence) {
+		t.Fatal("recovered validator review differs from the committed evidence")
 	}
 }
 

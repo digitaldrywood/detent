@@ -25,14 +25,16 @@ import (
 func TestValidatorPublicationTransfersLargeResultOnce(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		bytes   int
-		lost    bool
-		archive bool
+		name      string
+		bytes     int
+		lost      bool
+		archive   bool
+		wrongHash bool
 	}{
-		{"legacy inline", 600 << 10, false, false},
-		{"inline with oversized response", 1000 << 10, true, false},
-		{"oversized result with lost acknowledgement", 1300 << 10, true, true},
+		{name: "legacy inline", bytes: 600 << 10},
+		{name: "inline with oversized response", bytes: 1000 << 10, lost: true},
+		{name: "inline with different receipt", bytes: 1000 << 10, lost: true, wrongHash: true},
+		{name: "oversized result with lost acknowledgement", bytes: 1300 << 10, lost: true, archive: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 7}
@@ -46,10 +48,17 @@ func TestValidatorPublicationTransfersLargeResultOnce(t *testing.T) {
 			var stored attachment.ArchiveReference
 			var uploadedDigest string
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v2/capabilities" {
+					json.NewEncoder(w).Encode(nativeCapabilities{Features: []string{tracker.NativeValidatorReceiptCapability}})
+					return
+				}
 				if r.Method == http.MethodGet {
 					reads++
 					if r.URL.Query().Get("view") != "validator_receipt" || r.URL.Query().Get("idempotency_key") != request.IdempotencyKey || r.URL.Query().Get("version_id") != request.ExpectedVersionID {
 						t.Fatal("uncertain result did not read its exact receipt")
+					}
+					if test.wrongHash {
+						commandHash = strings.Repeat("0", 64)
 					}
 					json.NewEncoder(w).Encode(map[string]string{"request_sha256": commandHash})
 					return
@@ -123,7 +132,12 @@ func TestValidatorPublicationTransfersLargeResultOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := WithMutationAuthority(t.Context(), native.Scope(), lease, nil)
-			if err := native.PublishValidator(ctx, lease.WorkItemID, "change_example", request.ExpectedVersionID, request); err != nil {
+			err = native.PublishValidator(ctx, lease.WorkItemID, "change_example", request.ExpectedVersionID, request)
+			if test.wrongHash {
+				if err == nil || !strings.Contains(err.Error(), "receipt differs") {
+					t.Fatalf("mismatched receipt: %v", err)
+				}
+			} else if err != nil {
 				t.Fatal(err)
 			}
 			if test.archive && (uploads != 1 || posts != 2 || reads != 1) || !test.archive && (uploads != 0 || posts != 1 || (reads == 1) != test.lost) {

@@ -20,6 +20,7 @@ const NativePreStartConversationBindingCapability = "native_pre_start_conversati
 
 const NativeRuntimeEvidenceCapability = "native_runtime_evidence"
 const NativeAttemptEvidencePageCapability = "native_attempt_evidence_page"
+const NativeValidatorReceiptCapability = "native_validator_receipt"
 const NativePreProviderFailureCapability = "native_pre_provider_failure"
 const NativeAdmissionEvidenceCapability = "native_admission_evidence"
 const NativeAdmissionObservationCapability = "native_admission_observation"
