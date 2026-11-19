@@ -184,6 +184,7 @@ type NativeLeaseResponseDetails struct {
 	PolicyID            string
 	IsolationPolicy     *isolation.Policy
 	ProviderReservation *providercapacity.Reservation
+	DependencyFacts     *tracker.NativeClaimDependencyFacts
 }
 
 type preparedNativeRunEvent struct {

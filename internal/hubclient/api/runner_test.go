@@ -82,7 +82,7 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 			body = string(encoded)
 		} else if strings.HasSuffix(request.URL.Path, "/claims") {
 			claims++
-			body = `{"isolation_policy":{"tier":"sandbox"}}`
+			body = `{"lease_id":"lease_example","work_item_id":"wi_example","fencing_token":"1","isolation_policy":{"tier":"sandbox"},"dependency_ready":true,"blockers":[{"work_item_id":"wi_blocker","state":"Done","terminal":true}]}`
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 	})
@@ -157,8 +157,18 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 			}
 		})
 	}
-	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); err != nil || claims != 1 {
+	lease, err := native.Claim(t.Context(), tracker.NativeClaim{})
+	if err != nil || claims != 1 {
 		t.Fatalf("open claim = %v, calls = %d", err, claims)
+	}
+	if lease.NativeClaimDependencyFacts == nil || !lease.DependencyReady || len(lease.Blockers) != 1 || lease.Blockers[0].ID != "wi_blocker" || !lease.Blockers[0].Terminal {
+		t.Fatalf("claim dependency facts = %+v", lease.NativeClaimDependencyFacts)
+	}
+	if err := native.Release(t.Context(), lease, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := client.nativeLeases.Load(native.base() + "/" + string(lease.WorkItemID)); ok {
+		t.Fatal("released claim retained its lease")
 	}
 }
 

@@ -99,6 +99,10 @@ func (r nativePreviewCountingReader) LandingCapacityUsage(ctx context.Context, p
 	return r.Reader.LandingCapacityUsage(ctx, project, now)
 }
 
+func (r nativePreviewCountingReader) WorkItemBlockerFacts(ctx context.Context, project tracker.ProjectID, ids []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
+	return r.Reader.(tenantstore.WorkItemBlockerBatchReader).WorkItemBlockerFacts(ctx, project, ids)
+}
+
 func (r nativePreviewCountingReader) ClaimAuditDispositionRows(ctx context.Context, project tracker.ProjectID, ids []int64) (map[int64][]eventstore.AuditDisposition, error) {
 	return r.Reader.(tenantstore.ClaimAuditDispositionRowsReader).ClaimAuditDispositionRows(ctx, project, ids)
 }
@@ -1534,4 +1538,119 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNativeClaimPreviewUsesCurrentBlockers(t *testing.T) {
+	t.Parallel()
+	service := newPostgresNativeService(t, Config{})
+	type candidate struct {
+		fixture nativeFixture
+		runner  runnerFixture
+		issue   tracker.NativeIssue
+		blocker tracker.NativeIssue
+	}
+	makeCandidate := func(organization tracker.OrganizationID) candidate {
+		t.Helper()
+		f := newNativeFixture(t, service, organization, "Example project")
+		runner := prepareRunnerForScope(t, f, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+		runner.enroll(t)
+		runner.reportCapacity(t)
+		approveHubTestPolicy(t, service, f.base+"/policy", hubTestPolicy())
+		issue := f.create(t, "Dependent")
+		blocker := f.create(t, "Prerequisite")
+		request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "add-blocker"}, ExpectedRevision: issue.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
+		response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/dependencies", f.token, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		issue = readWorkItem(t, f, issue.WorkItemID, "")
+		if issue.DependencyReady || len(issue.Blockers) != 1 || issue.Blockers[0].State != "Todo" {
+			t.Fatalf("fixture dependency facts = %+v, ready = %t", issue.Blockers, issue.DependencyReady)
+		}
+		issue.Revision++
+		version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{
+			OrganizationID: organization, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision),
+		}, historyTestJSON(t, issue))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			row, err := w.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
+				return err
+			}
+			_, err = w.CreateCollaborationVersion(t.Context(), version)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return candidate{fixture: f, runner: runner, issue: issue, blocker: blocker}
+	}
+	first := makeCandidate("org_first")
+	second := makeCandidate("org_first_second")
+	claim := func(c candidate) tracker.NativeClaim {
+		return tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: c.issue.WorkItemID, MachineID: c.runner.binding.MachineID, SessionID: "work", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	}
+	checkPreview := func(c candidate, ready bool) {
+		t.Helper()
+		request := tracker.NativeCapacityPreview{NativeClaim: claim(c)}
+		request.SessionID = ""
+		response := performHubAPIRequest(t, service, http.MethodPost, c.fixture.base+"/claims/preview", c.runner.redemption.Credential, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		var page tracker.NativeCapacityPage
+		decodeHubResponse(t, response, &page)
+		index := slices.IndexFunc(page.Items, func(issue tracker.NativeIssue) bool { return issue.WorkItemID == c.issue.WorkItemID })
+		if !ready {
+			if index >= 0 {
+				t.Fatalf("preview included blocked dependent %s", c.issue.WorkItemID)
+			}
+			return
+		}
+		if index < 0 {
+			t.Fatalf("preview omitted ready dependent %s", c.issue.WorkItemID)
+		}
+		got := page.Items[index]
+		if got.Revision != c.issue.Revision {
+			t.Fatalf("dependent revision = %d, want %d", got.Revision, c.issue.Revision)
+		}
+		if !got.DependencyReady || len(got.Blockers) != 1 || got.Blockers[0].ID != c.blocker.WorkItemID || got.Blockers[0].State != "Done" || !got.Blockers[0].Terminal {
+			t.Fatalf("preview readiness = %t, blockers = %+v, want only completed blocker %s", got.DependencyReady, got.Blockers, c.blocker.WorkItemID)
+		}
+	}
+	moveBlocker := func(c *candidate, state string) {
+		t.Helper()
+		request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "prerequisite-" + state}, ExpectedRevision: c.blocker.Revision, State: state, Reason: "user_requested"}
+		response := performHubAPIRequest(t, service, http.MethodPost, c.fixture.base+"/work-items/"+string(c.blocker.WorkItemID)+"/workflow", c.fixture.token, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		c.blocker = readWorkItem(t, c.fixture, c.blocker.WorkItemID, "")
+	}
+
+	checkPreview(first, false)
+	checkPreview(second, false)
+	moveBlocker(&first, "Done")
+	checkPreview(first, true)
+	checkPreview(second, false)
+	moveBlocker(&second, "Done")
+	checkPreview(second, true)
+
+	request := claim(first)
+	response := performHubAPIRequest(t, service, http.MethodPost, first.fixture.base+"/claims", first.runner.redemption.Credential, request)
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	if lease.WorkItemID != first.issue.WorkItemID {
+		t.Fatalf("claimed %s, want %s", lease.WorkItemID, first.issue.WorkItemID)
+	}
+	if lease.NativeClaimDependencyFacts == nil || !lease.DependencyReady || len(lease.Blockers) != 1 || lease.Blockers[0].ID != first.blocker.WorkItemID || lease.Blockers[0].State != "Done" || !lease.Blockers[0].Terminal {
+		t.Fatalf("claim dependency facts = %+v, want only completed blocker %s", lease.NativeClaimDependencyFacts, first.blocker.WorkItemID)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, first.fixture.base+"/leases/"+string(lease.ID)+"/release", first.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
+
+	moveBlocker(&first, "Todo")
+	checkPreview(first, false)
+	checkPreview(second, true)
+	request.SessionID = "reopened"
+	response = performHubAPIRequest(t, service, http.MethodPost, first.fixture.base+"/claims", first.runner.redemption.Credential, request)
+	requireNativeError(t, response, http.StatusConflict, "no_claimable_work")
 }

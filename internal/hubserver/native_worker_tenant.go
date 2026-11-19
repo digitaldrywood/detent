@@ -621,20 +621,37 @@ func (s *Service) respondNativeLeaseTenant(c echo.Context, scope hubscope.Native
 	}
 	var lease leasestore.Lease
 	var details NativeLeaseResponseDetails
-	err := s.config.TenantRepository.ReadTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-
+	var blockerFacts []tenantstore.WorkItemRelationshipFact
+	ctx := c.Request().Context()
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader := s.nativeLeaseReader(r, scope)
 		var err error
-		lease, err = reader.Lease(c.Request().Context(), leaseID)
+		lease, err = reader.Lease(ctx, leaseID)
 		if err != nil {
 			return err
 		}
-		details, err = s.nativeLeaseResponseDetails(c.Request().Context(), reader, scope, lease)
+		details, err = s.nativeLeaseResponseDetails(ctx, reader, scope, lease)
+		if err != nil {
+			return err
+		}
+		if details.WorkItemID == "" {
+			return corestore.ErrNotFound
+		}
+		blockerFacts, err = readNativeClaimBlockerFacts(ctx, r, scope.Project, []tracker.NativeWorkItemID{details.WorkItemID})
 		return err
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	blockers, err := s.visibleNativeClaimBlockers(ctx, scope, blockerFacts)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	itemBlockers := blockers[details.WorkItemID]
+	if itemBlockers == nil {
+		itemBlockers = []tracker.NativeDependency{}
+	}
+	details.DependencyFacts = &tracker.NativeClaimDependencyFacts{Blockers: itemBlockers, DependencyReady: nativeClaimDependenciesReady(itemBlockers)}
 	return s.writeNativeLeaseResponse(c, lease, details)
 }
 
@@ -643,7 +660,8 @@ func (s *Service) writeNativeLeaseResponse(c echo.Context, lease leasestore.Leas
 		return s.nativeAPIError(c, corestore.ErrNotFound)
 	}
 	return c.JSON(http.StatusOK, tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: details.IsolationPolicy,
-		ProviderReservation: details.ProviderReservation, ServerTime: s.config.Clock().UTC(), PolicyID: details.PolicyID,
+		NativeClaimDependencyFacts: details.DependencyFacts,
+		ProviderReservation:        details.ProviderReservation, ServerTime: s.config.Clock().UTC(), PolicyID: details.PolicyID,
 		ID: tracker.LeaseID(lease.LeaseID), WorkItemID: details.WorkItemID, MachineID: tracker.MachineID(lease.MachineID), SessionID: lease.SessionID,
 		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
 }

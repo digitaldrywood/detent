@@ -158,9 +158,11 @@ JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
 JOIN projects p ON p.organization_id=r.organization_id AND p.id=$3 AND p.deleted_at IS NULL
 WHERE r.organization_id=$1 AND `
 
-const runnerProjectAuthorityRuleSQL = ` AND r.removed_at IS NULL
+const activeRunnerCredentialSQL = `r.removed_at IS NULL
 AND r.expires_at>$4 AND t.scope='worker' AND t.key_kind='service' AND t.revoked_at IS NULL
-AND t.created_at<=$4 AND (t.expires_at IS NULL OR t.expires_at>$4)
+AND t.created_at<=$4 AND (t.expires_at IS NULL OR t.expires_at>$4)`
+
+const runnerProjectAuthorityRuleSQL = ` AND ` + activeRunnerCredentialSQL + `
 AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=p.id))`
 
 const runnerProjectAuthorizedSQL = runnerProjectAuthoritySourceSQL + `r.runner_id=$2` + runnerProjectAuthorityRuleSQL

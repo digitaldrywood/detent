@@ -77,7 +77,7 @@ func Page(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID,
 	return page, nil
 }
 
-func Facts(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID, workItems []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
+func Facts(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID, workItems []tracker.NativeWorkItemID, blockersOnly bool) ([]tenantstore.WorkItemRelationshipFact, error) {
 	if len(workItems) == 0 || len(workItems) > corestore.MaxRelationshipBatch {
 		return nil, corestore.ErrInvalidPage
 	}
@@ -92,6 +92,7 @@ func Facts(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID
 		OrganizationID: tx.Organization,
 		WorkItemIds:    ids,
 		ProjectID:      project,
+		BlockersOnly:   blockersOnly,
 	})
 	if err != nil {
 		return nil, pgcore.MapError(ctx, err)

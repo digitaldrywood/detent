@@ -11,6 +11,10 @@ type WorkItemRelationshipBatchReader interface {
 	WorkItemRelationshipFacts(context.Context, tracker.ProjectID, []tracker.NativeWorkItemID) ([]WorkItemRelationshipFact, error)
 }
 
+type WorkItemBlockerBatchReader interface {
+	WorkItemBlockerFacts(context.Context, tracker.ProjectID, []tracker.NativeWorkItemID) ([]WorkItemRelationshipFact, error)
+}
+
 type WorkItemRelationshipFact struct {
 	WorkItemID            tracker.NativeWorkItemID
 	Relationship          corestore.Relationship
