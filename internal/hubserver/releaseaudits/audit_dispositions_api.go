@@ -1,4 +1,4 @@
-package hubserver
+package releaseaudits
 
 import (
 	"context"
@@ -6,8 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-
-	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -18,27 +16,28 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
 )
 
-func (s *Service) postAuditDisposition(c echo.Context) error {
+func (s *ChangeEvidence) PostAuditDisposition(c echo.Context) error {
 	var request securityaudit.DispositionCommand
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return s.deps.InvalidAPIRequest(c, err)
 	}
 	if request.RequestID == "" || len(request.RequestID) > 128 || !request.Confirm || strings.TrimSpace(request.FindingID) == "" || strings.TrimSpace(request.Evidence) == "" || len(request.Evidence) > securityaudit.MaxDispositionEvidenceBytes || request.Key.Repository == "" || request.Key.BaseSHA == "" || request.Key.HeadSHA == "" {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("confirmed disposition requires exact source, finding and bounded evidence"))
+		return s.deps.NativeAPIError(c, hubapi.NativePublicInvalid("confirmed disposition requires exact source, finding and bounded evidence"))
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := hubscope.NativeRequestScope(c)
 	hash, err := hubapi.CommandHash(request)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
 	var receipt *eventstore.AuditDisposition
 	var candidates []eventstore.Evidence
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+	err = s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.deps.AuthorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
 		reader, ok := r.(eventstore.AuditDispositionReader)
@@ -66,25 +65,25 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
 	if receipt != nil {
 		value, err := s.readAuditDisposition(ctx, scope, *receipt)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.NativeAPIError(c, err)
 		}
 		return c.JSON(http.StatusOK, value)
 	}
 	var selected *eventstore.Evidence
 	var run securityaudit.Run
 	for _, candidate := range candidates {
-		raw, err := eventstore.NewContent(s.runDetailStore()).Evidence(ctx, candidate)
+		raw, err := eventstore.NewContent(s.deps.RunDetailStore()).Evidence(ctx, candidate)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.NativeAPIError(c, err)
 		}
 		var review tracker.ChangeReview
 		if err := json.Unmarshal(raw, &review); err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.NativeAPIError(c, err)
 		}
 		if review.SecurityAudit == nil || candidate.VersionID == nil || review.SecurityAudit.VersionID != *candidate.VersionID || review.SecurityAudit.SessionID != review.SecurityAudit.Run.ID {
 			continue
@@ -103,31 +102,31 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 		break
 	}
 	if selected == nil || run.ID < 1 {
-		return s.nativeAPIError(c, hubapi.NativeNotFound())
+		return s.deps.NativeAPIError(c, hubapi.NativeNotFound())
 	}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.authorizeAuditDisposition(ctx, r, scope, *selected, run, false)
 	})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
-	disposition := securityaudit.Disposition{AuditRunID: run.ID, FindingID: request.FindingID, Status: securityaudit.DispositionFalsePositive, Evidence: strings.TrimSpace(request.Evidence), ServiceIdentity: securityaudit.ServiceIdentity(string(scope.Project)), RecordedAt: s.config.Clock().UTC()}
+	disposition := securityaudit.Disposition{AuditRunID: run.ID, FindingID: request.FindingID, Status: securityaudit.DispositionFalsePositive, Evidence: strings.TrimSpace(request.Evidence), ServiceIdentity: securityaudit.ServiceIdentity(string(scope.Project)), RecordedAt: s.deps.Clock().UTC()}
 	raw, err := json.Marshal(disposition)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
-	ref, err := s.runDetailStore().StoreDetail(ctx, string(scope.Organization), raw)
+	ref, err := s.deps.RunDetailStore().StoreDetail(ctx, string(scope.Organization), raw)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
-	if err := validateNativeDetailReference(ctx, s.runDetailStore(), scope.Organization, ref, raw); err != nil {
-		return s.nativeAPIError(c, err)
+	if err := s.deps.ValidateNativeDetailReference(ctx, s.deps.RunDetailStore(), scope.Organization, ref, raw); err != nil {
+		return s.deps.NativeAPIError(c, err)
 	}
 	row := eventstore.AuditDisposition{ActorID: scope.Credential.ID, Organization: scope.Organization, Project: scope.Project, ChangeID: selected.ChangeID, ReviewSequence: selected.Sequence, Disposition: disposition, Reference: ref}
 	row.RequestKey = request.RequestID
 	row.RequestHash = hash
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+	err = s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.deps.AuthorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
@@ -147,17 +146,17 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 		if errors.Is(err, corestore.ErrRevisionConflict) {
 			err = hubapi.NativeConflict(0)
 		}
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
 	value, err := s.readAuditDisposition(ctx, scope, row)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, value)
 }
 
-func (s *Service) authorizeAuditDisposition(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, evidence eventstore.Evidence, run securityaudit.Run, lock bool) error {
-	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+func (s *ChangeEvidence) authorizeAuditDisposition(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, evidence eventstore.Evidence, run securityaudit.Run, lock bool) error {
+	if err := s.deps.AuthorizeAccessScope(ctx, r, scope, true); err != nil {
 		return err
 	}
 	change, err := r.Change(ctx, evidence.ChangeID)
@@ -183,7 +182,7 @@ func (s *Service) authorizeAuditDisposition(ctx context.Context, r tenantstore.R
 			return accessstore.ErrDenied
 		}
 		scope.RequireHostedAdmin = true
-		return s.authorizeAccessScope(ctx, r, scope, true)
+		return s.deps.AuthorizeAccessScope(ctx, r, scope, true)
 	}
 	reader, ok := r.(runnersession.Reader)
 	if !ok {
@@ -200,7 +199,7 @@ func (s *Service) authorizeAuditDisposition(ctx context.Context, r tenantstore.R
 	if err != nil {
 		return err
 	}
-	current, _, err := s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: tracker.LeaseID(attempt.LeaseID), FencingToken: tracker.FencingToken(attempt.FencingToken)}, session.IssueID, lock)
+	current, _, err := s.deps.RunnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: tracker.LeaseID(attempt.LeaseID), FencingToken: tracker.FencingToken(attempt.FencingToken)}, session.IssueID, lock)
 	if err != nil {
 		return err
 	}

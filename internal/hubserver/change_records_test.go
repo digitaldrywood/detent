@@ -1955,42 +1955,37 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	details.data[canonical.PayloadObjectKey] = canonicalPayload
 	details.mu.Unlock()
 	requireUnchanged("missing canonical Change payload")
-	moved := false
-	details.afterStore = func(attachment.ArchiveReference) {
-		if moved {
-			return
-		}
-		moved = true
-		content := eventstore.NewContent(details)
-		current, err := content.Change(t.Context(), canonical)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		current.Revision++
-		current.UpdatedAt = current.UpdatedAt.Add(time.Microsecond)
-		raw, err := json.Marshal(current)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		record, err := content.PrepareChange(t.Context(), orgID, raw)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		record.Revision = canonical.Revision
-		if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.UpdateChange(t.Context(), record)
-			return err
-		}); err != nil {
-			t.Error(err)
-		}
+	movedStore := &changeReadInterceptionStore{
+		DetailStore: originalRunDetails,
+		key:         canonical.PayloadObjectKey,
+		afterRead: func(ctx context.Context) error {
+			content := eventstore.NewContent(originalRunDetails)
+			current, err := content.Change(ctx, canonical)
+			if err != nil {
+				return err
+			}
+			current.Revision++
+			current.UpdatedAt = current.UpdatedAt.Add(time.Microsecond)
+			raw, err := json.Marshal(current)
+			if err != nil {
+				return err
+			}
+			record, err := content.PrepareChange(ctx, orgID, raw)
+			if err != nil {
+				return err
+			}
+			record.Revision = canonical.Revision
+			return repository.WriteTenant(ctx, orgID, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.UpdateChange(ctx, record)
+				return err
+			})
+		},
 	}
+	service.config.RunDetails = movedStore
 	movedClaim := landingEvent("landing-moved-payload", 5, landedClaim)
 	movedResponse := performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, movedClaim)
-	details.afterStore = nil
-	if !moved {
+	service.config.RunDetails = originalRunDetails
+	if movedStore.afterRead != nil {
 		t.Fatal("canonical Change payload did not move during the landed claim")
 	}
 	var unavailable struct{ Code string }

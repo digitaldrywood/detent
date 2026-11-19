@@ -2035,6 +2035,18 @@
         "tables": []
       }
     },
+    "internal/hubserver/change_version_authority_records.go": {
+      "disposition": "non-storage",
+      "families": [
+        "non-storage"
+      ],
+      "inventory": {
+        "operations": {
+          "tenantChangeVersionAuthority.Prepare:Prepare": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/change_version_records.go": {
       "atomic_groups": [
         "change-publication"
@@ -2090,7 +2102,7 @@
         "tables": []
       }
     },
-    "internal/hubserver/conversation_work_items_sql.go": {
+    "internal/hubserver/conversations/work_items_sql.go": {
       "disposition": "serving",
       "families": [
         "conversation",
@@ -2099,7 +2111,7 @@
       ],
       "inventory": {
         "operations": {
-          "resolveConversationWorkItems:SQL": 1
+          "ResolveConversationWorkItems:SQL": 1
         },
         "tables": [
           "hub/issues",
