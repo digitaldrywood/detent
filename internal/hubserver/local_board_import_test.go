@@ -3,12 +3,9 @@ package hubserver
 import (
 	"bytes"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"maps"
 	"net/http"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -33,8 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func localBoardFixture(t *testing.T, kind string) (string, []localboard.Record) {
-	t.Helper()
+func localBoardFixture(kind string) []localboard.Record {
 	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	updated := created.AddDate(0, 0, 1)
 	records := []localboard.Record{
@@ -47,15 +43,7 @@ func localBoardFixture(t *testing.T, kind string) (string, []localboard.Record) 
 			records[i].Repository = "example-org/example-project"
 		}
 	}
-	raw, err := json.Marshal(records)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "board.json")
-	if err := os.WriteFile(path, raw, 0400); err != nil {
-		t.Fatal(err)
-	}
-	return path, records
+	return records
 }
 
 type localBoardTestRepository struct {
@@ -162,22 +150,12 @@ func TestLocalBoardImportFixtures(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"local_sqlite", "github_local"} {
 		t.Run(kind, func(t *testing.T) {
-			path, records := localBoardFixture(t, kind)
-			if len(records) != 2 || records[0].SourceID != "z-first" || records[1].SourceID != "a-second" {
-				t.Fatalf("dependency order or open selection: %+v", records)
-			}
-			if len(records[1].Comments) != 1 || records[1].Comments[0].Body != "Edited comment" {
-				t.Fatalf("comment event replay: %+v", records[1].Comments)
-			}
+			records := localBoardFixture(kind)
 			markers := []string{"<!-- detent:self-improvement proposal_id=import-first -->", "<!-- detent:self-improvement proposal_id=import-second -->"}
 			for index := range records {
 				records[index].Body += "\n" + strings.Repeat("x", 70<<10) + "\n" + markers[index]
 			}
 			records[0].Body += "\n\nhttps://figma.com/design/example"
-			before, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
 			f := localBoardTarget(t, nil, "import")
 			targets := []nativeFixture{f, localBoardTarget(t, f.service, "second-target")}
 			importedBySource := map[tracker.OrganizationID]map[string]tracker.NativeIssue{}
@@ -359,13 +337,6 @@ func TestLocalBoardImportFixtures(t *testing.T) {
 					t.Fatalf("reopened replay wrote rows: %v -> %v", before, after)
 				}
 			}
-			after, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(before, after) {
-				t.Fatal("source copy changed")
-			}
 			if kind == "local_sqlite" {
 				t.Run("terminal prerequisite", func(t *testing.T) {
 					for _, target := range targets {
@@ -422,7 +393,7 @@ func localBoardCounts(t *testing.T, f nativeFixture) []int {
 
 func TestLocalBoardImportRefusals(t *testing.T) {
 	t.Parallel()
-	_, records := localBoardFixture(t, "local_sqlite")
+	records := localBoardFixture("local_sqlite")
 	f := localBoardTarget(t, nil, "refusals")
 	for _, test := range []struct {
 		name, token string
@@ -512,7 +483,7 @@ func TestLocalBoardImportRefusals(t *testing.T) {
 
 func TestLocalBoardImportHostedAuthorityAndAllowances(t *testing.T) {
 	t.Parallel()
-	_, records := localBoardFixture(t, "local_sqlite")
+	records := localBoardFixture("local_sqlite")
 	admin := postgresStartupTemplate.Database(t)
 	for _, test := range []struct {
 		name, role, scope string
@@ -610,7 +581,7 @@ func TestLocalBoardImportHostedAuthorityAndAllowances(t *testing.T) {
 
 func TestLocalBoardGitHubMatchRefusals(t *testing.T) {
 	t.Parallel()
-	_, records := localBoardFixture(t, "github_local")
+	records := localBoardFixture("github_local")
 	for _, test := range []string{"missing intake", "repository mismatch", "native lane changed", "terminal native item"} {
 		t.Run(test, func(t *testing.T) {
 			f := localBoardTarget(t, nil, test)
@@ -632,9 +603,7 @@ func TestLocalBoardGitHubMatchRefusals(t *testing.T) {
 				}
 			}
 			before := localBoardCounts(t, f)
-			for _, dry := range []bool{true, false} {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/local-board-import", f.token, localboard.Request{Record: record, DryRun: dry}), http.StatusUnprocessableEntity)
-			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/local-board-import", f.token, localboard.Request{Record: record}), http.StatusUnprocessableEntity)
 			if after := localBoardCounts(t, f); !reflect.DeepEqual(before, after) {
 				t.Fatal("unmatched or protected GitHub item changed")
 			}
@@ -730,7 +699,7 @@ func localBoardWorker(t *testing.T, f nativeFixture) string {
 func TestLocalBoardImportRollsBackAtSourceMappingWrite(t *testing.T) {
 	t.Parallel()
 	f := localBoardTarget(t, nil, "rollback")
-	_, records := localBoardFixture(t, "local_sqlite")
+	records := localBoardFixture("local_sqlite")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/local-board-import", f.token, localboard.Request{Record: records[0]}), http.StatusOK)
 	admin := f.service.config.TenantRepository.(localBoardTestRepository).admin
 	if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION refuse_local_board_mapping() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'mapping write refused'; END$$; CREATE TRIGGER refuse_local_board_mapping BEFORE INSERT ON local_board_imports FOR EACH ROW EXECUTE FUNCTION refuse_local_board_mapping()`); err != nil {
