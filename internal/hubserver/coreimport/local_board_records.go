@@ -1,4 +1,4 @@
-package hubserver
+package coreimport
 
 import (
 	"context"
@@ -56,7 +56,7 @@ func localBoardMapping(ctx context.Context, r tenantstore.Reader, scope hubscope
 	return reader.LocalImportMapping(ctx, postgres.LocalImportMappingInput{OrganizationID: scope.Organization, ProjectID: scope.Project, SourceKey: key})
 }
 
-func (s *Service) planLocalBoardRecord(ctx context.Context, scope hubscope.NativeScope, request localboard.Request) (localBoardImportPlan, error) {
+func (s LocalBoardDeps) planLocalBoardRecord(ctx context.Context, scope hubscope.NativeScope, request localboard.Request) (localBoardImportPlan, error) {
 	record := request.Record
 	plan := localBoardImportPlan{result: localboard.Result{SourceID: record.SourceID, SourceState: record.State, Action: "created", Comments: len(record.Comments), Dependencies: len(record.Dependencies)}}
 	raw, err := json.Marshal(record)
@@ -66,8 +66,8 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope hubscope.Nativ
 	digest := sha256.Sum256(raw)
 	plan.digest = hex.EncodeToString(digest[:])
 	var version eventstore.CollaborationVersion
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
+	err = s.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.AuthorizeWorkItemRecordScope(ctx, r, scope); err != nil {
 			return err
 		}
 		var err error
@@ -101,7 +101,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope hubscope.Nativ
 			return err
 		}
 		if record.Kind == "github_local" {
-			if err := validateLinkedIssueRepository(projectIntegrationRecord(plan.project), record.Repository); err != nil {
+			if err := s.ValidateLinkedRepository(plan.project, record.Repository); err != nil {
 				return err
 			}
 			url := "https://github.com/" + strings.ToLower(record.Repository) + "/issues/" + strconv.Itoa(record.Number)
@@ -188,7 +188,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope hubscope.Nativ
 		return plan, err
 	}
 	if plan.current.ID != 0 {
-		plan.issue, err = s.hydrateWorkItemRecord(ctx, plan.current, version)
+		plan.issue, err = s.HydrateWorkItemRecord(ctx, plan.current, version)
 		if err != nil {
 			return plan, err
 		}
@@ -211,8 +211,8 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope hubscope.Nativ
 	return s.planLocalBoardMutations(ctx, scope, record, plan)
 }
 
-func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.NativeScope, record localboard.Record, plan localBoardImportPlan) (localBoardImportPlan, error) {
-	now := s.config.Clock().UTC().Truncate(time.Microsecond)
+func (s LocalBoardDeps) planLocalBoardMutations(ctx context.Context, scope hubscope.NativeScope, record localboard.Record, plan localBoardImportPlan) (localBoardImportPlan, error) {
+	now := s.Clock().UTC().Truncate(time.Microsecond)
 	provenance := &tracker.Provenance{Provider: record.Kind, ExternalID: record.Key, AuthorID: record.Author, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, ObservedAt: now}
 	current := plan.current
 	issue := plan.issue
@@ -228,10 +228,10 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.Na
 	}
 	if record.Kind == "local_sqlite" && plan.current.NativeID == "" {
 		request := tracker.CreateIssue{Title: record.Title, Body: record.Body, Priority: record.Priority, State: plan.result.State, Provenance: provenance}
-		if err := validateWorkItemRecordCreateInput(ctx, scope, plan.project, request); err != nil {
+		if err := s.ValidateWorkItemCreate(ctx, scope, plan.project, request); err != nil {
 			return plan, err
 		}
-		p, err := s.planWorkItemRecord(ctx, scope, hubrecords.WorkItemRecordPlan{Project: plan.project, Issue: issue}, request)
+		p, err := s.PlanWorkItemRecord(ctx, scope, hubrecords.WorkItemRecordPlan{Project: plan.project, Issue: issue}, request)
 		if err != nil {
 			return plan, err
 		}
@@ -257,7 +257,7 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.Na
 		source.ExternalID = localboard.SourceKey(record.Key, "comment", record.Kind, comment.ID)
 		source.AuthorID = "detent"
 		source.CreatedAt, source.UpdatedAt = comment.CreatedAt, comment.UpdatedAt
-		p, err := s.planWorkItemRecord(ctx, scope, hubrecords.WorkItemRecordPlan{Project: plan.project, Current: current, Issue: issue}, tracker.CreateComment{Body: comment.Body, Provenance: &source})
+		p, err := s.PlanWorkItemRecord(ctx, scope, hubrecords.WorkItemRecordPlan{Project: plan.project, Current: current, Issue: issue}, tracker.CreateComment{Body: comment.Body, Provenance: &source})
 		if err != nil {
 			return plan, err
 		}
@@ -271,7 +271,7 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.Na
 		issue.Dependencies = slices.Clone(issue.Dependencies)
 		relationship := &corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: related.NativeID, Type: "dependency"}
 		p := hubrecords.WorkItemRecordPlan{Project: plan.project, Current: current, Issue: issue, Related: related, Relationship: relationship, RelationshipType: "dependency", RelationshipOperate: "add"}
-		p, err := s.planWorkItemRecord(ctx, scope, p, tracker.DependencyMutation{ExpectedRevision: issue.Revision, RelatedWorkItemID: related.NativeID, Operation: "add"})
+		p, err := s.PlanWorkItemRecord(ctx, scope, p, tracker.DependencyMutation{ExpectedRevision: issue.Revision, RelatedWorkItemID: related.NativeID, Operation: "add"})
 		if err != nil {
 			return plan, err
 		}
@@ -283,7 +283,7 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.Na
 	return plan, nil
 }
 
-func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope hubscope.NativeScope, m localBoardImportMutation, dry bool) (localBoardImportMutation, error) {
+func (s LocalBoardDeps) prepareLocalBoardMutation(ctx context.Context, scope hubscope.NativeScope, m localBoardImportMutation, dry bool) (localBoardImportMutation, error) {
 	p := m.plan
 	id, item, revision, at := string(p.Issue.WorkItemID), p.Issue.WorkItemID, int64(p.Issue.Revision), p.Issue.UpdatedAt
 	if p.Comment.ID != "" {
@@ -325,11 +325,11 @@ func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope hubscope.
 	if p.Comment.ID == "" {
 		m.identities = postgres.DeriveDoctorProposalIdentities(p.Issue.Body)
 	}
-	m.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, p)
+	m.fields, err = s.PrepareWorkItemFields(ctx, scope.Organization, p)
 	if err != nil {
 		return m, err
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(s.RunDetailStore())
 	m.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, RecordID: id, Revision: revision}, raw)
 	if err != nil {
 		return m, err
@@ -341,16 +341,16 @@ func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope hubscope.
 	return m, err
 }
 
-func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.NativeScope, request localboard.Request) (localboard.Result, error) {
+func (s LocalBoardDeps) ImportLocalBoardRecord(ctx context.Context, scope hubscope.NativeScope, request localboard.Request) (localboard.Result, error) {
 	scope.ImportedContent = true
-	if s.config.TenantRepository == nil {
+	if s.Repository == nil {
 		return localboard.Result{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return localboard.Result{}, err
 		}
-		if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		if err := s.RecheckProjectRecordMutation(ctx, scope); err != nil {
 			return localboard.Result{}, err
 		}
 		plan, err := s.planLocalBoardRecord(ctx, scope, request)
@@ -364,21 +364,21 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.Nat
 			}
 		}
 		if request.DryRun {
-			err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return s.localBoardAllowances(ctx, scope, r, nil, plan) })
+			err = s.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return s.localBoardAllowances(ctx, scope, r, nil, plan) })
 			return plan.result, hubapi.ProjectRecordError(err)
 		}
-		repository, ok := s.config.TenantRepository.(interface {
+		repository, ok := s.Repository.(interface {
 			WriteLocalBoardImport(context.Context, tracker.OrganizationID, func(tenantstore.Writer) error) error
 		})
 		if !ok {
 			return plan.result, hubapi.NativeWorkItemStorageUnavailable()
 		}
-		authority, err := s.beginProjectRecordAuthority(ctx, scope)
+		authority, err := s.BeginProjectRecordAuthority(ctx, scope)
 		if err != nil {
 			return plan.result, err
 		}
 		err = repository.WriteLocalBoardImport(ctx, scope.Organization, func(w tenantstore.Writer) error {
-			if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
+			if err := s.AuthorizeWorkItemRecordScope(ctx, w, scope); err != nil {
 				return err
 			}
 			mapping, err := localBoardMapping(ctx, w, scope, request.Record.Key)
@@ -470,34 +470,31 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.Nat
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()
 			}
-			if _, err := writer.PutLocalImportMapping(ctx, postgres.PutLocalImportMappingInput{OrganizationID: scope.Organization, ProjectID: scope.Project, SourceKey: request.Record.Key, SourceKind: request.Record.Kind, SourceDigest: plan.digest, WorkItemID: string(plan.result.WorkItemID), ImportedAt: s.config.Clock()}); err != nil {
+			if _, err := writer.PutLocalImportMapping(ctx, postgres.PutLocalImportMappingInput{OrganizationID: scope.Organization, ProjectID: scope.Project, SourceKey: request.Record.Key, SourceKind: request.Record.Kind, SourceDigest: plan.digest, WorkItemID: string(plan.result.WorkItemID), ImportedAt: s.Clock()}); err != nil {
 				return err
 			}
-			return s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), 200)
+			return s.RecordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), 200)
 		})
 		err = errors.Join(err, hubrecords.ReleaseWorkItemAuthority(authority))
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
 			continue
 		}
 		if err == nil {
-			select {
-			case s.boardRefresh <- struct{}{}:
-			default:
-			}
+			s.NotifyBoard()
 		}
 		return plan.result, hubapi.ProjectRecordError(err)
 	}
 }
 
-func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.NativeScope, r tenantstore.Reader, w tenantstore.Writer, plan localBoardImportPlan) error {
-	if s.database.plansService().Plans() == nil {
+func (s LocalBoardDeps) localBoardAllowances(ctx context.Context, scope hubscope.NativeScope, r tenantstore.Reader, w tenantstore.Writer, plan localBoardImportPlan) error {
+	if s.Plans().Plans() == nil {
 		return nil
 	}
-	now := s.config.Clock()
-	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", now)); err != nil {
+	now := s.Clock()
+	if err := hubapi.FromFeatureError(s.Plans().RequireFeatureRecord(ctx, r, "collaboration", now)); err != nil {
 		return err
 	}
-	entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, now))
+	entitlement, err := hubapi.FeatureResult(s.Plans().EntitlementRecord(ctx, r, now))
 	if err != nil {
 		return err
 	}
@@ -525,13 +522,13 @@ func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.Nativ
 			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: result.Used}
 		}
 	}
-	plans := s.database.plansService().Plans()
+	plans := s.Plans().Plans()
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	for _, value := range []struct {
 		metric string
 		amount int64
 	}{{"api_mutations", 1}, {"ingested_events", int64(len(plan.mutations))}} {
-		if value.amount == 0 || value.metric == "api_mutations" && ctx.Value(runnerRequestBudgetContext{}) == true {
+		if value.amount == 0 || value.metric == "api_mutations" && s.IsRunnerBudget(ctx) {
 			continue
 		}
 		used, err := r.BillingUsage(ctx, window, value.metric)

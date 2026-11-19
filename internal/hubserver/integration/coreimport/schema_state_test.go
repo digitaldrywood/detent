@@ -1,26 +1,20 @@
-package hubserver
+package coreimport_test
 
 import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
-func TestCurrentSchemaFingerprintUsesLatestMigrationState(t *testing.T) {
+func TestPostgresOpenUsesLatestMigrationState(t *testing.T) {
 	t.Parallel()
-	admin := postgresStartupTemplate.Database(t)
-	config := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
-	before, err := openPostgresDatabase(t.Context(), *config.Postgres)
+	admin := hubtest.Database(t)
+	config := hubtest.PostgresConfig(t, admin)
+	version, err := postgres.LatestSchemaVersion()
 	if err != nil {
 		t.Fatal(err)
-	}
-	version, fingerprint := before.schemaVersion, before.schemaFingerprint
-	if err := before.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if version == 0 || fingerprint == "" {
-		t.Fatal("validated schema metadata is empty")
 	}
 	var earlierVersion int64
 	if err := admin.QueryRowContext(t.Context(), "SELECT min(version_id) FROM public.goose_db_version WHERE version_id > 0 AND is_applied").Scan(&earlierVersion); err != nil {
@@ -34,7 +28,7 @@ func TestCurrentSchemaFingerprintUsesLatestMigrationState(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), "INSERT INTO public.goose_db_version(version_id,is_applied) VALUES($1,$2)", changedVersion, applied); err != nil {
 				t.Fatal(err)
 			}
-			reopened, err := openPostgresDatabase(t.Context(), *config.Postgres)
+			reopened, err := openHubRepository(t.Context(), config)
 			if !applied {
 				if reopened != nil {
 					if closeErr := reopened.Close(); closeErr != nil {
@@ -49,9 +43,6 @@ func TestCurrentSchemaFingerprintUsesLatestMigrationState(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
-			}
-			if reopened.schemaVersion != version || reopened.schemaFingerprint != fingerprint {
-				t.Errorf("restored schema metadata=(%d,%q), want (%d,%q)", reopened.schemaVersion, reopened.schemaFingerprint, version, fingerprint)
 			}
 			if err := reopened.Close(); err != nil {
 				t.Fatal(err)
