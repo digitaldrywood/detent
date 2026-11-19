@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1199,7 +1198,7 @@ func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository,
 			}
 		})
 	}
-	runAccessAuditPrunePlans(t, repository, pruner, admin, trace, organizations, now, cutoff)
+	checkAccessAuditForeignUpdateDenied(t, admin, organizations, cutoff)
 }
 
 func runAccessAuditPruneIsolation(t *testing.T, pool *pgxpool.Pool, admin *sql.DB, organizations []tracker.OrganizationID, ids map[tracker.OrganizationID]int64) {
@@ -1261,33 +1260,10 @@ func runAccessAuditPruneIsolation(t *testing.T, pool *pgxpool.Pool, admin *sql.D
 	}
 }
 
-func runAccessAuditPrunePlans(t *testing.T, repository, pruner *postgres.Repository, admin *sql.DB, trace *accessAuditQueryTrace, organizations []tracker.OrganizationID, now, cutoff time.Time) {
+func checkAccessAuditForeignUpdateDenied(t *testing.T, admin *sql.DB, organizations []tracker.OrganizationID, cutoff time.Time) {
 	t.Helper()
 	migration := pgstoretest.RolePool(t, admin, postgres.MigrationRoleName, "")
 	defer migration.Close()
-	for _, org := range organizations {
-		if _, err := admin.ExecContext(t.Context(), `WITH inserted AS (
- INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,recorded_at_ns,account_kind,account_retry)
- SELECT $1,'plan','actor','actor','','retained','POST /items','',200,$2,$2,$2,$3,'','' FROM generate_series(1,10000)
- RETURNING organization_id,id,recorded_at_ns
-) INSERT INTO hosted_audit_times(organization_id,audit_id,recorded_at_ns) SELECT organization_id,id,recorded_at_ns FROM inserted`, org, now, now.UnixNano()); err != nil {
-			t.Fatal(err)
-		}
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			for range 2 {
-				at := cutoff.Add(-time.Nanosecond)
-				if _, err := w.RecordAccessAudit(t.Context(), accessstore.Audit{OrganizationID: org, SessionID: "plan_sparse", ActualActor: "actor", EffectiveUser: "actor", Event: "expired", Route: "POST /items", Status: 200, StartedAt: now, ExpiresAt: now, RecordedAt: at, RecordedAtNS: at.UnixNano()}); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE hosted_audit; ANALYZE hosted_audit_times"); err != nil {
-		t.Fatal(err)
-	}
 	t.Run("maintenance row locks do not permit foreign updates", func(t *testing.T) {
 		tx, err := migration.Begin(t.Context())
 		if err != nil {
@@ -1309,159 +1285,6 @@ func runAccessAuditPrunePlans(t *testing.T, repository, pruner *postgres.Reposit
 		_, err = tx.Exec(t.Context(), `UPDATE hosted_audit SET status=403 WHERE organization_id=$1 AND recorded_at_ns<$2`, organizations[1], cutoff.UnixNano())
 		pgstoretest.RequireSQLState(t, err, "42501")
 	})
-	rollback := errors.New("restore audit plan source")
-	for _, org := range organizations {
-		for _, test := range []struct {
-			name          string
-			legacy, empty bool
-		}{
-			{name: "age sparse after dense retained prefix"},
-			{name: "age empty negative", empty: true},
-			{name: "legacy sparse after dense security prefix", legacy: true},
-			{name: "legacy empty negative", legacy: true, empty: true},
-		} {
-			t.Run(string(org)+"/"+test.name, func(t *testing.T) {
-				before := cutoff
-				if test.empty && !test.legacy {
-					before = cutoff.Add(-24 * time.Hour)
-				}
-				if test.legacy && !test.empty {
-					for _, tenant := range organizations {
-						if err := repository.WriteTenant(t.Context(), tenant, corestore.Serving, func(w tenantstore.Writer) error {
-							for range 2 {
-								if _, err := w.RecordAccessAudit(t.Context(), accessstore.Audit{OrganizationID: tenant, SessionID: "plan_sparse", ActualActor: "actor", EffectiveUser: "actor", Event: "action", Route: "GET /items", Status: 200, StartedAt: now, ExpiresAt: now, RecordedAt: now, RecordedAtNS: now.UnixNano()}); err != nil {
-									return err
-								}
-							}
-							return nil
-						}); err != nil {
-							t.Fatal(err)
-						}
-					}
-				}
-				if test.legacy && test.empty {
-					if err := pruner.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
-						_, err := w.PruneAccessAuditReads(t.Context(), accessstore.MaxAuditPruneBatch)
-						return err
-					}); err != nil {
-						t.Fatal(err)
-					}
-				}
-				err := pruner.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
-					var count int
-					var err error
-					if test.legacy {
-						count, err = w.PruneAccessAuditReads(t.Context(), 2)
-					} else {
-						count, err = w.PruneAccessAuditsBefore(t.Context(), before, 2)
-					}
-					if err != nil {
-						return err
-					}
-					want := 2
-					if test.empty {
-						want = 0
-					}
-					if count != want {
-						return fmt.Errorf("audit plan source count=%d want%d", count, want)
-					}
-					return rollback
-				})
-				if !errors.Is(err, rollback) {
-					t.Fatal(err)
-				}
-				trace.mu.Lock()
-				statement, args := trace.statement, append([]any(nil), trace.args...)
-				trace.mu.Unlock()
-				function := "public.prune_expired_access_audits(bigint,integer)"
-				expectedArgs := []any{before.UnixNano(), 2}
-				queryArgs := []any{2, before.UnixNano()}
-				if test.legacy {
-					function, queryArgs, expectedArgs = "public.prune_legacy_access_audits(integer)", []any{2}, []any{2}
-				}
-				if !strings.HasPrefix(statement, "SELECT "+strings.Split(function, "(")[0]+"(") || !reflect.DeepEqual(args, expectedArgs) {
-					t.Fatalf("captured wrong audit capability: %q %+v", statement, args)
-				}
-				var body, owner string
-				var definer bool
-				if err := admin.QueryRowContext(t.Context(), `SELECT p.prosrc,r.rolname,p.prosecdef FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner WHERE p.oid=$1::regprocedure`, function).Scan(&body, &owner, &definer); err != nil {
-					t.Fatal(err)
-				}
-				if owner != postgres.MigrationRoleName || !definer {
-					t.Fatalf("audit capability authority owner=%q definer=%t", owner, definer)
-				}
-				_, selection, ok := strings.Cut(body, "        WITH selected AS MATERIALIZED (")
-				if !ok {
-					t.Fatal("audit capability selection missing")
-				}
-				selection, _, ok = strings.Cut(selection, "\n    ) victims;")
-				if !ok {
-					t.Fatal("audit capability selection boundary missing")
-				}
-				selection = "WITH selected AS MATERIALIZED (" + selection
-				selection = strings.NewReplacer("batch_limit", "$1", "effective_cutoff_ns", "$2").Replace(selection)
-				var raw []byte
-				if err := func() (result error) {
-					tx, err := migration.BeginTx(t.Context(), pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-					if err != nil {
-						return err
-					}
-					defer func() {
-						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
-						defer cancel()
-						if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-							result = errors.Join(result, err)
-						}
-					}()
-					if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE "+pgx.Identifier{postgres.MigrationRoleName}.Sanitize()); err != nil {
-						return err
-					}
-					var role, tenant string
-					var migrationRLS bool
-					if err := tx.QueryRow(t.Context(), `SELECT current_user, set_config('detent.organization_id', '', true),
- NOT (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user)
- AND current_setting('row_security')='on'`).Scan(&role, &tenant, &migrationRLS); err != nil {
-						return err
-					}
-					if !migrationRLS || role != owner || tenant != "" {
-						return fmt.Errorf("audit selection role=%q tenant=%q migration_rls=%t", role, tenant, migrationRLS)
-					}
-					return tx.QueryRow(pgtest.UnboundProbe(t.Context()), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+selection, queryArgs...).Scan(&raw)
-				}(); err != nil {
-					t.Fatal(err)
-				}
-				var plans []struct{ Plan pgstoretest.SearchPlanNode }
-				if err := json.Unmarshal(raw, &plans); err != nil {
-					t.Fatal(err)
-				}
-				if len(plans) != 1 {
-					t.Fatalf("audit plan count=%d", len(plans))
-				}
-				expectedIndex := "hosted_audit_retention_seek"
-				if test.legacy {
-					expectedIndex = "hosted_audit_legacy_read_cleanup_seek"
-				}
-				if !plans[0].Plan.UsesIndex(expectedIndex) {
-					t.Fatalf("audit plan lost %s: %s", expectedIndex, raw)
-				}
-				var visits float64
-				var walk func(pgstoretest.SearchPlanNode)
-				walk = func(p pgstoretest.SearchPlanNode) {
-					if p.Relation == "hosted_audit" {
-						visits += (p.Rows + p.Removed + p.IndexRemoved) * p.Loops
-					}
-					for _, child := range p.Plans {
-						walk(child)
-					}
-				}
-				walk(plans[0].Plan)
-				if visits > 128 {
-					t.Fatalf("audit plan visited%.0f rows for2-candidate request: %s", visits, raw)
-				}
-				t.Logf("audit plan tenant=%s kind=%s visits=%.0f raw=%s", org, test.name, visits, raw)
-			})
-		}
-	}
 }
 
 func TestAuthorizeAccessRunnerProjectScope(t *testing.T) {

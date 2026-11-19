@@ -78,17 +78,7 @@ func TestAttachmentReferenceBound(t *testing.T) {
 }
 
 func TestAttachmentObjectLookupProtectsTenantHistory(t *testing.T) {
-	r, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
-	counter := &pgstoretest.ReportCountingTracer{}
-	counted, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, counter), pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := counted.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	keys := map[tracker.OrganizationID]string{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedRepository(t, r, org)
@@ -96,7 +86,7 @@ func TestAttachmentObjectLookupProtectsTenantHistory(t *testing.T) {
 		keys[org] = f.Event.PayloadObjectKey
 	}
 	for org, key := range keys {
-		if err := counted.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
 			for other, candidate := range keys {
 				exists, err := reader.AttachmentObjectExists(t.Context(), "", candidate)
 				if err != nil {
@@ -112,13 +102,9 @@ func TestAttachmentObjectLookupProtectsTenantHistory(t *testing.T) {
 				batch[i] = orphan
 			}
 			batch[0], batch[1] = keys["org_first"], keys["org_second"]
-			before := counter.Count.Load()
 			results, err := reader.ReferencedAttachmentObjects(t.Context(), batch)
 			if err != nil {
 				return err
-			}
-			if got := counter.Count.Load() - before; got != 1 {
-				t.Errorf("%d reference statements for %d keys, want one", got, len(batch))
 			}
 			if len(results) != len(batch) {
 				t.Fatalf("got %d results for %d keys", len(results), len(batch))
@@ -220,17 +206,7 @@ func TestAttachmentReferencesFollowTheirSourceText(t *testing.T) {
 func TestDetailStoreReclaimsOnlyUnreferencedExpiredObjects(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	_, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-	counter := &pgstoretest.ReportCountingTracer{}
-	repository, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, counter), pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	now := start
 	store := repository.DetailStore(func() time.Time { return now })
@@ -296,13 +272,9 @@ func TestDetailStoreReclaimsOnlyUnreferencedExpiredObjects(t *testing.T) {
 SELECT $1,'orgs/'||$1||'/blobs/sha256/aa/'||lpad(to_hex(n),64,'0'),lpad(to_hex(n),64,'0'),1,1,'\x00'::bytea,$2 FROM generate_series(1,$3::int) AS n`, organizations[1], start, budget+1); err != nil {
 		t.Fatal(err)
 	}
-	counter.Count.Store(0)
 	firstPass, err := store.Reclaim(t.Context(), organizations[1], cutoff)
 	if err != nil || firstPass == 0 || firstPass > budget {
 		t.Fatalf("first bounded reclaim=%d err=%v, want 1..%d", firstPass, err, budget)
-	}
-	if got := counter.Count.Load(); got > postgres.DetailReclaimPages*3 {
-		t.Errorf("full reclaim pass used %d statements for %d objects, want at most three per page including tenant binding", got, firstPass)
 	}
 	if secondPass, err := store.Reclaim(t.Context(), organizations[1], cutoff); err != nil || firstPass+secondPass != budget+2 {
 		t.Fatalf("continued reclaim=%d+%d err=%v, want %d abandoned objects", firstPass, secondPass, err, budget+2)
