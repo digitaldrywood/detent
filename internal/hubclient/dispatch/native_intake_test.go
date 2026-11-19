@@ -378,9 +378,18 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 			}
 		})
 	}
+	h.projectBoard()
+	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+		t.Fatalf("refresh intake candidates: %v", err)
+	}
 	candidates, err := conn.FetchCandidateIssues(t.Context())
-	if err != nil || len(candidates) != 0 {
-		t.Fatalf("priority admitted a Backlog or held follow-up: %#v, %v", candidates, err)
+	if err != nil {
+		t.Fatalf("fetch intake candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.ID != source.ID {
+			t.Fatalf("priority admitted a Backlog or held follow-up: %#v", candidate)
+		}
 	}
 	if _, err := native.Renew(t.Context(), claim.lease, 90); err != nil {
 		t.Fatalf("machine intake lost the executing source claim: %v", err)
