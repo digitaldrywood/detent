@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet
 
 import (
 	"context"
@@ -20,32 +20,32 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func runnerLeaseMutationRoute(path string) bool {
+func RunnerLeaseMutationRoute(path string) bool {
 	return path == hubapi.NativeBase+"/leases/:lease/validate" || path == hubapi.NativeBase+"/leases/:lease/renew" || path == hubapi.NativeBase+"/leases/:lease/release"
 }
 
-func (s *Service) authorizeRunnerLeaseProject(ctx context.Context, scope hubscope.NativeScope) error {
-	if s.config.TenantRepository == nil || scope.Credential.Runner.RunnerID == "" || scope.Credential.Runner.OrganizationID != scope.Organization || scope.Credential.EntryKey != nil {
+func (d RoutingDeps) AuthorizeRunnerLeaseProject(ctx context.Context, scope hubscope.NativeScope) error {
+	if d.Repository == nil || scope.Credential.Runner.RunnerID == "" || scope.Credential.Runner.OrganizationID != scope.Organization || scope.Credential.EntryKey != nil {
 		return hubapi.NativeNotFound()
 	}
-	return s.authorizeProjectRecord(ctx, scope, true)
+	return d.AuthorizeProject(ctx, scope, true)
 }
 
-func runnerIdentityMatchesHeldLease(identity runnerstore.Identity, organization tracker.OrganizationID, runnerID, tokenID string, machine tracker.MachineID, now time.Time) bool {
+func RunnerIdentityMatchesHeldLease(identity runnerstore.Identity, organization tracker.OrganizationID, runnerID, tokenID string, machine tracker.MachineID, now time.Time) bool {
 	return identity.OrganizationID == organization && identity.RunnerID == runnerID && identity.TokenID == tokenID && identity.MachineID == machine && identity.RemovedAt == nil && identity.ExpiresAt.After(now)
 }
 
-func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID, fencing tracker.FencingToken) (runnerauth.Runner, error) {
-	if s.config.TenantRepository == nil || scope.Credential.Runner.RunnerID == "" || scope.Credential.EntryKey != nil {
+func (d RoutingDeps) ValidateRunnerLeaseTenant(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID, fencing tracker.FencingToken) (runnerauth.Runner, error) {
+	if d.Repository == nil || scope.Credential.Runner.RunnerID == "" || scope.Credential.EntryKey != nil {
 		return runnerauth.Runner{}, hubscope.RunnerUnauthorized()
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	now := s.config.Clock().UTC()
+	now := d.Now().UTC()
 	var runner runnerauth.Runner
 	var policyRevision policystore.Revision
 	var selector *policy.Requirements
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		credential, err := reader.AccessCredential(ctx, scope.Credential.ID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -81,7 +81,7 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 		if err != nil {
 			return err
 		}
-		if !runnerIdentityMatchesHeldLease(identity, scope.Organization, scope.Credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) {
+		if !RunnerIdentityMatchesHeldLease(identity, scope.Organization, scope.Credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) {
 			return hubapi.NativeNotFoundAt("lease_runner_credential")
 		}
 		if identity.Scope != "organization" {
@@ -93,10 +93,10 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 			}
 		}
 		if identity.State == "disabled" {
-			return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
+			return RunnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
 		}
 		if !slices.Contains(identity.Operations, runnerauth.Claim) {
-			return runnerExcluded([]runnerauth.Exclusion{{Code: "claim_not_permitted", Message: "Runner credential does not permit claims"}})
+			return RunnerExcluded([]runnerauth.Exclusion{{Code: "claim_not_permitted", Message: "Runner credential does not permit claims"}})
 		}
 		pinned, err := reader.LeasePolicy(ctx, leaseID)
 		if err != nil {
@@ -157,25 +157,25 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 		return runnerauth.Runner{}, err
 	}
 	if selector == nil {
-		requirements, err := s.legacyLeaseRequirements(ctx, policyRevision)
+		requirements, err := d.legacyLeaseRequirements(ctx, policyRevision)
 		if err != nil {
 			return runnerauth.Runner{}, err
 		}
 		selector = &requirements
 	}
-	if err := runnerExcluded(runner.Exclusions(scope.Project, *selector, true)); err != nil {
+	if err := RunnerExcluded(runner.Exclusions(scope.Project, *selector, true)); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	return runner, nil
 }
 
-var errLeaseSelectorUnbound = errors.New("lease selector is not bound")
+var ErrLeaseSelectorUnbound = errors.New("lease selector is not bound")
 
-func (s *Service) legacyLeaseRequirements(ctx context.Context, revision policystore.Revision) (policy.Requirements, error) {
-	if s.runDetailStore() == nil {
+func (d RoutingDeps) legacyLeaseRequirements(ctx context.Context, revision policystore.Revision) (policy.Requirements, error) {
+	if d.Details() == nil {
 		return policy.Requirements{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	descriptor, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, revision)
+	descriptor, err := eventstore.NewContent(d.Details()).ProjectPolicy(ctx, revision)
 	if err != nil {
 		return policy.Requirements{}, err
 	}
@@ -184,26 +184,26 @@ func (s *Service) legacyLeaseRequirements(ctx context.Context, revision policyst
 
 func leaseSelectorExcluded(requirements policy.Requirements, identity runnerstore.Identity) error {
 	if err := requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
-		return runnerExcluded([]runnerauth.Exclusion{{Code: "selector_no_match", Message: strings.TrimPrefix(err.Error(), "selector_no_match: ")}})
+		return RunnerExcluded([]runnerauth.Exclusion{{Code: "selector_no_match", Message: strings.TrimPrefix(err.Error(), "selector_no_match: ")}})
 	}
 	return nil
 }
 
-func checkLeaseSelector(pinned policystore.LeasePolicy, identity runnerstore.Identity, legacyChecked bool) error {
+func CheckLeaseSelector(pinned policystore.LeasePolicy, identity runnerstore.Identity, legacyChecked bool) error {
 	if pinned.Selector != nil {
 		return leaseSelectorExcluded(*pinned.Selector, identity)
 	}
 	if legacyChecked {
 		return nil
 	}
-	return errLeaseSelectorUnbound
+	return ErrLeaseSelectorUnbound
 }
 
-func (s *Service) checkLegacyLeaseSelector(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID) error {
+func (d RoutingDeps) CheckLegacyLeaseSelector(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID) error {
 	var pinned policystore.LeasePolicy
 	var identity runnerstore.Identity
 	var revision policystore.Revision
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
 		pinned, err = reader.LeasePolicy(ctx, leaseID)
 		if err != nil {
@@ -225,7 +225,7 @@ func (s *Service) checkLegacyLeaseSelector(ctx context.Context, scope hubscope.N
 	if pinned.Selector != nil {
 		return leaseSelectorExcluded(*pinned.Selector, identity)
 	}
-	requirements, err := s.legacyLeaseRequirements(ctx, revision)
+	requirements, err := d.legacyLeaseRequirements(ctx, revision)
 	if err != nil {
 		return fmt.Errorf("read legacy lease requirements: %w", err)
 	}
