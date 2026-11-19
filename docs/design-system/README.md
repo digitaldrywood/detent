@@ -106,7 +106,7 @@ change. Existing specialized renderer contracts and Detent-specific data and
 interaction behaviour remain authoritative.
 
 Implement only the UI named by a human-authored issue where INV-15 requires it.
-Honor INV-13 card content and INV-16 publication ownership. File product work
+Follow the work-board contract and INV-16 publication ownership. File product work
 through the supported selected tracker unless manual implementation is
 explicitly authorized. Do not add enforcement mechanisms or validation gates
 beyond the existing design checks, which make check-app already runs.
@@ -121,4 +121,4 @@ exception in the authorized Change or issue outcome.
 
 For a requested UI change, identify its pattern and choose the smallest set of available components that expresses it. The catalog distinguishes available components from proposed ones. Preserve existing behaviour, permission checks and renderer contracts while aligning appearance through the shared owners.
 
-A proposed width, layout or component is not permission to add a surface or perform a broad redesign. Scope product changes through the selected tracker and follow [INV-13](../invariants.md#inv-13--a-board-card-is-a-title-and-one-status-line), [INV-15](../invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue) and [INV-16](../invariants.md#inv-16--the-tracker-database-is-the-only-shared-knowledge-channel). Keep change-specific evidence and unresolved exceptions in the authorized Change or issue outcome, not in these documents.
+A proposed width, layout or component is not permission to add a surface or perform a broad redesign. Scope product changes through the selected tracker and follow [the work-board contract](patterns.md#work-board-and-issues), [INV-15](../invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue) and [INV-16](../invariants.md#inv-16--the-hub-carries-execution-context-and-git-carries-source). Keep change-specific evidence and unresolved exceptions in the authorized Change or issue outcome, not in these documents.
