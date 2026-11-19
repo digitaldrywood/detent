@@ -25,7 +25,7 @@ Read `AGENTS.md` and the governing sections of `docs/invariants.md` before chang
 
 ## Completion Contract
 
-- Follow the PostgreSQL-only storage authority in `AGENTS.md`. Do not implement, repair or retain SQLite runtime compatibility. Runners use the Hub for all durable state; local memory and disposable files are not recovery or ownership authorities.
+- Follow the PostgreSQL-only storage authority in `AGENTS.md`. Do not implement, repair or retain SQLite runtime compatibility. Runners use the Hub for durable application state. The Hub authorizes recovery and ownership.
 
 - Work in this workspace on the branch Detent checked out for you. Do not rebase onto or merge other branches unless the issue asks for it.
 - Stage finished issue-owned changes on that branch. Do not commit or use signing workarounds: the runner's host finalizer verifies the worktree, branch and execution authority, commits with the project's signing configuration and publishes the native Change. Preserve unfinished work for continuation; never stage a half-done change.
@@ -54,12 +54,31 @@ A plan names the acceptance criteria, the intended code and test changes, valida
 - Native landing serializes changes. A clean squash pushes on the finalization receipt; a change that needed a rebase reruns build, short tests for touched packages and lint of touched files on the rebased tree. A failure returns the item to Rework with its output.
 - `release/vX.Y` branches take only develop commits cherry-picked with `-x`. Never land features on a release branch or merge one back into develop. Develop landing never waits for a release branch.
 
+## Delivery policy
+
+Land the exact reviewed candidate through the project’s configured delivery path. Honor required forge queues and configured branch protection, and serialize target-ref updates. Queueing stays under the item’s lease. Resolve conflicts through ordinary Git and regeneration. Changes to live branch protection require separate operator authorization.
+
+**Existing queue and landing checks:** `TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch`,
+`TestDelegateNativeMergeQueueIssuesCachesQueueEntries`,
+`TestNativeMergeQueueReviewReworkAfterEnqueue`,
+`TestNativeMergeQueueWithdrawalDoesNotBlockDone`,
+`TestNativeMergeQueueSkippedChecks`, `TestNativeMergeQueueNeutralChecks`,
+`TestNativeMergeQueueHeadBudget`, and
+`TestNativeMergeQueueBudgetSurvivesRestart` in `internal/orchestrator`.
+`TestLocalGitLandingReplacement` in `internal/workspace` enforces superseded
+landing ownership, cleanup and retention of moved or unknown heads.
+
+**Existing branch protection and regeneration checks:** `TestDoctorRespectsProjectCIPolicy` in `internal/cli`;
+`TestIndividuallyValidBranchesRejectIntegratedCollision` in
+`tools/migrationcheck`; `make check-migrations`. Doctor reports live branch
+protection as project evidence; the operator verifies live settings.
+
 ## Validation
 
 - While iterating, run `go test -timeout=120s` on the packages you changed and the packages that import them, plus `go vet` and the relevant generation command. Hosts share one CPU budget across concurrent workers: no `go test ./...` sweeps. Give each diagnostic an explicit timeout, inspect a timeout or instance failure before repeating, and repeat only to verify changed behavior or a concrete risk.
 - Do not run `make check-land` or `make check-landing` yourself. Finalization runs the approved gate, `make check-landing` (`gate.run` with `gate.landing_mode: per_landing`), once on the finished source: build, short tests for changed packages and their dependents, lint of changed Go files, invariant and migration checks; module changes widen it. A failure returns to Rework with its output. Editing `detent.yaml` does not change the approved policy; the operator re-approves it in the Hub.
 - `make check-land` is the operator's wider gate: lint, vet, build, the whole-repository short suite, invariants, migrations and generated sources, changed-package NilAway, conversation typecheck, vitest and build when `web/conversation` changed, and `scripts/*_test.py` for changed scripts or `Makefile`. Set `CHECK_LAND_BASE` when the base is not `origin/develop`. Every make target shares the host through `TEST_PROCS` (default 4).
-- Run the full suite only for final recovery confirmation and releases. The full suite is `make check-release`: app, generated sources, migrations, invariants, build, Windows cross-build and vet, vet, lint, script tests, NilAway against the reviewed baseline, race, subprocess lifecycle repeats, the full non-short suite, security and browser journeys. Browser checks run every journey unless all changed paths since the nearest validated release are known to be irrelevant to browsers: documentation, Go test files, Python test files and script test files. Those changes run the smoke set; unavailable comparison history runs every journey. Coverage is evidence, never a gate, so it is not part of the suite. It runs on our own hardware through `scripts/release-validate-local.sh develop|release/vX.Y`, which uses `detent validate` so passing Go test binaries are reused from Hub receipts, and posts `develop-full-ci` or `scheduled-full-ci` on the exact head. GitHub Actions runs no CI. The full suite never holds landing; ordinary landing waits for no CI, local status, coverage percentage or fuzz duration. `required_status_checks` stays empty.
+- Run the full suite only for final recovery confirmation and releases. The full suite is `make check-release`: app, generated sources, migrations, invariants, build, Windows cross-build and vet, vet, lint, script tests, NilAway against the reviewed baseline, race, subprocess lifecycle repeats, the full non-short suite, security and browser journeys. Browser checks run every journey unless all changed paths since the nearest validated release are known to be irrelevant to browsers: documentation, Go test files, Python test files and script test files. Those changes run the smoke set; unavailable comparison history runs every journey. Coverage is evidence, never a gate, so it is not part of the suite. It runs on our own hardware through `scripts/release-validate-local.sh develop|release/vX.Y`, which uses `detent validate` so passing Go test binaries are reused from Hub receipts, and posts `develop-full-ci` or `scheduled-full-ci` on the exact head. GitHub Actions runs no validation. The only pull-request event is the CLA workflow’s `pull_request_target`, which runs the CLA assistant without checking out or executing pull request code. The full suite never holds landing; ordinary landing waits for no CI, local status, coverage percentage or fuzz duration. `required_status_checks` stays empty.
 - Before the first Go diagnostic that imports the embedded conversation app, build its ignored assets in this worktree with Node 24 and `make app`. Rebuild after client or lockfile changes; never copy assets from another branch or commit ignored bundles. Docs-only work that runs no such diagnostic skips it.
 - `make generate` after Templ, sqlc or CSS input changes; commit only `*_templ.go` and sqlc output. `docs/config.md`, `config.reference.yaml`, `static/app/conversation/` and `static/css/output.css` are generated and ignored.
 - Local tooling: `make setup` installs Air, Templ, sqlc, goose and golangci-lint v2; `make dev` runs Air and logs to `tmp/air-combined.log`; `make check` is a full local diagnostic reserved for final recovery confirmation. Browser journeys: `npx playwright install chromium`, then `make visual-e2e`, or one journey with `bash scripts/check-browser.sh "$TEST_PROCS" false tests/visual/<journey>.spec.js`. Run browser journeys only when the diff touches behavior they cover.
@@ -92,7 +111,9 @@ Contradictory or unverifiable acceptance criteria use the existing Issue Contrac
 
 Evidence must prove the criterion: a host-observed command receipt must match the reviewed head and tree, and a named test must assert the required behavior. Reuse genuine receipts the native version or its reviews already hold when command, head, tree and relevant inputs and environment match; a fresh validator session needs no fresh executions. Rerun only for changed behavior or inputs, missing applicable evidence or a concrete risk; a receipt for older source never validates a changed candidate. Go test binaries inside a gate or validator command are reused per binary from Hub go test receipts when the binary, its test flags and every file and environment variable Go's test log recorded still match; that follows Go's own test cache input model, and the command's `go test receipts:` line counts reused binaries. An assumed, skipped or unrelated check is not verified. A not-verified criterion that repository rework can satisfy requires Rework and is named in the summary. An outside-system, deployment or human-verification criterion is an authoring defect handled by the Issue Contract correction path, never Blocked. Only a genuine unresolved decision, missing authority or physical prerequisite uses Blocked with a concrete `human_action`. Historical diagnosis evidence keeps its original source identity and is assessed separately from candidate evidence.
 
-Go test receipt reuse requires hermetic test binaries, as [INV-5](docs/invariants.md#inv-5--local-validation-and-release-evidence) defines.
+[INV-5](docs/invariants.md#inv-5--local-validation-and-release-evidence) governs receipt reuse. Record a Go test pass only for a hermetic binary. Its inputs include the binary, flags, checkout-relative package directory, Go runtime environment and observed file and environment reads. Subprocesses, missing relative paths, inputs that disappear or change during the run, changed package source, and paths outside the checkout, GOROOT and temporary directories prevent recording. The same restrictions apply to file reads, globs and process starts in initialization code before the test log begins, including `init`, `TestMain`, package variables and the code they reach across all build constraints. Named early environment reads join the input set. Unnamed or shadowed early reads and environment listings anywhere in the package key the full environment in observed order.
+
+Read files are fingerprinted by mode and content. Stat-only inputs use size and mode, plus modification time for temporary files. Environment values normalize checkout and temporary directory prefixes by length. Receipt reuse depends on the test rules excluding hidden inputs such as `Readlink` and `syscall.Getenv` during tests, checkout file modification times, the length of the path from `syscall.Getwd`, and ambient network, clock and host state.
 
 Workers do not approve workflow revisions or load credentials. Feature-branch and uncommitted definitions are not approved policy.
 
@@ -212,10 +233,7 @@ confirmation; this contract enables no additional review mode.
 
 ### Invariants touched
 
-Preserve INV-3, INV-5, INV-7, INV-15, INV-16, INV-17 and INV-19: no added
-protection mechanism, no weakened validation, stable machine provenance, no new
-visible UI, tracker-owned evidence, stateless workspaces and no flaky tests. Identify additional affected
-invariants in the existing outcome and review evidence without expanding scope.
+Preserve INV-3, INV-5, INV-7, INV-15, INV-16, INV-17 and INV-19. Keep the mechanism budget, exact-source evidence, stable machine provenance, existing UI scope, Hub-owned execution context, fenced item worktrees and deterministic tests. Identify additional affected invariants in the existing outcome and review evidence without expanding scope.
 
 ### Safety regression
 
