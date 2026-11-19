@@ -33,13 +33,7 @@ The Hub’s orchestrator alone applies lane transitions and grants one fenced re
 
 Blocked is reserved for an explicit operator stop or a genuine unresolved decision or permission request. Record the request as a typed `human_action`, surface it durably to the human and release executing capacity. Only authorized human action clears the request. Machine failures use the retry loop.
 
-Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
-
-**Existing lane and lease checks:** `TestRepositorySources` in `internal/invariants`, `TestRetainedWorkAttemptsExpireOnTick`, `TestHubSchedulingReadinessBeforeClaim`, `TestBlockedRecoveryRecomputesDispatchWithoutDerivedHolds` and `TestStoredHoldRequiresProvenance` in `internal/orchestrator`, and `TestPostgresEntryKeyMoveItem` and `TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays` in `internal/hubserver`. `TestLocalSessionProcessOwnership` in `internal/runner`, `TestNativeDelayedResponsesPreserveSuccessor` in `internal/hubclient/dispatch` and `TestLocalWorkerReleaseAndPolicyCoexistence` in `internal/cli` cover process exit, finalization and release retries.
-
-**Existing workflow authority checks:** `TestRepositoryNativeWorkflowProjection` in `internal/config`, `TestNativeCloudWorkflowFallback` in `internal/project`, and `TestHostedProjectWorkflowConfiguration`, `TestProjectPolicyAuthorizationAndAtomicClaims` and `TestHostedProjectTools` in `internal/hubserver`.
-
-**Existing human-action checks:** `TestINV14DispatchQuestionTool`, `TestINV14LegacyQuestionRowDispatch`, `TestFirstHumanBlockerCompletionReachesBlocked`, `TestWorkpadHumanActionSnapshot` and `TestWorkpadHumanActionClearanceRecoversBlockedIssue` in `internal/orchestrator`.
+**Enforcement:** `TestRepositorySources` in `internal/invariants`. Review checks lane writes, lease authority and human-action handling.
 
 ## INV-2 — Instance-owned infrastructure failures
 
@@ -53,27 +47,7 @@ Infrastructure failures belong to the instance. Retry the failed phase with capp
 
 Lease renewal proves ownership only, and the existing stall owner ends a quiet provider session and restarts it in place. At the end of each round, an AI verdict judges progress against the issue’s acceptance criteria and open findings, never by commits or activity.
 
-Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
-
-**Existing source and consolidation checks:** `TestRepositorySources` and `TestSourceViolations` in
-`internal/invariants`; `TestChunkCoverage`, `TestLargeAuditAggregation` and
-`TestChunkSourceAndContinuation` in `internal/securityaudit`, and
-`TestRunnerChunkedAudit` in `internal/runner`. Review verifies removal or
-consolidation.
-
-**Existing retry checks:** `TestMachineFailuresUseRetryOwner`,
-`TestMachineRetrySurvivesStoreRestart`, `TestDerivedHoldDispatchEquivalence`,
-`TestHandleRunResultResetsRetryAfterProgress`,
-`TestBackendCapacityHelperBoundaries` and
-`TestPruneBudgetRefusalsReevaluatesDailyCap` in `internal/orchestrator`.
-`FuzzSafetyCriticalOrchestratorBoundaries` retains completion-evidence,
-capacity resume arithmetic, capped backoff, dispatch ordering and priority-only
-real-capacity acquisition coverage. The retired-symbol checks prevent restoring
-the deleted per-issue brake owners.
-
-**Existing instance failure checks:** `TestPreTurnFailuresRetryWithoutPausingProject`, `TestObservedLanePreTurnFailureRemainsInstanceOwned`, `TestWorkspacePreparationRetriesIssueWithoutPausingProject`, `TestClassifyWorkspaceForgeReadFailure`, `TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`, `TestRecoverDurableWorkspaceGitReadWait`, `TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker`, `TestNativeLandingRunCompletion` and `TestNativeChangeRunCompletion` in `internal/orchestrator`. `TestClaimCandidatesRequireUnansweredWorkItem` and `TestClaimCandidatesRetryInstancePreProviderFailures` in `internal/hubserver`, `TestHealthRunnerSetupFindings` in `internal/hubserver/healthsignals`, `TestLocalGitCreateReadsPublishedBranchWithRepositoryCredential` and `TestLocalGitLandChangeViaGitHub` in `internal/workspace`, `TestWorkerCredentialBlockerError` and `TestNativeInterruptedCodeRecoversPersistedSession` in `internal/runner`, `TestNativeExecutionSettlesFinishedRun`, `TestNativeExecutionLandsReviewedVersion` and `TestNativeRunnerOpensChangeAndLeavesDispatch` in `internal/hubclient/nativechange`, and `TestNativePlannerAutomaticHandoff` in `internal/hubclient/planner`.
-
-**Existing eligibility and reconciliation checks:** `TestMutationDocuments` in `internal/invariants`, `TestApprovedPolicyClaimExposure`, `TestNativeDerivedHoldDispatchEquivalence` and `TestReviewConversationHistoryDoesNotVetoLanding` in `internal/hubserver`, `TestNativeRecoveryWipeDerivedHold` and `TestNativePublicationRecoveryOnAnyRunner` in `internal/runner`, and `TestAttemptRecoveryAfterPolicyChange` and `TestOrphanRecoveryRetainsPolicyAcrossHubTransition` in `internal/orchestrator`.
+**Enforcement:** `TestRepositorySources` and `TestSourceViolations` in `internal/invariants`, and the seed cases in `FuzzSafetyCriticalOrchestratorBoundaries`. Review verifies removal or consolidation.
 
 ## INV-4 — Native merge queue
 
@@ -83,18 +57,7 @@ Moved to [Delivery policy](../WORKFLOW.md#delivery-policy).
 
 Acceptance and release decisions require authentic evidence bound to the exact source and relevant inputs. Reuse it only while those inputs remain valid. [WORKFLOW.md](../WORKFLOW.md#evidence-policy) specifies the commands, independent reviews and release authority.
 
-**Existing evidence and release checks:** `TestRepositoryWorkflow`, `TestRepositoryHasNoPullRequestActions`, and
-`TestWorkflowViolations` in `internal/invariants`;
-`TestReleaseWorkflowAuthenticatesExactCommitProvenance` in the repository root;
-`TestValidateCommandReusesGoTestReceiptsAcrossCheckouts` in `internal/cli`;
-`TestRunWrapperExecutesWhenUnobservedInputsChange`, `TestPreWindowInputs`,
-`TestParseTestLog`, `TestKeySeparatesArguments`, `TestSnapshotTempEntries`,
-`TestEnvironmentListingKeepsOrder` and `TestWrapperRejectsUnobservedInputs` in
-`internal/gotestreceipt`;
-`TestMakeCheckFastOverlapsWorktrees` in `tools/checklock`; `TestParseProblems`,
-`TestReport`, `TestCloudReport`, `TestCloudDestinationAuthority`,
-`TestReleaseStabilization`, and `TestReleaseFinalizer` in `tools/cifailure`.
-Review preserves project-specific policy and release authority.
+**Enforcement:** `TestRepositoryWorkflow` and `TestWorkflowViolations` in `internal/invariants`. Review preserves project-specific policy and release authority.
 
 ## INV-6 — Isolated agent home
 
@@ -114,14 +77,7 @@ to other backends.
 
 Machine defects have stable provenance and fingerprints. Update the existing incident only when evidence or disposition changes. Respect human cancellation and allow explicitly authorized, already-deduplicated filing without another confirmation. Retain historical occurrences without per-round issue narration.
 
-Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
-
-**Existing issue identity checks:** `TestMachineIssueTool` in `internal/orchestrator`;
-`TestNativeMachineDefectOccurrences` and `TestNativeReleaseStabilizationOccurrences` in `internal/hubserver` and
-`TestDefectFingerprint` in `internal/issueorigin`;
-`TestNativeMachineIntakeAuthorityAndFingerprint` in
-`internal/hubclient/dispatch`; `TestParseProblems`, `TestReport`, and `TestCloudReport`
-in `tools/cifailure`. Review checks fingerprint stability.
+**Enforcement:** `TestDefectFingerprint` in `internal/issueorigin`. Review checks fingerprint stability.
 
 ## INV-8 — No strict freshness protection
 
@@ -135,29 +91,7 @@ Merged into [INV-3](#inv-3--net-zero-mechanisms).
 
 Priority chooses the next executable work. Active work keeps its execution slot, and retained item leases reserve no idle execution slots. Enforce configured capacity and access limits and explicit operator stops using current facts.
 
-Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
-
-**Existing dispatch and capacity checks:** `TestGlobalDispatchGatePriorityOnlyPicksNextJob`,
-`TestGlobalDispatchGateReadyRequests`,
-`TestGlobalDispatchGateConcurrentReadyRequests`,
-`TestQueuedDispatchRanksIndependentRequests`,
-`TestQueuedDispatchPreservesProjectCeilings`,
-`TestQueuedDispatchChoosesAvailableHost`, and
-`TestStandingDispatchRequestUpdates` in `internal/scheduler`;
-`TestRunDispatchesQueuedRequestsWithoutPolling`,
-`TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`, and
-`TestStandingDispatchSurvivesProjectRefresh` in `internal/orchestrator`;
-`TestGlobalDispatchGateStrictPriorityDoesNotReserveIdleCapacity` in
-`internal/scheduler` and `TestProviderEmptyPreviewReachesClaim` in
-`internal/hubclient/dispatch`; `TestRepositorySources` in `internal/invariants`.
-`TestNativeAdmissionExplanation`, `TestNativeDependencyReadPermissions`,
-`TestNativeRuntimeReadPreservesCurrentEvidence`, `TestNativeRuntimeReadPreservesSharedCapacity`,
-`TestHostedAnalyticsReads` and `TestNativeAnalyticsRuntimePopulation` in
-`internal/hubserver` enforce scoped current evidence and recorded-read boundaries.
-`TestWorkerArtifactsRoutineUpdatePaths` and `TestSchedulerDrainPolicy` in
-`internal/update` and `TestLocalWorkerReleaseAndPolicyCoexistence` in
-`internal/cli` enforce compatible update capacity and exceptional-only drains.
-Review rejects semantic reservation and preemption substitutes.
+**Enforcement:** `TestGlobalDispatchGatePriorityOnlyPicksNextJob` in `internal/scheduler`. Review rejects semantic reservation and preemption substitutes.
 
 ## INV-11 — Retired
 
@@ -165,15 +99,7 @@ Review rejects semantic reservation and preemption substitutes.
 
 Use native toolchain caches for speed only, preserving configured environments and active process outputs. Workspace and cache cleanup must preserve live work.
 
-**Enforcement:** `TestINV12WorkerInheritsToolchainEnvironment`,
-`TestINV12BackendToolchainEnvironment` in `internal/runner`;
-`TestBackendAppliesRunnerIsolation` in `internal/codex`;
-`TestINV12WorkspaceCacheKeys` in `internal/config`;
-`TestINV12DoctorNativeCaches`, `TestINV12DoctorWorkspaceKinds`,
-`TestSSHProbeRequiresProvidedScratch`, and
-`TestSSHLocalTargetIntegration` in `internal/cli`;
-`TestINV12TrimReadout` in `internal/toolcache`;
-`TestRunReviewCommandReusesGoTestReceiptsAcrossWorkspaces` in `internal/workspace`.
+**Enforcement:** `TestINV12WorkerInheritsToolchainEnvironment` in `internal/runner` and `TestINV12TrimReadout` in `internal/toolcache`. Review checks that cleanup preserves live work.
 
 ## INV-13 — A board card is a title and one status line
 
@@ -210,9 +136,7 @@ configuration, reason code or UI surface enforces this rule.
 
 The Hub carries issue direction, phase receipts, verdicts and findings. Git carries source commits. Agents never carry execution state through repository notes or machine issue-comment streams. Human discussion and final outcomes remain in the tracker.
 
-Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
-
-**Existing history and receipt checks:** `TestNativeRuntimeCheckpointsDoNotGrowHistory` and `TestNativeAttemptTerminalActivityReceipts` in `internal/hubclient/runtimeevidence`. Review checks publication ownership against [AGENTS.md](../AGENTS.md#repository-invariants).
+**Enforcement:** `TestNativeRuntimeCheckpointsDoNotGrowHistory` and `TestNativeAttemptTerminalActivityReceipts` in `internal/hubclient/runtimeevidence`. Review checks publication ownership against [AGENTS.md](../AGENTS.md#repository-invariants).
 
 ## INV-17 — Hub-owned assignment and retained item worktrees
 
@@ -222,9 +146,7 @@ The Hub alone owns assignment and execution authority through one fenced, renewa
 
 Runners use their declared install configuration. Keep unrelated jobs independent of machine-local state. Never open a local application database, discover configuration by scanning the machine, route work by where it previously ran, or use local files or queues as execution or recovery authority.
 
-Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
-
-**Existing workspace and recovery checks:** `TestCheckpointAuthorityAndJournalFailures` and `TestNativePublicationRecoveryOnAnyRunner` in `internal/runner`. Review checks assignment and workspace custody in runner, workspace, Hub client, recovery and placement changes.
+**Enforcement:** `TestCheckpointAuthorityAndJournalFailures` and `TestNativePublicationRecoveryOnAnyRunner` in `internal/runner`. Review checks assignment and workspace custody in runner, workspace, Hub client, recovery and placement changes.
 
 ## INV-18 — Hub writes stay small
 
