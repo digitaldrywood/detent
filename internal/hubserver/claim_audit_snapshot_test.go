@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,8 +32,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type claimAuditWorkloadRepository struct {
-	tenantstore.Repository
+func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	config := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
@@ -326,36 +325,36 @@ type claimAuditWorkloadRepository struct {
 						}
 					})
 				}
-					for _, tc := range []struct {
-						name                          string
-						workload                      corestore.Workload
-						captured, credential, allowed bool
-					}{
-						{"background_projection", corestore.Background, false, false, true},
-						{"serving_authorized", corestore.Serving, false, true, true},
-						{"serving_denied", corestore.Serving, false, false, false},
-						{"captured_claim", corestore.Serving, true, true, true},
-					} {
-						t.Run(string(org)+"/"+tc.name, func(t *testing.T) {
-							plan := scan.plans[0]
-							facts := *plan.ChangeFacts
-							if !tc.captured {
-								facts.AuditDispositions = nil
+				for _, tc := range []struct {
+					name                          string
+					workload                      corestore.Workload
+					captured, credential, allowed bool
+				}{
+					{"background_projection", corestore.Background, false, false, true},
+					{"serving_authorized", corestore.Serving, false, true, true},
+					{"serving_denied", corestore.Serving, false, false, false},
+					{"captured_claim", corestore.Serving, true, true, true},
+				} {
+					t.Run(string(org)+"/"+tc.name, func(t *testing.T) {
+						plan := scan.plans[0]
+						facts := *plan.ChangeFacts
+						if !tc.captured {
+							facts.AuditDispositions = nil
+						}
+						hydrateScope := scope
+						if !tc.credential {
+							hydrateScope.Credential = hubapi.APICredential{}
+						}
+						got, err := service.hydrateCurrentChangeDetailWithFacts(t.Context(), hydrateScope, plan.Candidate.WorkItemID, plan.ChangeRecord, &plan.ChangeVersion, plan.ChangePolicy, now, &facts, nil, tc.workload)
+						if tc.allowed {
+							if err != nil || !reflect.DeepEqual(got, expected) {
+								t.Errorf("workload-aware detail differs: %v", err)
 							}
-							hydrateScope := scope
-							if !tc.credential {
-								hydrateScope.Credential = hubapi.APICredential{}
-							}
-							got, err := service.hydrateCurrentChangeDetailWithFacts(t.Context(), hydrateScope, plan.Candidate.WorkItemID, plan.ChangeRecord, &plan.ChangeVersion, plan.ChangePolicy, now, &facts, nil, tc.workload)
-							if tc.allowed {
-								if err != nil || !reflect.DeepEqual(got, expected) {
-									t.Errorf("workload-aware detail differs: %v", err)
-								}
-							} else if err == nil {
-								t.Error("serving hydration bypassed credential authorization")
-							}
-						})
-					}
+						} else if err == nil {
+							t.Error("serving hydration bypassed credential authorization")
+						}
+					})
+				}
 				if index == 99 {
 					t.Run(string(org)+"/pending landing intent", func(t *testing.T) {
 						current := scan.plans[0]
