@@ -272,14 +272,14 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			return nil, err
 		}
 		if !added {
-			return page.finish(last), nil
+			return page.finish(last)
 		}
 		last = cursor
 	}
 	if len(candidates) == limit {
-		return page.finish(tracker.WorkItemID(candidates[len(candidates)-1].ID)), nil
+		return page.finish(tracker.WorkItemID(candidates[len(candidates)-1].ID))
 	}
-	return page.finish(0), nil
+	return page.finish(0)
 }
 
 func (s *Service) nativeClaimLandingCapacityAvailable(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, requested int, now time.Time) (bool, error) {

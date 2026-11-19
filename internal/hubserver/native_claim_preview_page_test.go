@@ -12,6 +12,42 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestNativeClaimPreviewExactLimit(t *testing.T) {
+	for _, next := range []tracker.WorkItemID{0, 7} {
+		t.Run(fmt.Sprintf("next=%d", next), func(t *testing.T) {
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_exact_limit"}}
+			envelope, err := json.Marshal(tracker.NativeCapacityPage{Items: []tracker.NativeIssue{issue}, Next: next})
+			if err != nil {
+				t.Fatal(err)
+			}
+			padding := (1 << 20) - len(envelope)
+			issue.Body = strings.Repeat("\v", padding/6) + strings.Repeat("x", padding%6)
+			issue.Workpad = &tracker.NativeWorkpad{Body: "omit from preview"}
+			page, added, err := nativeClaimPreviewPage(nativePreviewPagePrefix).add(nativeClaimPreviewIssue{NativeIssue: issue})
+			if err != nil || !added {
+				t.Fatalf("add exact-limit candidate: added=%t err=%v", added, err)
+			}
+			wire, err := page.finish(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(wire) != 1<<20 {
+				t.Fatalf("page has %d bytes, want %d", len(wire), 1<<20)
+			}
+			var got tracker.NativeCapacityPage
+			if err := json.Unmarshal(wire, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Next != next || len(got.Items) != 1 || got.Items[0].WorkItemID != issue.WorkItemID || got.Items[0].Body != issue.Body || got.Items[0].Workpad != nil {
+				t.Fatal("exact-limit page lost its projected candidate or cursor")
+			}
+			if _, err := page.finish(77); err == nil {
+				t.Fatal("accepted a continuation that exceeds the page limit")
+			}
+		})
+	}
+}
+
 func TestNativeClaimPreviewPageBytes(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "Example project")
 	runner := prepareRunnerForScope(t, f, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
