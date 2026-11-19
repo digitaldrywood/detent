@@ -24,8 +24,13 @@ import (
 
 func newBoardSearchFixture(t *testing.T) searchFixture {
 	t.Helper()
+	return newBoardSearchFixtureWithBudget(t, 0)
+}
+
+func newBoardSearchFixtureWithBudget(t *testing.T, searchBudget time.Duration) searchFixture {
+	t.Helper()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1, SearchBudget: searchBudget})
 	objects := pgstoretest.NewHistoryObjects()
 	f := searchFixture{repository: repository, pool: pool, admin: admin, objects: objects}
 

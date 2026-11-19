@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -16,7 +17,11 @@ import (
 
 func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 	t.Parallel()
-	f := newBoardSearchFixture(t)
+	deadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("search coverage requires a test process deadline")
+	}
+	f := newBoardSearchFixtureWithBudget(t, time.Until(deadline))
 	ctx := t.Context()
 	clone := func(table, org, body string, first, count int) {
 		t.Helper()
