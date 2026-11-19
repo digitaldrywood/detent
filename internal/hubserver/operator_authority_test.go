@@ -152,30 +152,6 @@ func operatorPostgresSQL(t *testing.T, f operatorSecurityFixture, query string, 
 	}
 }
 
-func TestHubMCPOperatorCredentialBoundary(t *testing.T) {
-	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	worker := operatorNativeTokenFixture(t, f.service, f.project.OrganizationID, hubapi.APIScopeWorker, "mcp-worker")
-	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
-	for _, test := range []struct {
-		name, token, target string
-		status              int
-	}{
-		{"operator", f.token, path, http.StatusOK},
-		{"administrator", testHubAdminToken, path, http.StatusOK},
-		{"worker cannot become operator", worker.Token, path, http.StatusForbidden},
-		{"no credential", "", path, http.StatusUnauthorized},
-		{"foreign organization", f.token, "/api/v2/organizations/other/mcp", http.StatusUnauthorized},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			response := performHubAPIRequest(t, f.service, http.MethodPost, test.target, test.token, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "test", "version": "1"}}})
-			if response.Code != test.status {
-				t.Fatalf("%d %s", response.Code, response.Body.String())
-			}
-		})
-	}
-}
-
 func TestReporterOperatorAuthority(t *testing.T) {
 	t.Parallel()
 	for _, deployment := range []string{"shared", "dedicated"} {

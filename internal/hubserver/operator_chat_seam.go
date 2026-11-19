@@ -2,13 +2,10 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/operatorchat"
@@ -36,49 +33,39 @@ func (store operatorChatStore) Save(ctx context.Context, state chat.SessionState
 }
 
 func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity operatortool.Identity, origin string) (operatortool.Authority, error) {
-	var credential hubapi.APICredential
-	var err error
-	if origin != "" {
-		if identity.SessionID != "" {
-			return operatortool.Authority{}, operatortool.ErrAccessDenied
-		}
-		credential, err = s.currentEntryOriginCredential(ctx, origin)
-	} else if identity.SessionID == "" {
-		if s.config.TenantRepository != nil {
-			credential, _, err = s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(identity.OrganizationID), identity.CredentialID, "", "")
-		} else {
-			credential, _, err = s.authenticateAPIHash(ctx, identity.CredentialID, "", "")
-		}
-	} else if s.config.Hosted != nil && strings.HasPrefix(identity.PrincipalID, "account:") {
-		credential, err = s.hostedAccountCredential(ctx, identity.SessionID)
-	} else if s.config.Hosted != nil {
-		session, sessionErr := s.WebSession(ctx, identity.SessionID, s.config.Clock())
-		if sessionErr != nil {
-			return operatortool.Authority{}, operatortool.ErrAccessDenied
-		}
-		credential, _, err = s.hostedSessionCredential(ctx, session, identity.SessionID)
-	} else {
-		return operatortool.Authority{}, operatortool.ErrAccessDenied
+	deps := operatorchat.AuthorityDeps{
+		Hosted: s.config.Hosted != nil, Identity: hubscope.OperatorIdentity, OriginCredential: s.currentEntryOriginCredential,
+		AccountCredential: s.hostedAccountCredential, CurrentAuthority: s.operatorCurrentAuthority,
+		TokenCredential: func(ctx context.Context, organization, hash string) (hubapi.APICredential, error) {
+			if s.config.TenantRepository != nil {
+				credential, _, err := s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), hash, "", "")
+				return credential, err
+			}
+			credential, _, err := s.authenticateAPIHash(ctx, hash, "", "")
+			return credential, err
+		},
+		SessionCredential: func(ctx context.Context, hash string) (hubapi.APICredential, error) {
+			session, err := s.WebSession(ctx, hash, s.config.Clock())
+			if err != nil {
+				return hubapi.APICredential{}, err
+			}
+			credential, _, err := s.hostedSessionCredential(ctx, session, hash)
+			return credential, err
+		},
 	}
-	if err != nil || hubscope.OperatorIdentity(credential, identity.OrganizationID) != identity {
-		return operatortool.Authority{}, operatortool.ErrAccessDenied
-	}
-	return s.operatorCurrentAuthority(ctx, credential, identity.OrganizationID)
+	return deps.Resolve(ctx, identity, origin)
 }
 
 func (s *Service) currentEntryOriginClaims(ctx context.Context, encoded string) (cloudassert.Claims, error) {
-	var origin entryauthority.Origin
-	if !s.hostedShared() || s.config.Hosted.SharedEntry.ResolveKey == nil || json.Unmarshal([]byte(encoded), &origin) != nil || origin.Issuer != s.config.Hosted.SharedEntry.Issuer || origin.Generation != s.config.Hosted.SharedEntry.Generation || len(origin.CredentialBinding) != 64 || origin.KeyID == "" || origin.Subject == "" {
+	if !s.hostedShared() {
 		return cloudassert.Claims{}, operatortool.ErrAccessDenied
 	}
-	claims, err := s.config.Hosted.SharedEntry.ResolveKey(ctx, origin)
-	if err != nil {
-		return cloudassert.Claims{}, hubscope.OperatorAuthorizationError(err)
+	entry := s.config.Hosted.SharedEntry
+	origin := operatorchat.EntryOrigin{
+		Issuer: entry.Issuer, Generation: entry.Generation, ResolveKey: entry.ResolveKey,
+		ClassifyError: hubscope.OperatorAuthorizationError,
 	}
-	if claims.Key == nil || claims.Key.ID != origin.KeyID || claims.Key.CredentialBinding != origin.CredentialBinding || claims.Subject != origin.Subject || claims.Issuer != origin.Issuer || claims.Generation != origin.Generation {
-		return cloudassert.Claims{}, operatortool.ErrAccessDenied
-	}
-	return claims, nil
+	return origin.Claims(ctx, encoded)
 }
 
 func (s *Service) currentEntryOriginCredential(ctx context.Context, encoded string) (hubapi.APICredential, error) {
