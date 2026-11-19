@@ -429,7 +429,7 @@ func TestNativeErrorResponses(t *testing.T) {
 			c := echo.New().NewContext(request, recorded)
 			c.SetPath(hubapi.NativeBase + "/runners/:runner")
 			c.Set("native_scope", hubscope.NativeScope{Organization: "org_example", Project: "prj_example"})
-			if err := service.nativeAPIError(c, fmt.Errorf("private-context: %w", test.err)); err != nil {
+			if err := service.nativeAPIError(c, fmt.Errorf("render native response: %w", test.err)); err != nil {
 				t.Fatal(err)
 			}
 			failure := requireNativeCode(t, recorded, test.status, test.code)
