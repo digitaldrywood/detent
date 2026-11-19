@@ -46,6 +46,8 @@ func TestValidatorArchiveJSONBounds(t *testing.T) {
 		{name: "long output", input: "{\"output\":\"" + strings.Repeat("{,[\\\"}", 200_000) + "\"}", valid: true},
 		{name: "full pipeline timeline", input: "{\"timings\":[" + timings + "]}", valid: true},
 		{name: "large collection", input: "{\"values\":[" + strings.Repeat("0,", 10_000) + "0]}"},
+		{name: "many scalar object members", input: "{" + strings.Repeat("\"extra\":0,", 33_000) + "\"output\":\"\"}"},
+		{name: "invalid UTF-8 in a string", input: "{\"output\":\"\xff\"}"},
 		{name: "malformed syntax", input: "{\"review\":"},
 		{name: "extra value", input: "{} {}"},
 		{name: "wrong root type", input: "[]"},

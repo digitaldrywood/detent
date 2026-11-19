@@ -5074,8 +5074,9 @@
       ],
       "inventory": {
         "operations": {
-          "session.detailObject:QueryRow": 1,
-          "session.detailObject:SQL": 1,
+          "DetailStore.read:QueryRow": 2,
+          "DetailStore.read:SQL": 1,
+          "detailObjectQuery:SQL": 1,
           "session.putDetailObject:Exec": 1,
           "session.putDetailObject:SQL": 1,
           "session.reclaimDetailObjects:Exec": 1,

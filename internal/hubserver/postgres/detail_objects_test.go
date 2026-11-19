@@ -14,13 +14,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestDetailStoreKeepsContentPerOrganization(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
 	store := repository.DetailStore(func() time.Time { return now })
 	organizations := []tracker.OrganizationID{"org_detail_first", "org_detail_second"}
@@ -48,9 +49,21 @@ func TestDetailStoreKeepsContentPerOrganization(t *testing.T) {
 	}
 	for index, org := range organizations {
 		ref := refs[org]
-		got, err := store.ReadDetail(t.Context(), string(org), ref)
+		var transactionSpans []string
+		ctx := postgres.WithTransactionTiming(t.Context(), func(name string, _ time.Time) {
+			transactionSpans = append(transactionSpans, name)
+		})
+		got, err := store.ReadDetail(ctx, string(org), ref)
 		if err != nil || !bytes.Equal(got, data) {
 			t.Fatalf("%s read=%q err=%v", org, got, err)
+		}
+		if len(transactionSpans) != 0 {
+			t.Errorf("%s standalone detail read opened a repository transaction: %v", org, transactionSpans)
+		}
+		var visible int
+		var binding string
+		if err := pool.QueryRow(pgtest.UnboundProbe(t.Context()), `SELECT COALESCE(current_setting('detent.organization_id',true),''),(SELECT count(*) FROM hub_detail_objects)`).Scan(&binding, &visible); err != nil || binding != "" || visible != 0 {
+			t.Fatalf("pooled connection retained tenant %q with %d visible detail objects: %v", binding, visible, err)
 		}
 		canonical, err := store.ReadCanonicalDetail(t.Context(), string(org), "prj_example", ref.Key)
 		if err != nil || !bytes.Equal(canonical, data) {
