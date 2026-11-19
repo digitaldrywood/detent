@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerfleet"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -217,4 +218,36 @@ func validRunnerPlatform(os, architecture string) bool {
 
 func (s *Service) readRunnerIdentityTenant(ctx context.Context, organization tracker.OrganizationID, runnerID string) (runnerauth.Identity, error) {
 	return s.runnerIdentityDeps().ReadRunnerIdentityTenant(ctx, organization, runnerID)
+}
+
+func (s *Service) runnerDiagnosticDeps() runnerfleet.DiagnosticDeps {
+	return runnerfleet.DiagnosticDeps{
+		Repository:      s.config.TenantRepository,
+		Now:             s.config.Clock,
+		HTTPError:       s.nativeAPIError,
+		AuthorizeAccess: s.authorizeAccessScope,
+		DetailsFor:      s.runDetailStoreFor,
+	}
+}
+
+func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
+	return s.runnerDiagnosticDeps().GetRunnerProjectDiagnostics(c)
+}
+
+func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope hubscope.NativeScope, args operatortool.LocalProjectArguments) (runnerauth.DiagnosticPage, error) {
+	return s.runnerDiagnosticDeps().ReadRunnerProjectDiagnostics(ctx, scope, args)
+}
+
+type preparedRunnerAdmissionDecisions = runnerfleet.PreparedRunnerAdmissionDecisions
+
+func (s *Service) prepareRunnerAdmissionDecisions(ctx context.Context, credential hubapi.APICredential, view *runnerauth.ProjectConfiguration) (preparedRunnerAdmissionDecisions, error) {
+	return s.runnerDiagnosticDeps().PrepareRunnerAdmissionDecisions(ctx, credential, view)
+}
+
+func appendRunnerAdmissionDecisions(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, prepared preparedRunnerAdmissionDecisions, receivedAt time.Time) error {
+	return runnerfleet.AppendRunnerAdmissionDecisions(ctx, w, identity, prepared, receivedAt)
+}
+
+func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.NativeScope, view runnerauth.ProjectConfiguration, receivedAt time.Time, writer runnerstore.Writer) error {
+	return runnerfleet.StoreRunnerProjectObservationTenant(ctx, pruneExpiredProjectDiagnostics, projectConfigurationDigest, scope, view, receivedAt, writer)
 }
