@@ -637,7 +637,7 @@ func (s *Service) respondNativeLeaseTenant(c echo.Context, scope hubscope.Native
 		if details.WorkItemID == "" {
 			return corestore.ErrNotFound
 		}
-		blockerFacts, err = readNativeClaimBlockerFacts(ctx, r, scope.Project, []tracker.NativeWorkItemID{details.WorkItemID})
+		blockerFacts, err = r.WorkItemBlockerFacts(ctx, scope.Project, []tracker.NativeWorkItemID{details.WorkItemID})
 		return err
 	})
 	if err != nil {

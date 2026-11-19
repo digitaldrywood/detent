@@ -162,8 +162,11 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 		for _, plan := range plans {
 			ids = append(ids, plan.Candidate.WorkItemID)
 		}
-		blockerFacts, err = readNativeClaimBlockerFacts(ctx, r, scope.Project, ids)
-		return err
+		if len(ids) > 0 {
+			blockerFacts, err = r.WorkItemBlockerFacts(ctx, scope.Project, ids)
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return tracker.NativeCapacityPage{}, err
