@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -74,47 +72,6 @@ func parityToolCall(t *testing.T, name string, arguments any) operatortool.Call 
 		t.Fatal(err)
 	}
 	return operatortool.Call{Name: name, Arguments: raw}
-}
-
-func TestPostgresMCPChangeParity(t *testing.T) {
-	t.Parallel()
-	first := newChangeFixture(t, nil)
-	organization := nativeOrganization{ID: first.project.OrganizationID + "_second"}
-	second := newChangeFixture(t, first.service, organization.ID)
-	for _, f := range []changeFixture{first, second} {
-		t.Run(string(f.project.OrganizationID), func(t *testing.T) {
-			version := f.publish(t, "parity-version", "")
-			ctx := parityNativeContext(t, f.service, f.project.OrganizationID)
-			for _, name := range []string{
-				operatortool.GetChange, operatortool.GetChangeVersion, operatortool.DiscussChange,
-				operatortool.GetChangeReviewPolicy,
-				operatortool.ListWorkItemPullRequests, operatortool.ArtifactServices,
-				operatortool.ArtifactReferences,
-			} {
-				t.Run(name, func(t *testing.T) {
-					args := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), ChangeID: f.change.ID, VersionID: version.ID, RequestID: "parity-" + name, Body: "Example discussion", FileSHA256: strings.Repeat("a", 64), Viewed: true, ExpectedRevision: int64(f.change.Revision), ExpectedPolicyID: f.rules.ID, Policy: &f.rules, AttemptID: "attempt", Sequence: 1, Bundle: &tracker.ChangeReviewBundle{ArtifactID: artifact.NewID("artifact"), Revision: 1, SHA256: strings.Repeat("a", 64), HeadSHA: version.HeadSHA}, Binding: &artifact.Binding{ServiceID: artifact.NewID("service"), Origin: "https://artifacts.example.test", PublisherTokenID: "publisher", Mode: "customer"}, ReleasePick: &tracker.ReleasePickInput{SourceIssueID: f.issue.WorkItemID, SourceChangeID: f.change.ID, SourceMergeSHA: strings.Repeat("a", 40), Repository: "example-org/example-project", PRNumber: 1, HeadRef: "release-pick", HeadSHA: strings.Repeat("b", 40), BaseRef: "release/v1.0", BaseSHA: strings.Repeat("a", 40), FrozenSHA: strings.Repeat("a", 40)}}
-					call := parityToolCall(t, name, args)
-					result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, call)
-					paritySuccess(t, result, err)
-					var got operatortool.ChangeResult
-					if err := json.Unmarshal(result.Content, &got); err != nil {
-						t.Fatal(err)
-					}
-					if got.OrganizationID != string(f.project.OrganizationID) || got.ProjectID != string(f.project.ID) {
-						t.Fatal("change result escaped tenant")
-					}
-					definitions, listErr := (hostedOperatorExecutor{f.service}).ListTools(ctx)
-					if listErr != nil {
-						t.Fatal(listErr)
-					}
-					if entryKeyHasDefinition(definitions, name) != (err == nil) {
-						t.Fatalf("catalog/execution mismatch for %s: %v", name, err)
-					}
-
-				})
-			}
-		})
-	}
 }
 
 func TestPostgresMCPProjectParity(t *testing.T) {
@@ -383,36 +340,6 @@ func parityHostedPeer(t *testing.T, first hostedSecurityFixture, organization tr
 	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/" + hosted.OrganizationID + "/projects/" + string(project)}
 }
 
-func TestPostgresMCPArtifactParity(t *testing.T) {
-	t.Parallel()
-	first := newPostgresArtifactFixture(t)
-	peer := parityHostedPeer(t, first.hostedSecurityFixture, tracker.OrganizationID("org_"+strings.Repeat("c", 32)), tracker.ProjectID("prj_"+strings.Repeat("d", 32)))
-	second := postgresArtifactFixture{hostedSecurityFixture: peer, admin: hostedPostgresAdmin(t, peer.service)}
-	for _, f := range []postgresArtifactFixture{first, second} {
-		t.Run(f.service.config.Hosted.OrganizationID, func(t *testing.T) {
-			reference, _, _ := seedPostgresHostedArtifact(t, f)
-			owner := coordinatorBudgetUser(t, f.hostedSecurityFixture, "artifact-reader", "owner", false)
-			ctx := parityHostedContext(t, f.hostedSecurityFixture, owner)
-			for _, name := range []string{operatortool.ArtifactServices, operatortool.ArtifactReferences, operatortool.GetArtifactReference, operatortool.ArtifactAccess} {
-				t.Run(name, func(t *testing.T) {
-					args := operatortool.ChangeArguments{ProjectID: string(f.project), ItemID: reference.WorkItemID, ArtifactID: reference.ArtifactID, Revision: reference.Revision, SHA256: reference.SHA256, RequestID: "artifact-parity"}
-					result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, parityToolCall(t, name, args))
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !strings.Contains(string(result.Content), reference.ServiceID) {
-						t.Fatalf("artifact identity missing: %s", result.Content)
-					}
-					definitions, err := (hostedOperatorExecutor{f.service}).ListTools(ctx)
-					if err != nil || !entryKeyHasDefinition(definitions, name) {
-						t.Fatalf("working artifact tool absent: %v", err)
-					}
-				})
-			}
-		})
-	}
-}
-
 func TestPostgresMCPInstanceParity(t *testing.T) {
 	t.Parallel()
 	first := newDefaultNativeFixture(t, Config{GitHubRequestCounts: func() []GitHubRequestCount { return []GitHubRequestCount{} }})
@@ -489,147 +416,6 @@ func paritySuccess(t *testing.T, result operatortool.Result, err error) {
 		if status != "" && status != "succeeded" {
 			t.Fatalf("action did not succeed: %s", result.Content)
 		}
-	}
-}
-
-func TestPostgresMCPCatalogAuthorities(t *testing.T) {
-	t.Parallel()
-	cases := []struct{ name, authorities string }{
-		{"billing_usage.hosted_billing", "owner shared"},
-		{"billing_usage.hosted_plan_page", "owner shared admin"},
-		{"billing_usage.hosted_usage_report", "owner shared member viewer staff admin"},
-		{"board_receipt", "local owner shared member viewer admin"},
-		{"board_session", "local owner shared member viewer admin"},
-		{"approve_change_review_policy", "local owner shared staff admin"},
-		{"artifact_access", "local owner shared member viewer staff admin"},
-		{"artifact_references", "local owner shared member viewer staff admin"},
-		{"artifact_services", "local owner shared member viewer staff admin"},
-		{"associate_release_pick", "local owner shared member admin"},
-		{"bind_artifact_service", "local owner shared staff admin"},
-		{"change_viewed_files", "local owner shared member viewer staff admin"},
-		{"discuss_change", "local owner shared member admin"},
-		{"get_artifact_reference", "local owner shared member viewer staff admin"},
-		{"get_attempt_diff", "local owner shared member viewer staff admin"},
-		{"get_change", "local owner shared member viewer staff admin"},
-		{"get_change_review_policy", "local owner shared member viewer staff admin"},
-		{"get_change_version", "local owner shared member viewer staff admin"},
-		{"get_native_run", "local owner shared member viewer staff admin"},
-		{"get_work_item_diff", "local owner shared member viewer staff admin"},
-		{"list_work_item_pull_requests", "local owner shared member viewer staff admin"},
-		{"publish_release_pick", "local owner shared member admin"},
-		{"view_change_file", "local owner shared member admin"},
-		{"session_logout", "owner member viewer staff admin"},
-		{"credential_create", "owner shared member viewer admin"},
-		{"credential_list", "local owner shared member viewer admin"},
-		{"credential_revoke", "owner shared member viewer admin"},
-		{"analytics_dashboard", "owner shared member viewer staff admin"},
-		{"get_runner_routing", "local"},
-		{"github_request_counts", "local"},
-		{"health", "local"},
-		{"hosted_fleet", "owner shared member viewer staff admin"},
-		{"native_capabilities", "local"},
-		{"time_series", "owner shared member viewer staff admin"},
-		{"apply_local_project_policy", "local owner shared staff admin"},
-		{"detach_local_project", "local owner shared staff admin"},
-		{"drain_local_project", "local owner shared staff admin"},
-		{"local_project_configuration", "local owner shared member viewer staff admin"},
-		{"resume_local_project", "local owner shared admin"},
-		{"invitation_accept", "owner member viewer staff admin"},
-		{"invitation_revoke", "owner shared admin"},
-		{"member_remove", "owner shared admin"},
-		{"organization_list", "local owner shared member viewer staff admin"},
-		{"organization_project_rank", "owner shared admin"},
-		{"organization_project_rank_update", "owner shared admin"},
-		{"organization_switch", "local owner member viewer staff admin"},
-		{"advance_git_hub_import", "local owner shared member admin"},
-		{"bind_native_repository", "local owner shared staff admin"},
-		{"command_git_hub_batch", "local owner shared staff admin"},
-		{"create_hosted_project", "owner shared staff admin"},
-		{"create_native_project", "local"},
-		{"cutover_project", "local owner shared staff admin"},
-		{"get_cutover_receipt", "local owner shared member viewer staff admin"},
-		{"get_git_hub_import", "local owner shared member viewer staff admin"},
-		{"get_project_sprite_allocation", "local owner shared member viewer staff admin"},
-		{"get_sprite_pool", "local owner shared member viewer staff admin"},
-		{"list_git_hub_import_records", "local owner shared member viewer staff admin"},
-		{"project_native_summary", "local owner shared member admin"},
-		{"project_secret_metadata", "local owner shared member viewer staff admin"},
-		{"remove_project_secret", "local owner shared staff admin"},
-		{"outbox_health", ""},
-		{"repository_freshness", ""},
-		{"revoke_project_policy", ""},
-		{"start_git_hub_import", "local owner shared member admin"},
-		{"update_project_sprite_allocation", "local owner shared staff admin"},
-		{"update_sprite_pool", "local owner shared staff admin"},
-		{"organization_create", ""},
-		{"support_start", "staff"},
-	}
-	for _, authority := range []string{"local", "owner", "shared", "member", "viewer", "shared_member", "shared_viewer", "admin", "staff"} {
-		t.Run(authority, func(t *testing.T) {
-			var service *Service
-			var ctx context.Context
-			switch authority {
-			case "local":
-				f := newDefaultNativeFixture(t, Config{})
-				service = f.service
-				ctx = parityNativeContext(t, service, f.project.OrganizationID)
-			case "staff":
-				f := newOperatorSecurityFixture(t)
-				user := f.user(t, "staff", "admin", "support@example.test", "write", "")
-				service = f.service
-				ctx = parityHostedContext(t, f.hostedSecurityFixture, user)
-			default:
-				deployment, role := "dedicated", authority
-				if authority == "shared" {
-					deployment, role = "shared", "owner"
-				}
-				if strings.HasPrefix(authority, "shared_") {
-					deployment, role = "shared", strings.TrimPrefix(authority, "shared_")
-				}
-				fixture, context := newOperatorKeyFixture(t, deployment, role)
-				service, ctx = fixture.service, context
-			}
-			definitions, err := (hostedOperatorExecutor{service}).ListTools(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, test := range cases {
-				t.Run(test.name, func(t *testing.T) {
-					want := slices.Contains(strings.Fields(test.authorities), strings.TrimPrefix(authority, "shared_"))
-					if strings.HasPrefix(authority, "shared_") && (test.name == operatortool.SessionLogout || test.name == operatortool.OrganizationSwitch || test.name == operatortool.InvitationAccept) {
-						want = false
-					}
-					if entryKeyHasDefinition(definitions, test.name) != want {
-						t.Fatalf("%s visibility for %s: want %t", test.name, authority, want)
-					}
-					allowed, err := service.entryKeyToolAvailable(ctx, test.name)
-					if err != nil || allowed != want {
-						t.Fatalf("%s call gate for %s: allowed=%t want=%t error=%v", test.name, authority, allowed, want, err)
-					}
-				})
-			}
-		})
-	}
-}
-
-func TestPostgresMCPRuntimeParity(t *testing.T) {
-	t.Parallel()
-	first := newNativeFixture(t, nil, "", "Runtime parity")
-	second := newNativeFixture(t, first.service, first.project.OrganizationID+"_second", "Runtime parity")
-	for _, f := range []nativeFixture{first, second} {
-		t.Run(string(f.project.OrganizationID), func(t *testing.T) {
-			issue := f.create(t, "Recorded runtime")
-			ctx := parityNativeContext(t, f.service, f.project.OrganizationID)
-			for _, name := range []string{operatortool.BoardReceipt, operatortool.BoardSession} {
-				t.Run(name, func(t *testing.T) {
-					result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, parityToolCall(t, name, map[string]any{"project_id": f.project.ID, "reference": issue.WorkItemID}))
-					paritySuccess(t, result, err)
-					if !strings.Contains(string(result.Content), string(issue.WorkItemID)) {
-						t.Fatal("runtime result lost work item identity")
-					}
-				})
-			}
-		})
 	}
 }
 

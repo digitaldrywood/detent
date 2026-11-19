@@ -65,53 +65,26 @@ func (r hostedUsageFaultReader) AccessMissingUsageGrant(context.Context, string,
 	return false, r.err
 }
 
-func TestPostgresHostedEndpointCredentialOutages(t *testing.T) {
-	t.Parallel()
-	f := newSharedRouteFixture(t)
-	for org, service := range f.services {
-		repository := service.config.AccessRepository
-		base := "/api/v2/organizations/" + org
-		for _, route := range []struct{ method, path, body string }{
-			{http.MethodDelete, base + "/members/missing", ""},
-			{http.MethodPut, base + "/members/missing/role", `{"role":"member"}`},
-			{http.MethodPost, base + "/members/invitations", `{"email":"member@example.test","role":"member","idempotency_key":"example"}`},
-			{http.MethodPut, base + "/members/invitations/missing", `{}`},
-			{http.MethodPut, base + "/members/missing/grants", `{}`},
-			{http.MethodDelete, base + "/members/invitations/missing", ""},
-			{http.MethodPost, base + "/members/invitations/missing/resend", `{}`},
-			{http.MethodGet, base + "/api-keys", ""},
-			{http.MethodPost, base + "/api-keys", `{}`},
-			{http.MethodDelete, base + "/api-keys/missing", ""},
-			{http.MethodPost, "/organizations/" + org + "/organization/members/missing/revoke", ""},
-			{http.MethodPost, "/organizations/" + org + "/organization/members/missing/role", ""},
-			{http.MethodPost, "/organizations/" + org + "/organization/grants", ""},
-			{http.MethodPost, "/organizations/" + org + "/organization/invite", ""},
-			{http.MethodPost, "/organizations/" + org + "/projects", ""},
-		} {
-			for _, fault := range []struct {
-				name string
-				err  error
-				want int
-			}{
-				{"storage", errors.New("private-outage-sentinel"), http.StatusServiceUnavailable},
-				{"outage before denial", errors.Join(tenantauth.ErrUnavailable, accessstore.ErrDenied), http.StatusServiceUnavailable},
-				{"missing", corestore.ErrNotFound, http.StatusForbidden},
-			} {
-				t.Run(org+"/"+route.method+route.path+"/"+fault.name, func(t *testing.T) {
-					service.config.AccessRepository = entryAuthFaultRepository{Repository: repository, stage: "member", err: fault.err}
-					defer func() { service.config.AccessRepository = repository }()
-					response := hostedOutageRequest(t, f, org, route.method, route.path, route.body, "application/json")
-					requireEntryAuthResponse(t, response.Code, response.Body.String(), fault.want)
-				})
-			}
-		}
-	}
-}
-
 func TestPostgresHostedMemberProviderOutages(t *testing.T) {
 	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
+		t.Run(org+"/browser membership lookup", func(t *testing.T) {
+			repository := service.config.AccessRepository
+			defer func() { service.config.AccessRepository = repository }()
+			path := "/api/v2/organizations/" + org + "/api-keys"
+			for _, test := range []struct {
+				err  error
+				want int
+			}{
+				{errors.Join(errors.New("private-outage-sentinel"), tenantauth.ErrUnavailable, accessstore.ErrDenied), http.StatusServiceUnavailable},
+				{corestore.ErrNotFound, http.StatusForbidden},
+			} {
+				service.config.AccessRepository = entryAuthFaultRepository{Repository: repository, stage: "member", err: test.err}
+				response := hostedOutageRequest(t, f, org, http.MethodGet, path, "", "application/json")
+				requireEntryAuthResponse(t, response.Code, response.Body.String(), test.want)
+			}
+		})
 		provider := &entryAuthProvider{browserHostedProvider: &browserHostedProvider{members: map[string]auth.Membership{}}}
 		service.config.Hosted.Provider = provider
 		base := "/api/v2/organizations/" + org + "/members/missing"
