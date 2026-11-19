@@ -5,10 +5,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/workspacerelay"
 
 	"github.com/labstack/echo/v4"
 
@@ -37,10 +38,7 @@ import (
 // that arrives after the re-bind grace, is refused with stale_execution.
 
 // workspaceWorkerIdentity is the tuple every workspace worker request carries.
-type workspaceWorkerIdentity struct {
-	LeaseID      tracker.LeaseID      `json:"lease_id"`
-	FencingToken tracker.FencingToken `json:"fencing_token,string"`
-}
+type workspaceWorkerIdentity = workspacerelay.WorkerIdentity
 
 // workspaceBindRequest claims a workspace for the runner that holds its item's
 // lease.
@@ -570,16 +568,7 @@ func workerActionRunClaimant(record workspaceRecord) string {
 
 // workerRelayIdentity reads the workspace tuple from the upgrade's headers.
 func workerRelayIdentity(c echo.Context) (workspaceWorkerIdentity, error) {
-	lease := strings.TrimSpace(c.Request().Header.Get("X-Detent-Lease"))
-	token := strings.TrimSpace(c.Request().Header.Get("X-Detent-Fencing-Token"))
-	if lease == "" || token == "" {
-		return workspaceWorkerIdentity{}, hubapi.NativePublicInvalid("A lease and fencing token header are required")
-	}
-	var fencing int64
-	if _, err := fmt.Sscanf(token, "%d", &fencing); err != nil || fencing <= 0 {
-		return workspaceWorkerIdentity{}, hubapi.NativePublicInvalid("The fencing token header is invalid")
-	}
-	return workspaceWorkerIdentity{LeaseID: tracker.LeaseID(lease), FencingToken: tracker.FencingToken(fencing)}, nil
+	return workspacerelay.WorkerIdentityFromHeaders(c)
 }
 
 func workspaceCapabilityNames(value workspacesession.Capabilities) []string {

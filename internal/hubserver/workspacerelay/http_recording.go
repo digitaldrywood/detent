@@ -1,10 +1,12 @@
-package hubserver
+package workspacerelay
 
 import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -36,13 +38,13 @@ import (
 // the level the runner was told to serve. A recording's audience is decided
 // from it for the life of the row, so a setting changed afterwards cannot widen
 // who may read a recording already made.
-func (w *workspaceService) beginTerminalRecording(
-	record workspaceRecord,
-	connection *relayConnection,
-	stream *relayStream,
+func (w *HTTP) beginTerminalRecording(
+	record workspacehub.Record,
+	connection *Connection,
+	stream *Stream,
 	open workspacesession.TerminalOpen,
-) *terminalStreamState {
-	if !w.config.Terminal.RecordEnabled() {
+) *TerminalStream {
+	if !w.TerminalConfig().RecordEnabled() {
 		return nil
 	}
 	now := w.now()
@@ -54,12 +56,12 @@ func (w *workspaceService) beginTerminalRecording(
 		// happened is a session worth having a record of.
 		cols, rows = workspacesession.DefaultTerminalCols, workspacesession.DefaultTerminalRows
 	}
-	return &terminalStreamState{
+	return &TerminalStream{
 		ID: hubapi.NewID("termrec"), WorkspaceID: record.ID,
 		OrganizationID: string(record.OrganizationID), ProjectID: string(record.ProjectID),
 		RelaySessionID: connection.AuditID, StreamID: stream.ID,
 		PrincipalID: connection.PrincipalID, Subject: connection.Subject,
-		Isolation: w.config.Terminal.Isolation, SupportReason: connection.SupportReason,
+		Isolation: w.TerminalConfig().Isolation, SupportReason: connection.SupportReason,
 		StartedAt: now, Cols: cols, Rows: rows,
 		Recording: workspacesession.NewRecording(cols, rows, now),
 	}
@@ -72,8 +74,8 @@ func (w *workspaceService) beginTerminalRecording(
 // says so; a recording that silently held only the shell's half would be a
 // worse answer than one that says which half is which, because a reader would
 // not know they were reading half.
-func (w *workspaceService) recordPersonTerminalFrame(connection *relayConnection, stream *relayStream, frame workspacesession.Frame) {
-	if !w.config.Terminal.RecordEnabled() || stream.Channel != workspacesession.ChannelTerminal {
+func (w *HTTP) recordPersonTerminalFrame(connection *Connection, stream *Stream, frame workspacesession.Frame) {
+	if !w.TerminalConfig().RecordEnabled() || stream.Channel != workspacesession.ChannelTerminal {
 		return
 	}
 	switch frame.Type {
@@ -90,7 +92,7 @@ func (w *workspaceService) recordPersonTerminalFrame(connection *relayConnection
 			}
 			data = string(decoded)
 		}
-		w.relay.appendTerminalEvent(connection.WorkspaceID, stream.ID, workspacesession.AsciicastInput, data, w.now())
+		w.Relay.AppendTerminalEvent(connection.WorkspaceID, stream.ID, workspacesession.AsciicastInput, data, w.now())
 	case workspacesession.TypeTerminalResize:
 		var payload workspacesession.TerminalResize
 		if err := json.Unmarshal(frame.Payload, &payload); err != nil {
@@ -100,12 +102,12 @@ func (w *workspaceService) recordPersonTerminalFrame(connection *relayConnection
 		if err != nil {
 			return
 		}
-		w.relay.resizeTerminalRecording(connection.WorkspaceID, stream.ID, size.Cols, size.Rows, w.now())
+		w.Relay.ResizeTerminalRecording(connection.WorkspaceID, stream.ID, size.Cols, size.Rows, w.now())
 	}
 }
 
 // recordRunnerTerminalFrame records what the shell wrote.
-func (w *workspaceService) recordRunnerTerminalFrame(connection *relayConnection, stream *relayStream, frame workspacesession.Frame) {
+func (w *HTTP) recordRunnerTerminalFrame(connection *Connection, stream *Stream, frame workspacesession.Frame) {
 	if frame.Type != workspacesession.TypeTerminalOutput {
 		return
 	}
@@ -125,7 +127,7 @@ func (w *workspaceService) recordRunnerTerminalFrame(connection *relayConnection
 		}
 		data = string(decoded)
 	}
-	w.relay.appendTerminalEvent(connection.WorkspaceID, stream.ID, workspacesession.AsciicastOutput, data, w.now())
+	w.Relay.AppendTerminalEvent(connection.WorkspaceID, stream.ID, workspacesession.AsciicastOutput, data, w.now())
 }
 
 // finishTerminalRecordings writes every recording it is given.
@@ -135,29 +137,29 @@ func (w *workspaceService) recordRunnerTerminalFrame(connection *relayConnection
 // workspace ending, the hub shutting down -- are the same events that cancel
 // the contexts they arrive on, so a write that honoured the cancellation would
 // be abandoned exactly when it mattered and the recording would be lost.
-func (w *workspaceService) finishTerminalRecordings(ctx context.Context, states []*terminalStreamState) {
+func (w *HTTP) FinishTerminalRecordings(ctx context.Context, states []*TerminalStream) {
 	for _, state := range states {
 		if state == nil {
 			continue
 		}
-		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
-		w.finishTerminalRecording(writeCtx, state)
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), WriteTimeout)
+		w.FinishTerminalRecording(writeCtx, state)
 		cancel()
 	}
 }
 
 // finishTerminalRecording writes one recording and points the relay session's
 // recording_artifact at where it may be read.
-func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *terminalStreamState) {
+func (w *HTTP) FinishTerminalRecording(ctx context.Context, state *TerminalStream) {
 	now := w.now()
 	organization := tracker.OrganizationID(state.OrganizationID)
-	ref, err := w.prepareRelayOutput(ctx, organization, []byte(state.Recording.Cast()))
+	ref, err := w.PrepareRelayOutput(ctx, organization, []byte(state.Recording.Cast()))
 	if err != nil {
-		w.logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.WorkspaceID, "stream", state.StreamID, "error", err)
+		w.Logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.WorkspaceID, "stream", state.StreamID, "error", err)
 		return
 	}
 	var recorded postgres.TerminalRecording
-	err = w.server.accessWrite(ctx, organization, func(writer tenantstore.Writer) error {
+	err = w.AccessWrite(ctx, organization, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -194,7 +196,7 @@ func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *t
 		if err != nil {
 			return err
 		}
-		if err := w.server.retainRelayArchive(ctx, writer, organization, tracker.ProjectID(state.ProjectID), state.ID, "workspace-terminal-recording", ref, now); err != nil {
+		if err := RetainRelayArchive(ctx, writer, organization, tracker.ProjectID(state.ProjectID), state.ID, "workspace-terminal-recording", ref, now); err != nil {
 			return err
 		}
 		if previous != nil {
@@ -215,14 +217,14 @@ func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *t
 		return
 	}
 	if err != nil {
-		w.logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.WorkspaceID, "stream", state.StreamID, "error", err)
+		w.Logger.Warn("workspace.terminal_recording_not_written", "workspace_id", state.WorkspaceID, "stream", state.StreamID, "error", err)
 		return
 	}
-	w.logger.Info("workspace.terminal_recorded", "workspace_id", state.WorkspaceID, "stream", state.StreamID, "recording_id", state.ID, "bytes", recorded.CastContentBytes, "truncated", recorded.Truncated, "isolation", recorded.Isolation)
+	w.Logger.Info("workspace.terminal_recorded", "workspace_id", state.WorkspaceID, "stream", state.StreamID, "recording_id", state.ID, "bytes", recorded.CastContentBytes, "truncated", recorded.Truncated, "isolation", recorded.Isolation)
 }
 
 // relaySessionRecordingReference is the path a relay session row points at.
-func relaySessionRecordingReference(state *terminalStreamState) string {
+func relaySessionRecordingReference(state *TerminalStream) string {
 	return "/api/v2/organizations/" + state.OrganizationID + "/projects/" + state.ProjectID +
 		"/workspaces/" + state.WorkspaceID + "/terminal-recordings?relay_session=" + state.RelaySessionID
 }
