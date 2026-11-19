@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"context"
+	"net/url"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimapi"
@@ -778,4 +780,252 @@ func validateTenantProviderAttempt(ctx context.Context, reader tenantstore.Reade
 
 func answeredClaimKind(data tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint) string {
 	return claimapi.AnsweredClaimKind(data, checkpoint)
+}
+
+func (s *Service) runnerAttemptDeps() executionapi.AttemptDeps {
+	return executionapi.AttemptDeps{
+		Repository:             s.config.TenantRepository,
+		Now:                    s.config.Clock,
+		HTTPError:              s.nativeAPIError,
+		Details:                s.runDetailStore,
+		AuthorizeAccess:        s.authorizeAccessScope,
+		Logger:                 s.config.Logger,
+		ReadQuery:              nativeReadQuery,
+		ArchiveJSON:            nativeArchiveJSON,
+		DetailContext:          s.runDetailContext,
+		DetailsFor:             s.runDetailStoreFor,
+		ReadPage:               s.readNativePage,
+		PageOrder:              nativePageOrder,
+		CleanupRequired:        nativeRunCleanupRequired,
+		ReadLandingObservation: s.readNativeLandingObservation,
+		FailureSummary:         attemptFailureSummary,
+	}
+}
+
+func nativeExecutionConflict(message string) error {
+	return executionapi.NativeExecutionConflict(message)
+}
+
+func nativeStaleLease(err error, message string) error {
+	return executionapi.NativeStaleLease(err, message)
+}
+
+func validExecutionName(value string) bool {
+	return executionapi.ValidExecutionName(value)
+}
+
+func validCheckpointRef(ref string) bool {
+	return executionapi.ValidCheckpointRef(ref)
+}
+
+func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
+	return executionapi.ValidateNativeExecution(nativeRejection, nativeTerminationData, data, eventType)
+}
+
+func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObservation) bool {
+	return executionapi.NativeRuntimeHistoryChanged(nativeRuntimeSession, previous, observation)
+}
+
+func (s *Service) listNativeAttempts(c echo.Context) error {
+	return s.runnerAttemptDeps().ListNativeAttempts(c)
+}
+
+type nativeAttemptPage struct {
+	tracker.Page[tracker.NativeAttempt]
+	encoded []byte
+}
+
+func (s *Service) readAttempts(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
+	return s.runnerAttemptDeps().ReadAttempts(ctx, scope, item, params)
+}
+
+func (s *Service) readNativeAttemptPage(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
+	page, err := s.runnerAttemptDeps().ReadNativeAttemptPage(ctx, scope, item, params, marshal)
+	return nativeAttemptPage{Page: page.Page, encoded: page.Encoded}, err
+}
+
+func nativeAttemptAuthorityProjection(attempt tracker.NativeAttempt) tracker.NativeAttempt {
+	return executionapi.NativeAttemptAuthorityProjection(attempt)
+}
+
+func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.NativeExecutionIdentity {
+	return executionapi.NativeAttemptDisplayIdentity(attempt)
+}
+
+func nativeRecordedAttemptIdentity(attempt leasestore.Attempt, runtime bool) (*tracker.NativeExecutionIdentity, bool) {
+	return executionapi.NativeRecordedAttemptIdentity(attempt, runtime)
+}
+
+func nativeExecutionDisplayIdentity(execution *tracker.NativeExecutionIdentity, runtime *agentidentity.Identity) *tracker.NativeExecutionIdentity {
+	return executionapi.NativeExecutionDisplayIdentity(execution, runtime)
+}
+
+func (s *Service) getNativeAttempt(c echo.Context) error {
+	return s.runnerAttemptDeps().GetNativeAttempt(c)
+}
+
+func (s *Service) readNativeAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
+	return s.runnerAttemptDeps().ReadNativeAttempt(ctx, scope, item, id)
+}
+
+func nativeLeaseReleaseFailure(reason string, now time.Time) tracker.NativeTerminalFailure {
+	return executionapi.NativeLeaseReleaseFailure(reason, now)
+}
+
+func (s *Service) readNativeAttemptTenant(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
+	return s.runnerAttemptDeps().ReadNativeAttemptTenant(ctx, scope, item, id)
+}
+
+func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope hubscope.NativeScope, item, id string) (hubrecords.TenantAttemptSnapshot, error) {
+	return s.runnerAttemptDeps().ReadNativeAttemptSnapshotTenant(ctx, scope, item, id)
+}
+
+func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
+	page, err := s.runnerAttemptDeps().ReadNativeAttemptPageTenant(ctx, scope, item, params, marshal)
+	return nativeAttemptPage{Page: page.Page, encoded: page.Encoded}, err
+}
+
+func (s *Service) readNativeAttemptCheckpointTenant(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot) (*tracker.NativeCheckpoint, error) {
+	return s.runnerAttemptDeps().ReadNativeAttemptCheckpointTenant(ctx, snapshot)
+}
+
+func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, now time.Time) (tracker.NativeAttempt, error) {
+	return s.runnerAttemptDeps().HydrateNativeAttemptTenant(ctx, snapshot, now)
+}
+
+func nativeAttemptRunMatches(snapshot hubrecords.TenantAttemptSnapshot, run tracker.NativeRunData) bool {
+	return executionapi.NativeAttemptRunMatches(snapshot, run)
+}
+
+func readTenantAttemptEvidence(ctx context.Context, r tenantstore.Reader, snapshot *hubrecords.TenantAttemptSnapshot) error {
+	return executionapi.ReadTenantAttemptEvidence(ctx, r, snapshot)
+}
+
+func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot) (tracker.NativeRunData, error) {
+	return s.runnerAttemptDeps().ReadNativeAttemptRunTenant(ctx, snapshot)
+}
+
+func nativeAttemptArchiveReadError(ref *attachment.ArchiveReference, err error) error {
+	return executionapi.NativeAttemptArchiveReadError(ref, err)
+}
+
+func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, detail *hubrecords.RunDetailReference) ([]byte, error) {
+	return s.runnerAttemptDeps().ReadAttemptCheckpointDetail(ctx, snapshot, detail)
+}
+
+func (s *Service) populateCheckpointSource(ctx context.Context, organization tracker.OrganizationID, after string) (string, error) {
+	return s.runnerAttemptDeps().PopulateCheckpointSource(ctx, organization, after)
+}
+
+type attemptSummaryContextKey = executionapi.AttemptSummaryContextKey
+
+func attemptSummaryRead(ctx context.Context) bool {
+	return executionapi.AttemptSummaryRead(ctx)
+}
+
+type retainedAttemptReadPin = executionapi.RetainedAttemptReadPin
+
+func (s *Service) readRetainedAttemptTenant(ctx context.Context, scope hubscope.NativeScope, item, id string, pin *retainedAttemptReadPin) (tracker.NativeAttempt, *retainedAttemptReadPin, error) {
+	return s.runnerAttemptDeps().ReadRetainedAttemptTenant(ctx, scope, item, id, pin)
+}
+
+func (p nativeAttemptPage) candidateBytes(encoded []byte, cursor string) int {
+	return (executionapi.NativeAttemptPage{Page: p.Page, Encoded: p.encoded}).CandidateBytes(encoded, cursor)
+}
+
+func (p *nativeAttemptPage) appendAttempt(attempt tracker.NativeAttempt, encoded []byte) {
+	page := executionapi.NativeAttemptPage{Page: p.Page, Encoded: p.encoded}
+	page.AppendAttempt(attempt, encoded)
+	p.Page, p.encoded = page.Page, page.Encoded
+}
+
+func (p *nativeAttemptPage) finish() {
+	page := executionapi.NativeAttemptPage{Page: p.Page, Encoded: p.encoded}
+	page.Finish()
+	p.Page, p.encoded = page.Page, page.Encoded
+}
+
+func (s *Service) runnerRuntimeDeps() executionapi.RuntimeDeps {
+	return executionapi.RuntimeDeps{
+		Repository:           s.config.TenantRepository,
+		Now:                  s.config.Clock,
+		HTTPError:            s.nativeAPIError,
+		AuthorizeAccess:      s.authorizeAccessScope,
+		DetailContext:        s.runDetailContext,
+		RequestDetails:       s.withRequestDetails,
+		DetailsFor:           s.runDetailStoreFor,
+		HydrateAttempt:       s.hydrateNativeAttemptTenant,
+		HydrateChange:        s.hydrateCurrentChangeDetail,
+		HydrateWorkItem:      s.hydrateWorkItemRecord,
+		HydrateRelationships: s.hydrateWorkItemRelationshipFacts,
+		ReadAdmission:        s.readRuntimeAdmissionTenant,
+		ReadSourceRecovery:   s.readRuntimeSourceRecoveryTenant,
+		ReadWorkItem:         s.readWorkItemRecord,
+		AttachChange:         attachRuntimeChangeDetail,
+		Explain:              boundedNativeExplanation,
+		ArchiveJSON:          nativeArchiveJSON,
+		ReadOperatorEvidence: s.readRunnerOperatorEvidence,
+	}
+}
+
+func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
+	return executionapi.ValidateNativeRuntime(nativeRejection, validateNativeGitHubScope, r)
+}
+
+func (s *Service) getNativeExplanation(c echo.Context) error {
+	return s.runnerRuntimeDeps().GetNativeExplanation(c)
+}
+
+func (s *Service) getNativeRuntime(c echo.Context) error {
+	return s.runnerRuntimeDeps().GetNativeRuntime(c)
+}
+
+func (s *Service) readNativeRuntime(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+	return s.runnerRuntimeDeps().ReadNativeRuntime(ctx, scope, item, attemptID, admission...)
+}
+
+func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+	return s.runnerRuntimeDeps().ReadNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
+}
+
+type runtimeAttemptSelector struct {
+	attemptID string
+	latest    bool
+	failures  *runtimeFailureRows
+}
+
+type runtimeFailureRows struct {
+	rows   []leasestore.AttemptFailureRow
+	legacy map[string]hubrecords.TenantAttemptSnapshot
+}
+
+const runtimeFailureHistory = executionapi.RuntimeFailureHistory
+
+func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hubscope.NativeScope, item string, selector runtimeAttemptSelector) (tracker.NativeRuntimeEvidence, int64, bool, error) {
+	value := executionapi.RuntimeAttemptSelector{AttemptID: selector.attemptID, Latest: selector.latest}
+	if selector.failures != nil {
+		value.Failures = &executionapi.RuntimeFailureRows{Rows: selector.failures.rows, Legacy: selector.failures.legacy}
+	}
+	evidence, sequence, found, err := s.runnerRuntimeDeps().ReadSelectedNativeRuntimeTenant(ctx, scope, item, value)
+	if selector.failures != nil {
+		selector.failures.rows, selector.failures.legacy = value.Failures.Rows, value.Failures.Legacy
+	}
+	return evidence, sequence, found, err
+}
+
+func validateNativeAdmissionContext(c tracker.NativeAdmissionContext) error {
+	return executionapi.ValidateNativeAdmissionContext(c)
+}
+
+func (s *Service) hydrateSchedulerDecisionRows(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, evidence tracker.NativeRuntimeEvidence, rows eventstore.SchedulerDecisionRows) (tracker.NativeRuntimeEvidence, error) {
+	return s.runnerRuntimeDeps().HydrateSchedulerDecisionRows(ctx, scope, item, evidence, rows)
+}
+
+func (s *Service) readRunnerOperatorEvidence(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, withFailures bool) (tracker.NativeRuntimeEvidence, error) {
+	evidence, _, _, err := s.readOperatorEvidence(ctx, scope, issue, withFailures)
+	return evidence, err
+}
+
+func readAttemptMetadataSnapshot(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, attempts []leasestore.Attempt, evidence bool) (tenantstore.Reader, error) {
+	return executionapi.ReadAttemptMetadataSnapshot(ctx, r, scope, item, attempts, evidence)
 }

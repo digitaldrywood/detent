@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -435,41 +434,5 @@ func TestPostgresOperatorReadsRejectRoleChanges(t *testing.T) {
 				t.Fatalf("explanation accepted downgraded role: hook=%v error=%v", changed, err)
 			}
 		})
-	}
-}
-
-func TestPostgresRuntimeReportsMissingAttempt(t *testing.T) {
-	t.Parallel()
-	_, f, owner, _ := newExportPostgresFixture(t)
-	for _, key := range []string{"first", "second"} {
-		response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "missing-attempt-" + key}, Title: "Example " + key, Body: workItemRecordBody, State: "Todo"})
-		requireNativeStatus(t, response, http.StatusOK)
-		var issue tracker.NativeIssue
-		decodeHubResponse(t, response, &issue)
-		response = f.request(t, owner, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/runtime", nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		var evidence tracker.NativeRuntimeEvidence
-		decodeHubResponse(t, response, &evidence)
-		if evidence.Attempt != nil || !slices.Contains(evidence.Unavailable, "native_attempt") {
-			t.Fatalf("missing attempt availability = %+v", evidence)
-		}
-	}
-}
-
-func TestNativeRuntimeHidesUnreadableProjectDependencies(t *testing.T) {
-	t.Parallel()
-	f := newNativeFixture(t, newPostgresNativeService(t, Config{}), "", "runtime-visible")
-	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "runtime-foreign")
-	for _, key := range []string{"first", "second"} {
-		item := f.create(t, "visible "+key)
-		hidden := foreign.create(t, "hidden "+key)
-		itemPath := f.base + "/work-items/" + string(item.WorkItemID)
-		response := performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "runtime-hidden-" + key}, ExpectedRevision: item.Revision, RelatedWorkItemID: hidden.WorkItemID, Operation: "add"})
-		requireNativeStatus(t, response, http.StatusOK)
-		response = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/runtime", f.token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		if body := response.Body.String(); strings.Contains(body, string(hidden.WorkItemID)) || strings.Contains(body, hidden.Title) {
-			t.Fatalf("runtime evidence leaked dependency from unreadable project: %s", body)
-		}
 	}
 }

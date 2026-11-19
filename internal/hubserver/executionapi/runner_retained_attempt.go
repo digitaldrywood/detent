@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
@@ -12,15 +12,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type retainedAttemptReadPin struct {
+type RetainedAttemptReadPin struct {
 	SourceSHA256   string    `json:"source_sha256"`
 	At             time.Time `json:"at"`
 	LeaseRenewedAt time.Time `json:"lease_renewed_at"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
 }
 
-func (s *Service) readRetainedAttemptTenant(ctx context.Context, scope hubscope.NativeScope, item, id string, pin *retainedAttemptReadPin) (tracker.NativeAttempt, *retainedAttemptReadPin, error) {
-	snapshot, err := s.readNativeAttemptSnapshotTenant(ctx, scope, item, id)
+func (d AttemptDeps) ReadRetainedAttemptTenant(ctx context.Context, scope hubscope.NativeScope, item, id string, pin *RetainedAttemptReadPin) (tracker.NativeAttempt, *RetainedAttemptReadPin, error) {
+	snapshot, err := d.ReadNativeAttemptSnapshotTenant(ctx, scope, item, id)
 	if err != nil {
 		return tracker.NativeAttempt{}, nil, err
 	}
@@ -45,11 +45,11 @@ func (s *Service) readRetainedAttemptTenant(ctx context.Context, scope hubscope.
 	digest := sha256.Sum256(raw)
 	sha := hex.EncodeToString(digest[:])
 	if pin == nil {
-		pin = &retainedAttemptReadPin{SourceSHA256: sha, At: s.config.Clock().UTC(), LeaseRenewedAt: snapshot.Lease.RenewedAt, LeaseExpiresAt: snapshot.Lease.ExpiresAt}
+		pin = &RetainedAttemptReadPin{SourceSHA256: sha, At: d.Now().UTC(), LeaseRenewedAt: snapshot.Lease.RenewedAt, LeaseExpiresAt: snapshot.Lease.ExpiresAt}
 	} else if pin.SourceSHA256 != sha || pin.At.IsZero() || pin.LeaseRenewedAt.IsZero() || !pin.LeaseExpiresAt.After(pin.LeaseRenewedAt) {
 		return tracker.NativeAttempt{}, nil, hubapi.NativeConflict(0)
 	}
 	snapshot.Lease.RenewedAt, snapshot.Lease.ExpiresAt = pin.LeaseRenewedAt, pin.LeaseExpiresAt
-	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, pin.At)
+	attempt, err := d.HydrateNativeAttemptTenant(ctx, snapshot, pin.At)
 	return attempt, pin, err
 }

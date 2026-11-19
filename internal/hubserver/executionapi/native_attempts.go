@@ -1,9 +1,10 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -16,31 +17,53 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workpage"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-func nativeExecutionConflict(message string) error {
+type AttemptDeps struct {
+	Repository             tenantstore.Repository
+	Now                    func() time.Time
+	HTTPError              func(echo.Context, error, ...any) error
+	Details                func() attachment.DetailStore
+	AuthorizeAccess        func(context.Context, accessstore.Reader, hubscope.NativeScope, bool) error
+	Logger                 *slog.Logger
+	ReadQuery              func(c echo.Context) (url.Values, error)
+	ArchiveJSON            func(c echo.Context, status int, value any) error
+	DetailContext          func(ctx context.Context) context.Context
+	DetailsFor             func(ctx context.Context) attachment.DetailStore
+	ReadPage               func(ctx context.Context, scope hubscope.NativeScope, path string, params url.Values) (int, workpage.Cursor, []byte, error)
+	PageOrder              func(params url.Values, column, after string) (string, string, error)
+	CleanupRequired        func(run tracker.NativeRunData) bool
+	ReadLandingObservation func(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, ref tracker.NativeChangeReference) (*tracker.NativeLandingReceipt, string, error)
+	FailureSummary         func(data tracker.NativeRunData, status string) *leasestore.AttemptFailure
+}
+
+func NativeExecutionConflict(message string) error {
 	return &hubapi.NativeError{Code: "run_sequence_conflict", Message: message, Status: http.StatusConflict}
 }
 
-// nativeStaleLease maps a tracker fencing failure onto that vocabulary, so a
+// NativeStaleLease maps a tracker fencing failure onto that vocabulary, so a
 // lease that is no longer current reads as stale_execution rather than as the
 // tracker's own error.
-func nativeStaleLease(err error, message string) error {
+
+func NativeStaleLease(err error, message string) error {
 	if errors.Is(err, tracker.ErrStaleFencingToken) {
 		return hubapi.NativeStaleExecution(message)
 	}
 	return err
 }
 
-func validExecutionName(value string) bool {
+func ValidExecutionName(value string) bool {
 	return value != "" && len(value) <= 128 && strings.IndexFunc(value, func(r rune) bool {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
 			return false
@@ -49,12 +72,12 @@ func validExecutionName(value string) bool {
 	}) < 0
 }
 
-func validCheckpointRef(ref string) bool {
+func ValidCheckpointRef(ref string) bool {
 	name, ok := strings.CutPrefix(ref, tracker.CheckpointRefPrefix)
 	return ok && name != "" && len(name) <= 128 && strings.Trim(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") == "" && !strings.HasPrefix(name, ".") && !strings.Contains(name, "..") && !strings.HasSuffix(name, ".lock")
 }
 
-func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
+func ValidateNativeExecution(nativeRejection func(error, string, string) error, nativeTerminationData func(tracker.NativeRunData) bool, data tracker.NativeRunData, eventType string) error {
 	if len(data.Steps) > 8 {
 		return hubapi.NativePublicInvalid("Execution step receipts exceed the bounded step set")
 	}
@@ -100,7 +123,7 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 		if eventType != "run.finished" || data.Sequence <= 0 || f.ObservedAt.IsZero() || f.Files < 0 ||
 			f.ChangeID != "" && !hubapi.ValidID(f.ChangeID, "change") || f.VersionID != "" && !hubapi.ValidID(f.VersionID, "version") ||
 			f.BaseSHA != "" && !hubapi.ValidCommitID(f.BaseSHA) || f.HeadSHA != "" && !hubapi.ValidCommitID(f.HeadSHA) ||
-			f.SourceAttemptID != "" && !hubapi.ValidID(f.SourceAttemptID, "attempt") || f.VersionCode != "" && (!validExecutionName(f.VersionCode) || strings.ContainsAny(f.VersionCode, "/:\\")) ||
+			f.SourceAttemptID != "" && !hubapi.ValidID(f.SourceAttemptID, "attempt") || f.VersionCode != "" && (!ValidExecutionName(f.VersionCode) || strings.ContainsAny(f.VersionCode, "/:\\")) ||
 			len(f.VersionError) > tracker.NativeFinalizationTextLimit || len(f.Error) > tracker.NativeFinalizationTextLimit || !utf8.ValidString(f.VersionError) || !utf8.ValidString(f.Error) {
 			return nativeRejection(hubapi.NativePublicInvalid("Finalizer observations require bounded identity and text on an ordered terminal event"), "execution_validation", "data.finalization")
 		}
@@ -146,7 +169,7 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	if eventType == "run.finished" && data.Identity == nil && data.Sequence > 1 && data.Outcome == "cancelled" && nativeTerminationData(data) {
 		return nil
 	}
-	if data.Sequence < 0 || data.Identity == nil || !validExecutionName(data.Identity.Role) || !validExecutionName(data.Identity.Backend) || !validExecutionName(data.Identity.Model) {
+	if data.Sequence < 0 || data.Identity == nil || !ValidExecutionName(data.Identity.Role) || !ValidExecutionName(data.Identity.Backend) || !ValidExecutionName(data.Identity.Model) {
 		return nativeRejection(hubapi.NativePublicInvalid("Ordered events require a positive sequence and bounded execution identity"), "execution_validation", "data")
 	}
 	if data.Handoff == nil {
@@ -176,7 +199,7 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 		return nativeRejection(hubapi.NativePublicInvalid("External effects require a typed reconciliation identity and state"), "execution_validation", "data.handoff")
 	}
 	if (c.Storage == "git_ref") != (c.Ref != "" || c.CommitSHA != "" || c.TreeSHA != "" || c.BaseSHA != "") || c.Storage == "git_ref" &&
-		(!validCheckpointRef(c.Ref) || !hubapi.ValidCommitID(c.CommitSHA) || !hubapi.ValidCommitID(c.TreeSHA) || c.BaseSHA != "" && !hubapi.ValidCommitID(c.BaseSHA)) {
+		(!ValidCheckpointRef(c.Ref) || !hubapi.ValidCommitID(c.CommitSHA) || !hubapi.ValidCommitID(c.TreeSHA) || c.BaseSHA != "" && !hubapi.ValidCommitID(c.BaseSHA)) {
 		return nativeRejection(hubapi.NativePublicInvalid("Git checkpoints require a Detent checkpoint ref and commit, tree and base IDs"), "execution_validation", "data.handoff")
 	}
 	if c.Storage == "customer_store" && (len(data.ArtifactIDs) == 0 || c.Availability == "available") {
@@ -188,7 +211,7 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	return nil
 }
 
-func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObservation) bool {
+func NativeRuntimeHistoryChanged(nativeRuntimeSession func(*tracker.NativeRuntimeObservation) int64, previous, observation *tracker.NativeRuntimeObservation) bool {
 	if previous == nil || observation == nil {
 		return previous != observation
 	}
@@ -222,64 +245,64 @@ func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObs
 	return !reflect.DeepEqual(left, right)
 }
 
-func (s *Service) listNativeAttempts(c echo.Context) error {
+func (d AttemptDeps) ListNativeAttempts(c echo.Context) error {
 	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
-	params, err := nativeReadQuery(c)
+	params, err := d.ReadQuery(c)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	if params.Get("view") == "" && c.Request().Header.Get("X-Detent-Attempt-Detail") == "full" {
 		params.Set("view", "detail")
 	}
-	result, err := s.readNativeAttemptPageTenant(ctx, scope, c.Param("item"), params, json.Marshal)
+	result, err := d.ReadNativeAttemptPageTenant(ctx, scope, c.Param("item"), params, json.Marshal)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, result.encoded)
+	return c.JSONBlob(http.StatusOK, result.Encoded)
 }
 
-type nativeAttemptPage struct {
+type NativeAttemptPage struct {
 	tracker.Page[tracker.NativeAttempt]
-	encoded []byte
+	Encoded []byte `json:"-"`
 }
 
-func (p nativeAttemptPage) candidateBytes(encoded []byte, cursor string) int {
+func (p NativeAttemptPage) CandidateBytes(encoded []byte, cursor string) int {
 	separator := 0
 	if len(p.Items) > 0 {
 		separator = 1
 	}
-	return len(p.encoded) + separator + len(encoded) + len(`],"next_cursor":"`) + len(cursor) + len("\"}\n")
+	return len(p.Encoded) + separator + len(encoded) + len(`],"next_cursor":"`) + len(cursor) + len("\"}\n")
 }
 
-func (p *nativeAttemptPage) appendAttempt(attempt tracker.NativeAttempt, encoded []byte) {
+func (p *NativeAttemptPage) AppendAttempt(attempt tracker.NativeAttempt, encoded []byte) {
 	if len(p.Items) > 0 {
-		p.encoded = append(p.encoded, ',')
+		p.Encoded = append(p.Encoded, ',')
 	}
-	p.encoded = append(p.encoded, encoded...)
+	p.Encoded = append(p.Encoded, encoded...)
 	p.Items = append(p.Items, attempt)
 }
 
-func (p *nativeAttemptPage) finish() {
-	p.encoded = append(p.encoded, ']')
+func (p *NativeAttemptPage) Finish() {
+	p.Encoded = append(p.Encoded, ']')
 	if p.NextCursor != "" {
-		p.encoded = append(p.encoded, `,"next_cursor":"`...)
-		p.encoded = append(p.encoded, p.NextCursor...)
-		p.encoded = append(p.encoded, '"')
+		p.Encoded = append(p.Encoded, `,"next_cursor":"`...)
+		p.Encoded = append(p.Encoded, p.NextCursor...)
+		p.Encoded = append(p.Encoded, '"')
 	}
-	p.encoded = append(p.encoded, '}', '\n')
+	p.Encoded = append(p.Encoded, '}', '\n')
 }
 
-func (s *Service) readAttempts(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
-	result, err := s.readNativeAttemptPage(ctx, scope, item, params, json.Marshal)
+func (d AttemptDeps) ReadAttempts(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
+	result, err := d.ReadNativeAttemptPage(ctx, scope, item, params, json.Marshal)
 	return result.Page, err
 }
 
-func (s *Service) readNativeAttemptPage(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
-	return s.readNativeAttemptPageTenant(ctx, scope, item, params, marshal)
+func (d AttemptDeps) ReadNativeAttemptPage(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (NativeAttemptPage, error) {
+	return d.ReadNativeAttemptPageTenant(ctx, scope, item, params, marshal)
 }
 
-func nativeAttemptAuthorityProjection(attempt tracker.NativeAttempt) tracker.NativeAttempt {
+func NativeAttemptAuthorityProjection(attempt tracker.NativeAttempt) tracker.NativeAttempt {
 	if attempt.CompletionBody != "" {
 		attempt.CompletionBody = ""
 		attempt.Unavailable = append(attempt.Unavailable, "completion_body")
@@ -303,24 +326,24 @@ func nativeAttemptAuthorityProjection(attempt tracker.NativeAttempt) tracker.Nat
 	return attempt
 }
 
-func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.NativeExecutionIdentity {
+func NativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.NativeExecutionIdentity {
 	if attempt.Runtime == nil {
-		return nativeExecutionDisplayIdentity(attempt.Identity, nil)
+		return NativeExecutionDisplayIdentity(attempt.Identity, nil)
 	}
-	return nativeExecutionDisplayIdentity(attempt.Identity, &attempt.Runtime.Identity)
+	return NativeExecutionDisplayIdentity(attempt.Identity, &attempt.Runtime.Identity)
 }
 
-func nativeRecordedAttemptIdentity(attempt leasestore.Attempt, runtime bool) (*tracker.NativeExecutionIdentity, bool) {
+func NativeRecordedAttemptIdentity(attempt leasestore.Attempt, runtime bool) (*tracker.NativeExecutionIdentity, bool) {
 	if attempt.IdentitySequence == 0 {
 		return nil, false
 	}
 	if !runtime {
-		return nativeExecutionDisplayIdentity(attempt.Identity.Execution, nil), true
+		return NativeExecutionDisplayIdentity(attempt.Identity.Execution, nil), true
 	}
-	return nativeExecutionDisplayIdentity(attempt.Identity.Execution, &attempt.Identity.Runtime), true
+	return NativeExecutionDisplayIdentity(attempt.Identity.Execution, &attempt.Identity.Runtime), true
 }
 
-func nativeExecutionDisplayIdentity(execution *tracker.NativeExecutionIdentity, runtime *agentidentity.Identity) *tracker.NativeExecutionIdentity {
+func NativeExecutionDisplayIdentity(execution *tracker.NativeExecutionIdentity, runtime *agentidentity.Identity) *tracker.NativeExecutionIdentity {
 	if execution == nil {
 		return nil
 	}
@@ -337,35 +360,35 @@ func nativeExecutionDisplayIdentity(execution *tracker.NativeExecutionIdentity, 
 	return &identity
 }
 
-func (s *Service) getNativeAttempt(c echo.Context) error {
+func (d AttemptDeps) GetNativeAttempt(c echo.Context) error {
 	if c.QueryParam("view") == "cleanup" {
-		result, err := s.readNativeCleanupAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"))
+		result, err := d.readNativeCleanupAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"))
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return d.HTTPError(c, err)
 		}
 		return c.JSON(http.StatusOK, result)
 	}
-	result, err := s.readNativeAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"))
+	result, err := d.ReadNativeAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
-	return nativeArchiveJSON(c, http.StatusOK, result)
+	return d.ArchiveJSON(c, http.StatusOK, result)
 }
 
-func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
+func (d AttemptDeps) readNativeCleanupAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
 	if !scope.Credential.Runner.Valid() {
 		return tracker.NativeAttempt{}, hubapi.NativeNotFound()
 	}
-	ctx = s.runDetailContext(ctx)
+	ctx = d.DetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	repository, ok := d.Repository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return tracker.NativeAttempt{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var snapshot hubrecords.TenantAttemptSnapshot
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
 			return err
 		}
 		project, err := r.Project(ctx, scope.Project)
@@ -412,17 +435,17 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope hubscope.N
 	if err != nil {
 		return tracker.NativeAttempt{}, hubapi.ProjectRecordError(err)
 	}
-	if s.runDetailStore() == nil {
+	if d.Details() == nil {
 		return tracker.NativeAttempt{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	data, err := s.readNativeAttemptRunTenant(ctx, snapshot)
+	data, err := d.ReadNativeAttemptRunTenant(ctx, snapshot)
 	if err != nil {
 		return tracker.NativeAttempt{}, err
 	}
-	if !nativeAttemptRunMatches(snapshot, data) || data.RunnerID != scope.Credential.Runner.RunnerID {
+	if !NativeAttemptRunMatches(snapshot, data) || data.RunnerID != scope.Credential.Runner.RunnerID {
 		return tracker.NativeAttempt{}, artifact.ErrIntegrity
 	}
-	if !nativeRunCleanupRequired(data) || data.MachineID != scope.Credential.Runner.MachineID {
+	if !d.CleanupRequired(data) || data.MachineID != scope.Credential.Runner.MachineID {
 		return tracker.NativeAttempt{}, hubapi.NativeNotFound()
 	}
 	return tracker.NativeAttempt{
@@ -435,17 +458,17 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope hubscope.N
 	}, nil
 }
 
-func (s *Service) readNativeAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
-	ctx = s.runDetailContext(ctx)
+func (d AttemptDeps) ReadNativeAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
+	ctx = d.DetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	return s.readNativeAttemptTenant(ctx, scope, item, id)
+	return d.ReadNativeAttemptTenant(ctx, scope, item, id)
 }
 
-func nativeLeaseReleaseFailure(reason string, now time.Time) tracker.NativeTerminalFailure {
+func NativeLeaseReleaseFailure(reason string, now time.Time) tracker.NativeTerminalFailure {
 	failure := tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "lease_release", ObservedAt: now.UTC(),
 		Error: "attempt lease was released before the attempt finished; release reason unavailable (lease expired, replaced or its runner was revoked)"}
-	if validExecutionName(reason) {
+	if ValidExecutionName(reason) {
 		failure.Error = "attempt lease was released before the attempt finished; release reason: " + reason
 	}
 	return failure.Public()

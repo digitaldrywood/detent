@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
@@ -38,64 +38,64 @@ type nativeRuntimeTenantSnapshot struct {
 	reservation          *claimstore.ProviderReservation
 }
 
-func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+func (d RuntimeDeps) ReadNativeRuntimeTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
 	if len(admission) > 1 {
 		return tracker.NativeRuntimeEvidence{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	if attemptID == "" {
-		row, version, err := s.readWorkItemRecord(ctx, scope, item)
+		row, version, err := d.ReadWorkItem(ctx, scope, item)
 		if err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
-		issue, err := s.hydrateWorkItemRecord(ctx, row, version)
+		issue, err := d.HydrateWorkItem(ctx, row, version)
 		if err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
-		if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue); err != nil {
+		if err := d.HydrateRelationships(ctx, scope, &issue); err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
-		evidence, _, _, err := s.readOperatorEvidence(ctx, scope, issue, false)
+		evidence, err := d.ReadOperatorEvidence(ctx, scope, issue, false)
 		if err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
-		if err := s.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, admission); err != nil {
+		if err := d.ReadAdmission(ctx, scope, issue, &evidence, admission); err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
 		if evidence.Attempt == nil {
-			if err := s.readRuntimeSourceRecoveryTenant(ctx, scope, item, &evidence); err != nil {
+			if err := d.ReadSourceRecovery(ctx, scope, item, &evidence); err != nil {
 				return evidence, err
 			}
 		}
 		return evidence, nil
 	}
-	evidence, _, _, err := s.readSelectedNativeRuntimeTenant(ctx, scope, item, runtimeAttemptSelector{attemptID: attemptID})
+	evidence, _, _, err := d.ReadSelectedNativeRuntimeTenant(ctx, scope, item, RuntimeAttemptSelector{AttemptID: attemptID})
 	return evidence, err
 }
 
-type runtimeAttemptSelector struct {
-	attemptID string
-	latest    bool
-	failures  *runtimeFailureRows
+type RuntimeAttemptSelector struct {
+	AttemptID string
+	Latest    bool
+	Failures  *RuntimeFailureRows
 }
 
-type runtimeFailureRows struct {
-	rows   []leasestore.AttemptFailureRow
-	legacy map[string]hubrecords.TenantAttemptSnapshot
+type RuntimeFailureRows struct {
+	Rows   []leasestore.AttemptFailureRow
+	Legacy map[string]hubrecords.TenantAttemptSnapshot
 }
 
-const runtimeFailureHistory = 64
+const RuntimeFailureHistory = 64
 
-func readRuntimeFailureRows(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, row corestore.WorkItem, out *runtimeFailureRows) error {
+func readRuntimeFailureRows(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, row corestore.WorkItem, out *RuntimeFailureRows) error {
 	reader, ok := r.(leasestore.AttemptFailureReader)
 	if !ok {
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
-	rows, err := reader.AttemptFailures(ctx, row.ID, runtimeFailureHistory+1)
+	rows, err := reader.AttemptFailures(ctx, row.ID, RuntimeFailureHistory+1)
 	if err != nil {
 		return err
 	}
-	out.rows, out.legacy = rows, map[string]hubrecords.TenantAttemptSnapshot{}
-	for _, failure := range rows[:min(len(rows), runtimeFailureHistory)] {
+	out.Rows, out.Legacy = rows, map[string]hubrecords.TenantAttemptSnapshot{}
+	for _, failure := range rows[:min(len(rows), RuntimeFailureHistory)] {
 		if failure.Recorded {
 			continue
 		}
@@ -124,28 +124,28 @@ func readRuntimeFailureRows(ctx context.Context, r tenantstore.Reader, scope hub
 		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 			return err
 		}
-		out.legacy[attempt.ID] = snapshot
+		out.Legacy[attempt.ID] = snapshot
 	}
 	return nil
 }
 
-func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hubscope.NativeScope, item string, selector runtimeAttemptSelector) (tracker.NativeRuntimeEvidence, int64, bool, error) {
-	attemptID := selector.attemptID
+func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope hubscope.NativeScope, item string, selector RuntimeAttemptSelector) (tracker.NativeRuntimeEvidence, int64, bool, error) {
+	attemptID := selector.AttemptID
 	var localAttemptID int64
-	if !selector.latest && !hubapi.ValidID(attemptID, "attempt") {
+	if !selector.Latest && !hubapi.ValidID(attemptID, "attempt") {
 		local, err := strconv.ParseInt(attemptID, 10, 64)
 		if err != nil || local <= 0 {
 			return tracker.NativeRuntimeEvidence{}, 0, false, hubapi.NativePublicInvalid("Invalid attempt identity")
 		}
 		localAttemptID = local
 	}
-	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
-	if !ok || s.runDetailStoreFor(ctx) == nil {
+	snapshotRepository, ok := d.Repository.(tenantstore.SnapshotRepository)
+	if !ok || d.DetailsFor(ctx) == nil {
 		return tracker.NativeRuntimeEvidence{}, 0, false, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var snapshot nativeRuntimeTenantSnapshot
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
 			return err
 		}
 		project, err := r.ProjectRecord(ctx, scope.Project)
@@ -172,7 +172,7 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 		}
 		snapshot.project, snapshot.item, snapshot.version, snapshot.boardSequence = project, row, version, board.Sequence
 		var attempt leasestore.Attempt
-		if selector.latest {
+		if selector.Latest {
 			attempt, err = r.LatestAttempt(ctx, row.ID)
 			if errors.Is(err, corestore.ErrNotFound) {
 				return nil
@@ -186,8 +186,8 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 		if attempt.OrganizationID != scope.Organization || attempt.IssueID != row.ID {
 			return hubapi.NativeNotFound()
 		}
-		if selector.failures != nil {
-			if err := readRuntimeFailureRows(ctx, r, scope, row, selector.failures); err != nil {
+		if selector.Failures != nil {
+			if err := readRuntimeFailureRows(ctx, r, scope, row, selector.Failures); err != nil {
 				return err
 			}
 		}
@@ -259,7 +259,7 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
 			return err
 		}
-		if err := readTenantAttemptEvidence(ctx, r, &snapshot.attempt); err != nil {
+		if err := ReadTenantAttemptEvidence(ctx, r, &snapshot.attempt); err != nil {
 			return err
 		}
 		snapshot.attemptPolicy, snapshot.currentPolicy, snapshot.policyFound = attemptPolicy, currentPolicy, policyFound
@@ -295,23 +295,23 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 	if snapshot.attempt.Attempt.ID == "" {
 		return tracker.NativeRuntimeEvidence{}, snapshot.boardSequence, false, nil
 	}
-	issue, err := s.hydrateWorkItemRecord(ctx, snapshot.item, snapshot.version)
+	issue, err := d.HydrateWorkItem(ctx, snapshot.item, snapshot.version)
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, 0, false, err
 	}
-	if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue); err != nil {
+	if err := d.HydrateRelationships(ctx, scope, &issue); err != nil {
 		return tracker.NativeRuntimeEvidence{}, 0, false, err
 	}
 	issue.ChangeSequence = snapshot.boardSequence
 	issue = issue.RuntimeReference()
-	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot.attempt, s.config.Clock().UTC())
+	attempt, err := d.HydrateAttempt(ctx, snapshot.attempt, d.Now().UTC())
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, 0, false, err
 	}
 	if attempt.PolicyID == "" || attempt.PolicyID != snapshot.leasePolicy.PolicyID {
 		return tracker.NativeRuntimeEvidence{}, 0, false, hubapi.PolicyMismatch("Attempt policy does not match its fenced lease")
 	}
-	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	content := eventstore.NewContent(d.DetailsFor(ctx))
 	boundPolicy, err := content.ProjectPolicy(ctx, snapshot.attemptPolicy)
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, 0, false, err
@@ -328,7 +328,7 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 			return tracker.NativeRuntimeEvidence{}, 0, false, err
 		}
 	}
-	now := s.config.Clock().UTC()
+	now := d.Now().UTC()
 	attempt.Current = snapshot.attempt.Lease.ReleasedAt == nil && !now.Before(snapshot.attempt.Lease.RenewedAt) && now.Before(snapshot.attempt.Lease.ExpiresAt)
 	if attempt.Runtime != nil {
 		attempt.RuntimeFreshness = "available"
@@ -363,11 +363,11 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 		result.LatestDecision = &decision
 	}
 	if snapshot.changeRecord.ID != "" {
-		detail, err := s.hydrateCurrentChangeDetail(ctx, scope, issue.WorkItemID, snapshot.changeRecord, snapshot.changeVersion, snapshot.changePolicy, now)
+		detail, err := d.HydrateChange(ctx, scope, issue.WorkItemID, snapshot.changeRecord, snapshot.changeVersion, snapshot.changePolicy, now)
 		if err != nil {
 			return tracker.NativeRuntimeEvidence{}, 0, false, err
 		}
-		attachRuntimeChangeDetail(&result, detail)
+		d.AttachChange(&result, detail)
 	}
 	if !snapshot.policyFound {
 		result.Unavailable = append(result.Unavailable, "approved_dispatch_policy")
@@ -416,7 +416,7 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 	if attempt.TerminalFailure == nil {
 		result.Unavailable = append(result.Unavailable, "terminal_failure")
 	}
-	if err := s.readRuntimeSourceRecoveryTenant(ctx, scope, item, &result); err != nil {
+	if err := d.ReadSourceRecovery(ctx, scope, item, &result); err != nil {
 		return result, 0, false, err
 	}
 	return result, snapshot.boardSequence, true, nil
