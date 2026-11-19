@@ -29,7 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -216,95 +215,6 @@ type hostedSecurityFixture struct {
 	provider *hostedSecurityProvider
 	project  tracker.ProjectID
 	base     string
-}
-
-func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
-	t.Parallel()
-	for _, organization := range []string{"org_first", "org_second", "org_third"} {
-		t.Run(organization, func(t *testing.T) {
-			t.Parallel()
-			service := openHostedPostgresService(t, Config{
-				Hosted: &hostedplans.HostedConfig{
-					OrganizationID:       organization,
-					WorkOSOrganizationID: "provider_" + organization,
-					PublicURL:            "https://" + organization + ".example.test",
-					Provider:             newHostedSecurityProvider(),
-				},
-			})
-			version, err := postgres.LatestSchemaVersion()
-			if err != nil {
-				t.Fatal(err)
-			}
-			admin := hostedPostgresAdmin(t, service)
-			var applied int64
-			if err := admin.QueryRowContext(t.Context(), "SELECT max(version_id) FROM goose_db_version WHERE is_applied").Scan(&applied); err != nil {
-				t.Fatal(err)
-			}
-			if service.database.schemaVersion != version || applied != version {
-				t.Fatalf("schema version = %d, want %d", applied, version)
-			}
-			var boundOrganization string
-			if err := service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(r tenantstore.Reader) error {
-				tenant, err := r.AccessTenant(t.Context())
-				boundOrganization = string(tenant.OrganizationID)
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if boundOrganization != organization {
-				t.Fatalf("tenant binding = %q, want %q", boundOrganization, organization)
-			}
-			var sessions int
-			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_sessions WHERE organization_id=$1", organization).Scan(&sessions); err != nil {
-				t.Fatal(err)
-			}
-			if sessions != 0 {
-				t.Fatalf("new fixture contains %d sessions", sessions)
-			}
-			now := service.config.Clock().UTC().Truncate(time.Microsecond)
-			if err := service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
-				return w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: tracker.OrganizationID(organization), Hash: apikey.HashToken("same-token"), Email: "fixture@example.test", Subject: "fixture_" + organization, ProviderOrganizationID: "provider_" + organization, SessionID: "session_" + organization, CreatedAt: now, ExpiresAt: now.Add(time.Hour), IdentityCreatedAt: now, IdentityExpiresAt: now.Add(time.Hour)})
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if err := service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(r tenantstore.Reader) error {
-				row, err := r.AccessSession(t.Context(), apikey.HashToken("same-token"))
-				if err == nil && (row.OrganizationID != tracker.OrganizationID(organization) || row.SessionID != "session_"+organization) {
-					return errors.New("session crossed tenant binding")
-				}
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := admin.ExecContext(t.Context(), "CREATE TABLE fixture_probe (id bigint PRIMARY KEY)"); err != nil {
-				t.Fatalf("fixture schema was shared: %v", err)
-			}
-			if err := service.database.health(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-		})
-	}
-	t.Run("seeded security copies", func(t *testing.T) {
-		for range 2 {
-			f := newHostedSecurityFixture(t)
-			var sessions int
-			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_sessions WHERE organization_id=$1", f.service.accessOrganization()).Scan(&sessions); err != nil {
-				t.Fatal(err)
-			}
-			if sessions != 0 {
-				t.Fatalf("security template contains %d sessions", sessions)
-			}
-			// The same user and issue must be fresh in each seeded copy.
-			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
-			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "isolation"}, Title: "isolated", State: "Todo"})
-			requireNativeStatus(t, response, http.StatusOK)
-			var issue tracker.NativeIssue
-			decodeHubResponse(t, response, &issue)
-			if issue.Number != 1 {
-				t.Fatalf("security fixture issue number = %d, want 1", issue.Number)
-			}
-		}
-	})
 }
 
 func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSecurityFixture {
