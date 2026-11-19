@@ -103,13 +103,12 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				t.Setenv("MFLAGS", "")
 				source := initRunnerSourceRepo(t)
 				writeRunnerFiles(t, source, map[string]string{
-					"internal/invariants/sqlite_policy.json":  "{\"files\":{},\"modules\":{}}\n",
 					"internal/invariants/tenancy_policy.json": "{\"test_support\":[],\"exceptions\":{},\"debt\":{}}\n",
 					"internal/invariants/tenancy_test.go":     "package invariants\n",
 				})
 				runRunnerGit(t, source, "add", "internal/invariants")
 				runRunnerGit(t, source, "commit", "-m", "initialize storage policy")
-				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py", "scripts/check-tenancy-policy.py", "scripts/check-landing.py"} {
+				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-tenancy-policy.py", "scripts/check-landing.py"} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
 					if err != nil {
 						t.Fatal(err)

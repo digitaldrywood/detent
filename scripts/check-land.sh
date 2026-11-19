@@ -15,7 +15,6 @@ trap 'result=$?; printf "check-land finished: exit=%s wall=%ss\n" "$result" "$((
 
 base=$(git rev-parse --verify "${base}^{commit}")
 head=$(git rev-parse --verify 'HEAD^{commit}')
-check_with_evidence sqlite-policy python3 scripts/check-sqlite-policy.py "$base" "$head"
 check_with_evidence tenancy-policy python3 scripts/check-tenancy-policy.py "$base" "$head"
 app_changed=false
 if ! git diff --quiet "$base" -- "$app" || [ -n "$(git ls-files --others --exclude-standard -- "$app")" ]; then

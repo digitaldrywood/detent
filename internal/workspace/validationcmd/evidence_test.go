@@ -16,15 +16,13 @@ func TestLandingRecipeInputsMatch(t *testing.T) {
 		want               bool
 	}{
 		{name: "embedded recipe", helper: "unchanged", want: true},
-		{name: "modified SQLite helper rejected", file: "scripts/check-sqlite-policy.py", helper: "modified"},
-		{name: "missing SQLite helper rejected", file: "scripts/check-sqlite-policy.py", helper: "missing"},
 		{name: "modified PostgreSQL helper rejected", file: "scripts/check-landing.py", helper: "modified"},
 		{name: "missing PostgreSQL helper rejected", file: "scripts/check-landing.py", helper: "missing"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py", "scripts/check-landing.py"} {
+			for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py"} {
 				if name == tt.file && tt.helper == "missing" {
 					continue
 				}

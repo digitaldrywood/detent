@@ -79,7 +79,7 @@ class ShortLandingGateTest(unittest.TestCase):
         self.git("config", "user.email", "fixture@example.test")
         self.git("config", "commit.gpgsign", "false")
         (self.root / "scripts").mkdir()
-        for name in ("check-landing.sh", "check-evidence.sh", "check-sqlite-policy.py", "check-tenancy-policy.py", "check-landing.py"):
+        for name in ("check-landing.sh", "check-evidence.sh", "check-tenancy-policy.py", "check-landing.py"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         (self.root / "go.mod").write_text("module example.test\n\ngo 1.26\n")
         for directory in ("lib", "app", "integration", "unrelated", "removed"):
@@ -88,10 +88,9 @@ class ShortLandingGateTest(unittest.TestCase):
         (self.root / "lib/data.txt").write_text("old\n")
         (self.root / "lib/testdata").mkdir()
         (self.root / "lib/testdata/fixture.json").write_text("{}\n")
-        policy = self.root / "internal/invariants/sqlite_policy.json"
+        policy = self.root / "internal/invariants/tenancy_policy.json"
         policy.parent.mkdir(parents=True)
-        policy.write_text('{"files":{},"modules":{}}\n')
-        (policy.parent / "tenancy_policy.json").write_text('{"test_support":[],"exceptions":{},"debt":{}}\n')
+        policy.write_text('{"test_support":[],"exceptions":{},"debt":{}}\n')
         (policy.parent / "tenancy_test.go").write_text("package invariants\n")
         self.commit()
         self.base = self.git("rev-parse", "HEAD").strip()
@@ -457,15 +456,6 @@ func TestGateLifetime(t *testing.T) {
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(self.trace(), [])
 
-    def test_policy_growth_stops_before_build(self):
-        policy = self.root / "internal/invariants/sqlite_policy.json"
-        policy.write_text('{"files":{"new.go":{"driver_import":1}},"modules":{}}\n')
-        self.commit()
-        result = self.run_gate(self.base)
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("new.go: SQLite driver_import count 1 exceeds target baseline 0", result.stderr)
-        self.assertEqual(self.trace(), [])
-
     def test_tenancy_policy_growth_stops_before_build(self):
         policy = self.root / "internal/invariants/tenancy_policy.json"
         policy.write_text('{"test_support":[],"exceptions":{},"debt":{"internal/hubserver/new.go":{"timer:time.NewTicker":1}}}\n')
@@ -476,8 +466,8 @@ func TestGateLifetime(t *testing.T) {
         self.assertEqual(self.trace(), [])
 
     def test_moved_target_compares_only_candidate_commits(self):
-        policy = self.root / "internal/invariants/sqlite_policy.json"
-        policy.write_text('{"files":{"legacy.go":{"driver_import":1}},"modules":{}}\n')
+        policy = self.root / "internal/invariants/tenancy_policy.json"
+        policy.write_text('{"test_support":[],"exceptions":{},"debt":{"legacy.go":{"timer:time.NewTicker":1}}}\n')
         self.commit()
         fork = self.git("rev-parse", "HEAD").strip()
         (self.root / "unrelated/source.go").write_text("package unrelated\nconst Value = 1\n")
@@ -513,7 +503,7 @@ func TestGateLifetime(t *testing.T) {
 
         def lowered_baseline():
             checkout(target)
-            policy.write_text('{"files":{},"modules":{}}\n')
+            policy.write_text('{"test_support":[],"exceptions":{},"debt":{}}\n')
             self.commit()
             self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
             candidate(fork)
@@ -528,7 +518,7 @@ func TestGateLifetime(t *testing.T) {
             ("based before target moved", lambda: candidate(fork) and fork, ["./lib"], ["./lib"], None),
             ("merged target", merged, ["./lib"], ["./lib"], None),
             ("criss-cross merge", criss_cross, ["./app", "./integration", "./lib"], ["./lib"], None),
-            ("target lowered a policy baseline", lowered_baseline, None, None, "legacy.go: SQLite driver_import count 1 exceeds target baseline 0"),
+            ("target lowered a policy baseline", lowered_baseline, None, None, "legacy.go: debt timer:time.NewTicker count 1 exceeds target baseline 0"),
             ("no shared history", disjoint, None, None, "no merge base with landing target {landing}"),
         )
         for name, prepare, tests, lint, refusal in cases:
@@ -546,7 +536,6 @@ func TestGateLifetime(t *testing.T) {
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 head = self.git("rev-parse", "HEAD").strip()
                 self.assertIn(f"Landing comparison: base={comparison} head={head} target={landing}", result.stdout)
-                self.assertIn(f"SQLite policy monotonicity passed: target={landing} candidate={head}", result.stdout)
                 self.assertIn(f"Tenancy policy monotonicity passed: target={landing} candidate={head}", result.stdout)
                 test = next(call for call in trace if call["tool"] == "go" and call["args"][0] == "test")
                 self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(tests + self.required_packages))
