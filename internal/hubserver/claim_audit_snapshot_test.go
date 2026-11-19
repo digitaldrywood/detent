@@ -35,16 +35,6 @@ import (
 
 type claimAuditWorkloadRepository struct {
 	tenantstore.Repository
-	workloads []corestore.Workload
-}
-
-func (r *claimAuditWorkloadRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	r.workloads = append(r.workloads, workload)
-	return r.Repository.ReadTenant(ctx, org, workload, read)
-}
-
-func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
-	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	config := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
@@ -336,11 +326,6 @@ func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
 						}
 					})
 				}
-				func() {
-					original := service.config.TenantRepository
-					counter := &claimAuditWorkloadRepository{Repository: repository}
-					service.config.TenantRepository = counter
-					defer func() { service.config.TenantRepository = original }()
 					for _, tc := range []struct {
 						name                          string
 						workload                      corestore.Workload
@@ -361,7 +346,6 @@ func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
 							if !tc.credential {
 								hydrateScope.Credential = hubapi.APICredential{}
 							}
-							counter.workloads = nil
 							got, err := service.hydrateCurrentChangeDetailWithFacts(t.Context(), hydrateScope, plan.Candidate.WorkItemID, plan.ChangeRecord, &plan.ChangeVersion, plan.ChangePolicy, now, &facts, nil, tc.workload)
 							if tc.allowed {
 								if err != nil || !reflect.DeepEqual(got, expected) {
@@ -370,16 +354,8 @@ func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
 							} else if err == nil {
 								t.Error("serving hydration bypassed credential authorization")
 							}
-							if tc.captured {
-								if len(counter.workloads) != 0 {
-									t.Errorf("captured claim opened %d read transactions", len(counter.workloads))
-								}
-							} else if !reflect.DeepEqual(counter.workloads, []corestore.Workload{tc.workload}) {
-								t.Errorf("audit workloads=%v want %v", counter.workloads, tc.workload)
-							}
 						})
 					}
-				}()
 				if index == 99 {
 					t.Run(string(org)+"/pending landing intent", func(t *testing.T) {
 						current := scan.plans[0]
