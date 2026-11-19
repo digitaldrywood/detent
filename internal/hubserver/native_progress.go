@@ -838,6 +838,13 @@ func (o terminalProgressOwner) authorizeRunner(ctx context.Context, r tenantstor
 	if assigned.RunnerID != identity.RunnerID || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
 		return hubscope.RunnerUnauthorized()
 	}
+	lease, err := r.Lease(ctx, attempt.LeaseID)
+	if err != nil {
+		return err
+	}
+	if lease.OrganizationID != o.scope.Organization || lease.IssueID != attempt.IssueID || lease.FencingToken != attempt.FencingToken || lease.MachineID != string(identity.MachineID) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
+		return tracker.ErrStaleFencingToken
+	}
 	return nil
 }
 
@@ -999,6 +1006,13 @@ func (o terminalProgressOwner) publish(ctx context.Context, input progresscheck.
 			return err
 		}
 		if _, err := w.LockWorkItem(ctx, o.scope.Project, o.item); err != nil {
+			return err
+		}
+		locker, ok := w.(leasestore.FencedLeaseLocker)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		if _, err := locker.LockLease(ctx, string(input.LeaseID)); err != nil {
 			return err
 		}
 		current, err := o.facts(ctx, w, &input)
