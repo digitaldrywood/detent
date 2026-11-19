@@ -22,6 +22,35 @@ import (
 
 const maxNativeUsageEntries = 32
 
+func TestRunnerEventReportProjection(t *testing.T) {
+	t.Parallel()
+	f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
+	issue := f.Create(t, "Example report projection")
+	runner := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	runner.Enroll(t)
+	hubfixture.PublishCapacity(t, f, runner, hubfixture.CapacityReport(f.Hub.Now()))
+	worker := runner.Redemption.Credential
+	claim := f.Hub.Request(t, http.MethodPost, f.Base+"/claims", worker, hubfixture.ProviderClaim(runner, issue, "session"))
+	hubfixture.RequireStatus(t, claim, http.StatusOK)
+	var lease tracker.NativeLease
+	hubfixture.Decode(t, claim, &lease)
+	start := hubfixture.StartedEvent(lease)
+	path := f.Base + "/work-items/" + string(issue.WorkItemID) + "/events"
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, path, worker, start), http.StatusOK)
+
+	var stage, noChange string
+	err := f.Hub.Admin.QueryRowContext(t.Context(), `SELECT f.activity_stage,f.activity_no_change_status
+FROM report_event_facts f JOIN collaboration_events e ON e.organization_id=f.organization_id AND e.id=f.event_id
+WHERE e.organization_id=$1 AND e.project_id=$2 AND e.work_item_id=$3 AND e.attempt_id=$4 AND e.type='run.started'`,
+		f.Organization(), f.Project.ID, issue.WorkItemID, start.Data.AttemptID).Scan(&stage, &noChange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stage != "unknown" || noChange != "unknown" {
+		t.Fatalf("run.started activity projection = (%q, %q), want both unknown", stage, noChange)
+	}
+}
+
 func TestNativeRunEventRejectionsLogged(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
