@@ -1503,3 +1503,24 @@ const (
 	coordinatorToolFindTools = coordinator.FindToolsName
 	coordinatorToolCallTool  = coordinator.CallToolName
 )
+
+type bindArtifactServiceRequest = conversations.BindArtifactServiceRequest
+
+type cloudContentSettingsRequest = conversations.ContentSettingsRequest
+
+type conversationArchiveStore = conversations.ArchiveStore
+
+type coordinatorStopRunArguments = operatortool.NativeStopRunArguments
+
+// withCoordinatorAgent attributes application writes made under ctx to the
+// agent acting for the credential's principal.
+func withCoordinatorAgent(ctx context.Context, agent string) context.Context {
+	if resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (hubapi.APICredential, error)); ok {
+		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(ctx context.Context) (hubapi.APICredential, error) {
+			credential, err := resolve(ctx)
+			credential.Agent = agent
+			return credential, err
+		})
+	}
+	return coordinator.WithAgent(ctx, agent)
+}
