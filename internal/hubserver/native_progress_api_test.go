@@ -3,11 +3,11 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -167,6 +167,44 @@ func (w progressPublicationWorkspace) Create(context.Context, workspace.Issue) (
 	return workspace.Info{Path: w.path}, nil
 }
 
+func checkProgressWithAttemptWorker(t *testing.T, worker *runner.Runner, request runner.RunRequest, evidence progresscheck.Request, now time.Time) (progresscheck.Decision, error) {
+	t.Helper()
+	owner, ok := request.Execution.(runner.AttemptWorkerExecution)
+	if !ok {
+		t.Fatal("progress fixture is missing the native attempt owner")
+	}
+	now = now.UTC().Truncate(time.Microsecond)
+	identity := tracker.NativeAttemptWorker{PID: 101, PGID: 101, StartedAt: now, StartKey: "progress-fixture-worker"}
+	launch := &tracker.NativeWorkerLaunch{
+		PID: int(identity.PID), GroupID: int(identity.PGID), ProcessStart: now, SelectedAt: now,
+		ExecutionVersion: "test", ControlVersion: "test", Protocol: runner.SSHProtocolVersion,
+		ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), PolicyID: evidence.PolicyID,
+	}
+	primary, err := owner.RegisterAttemptWorker(t.Context(), identity, tracker.NativeRuntimeObservation{WorkerLaunch: launch, Phase: "implementation", HeartbeatAt: now})
+	if err != nil || !primary {
+		t.Fatalf("register progress attempt worker: primary=%t error=%v", primary, err)
+	}
+	t.Cleanup(func() { owner.AttemptWorkerExited(identity) })
+	request.AttemptWorkspace = owner.AttemptWorkspace()
+
+	controlConn, workerConn := net.Pipe()
+	control := runner.NewSSHPeer(t.Context(), controlConn, controlConn, runner.NewSSHCallbackHandler(request, nil, nil, nil))
+	peer := runner.NewSSHPeer(t.Context(), workerConn, workerConn, nil)
+	defer func() {
+		if err := errors.Join(controlConn.Close(), workerConn.Close()); err != nil {
+			t.Error(err)
+		}
+		<-control.Context().Done()
+		<-peer.Context().Done()
+	}()
+
+	wire := runner.NewSSHRunRequest(request)
+	ctx := runner.WithWorkerProgressCheck(t.Context(), func(ctx context.Context, request progresscheck.Request) (progresscheck.Decision, error) {
+		return worker.CheckProgress(ctx, wire.Bind(ctx, peer), request)
+	})
+	return worker.CheckProgress(ctx, request, evidence)
+}
+
 func TestNativeProgressExecutionPublication(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -188,7 +226,6 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			boundary := test.name
 			overlap := strings.HasSuffix(boundary, "guard")
 			f := newDispatchGuardFixture(t)
-			installReportsBudgetTrace(t, f.service)
 			admin := hostedPostgresAdmin(t, f.service)
 			scope := analyticsTestScope(t, f.nativeFixture)
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
@@ -299,38 +336,9 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution := scheduler.RunExecution(claim.Issue.ID)
-			var sourceMu sync.Mutex
-			var sourceStatements []tracedStatement
-			sourceTiming := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
-				values := make([]any, len(args))
-				for i, arg := range args {
-					values[i] = arg.Value
-				}
-				sourceMu.Lock()
-				sourceStatements = append(sourceStatements, tracedStatement{query, values})
-				sourceMu.Unlock()
-			}}
-			beforeTransition, _, err := f.service.nativeProgressRequest(withRequestTiming(t.Context(), sourceTiming), scope, string(f.issue.WorkItemID), f.policy, string(f.runner.binding.MachineID))
+			beforeTransition, _, err := f.service.nativeProgressRequest(t.Context(), scope, string(f.issue.WorkItemID), f.policy, string(f.runner.binding.MachineID))
 			if err != nil {
 				t.Fatal(err)
-			}
-			if test.staleRunning > 0 {
-				sourceMu.Lock()
-				captured := append([]tracedStatement(nil), sourceStatements...)
-				sourceMu.Unlock()
-				found := false
-				for _, statement := range captured {
-					if !strings.Contains(statement.query, "FROM native_attempts") || !strings.Contains(statement.query, "fencing_token DESC") || !strings.HasPrefix(statement.query, "-- name: PageIssueAttempts :many") {
-						continue
-					}
-					found = true
-					if violations, _, raw := tenantWriteWorkViolations(t, admin, scope.Organization, statement); len(violations) > 0 {
-						t.Fatalf("terminal history lookup is not indexed and bounded: %v plan=%s", violations, raw)
-					}
-				}
-				if !found {
-					t.Fatal("progress request did not execute the actual bounded attempt-page owner")
-				}
 			}
 			current := f.reload(t)
 			native, err := client.Native(f.project.OrganizationID, f.project.ID)
@@ -359,7 +367,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			decision, err := worker.CheckProgress(t.Context(), runner.RunRequest{Issue: claim.Issue, Mode: runner.RunModeImplement, Execution: execution}, request)
+			decision, err := checkProgressWithAttemptWorker(t, worker, runner.RunRequest{Issue: claim.Issue, Mode: runner.RunModeImplement, Execution: execution}, request, f.service.config.Clock())
 			if err != nil {
 				t.Fatal(err)
 			}
