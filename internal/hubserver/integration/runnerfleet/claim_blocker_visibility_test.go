@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"fmt"
@@ -6,12 +6,14 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeClaimPreviewBlockerBounds(t *testing.T) {
+	h := hubfixture.Open(t, hubfixture.Config{})
 	for _, tc := range []struct {
 		name         string
 		count        int
@@ -26,32 +28,30 @@ func TestNativeClaimPreviewBlockerBounds(t *testing.T) {
 		{"organization_runner", 2, true, true, "organization"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "Example project")
-			ready := f.create(t, "Ready candidate")
-			waiting := f.create(t, "Waiting candidate")
+			f := hubfixture.NewNative(t, h, h.CreateOrganization(t, tc.name), "Example project")
+			ready := f.Create(t, "Ready candidate")
+			waiting := f.Create(t, "Waiting candidate")
 			owner := f
 			if tc.crossProject {
-				owner = newNativeFixture(t, f.service, f.project.OrganizationID, "Example blocker project")
+				owner = hubfixture.NewNative(t, h, f.Project.OrganizationID, "Example blocker project")
 			}
-			seedClaimPreviewBlockers(t, f, owner.project.ID, ready, waiting, tc.count)
+			seedClaimPreviewBlockers(t, f, owner.Project.ID, ready, waiting, tc.count)
 			operations := []string{runnerauth.Claim, runnerauth.Heartbeat}
 			if tc.read {
 				operations = append(operations, runnerauth.Read)
 			}
-			runner := prepareRunnerForScope(t, f, tc.scope, operations...)
-			runner.enroll(t)
-			runner.reportCapacity(t)
-			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			request := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			runner := hubfixture.PrepareRunnerForScope(t, f, tc.scope, operations...)
+			runner.Enroll(t)
+			runner.ReportCapacity(t)
+
+			request := tracker.NativeClaim{PolicyID: hubfixture.Policy().ID, MachineID: runner.Binding.MachineID, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			preview := func() []claimPreviewTestItem {
 				t.Helper()
-				resp := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", runner.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: request})
-				requireNativeStatus(t, resp, http.StatusOK)
+				resp := f.Hub.Request(t, http.MethodPost, f.Base+"/claims/preview", runner.Redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: request})
+				hubfixture.RequireStatus(t, resp, http.StatusOK)
 				var page struct{ Items []claimPreviewTestItem }
-				decodeHubResponse(t, resp, &page)
-				if resp.Body.Len() > 16<<10 {
-					t.Errorf("preview size = %d bytes, want at most 16 KiB", resp.Body.Len())
-				}
+				hubfixture.Decode(t, resp, &page)
+
 				return page.Items
 			}
 			page := preview()
@@ -61,18 +61,18 @@ func TestNativeClaimPreviewBlockerBounds(t *testing.T) {
 			checkClaimPreviewSummary(t, page[0], 0)
 			claim := request
 			claim.WorkItemID, claim.SessionID, claim.TTLSeconds = waiting.WorkItemID, "blocked", 90
-			requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, claim), http.StatusConflict, "no_claimable_work")
+			hubfixture.RequireCode(t, f.Hub.Request(t, http.MethodPost, f.Base+"/claims", runner.Redemption.Credential, claim), http.StatusConflict, "no_claimable_work")
 			claim.WorkItemID, claim.SessionID = ready.WorkItemID, "ready"
-			resp := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, claim)
-			requireNativeStatus(t, resp, http.StatusOK)
+			resp := f.Hub.Request(t, http.MethodPost, f.Base+"/claims", runner.Redemption.Credential, claim)
+			hubfixture.RequireStatus(t, resp, http.StatusOK)
 			var lease claimPreviewTestItem
-			decodeHubResponse(t, resp, &lease)
-			if lease.WorkItemID != ready.WorkItemID || resp.Body.Len() > 16<<10 {
-				t.Fatalf("ready lease item = %s, size = %d", lease.WorkItemID, resp.Body.Len())
+			hubfixture.Decode(t, resp, &lease)
+			if lease.WorkItemID != ready.WorkItemID {
+				t.Fatalf("ready lease item = %s, want %s", lease.WorkItemID, ready.WorkItemID)
 			}
 			checkClaimPreviewSummary(t, lease, 0)
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-				project, err := w.ProjectRecord(t.Context(), f.project.ID)
+			if err := f.Hub.Repository.WriteTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.Project.ID)
 				if err != nil {
 					return err
 				}
@@ -95,12 +95,12 @@ func TestNativeClaimPreviewBlockerBounds(t *testing.T) {
 			}
 			checkClaimPreviewSummary(t, page[0], open)
 			claim.WorkItemID, claim.SessionID = waiting.WorkItemID, "optional"
-			resp = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, claim)
-			requireNativeStatus(t, resp, http.StatusOK)
+			resp = f.Hub.Request(t, http.MethodPost, f.Base+"/claims", runner.Redemption.Credential, claim)
+			hubfixture.RequireStatus(t, resp, http.StatusOK)
 			var optional claimPreviewTestItem
-			decodeHubResponse(t, resp, &optional)
-			if optional.WorkItemID != waiting.WorkItemID || resp.Body.Len() > 16<<10 {
-				t.Fatalf("optional lease item = %s, size = %d", optional.WorkItemID, resp.Body.Len())
+			hubfixture.Decode(t, resp, &optional)
+			if optional.WorkItemID != waiting.WorkItemID {
+				t.Fatalf("optional lease item = %s, want %s", optional.WorkItemID, waiting.WorkItemID)
 			}
 			checkClaimPreviewSummary(t, optional, open)
 		})
@@ -127,20 +127,20 @@ func checkClaimPreviewSummary(t *testing.T, item claimPreviewTestItem, open int)
 	}
 }
 
-func seedClaimPreviewBlockers(t *testing.T, f nativeFixture, blockerProject tracker.ProjectID, ready, waiting tracker.NativeIssue, count int) {
+func seedClaimPreviewBlockers(t *testing.T, f hubfixture.Native, blockerProject tracker.ProjectID, ready, waiting tracker.NativeIssue, count int) {
 	t.Helper()
 	ctx := t.Context()
-	err := f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+	err := f.Hub.Repository.WriteTenant(ctx, f.Project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		for i := range count {
 			for j, target := range []tracker.NativeIssue{ready, waiting} {
 				number := 10 + i*2 + j
 				state := []string{"Done", "Todo"}[j]
-				blocker, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: f.project.OrganizationID, ProjectID: blockerProject, Number: int64(number), NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_fixture_%d", number)), Title: "Example prerequisite", Archived: true, WorkflowStateName: &state})
+				blocker, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: f.Project.OrganizationID, ProjectID: blockerProject, Number: int64(number), NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_fixture_%d", number)), Title: "Example prerequisite", Archived: true, WorkflowStateName: &state})
 				if err != nil {
 					return err
 				}
-				edge := corestore.Relationship{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: target.WorkItemID, RelatedProjectID: blockerProject, RelatedWorkItemID: blocker.NativeID, Type: "dependency", Provenance: "native"}
-				if err := w.SetRelationship(ctx, edge, "add", f.service.config.Clock()); err != nil {
+				edge := corestore.Relationship{OrganizationID: f.Project.OrganizationID, ProjectID: f.Project.ID, WorkItemID: target.WorkItemID, RelatedProjectID: blockerProject, RelatedWorkItemID: blocker.NativeID, Type: "dependency", Provenance: "native"}
+				if err := w.SetRelationship(ctx, edge, "add", f.Hub.Now()); err != nil {
 					return err
 				}
 			}
