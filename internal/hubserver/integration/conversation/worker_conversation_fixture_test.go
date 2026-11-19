@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -20,6 +21,8 @@ import (
 
 type workerConversationProject struct {
 	project      hubfixture.Native
+	runner       hubfixture.Runner
+	issue        tracker.NativeIssue
 	lease        tracker.NativeLease
 	attempt, run string
 	worker, id   string
@@ -32,9 +35,11 @@ func newWorkerConversationProject(t *testing.T, h *hubfixture.Hub, name string) 
 	issue := p.Create(t, name+" issue")
 	runner := hubfixture.PrepareRunner(t, p, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 	runner.Enroll(t)
-	hubfixture.PublishCapacity(t, p, runner, hubfixture.CapacityReport(h.Now()))
+	capacity := hubfixture.CapacityReport(h.Now())
+	capacity.SharedAccountAlias = string(runner.Binding.RunnerID)
+	hubfixture.PublishCapacity(t, p, runner, capacity)
 	worker := runner.Redemption.Credential
-	claimed := h.Request(t, http.MethodPost, p.Base+"/claims", worker, hubfixture.ProviderClaim(runner, issue, "conversation-session"))
+	claimed := h.Request(t, http.MethodPost, p.Base+"/claims", worker, hubfixture.ProviderClaim(runner, issue, hubapi.NewID("session")))
 	hubfixture.RequireStatus(t, claimed, http.StatusOK)
 	var lease tracker.NativeLease
 	hubfixture.Decode(t, claimed, &lease)
@@ -59,13 +64,20 @@ func newWorkerConversationProject(t *testing.T, h *hubfixture.Hub, name string) 
 	start := hubfixture.StartedEvent(lease)
 	itemPath := p.Base + "/work-items/" + string(issue.WorkItemID)
 	hubfixture.RequireStatus(t, h.Request(t, http.MethodPost, itemPath+"/events", worker, start), http.StatusOK)
-	f := workerConversationProject{project: p, lease: lease, run: start.Data.RunID, attempt: start.Data.AttemptID, worker: worker, id: id}
+	f := workerConversationProject{project: p, runner: runner, issue: issue, lease: lease, run: start.Data.RunID, attempt: start.Data.AttemptID, worker: worker, id: id}
+	bindWorkerConversation(t, f)
+	return f
+}
+
+func bindWorkerConversation(t *testing.T, f workerConversationProject) {
+	t.Helper()
 	bind := map[string]any{
-		"lease_id": lease.ID, "fencing_token": lease.FencingToken, "attempt_id": f.attempt, "run_id": f.run,
+		"lease_id": f.lease.ID, "fencing_token": f.lease.FencingToken, "attempt_id": f.attempt, "run_id": f.run,
 		"capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true},
 	}
-	hubfixture.RequireStatus(t, h.Request(t, http.MethodPost, itemPath+"/conversation/bind", worker, bind), http.StatusOK)
-	return f
+	itemPath := f.project.Base + "/work-items/" + string(f.issue.WorkItemID)
+	response := f.project.Hub.Request(t, http.MethodPost, itemPath+"/conversation/bind", f.worker, bind)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 }
 
 func (f workerConversationProject) path() string {
