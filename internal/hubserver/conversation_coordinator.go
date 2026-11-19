@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,9 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/credits"
-	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -40,7 +36,6 @@ const (
 	coordinatorDeltaFlushBytes    = 2048
 	coordinatorTranscriptMessages = 20
 
-	coordinatorErrorRunes = 2000
 	// coordinatorPendingMessages and coordinatorPendingRunes bound the
 	// prompt a single turn carries: the durable store may hold far more
 	// queued text than one provider request should ever receive.
@@ -326,10 +321,6 @@ func (c *conversationTurnCoordinator) appendPreparedMessage(ctx context.Context,
 	})
 }
 
-// errCoordinatorNothingPending aborts the start transaction when the
-// re-check inside the transaction finds no work.
-var errCoordinatorNothingPending = errors.New("coordinator: nothing pending")
-
 // coordinatorTurnState is the mutable state of one running turn. mu
 // serializes the delta buffer, the assistant message and tool messages
 // between the backend's update callback, the flush ticker and completion.
@@ -391,67 +382,10 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		if len(pending) == 0 {
 			return errCoordinatorNothingPending
 		}
-		decision, err := coordinatorMonthlyBudget(ctx, tx, record.ProjectID, now)
+		var err error
+		state.modelChoice, refusal, err = c.turnAdmissionDeps().Check(ctx, tx, *record, pending[len(pending)-1].Actor.PrincipalID, now, state.modelChoice)
 		if err != nil {
 			return err
-		}
-		if !decision.Allowed {
-			return errCoordinatorNothingPending
-		}
-		refusal = hubapi.FromFeatureError(c.server.database.plansService().RequireFeatureRecord(ctx, tx, "native_execution", now))
-		var limit *hostedplans.LimitError
-		if refusal != nil && !errors.As(refusal, &limit) {
-			return refusal
-		}
-		if c.server.hasLunaCoordinator() && c.server.database.aiCreditMode != "" {
-			d := c.server.database
-			account, err := tx.BillingCreditAccount(ctx, d.aiCreditMode)
-			if err != nil {
-				return err
-			}
-			balance, failure := account.BalanceMicros, account.Failure
-			refusal = nil
-			included, err := d.includedAICreditsFromReader(ctx, tx, now)
-			if err != nil {
-				return err
-			}
-			if balance+included.remaining() <= 0 {
-				owner := false
-				credential, err := tx.AccessCredential(ctx, pending[len(pending)-1].Actor.PrincipalID)
-				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-					return err
-				}
-				if credential.UserID != "" {
-					member, err := tx.AccessMember(ctx, credential.UserID)
-					if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-						return err
-					}
-					owner = member.Active && member.Role == "owner"
-				}
-				message := "AI credits are exhausted. Ask an organization owner to buy credits in billing settings."
-				if owner {
-					message = "AI credits are exhausted. Buy credits in billing settings."
-					if failure != "" {
-						message += " Auto-fund is disabled: " + failure + "."
-					}
-				}
-				refusal = errors.New(message)
-			}
-		}
-		if refusal == nil && c.server.hasLunaCoordinator() {
-			state.modelChoice, err = c.modelChoiceGranted(ctx, tx, record.OrganizationID, now)
-			if err != nil {
-				return err
-			}
-			if model := record.Preferences.ModelValue(); model != "" {
-				models, err := c.modelChoices(ctx, tx, record.ProjectID, now)
-				if err != nil {
-					return err
-				}
-				if !slices.ContainsFunc(models, func(choice conversationModel) bool { return choice.ID == model }) {
-					refusal = fmt.Errorf("preferences: model %q is not one of the available choices", model)
-				}
-			}
 		}
 		for i := range pending {
 			pending[i].Delivery = conversation.DeliverySending
@@ -880,86 +814,4 @@ func (s *coordinatorTurnState) recordTool(ctx context.Context, update runner.Age
 	if err != nil {
 		s.coordinator.logger.Warn("coordinator could not persist tool message", "conversation_id", s.conversationID, "error", err)
 	}
-}
-
-// finish persists the outcome of the turn for the assistant message, the
-// user messages and the execution state in one transaction.
-func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.Delivery, runErr error, usage *ConversationUsage) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	userDelivery := conversation.DeliveryDelivered
-	var failure *conversation.ReceiptError
-	execution := conversation.Execution{Status: conversation.ExecutionIdle, Owner: conversation.Owner{ThreadID: s.threadID}}
-	switch outcome {
-	case conversation.DeliveryFailed:
-		userDelivery = conversation.DeliveryFailed
-		execution.Status = conversation.ExecutionFailed
-		execution.Error = boundRunes(runErr.Error(), coordinatorErrorRunes)
-		failure = &conversation.ReceiptError{Code: "coordinator_error", Message: execution.Error}
-	case conversation.DeliveryUnknown:
-		userDelivery = conversation.DeliveryUnknown
-		execution.Status = conversation.ExecutionUnknown
-		failure = &conversation.ReceiptError{Code: "unknown", Message: "The coordinator turn stopped before it answered"}
-	}
-	if s.budgetStopped {
-		userDelivery = conversation.DeliverySaved
-		failure = nil
-	}
-
-	s.assistant.Delivery = outcome
-	s.assistant.ThreadID = s.threadID
-	if outcome == conversation.DeliveryFailed {
-		data, err := json.Marshal(map[string]string{"error": execution.Error})
-		if err != nil {
-			return err
-		}
-		s.assistant.Data = data
-	}
-	prepared, err := s.coordinator.service.PrepareConversationContents(ctx, s.conversationID, s.assistant)
-	if err != nil {
-		return err
-	}
-	ctx = prepared
-	var preparedUsage preparedConversationUsage
-	if usage != nil {
-		preparedUsage, err = hubapi.FeatureResult(s.coordinator.server.database.creditsService().PrepareUsage(ctx, credits.Usage(*usage)))
-		if err != nil {
-			return err
-		}
-	}
-	return s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
-		if usage != nil {
-			if err := hubapi.FromFeatureError(s.coordinator.server.database.creditsService().WriteUsage(ctx, tx, preparedUsage)); err != nil {
-				return err
-			}
-		}
-		if err := s.coordinator.updateMessage(ctx, tx, s.assistant, now); err != nil {
-			return err
-		}
-		for i := range s.users {
-			// setControlDelivery rather than updateMessage: the receipt must
-			// follow the message so the client can offer the retry command
-			// a failed or unknown turn leaves as the only way forward.
-			if err := s.coordinator.setControlDelivery(ctx, tx, &s.users[i], userDelivery, failure, now); err != nil {
-				return err
-			}
-		}
-		if s.threadID != "" {
-			record.ProviderThreadID = s.threadID
-		}
-		return s.coordinator.updateExecution(ctx, tx, record, execution, now)
-	}, func(ctx context.Context, p *conversationPublicationPlan) error {
-		if err := p.UpdateMessage(ctx, s.assistant); err != nil {
-			return err
-		}
-		for _, message := range s.users {
-			if err := p.SetControlDelivery(ctx, message, userDelivery, failure); err != nil {
-				return err
-			}
-		}
-		if s.threadID != "" {
-			p.Record.ProviderThreadID = s.threadID
-		}
-		return p.UpdateExecution(ctx, execution)
-	})
 }

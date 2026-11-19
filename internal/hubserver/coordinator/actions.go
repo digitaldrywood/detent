@@ -396,6 +396,6 @@ func (s ActionAuthorizationDeps) Authorize(ctx context.Context, action chat.Acti
 }
 
 func PostRefusal(ctx context.Context, id, name string, failure error, publish func(context.Context, string, conversations.ConversationMessageRecord) error) error {
-	message := conversations.ConversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: strings.ReplaceAll(name, "_", " ") + " refused: " + conversations.BoundRunes(failure.Error(), 2000), Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
+	message := conversations.ConversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: strings.ReplaceAll(name, "_", " ") + " refused: " + conversations.BoundRunes(failure.Error(), ErrorRunes), Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
 	return publish(ctx, id, message)
 }

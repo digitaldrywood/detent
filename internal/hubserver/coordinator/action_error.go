@@ -52,7 +52,7 @@ func ToolError(err error) runner.AgentToolResult {
 	case errors.As(err, &request) && request.Message != "":
 		message = request.Message
 	}
-	encoded, encodeErr := json.Marshal(map[string]string{"error": conversations.BoundRunes(message, 2000)})
+	encoded, encodeErr := json.Marshal(map[string]string{"error": conversations.BoundRunes(message, ErrorRunes)})
 	if encodeErr != nil {
 		encoded = []byte(`{"error":"tool failed"}`)
 	}
