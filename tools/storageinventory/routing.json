@@ -5995,6 +5995,8 @@
           "session.LockUnreleasedIssueLease:query-receiver": 1,
           "session.Machine:QueryRow": 1,
           "session.Machine:SQL": 1,
+          "session.RecordTerminalProgressVerdict:generated:RecordTerminalProgressVerdict": 1,
+          "session.RecordTerminalProgressVerdict:query-receiver": 1,
           "session.RegisterMachine:generated:RegisterLeaseMachine": 1,
           "session.RegisterMachine:query-receiver": 1,
           "session.RegisterOwnedMachine:generated:RegisterOwnedMachine": 1,
@@ -12252,6 +12254,20 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261119202527_attempt_progress_verdict.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_attempts"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -14106,6 +14122,7 @@
           "Queries.PageIssueAttempts:Query": 1,
           "Queries.PageIssueAttemptsOldest:Query": 1,
           "Queries.PageIssueCheckpointAttempts:Query": 1,
+          "Queries.RecordTerminalProgressVerdict:Exec": 1,
           "Queries.RegisterLeaseMachine:Exec": 1,
           "Queries.RegisterOwnedMachine:Exec": 1,
           "Queries.SetAttemptFailure:Exec": 1,
@@ -14146,6 +14163,7 @@
           "pageIssueAttempts:SQL": 1,
           "pageIssueAttemptsOldest:SQL": 1,
           "pageIssueCheckpointAttempts:SQL": 1,
+          "recordTerminalProgressVerdict:SQL": 1,
           "registerLeaseMachine:SQL": 1,
           "registerOwnedMachine:SQL": 1,
           "setAttemptFailure:SQL": 1,
@@ -16920,6 +16938,7 @@
           "query:PageIssueAttempts:many": 1,
           "query:PageIssueAttemptsOldest:many": 1,
           "query:PageIssueCheckpointAttempts:many": 1,
+          "query:RecordTerminalProgressVerdict:execrows": 1,
           "query:RegisterLeaseMachine:exec": 1,
           "query:RegisterOwnedMachine:execrows": 1,
           "query:SetAttemptFailure:execrows": 1,
