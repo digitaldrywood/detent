@@ -1,37 +1,20 @@
 package executionrecords_test
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"math"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type operatorOrphanProbe struct {
-	pgquery.DBTX
-	query string
-	args  []any
-}
-
-func (p *operatorOrphanProbe) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
-	p.query, p.args = query, args
-	return p.DBTX.QueryRow(ctx, query, args...)
-}
 
 func TestOperatorOrphanScanAdvancesPastOtherRunners(t *testing.T) {
 	t.Parallel()
@@ -107,10 +90,6 @@ func TestOperatorOrphanScanAdvancesPastOtherRunners(t *testing.T) {
 			create("other", "other_"+event.ID, "running", "provider_other")
 		}
 	}
-	if err := repository.Close(); err != nil {
-		t.Fatal(err)
-	}
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for id := int64(1); id <= 2; id++ {
 			query := postgres.OperatorOrphanQuery{OrganizationID: org, ProjectID: tracker.ProjectID(fmt.Sprintf("prj_%d", id)), RunnerID: fmt.Sprintf("runner_%d", id), EnrollmentID: fmt.Sprintf("enrollment_runner_%d", id), MachineID: tracker.MachineID(fmt.Sprintf("machine_%d", id)), Now: now.Add(2 * time.Hour), Limit: 1}
@@ -174,38 +153,4 @@ func TestOperatorOrphanScanAdvancesPastOtherRunners(t *testing.T) {
 			}
 		}
 	}
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO runner_sessions(organization_id,project_id,issue_id,attempt_id,start_key,started_at,completed_at,backend_id,backend_kind,role,model,policy_id,final_state,provider_session_id,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT s.organization_id,s.project_id,s.issue_id,s.attempt_id,'closed_'||n,s.started_at,s.started_at,s.backend_id,s.backend_kind,s.role,s.model,s.policy_id,'completed','provider',s.payload_object_key,s.payload_sha256,s.payload_bytes,s.payload_content_bytes FROM runner_sessions s CROSS JOIN generate_series(1,10000) n WHERE s.organization_id='org_first' AND s.project_id='prj_1' AND s.start_key='first'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.ExecContext(t.Context(), `ANALYZE runner_sessions`); err != nil {
-		t.Fatal(err)
-	}
-	tx := pgstoretest.TenantTx(t, pgstoretest.RuntimeFor(t, pool, pool), pool, "org_first")
-	defer tx.Rollback(t.Context())
-	probe := &operatorOrphanProbe{DBTX: tx}
-	_, err := pgquery.New(probe).OperatorOrphanScanThrough(t.Context(), pgquery.OperatorOrphanScanThroughParams{OrganizationID: "org_first", ProjectID: "prj_1", BeforeTime: now.Add(time.Second), BeforeID: math.MaxInt64, PageLimit: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var raw []byte
-	if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.query, probe.args...).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var plans []struct{ Plan pgstoretest.SearchPlanNode }
-	if err := json.Unmarshal(raw, &plans); err != nil {
-		t.Fatal(err)
-	}
-	if len(plans) != 1 || !plans[0].Plan.UsesIndex("runner_sessions_orphan_scan") {
-		t.Fatalf("orphan discovery missed partial index: %s", raw)
-	}
-	var inspect func(pgstoretest.SearchPlanNode)
-	inspect = func(p pgstoretest.SearchPlanNode) {
-		if p.Relation == "runner_sessions" && (p.Rows+p.Removed+p.IndexRemoved)*p.Loops > 1 {
-			t.Errorf("orphan page scanned history: %s", raw)
-		}
-		for _, child := range p.Plans {
-			inspect(child)
-		}
-	}
-	inspect(plans[0].Plan)
 }

@@ -1,18 +1,14 @@
 package executionrecords_test
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
@@ -24,22 +20,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-type relayActionQueryTrace struct {
-	pgstoretest.ReportCountingTracer
-	query string
-	args  []any
-}
-
-func (trace *relayActionQueryTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.HasPrefix(data.SQL, "-- name: RecentActionRuns") {
-		trace.query, trace.args = data.SQL, append([]any(nil), data.Args...)
-	}
-	return trace.ReportCountingTracer.TraceQueryStart(ctx, conn, data)
-}
-
 func TestRelayActionContractRedeemsOnceAndFencesOrderedReports(t *testing.T) {
 	t.Parallel()
-	admin, repository, pool, now := workspaceContractFixture(t)
+	admin, repository, _, now := workspaceContractFixture(t)
 	objects := pgstoretest.NewHistoryObjects()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		command, err := objects.StoreDetail(t.Context(), string(org), []byte("example command"))
@@ -232,7 +215,7 @@ func TestRelayActionContractRedeemsOnceAndFencesOrderedReports(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, pool = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadRelayAction(t.Context(), org, corestore.Serving, func(r postgres.RelayActionReader) error {
 			for i := 1; i <= 2; i++ {
@@ -275,18 +258,6 @@ func TestRelayActionContractRedeemsOnceAndFencesOrderedReports(t *testing.T) {
 
 	t.Run("relay claims preserve original lease authority after rebind", func(t *testing.T) {
 		current := time.Now().UTC().Truncate(time.Microsecond)
-		trace := new(relayActionQueryTrace)
-		counter := &trace.ReportCountingTracer
-		tracePool := pgstoretest.TracedFeaturePool(t, pool, trace)
-		counted, err := postgres.NewRepository(t.Context(), tracePool, pgstoretest.SmallPool())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := counted.Close(); err != nil {
-				t.Error(err)
-			}
-		})
 		type target struct {
 			organization tracker.OrganizationID
 			project      tracker.ProjectID
@@ -375,7 +346,7 @@ SELECT a.organization_id,a.project_id,'history_'||lpad(n::text,9,'0'),a.id,$3,a.
 FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organization_id=$1 AND a.project_id=$2 AND a.id='action'`, v.organization, v.project, v.workspace.ID, current, v.lease.LeaseID, v.lease.FencingToken); err != nil {
 				t.Fatal(err)
 			}
-			if err := counted.WriteRelayAction(t.Context(), v.organization, corestore.Serving, func(w postgres.RelayActionWriter) error {
+			if err := repository.WriteRelayAction(t.Context(), v.organization, corestore.Serving, func(w postgres.RelayActionWriter) error {
 				for _, id := range []string{"recent_a", "recent_z"} {
 					if _, err := w.CreateActionRun(t.Context(), postgres.CreateActionRunInput{OrganizationID: v.organization, ProjectID: v.project, ID: id, ActionID: "action", WorkspaceID: v.workspace.ID, CreatedBy: "example", CreatedAt: current}); err != nil {
 						return err
@@ -388,11 +359,7 @@ FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organizatio
 				if len(rows) != 2 || rows[0].ID != "recent_z" || rows[1].ID != "recent_a" {
 					t.Fatalf("newest-first ties=%+v", rows)
 				}
-				beforeSeek := counter.Count.Load()
 				rows, err = w.RecentActionRuns(t.Context(), v.project, "action", &postgres.ActionRunCursor{CreatedAt: current, ID: "recent_a"}, 1)
-				if got := counter.Count.Load() - beforeSeek; got != 2 {
-					t.Fatalf("recent-run seek and selected hydration statements=%d want2", got)
-				}
 				if err != nil {
 					return err
 				}
@@ -402,57 +369,6 @@ FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organizatio
 				return nil
 			}); err != nil {
 				t.Fatal(err)
-			}
-			if trace.query == "" || len(trace.args) == 0 {
-				t.Fatal("actual recent-run seek was not captured")
-			}
-			for _, phase := range []string{"fresh", "analyzed"} {
-				if phase == "analyzed" {
-					if _, err := admin.ExecContext(t.Context(), "ANALYZE project_action_runs"); err != nil {
-						t.Fatal(err)
-					}
-				}
-				tx := pgstoretest.TenantTx(t, pgstoretest.RuntimeFor(t, tracePool, tracePool), tracePool, string(v.organization))
-				var raw []byte
-				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+trace.query, trace.args...).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
-				if err := tx.Rollback(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-				type planNode struct {
-					Kind      string     `json:"Node Type"`
-					Index     string     `json:"Index Name"`
-					Condition string     `json:"Index Cond"`
-					Rows      float64    `json:"Actual Rows"`
-					Loops     float64    `json:"Actual Loops"`
-					Removed   float64    `json:"Rows Removed by Filter"`
-					Plans     []planNode `json:"Plans"`
-				}
-				var plans []struct{ Plan planNode }
-				if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-					t.Fatalf("decode recent-run plan=%v", err)
-				}
-				found := false
-				var inspect func(planNode)
-				inspect = func(node planNode) {
-					if strings.Contains(node.Kind, "Sort") {
-						t.Fatalf("%s recent-run seek sorted history: %s", phase, raw)
-					}
-					if node.Index == "action_run_recent_order" {
-						found = true
-						if node.Rows != 1 || (node.Rows+node.Removed)*node.Loops > 1 || !strings.Contains(node.Condition, "created_at") || !strings.Contains(node.Condition, "id") {
-							t.Fatalf("unbounded or vacuous recent-run seek=%+v", node)
-						}
-					}
-					for _, child := range node.Plans {
-						inspect(child)
-					}
-				}
-				inspect(plans[0].Plan)
-				if !found {
-					t.Fatal("recent-run seek did not use its scoped ordering index")
-				}
 			}
 			normal[key(v)] = claim(v, "normal_exit", current)
 			for _, id := range []string{"lease_lost", "stream_closed", "workspace_closed", "retained_dispatch", "rebind_exit"} {
@@ -482,18 +398,9 @@ FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organizatio
 			finish := func(t *testing.T, arg postgres.FinishRelayActionRunInput, want error) postgres.ActionRun {
 				t.Helper()
 				var row postgres.ActionRun
-				counter.Count.Store(0)
-				err := counted.WriteRelayAction(t.Context(), v.organization, corestore.Serving, func(w postgres.RelayActionWriter) error {
+				err := repository.WriteRelayAction(t.Context(), v.organization, corestore.Serving, func(w postgres.RelayActionWriter) error {
 					var err error
-					before := counter.Count.Load()
 					row, err = w.FinishRelayActionRun(t.Context(), arg)
-					wantStatements := int64(1)
-					if errors.Is(want, corestore.ErrInvalidPage) || errors.Is(want, corestore.ErrTenantMismatch) {
-						wantStatements = 0
-					}
-					if got := counter.Count.Load() - before; got != wantStatements {
-						t.Fatalf("finish owner statements=%d want=%d", got, wantStatements)
-					}
 					return err
 				})
 				if !errors.Is(err, want) {

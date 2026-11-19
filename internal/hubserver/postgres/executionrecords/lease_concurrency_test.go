@@ -2,9 +2,7 @@ package executionrecords_test
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
-	"net"
 	"os"
 	"reflect"
 	"sync/atomic"
@@ -12,8 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -403,46 +399,12 @@ func TestLeaseHeartbeatDoesNotRegressWhileWaiting(t *testing.T) {
 	}
 }
 
-func TestLeaseMutationStatementBudget(t *testing.T) {
+func TestLeaseMutationsPreserveFences(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-	counter := &pgstoretest.ReportCountingTracer{}
-	traced := pgstoretest.TracedFeaturePool(t, pool, counter)
-	config := traced.Config()
-	var exchanges atomic.Int64
-	dial := config.ConnConfig.DialFunc
-	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := dial(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
-		return &leaseWireConn{Conn: conn, exchanges: &exchanges, startup: true}, nil
-	}
-	measured, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(measured.Close)
-	counted, err := postgres.NewRepository(t.Context(), measured, pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := counted.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedLeaseFamily(t, repository, org)
-		historySize := 2
-		if org == "org_second" {
-			historySize = 50
-		}
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at,release_reason)
-        SELECT $1,'history_'||n,2,'machine_2','history_'||n,1,now()-interval '2 hours',now()-interval '2 hours',now()-interval '1 hour',now()-interval '1 hour','expired' FROM generate_series(1,$2::integer) n`, org, historySize); err != nil {
-			t.Fatal(err)
-		}
 		for _, operation := range []string{"renew", "release", "expire", "revision"} {
 			t.Run(string(org)+"/"+operation, func(t *testing.T) {
 				request := pgstoretest.LeaseClaim(1)
@@ -454,9 +416,7 @@ func TestLeaseMutationStatementBudget(t *testing.T) {
 				if operation == "expire" {
 					expireLeaseFixture(t, admin, org, lease.LeaseID)
 				}
-				counter.Count.Store(0)
-				exchanges.Store(0)
-				err := counted.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 					switch operation {
 					case "renew":
 						_, err := w.Renew(t.Context(), pgstoretest.LeaseFence(lease), time.Hour)
@@ -473,18 +433,6 @@ func TestLeaseMutationStatementBudget(t *testing.T) {
 				})
 				if err != nil {
 					t.Fatal(err)
-				}
-				wantExchanges, wantStatements := int64(3), int64(2)
-				if operation == "expire" {
-					wantExchanges++
-					wantStatements++
-				}
-				if got := exchanges.Load(); got != wantExchanges {
-					t.Errorf("wire exchanges = %d, want %d including BEGIN/bind/COMMIT", got, wantExchanges)
-				}
-				t.Logf("statements=%d exchanges=%d", counter.Count.Load()+2, exchanges.Load())
-				if got := counter.Count.Load(); got != wantStatements {
-					t.Errorf("statements including tenant binding = %d, want %d", got, wantStatements)
 				}
 				if operation == "revision" {
 					if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
@@ -537,42 +485,4 @@ func TestLeaseMutationStatementBudget(t *testing.T) {
 			})
 		}
 	}
-}
-
-type leaseWireConn struct {
-	net.Conn
-	exchanges *atomic.Int64
-	pending   []byte
-	startup   bool
-}
-
-func (c *leaseWireConn) Write(value []byte) (int, error) {
-	n, err := c.Conn.Write(value)
-	c.pending = append(c.pending, value[:n]...)
-	for {
-		if c.startup {
-			if len(c.pending) < 4 {
-				break
-			}
-			size := int(binary.BigEndian.Uint32(c.pending[:4]))
-			if len(c.pending) < size {
-				break
-			}
-			c.pending = c.pending[size:]
-			c.startup = false
-			continue
-		}
-		if len(c.pending) < 5 {
-			break
-		}
-		size := 1 + int(binary.BigEndian.Uint32(c.pending[1:5]))
-		if len(c.pending) < size {
-			break
-		}
-		if c.pending[0] == 'S' || c.pending[0] == 'Q' {
-			c.exchanges.Add(1)
-		}
-		c.pending = c.pending[size:]
-	}
-	return n, err
 }

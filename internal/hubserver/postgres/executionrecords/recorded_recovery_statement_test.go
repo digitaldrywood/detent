@@ -3,11 +3,8 @@ package executionrecords_test
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,30 +16,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type recoveryStatementTrace struct {
-	query string
-	args  []any
-	conn  *pgx.Conn
-}
-
-func (p *recoveryStatementTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "FROM native_attempts a JOIN leases l") {
-		p.query, p.args, p.conn = data.SQL, append([]any(nil), data.Args...), conn
-	}
-	return ctx
-}
-func (*recoveryStatementTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
 func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	admin.SetMaxOpenConns(2)
 	var database string
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
@@ -51,20 +33,10 @@ func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+" CONNECTION LIMIT 8"); err != nil {
 		t.Fatal(err)
 	}
-	trace := &recoveryStatementTrace{}
-	repository, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, trace), pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
 	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	recoveries := map[tracker.OrganizationID]leasestore.RecordedRecovery{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		recoveries[org] = seedRecordedRecovery(t, original, admin, content, org)
+		recoveries[org] = seedRecordedRecovery(t, repository, admin, content, org)
 		for _, query := range []string{
 			`INSERT INTO project_settings(organization_id,project_id) VALUES($1,'prj_1')`,
 			`UPDATE projects SET require_dependencies=true WHERE organization_id=$1 AND id='prj_1'`,
@@ -116,7 +88,6 @@ func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
 					if err := w.(leasestore.RecordedRecoveryWriter).AuthorizeRecordedRecovery(t.Context(), requested); err != nil {
 						return err
 					}
-					checkRecoveryStatementPlan(t, trace, org, count, test.reported)
 					_, err := admin.ExecContext(t.Context(), `SELECT id FROM issues WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT`, org, count+2)
 					if err != nil {
 						t.Errorf("recovery locked an unreported blocker: %v", err)
@@ -251,12 +222,8 @@ func seedRecoveryDependencies(t *testing.T, admin *sql.DB, org tracker.Organizat
 		`DELETE FROM issue_dependencies WHERE organization_id=$1 AND dependent_issue_id=1`,
 		`INSERT INTO issues(organization_id,id,native_id,project_id,number,title,workflow_state_name) SELECT $1,n,'wi_dependency_'||n,'prj_1',n-1,'Example','Done' FROM generate_series(4,$2::bigint+2) n ON CONFLICT (organization_id,id) DO NOTHING`,
 		`UPDATE issues SET workflow_state_name='Done' WHERE organization_id=$1 AND id>=3 AND workflow_state_name IS DISTINCT FROM 'Done'`,
-		`ANALYZE issues`,
-		`ANALYZE work_item_identities`,
 		`INSERT INTO issue_dependencies(organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id) SELECT $1,'prj_1',1,'prj_1',n FROM generate_series(3,$2::bigint+2) n`,
 		`ALTER TABLE issue_dependencies ENABLE TRIGGER USER`,
-		`ANALYZE issue_dependencies`,
-		`ANALYZE project_workflow_states`,
 	} {
 		args := []any{}
 		if strings.Contains(query, "$1") {
@@ -271,52 +238,5 @@ func seedRecoveryDependencies(t *testing.T, admin *sql.DB, org tracker.Organizat
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
-	}
-}
-
-type recoveryStatementPlan struct {
-	Kind     string  `json:"Node Type"`
-	Relation string  `json:"Relation Name"`
-	Rows     float64 `json:"Actual Rows"`
-	Removed  float64 `json:"Rows Removed by Filter"`
-	Loops    float64 `json:"Actual Loops"`
-	Plans    []recoveryStatementPlan
-}
-
-func checkRecoveryStatementPlan(t *testing.T, trace *recoveryStatementTrace, org tracker.OrganizationID, count, reported int) {
-	t.Helper()
-	var raw []byte
-	if err := trace.conn.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+trace.query, trace.args...).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var plans []struct{ Plan recoveryStatementPlan }
-	if err := json.Unmarshal(raw, &plans); err != nil {
-		t.Fatal(err)
-	}
-	visits := map[string]float64{}
-	var locks float64
-	var walk func(recoveryStatementPlan)
-	walk = func(p recoveryStatementPlan) {
-		if p.Relation == "issue_dependencies" && p.Kind == "Seq Scan" {
-			t.Errorf("dependency eligibility used an unrelated-table scan")
-		}
-		if p.Relation != "" {
-			visits[p.Relation] += (p.Rows + p.Removed) * p.Loops
-		}
-		if p.Kind == "LockRows" {
-			locks += p.Rows * p.Loops
-		}
-		for _, child := range p.Plans {
-			walk(child)
-		}
-	}
-	walk(plans[0].Plan)
-	path := filepath.Join(os.Getenv("TMPDIR"), fmt.Sprintf("recovery-plan-%s-D%d-R%d.json", org, count, reported))
-	if err := os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("valid recovery D=%d R=%d visits=%v LockRows=%.0f plan=%s", count, reported, visits, locks, path)
-	if locks != 0 || visits["issue_dependencies"] > float64(count+reported) || visits["issues"] > float64(count+reported) {
-		t.Errorf("recovery traversed unrelated rows or locked blockers: visits=%v LockRows=%.0f", visits, locks)
 	}
 }

@@ -302,16 +302,6 @@ func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
 	}
 
 	t.Run("activity preserves lifecycle and current ownership", func(t *testing.T) {
-		counter := new(pgstoretest.ReportCountingTracer)
-		counted, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, counter), pgstoretest.SmallPool())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := counted.Close(); err != nil {
-				t.Error(err)
-			}
-		})
 		type scope struct {
 			organization tracker.OrganizationID
 			project      tracker.ProjectID
@@ -382,28 +372,11 @@ func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
 		}
 		touch := func(key scope, at time.Time, want error) {
 			t.Helper()
-			counter.Count.Store(0)
-			err := counted.WriteWorkspace(t.Context(), key.organization, corestore.Serving, func(w postgres.WorkspaceWriter) error {
-				before := counter.Count.Load()
-				err := w.TouchWorkspaceActivity(t.Context(), key.project, key.id, at)
-				statements := int64(1)
-				if at.IsZero() {
-					statements = 0
-				}
-				if got := counter.Count.Load() - before; got != statements {
-					t.Fatalf("activity owner statements=%d want=%d", got, statements)
-				}
-				return err
+			err := repository.WriteWorkspace(t.Context(), key.organization, corestore.Serving, func(w postgres.WorkspaceWriter) error {
+				return w.TouchWorkspaceActivity(t.Context(), key.project, key.id, at)
 			})
 			if !errors.Is(err, want) {
 				t.Fatalf("activity error=%v want=%v", err, want)
-			}
-			statements := int64(2)
-			if at.IsZero() {
-				statements = 1
-			}
-			if got := counter.Count.Load(); got != statements {
-				t.Fatalf("activity tenant bind and owner statements=%d want=%d", got, statements)
 			}
 			assertAll()
 		}

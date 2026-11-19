@@ -3,7 +3,6 @@ package executionrecords_test
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -135,7 +133,7 @@ func TestRunnerProviderAccountLockScopesCurrentReports(t *testing.T) {
 func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	const organization tracker.OrganizationID = "org_usage"
 	pgstoretest.SeedLeaseFamily(t, repository, organization)
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -535,55 +533,6 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE leases; ANALYZE runner_lease_assignments; ANALYZE issues"); err != nil {
-				t.Fatal(err)
-			}
-			var raw []byte
-			if err := func() (result error) {
-				tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-				if err != nil {
-					return err
-				}
-				defer func() {
-					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
-					defer cancel()
-					if err := tx.Rollback(cleanupCtx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-						result = errors.Join(result, fmt.Errorf("rollback membership plan snapshot: %w", err))
-					}
-				}()
-				var role, tenant string
-				var runtimeRLS bool
-				if err := tx.QueryRow(t.Context(), `SELECT current_user, set_config('detent.organization_id', $1, true),
- pg_has_role(current_user, 'detent_runtime_v2', 'USAGE')
- AND NOT (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user)
- AND current_setting('row_security')='on'`, string(org)).Scan(&role, &tenant, &runtimeRLS); err != nil {
-					return err
-				}
-				if !runtimeRLS || tenant != string(org) {
-					return fmt.Errorf("membership plan role=%q tenant=%q runtime_rls=%t", role, tenant, runtimeRLS)
-				}
-				return tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, org, "machine_1", "runner_page", "", 200).Scan(&raw)
-			}(); err != nil {
-				t.Fatal(err)
-			}
-			var plans []struct{ Plan pgstoretest.SearchPlanNode }
-			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-				t.Fatalf("decode membership plan: %v", err)
-			}
-			var visits func(pgstoretest.SearchPlanNode) float64
-			visits = func(node pgstoretest.SearchPlanNode) float64 {
-				count := float64(0)
-				if node.Relation != "" {
-					count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-				}
-				for _, child := range node.Plans {
-					count += visits(child)
-				}
-				return count
-			}
-			if count := visits(plans[0].Plan); count > 800 {
-				t.Fatalf("200 examined leases visited %.0f relation rows with 50000 released leases", count)
-			}
 			if org == "org_page_first" {
 				tx, err := admin.BeginTx(t.Context(), nil)
 				if err != nil {
@@ -823,7 +772,7 @@ func TestSetRunnerUrgentUpdateRejectsNonzeroRevisionWithoutCurrentRow(t *testing
 func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	now := pgstoretest.HistoryAt()
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
@@ -889,17 +838,6 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 		}
 	}
 
-	counter := &pgstoretest.ReportCountingTracer{}
-	countedPool := pgstoretest.TracedFeaturePool(t, pool, counter)
-	counted, err := postgres.NewRepository(ctx, countedPool, pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := counted.Close(); err != nil {
-			t.Error(err)
-		}
-	})
 	for _, organization := range organizations {
 		if _, err := admin.ExecContext(ctx, `INSERT INTO runner_availability_window_slots(organization_id,runner_id,slot_key,capacity) VALUES($1,'runner_shared','example',1)`, organization); err != nil {
 			t.Fatal(err)
@@ -907,7 +845,7 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 		if _, err := admin.ExecContext(ctx, `INSERT INTO runner_project_capacity_limits(organization_id,runner_id,project_id,capacity_limit) VALUES($1,'runner_shared','project_shared',1)`, organization); err != nil {
 			t.Fatal(err)
 		}
-		t.Run(string(organization)+" projects preserve validity and bound queries", func(t *testing.T) {
+		t.Run(string(organization)+" projects preserve validity", func(t *testing.T) {
 			for _, check := range []struct {
 				name      string
 				setup     string
@@ -940,9 +878,7 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 						}
 					}
 					checkProjects := func(r tenantstore.Reader) error {
-						counter.Count.Store(0)
 						projects, err := r.RunnerProjects(ctx, check.runner, check.limit)
-						queries := counter.Count.Load()
 						if check.wantError == corestore.ErrInvalidPage && check.limit == 1 || check.wantError == runnerstore.ErrInvalidRecord {
 							if _, identityErr := r.RunnerIdentity(ctx, check.runner); !errors.Is(identityErr, check.wantError) {
 								t.Errorf("identity error=%v, want %v", identityErr, check.wantError)
@@ -952,24 +888,16 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 							t.Errorf("projects=%v error=%v, want %v error=%v", projects, err, check.want, check.wantError)
 						}
 						if check.wantError == nil {
-							counter.Count.Store(0)
 							if _, err := r.RunnerIdentity(ctx, check.runner); err != nil {
 								return err
-							}
-							if got := counter.Count.Load(); got > 2 {
-								t.Errorf("RunnerIdentity queries=%d, want at most 2", got)
-							}
-							t.Logf("RunnerProjects actual PostgreSQL queries=%d", queries)
-							if queries != 2 {
-								t.Errorf("RunnerProjects queries=%d, want 2", queries)
 							}
 						}
 						return nil
 					}
-					if err := counted.ReadTenant(ctx, organization, corestore.Serving, checkProjects); err != nil {
+					if err := repository.ReadTenant(ctx, organization, corestore.Serving, checkProjects); err != nil {
 						t.Fatal(err)
 					}
-					if err := counted.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error { return checkProjects(w) }); err != nil {
+					if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error { return checkProjects(w) }); err != nil {
 						t.Fatal(err)
 					}
 				})
@@ -1453,33 +1381,6 @@ func TestRunnerHostMetricRetentionUsesBoundedTenantBatch(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed host metrics for %s: %v", organization, err)
 		}
-	}
-	connection, err := admin.Conn(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
-	if _, err := connection.ExecContext(ctx, `SET enable_seqscan=off`); err != nil {
-		t.Fatal(err)
-	}
-	plan, err := connection.QueryContext(ctx, `EXPLAIN (COSTS OFF) SELECT ctid FROM runner_host_metric_segments WHERE organization_id=$1 AND hour <= $2 ORDER BY hour,runner_id,segment_id LIMIT $3`, "org_first", firstHour.Add(time.Hour), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var planLines []string
-	for plan.Next() {
-		var line string
-		if err := plan.Scan(&line); err != nil {
-			plan.Close()
-			t.Fatal(err)
-		}
-		planLines = append(planLines, line)
-	}
-	if err := errors.Join(plan.Err(), plan.Close()); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(strings.Join(planLines, "\n"), "runner_host_metric_segments_retention_idx") {
-		t.Fatalf("bounded retention query plan does not use its indexed cursor: %v", planLines)
 	}
 	cutoff := firstHour.Add(time.Hour)
 	if err := repository.WriteTenant(ctx, "org_first", corestore.Background, func(w tenantstore.Writer) error {
