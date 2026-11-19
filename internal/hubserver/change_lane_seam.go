@@ -3,13 +3,13 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/changeapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/changefiles"
@@ -23,11 +23,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/releaseaudits"
 	"github.com/digitaldrywood/detent/internal/hubserver/releasefeed"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -368,14 +371,17 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope h
 
 func (s *Service) changeVersionPublication() *changeapi.VersionPublication {
 	return changeapi.NewVersionPublication(changeapi.VersionPublicationDeps{
-		Repository:   s.config.TenantRepository,
-		CurrentTime:  s.database.currentTime,
-		BoardRefresh: s.boardRefresh,
-		Authority:    s.config.ChangeVersionAuthority,
+		RunEventsAvailable: func() bool { return s.config.NativeRunEvents != nil },
+		ValidateRunOwner:   s.validateChangeVersionRunOwner,
+		ExecutionConflict:  nativeExecutionConflict,
+		Repository:         s.config.TenantRepository,
+		CurrentTime:        s.database.currentTime,
+		BoardRefresh:       s.boardRefresh,
+		Authority:          s.config.ChangeVersionAuthority,
 		DefaultAuthority: func() changeapi.VersionAuthority {
 			return tenantChangeVersionAuthority{repository: s.config.TenantRepository, content: eventstore.NewContent(s.runDetailStore())}
 		},
-		PrepareVersionSource:            s.prepareVersionSource,
+
 		ValidateVersionAttachments:      validateVersionAttachments,
 		BindVersionAttachments:          bindVersionAttachments,
 		RunDetailContext:                s.runDetailContext,
@@ -394,23 +400,6 @@ func (s *Service) changeVersionPublication() *changeapi.VersionPublication {
 		ValidateChangeVersion:           validateChangeVersion,
 		ValidateChangeVersionEvidence:   validateChangeVersionEvidence,
 	})
-}
-
-func (s *Service) prepareVersionSource(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) (*changeapi.VersionSource, error) {
-	source, err := s.prepareChangeVersionRun(ctx, scope, change, request)
-	if errors.Is(err, errNoChangeVersionRun) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &changeapi.VersionSource{
-		SessionID: source.sessionID,
-		MachineID: source.machineID,
-		Recheck: func(ctx context.Context, w tenantstore.Writer) error {
-			return s.recheckChangeVersionRun(ctx, w, source)
-		},
-	}, nil
 }
 
 func validateVersionAttachments(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, artifacts []tracker.ChangeArtifact) error {
@@ -844,4 +833,99 @@ func (s *Service) changeHTTP() *changeapi.HTTP {
 
 func appendBoundedChangeEvidence(detail *tracker.ChangeDetail, row eventstore.Evidence, raw []byte) error {
 	return changeapi.AppendBoundedChangeEvidence(detail, row, raw, boundedChangeReviewResult)
+}
+
+func (s *Service) changeValidatorDeps() changeapi.ValidatorDeps {
+	return changeapi.ValidatorDeps{
+		Repository:                        s.config.TenantRepository,
+		RunDetailStoreFor:                 s.runDetailStoreFor,
+		RunnerSessionFence:                s.runnerSessionFence,
+		ReadRunnerSessionPayload:          s.readRunnerSessionPayload,
+		VerifyRunnerSessionFinalization:   s.verifyRunnerSessionFinalization,
+		HydrateWorkItemRecord:             s.hydrateWorkItemRecord,
+		PrepareValidatorAuditDispositions: s.prepareValidatorAuditDispositions,
+		NativeRejection:                   nativeRejection,
+		SecurityAuditRejection:            securityAuditRejection,
+		RunnerSessionFenceWithOwner:       s.reviewRunnerSessionFence,
+	}
+}
+
+func (s *Service) changeReviewRecordMutation(c echo.Context, request tracker.ReviewChange) error {
+	return s.changeReview().ChangeReviewRecordMutation(c, request)
+}
+
+func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope hubscope.NativeScope, item, changeID, versionID, operation string, request tracker.ReviewChange) (json.RawMessage, error) {
+	return s.changeReview().ReviewChangeRecordCommand(ctx, scope, item, changeID, versionID, operation, request)
+}
+
+func (s *Service) changeReview() *changeapi.Review {
+	workflow := s.changeWorkflow()
+	return changeapi.NewReview(changeapi.ReviewDeps{
+		Repository:                          s.config.TenantRepository,
+		CurrentTime:                         s.database.currentTime,
+		BoardRefresh:                        s.boardRefresh,
+		RunDetailContext:                    s.runDetailContext,
+		RunDetailStore:                      s.runDetailStore,
+		NativeAPIError:                      s.nativeAPIError,
+		ChangeOperationRecordReceipt:        s.changeOperationRecordReceipt,
+		ReadChangeRecord:                    s.readChangeRecord,
+		ReadChangeVersionRecord:             s.readChangeVersionRecord,
+		ReadWorkItemRecord:                  s.readWorkItemRecord,
+		HydrateWorkItemRecord:               s.hydrateWorkItemRecord,
+		LockChangeRecordOperation:           s.lockChangeRecordOperation,
+		ValidateReviewBundleRecord:          s.validateReviewBundleRecord,
+		RegisterChangeContentRecord:         s.registerChangeContentRecord,
+		CheckChangeContentAllowance:         s.checkChangeContentAllowance,
+		HydrateCurrentChangeVersionApproval: hydrateCurrentChangeVersionApproval,
+		NativeRejection:                     nativeRejection,
+		PrepareChangeReviewWorkflow:         workflow.PrepareChangeReviewWorkflow,
+		RecheckChangeReviewWorkflow:         workflow.RecheckChangeReviewWorkflow,
+		LockChangeWorkflowTransition:        workflow.LockChangeWorkflowTransition,
+		ApplyChangeWorkflowTransition:       workflow.ApplyChangeWorkflowTransition,
+		Validator:                           s.changeValidatorDeps(),
+		AttachmentReferences:                cloudContentAttachmentReferences,
+		PrepareRepairs:                      s.prepareChangeReviewRepairs,
+		ChangeReviewContentFields: func(request tracker.ReviewChange) []changefiles.ContentField {
+			return changeAttachmentFields(changeReviewContentFields(request))
+		},
+	})
+}
+
+func (s *Service) prepareChangeReviewRepairs(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, failures []failureattribution.Evidence, source string, now time.Time) (*changeapi.PreparedRepairs, error) {
+	plan, err := s.prepareIndependentRepairs(ctx, scope, item, failures, source, now)
+	if err != nil || plan == nil {
+		return nil, err
+	}
+	return &changeapi.PreparedRepairs{
+		Dependencies: plan.dependencies,
+		Refusal:      plan.refusal,
+		Check: func(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope) (string, error) {
+			return s.checkIndependentRepairs(ctx, w, scope, plan)
+		},
+		Apply: func(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope) error {
+			return s.applyIndependentRepairs(ctx, w, scope, plan)
+		},
+	}, nil
+}
+
+func (s *Service) reviewRunnerSessionFence(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request runnersession.Mutation, issue string, owner runnerstore.Identity) (leasestore.Attempt, corestore.WorkItem, policystore.Revision, error) {
+	return s.runnerSessionFenceHeld(ctx, r, scope, request, issue, true, &heldRunnerSessionAuthority{owner: owner})
+}
+
+func nativeRuntimeSession(runtime *tracker.NativeRuntimeObservation) int64 {
+	return changeapi.NativeRuntimeSession(runtime)
+}
+
+func (s *Service) validateChangeVersionRunOwner(ctx context.Context, r tenantstore.Reader, run changeapi.VersionRunAuthority) error {
+	authority := NativeRunEventAuthority{
+		Scope:              run.Scope,
+		OrganizationID:     run.OrganizationID,
+		ProjectID:          run.ProjectID,
+		WorkItem:           run.WorkItem,
+		Lease:              run.Lease,
+		DispatchGeneration: run.DispatchGeneration,
+		UsageCorrection:    run.UsageCorrection,
+		Event:              run.Event,
+	}
+	return (tenantNativeRunEventParticipant{service: s}).validateNativeRunEventOwner(ctx, r, &authority)
 }
