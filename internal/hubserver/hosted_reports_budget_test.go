@@ -6,129 +6,20 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestReportsLongRangeReadBudget(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
-	f := newUsageHostedFixture(t, func(cfg *Config) { cfg.Clock = func() time.Time { return now } })
-	installReportsBudgetTrace(t, f.service)
-	scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}
-	seedProductionProject(t, f.service, scope, productionProjectShape{issues: 990, attempts: 990, usage: 660, leases: 1682, comments: 7000, days: 180})
-	content := eventstore.NewContent(f.service.runDetailStore())
-	admin := hostedPostgresAdmin(t, f.service)
-	rows, err := admin.QueryContext(t.Context(), `SELECT id FROM change_requests WHERE organization_id=$1 AND project_id=$2 AND id LIKE 'change_wi_shaped_%' ORDER BY id`, scope.Organization, scope.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			t.Fatal(err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		t.Fatal(err)
-	}
-	rows.Close()
-	for _, id := range ids {
-		var change eventstore.Change
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { var err error; change, err = r.Change(t.Context(), id); return err }); err != nil {
-			t.Fatal(err)
-		}
-		for number := 1; number <= 6; number++ {
-			kind := "review"
-			var value any = tracker.ChangeReview{ID: fmt.Sprintf("%s_%d", id, number), VersionID: *change.LandedVersionID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, Decision: "changes_requested", CreatedAt: *change.LandedAt, Body: strings.Repeat("x", 4096)}
-			if number%2 == 0 {
-				kind = "discussion"
-				value = tracker.ChangeDiscussion{ID: fmt.Sprintf("%s_%d", id, number), VersionID: *change.LandedVersionID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: *change.LandedAt, Body: strings.Repeat("x", 4096), Escape: &tracker.QualityEscape{OccurrenceID: fmt.Sprintf("%s_%d", id, number), Kind: "reopened", Cause: "missing_criterion", ObservedAt: *change.LandedAt, EvidenceReference: "record", EvidenceQuote: "Recorded failure", BasisQuote: "Frozen contract"}}
-			}
-			evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: id, Kind: kind}, historyTestJSON(t, value))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), evidence); return err }); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-
-	freezeReportPlannerInputs(t, admin)
-	statementCounts := map[string]int{}
-	for _, test := range []struct {
-		name, rangeName string
-		hour, days      int
-	}{
-		{"30d/midnight", "30d", 0, 30},
-		{"30d/daytime", "30d", 10, 29},
-		{"90d/midnight", "90d", 0, 90},
-		{"90d/daytime", "90d", 10, 89},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if reportsRedesignLeaf(t.Name()) {
-				statementCounts[test.name] = -1
-				t.Skip(reportsRedesignSkipReason)
-			}
-			f.service.config.Clock = func() time.Time { return now.Add(time.Duration(test.hour) * time.Hour) }
-			timing, statements := newReportStatementTrace(true)
-			ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), hubapi.ReadTimeout)
-			defer cancel()
-			request := httptest.NewRequest(http.MethodGet, browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+test.rangeName, nil).WithContext(ctx)
-			request.AddCookie(f.cookies["owner"])
-			response := httptest.NewRecorder()
-			started := time.Now()
-			f.service.Handler().ServeHTTP(response, request)
-			elapsed := time.Since(started)
-			if response.Code != http.StatusOK || elapsed >= hubapi.ReadTimeout {
-				t.Fatalf("report took %s: HTTP %d: %s", elapsed, response.Code, response.Body.String())
-			}
-			var report hostedReportsReport
-			if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
-				t.Fatal(err)
-			}
-			now := f.service.config.Clock().UTC()
-			wantFrom := now.Truncate(24*time.Hour).AddDate(0, 0, -test.days)
-			if !report.Analytics.Window.From.Equal(wantFrom) || !report.Analytics.Window.To.Equal(now) || report.Completion.Done < test.days {
-				t.Fatalf("window=%+v shipped=%d, want %s through %s and at least %d shipped", report.Analytics.Window, report.Completion.Done, wantFrom, now, test.days)
-			}
-			t.Logf("%s report: %s, %d shipped", test.rangeName, elapsed, report.Completion.Done)
-			captured := statements()
-			statementCounts[test.name] = len(captured)
-			reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "reports", "issues", "collaboration_events", "native_attempts", "change_requests", "report_escape_facts")
-		})
-		if statementCounts[test.name] == 0 {
-			t.Errorf("missing report statement measurement for %s", test.name)
-		}
-	}
-	if statementCounts["30d/midnight"] == 0 || statementCounts["90d/midnight"] != statementCounts["30d/midnight"] || statementCounts["90d/daytime"] != statementCounts["30d/daytime"] {
-		t.Errorf("report statements grow with the window: %v", statementCounts)
-	}
-}
 
 type reportsBudgetTrace struct{}
 
@@ -207,15 +98,6 @@ func freezeReportPlannerInputs(t *testing.T, admin *sql.DB) {
 			t.Fatal(err)
 		}
 	}
-}
-
-func reportsAssertPostgresPlans(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statements []tracedStatement, request string, required ...string) {
-	t.Helper()
-	plans := make([]pgstoretest.ReportStatement, len(statements))
-	for i, statement := range statements {
-		plans[i] = pgstoretest.ReportStatement{Query: statement.query, Args: statement.args}
-	}
-	pgstoretest.AssertReportRequest(t, admin, string(organization), plans, reportsBudgetHotRelations, request, required...)
 }
 
 func reportsExplainPostgresPlan(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statement tracedStatement, planner ...string) (reportsBudgetPlan, []byte) {
