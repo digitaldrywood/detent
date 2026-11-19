@@ -37,7 +37,7 @@ func (s *Service) registerRunnerRoutes(e *echo.Echo) {
 func (s *Service) runnerEnrollmentService() *runnerenroll.Service {
 	return runnerenroll.New(runnerenroll.Deps{
 		Repository: s.config.TenantRepository, Now: s.config.Clock, NewID: hubapi.NewID,
-		GenerateToken: s.config.deps.GenerateToken, TokenFingerprint: hubapi.TokenFingerprint, WorkerScope: string(hubapi.APIScopeWorker),
+		GenerateToken: s.config.Deps().GenerateToken, TokenFingerprint: hubapi.TokenFingerprint, WorkerScope: string(hubapi.APIScopeWorker),
 		ApplyUsage: s.applyRunnerTenantUsage, CheckAdmission: s.checkRunnerAdmission,
 		ValidPlatform: validRunnerPlatform, ValidSpriteSlug: validSpritesSlug,
 	})

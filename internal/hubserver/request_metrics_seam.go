@@ -78,8 +78,8 @@ func (s *Service) expireRequestMetrics(ctx context.Context, now time.Time) error
 }
 
 func (s *Service) requestTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if s.config.deps.RequestTimeout == nil {
+	if s.config.Deps().RequestTimeout == nil {
 		return context.WithTimeout(ctx, timeout)
 	}
-	return s.config.deps.RequestTimeout(ctx, timeout)
+	return s.config.Deps().RequestTimeout(ctx, timeout)
 }
