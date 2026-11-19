@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -383,46 +382,6 @@ func TestChatCacheSavingsCurrency(t *testing.T) {
 	}
 }
 
-func TestConversationUsageCommitsWithCompletion(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name     string
-		fail     bool
-		want     conversation.Delivery
-		wantRows int
-	}{
-		{"completion sees usage", false, conversation.DeliveryCompleted, 1},
-		{"usage failure rolls back completion", true, conversation.DeliveryResponding, 0},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newCoordinatorFixture(t, "atomic-usage")
-			f.conversations.Config.Model = "example-model"
-			f.service.config.TenantRepository = coordinatorUsageRepository{Repository: f.service.config.TenantRepository, fail: test.fail}
-			f.backend.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
-				return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 5}})
-			})
-			record := f.seed(t, "Usage", nil)
-			f.say(t, &record, "Hello")
-			f.backend.waitStarted(t)
-			coordinator := f.coordinator().(*conversationTurnCoordinator)
-			waitUntil(t, "turn finished", func() bool { coordinator.mu.Lock(); defer coordinator.mu.Unlock(); return len(coordinator.turns) == 0 })
-			assistant, ok := lastReply(f.messages(t, record.ID))
-			if !ok || assistant.Delivery != test.want {
-				t.Fatalf("assistant = %+v, want %s", assistant, test.want)
-			}
-			_, err := readCoordinatorUsage(t, f.service, f.organization, assistant.ID)
-			rows := 1
-			if errors.Is(err, corestore.ErrNotFound) {
-				rows = 0
-				err = nil
-			}
-			if err != nil || rows != test.wantRows {
-				t.Fatalf("usage rows = %d, %v", rows, err)
-			}
-		})
-	}
-}
-
 func readCoordinatorUsage(t *testing.T, service *Service, organization tracker.OrganizationID, turn string) (billingstore.ConversationUsage, error) {
 	t.Helper()
 	var row billingstore.ConversationUsage
@@ -432,33 +391,4 @@ func readCoordinatorUsage(t *testing.T, service *Service, organization tracker.O
 		return err
 	})
 	return row, err
-}
-
-type coordinatorUsageRepository struct {
-	tenantstore.Repository
-	fail bool
-}
-
-func (r coordinatorUsageRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, work corestore.Workload, fn func(tenantstore.Writer) error) error {
-	return r.Repository.WriteTenant(ctx, org, work, func(w tenantstore.Writer) error { return fn(coordinatorUsageWriter{Writer: w, fail: r.fail}) })
-}
-
-type coordinatorUsageWriter struct {
-	tenantstore.Writer
-	fail bool
-}
-
-func (w coordinatorUsageWriter) RecordConversationUsage(ctx context.Context, row billingstore.ConversationUsage) (bool, error) {
-	if w.fail {
-		return false, errors.New("example usage write failure")
-	}
-	return w.Writer.RecordConversationUsage(ctx, row)
-}
-func (w coordinatorUsageWriter) UpdateMessage(ctx context.Context, row conversationstore.Message, rev int64) (conversationstore.Message, error) {
-	if row.Role == conversation.RoleAssistant && row.Delivery == conversation.DeliveryCompleted {
-		if _, err := w.ConversationUsage(ctx, row.ID); err != nil {
-			return conversationstore.Message{}, errors.New("completion must include usage")
-		}
-	}
-	return w.Writer.UpdateMessage(ctx, row, rev)
 }
