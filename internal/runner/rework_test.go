@@ -570,7 +570,11 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			if test.normal {
 				issue.State = "In Progress"
 			}
-			info, err := backend.Create(t.Context(), workspaceIssue("default", issue))
+			ownedIssue := workspaceIssue("default", issue)
+			if test.sameMachine && !test.resolvedPause {
+				ownedIssue.AttemptWorkspace = workspace.AttemptWorkspace{Organization: "org_example", Project: "default", Attempt: "attempt_11111111111111111111111111111111"}
+			}
+			info, err := backend.Create(t.Context(), ownedIssue)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -603,7 +607,6 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			runRunnerGit(t, source, "commit", "-m", "base")
 			runRunnerGit(t, source, "push", "origin", "main")
-			ownedIssue := workspaceIssue("default", issue)
 			ownedIssue.NativeRework = true
 			if test.resolvedPause {
 				prepared, err := backend.PrepareRework(t.Context(), info, ownedIssue, workspace.MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
@@ -677,6 +680,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					execution.recovery.Lease.MachineID = "host"
 					execution.recovery.Attempts[0].MachineID = "host"
 					if !test.resolvedPause {
+						execution.recovery.Attempts[0].AttemptID = ownedIssue.AttemptWorkspace.Attempt
 						stageFile(info.Path, "target-fix.md", "retained work after checkpoint\n")
 						runRunnerGit(t, info.Path, "commit", "-m", "retained progress")
 						target = strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
@@ -696,7 +700,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 				issue.State = test.checkpointRetry
 			}
-			request := RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}
+			request := RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution, AttemptWorkspace: ownedIssue.AttemptWorkspace}
 			bundleErr := fmt.Errorf("%w: Change bundle unavailable", ErrNativeRecoveryRequired)
 			if test.missingBundleBackend != "" {
 				execution.recovery.Change = &tracker.NativeChangeReference{ChangeID: "change_current", VersionID: "version_current", HeadSHA: original}
@@ -1007,6 +1011,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Resolve the source"}, Workspace: retryBackend, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if ownedIssue.AttemptWorkspace.Key() != "" {
+				r.store = &fakeSessionStore{sessionID: 1}
 			}
 			if test.resume {
 				r.store = &fakeSessionStore{sessionID: 2, resumeState: store.AgentResumeState{DetentSessionID: 1, ProviderThreadID: "source-thread", ProviderSessionID: "source-session", RequestedModel: "provider_default", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode}}
