@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
@@ -10,19 +10,48 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
-func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
+type RuntimeDeps struct {
+	Repository           tenantstore.Repository
+	Now                  func() time.Time
+	HTTPError            func(echo.Context, error, ...any) error
+	AuthorizeAccess      func(context.Context, accessstore.Reader, hubscope.NativeScope, bool) error
+	DetailContext        func(ctx context.Context) context.Context
+	RequestDetails       func(ctx context.Context) context.Context
+	DetailsFor           func(ctx context.Context) attachment.DetailStore
+	HydrateAttempt       func(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, now time.Time) (tracker.NativeAttempt, error)
+	HydrateChange        func(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows hubrecords.CurrentChangePolicyRows, now time.Time) (tracker.ChangeDetail, error)
+	HydrateWorkItem      func(ctx context.Context, row corestore.WorkItem, version eventstore.CollaborationVersion) (tracker.NativeIssue, error)
+	HydrateRelationships func(ctx context.Context, scope hubscope.NativeScope, issue *tracker.NativeIssue) error
+	ReadAdmission        func(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, evidence *tracker.NativeRuntimeEvidence, supplied []tracker.NativeAdmissionContext) error
+	ReadSourceRecovery   func(ctx context.Context, scope hubscope.NativeScope, item string, evidence *tracker.NativeRuntimeEvidence) error
+	ReadWorkItem         func(ctx context.Context, scope hubscope.NativeScope, id string) (corestore.WorkItem, eventstore.CollaborationVersion, error)
+	AttachChange         func(result *tracker.NativeRuntimeEvidence, detail tracker.ChangeDetail)
+	Explain              func(evidence tracker.NativeRuntimeEvidence, failure *explain.FailureSignature) (explain.IssueExplanation, error)
+	ArchiveJSON          func(c echo.Context, status int, value any) error
+	ReadOperatorEvidence func(context.Context, hubscope.NativeScope, tracker.NativeIssue, bool) (tracker.NativeRuntimeEvidence, error)
+}
+
+func ValidateNativeRuntime(nativeRejection func(error, string, string) error, validateNativeGitHubScope func(*tracker.NativeGitHubScope) error, r *tracker.NativeRuntimeObservation) error {
 	if r == nil {
 		return nil
 	}
@@ -91,7 +120,7 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		}
 	}
 	for _, v := range []string{r.Identity.BackendID, r.Identity.BackendKind, r.Identity.Role, r.Identity.Provider.Value, r.Identity.RequestedModel.Value, r.Identity.ResolvedModel.Value, r.Identity.ReasoningEffort.Value, r.Identity.ServiceTier.Value} {
-		if v != "" && !validExecutionName(v) {
+		if v != "" && !ValidExecutionName(v) {
 			return nativeRejection(hubapi.NativePublicInvalid("Invalid runtime identity"), "runtime_validation", "data.runtime.identity")
 		}
 	}
@@ -148,7 +177,7 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		}
 		waitingCI := (l.Waiting || l.CI != nil && l.CI.State == "pending") && !l.GateFailed && l.RefusalKind == ""
 		if l.Landed {
-			if !hubapi.ValidID(l.ChangeID, "change") || !hubapi.ValidID(l.VersionID, "version") || !hubapi.ValidCommitID(l.HeadSHA) || l.RefusalKind != "" || l.GateFailed || l.Waiting || !hubapi.ValidCommitID(l.MergeSHA) || !slices.Contains([]string{"squash", "merge", "rebase"}, l.Method) || !validExecutionName(l.BaseRef) {
+			if !hubapi.ValidID(l.ChangeID, "change") || !hubapi.ValidID(l.VersionID, "version") || !hubapi.ValidCommitID(l.HeadSHA) || l.RefusalKind != "" || l.GateFailed || l.Waiting || !hubapi.ValidCommitID(l.MergeSHA) || !slices.Contains([]string{"squash", "merge", "rebase"}, l.Method) || !ValidExecutionName(l.BaseRef) {
 				return nativeRejection(hubapi.NativePublicInvalid("Invalid landing receipt"), "runtime_validation", "data.runtime.landing")
 			}
 		} else if l.MergeSHA != "" || !waitingCI && (!l.GateFailed || l.RefusalKind != "") && !slices.Contains([]string{"head_moved", "missing_head", "conflict", "nothing_to_land", "base_protected", "base_moved"}, l.RefusalKind) {
@@ -177,83 +206,83 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	return nativeRejection(validateNativeGitHubScope(r.GitHub), "runtime_validation", "data.runtime.github")
 }
 
-func (s *Service) getNativeExplanation(c echo.Context) error {
+func (d RuntimeDeps) GetNativeExplanation(c echo.Context) error {
 	ctx := context.WithValue(c.Request().Context(), hubcontent.ExplanationReadKey{}, true)
 	c.SetRequest(c.Request().WithContext(ctx))
 	if len(c.QueryParams()) != 0 {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Unsupported explanation selector"))
+		return d.HTTPError(c, hubapi.NativePublicInvalid("Unsupported explanation selector"))
 	}
-	evidence, err := s.readNativeRuntime(ctx, hubscope.NativeRequestScope(c), c.Param("item"), "")
+	evidence, err := d.ReadNativeRuntime(ctx, hubscope.NativeRequestScope(c), c.Param("item"), "")
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
-	result, err := boundedNativeExplanation(evidence, nil)
+	result, err := d.Explain(evidence, nil)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) getNativeRuntime(c echo.Context) error {
+func (d RuntimeDeps) GetNativeRuntime(c echo.Context) error {
 	for key, values := range c.QueryParams() {
 		if key != "native_attempt_id" && key != "attempt_id" && key != "admission" && key != "evidence_after" || len(values) != 1 {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Unsupported runtime selector"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("Unsupported runtime selector"))
 		}
 	}
 	selector := c.QueryParam("native_attempt_id")
 	if c.QueryParam("attempt_id") != "" {
 		if selector != "" {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Select one attempt identity"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("Select one attempt identity"))
 		}
 		selector = c.QueryParam("attempt_id")
 	}
 	if c.QueryParams().Has("evidence_after") {
 		after := c.QueryParam("evidence_after")
 		if after != "" && after != "start" && !hubapi.ValidID(after, "att") || !hubapi.ValidID(selector, "attempt") || c.QueryParams().Has("admission") {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attempt evidence cursor"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("Invalid attempt evidence cursor"))
 		}
-		ctx, cancel := context.WithTimeout(s.withRequestDetails(s.runDetailContext(c.Request().Context())), hubapi.ReadTimeout)
+		ctx, cancel := context.WithTimeout(d.RequestDetails(d.DetailContext(c.Request().Context())), hubapi.ReadTimeout)
 		defer cancel()
-		evidence, _, _, err := s.readSelectedNativeRuntimeTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), runtimeAttemptSelector{attemptID: selector, evidenceAfter: after, firstEvidencePage: after == ""})
+		evidence, _, _, err := d.ReadSelectedNativeRuntimeTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), RuntimeAttemptSelector{AttemptID: selector, EvidenceAfter: after, FirstEvidencePage: after == ""})
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return d.HTTPError(c, err)
 		}
-		return nativeArchiveJSON(c, http.StatusOK, evidence)
+		return d.ArchiveJSON(c, http.StatusOK, evidence)
 	}
 	var admission []tracker.NativeAdmissionContext
 	if raw := c.QueryParam("admission"); raw != "" {
 		var current tracker.NativeAdmissionContext
 		if len(raw) > 8192 {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Admission context exceeds its bound"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("Admission context exceeds its bound"))
 		}
 		decoder := json.NewDecoder(strings.NewReader(raw))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&current); err != nil {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid admission context"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("Invalid admission context"))
 		}
 		if err := decoder.Decode(new(any)); err != io.EOF {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid admission context"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("Invalid admission context"))
 		}
-		if err := validateNativeAdmissionContext(current); err != nil {
-			return s.nativeAPIError(c, err)
+		if err := ValidateNativeAdmissionContext(current); err != nil {
+			return d.HTTPError(c, err)
 		}
 		if hubscope.NativeRequestScope(c).Credential.Runner.RunnerID == "" {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Admission context requires the current registered runner"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("Admission context requires the current registered runner"))
 		}
 		admission = append(admission, current)
 	}
-	result, err := s.readNativeRuntime(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), selector, admission...)
+	result, err := d.ReadNativeRuntime(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), selector, admission...)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
-	return nativeArchiveJSON(c, http.StatusOK, result)
+	return d.ArchiveJSON(c, http.StatusOK, result)
 }
 
-func (s *Service) readNativeRuntime(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
-	ctx = s.withRequestDetails(s.runDetailContext(ctx))
+func (d RuntimeDeps) ReadNativeRuntime(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+	ctx = d.RequestDetails(d.DetailContext(ctx))
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	return s.readNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
+	return d.ReadNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
 }
 
 func validNativeRESTCredential(identity string) bool {

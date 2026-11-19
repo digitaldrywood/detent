@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) hydrateSchedulerDecisionRows(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, evidence tracker.NativeRuntimeEvidence, rows eventstore.SchedulerDecisionRows) (tracker.NativeRuntimeEvidence, error) {
+func (d RuntimeDeps) HydrateSchedulerDecisionRows(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, evidence tracker.NativeRuntimeEvidence, rows eventstore.SchedulerDecisionRows) (tracker.NativeRuntimeEvidence, error) {
 	hydrated := map[string]*tracker.CollaborationEvent{}
 	read := func(row eventstore.Event) (*tracker.CollaborationEvent, error) {
 		if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project || row.WorkItemID != item {
@@ -21,7 +21,7 @@ func (s *Service) hydrateSchedulerDecisionRows(ctx context.Context, scope hubsco
 		if event := hydrated[row.ID]; event != nil {
 			return event, nil
 		}
-		event, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).Event(ctx, row)
+		event, err := eventstore.NewContent(d.DetailsFor(ctx)).Event(ctx, row)
 		if err != nil {
 			return nil, err
 		}
