@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/reports"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -152,7 +153,7 @@ func (s *Service) hostedReportOptionsPostgres(c echo.Context) error {
 	return c.JSON(200, struct {
 		reportsFacets
 		Unavailable []string `json:"unavailable"`
-	}{reportsFacets{Labels: facets.Labels, FiledBy: convertReportFacets(facets.FiledBy), Runners: convertReportFacets(facets.Runners), Models: facets.Models, Stages: facets.Stages}, facets.Unavailable})
+	}{reportsFacets{Labels: facets.Labels, FiledBy: reports.ConvertFacets(facets.FiledBy), Runners: reports.ConvertFacets(facets.Runners), Models: facets.Models, Stages: facets.Stages}, facets.Unavailable})
 }
 
 func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, credential hubapi.APICredential, projectIDsValue []string, w operatortool.AnalyticsWindow, filter reportsFilter) (postgresOrganizationProductivity, error) {
@@ -514,14 +515,6 @@ func projectIDs(projects []string) []tracker.ProjectID {
 		ids[i] = tracker.ProjectID(project)
 	}
 	return ids
-}
-
-func convertReportFacets(facets []reportstore.Facet) []reportsFacet {
-	out := make([]reportsFacet, len(facets))
-	for i, facet := range facets {
-		out[i] = reportsFacet{ID: facet.ID, Name: facet.Name}
-	}
-	return out
 }
 
 func mustAtoi(value string) int {
