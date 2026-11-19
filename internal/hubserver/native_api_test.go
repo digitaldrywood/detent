@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +35,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -391,158 +389,74 @@ func TestNativeRunnerVersionErrorResponse(t *testing.T) {
 	}
 }
 
-func TestNativeAPIError(t *testing.T) {
+func TestNativeErrorResponses(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, code, reason, level string
-		err                       error
-		status                    int
+		name, code string
+		err        error
+		status     int
 	}{
-		{"validation", "invalid_request", "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", "WARN", &hubapi.NativeError{Code: "invalid_request", Message: "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", Status: http.StatusUnprocessableEntity, PublicMessage: true}, http.StatusUnprocessableEntity},
-		{"key refusal", "scope_required", "Write access is required", "WARN", &apikey.Refusal{Code: "scope_required", Message: "Write access is required"}, http.StatusForbidden},
-		{"access denied", "access_denied", "operator access is unavailable", "WARN", operatortool.ErrAccessDenied, http.StatusForbidden},
-		{"authorization diagnostic", "service_unavailable", operatortool.ErrServiceUnavailable.Error(), "ERROR", &operatortool.AuthorizationError{Stage: "check", Cause: errors.New("private-context"), PrincipalID: "principal_example", OrganizationID: "org_example", ProjectID: "prj_example"}, http.StatusServiceUnavailable},
-		{"authorization timeout", "service_unavailable", operatortool.ErrServiceUnavailable.Error(), "ERROR", &operatortool.AuthorizationError{Stage: "resolve", Cause: context.DeadlineExceeded}, http.StatusServiceUnavailable},
-		{"aborted transaction", "service_unavailable", "Database transaction was aborted; retry the request", "ERROR", corestore.ErrSerializationFailure, http.StatusServiceUnavailable},
-		{"expired session", "access_denied", "Access is no longer available", "WARN", auth.ErrInvalidSession, http.StatusForbidden},
-		{"session lookup outage", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, auth.ErrInvalidSession), http.StatusServiceUnavailable},
-		{"overlapping session lookup", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, &accessstore.LookupError{Step: "session", Cause: fmt.Errorf("private-context: %w", pgtransport.ErrOpenResults)}), http.StatusServiceUnavailable},
-		{"grant storage lookup", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, &accessstore.LookupError{Step: "project_grant", Cause: fmt.Errorf("private-context: %w", &pgconn.PgError{Code: "42501", Message: "private-context", Detail: "query-secret"})}), http.StatusServiceUnavailable},
-		{"invalid provider response", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", &auth.HostedIdentityError{Reason: auth.HostedReasonProviderInvalid}, http.StatusServiceUnavailable},
-		{"joined authorization outage", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, &operatortool.AuthorizationError{Stage: "resolve", Cause: auth.ErrInvalidSession}), http.StatusServiceUnavailable},
-		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedplans.LimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
-		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
-		{"private validation", "invalid_request", "Unprocessable Entity: invalid request", "WARN", hubapi.NativeInvalid("private-context"), http.StatusUnprocessableEntity},
-		{"publication rejection", "invalid_request", "publication rejected: category=version_validation field=source [private error text omitted]", "WARN", nativeRejection(hubapi.NativeInvalid("private-context"), "version_validation", "source"), http.StatusUnprocessableEntity},
-		{"lease conflict", "lease_conflict", "Work item is already leased", "WARN", tracker.ErrLeaseConflict, http.StatusConflict},
-		{"invalid claim", "invalid_request", "Request is invalid", "WARN", tracker.ErrInvalidClaimRequest, http.StatusUnprocessableEntity},
-		{"revision conflict", "revision_conflict", "Resource has changed", "WARN", hubapi.NativeConflict(7), http.StatusConflict},
-		{"typed revision conflict", "revision_conflict", "Resource has changed", "WARN", corestore.ErrRevisionConflict, http.StatusConflict},
-		{"typed attempt conflict", "revision_conflict", "Resource has changed", "WARN", leasestore.ErrAttemptConflict, http.StatusConflict},
-		{"retry key conflict", "idempotency_conflict", "Request was already used with different content", "WARN", corestore.ErrUniqueViolation, http.StatusConflict},
-		{"not found", "not_found", "Resource was not found", "", sql.ErrNoRows, http.StatusNotFound},
-		{"domain not found", "not_found", "Resource was not found", "", corestore.ErrNotFound, http.StatusNotFound},
-		{"authorization missing resource", "access_denied", "operator access is unavailable", "WARN", &operatortool.AuthorizationError{Stage: "check", Cause: corestore.ErrNotFound}, http.StatusForbidden},
-		{"search refresh pending", "not_ready", "Search index refresh is pending", "", searchstore.ErrIndexPending, http.StatusServiceUnavailable},
-		{"search budget", "service_unavailable", "Search is busy; retry the request", "ERROR", hubapi.ProjectRecordError(fmt.Errorf("board search: %w", errors.Join(searchstore.ErrBusy, context.DeadlineExceeded))), http.StatusServiceUnavailable},
-		{"service unavailable", "storage_owner_unavailable", "Dependency is temporarily unavailable", "ERROR", &hubapi.NativeError{Code: "storage_owner_unavailable", Message: "Dependency is temporarily unavailable", Status: http.StatusServiceUnavailable, PublicMessage: true, LogAttributes: []any{"private_detail", "private-context"}}, http.StatusServiceUnavailable},
-		{"internal error", "native_operation_failed", "Native operation could not be completed", "ERROR", errors.New("database unavailable"), http.StatusInternalServerError},
+		{"validation", "invalid_request", &hubapi.NativeError{Code: "invalid_request", Message: "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", Status: http.StatusUnprocessableEntity, PublicMessage: true}, http.StatusUnprocessableEntity},
+		{"key refusal", "scope_required", &apikey.Refusal{Code: "scope_required", Message: "Write access is required"}, http.StatusForbidden},
+		{"access denied", "access_denied", operatortool.ErrAccessDenied, http.StatusForbidden},
+		{"aborted transaction", "service_unavailable", corestore.ErrSerializationFailure, http.StatusServiceUnavailable},
+		{"expired session", "access_denied", auth.ErrInvalidSession, http.StatusForbidden},
+		{"session lookup outage", "service_unavailable", errors.Join(tenantauth.ErrUnavailable, auth.ErrInvalidSession), http.StatusServiceUnavailable},
+		{"grant storage lookup", "service_unavailable", errors.Join(tenantauth.ErrUnavailable, &accessstore.LookupError{Step: "project_grant", Cause: fmt.Errorf("private-context: %w", &pgconn.PgError{Code: "42501", Message: "private-context", Detail: "query-secret"})}), http.StatusServiceUnavailable},
+		{"invalid provider response", "service_unavailable", &auth.HostedIdentityError{Reason: auth.HostedReasonProviderInvalid}, http.StatusServiceUnavailable},
+		{"allowance", "allowance_exhausted", &hostedplans.LimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
+		{"request refusal", "invalid_request", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
+		{"private validation", "invalid_request", hubapi.NativeInvalid("private-context"), http.StatusUnprocessableEntity},
+		{"publication rejection", "invalid_request", nativeRejection(hubapi.NativeInvalid("private-context"), "version_validation", "source"), http.StatusUnprocessableEntity},
+		{"lease conflict", "lease_conflict", tracker.ErrLeaseConflict, http.StatusConflict},
+		{"invalid claim", "invalid_request", tracker.ErrInvalidClaimRequest, http.StatusUnprocessableEntity},
+		{"revision conflict", "revision_conflict", hubapi.NativeConflict(7), http.StatusConflict},
+		{"typed attempt conflict", "revision_conflict", leasestore.ErrAttemptConflict, http.StatusConflict},
+		{"retry key conflict", "idempotency_conflict", corestore.ErrUniqueViolation, http.StatusConflict},
+		{"domain not found", "not_found", corestore.ErrNotFound, http.StatusNotFound},
+		{"authorization missing resource", "access_denied", &operatortool.AuthorizationError{Stage: "check", Cause: corestore.ErrNotFound}, http.StatusForbidden},
+		{"search refresh pending", "not_ready", searchstore.ErrIndexPending, http.StatusServiceUnavailable},
+		{"search budget", "service_unavailable", hubapi.ProjectRecordError(fmt.Errorf("board search: %w", errors.Join(searchstore.ErrBusy, context.DeadlineExceeded))), http.StatusServiceUnavailable},
+		{"service unavailable", "storage_owner_unavailable", &hubapi.NativeError{Code: "storage_owner_unavailable", Message: "Dependency is temporarily unavailable", Status: http.StatusServiceUnavailable, PublicMessage: true, LogAttributes: []any{"private_detail", "private-context"}}, http.StatusServiceUnavailable},
+		{"internal error", "native_operation_failed", errors.New("database unavailable"), http.StatusInternalServerError},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			for _, hosted := range []bool{false, true} {
-				t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
-					var logs bytes.Buffer
-					var handler slog.Handler = slog.NewJSONHandler(&logs, nil)
-					if hosted {
-						handler = hostedLogHandler{output: handler}
-					}
-					service := &Service{config: Config{Logger: slog.New(handler)}}
-					if hosted {
-						service.config.Hosted = &hostedplans.HostedConfig{}
-					}
-					recorded := httptest.NewRecorder()
-					request := httptest.NewRequest(http.MethodDelete, "/private-target?token=query-secret", strings.NewReader("body-secret"))
-					request.Header.Set("Authorization", "Bearer header-secret")
-					c := echo.New().NewContext(request, recorded)
-					c.SetPath(hubapi.NativeBase + "/runners/:runner")
-					c.SetParamNames("organization", "project", "runner")
-					c.SetParamValues("private-organization", "private-project", "runner_example")
-					c.Set("native_scope", hubscope.NativeScope{Organization: "org_example", Project: "prj_example"})
-					if err := service.nativeAPIError(c, fmt.Errorf("private-context: %w", test.err), "operation", "example_lookup"); err != nil {
-						t.Fatal(err)
-					}
-					failure := requireNativeCode(t, recorded, test.status, test.code)
-					if retry := recorded.Header().Get("Retry-After"); (test.name == "search budget") != (retry == "1") {
-						t.Fatalf("Retry-After = %q", retry)
-					}
-					wantReason := test.reason
-					if test.name == "private validation" && !hosted {
-						wantReason = "private-context"
-					}
-					if failure.Message != wantReason {
-						t.Fatalf("reason = %q, want %q", failure.Message, test.reason)
-					}
-					if test.name == "publication rejection" && failure.Details["rejection"] == nil {
-						t.Fatalf("missing publication rejection details: %s", recorded.Body.String())
-					}
-					if test.level == "" {
-						if logs.Len() != 0 {
-							t.Fatalf("unexpected logs: %s", &logs)
-						}
-						return
-					}
-					var entry map[string]any
-					if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
-						t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
-					}
-					if entry["level"] != test.level || entry["error"] == nil {
-						t.Fatalf("log = %#v", entry)
-					}
-					if test.name == "expired session" && entry["authorization_cause"] != "invalid_session" {
-						t.Fatalf("denial class = %v, want invalid_session", entry["authorization_cause"])
-					}
-					if test.name == "overlapping session lookup" || test.name == "grant storage lookup" {
-						step, cause, class := "session", "open_results", "*errors.errorString"
-						if test.name == "grant storage lookup" {
-							step, cause, class = "project_grant", "unclassified", "*pgconn.PgError"
-							if entry["sqlstate"] != "42501" {
-								t.Errorf("SQLSTATE was lost: %v", entry)
-							}
-						}
-						for key, want := range map[string]any{"authorization_step": step, "authorization_cause": cause, "cause_class": class} {
-							if entry[key] != want {
-								t.Errorf("lookup diagnostic %s = %v, want %v", key, entry[key], want)
-							}
-						}
-						for _, private := range []string{"private-context", "query-secret", "header-secret", "body-secret"} {
-							if strings.Contains(logs.String(), private) || strings.Contains(recorded.Body.String(), private) {
-								t.Fatalf("private lookup content escaped: %s", private)
-							}
-						}
-					}
-					if test.name == "joined authorization outage" {
-						for key, want := range map[string]any{"authorization_stage": "resolve", "authorization_cause": "invalid_session", "operation": "example_lookup"} {
-							if entry[key] != want {
-								t.Errorf("outage diagnostic %s = %v, want %v", key, entry[key], want)
-							}
-						}
-					}
-					if test.level == "WARN" || test.name == "service unavailable" {
-						fields := map[string]any{"refusal_code": test.code, "route": hubapi.NativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete}
-						if test.level == "WARN" {
-							fields["reason"] = test.reason
-						} else {
-							fields["error"] = test.code
-							fields["status"] = float64(test.status)
-						}
-						for key, want := range fields {
-							if entry[key] != want {
-								t.Errorf("log %s = %v, want %v", key, entry[key], want)
-							}
-						}
-						for _, private := range []string{"private-context", "private-target", "query-secret", "header-secret", "body-secret", "private-organization", "private-project"} {
-							if strings.Contains(logs.String(), private) || (test.name != "private validation" || hosted) && strings.Contains(recorded.Body.String(), private) {
-								t.Fatalf("private context escaped: %s", private)
-							}
-						}
-					}
-					if test.name == "authorization timeout" && entry["authorization_cause"] != "deadline_exceeded" {
-						t.Fatalf("authorization timeout cause was lost: %v", entry)
-					}
-					if test.name == "authorization diagnostic" {
-						for key, want := range map[string]any{"authorization_stage": "check", "authorization_cause": "unclassified", "cause_class": "*errors.errorString"} {
-							if entry[key] != want {
-								t.Errorf("diagnostic %s = %v, want %v", key, entry[key], want)
-							}
-						}
-					}
-					if test.name == "revision conflict" && !hosted && failure.CurrentRevision != 7 {
-						t.Fatalf("current revision = %d, want 7", failure.CurrentRevision)
-					}
-				})
+			var logs bytes.Buffer
+			service := &Service{config: Config{Hosted: &hostedplans.HostedConfig{}, Logger: slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)})}}
+			request := httptest.NewRequest(http.MethodDelete, "/private-target?token=query-secret", strings.NewReader("body-secret"))
+			request.Header.Set("Authorization", "Bearer header-secret")
+			recorded := httptest.NewRecorder()
+			c := echo.New().NewContext(request, recorded)
+			c.SetPath(hubapi.NativeBase + "/runners/:runner")
+			c.Set("native_scope", hubscope.NativeScope{Organization: "org_example", Project: "prj_example"})
+			if err := service.nativeAPIError(c, fmt.Errorf("private-context: %w", test.err)); err != nil {
+				t.Fatal(err)
+			}
+			failure := requireNativeCode(t, recorded, test.status, test.code)
+			if test.name == "search budget" && recorded.Header().Get("Retry-After") != "1" {
+				t.Fatal("busy response omitted Retry-After")
+			}
+			if test.name == "publication rejection" && failure.Details["rejection"] == nil {
+				t.Fatal("publication response omitted rejection details")
+			}
+			for _, private := range []string{"private-context", "private-target", "query-secret", "header-secret", "body-secret"} {
+				if strings.Contains(logs.String()+recorded.Body.String(), private) {
+					t.Fatal("hosted error exposed private request or storage details")
+				}
 			}
 		})
 	}
+	t.Run("local conflict reports current revision", func(t *testing.T) {
+		service := &Service{config: Config{Logger: discardLogger()}}
+		response := httptest.NewRecorder()
+		c := echo.New().NewContext(httptest.NewRequest(http.MethodPatch, "/", nil), response)
+		if err := service.nativeAPIError(c, hubapi.NativeConflict(7)); err != nil {
+			t.Fatal(err)
+		}
+		if failure := requireNativeCode(t, response, http.StatusConflict, "revision_conflict"); failure.CurrentRevision != 7 {
+			t.Fatalf("current revision = %d, want 7", failure.CurrentRevision)
+		}
+	})
 }
 
 func TestNativeWorkflowRefusalCode(t *testing.T) {

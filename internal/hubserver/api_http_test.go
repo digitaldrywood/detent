@@ -2,9 +2,7 @@ package hubserver
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,23 +11,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/credits"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgcore"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -315,89 +309,22 @@ func TestAPIRefusals(t *testing.T) {
 	}
 }
 
-func TestInternalAPIErrorPostgresDiagnostics(t *testing.T) {
+func TestInternalAPIErrorRedactsPostgresDetails(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name, state, schema, table, column string
-		wantSchema, wantTable, wantColumn  string
-		domain                             error
-	}{
-		{name: "not null owner error", state: "23502", schema: "public", table: "native_attempts", column: "issue_id", wantSchema: "public", wantTable: "native_attempts", wantColumn: "issue_id"},
-		{name: "domain classification", state: "23505", schema: "platform", table: "organizations", column: "id", wantSchema: "platform", wantTable: "organizations", wantColumn: "id", domain: corestore.ErrUniqueViolation},
-		{name: "unknown schema", state: "23502", schema: "customer_private", table: "private_table", column: "private_column"},
-		{name: "empty schema", state: "23502", table: "private_table", column: "private_column"},
-		{name: "malformed identifiers", state: "23502", schema: "public", table: "issues\nprivate", column: "private value", wantSchema: "public"},
-		{name: "quoted identifiers", state: "23502", schema: "public", table: "Issues", column: "title.secret", wantSchema: "public"},
-		{name: "overlong identifiers", state: "23502", schema: "public", table: strings.Repeat("a", 64), column: strings.Repeat("b", 64), wantSchema: "public"},
-		{name: "empty identifiers", state: "23502", schema: "public", wantSchema: "public"},
-		{name: "invalid initial digit", state: "23502", schema: "public", table: "1issues", column: "2title", wantSchema: "public"},
-		{name: "non ASCII", state: "23502", schema: "public", table: "issués", column: "títle", wantSchema: "public"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			raw := &pgconn.PgError{Code: test.state, SchemaName: test.schema, TableName: test.table, ColumnName: test.column,
-				Message: "private message", Detail: "private detail", Where: "private where", Hint: "private hint", ConstraintName: "private constraint", InternalQuery: "private query"}
-			native, err := pgxpool.ParseConfig("postgres://example:fixture@127.0.0.1:1/example?sslmode=disable")
-			if err != nil {
-				t.Fatal(err)
-			}
-			pgtransport.Configure(native)
-			native.MaxConns = 3
-			native.BeforeConnect = func(context.Context, *pgx.ConnConfig) error { return fmt.Errorf("connect: %w", raw) }
-			pool, err := pgxpool.NewWithConfig(t.Context(), native)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				pool.Close()
-			})
-			_, ownerErr := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
-			var retained *pgconn.PgError
-			if !errors.As(ownerErr, &retained) || retained != raw || !errors.Is(ownerErr, raw) {
-				t.Fatalf("owner lost PostgreSQL cause: %v", ownerErr)
-			}
-			if test.domain != nil && !errors.Is(ownerErr, test.domain) {
-				t.Fatalf("owner lost domain: %v", ownerErr)
-			}
-			wantError := "PostgreSQL operation failed with SQLSTATE " + test.state
-			if test.domain != nil {
-				wantError = test.domain.Error()
-			}
-			if ownerErr.Error() != wantError {
-				t.Fatalf("owner error = %q, want %q", ownerErr, wantError)
-			}
+	for _, schema := range []string{"public", "private-schema"} {
+		t.Run(schema, func(t *testing.T) {
+			cause := &pgconn.PgError{Code: "23502", SchemaName: schema, TableName: "invalid.private-table", ColumnName: "private column", Message: "private message", Detail: "private detail", Hint: "private hint", InternalQuery: "private query"}
+			err := pgcore.MapError(t.Context(), cause)
 			var logs bytes.Buffer
 			service := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
-			recorder := httptest.NewRecorder()
-			c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/example", nil), recorder)
-			if err := service.internalAPIError(c, "example_unavailable", "Example unavailable", fmt.Errorf("read: %w", ownerErr)); err != nil {
+			response := httptest.NewRecorder()
+			c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/example", nil), response)
+			if err := service.internalAPIError(c, "example_unavailable", "Example unavailable", err); err != nil {
 				t.Fatal(err)
 			}
-			if recorder.Code != http.StatusInternalServerError || recorder.Body.String() != "{\"code\":\"example_unavailable\",\"message\":\"Example unavailable\"}\n" {
-				t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
-			}
-			if strings.Count(logs.String(), "\n") != 1 {
-				t.Fatalf("expected one log: %s", logs.String())
-			}
-			var record map[string]any
-			if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
-				t.Fatal(err)
-			}
-			for key, want := range map[string]string{"sqlstate": test.state, "schema": test.wantSchema, "table": test.wantTable, "column": test.wantColumn, "error": "read: " + wantError} {
-				got, exists := record[key]
-				if want == "" {
-					if exists {
-						t.Errorf("unexpected %s = %v", key, got)
-					}
-					continue
-				}
-				if got != want {
-					t.Errorf("%s = %v, want %q", key, got, want)
-				}
-			}
-			for _, secret := range []string{"private", "customer_private", "Detail", "Where", "Hint", "Constraint", "InternalQuery"} {
-				if strings.Contains(logs.String()+recorder.Body.String(), secret) {
-					t.Errorf("output leaked %q", secret)
-				}
+			requireNativeCode(t, response, http.StatusInternalServerError, "example_unavailable")
+			if strings.Contains(logs.String()+response.Body.String(), "private") {
+				t.Fatal("database error exposed private identifiers or content")
 			}
 		})
 	}

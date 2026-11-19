@@ -11,8 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
-const conversationFixtureDirectory = "../../web/conversation/src/contracts/fixtures"
-
 func TestHostedAccountAPI(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
