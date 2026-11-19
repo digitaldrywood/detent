@@ -6,7 +6,7 @@ This page describes the path a native Cloud issue takes from dispatch to a lande
 
 ## Workspaces
 
-Runners are stateless. Every job starts in a fresh workspace from an exact commit or a Hub-stored source bundle, and work that must survive is published to the Hub. A runner depends only on its install configuration, so nothing a later job needs is kept on one machine.
+The current runner restores work from an exact commit or a Hub-stored source bundle and can reuse a matching local worktree. The target is one retained worktree per item lease, with phase commits in Git and commit-bound receipts in the Hub. See [INV-17](invariants.md#inv-17--hub-owned-assignment-and-retained-item-worktrees) for the migration contract.
 
 Project setup runs from repository files:
 
