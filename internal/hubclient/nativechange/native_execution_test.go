@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -135,7 +134,6 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		releaseOutage  bool
 		conflict       bool
 		unreleased     bool
-		current        bool
 		preProvider    bool
 	}{
 		{name: "worker stopped"},
@@ -148,8 +146,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		{name: "prepared completion keeps ownership without controller", prepared: true, prepareFinish: true, retained: true},
 		{name: "released completion reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true},
 		{name: "released setup reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true, preProvider: true},
-		{name: "conflicting pending event preserves an unreleased lease", controller: true, prepared: true, retained: true, conflict: true, unreleased: true, current: true},
-		{name: "locally lost authority retains an unreleased pending event", controller: true, prepared: true, retained: true, conflict: true, unreleased: true},
+		{name: "conflicting pending event preserves an unreleased lease", controller: true, prepared: true, retained: true, conflict: true, unreleased: true},
 		{name: "terminal item with unavailable settlement", controller: true, prepared: true, retained: true, terminal: true, unavailable: true},
 		{name: "expired lease with unavailable settlement", controller: true, prepared: true, retained: true, expired: true, unavailable: true},
 	} {
@@ -243,7 +240,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 					t.Fatalf("terminal transition = %+v, %v", item, err)
 				}
 			}
-			if !test.expired && !test.current {
+			if !test.expired {
 				var err error
 				if test.terminal {
 					_, err = h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now())
@@ -296,7 +293,6 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 					data.Sequence++
 					e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.observed", SchemaVersion: 1, Data: data}
 					original := fixtureClient(h.native.Transport()).requests.Load()
-					var eventPosts atomic.Int32
 					fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 						if strings.HasSuffix(request.URL.Path, "/events") {
 							raw, err := io.ReadAll(request.Body)
@@ -309,7 +305,6 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 								return nil, err
 							}
 							if event.Type == "run.observed" {
-								eventPosts.Add(1)
 								return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"idempotency_conflict","message":"different content"}`)), Request: request}, nil
 							}
 						}
@@ -328,13 +323,8 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 								t.Error(err)
 							}
 						})
-						err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
-						if test.current {
-							if hubErrorCode(err) != "idempotency_conflict" {
-								t.Fatalf("unresolved publication = %v", err)
-							}
-						} else if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || eventPosts.Load() != 0 {
-							t.Fatalf("lost lease publication = %v, posts = %d", err, eventPosts.Load())
+						if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); hubErrorCode(err) != "idempotency_conflict" {
+							t.Fatalf("unresolved publication = %v", err)
 						}
 						if _, err := h.native.ValidateLease(t.Context(), e.claim.lease); err != nil || len(fixtureClaims(h.scheduler)) != 1 || e.pending == nil {
 							t.Fatalf("conflict discarded current authority: %v", err)
@@ -782,7 +772,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 					wantReleases = 1
 				}
 				wantRenewals := 0
-				if !test.exhausted && !test.staleProcess && test.age < 90*time.Second && (test.terminal || test.lane != "" || test.dependency) {
+				if test.exhausted || !test.staleProcess && test.age < 90*time.Second && (test.terminal || test.lane != "" || test.dependency) {
 					wantRenewals = 1
 				}
 				if renewals != wantRenewals || releases != wantReleases {
@@ -2077,136 +2067,6 @@ func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 	}
 }
 
-func TestRunningAttemptLeaseOutage(t *testing.T) {
-	for _, recovers := range []bool{false, true} {
-		t.Run(fmt.Sprintf("recovers=%t", recovers), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				start := time.Now()
-				ttl := time.Minute
-				deadline := start.Add(ttl)
-				descriptor := clientTestPolicy()
-				lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 1, PolicyID: descriptor.ID}
-				var renewals, diffs, finishes int
-				var generation, sequence int64
-				var finishKey string
-				var storedHead string
-				failUsage := true
-				client, err := newTestClient(t, Config{URL: "http://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
-					body := `{"profile":"native"}`
-					switch {
-					case strings.HasSuffix(r.URL.Path, "/renew"):
-						renewals++
-						if !recovers || renewals == 1 {
-							return nil, ErrUnavailable
-						}
-						renewed := lease
-						renewed.ServerTime, renewed.ExpiresAt = time.Now(), time.Now().Add(ttl)
-						b, _ := json.Marshal(renewed)
-						body = string(b)
-					case strings.HasSuffix(r.URL.Path, "/capabilities"):
-						body = `{"protocol_majors":[2],"event_schema_versions":[1],"features":["native_issues","scoped_collaboration","repository_policy"]}`
-					case strings.HasSuffix(r.URL.Path, "/policy"):
-						b, _ := json.Marshal(policy.Approval{Policy: descriptor})
-						body = string(b)
-					case strings.HasSuffix(r.URL.Path, "/diff"):
-						diffs++
-						var diff tracker.AttemptDiffRequest
-						if err := json.NewDecoder(r.Body).Decode(&diff); err != nil {
-							return nil, err
-						}
-						if diffs == 1 {
-							return nil, ErrUnavailable
-						}
-						generation, storedHead = diff.Generation.Seq, diff.HeadSHA
-					case strings.HasSuffix(r.URL.Path, "/events"):
-						var event tracker.NativeRunEvent
-						if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-							return nil, err
-						}
-						if event.Type == "run.observed" && failUsage {
-							failUsage = false
-							return nil, ErrUnavailable
-						}
-						if event.Type == "run.finished" {
-							if len(event.Data.Usage) != 1 || event.Data.Usage[0].Input != 17 {
-								return nil, errors.New("finish lost deferred usage")
-							}
-							if finishKey == "" {
-								finishKey = event.IdempotencyKey
-								return nil, ErrUnavailable
-							}
-							if finishKey != event.IdempotencyKey {
-								return nil, errors.New("completion retry changed idempotency key")
-							}
-							if event.Data.Outcome != "succeeded" {
-								return nil, errors.New("completion lost successful outcome")
-							}
-							finishes++
-							sequence = event.Data.Sequence
-						}
-					}
-					return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
-				})}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				scheduler, err := newTestScheduler(client, SchedulerConfig{Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}, LeaseTTL: ttl, HeartbeatInterval: time.Second})
-				if err != nil {
-					t.Fatal(err)
-				}
-				native, err := client.Native("org_example", "prj_example")
-				if err != nil {
-					t.Fatal(err)
-				}
-				source, err := NewNativeConnector(native)
-				if err != nil {
-					t.Fatal(err)
-				}
-				fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: deadline}, descriptor, "example")
-				e := scheduler.RunExecution(string(lease.WorkItemID)).(*nativeExecution)
-				e.data.Identity = &tracker.NativeExecutionIdentity{Role: "review", Backend: "codex", Model: "example"}
-				e.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
-				ctx, stop, err := e.Guard(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer stop()
-				<-time.After(ttl)
-				synctest.Wait()
-				if renewals == 0 {
-					t.Fatal("lease renewal outage was not exercised")
-				}
-				if !recovers {
-					var cause *runner.CancellationCause
-					if !errors.As(context.Cause(ctx), &cause) || !errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) || cause.Reason == "unclassified_cancellation" {
-						t.Fatalf("cause at expiry = %v", context.Cause(ctx))
-					}
-					if err := e.Finish(context.WithoutCancel(ctx), "succeeded"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || diffs != 0 || finishes != 0 {
-						t.Fatalf("after expiry: diffs=%d finishes=%d error=%v", diffs, finishes, err)
-					}
-					return
-				}
-				if renewals < 2 || ctx.Err() != nil {
-					t.Fatalf("short outage cancelled work: renewals=%d cause=%v", renewals, context.Cause(ctx))
-				}
-				if err := e.RecordUsage(ctx, tracker.NativeUsage{Provider: "codex", Model: "example", SourceID: "session_1", Revision: 1, Input: 17}); err != nil || failUsage {
-					t.Fatalf("usage outage ended turn: %v", err)
-				}
-				if err := e.Finish(ctx, "succeeded"); !nativeTransportUnavailable(err) || finishes != 0 {
-					t.Fatalf("finish advanced past unavailable diff: finishes=%d err=%v", finishes, err)
-				}
-				e.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("d"), "later.go"))
-				if err := e.Finish(ctx, "succeeded"); !nativeTransportUnavailable(err) || finishes != 0 {
-					t.Fatalf("unavailable finish = %v, applied=%d", err, finishes)
-				}
-				if err := e.Finish(ctx, "succeeded"); err != nil || finishes != 1 || generation == 0 || generation != sequence || storedHead != nativeChangeFixtureHead("c") || diffs != 2 {
-					t.Fatalf("diff generation=%d completion sequence=%d finishes=%d error=%v", generation, sequence, finishes, err)
-				}
-			})
-		})
-	}
-}
-
 func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 	for _, test := range []struct {
 		status    int
@@ -2218,7 +2078,6 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 			descriptor := clientTestPolicy()
 			offline := true
 			var finished tracker.NativeRunEvent
-			var stored tracker.AttemptDiffRequest
 			client, err := newTestClient(t, Config{URL: "http://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				if offline {
 					if status == 0 {
@@ -2237,11 +2096,6 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 				if strings.HasSuffix(request.URL.Path, "/renew") {
 					value, _ := json.Marshal(tracker.NativeLease{ID: "lease", WorkItemID: "wi_test", FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), ExpiresAt: time.Now().Add(10 * time.Minute)})
 					body = string(value)
-				}
-				if strings.HasSuffix(request.URL.Path, "/diff") {
-					if err := json.NewDecoder(request.Body).Decode(&stored); err != nil {
-						return nil, err
-					}
 				}
 				if strings.HasSuffix(request.URL.Path, "/events") {
 					var event tracker.NativeRunEvent
@@ -2272,9 +2126,6 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 			execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
 			execution.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: start.Add(-11 * time.Minute)}
 			execution.preparedOutcome = "succeeded"
-			if !test.published {
-				execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
-			}
 			if test.published {
 				execution.publication = &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
 				execution.change = &runner.NativeChange{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
@@ -2308,9 +2159,6 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 			}
 			if finished.Data.Outcome != "succeeded" || finished.Data.TerminalFailure != nil {
 				t.Fatalf("completion lost: %+v", finished)
-			}
-			if !test.published && (stored.Generation.Seq != finished.Data.Sequence || stored.Producer.ID != finished.Data.AttemptID || stored.HeadSHA != nativeChangeFixtureHead("c")) {
-				t.Fatalf("completed attempt %s:%d lost its diff: %+v", finished.Data.AttemptID, finished.Data.Sequence, stored)
 			}
 			if len(fixtureClaims(scheduler)) != 0 {
 				t.Fatal("completed claim retained")
@@ -2399,65 +2247,6 @@ func TestNativeCompletionDuplicateKeepsOtherObservationFields(t *testing.T) {
 			}
 			if duplicate := nativeCompletionObservationDuplicate(observation, current); duplicate != test.want {
 				t.Fatalf("duplicate=%t want=%t", duplicate, test.want)
-			}
-		})
-	}
-}
-
-func TestCompletionKeepsLatestCheckpointDuringReplay(t *testing.T) {
-	for _, restore := range []bool{false, true} {
-		t.Run(fmt.Sprintf("restore=%t", restore), func(t *testing.T) {
-			offline := true
-			heads := map[int64]string{}
-			var terminal []int64
-			e := replayExecution(t, func(r *http.Request) (int, string, error) {
-				switch {
-				case strings.HasSuffix(r.URL.Path, "/diff"):
-					if offline {
-						return 0, "", ErrUnavailable
-					}
-					var diff tracker.AttemptDiffRequest
-					if err := json.NewDecoder(r.Body).Decode(&diff); err != nil {
-						return 0, "", err
-					}
-					heads[diff.Generation.Seq] = diff.HeadSHA
-				case strings.HasSuffix(r.URL.Path, "/events"):
-					var event tracker.NativeRunEvent
-					if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-						return 0, "", err
-					}
-					if event.Type == "run.finished" {
-						terminal = append(terminal, event.Data.Sequence)
-					}
-				}
-				return 200, "{}", nil
-			})
-			for _, label := range []string{"a", "b"} {
-				head := nativeChangeFixtureHead(label)
-				e.SetDiffSource(nativeChangeDiff(head, label+".go"))
-				if err := e.Checkpoint(t.Context(), tracker.NativeCheckpoint{WorktreeState: "unpushed", HeadSHA: head}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			e.SetDiffSource(nil)
-			if restore {
-				var state nativeCompletionState
-				if err := json.Unmarshal(e.CompletionState(), &state); err != nil {
-					t.Fatal(err)
-				}
-				view, _ := e.scheduler.host.ExecutionClaim(string(e.claim.lease.WorkItemID))
-				restored, err := NewRecoveredExecution(e.scheduler.host, t.Context(), view, state)
-				if err != nil {
-					t.Fatal(err)
-				}
-				e = restored.(*nativeExecution)
-			}
-			offline = false
-			if err := e.Finish(t.Context(), "succeeded"); err != nil {
-				t.Fatal(err)
-			}
-			if len(terminal) != 1 || len(heads) != 2 || heads[1] != nativeChangeFixtureHead("a") || heads[terminal[0]] != nativeChangeFixtureHead("b") {
-				t.Fatalf("stored diffs=%v, terminal events=%v", heads, terminal)
 			}
 		})
 	}

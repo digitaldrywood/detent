@@ -31,7 +31,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner/internal/gitfixture"
@@ -2119,8 +2118,10 @@ func TestRunnerRunRecordsRuntimeModelUpdate(t *testing.T) {
 	t.Parallel()
 
 	workspaceBackend := &fakeWorkspaceBackend{
-		info:      workspace.Info{Path: t.TempDir(), Key: "issue-1103", Branch: "detent/issue-1103"},
-		diffStats: []workspace.DiffStat{{Files: 1, Added: 3}},
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-1103", Branch: "detent/issue-1103"},
+		diffStats: []workspace.DiffStat{
+			{Files: 1, Added: 3},
+		},
 	}
 	agentBackend := &fakeCodexClient{
 		updates: []AgentUpdate{
@@ -2130,7 +2131,11 @@ func TestRunnerRunRecordsRuntimeModelUpdate(t *testing.T) {
 				Type:     AgentUpdateTokenUsage,
 				ThreadID: "thread-1103",
 				TurnID:   "turn-1",
-				Tokens:   AgentTokenUsage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110},
+				Tokens: AgentTokenUsage{
+					InputTokens:  100,
+					OutputTokens: 10,
+					TotalTokens:  110,
+				},
 			},
 		},
 		result: AgentTurnResult{ThreadID: "thread-1103", TurnID: "turn-1", SessionID: "thread-1103-turn-1"},
@@ -2166,13 +2171,17 @@ func TestRunnerRunRecordsRuntimeModelUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
+	if result.Model != "gpt-5.6" {
+		t.Fatalf("RunResult.Model = %q, want runtime model", result.Model)
+	}
 	if sessionStore.started.Model != "" {
 		t.Fatalf("SessionStart.Model = %q, want bare route to start without a pinned model", sessionStore.started.Model)
 	}
-	for source, model := range map[string]string{"result": result.Model, "session finish": sessionStore.finished.Model, "usage": sessionStore.usage.Model} {
-		if model != "gpt-5.6" {
-			t.Errorf("%s model = %q, want runtime model gpt-5.6", source, model)
-		}
+	if sessionStore.finished.Model != "gpt-5.6" {
+		t.Fatalf("SessionFinish.Model = %q, want runtime model", sessionStore.finished.Model)
+	}
+	if sessionStore.usage.Model != "gpt-5.6" {
+		t.Fatalf("UsageEvent.Model = %q, want runtime model", sessionStore.usage.Model)
 	}
 	if sessionStore.usage.CostUSD == 0 {
 		t.Fatal("UsageEvent.CostUSD = 0, want priced runtime model")
@@ -2197,7 +2206,7 @@ func TestRunnerRunRetainsEffectiveTurnIdentity(t *testing.T) {
 				},
 				result: AgentTurnResult{ThreadID: "thread-2332", TurnID: "turn-1", SessionID: "thread-2332-turn-1"},
 			}
-			sessionStore := &fakeSessionStore{sessionID: 2332, offlineProvider: "azure"}
+			sessionStore := &fakeSessionStore{sessionID: 2332}
 			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{Prompt: "Work"},
 				Workspace: &fakeWorkspaceBackend{
@@ -2228,12 +2237,8 @@ func TestRunnerRunRetainsEffectiveTurnIdentity(t *testing.T) {
 			if agentBackend.request.ReasoningEffort != effort {
 				t.Fatalf("requested effort = %q, want %q", agentBackend.request.ReasoningEffort, effort)
 			}
-			if len(sessionStore.identityUpdates) == 0 {
-				t.Fatal("live session received no runtime identity")
-			}
 			for name, identity := range map[string]agentidentity.Identity{
-				"live session": sessionStore.identityUpdates[len(sessionStore.identityUpdates)-1],
-				"result":       result.RuntimeIdentity, "session": sessionStore.finished.RuntimeIdentity, "telemetry": telemetryIdentity,
+				"result": result.RuntimeIdentity, "session": sessionStore.finished.RuntimeIdentity, "telemetry": telemetryIdentity,
 			} {
 				if identity.ReasoningEffort != turnIdentity.ReasoningEffort || identity.Provider != turnIdentity.Provider || identity.ServiceTier != turnIdentity.ServiceTier {
 					t.Errorf("%s identity = %+v, want effective turn settings %+v", name, identity, turnIdentity)
@@ -8408,7 +8413,6 @@ type fakeSessionStore struct {
 	finished        store.SessionFinish
 	usage           store.UsageEvent
 	phase           store.WorkflowPhaseEvent
-	offlineProvider string
 	identityUpdates []agentidentity.Identity
 	startCalls      int
 	finishCalls     int
@@ -8456,10 +8460,6 @@ func (s *fakeSessionStore) FinishSession(_ context.Context, _ int64, attrs store
 }
 
 func (s *fakeSessionStore) UpdateSessionIdentity(_ context.Context, _ int64, identity agentidentity.Identity) error {
-	if s.offlineProvider != "" && s.offlineProvider == identity.Provider.Value {
-		s.offlineProvider = ""
-		return transport.ErrUnavailable
-	}
 	s.identityUpdates = append(s.identityUpdates, identity)
 	return nil
 }

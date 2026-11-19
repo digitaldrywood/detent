@@ -8,13 +8,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/hubclient/api"
-	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeUsage) (err error) {
+func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeUsage) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if entry.SourceID != "" && e.scheduler != nil {
@@ -26,13 +24,6 @@ func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeU
 		}
 	}
 	e.data.Usage = mergeNativeUsage(e.data.Usage, entry)
-	if entry.SourceID != "" {
-		defer func() {
-			if transport.DeferObservation(ctx, err) {
-				err = api.MutationEffectError(ctx)
-			}
-		}()
-	}
 	observed := slices.Clone(e.data.Usage)
 	if e.scheduler != nil {
 		if err := e.flush(ctx); err != nil {
