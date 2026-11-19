@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -21,6 +22,16 @@ import (
 )
 
 func TestReapWorkerProcessesAtStartup(t *testing.T) {
+	const childEnv = "DETENT_TEST_WORKER_SCRATCH_CHILD"
+	if os.Getenv(childEnv) == "1" {
+		if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	t.Parallel()
 
 	for _, stale := range []bool{false, true} {
@@ -39,7 +50,8 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 			if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{CleanupRoot: root, CleanupPath: scratch}); err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.CommandContext(t.Context(), "sh", "-c", "printf 'ready\n'; read value")
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestReapWorkerProcessesAtStartup$")
+			cmd.Env = []string{childEnv + "=1"}
 			cmd.Dir = scratch
 			procgroup.SetTempDir(cmd, scratch)
 			procgroup.Configure(t.Context(), cmd)
@@ -48,16 +60,30 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = stdin.Close() })
-			stdout, err := cmd.StdoutPipe()
+			stdout, readyWriter, err := os.Pipe()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
+			defer stdout.Close()
+			cmd.Stdout, cmd.Stderr = readyWriter, os.Stderr
+			startErr := cmd.Start()
+			closeErr := readyWriter.Close()
+			if startErr != nil {
+				t.Fatal(errors.Join(startErr, closeErr))
 			}
-			wait := make(chan error, 1)
-			go func() { wait <- cmd.Wait() }()
-			t.Cleanup(func() { _ = cmd.Process.Kill() })
+			wait := make(chan struct{})
+			var waitErr error
+			go func() {
+				waitErr = cmd.Wait()
+				close(wait)
+			}()
+			t.Cleanup(func() {
+				_ = cmd.Process.Kill()
+				<-wait
+			})
+			if closeErr != nil {
+				t.Fatal(closeErr)
+			}
 			if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
 				t.Fatalf("child startup: %q %v", line, err)
 			}
@@ -87,6 +113,9 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 			}
 			select {
 			case <-wait:
+				if waitErr == nil || cmd.ProcessState.ExitCode() != -1 {
+					t.Fatalf("scratch child exited without a signal: %v", waitErr)
+				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("scratch child survived startup recovery")
 			}
