@@ -147,8 +147,6 @@ const conversationLeaseLostError = conversations.ConversationLeaseLostError
 
 const conversationMaxDeltaBytes = conversations.ConversationMaxDeltaBytes
 
-const conversationMaxTurnEvents = conversations.ConversationMaxTurnEvents
-
 const conversationOriginUser = conversations.ConversationOriginUser
 
 const conversationOriginWorker = conversations.ConversationOriginWorker

@@ -41,6 +41,75 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type conversationLogSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *conversationLogSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *conversationLogSink) text() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func (s *conversationLogSink) records(t *testing.T) []map[string]any {
+	t.Helper()
+	var records []map[string]any
+	for _, line := range strings.Split(s.text(), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("log line %q is not JSON: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func (s *conversationLogSink) events(t *testing.T, name string) []map[string]any {
+	t.Helper()
+	var found []map[string]any
+	for _, record := range s.records(t) {
+		if record["msg"] == name {
+			found = append(found, record)
+		}
+	}
+	return found
+}
+
+func (s *conversationLogSink) only(t *testing.T, name string) map[string]any {
+	t.Helper()
+	found := s.events(t, name)
+	if len(found) != 1 {
+		t.Fatalf("%s records = %d, want exactly 1 (log: %s)", name, len(found), s.text())
+	}
+	return found[0]
+}
+
+func requireConversationLogFields(t *testing.T, record map[string]any, want map[string]any) {
+	t.Helper()
+	if record["component"] != "conversation" {
+		t.Fatalf("component = %#v, want conversation (record %#v)", record["component"], record)
+	}
+	for key, value := range want {
+		got, ok := record[key]
+		if !ok {
+			t.Fatalf("record %#v is missing %q", record, key)
+		}
+		if got != value {
+			t.Fatalf("%s = %#v, want %#v (record %#v)", key, got, value, record)
+		}
+	}
+}
+
 func TestAPITokensAreHashedScopedRotatableAndRedacted(t *testing.T) {
 	t.Parallel()
 
@@ -1206,6 +1275,7 @@ func TestControlPlaneRoutesRequireAuthentication(t *testing.T) {
 			}
 		})
 	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, "/api/v1/outbox/health", testHubAdminToken, nil), http.StatusNotFound)
 	t.Run("private credential maintenance", func(t *testing.T) {
 		config := hostedPostgresConfig(t, Config{ListenAddress: "127.0.0.1:0", CredentialMaintenance: true, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_api_auth", WorkOSOrganizationID: "provider_api_auth", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}})
 		maintenance := openTestService(t, config)

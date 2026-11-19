@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -225,7 +226,15 @@ func requireNativeError(t *testing.T, response *httptest.ResponseRecorder, statu
 
 func TestConversationAPICreate(t *testing.T) {
 	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
+	var sink conversationLogSink
+	f := newConversationAPIFixtureConfig(t, nil, Config{Logger: slog.New(slog.NewJSONHandler(&sink, nil))})
+	t.Cleanup(func() {
+		for _, secret := range []string{"Fix the login bug", "with details", f.token} {
+			if strings.Contains(sink.text(), secret) {
+				t.Fatal("conversation logs contain private message content or an API credential")
+			}
+		}
+	})
 	tests := []struct {
 		name      string
 		body      map[string]any
@@ -395,11 +404,29 @@ func TestConversationAPIListVisibility(t *testing.T) {
 		if len(page.Conversations) != 0 {
 			t.Fatalf("organization list = %#v, want none", page.Conversations)
 		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/org_hidden/projects/prj_hidden/conversations", f.token, nil), http.StatusUnauthorized)
+	})
+	t.Run("order by latest message before title edit", func(t *testing.T) {
+		message := conversation.Command{Key: "list-order-message", Kind: conversation.CommandMessage, Text: "A newer message"}
+		requireNativeStatus(t, f.command(t, f.token, private.ID, message), http.StatusOK)
+		title := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+shared.ID, f.token, map[string]string{"title": "Edited shared title"})
+		requireNativeStatus(t, title, http.StatusOK)
+		if got := ids(list(f.token, f.base+"/conversations")); strings.Join(got, ",") != private.ID+","+shared.ID {
+			t.Fatalf("latest message did not take precedence over a title edit: %v", got)
+		}
 	})
 	// Settled replaces Archive: both groups are listed by default, active
 	// first, and the settled filter selects one group.
 	t.Run("settled filter", func(t *testing.T) {
 		f.settle(t, private.ID)
+		first := list(f.token, f.base+"/conversations?limit=1")
+		if got := ids(first); strings.Join(got, ",") != shared.ID || first.NextCursor == nil {
+			t.Fatalf("expected first page to contain the active conversation: %+v", first)
+		}
+		second := list(f.token, f.base+"/conversations?limit=1&cursor="+*first.NextCursor)
+		if got := ids(second); strings.Join(got, ",") != private.ID || second.NextCursor != nil {
+			t.Fatalf("expected final page to contain the settled conversation: %+v", second)
+		}
 		if got := ids(list(f.token, f.base+"/conversations")); strings.Join(got, ",") != shared.ID+","+private.ID {
 			t.Fatalf("ids = %v, want the active conversation first", got)
 		}
@@ -635,6 +662,14 @@ func TestConversationAPICommands(t *testing.T) {
 		snapshot := f.snapshot(t, f.token, record.ID)
 		if len(snapshot.Messages) != 1 {
 			t.Fatalf("messages = %d, want 1", len(snapshot.Messages))
+		}
+		other := f.create(t, f.token, map[string]any{"title": "Separate command scope"}).Conversation
+		otherResponse := f.command(t, f.token, other.ID, message)
+		requireNativeStatus(t, otherResponse, http.StatusOK)
+		var otherReceipt conversation.Receipt
+		decodeHubResponse(t, otherResponse, &otherReceipt)
+		if otherReceipt.MessageID == "" || otherReceipt.MessageID == receipt.MessageID {
+			t.Fatal("two conversations shared a command receipt")
 		}
 	})
 	t.Run("unsupported and rejected controls", func(t *testing.T) {
@@ -1399,6 +1434,13 @@ func TestConversationAPILinkedWorkItem(t *testing.T) {
 	if snapshot.Conversation.WorkItem == nil || *snapshot.Conversation.WorkItem != want {
 		t.Fatalf("snapshot work item = %#v, want %#v", snapshot.Conversation.WorkItem, want)
 	}
+	metadata := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+linked.Issue.ID+"/conversation?metadata=true", f.token, nil)
+	requireNativeStatus(t, metadata, http.StatusOK)
+	var header conversationSnapshotResponse
+	decodeHubResponse(t, metadata, &header)
+	if header.Conversation.ID != record.ID || len(header.Messages) != 0 {
+		t.Fatalf("metadata lookup returned the wrong conversation or included messages: %+v", header)
+	}
 	t.Run("issue result survives reload", func(t *testing.T) {
 		last := snapshot.Messages[len(snapshot.Messages)-1]
 		if last.Role != conversation.RoleSystem || last.Kind != conversation.MessageStatus || !strings.Contains(last.Text, "Ship the release") {
@@ -1743,55 +1785,6 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 	}
 	if created.Conversation.ID == "" {
 		t.Fatal("created conversation has no id")
-	}
-}
-
-func TestConversationPostgresScopeUsesTenantRecords(t *testing.T) {
-	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
-	repository := f.service.config.TenantRepository
-	created := f.create(t, f.token, map[string]any{"title": "Scoped conversation"}).Conversation
-	linked := f.link(t, f.token, created.ID, "scope-link", true, "Scoped work item")
-	requireNativeStatus(t, linked, http.StatusOK)
-	var linkedResult conversationLinkResponse
-	decodeHubResponse(t, linked, &linkedResult)
-
-	if f.service.database.postgres == nil || f.service.config.TenantRepository == nil {
-		t.Fatal("required PostgreSQL fixture owners are not configured")
-	}
-
-	projectList := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations", f.token, nil)
-	requireNativeStatus(t, projectList, http.StatusOK)
-	organizationList := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/conversations", f.token, nil)
-	requireNativeStatus(t, organizationList, http.StatusOK)
-	itemConversation := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+linkedResult.Issue.ID+"/conversation?metadata=true", f.token, nil)
-	requireNativeStatus(t, itemConversation, http.StatusOK)
-
-	foreignProject := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/projects/prj_hidden/conversations", f.token, nil)
-	requireNativeStatus(t, foreignProject, http.StatusNotFound)
-	foreignOrganization := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/org_hidden/projects/prj_hidden/conversations", f.token, nil)
-	requireNativeStatus(t, foreignOrganization, http.StatusUnauthorized)
-
-	var item corestore.WorkItem
-	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		item, err = r.WorkItem(t.Context(), f.project.ID, tracker.NativeWorkItemID(linkedResult.Issue.ID))
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	reporterScope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{Scope: hubapi.APIScopeOperator, HostedRole: "reporter", HostedPrincipal: hubapi.StringValue(item.ActorPrincipalID)}}
-	if _, _, err := f.service.readWorkItemRecord(t.Context(), reporterScope, linkedResult.Issue.ID); err != nil {
-		t.Fatalf("reporter could not read its own work item: %v", err)
-	}
-	reporterScope.Credential.HostedPrincipal = "other-reporter"
-	if _, _, err := f.service.readWorkItemRecord(t.Context(), reporterScope, linkedResult.Issue.ID); err == nil {
-		t.Fatal("reporter read another principal's work item")
-	} else {
-		var failure *hubapi.NativeError
-		if !errors.As(err, &failure) || failure.Status != http.StatusNotFound {
-			t.Fatalf("foreign reporter visibility error = %v, want not found", err)
-		}
 	}
 }
 

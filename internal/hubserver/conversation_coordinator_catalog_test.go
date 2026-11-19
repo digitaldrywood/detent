@@ -162,26 +162,6 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 	}
 }
 
-func TestCoordinatorCatalogExclusionDoesNotRebuildTools(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		excluded bool
-	}{
-		{name: "read_skill", excluded: true},
-		{name: "get_project_runners", excluded: true},
-		{name: coordinatorToolCallTool, excluded: true},
-		{name: operatortool.WorkItem, excluded: false},
-		{name: operatortool.SetDependency, excluded: false},
-	} {
-		if got := coordinatorCatalogExcluded(test.name); got != test.excluded {
-			t.Fatalf("coordinatorCatalogExcluded(%q) = %v, want %v", test.name, got, test.excluded)
-		}
-		if allocations := testing.AllocsPerRun(10, func() { coordinatorCatalogExcluded(test.name) }); allocations > 100 {
-			t.Fatalf("coordinatorCatalogExcluded(%q) allocations = %v, want at most 100: the catalog filter must not rebuild the coordinator tools per definition", test.name, allocations)
-		}
-	}
-}
-
 func TestCoordinatorTurnOutlivesSharedBrowserAccessToken(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {

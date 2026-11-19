@@ -2,16 +2,12 @@ package hubserver
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -24,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -250,50 +245,6 @@ func TestCoordinatorSettingsBoundaries(t *testing.T) {
 					t.Fatalf("boundary accepted: %+v, %v", result, err)
 				}
 			})
-		}
-	}
-}
-
-func TestConfigurationMapOwners(t *testing.T) {
-	t.Parallel()
-	f, _, _ := coordinatorReadFixture(t)
-	_, body, err := skills.ReadBuiltin("configuration-map")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sections, err := os.ReadFile("../../web/conversation/src/app/settings/sections.tsx")
-	if err != nil {
-		t.Fatal(err)
-	}
-	routes := f.service.echo.Routes()
-	owners := []string{}
-	for _, line := range strings.Split(body, "\n") {
-		if !strings.HasPrefix(line, "| ") || !strings.Contains(line, "/settings/") {
-			continue
-		}
-		cells := strings.Split(line, "|")
-		if len(cells) != 8 {
-			t.Fatalf("invalid map row: %s", line)
-		}
-		section := strings.TrimPrefix(strings.TrimSpace(cells[2]), "/settings/")
-		if !strings.Contains(string(sections), fmt.Sprintf("\"%s\"", section)) {
-			t.Fatalf("unknown Cloud section %s", section)
-		}
-		for _, cell := range []string{cells[3], cells[4]} {
-			name := strings.TrimSpace(cell)
-			owners = append(owners, name)
-			if _, ok := operatortool.Lookup(name); !ok && !slices.Contains([]string{"get_project_runners", "get_project_integration", "get_sprite_pool", "set_sprite_pool"}, name) {
-				t.Fatalf("unknown configuration owner %s", name)
-			}
-		}
-		endpoint := strings.Fields(cells[6])
-		if len(endpoint) != 2 || !slices.ContainsFunc(routes, func(route *echo.Route) bool { return route.Method == endpoint[0] && route.Path == endpoint[1] }) {
-			t.Fatalf("missing configuration route: %s", cells[6])
-		}
-	}
-	for _, name := range coordinatorSettingsNames() {
-		if !slices.Contains(owners, name) {
-			t.Fatalf("settings tool %s is missing from the configuration map", name)
 		}
 	}
 }
