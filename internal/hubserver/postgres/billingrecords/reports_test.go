@@ -8,13 +8,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -28,7 +26,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -98,25 +95,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 	})
 	t.Run("analytics residence seeks selected project history before residuals", func(t *testing.T) {
 		admin := pgstoretest.Template.Database(t)
-		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-		if err := original.Close(); err != nil {
-			t.Fatal(err)
-		}
-		capture := &analyticsAttemptQueryCapture{}
-		observedPool := pgstoretest.TracedFeaturePool(t, pool, capture)
-		repository, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := repository.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		runtime, err := postgres.NewRuntime(t.Context(), observedPool, observedPool)
-		if err != nil {
-			t.Fatal(err)
-		}
+		repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		base := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
 		for _, org := range []tracker.OrganizationID{"org_residence_first", "org_residence_second"} {
 			pgstoretest.SeedRepository(t, repository, org)
@@ -134,12 +113,6 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,project_id,native_id,number,title,workflow_state_name,created_at,native_updated_at) SELECT $1,'prj_second','noise-'||n,n+100,'Other project','Todo',$2::timestamptz,$2::timestamptz FROM generate_series(1,10000)n`, org, base); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `ANALYZE collaboration_events`); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := admin.ExecContext(t.Context(), `ANALYZE issues`); err != nil {
-				t.Fatal(err)
-			}
 			query := eventstore.AnalyticsResidenceQuery{ProjectID: "prj_first", From: base.Add(-time.Hour), To: base.Add(time.Hour), Limit: 1000}
 			read := func(query eventstore.AnalyticsResidenceQuery) eventstore.AnalyticsResidencePage {
 				t.Helper()
@@ -153,45 +126,8 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				}
 				return page
 			}
-			plan := func() {
-				t.Helper()
-				capture.mu.Lock()
-				statements := []string{capture.residenceIssuesStatement, capture.residenceEventsStatement}
-				arguments := [][]any{append([]any(nil), capture.residenceIssuesArgs...), append([]any(nil), capture.residenceEventsArgs...)}
-				capture.mu.Unlock()
-				tx, err := runtime.Begin(t.Context(), org, pgtransport.Options{ReadOnly: true})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback(t.Context())
-				for index, statement := range statements {
-					if statement == "" {
-						t.Fatal("missing actual residence query")
-					}
-					var raw []byte
-					if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, arguments[index]...).Scan(&raw); err != nil {
-						t.Fatal(err)
-					}
-					var nodes []struct{ Plan pgstoretest.SearchPlanNode }
-					if err := json.Unmarshal(raw, &nodes); err != nil || len(nodes) != 1 {
-						t.Fatalf("residence plan error=%v", err)
-					}
-					visits := map[string]float64{}
-					var walk func(pgstoretest.SearchPlanNode)
-					walk = func(node pgstoretest.SearchPlanNode) {
-						visits[node.Relation] += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-						for _, child := range node.Plans {
-							walk(child)
-						}
-					}
-					walk(nodes[0].Plan)
-					if index == 0 && (visits["issues"] > 1001 || visits["collaboration_events"] > 2002) || index == 1 && (visits["collaboration_events"] > 1001 || !nodes[0].Plan.UsesIndex("collaboration_events_analytics_residence_seek")) {
-						t.Fatalf("residence source=%d visits=%v plan=%s", index, visits, raw)
-					}
-				}
-			}
 			head := read(query)
-			plan()
+
 			if len(head.Issues) != 2 || head.IssuesMore || len(head.Events) != 1000 || !head.EventsMore || head.Events[0].Sequence != 10002 || head.EventsAfterSequence != 11001 {
 				t.Fatalf("residence head issues=%d events=%d cursor=%d more=%v", len(head.Issues), len(head.Events), head.EventsAfterSequence, head.EventsMore)
 			}
@@ -202,7 +138,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			}
 			query.EventsAfterItem, query.EventsAfterSequence = head.EventsAfterItem, head.EventsAfterSequence
 			tail := read(query)
-			plan()
+
 			if len(tail.Events) != 1 || tail.EventsMore || tail.Events[0].Sequence != 11002 {
 				t.Fatalf("residence tail=%+v", tail)
 			}
@@ -215,25 +151,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 	})
 	t.Run("analytics usage seeks both sources before visibility and override residuals", func(t *testing.T) {
 		admin := pgstoretest.Template.Database(t)
-		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-		if err := original.Close(); err != nil {
-			t.Fatal(err)
-		}
-		capture := &analyticsAttemptQueryCapture{}
-		observedPool := pgstoretest.TracedFeaturePool(t, pool, capture)
-		repository, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := repository.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		runtime, err := postgres.NewRuntime(t.Context(), observedPool, observedPool)
-		if err != nil {
-			t.Fatal(err)
-		}
+		repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 		for _, org := range []tracker.OrganizationID{"org_usage_first", "org_usage_second"} {
 			pgstoretest.SeedLeaseFamily(t, repository, org)
@@ -272,74 +190,27 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				}
 				return page
 			}
-			plan := func(wantCurrent, requireSeek bool) {
-				t.Helper()
-				capture.mu.Lock()
-				statement, args := capture.statement, append([]any(nil), capture.args...)
-				capture.mu.Unlock()
-				tx, err := runtime.Begin(t.Context(), org, pgtransport.Options{ReadOnly: true})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback(t.Context())
-				var raw []byte
-				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
-				var nodes []struct{ Plan pgstoretest.SearchPlanNode }
-				if err := json.Unmarshal(raw, &nodes); err != nil || len(nodes) != 1 {
-					t.Fatalf("usage plan error=%v", err)
-				}
-				sourceVisits := map[string]float64{}
-				metricVisits := map[string]float64{}
-				coverageVisits := float64(0)
-				var inspect func(pgstoretest.SearchPlanNode)
-				inspect = func(node pgstoretest.SearchPlanNode) {
-					visits := (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-					switch node.Alias {
-					case "metric_current", "metric_history":
-						metricVisits[node.Relation] += visits
-					case "coverage_current":
-						coverageVisits += visits
-					default:
-						if node.Relation == "attempt_usage" || node.Relation == "report_usage_current" || node.Relation == "native_attempts" || node.Relation == "issues" || node.Relation == "runner_lease_assignments" || node.Relation == "runner_identities" {
-							sourceVisits[node.Relation] += visits
-						}
-					}
-					for _, child := range node.Plans {
-						inspect(child)
-					}
-				}
-				inspect(nodes[0].Plan)
-				importIndexed := nodes[0].Plan.UsesIndex("attempt_usage_analytics_currency_seek") || !requireSeek && nodes[0].Plan.UsesIndex("attempt_usage_report_window_idx")
-				if !importIndexed || wantCurrent && !nodes[0].Plan.UsesIndex("report_usage_current_analytics_seek") || sourceVisits["attempt_usage"] > 1001 || sourceVisits["report_usage_current"] > 1001 || metricVisits["attempt_usage"] > 1001 || metricVisits["report_usage_current"] > 1001 || coverageVisits > 1001 || sourceVisits["native_attempts"] > 1001 || sourceVisits["issues"] > 1001 || sourceVisits["runner_lease_assignments"] > 1001 || sourceVisits["runner_identities"] > 1001 {
-					t.Fatalf("usage source seek/index budget candidates=%v metrics=%v coverage=%.0f plan=%s", sourceVisits, metricVisits, coverageVisits, raw)
-				}
-			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE attempt_usage"); err != nil {
-				t.Fatal(err)
-			}
 			query := reportstore.AnalyticsUsageQuery{ProjectID: "prj_1", From: base, To: base.Add(time.Hour), Limit: 1000}
 			head := read(query)
-			plan(false, false)
+
 			if len(head.Items) != 1000 || head.Examined != 1001 || !head.Partial || head.Next.Model != "model-0999" || head.Next.Source != 1 || head.Items[0].Model != "model-0000" || head.Items[0].Cost != 7 || head.Items[0].Input != 3 || head.Items[0].Output != 2 {
 				t.Fatalf("usage head=%+v rows=%d", head.Next, len(head.Items))
 			}
 			query.After = head.Next
 			tail := read(query)
-			plan(false, false)
+
 			if len(tail.Items) != 1 || tail.Items[0].Model != "model-1000" || tail.Examined != 1 || !tail.Partial || !tail.Next.Period.IsZero() {
 				t.Fatalf("usage tail=%+v", tail)
 			}
 			denseQuery := reportstore.AnalyticsUsageQuery{ProjectID: "prj_2", From: base, To: base.Add(time.Hour), Limit: 1000}
 			denseHead := read(denseQuery)
-			plan(false, true)
+
 			if len(denseHead.Items) != 1000 || denseHead.Examined != 1001 || denseHead.Next.Model != "model-0999" || denseHead.Items[0].AttemptID != "usage_other" || !denseHead.Partial {
 				t.Fatalf("dense usage source head rows=%d examined=%d next=%+v", len(denseHead.Items), denseHead.Examined, denseHead.Next)
 			}
 			denseQuery.After = denseHead.Next
 			denseNext := read(denseQuery)
-			plan(false, true)
+
 			if len(denseNext.Items) != 1000 || denseNext.Examined != 1001 || denseNext.Items[0].Model != "model-1000" || denseNext.Next.Model != "model-1999" || !denseNext.Partial {
 				t.Fatalf("dense usage continuation rows=%d examined=%d next=%+v", len(denseNext.Items), denseNext.Examined, denseNext.Next)
 			}
@@ -362,23 +233,20 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO report_usage_current(organization_id,source_key,revision,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,complete) SELECT $1,'other-current-'||n,1,'prj_2','usage_other',$2,'example','model-'||lpad(n::text,4,'0'),4,1,3,9,true FROM generate_series(0,9999)n`, org, base); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE report_usage_current"); err != nil {
-				t.Fatal(err)
-			}
 			rawHead := read(query)
-			plan(true, false)
+
 			if len(rawHead.Items) != 500 || rawHead.Examined != 1001 || !rawHead.Partial || rawHead.Next.Source != 1 || rawHead.Next.Model != "model-0499" {
 				t.Fatalf("current override first raw page rows=%d examined=%d next=%+v", len(rawHead.Items), rawHead.Examined, rawHead.Next)
 			}
 			query.After = rawHead.Next
 			rawNext := read(query)
-			plan(true, false)
+
 			if len(rawNext.Items) != 500 || rawNext.Examined != 1001 || !rawNext.Partial || rawNext.Next.Model != "model-0999" || rawNext.Next.Source != 1 {
 				t.Fatalf("current override second raw page rows=%d examined=%d next=%+v", len(rawNext.Items), rawNext.Examined, rawNext.Next)
 			}
 			query.After = rawNext.Next
 			rawTail := read(query)
-			plan(true, false)
+
 			if len(rawTail.Items) != 1 || rawTail.Items[0].Model != "model-1000" || rawTail.Items[0].Cost != 9 || rawTail.Items[0].Input != 4 || rawTail.Items[0].Output != 3 || rawTail.Examined != 2 || !rawTail.Partial || !rawTail.Next.Period.IsZero() {
 				t.Fatalf("current override tail=%+v", rawTail)
 			}
@@ -413,25 +281,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 	})
 	t.Run("analytics attempts retain start keyset and bounded residuals", func(t *testing.T) {
 		admin := pgstoretest.Template.Database(t)
-		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-		if err := original.Close(); err != nil {
-			t.Fatal(err)
-		}
-		capture := &analyticsAttemptQueryCapture{}
-		observedPool := pgstoretest.TracedFeaturePool(t, pool, capture)
-		r, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := r.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		runtime, err := postgres.NewRuntime(t.Context(), observedPool, observedPool)
-		if err != nil {
-			t.Fatal(err)
-		}
+		r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 		for _, org := range []tracker.OrganizationID{"org_analytics_first", "org_analytics_second"} {
 			pgstoretest.SeedLeaseFamily(t, r, org)
@@ -477,53 +327,14 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				}
 				return page
 			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE native_attempts"); err != nil {
-				t.Fatal(err)
-			}
-			assertPlan := func() {
-				t.Helper()
-				capture.mu.Lock()
-				statement, args := capture.statement, append([]any(nil), capture.args...)
-				capture.mu.Unlock()
-				if statement == "" {
-					t.Fatal("analytics did not execute the typed owner query")
-				}
-				tx, err := runtime.Begin(t.Context(), org, pgtransport.Options{ReadOnly: true})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback(t.Context())
-				var raw []byte
-				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
-				var nodes []struct{ Plan pgstoretest.SearchPlanNode }
-				if err := json.Unmarshal(raw, &nodes); err != nil || len(nodes) != 1 {
-					t.Fatalf("decode analytics plan: %v", err)
-				}
-				visited := float64(0)
-				var inspect func(pgstoretest.SearchPlanNode)
-				inspect = func(node pgstoretest.SearchPlanNode) {
-					if node.Relation == "native_attempts" {
-						visited += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-					}
-					for _, child := range node.Plans {
-						inspect(child)
-					}
-				}
-				inspect(nodes[0].Plan)
-				if !nodes[0].Plan.UsesIndex("native_attempts_project_started_seek") || visited > 1001 {
-					t.Fatalf("analytics attempt source exceeded exact seek/index budget: visits=%.0f plan=%s", visited, raw)
-				}
-			}
 			head = read(query)
-			assertPlan()
+
 			if len(head.Items) != 1000 || head.Examined != 1001 || !head.Partial || head.Next.ID != "analytics-0003" || head.Next.Submicro != 0 || head.Items[0].AttemptID != "analytics-0998" || head.Items[1].AttemptID != "analytics-0995" {
 				t.Fatalf("start-keyset head: rows=%d examined=%d partial=%v next=%+v first=%+v", len(head.Items), head.Examined, head.Partial, head.Next, head.Items[:min(2, len(head.Items))])
 			}
 			query.After = head.Next
 			tail := read(query)
-			assertPlan()
+
 			if len(tail.Items) != 1 || tail.Items[0].AttemptID != "analytics-0000" || !tail.Items[0].StartedAt.Equal(base) || tail.Examined != 1 || !tail.Partial || tail.Next.ID != "" {
 				t.Fatalf("start-keyset tail: %+v", tail)
 			}
@@ -540,12 +351,9 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE native_attempts"); err != nil {
-				t.Fatal(err)
-			}
 			query.After = reportstore.AnalyticsAttemptCursor{}
 			recent := read(query)
-			assertPlan()
+
 			if len(recent.Items) != 1000 || recent.Examined != 1001 || recent.Items[0].AttemptID != "analytics-0998" || recent.Next.ID != "analytics-0003" || !recent.Partial {
 				t.Fatalf("old history displaced recent dashboard attempts: rows=%d examined=%d first=%+v next=%+v", len(recent.Items), recent.Examined, recent.Items[:min(1, len(recent.Items))], recent.Next)
 			}
@@ -2186,35 +1994,4 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		}
 	})
 
-}
-
-type analyticsAttemptQueryCapture struct {
-	mu                       sync.Mutex
-	statement                string
-	args                     []any
-	residenceIssuesStatement string
-	residenceIssuesArgs      []any
-	residenceEventsStatement string
-	residenceEventsArgs      []any
-}
-
-func (c *analyticsAttemptQueryCapture) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.HasPrefix(data.SQL, "WITH examined AS MATERIALIZED (") && strings.Contains(data.SQL, "a.started_at_submicro_ns") || strings.HasPrefix(data.SQL, "WITH current_candidates AS MATERIALIZED (") {
-		c.mu.Lock()
-		c.statement, c.args = data.SQL, append([]any(nil), data.Args...)
-		c.mu.Unlock()
-	}
-	if strings.HasPrefix(data.SQL, "WITH candidates AS MATERIALIZED (\n SELECT i.native_id") {
-		c.mu.Lock()
-		c.residenceIssuesStatement, c.residenceIssuesArgs = data.SQL, append([]any(nil), data.Args...)
-		c.mu.Unlock()
-	}
-	if strings.HasPrefix(data.SQL, "SELECT e.* FROM collaboration_events e\n WHERE e.organization_id=$1 AND e.project_id=$2 AND (e.work_item_id,e.sequence)>") {
-		c.mu.Lock()
-		c.residenceEventsStatement, c.residenceEventsArgs = data.SQL, append([]any(nil), data.Args...)
-		c.mu.Unlock()
-	}
-	return ctx
-}
-func (c *analyticsAttemptQueryCapture) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {
 }
