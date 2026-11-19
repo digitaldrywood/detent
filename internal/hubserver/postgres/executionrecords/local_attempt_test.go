@@ -23,7 +23,7 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 	for _, queued := range []bool{false, true} {
 		t.Run(fmt.Sprintf("queued=%t", queued), func(t *testing.T) {
 			admin := pgstoretest.Template.Database(t)
-			repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+			repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				pgstoretest.SeedLeaseFamily(t, repository, org)
 				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
@@ -230,7 +230,6 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 					}
 				}
 			}
-			repository, _ = attemptCountedRepository(t, repository, pool)
 			if queued {
 				columnAdded := false
 				t.Cleanup(func() {

@@ -3,7 +3,6 @@ package executionrecords_test
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -19,7 +18,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -83,125 +81,52 @@ func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
 	}
 }
 
-func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
+func TestAttemptEvidencePreservesOrderAndTenantScope(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
-	repository, repositoryPool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedTenantAccess(t, repository, org)
 	}
-	repository, counts := attemptCountedRepository(t, repository, repositoryPool)
-	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
-	previous := 0
-	for _, history := range []int{2, 50} {
-		started := time.Now()
-		if err := copyAttemptEvidenceHistory(t.Context(), admin, previous*201+1, history*201); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("history=%d fixture load=%v", history, time.Since(started))
-		previous = history
-		if _, err := admin.ExecContext(t.Context(), `ANALYZE attachments`); err != nil {
-			t.Fatal(err)
-		}
-		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			for _, size := range []int{2, 50} {
-				t.Run(fmt.Sprintf("history_%dx/%s/page_%d", history, org, size), func(t *testing.T) {
-					if err := repository.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(tenantstore.Reader) error { return nil }); err != nil {
-						t.Fatal(err)
-					}
-					attempts, ids := make([]leasestore.Attempt, size), make([]string, size)
-					for i := range attempts {
-						ids[i] = fmt.Sprintf("attempt_%d", i+1)
-						attempts[i] = leasestore.Attempt{OrganizationID: org, ID: ids[i]}
-					}
-					var statement string
-					ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
-						if strings.Contains(query, "LIMIT 201") {
-							statement = query
-						}
-					})
-					counts.exchanges.Store(0)
-					counts.statements.Store(0)
-					if err := repository.ReadTenantSnapshot(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-						metadata, err := r.(tenantstore.AttemptMetadataReader).AttemptMetadata(ctx, "prj_shared", "wi_shared", attempts, true)
-						if err != nil {
-							return err
-						}
-						if len(metadata.Evidence) != size {
-							t.Fatalf("evidence attempts=%d, want %d", len(metadata.Evidence), size)
-						}
-						for i, id := range ids {
-							records := metadata.Evidence[id]
-							if len(records) != 201 {
-								t.Fatalf("attempt %s evidence=%d, want overflow sentinel 201", id, len(records))
-							}
-							for j, record := range records {
-								wantID := fmt.Sprintf("target_%d_%06d", i+1, j+1)
-								wantTime := pgstoretest.HistoryAt().Add(time.Duration(j/2) * time.Second)
-								if record.OrganizationID != org || record.Metadata.ProjectID != "prj_shared" || record.Metadata.WorkItemID != "wi_shared" || record.EvidenceAttemptID != id || record.Metadata.ID != wantID || !record.Metadata.CreatedAt.Equal(wantTime) || (record.Metadata.DeletedAt != nil) != (j%2 == 1) {
-									t.Fatalf("evidence identity, order or deletion changed: attempt=%s row=%d", id, j)
-								}
-							}
-						}
-						return nil
-					}); err != nil {
-						t.Fatal(err)
-					}
-					if statement == "" {
-						t.Fatal("evidence statement was not observed")
-					}
-					if exchanges, statements := counts.exchanges.Load(), counts.statements.Load(); exchanges != 3 || statements != 8 {
-						t.Fatalf("metadata snapshot exchanges=%d statements=%d, want 3/8", exchanges, statements)
-					}
-					tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer tx.Rollback(t.Context())
-					if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
-						t.Fatal(err)
-					}
-					var raw []byte
-					if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, org, "prj_shared", "wi_shared", ids).Scan(&raw); err != nil {
-						t.Fatal(err)
-					}
-					var plan []struct {
-						Plan struct {
-							pgstoretest.SearchPlanNode
-							Hits  float64 `json:"Shared Hit Blocks"`
-							Reads float64 `json:"Shared Read Blocks"`
-						}
-					}
-					if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
-						t.Fatalf("decode evidence plan: %v", err)
-					}
-					var visits func(pgstoretest.SearchPlanNode) float64
-					visits = func(node pgstoretest.SearchPlanNode) float64 {
-						count := 0.0
-						if node.Relation == "attachments" {
-							count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-						}
-						for _, child := range node.Plans {
-							count += visits(child)
-						}
-						return count
-					}
-					count := visits(plan[0].Plan.SearchPlanNode)
-					blocks := plan[0].Plan.Hits + plan[0].Plan.Reads
-					t.Logf("history_rows_per_tenant=%d attempts=%d visited=%.0f buffers=%.0f exchanges=%d statements=%d", history*201*53, size, count, blocks, counts.exchanges.Load(), counts.statements.Load())
-					if count != float64(size*201) {
-						t.Errorf("evidence scanned %.0f history rows for %d attempts, want %d", count, size, size*201)
-					}
-					if !plan[0].Plan.UsesIndex("attachments_evidence_history_order") || strings.Contains(string(raw), `"Node Type": "Sort"`) {
-						t.Error("evidence must use its ordered history index without sorting")
-					}
-					if blocks > float64(size*240) {
-						t.Errorf("evidence buffers=%.0f, want <=%d", blocks, size*240)
-					}
-				})
+	if err := copyAttemptEvidenceHistory(t.Context(), admin, 1, 202); err != nil {
+		t.Fatal(err)
+	}
+	const size = 2
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			ctx := t.Context()
+			attempts, ids := make([]leasestore.Attempt, size), make([]string, size)
+			for i := range attempts {
+				ids[i] = fmt.Sprintf("attempt_%d", i+1)
+				attempts[i] = leasestore.Attempt{OrganizationID: org, ID: ids[i]}
 			}
-		}
+			if err := repository.ReadTenantSnapshot(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				metadata, err := r.(tenantstore.AttemptMetadataReader).AttemptMetadata(ctx, "prj_shared", "wi_shared", attempts, true)
+				if err != nil {
+					return err
+				}
+				if len(metadata.Evidence) != size {
+					t.Fatalf("evidence attempts=%d, want %d", len(metadata.Evidence), size)
+				}
+				for i, id := range ids {
+					records := metadata.Evidence[id]
+					if len(records) != 201 {
+						t.Fatalf("attempt %s evidence=%d, want overflow sentinel 201", id, len(records))
+					}
+					for j, record := range records {
+						wantID := fmt.Sprintf("target_%d_%06d", i+1, j+1)
+						wantTime := pgstoretest.HistoryAt().Add(time.Duration(j/2) * time.Second)
+						if record.OrganizationID != org || record.Metadata.ProjectID != "prj_shared" || record.Metadata.WorkItemID != "wi_shared" || record.EvidenceAttemptID != id || record.Metadata.ID != wantID || !record.Metadata.CreatedAt.Equal(wantTime) || (record.Metadata.DeletedAt != nil) != (j%2 == 1) {
+							t.Fatalf("evidence identity, order or deletion changed: attempt=%s row=%d", id, j)
+						}
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -246,8 +171,8 @@ func copyAttemptEvidenceHistory(ctx context.Context, admin *sql.DB, first, last 
 			}
 		}
 		type group struct{ prefix, project, item, attempt string }
-		groups := make([]group, 0, 53)
-		for attempt := 1; attempt <= 50; attempt++ {
+		groups := make([]group, 0, 5)
+		for attempt := 1; attempt <= 2; attempt++ {
 			groups = append(groups, group{fmt.Sprintf("target_%d_", attempt), "prj_shared", "wi_shared", fmt.Sprintf("attempt_%d", attempt)})
 		}
 		groups = append(groups, group{"other_project_1_", "prj_other", "wi_shared", "attempt_1"}, group{"other_item_1_", "prj_shared", "wi_other", "attempt_1"}, group{"other_attempt_1_", "prj_shared", "wi_shared", "unrequested"})

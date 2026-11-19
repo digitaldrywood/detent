@@ -579,6 +579,9 @@ func TestLeaseIssueReadsReturnActiveLeaseAndBoundedAttemptPages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	siblingLease := pgstoretest.ClaimLease(t, r, "org_first", pgstoretest.LeaseClaim(2))
+	siblingAttempt := pgstoretest.RecordLeaseAttempt(t, r, "org_first", pgstoretest.AttemptEvent(siblingLease))
+
 	pgstoretest.SeedLeaseFamily(t, r, "org_second")
 	foreignLease := pgstoretest.ClaimLease(t, r, "org_second", pgstoretest.LeaseClaim(1))
 	foreignEvent := pgstoretest.AttemptEvent(foreignLease)
@@ -611,11 +614,18 @@ func TestLeaseIssueReadsReturnActiveLeaseAndBoundedAttemptPages(t *testing.T) {
 		if latest.ID != attempts[2].ID || latest.FencingToken != attempts[2].FencingToken {
 			t.Errorf("latest attempt = %+v, want %+v", latest, attempts[2])
 		}
+		sibling, err := reader.AttemptPage(t.Context(), 2, leasestore.AttemptCursor{}, 1)
+		if err != nil {
+			return err
+		}
+		if len(sibling.Items) != 1 || sibling.Items[0].ID != siblingAttempt.ID || sibling.Items[0].IssueID != 2 || sibling.Next != (leasestore.AttemptCursor{}) {
+			t.Fatalf("sibling issue attempt page = %+v", sibling)
+		}
 		first, err := reader.AttemptPage(t.Context(), 1, leasestore.AttemptCursor{}, 1)
 		if err != nil {
 			return err
 		}
-		if len(first.Items) != 1 || first.Items[0].ID != attempts[2].ID || first.Next.IssueID != 1 || first.Next.BeforeFence != attempts[2].FencingToken {
+		if len(first.Items) != 1 || first.Items[0].ID != attempts[2].ID || first.Items[0].IssueID != 1 || first.Items[0].OrganizationID != "org_first" || first.Next.IssueID != 1 || first.Next.BeforeFence != attempts[2].FencingToken {
 			t.Fatalf("first attempt page = %+v", first)
 		}
 		second, err := reader.AttemptPage(t.Context(), 1, first.Next, 1)
