@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -624,6 +625,19 @@ type NativeDisposition struct {
 	BlockerEvidence []workpad.Blocker `json:"blocker_evidence,omitempty"`
 }
 
+const MaxAttemptWorkerStartKeyBytes = 128
+
+type NativeAttemptWorker struct {
+	PID       int32     `json:"pid"`
+	PGID      int32     `json:"pgid"`
+	StartedAt time.Time `json:"started_at"`
+	StartKey  string    `json:"start_key"`
+}
+
+func (w NativeAttemptWorker) Valid() bool {
+	return w.PID > 0 && w.PGID > 0 && !w.StartedAt.IsZero() && len(w.StartKey) <= MaxAttemptWorkerStartKeyBytes && strings.TrimSpace(w.StartKey) != ""
+}
+
 type NativeRunData struct {
 	Steps           []NativeStepReceipt       `json:"steps,omitempty"`
 	ProcessUsage    *procgroup.Usage          `json:"process_usage,omitempty"`
@@ -659,7 +673,9 @@ type NativeEvidence struct {
 }
 
 type NativeRunEvent struct {
-	PriorEvents []NativeRunEvent `json:"prior_events,omitempty"`
+	Worker        *NativeAttemptWorker `json:"worker,omitempty"`
+	WorkerCleanup *NativeAttemptWorker `json:"worker_cleanup,omitempty"`
+	PriorEvents   []NativeRunEvent     `json:"prior_events,omitempty"`
 	Mutation
 	Type          string        `json:"type"`
 	SchemaVersion int           `json:"schema_version"`

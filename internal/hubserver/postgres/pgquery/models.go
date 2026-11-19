@@ -2228,6 +2228,11 @@ type NativeAttempt struct {
 	IdentityServiceTier                *string
 	IdentityServiceTierProvenance      *string
 	IdentityObservedAt                 *time.Time
+	WorkerPid                          pgtype.Int4
+	WorkerPgid                         pgtype.Int4
+	WorkerStartedAt                    *time.Time
+	WorkerStartKey                     *string
+	WorkerRunnerID                     *string
 }
 
 type NativeAttemptEvent struct {

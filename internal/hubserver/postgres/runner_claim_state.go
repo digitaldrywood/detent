@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/attemptworkersql"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -70,4 +71,9 @@ func (s *session) RunnerClaimState(ctx context.Context, runner string, project t
 		page.Next = rows[len(rows)-1].ScannedID
 	}
 	return page, nil
+}
+
+func (s *session) RunnerAttemptWorkers(ctx context.Context, runner string, machine tracker.MachineID, project tracker.ProjectID, after string, limit int, now time.Time) (runnerauth.AttemptWorkerPage, error) {
+	page, err := attemptworkersql.Read(ctx, s.queries, s.organization, runner, machine, project, after, limit, now)
+	return page, mapError(ctx, err)
 }

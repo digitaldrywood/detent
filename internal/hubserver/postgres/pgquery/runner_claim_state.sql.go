@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const removeRunnerIdentity = `-- name: RemoveRunnerIdentity :execrows
@@ -29,6 +30,89 @@ func (q *Queries) RemoveRunnerIdentity(ctx context.Context, arg RemoveRunnerIden
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const runnerAttemptWorkers = `-- name: RunnerAttemptWorkers :many
+WITH page AS MATERIALIZED (
+ SELECT n.id,n.issue_id,n.lease_id,n.fencing_token,n.worker_pid,n.worker_pgid,n.worker_started_at,n.worker_start_key
+ FROM native_attempts n
+ WHERE n.organization_id=$2 AND n.project_id=$3 AND n.worker_runner_id=$4
+ AND n.worker_pid IS NOT NULL AND n.cleanup_acknowledged_at IS NULL AND n.id>$5
+ ORDER BY n.id LIMIT $6
+)
+SELECT page.id,i.native_id AS work_item_id,page.lease_id,page.fencing_token,l.machine_id,l.expires_at,
+ page.worker_pid,page.worker_pgid,page.worker_started_at,page.worker_start_key,
+ CASE WHEN l.released_at IS NULL AND l.expires_at>$1::timestamptz THEN 'live'
+ WHEN EXISTS (SELECT 1 FROM leases newer WHERE newer.organization_id=l.organization_id AND newer.issue_id=l.issue_id AND newer.fencing_token>l.fencing_token) THEN 'replaced'
+ WHEN l.released_at IS NULL OR l.release_reason='expired' THEN 'expired'
+ ELSE 'finished' END::text AS lease_state
+FROM page
+JOIN leases l ON l.organization_id=$2 AND l.lease_id=page.lease_id AND l.issue_id=page.issue_id AND l.fencing_token=page.fencing_token
+JOIN work_item_identities i ON i.organization_id=l.organization_id AND i.id=page.issue_id AND i.project_id=$3
+JOIN runner_lease_assignments a ON a.organization_id=l.organization_id AND a.lease_id=l.lease_id AND a.runner_id=$4
+ORDER BY page.id
+`
+
+type RunnerAttemptWorkersParams struct {
+	Now            time.Time
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	RunnerID       string
+	AfterID        string
+	PageSize       int32
+}
+
+type RunnerAttemptWorkersRow struct {
+	ID              string
+	WorkItemID      string
+	LeaseID         string
+	FencingToken    int64
+	MachineID       string
+	ExpiresAt       time.Time
+	WorkerPid       pgtype.Int4
+	WorkerPgid      pgtype.Int4
+	WorkerStartedAt *time.Time
+	WorkerStartKey  *string
+	LeaseState      string
+}
+
+func (q *Queries) RunnerAttemptWorkers(ctx context.Context, arg RunnerAttemptWorkersParams) ([]RunnerAttemptWorkersRow, error) {
+	rows, err := q.db.Query(ctx, runnerAttemptWorkers,
+		arg.Now,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.RunnerID,
+		arg.AfterID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RunnerAttemptWorkersRow{}
+	for rows.Next() {
+		var i RunnerAttemptWorkersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkItemID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.MachineID,
+			&i.ExpiresAt,
+			&i.WorkerPid,
+			&i.WorkerPgid,
+			&i.WorkerStartedAt,
+			&i.WorkerStartKey,
+			&i.LeaseState,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const runnerClaimSlots = `-- name: RunnerClaimSlots :many
@@ -72,7 +156,7 @@ func (q *Queries) RunnerClaimSlots(ctx context.Context, arg RunnerClaimSlotsPara
 
 const runnerReleasedAttemptCandidates = `-- name: RunnerReleasedAttemptCandidates :many
 WITH page AS MATERIALIZED (
-SELECT n.id,n.issue_id,n.lease_id,n.status,n.cleanup_acknowledged_at,n.worker_cleanup_required,n.runtime_summary_sequence,n.sequence,n.fencing_token FROM native_attempts n
+SELECT n.id,n.issue_id,n.lease_id,n.status,n.cleanup_acknowledged_at,n.worker_cleanup_required,n.runtime_summary_sequence,n.sequence,n.fencing_token,n.worker_pid FROM native_attempts n
 WHERE n.organization_id=$4 AND n.project_id=$1 AND n.id>$5
 AND n.cleanup_acknowledged_at IS NULL AND n.status IN ('running','interrupted','cancelled') AND (n.worker_cleanup_required IS DISTINCT FROM FALSE OR n.runtime_summary_sequence IS DISTINCT FROM n.sequence)
 ORDER BY n.id LIMIT $6
@@ -80,7 +164,7 @@ ORDER BY n.id LIMIT $6
 SELECT page.id AS scanned_id,
 CASE WHEN i.project_id=$1 AND a.runner_id=$2
 AND l.machine_id=$3 AND l.issue_id=page.issue_id AND l.fencing_token=page.fencing_token
-AND (page.worker_cleanup_required IS DISTINCT FROM FALSE OR page.runtime_summary_sequence IS DISTINCT FROM page.sequence) AND l.released_at IS NOT NULL AND page.cleanup_acknowledged_at IS NULL AND page.status IN ('running','interrupted','cancelled')
+AND page.worker_pid IS NULL AND (page.worker_cleanup_required IS DISTINCT FROM FALSE OR page.runtime_summary_sequence IS DISTINCT FROM page.sequence) AND l.released_at IS NOT NULL AND page.cleanup_acknowledged_at IS NULL AND page.status IN ('running','interrupted','cancelled')
 THEN i.native_id ELSE '' END::text AS work_item_id,
 COALESCE(page.worker_cleanup_required AND page.runtime_summary_sequence=page.sequence,false)::boolean AS cleanup_known
 FROM page

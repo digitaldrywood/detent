@@ -57,12 +57,46 @@ type ReleasedExecution struct {
 	AttemptID  string                   `json:"attempt_id"`
 }
 
+type AttemptLeaseState string
+
+const (
+	AttemptLeaseLive     AttemptLeaseState = "live"
+	AttemptLeaseExpired  AttemptLeaseState = "expired"
+	AttemptLeaseReplaced AttemptLeaseState = "replaced"
+	AttemptLeaseFinished AttemptLeaseState = "finished"
+)
+
+type AttemptWorker struct {
+	ProjectID    tracker.ProjectID           `json:"project_id"`
+	WorkItemID   tracker.NativeWorkItemID    `json:"work_item_id"`
+	AttemptID    string                      `json:"attempt_id"`
+	LeaseID      tracker.LeaseID             `json:"lease_id"`
+	FencingToken tracker.FencingToken        `json:"fencing_token,string"`
+	MachineID    tracker.MachineID           `json:"machine_id"`
+	LeaseState   AttemptLeaseState           `json:"lease_state"`
+	ExpiresAt    time.Time                   `json:"expires_at"`
+	Worker       tracker.NativeAttemptWorker `json:"worker"`
+}
+
+const AttemptWorkerPageSize = 100
+
+type AttemptWorkerPage struct {
+	ProjectID tracker.ProjectID `json:"project_id"`
+	Workers   []AttemptWorker   `json:"workers"`
+	Next      string            `json:"next"`
+}
+
 type ClaimState struct {
 	ReleasedExecutions []ReleasedExecution          `json:"released_executions,omitempty"`
 	HostCapacity       int                          `json:"host_capacity"`
 	RunnerCapacity     int                          `json:"runner_capacity"`
 	Slots              []ClaimSlot                  `json:"slots"`
 	PolicyIDs          map[tracker.ProjectID]string `json:"policy_ids"`
+}
+
+type AttemptWorkerInventory struct {
+	RunnerID string             `json:"runner_id"`
+	Page     *AttemptWorkerPage `json:"attempt_workers"`
 }
 
 type RoutingSnapshot struct {

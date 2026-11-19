@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"slices"
 	"time"
 
@@ -43,6 +44,25 @@ func (c *Client) ReleasedExecutions(runnerID string) []runnerauth.ReleasedExecut
 	}
 	return slices.Clone(snapshot.ClaimState.ReleasedExecutions)
 }
+func (c *NativeClient) AttemptWorkers(ctx context.Context, after string) (runnerauth.AttemptWorkerPage, error) {
+	if c.client.runner == nil || c.project == "" {
+		return runnerauth.AttemptWorkerPage{}, ErrUnavailable
+	}
+	file, err := runnerauth.Load(c.client.runner.path)
+	if err != nil {
+		return runnerauth.AttemptWorkerPage{}, err
+	}
+	path := c.base() + "/machines/" + url.PathEscape(string(file.Identity.MachineID)) + "/heartbeat?" + url.Values{"attempt_worker_after": {after}}.Encode()
+	var response runnerauth.AttemptWorkerInventory
+	if err := c.client.request(ctx, http.MethodPost, path, struct{}{}, &response); err != nil {
+		return runnerauth.AttemptWorkerPage{}, err
+	}
+	if response.RunnerID != file.Identity.RunnerID || response.Page == nil || response.Page.ProjectID != c.project {
+		return runnerauth.AttemptWorkerPage{}, ErrUnavailable
+	}
+	return *response.Page, nil
+}
+
 func (c *Client) ClaimSlots() []runnerauth.ClaimSlot {
 	c.runner.routingMu.Lock()
 	defer c.runner.routingMu.Unlock()

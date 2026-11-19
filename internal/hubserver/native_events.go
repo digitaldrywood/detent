@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/attemptworkers"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -19,7 +20,13 @@ func validateNativeRunEvent(request tracker.NativeRunEvent) error {
 	if request.SchemaVersion != 1 || !slices.Contains([]string{"run.started", "run.finished", "run.checkpointed", "run.observed"}, request.Type) {
 		return nativeRejection(hubapi.NativeInvalid("Unsupported event type or schema version"), "event_validation", "")
 	}
+	if request.WorkerCleanup != nil {
+		return nativeRejection(attemptworkers.ValidateAcknowledgment(request), "event_validation", "worker_cleanup")
+	}
 	data := request.Data
+	if request.Worker != nil && (request.Type != "run.started" && request.Type != "run.observed" || !request.Worker.Valid()) {
+		return nativeRejection(hubapi.NativeInvalid("Worker identity requires a complete launch on start or observe"), "event_validation", "worker")
+	}
 	if data.Runtime != nil && data.Sequence <= 0 || request.Type == "run.observed" && data.Runtime == nil {
 		return nativeRejection(hubapi.NativeInvalid("Runtime evidence requires an ordered observation"), "event_validation", "data")
 	}
@@ -57,6 +64,19 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 	}
 	if err := validateNativeRunEvent(request); err != nil {
 		return s.nativeRunEventError(c, request, err)
+	}
+	if request.WorkerCleanup != nil {
+		if s.config.TenantRepository == nil {
+			return s.nativeRunEventError(c, request, hubapi.NativeRunEventStorageUnavailable())
+		}
+		err := attemptworkers.Acknowledge(c.Request().Context(), hubscope.NativeRequestScope(c), tracker.NativeWorkItemID(c.Param("item")), request, s.config.Clock, s.writeNativeClaimCommand)
+		if errors.Is(err, leasestore.ErrAttemptConflict) {
+			err = nativeExecutionConflict("Worker cleanup no longer matches the recorded owner")
+		}
+		if err != nil {
+			return s.nativeRunEventError(c, request, err)
+		}
+		return c.JSON(http.StatusOK, map[string]bool{"accepted": true})
 	}
 	result, err := s.appendNativeRunEventTenant(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), request)
 	if err != nil {

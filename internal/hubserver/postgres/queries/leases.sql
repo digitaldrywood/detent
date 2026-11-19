@@ -144,16 +144,28 @@ SELECT request_hash FROM native_attempt_events WHERE organization_id=$1 AND atte
 
 -- name: InsertLeaseAttempt :one
 INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence,worker_cleanup_required,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,project_id,failure_sequence,failure_example,failure_class,failure_landing_observed_at,
-identity_sequence,identity_execution_role,identity_execution_backend,identity_execution_model,identity_execution_reasoning_effort,identity_selection_effort_clamped_from,identity_selection_policy,identity_selection_policy_source,identity_selection_reason,identity_selection_level,identity_selection_requested_model,identity_selection_model_source,identity_selection_effort_source,identity_selection_fallback_reason,identity_selection_backend_source,identity_selection_route_source,identity_backend_id,identity_backend_kind,identity_route,identity_role,identity_provider,identity_provider_provenance,identity_requested_model,identity_requested_model_provenance,identity_resolved_model,identity_resolved_model_provenance,identity_reasoning_effort,identity_reasoning_effort_provenance,identity_service_tier,identity_service_tier_provenance,identity_observed_at)
+identity_sequence,identity_execution_role,identity_execution_backend,identity_execution_model,identity_execution_reasoning_effort,identity_selection_effort_clamped_from,identity_selection_policy,identity_selection_policy_source,identity_selection_reason,identity_selection_level,identity_selection_requested_model,identity_selection_model_source,identity_selection_effort_source,identity_selection_fallback_reason,identity_selection_backend_source,identity_selection_route_source,identity_backend_id,identity_backend_kind,identity_route,identity_role,identity_provider,identity_provider_provenance,identity_requested_model,identity_requested_model_provenance,identity_resolved_model,identity_resolved_model_provenance,identity_reasoning_effort,identity_reasoning_effort_provenance,identity_service_tier,identity_service_tier_provenance,identity_observed_at,worker_pid,worker_pgid,worker_started_at,worker_start_key,worker_runner_id)
 VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(started_at),sqlc.arg(started_at_submicro_ns),sqlc.arg(now),sqlc.narg(runtime_heartbeat_at),1,sqlc.narg(worker_cleanup_required)::boolean,NULLIF(sqlc.arg(local_attempt_id)::bigint,0),true,sqlc.narg(checkpoint_preserves_source)::boolean,(SELECT i.project_id FROM work_item_identities i WHERE i.organization_id=$1 AND i.id=$3),
 CASE WHEN sqlc.arg(failure_recorded)::boolean THEN 1 END,sqlc.narg(failure_example)::text,sqlc.narg(failure_class)::text,sqlc.narg(failure_landing_observed_at)::timestamptz,
-CASE WHEN sqlc.narg(identity_execution_role)::text IS NOT NULL THEN 1 END,sqlc.narg(identity_execution_role)::text,sqlc.narg(identity_execution_backend)::text,sqlc.narg(identity_execution_model)::text,sqlc.narg(identity_execution_reasoning_effort)::text,sqlc.narg(identity_selection_effort_clamped_from)::text,sqlc.narg(identity_selection_policy)::text,sqlc.narg(identity_selection_policy_source)::text,sqlc.narg(identity_selection_reason)::text,sqlc.narg(identity_selection_level)::text,sqlc.narg(identity_selection_requested_model)::text,sqlc.narg(identity_selection_model_source)::text,sqlc.narg(identity_selection_effort_source)::text,sqlc.narg(identity_selection_fallback_reason)::text,sqlc.narg(identity_selection_backend_source)::text,sqlc.narg(identity_selection_route_source)::text,sqlc.narg(identity_backend_id)::text,sqlc.narg(identity_backend_kind)::text,sqlc.narg(identity_route)::text,sqlc.narg(identity_role)::text,sqlc.narg(identity_provider)::text,sqlc.narg(identity_provider_provenance)::text,sqlc.narg(identity_requested_model)::text,sqlc.narg(identity_requested_model_provenance)::text,sqlc.narg(identity_resolved_model)::text,sqlc.narg(identity_resolved_model_provenance)::text,sqlc.narg(identity_reasoning_effort)::text,sqlc.narg(identity_reasoning_effort_provenance)::text,sqlc.narg(identity_service_tier)::text,sqlc.narg(identity_service_tier_provenance)::text,sqlc.narg(identity_observed_at)::timestamptz) RETURNING *;
+CASE WHEN sqlc.narg(identity_execution_role)::text IS NOT NULL THEN 1 END,sqlc.narg(identity_execution_role)::text,sqlc.narg(identity_execution_backend)::text,sqlc.narg(identity_execution_model)::text,sqlc.narg(identity_execution_reasoning_effort)::text,sqlc.narg(identity_selection_effort_clamped_from)::text,sqlc.narg(identity_selection_policy)::text,sqlc.narg(identity_selection_policy_source)::text,sqlc.narg(identity_selection_reason)::text,sqlc.narg(identity_selection_level)::text,sqlc.narg(identity_selection_requested_model)::text,sqlc.narg(identity_selection_model_source)::text,sqlc.narg(identity_selection_effort_source)::text,sqlc.narg(identity_selection_fallback_reason)::text,sqlc.narg(identity_selection_backend_source)::text,sqlc.narg(identity_selection_route_source)::text,sqlc.narg(identity_backend_id)::text,sqlc.narg(identity_backend_kind)::text,sqlc.narg(identity_route)::text,sqlc.narg(identity_role)::text,sqlc.narg(identity_provider)::text,sqlc.narg(identity_provider_provenance)::text,sqlc.narg(identity_requested_model)::text,sqlc.narg(identity_requested_model_provenance)::text,sqlc.narg(identity_resolved_model)::text,sqlc.narg(identity_resolved_model_provenance)::text,sqlc.narg(identity_reasoning_effort)::text,sqlc.narg(identity_reasoning_effort_provenance)::text,sqlc.narg(identity_service_tier)::text,sqlc.narg(identity_service_tier_provenance)::text,sqlc.narg(identity_observed_at)::timestamptz,sqlc.narg(worker_pid)::integer,sqlc.narg(worker_pgid)::integer,sqlc.narg(worker_started_at)::timestamptz,sqlc.narg(worker_start_key)::text,
+CASE WHEN sqlc.narg(worker_pid)::integer IS NOT NULL THEN (SELECT a.runner_id FROM runner_lease_assignments a WHERE a.organization_id=$1 AND a.lease_id=$4) END) RETURNING *;
 
 -- name: AdvanceLeaseAttempt :one
 UPDATE native_attempts SET sequence=sqlc.arg(next_sequence),
 local_attempt_id=CASE WHEN local_attempt_id_recorded THEN COALESCE(local_attempt_id,NULLIF(sqlc.arg(local_attempt_id)::bigint,0)) ELSE local_attempt_id END,
 runtime_heartbeat_at=sqlc.narg(runtime_heartbeat_at),runtime_summary_sequence=sqlc.arg(next_sequence),worker_cleanup_required=sqlc.narg(worker_cleanup_required)::boolean,
-cleanup_acknowledged_at=CASE WHEN sqlc.arg(termination)::boolean THEN sqlc.arg(now) ELSE cleanup_acknowledged_at END,
+worker_pid=COALESCE(sqlc.narg(worker_pid)::integer,worker_pid),
+worker_pgid=COALESCE(sqlc.narg(worker_pgid)::integer,worker_pgid),
+worker_started_at=COALESCE(sqlc.narg(worker_started_at)::timestamptz,worker_started_at),
+worker_start_key=COALESCE(sqlc.narg(worker_start_key)::text,worker_start_key),
+worker_runner_id=CASE WHEN sqlc.narg(worker_pid)::integer IS NOT NULL AND worker_runner_id IS NULL
+ THEN (SELECT a.runner_id FROM runner_lease_assignments a WHERE a.organization_id=native_attempts.organization_id AND a.lease_id=native_attempts.lease_id)
+ ELSE worker_runner_id END,
+cleanup_acknowledged_at=CASE
+ WHEN sqlc.narg(worker_pid)::integer IS NOT NULL AND ROW(worker_pid,worker_pgid,worker_started_at,worker_start_key) IS DISTINCT FROM
+      ROW(sqlc.narg(worker_pid)::integer,sqlc.narg(worker_pgid)::integer,sqlc.narg(worker_started_at)::timestamptz,sqlc.narg(worker_start_key)::text) THEN NULL
+ WHEN sqlc.arg(termination)::boolean AND worker_pid IS NULL THEN sqlc.arg(now)
+ ELSE cleanup_acknowledged_at END,
 status=CASE WHEN sqlc.arg(usage_correction)::boolean THEN status ELSE sqlc.arg(status) END,
 payload_object_key=sqlc.arg(payload_object_key),
 checkpoint_object_key=COALESCE(sqlc.narg(checkpoint_object_key),checkpoint_object_key),
@@ -195,10 +207,13 @@ identity_service_tier=CASE WHEN identity_sequence<sqlc.arg(next_sequence) AND sq
 identity_service_tier_provenance=CASE WHEN identity_sequence<sqlc.arg(next_sequence) AND sqlc.narg(identity_service_tier_provenance)::text IS NOT NULL THEN sqlc.narg(identity_service_tier_provenance)::text ELSE identity_service_tier_provenance END,
 identity_observed_at=CASE WHEN identity_sequence<sqlc.arg(next_sequence) AND sqlc.narg(identity_observed_at)::timestamptz IS NOT NULL THEN sqlc.narg(identity_observed_at)::timestamptz ELSE identity_observed_at END,
 updated_at=CASE WHEN sqlc.arg(usage_correction)::boolean THEN updated_at ELSE sqlc.arg(now) END
-WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND lease_id=sqlc.arg(lease_id)
+WHERE native_attempts.organization_id=sqlc.arg(organization_id) AND native_attempts.id=sqlc.arg(id) AND native_attempts.lease_id=sqlc.arg(lease_id)
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND run_id=sqlc.arg(run_id)
 AND (sqlc.arg(local_attempt_id)::bigint=0 OR local_attempt_id IS NULL OR local_attempt_id=sqlc.arg(local_attempt_id))
 AND dispatch_generation=sqlc.arg(dispatch_generation) AND sequence=sqlc.arg(next_sequence)-1
+AND (sqlc.narg(worker_pid)::integer IS NULL OR worker_pid IS NULL OR cleanup_acknowledged_at IS NOT NULL
+ OR ROW(worker_pid,worker_pgid,worker_started_at,worker_start_key) IS NOT DISTINCT FROM
+    ROW(sqlc.narg(worker_pid)::integer,sqlc.narg(worker_pgid)::integer,sqlc.narg(worker_started_at)::timestamptz,sqlc.narg(worker_start_key)::text))
 AND (status='running' OR status='interrupted' AND sqlc.arg(status)='running' OR sqlc.arg(usage_correction)::boolean AND status=sqlc.arg(status) OR sqlc.arg(termination)::boolean AND status IN ('interrupted','cancelled') AND sqlc.arg(status)='cancelled')
 AND (NOT sqlc.arg(runtime_ordered)::boolean OR CASE WHEN sqlc.arg(usage_correction)::boolean THEN status ELSE sqlc.arg(status) END NOT IN ('running','interrupted') OR runtime_heartbeat_at IS NULL OR sqlc.narg(runtime_heartbeat_at)>=runtime_heartbeat_at)
 RETURNING *;
@@ -322,3 +337,14 @@ WITH owned_item AS MATERIALIZED (
 )
 SELECT id,false AS coverage_unknown FROM matches
 UNION ALL SELECT '' AS id,coverage_unknown FROM unprojected;
+
+-- name: AcknowledgeAttemptWorker :one
+UPDATE native_attempts n SET cleanup_acknowledged_at=coalesce(n.cleanup_acknowledged_at,sqlc.arg(acknowledged_at)::timestamptz)
+FROM leases l, runner_lease_assignments a, work_item_identities i
+WHERE n.organization_id=sqlc.arg(organization_id) AND n.project_id=sqlc.arg(project_id) AND n.id=sqlc.arg(attempt_id)
+AND n.lease_id=sqlc.arg(lease_id) AND n.fencing_token=sqlc.arg(fencing_token) AND n.worker_runner_id=sqlc.arg(runner_id)
+AND l.organization_id=n.organization_id AND l.lease_id=n.lease_id AND l.issue_id=n.issue_id AND l.fencing_token=n.fencing_token AND l.machine_id=sqlc.arg(machine_id)
+AND a.organization_id=n.organization_id AND a.lease_id=n.lease_id AND a.runner_id=n.worker_runner_id
+AND i.organization_id=n.organization_id AND i.id=n.issue_id AND i.project_id=n.project_id AND i.native_id=sqlc.arg(work_item_id)
+AND (n.worker_pid,n.worker_pgid,n.worker_started_at,n.worker_start_key)=(sqlc.arg(pid)::integer,sqlc.arg(pgid)::integer,sqlc.arg(started_at)::timestamptz,sqlc.arg(start_key)::text)
+RETURNING n.id;

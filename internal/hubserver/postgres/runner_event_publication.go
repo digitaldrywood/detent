@@ -17,12 +17,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/attemptworkersql"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 )
 
 func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestore.AttemptEvent) (leasestore.Attempt, bool, error) {
-	if (e.CheckpointObjectKey == nil) != (e.CheckpointPreservesSource == nil) {
+	if (e.CheckpointObjectKey == nil) != (e.CheckpointPreservesSource == nil) || e.Worker != nil && !e.Worker.Valid() {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	if e.PayloadReference != (attachment.ArchiveReference{}) && (e.PayloadReference.Validate(string(f.session.organization)) != nil || e.PayloadReference.Key != e.PayloadObjectKey || e.PayloadReference.SchemaVersion != 1 || e.PayloadReference.BindingID != "" || e.PayloadReference.CustomerOwned) {
@@ -107,12 +108,14 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 			return leasestore.Attempt{}, false, err
 		}
 		params := pgquery.InsertLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, IssueID: l.IssueID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, Status: e.Status, WorkItemRevision: l.WorkItemRevision, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(e.CheckpointPreservesSource), ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(e.WorkerCleanupRequired), LocalAttemptID: e.LocalAttemptID, StartedAt: old.StartedAt, StartedAtSubmicroNs: old.StartedAtSubmicroNs, Now: f.now, FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt}
+		params.WorkerPid, params.WorkerPgid, params.WorkerStartedAt, params.WorkerStartKey = attemptworkersql.Columns(e.Worker)
 		newAttemptIdentityColumns(e.Identity).insert(&params)
 		if _, err := q.InsertLeaseAttempt(ctx, params); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
 	} else {
 		params := pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(e.CheckpointPreservesSource), ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(e.WorkerCleanupRequired), LocalAttemptID: e.LocalAttemptID, UsageCorrection: e.UsageCorrection, Termination: e.Termination, RuntimeOrdered: e.RuntimeOrdered, Now: &f.now, FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt}
+		params.WorkerPid, params.WorkerPgid, params.WorkerStartedAt, params.WorkerStartKey = attemptworkersql.Columns(e.Worker)
 		newAttemptIdentityColumns(e.Identity).advance(&params)
 		if _, err := pgquery.New(runEventAdvanceQueue{runEventQueue{f.pending}}).AdvanceLeaseAttempt(ctx, params); err != nil {
 			return leasestore.Attempt{}, false, err
