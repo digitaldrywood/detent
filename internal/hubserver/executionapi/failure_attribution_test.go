@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"testing"
@@ -22,7 +22,7 @@ func TestPreProviderFailureDecisionRetainsUsage(t *testing.T) {
 				failure.Decision = &tracker.FailureAttribution{Outcome: test.outcome, Reason: "recorded decision", Evidence: tracker.FailureEvidence{Step: "checkout"}}
 			}
 			data := tracker.NativeRunData{Sequence: 1, Outcome: "failed", TerminalFailure: failure, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 1, Generation: 1, HeartbeatAt: now, Phase: "completed"}, Usage: []tracker.NativeUsage{{Provider: "example", Model: "example", Input: 10, Output: 1}}}
-			err := validateNativeExecution(data, "run.finished")
+			err := ValidateNativeExecution(func(err error, _, _ string) error { return err }, nil, data, "run.finished")
 			if (err == nil) != test.allow {
 				t.Fatalf("allowed=%v error=%v", test.allow, err)
 			}
