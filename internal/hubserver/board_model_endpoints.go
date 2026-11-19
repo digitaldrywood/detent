@@ -27,6 +27,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	selection.WindowAsOf = new(s.config.Clock())
 	selection.SearchText = params.Get("q")
 	selection.WorkItemIDs = nil
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)

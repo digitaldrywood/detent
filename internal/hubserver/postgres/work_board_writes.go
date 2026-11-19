@@ -338,7 +338,7 @@ func (s *session) putBoardItem(ctx context.Context, b viewstore.BoardRecord, num
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	if _, err := s.db.Exec(ctx, "UPDATE native_board_items SET page_window_mask=$4,page_refresh_after=$5,page_list_bytes=$6 WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, b.ProjectID, b.WorkItemID, b.WindowMask, b.RefreshAfter, b.ListBytes); err != nil {
+	if _, err := s.db.Exec(ctx, "UPDATE native_board_items SET page_window_mask=0,page_refresh_after=$4,page_list_bytes=$5 WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, b.ProjectID, b.WorkItemID, b.RefreshAfter, b.ListBytes); err != nil {
 		return mapError(ctx, err)
 	}
 	if err := s.putBoardPage(ctx, b); err != nil {

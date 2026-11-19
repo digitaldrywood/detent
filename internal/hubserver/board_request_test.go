@@ -328,7 +328,7 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 							if strings.Contains(query, "native_board_sequences") || strings.Contains(query, "WITH page AS MATERIALIZED") {
 								modelReads++
 							}
-							if strings.Contains(query, "RelationshipBatch") || strings.Contains(query, "FROM issue_dependency_reasons") || strings.Contains(query, "count(*)") {
+							if boardDerivesPageData(query) {
 								t.Errorf("serving query derives page data: %s", strings.Split(query, "\n")[0])
 							}
 						}
@@ -351,6 +351,23 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 			}
 		}
 	}
+}
+
+func boardDerivesPageData(query string) bool {
+	if strings.Contains(query, "RelationshipBatch") || strings.Contains(query, "FROM issue_dependency_reasons") {
+		return true
+	}
+	before, rest, found := strings.Cut(query, "\nwindows AS MATERIALIZED (")
+	if !found {
+		return strings.Contains(query, "count(*)")
+	}
+	window, after, found := strings.Cut(rest, "), summary(")
+	const indexedClose = "coalesce(b.closed_at,'-infinity'::timestamptz)"
+	const asOf = "coalesce($6::timestamptz,statement_timestamp())"
+	return !found || strings.Contains(before+after, "count(*)") ||
+		!strings.Contains(window, "WHERE b.organization_id=$1 AND b.project_id=") ||
+		!strings.Contains(window, "AND "+indexedClose+">="+asOf+"-interval '168 hours'") ||
+		!strings.Contains(window, "AND "+indexedClose+"<="+asOf)
 }
 
 func boardHandlerArrayContract(t *testing.T, service *Service, ctx context.Context, scope hubscope.NativeScope, params url.Values) tracker.NativeIssuePage {

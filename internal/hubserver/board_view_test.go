@@ -61,9 +61,6 @@ func TestBoardViewReadsOpenCardsPerTenant(t *testing.T) {
 					return err
 				}
 				row := viewstore.BoardRecord{OrganizationID: org, ProjectID: fixture.project.ID, WorkItemID: card.id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: card.state, Identifier: fmt.Sprintf("Example#%d", index+1), Activity: &now}, Terminal: terminal, ClosedAt: issue.ClosedAt, Dispatchable: !terminal, CreatedAt: now, UpdatedAt: now, Payload: payload, ActorPrincipalID: card.actor, PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{DependencyReady: true}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: index + 1, Actor: issue.Actor}}
-				if terminal {
-					row.WindowMask = 7
-				}
 				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: fixture.project.ID, WorkItemID: card.id, ExpectedRevision: item.Revision, Current: &row})
 			}); err != nil {
 				t.Fatal(err)
@@ -291,9 +288,6 @@ func TestBoardViewCardsMatchLaneCards(t *testing.T) {
 				}
 				row := boardProjectionRecord(snapshot, card)
 				row.ProjectedAt = now
-				if row.Terminal {
-					row.WindowMask = 7
-				}
 				issue := card.Issue
 				issue.WebURL = hubrecords.IssueBrowserPath(strings.ReplaceAll(string(org), "_", "-"), record.Core.Slug, number)
 				board, list, reporter, listBytes, err := boundBoardProjection(service.nativeIssueResponse(issue), viewstore.BoardReporterRelations{ReporterStatus: "submitted", DependencyReady: true, BlockedReason: issue.BlockedReason})

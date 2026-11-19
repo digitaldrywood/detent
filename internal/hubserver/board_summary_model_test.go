@@ -99,7 +99,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 			if !ok {
 				return errors.New("missing typed summary reader")
 			}
-			rows, err := model.BoardSummaryModel(t.Context(), viewstore.BoardSelection{ProjectID: projects[org], Archived: new(false), ExcludeWorkspace: true})
+			rows, err := model.BoardSummaryModel(t.Context(), viewstore.BoardSelection{ProjectID: projects[org], WindowAsOf: &now, Archived: new(false), ExcludeWorkspace: true})
 			for _, row := range rows {
 				key := row.State
 				if row.Kind == "total" {
@@ -210,36 +210,47 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	now = now.Add(30 * time.Minute)
-	if err := service.refreshBoardRecord(t.Context(), "org_first", candidates["org_first"][1], now); err != nil {
-		t.Fatal(err)
-	}
-	boundary := read("org_first")
-	if boundary["*"].Shipped1h != 1 || boundary["Done"].Shipped1h != 1 {
-		t.Fatalf("inclusive completion boundary lost shipped item: %+v", boundary)
-	}
-	if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
-		row, err := r.BoardItem(t.Context(), projects["org_first"], candidates["org_first"][1].WorkItemID)
-		if err == nil && (row.RefreshAfter == nil || !row.RefreshAfter.After(now)) {
-			t.Fatalf("completion boundary remains immediately due: %+v", row.RefreshAfter)
+	for _, test := range []struct {
+		name               string
+		age                time.Duration
+		shipped, cancelled [3]int
+	}{
+		{"inclusive one-hour boundary", 30 * time.Minute, [3]int{1, 1, 1}, [3]int{0, 1, 1}},
+		{"after one hour", 30*time.Minute + time.Microsecond, [3]int{0, 1, 1}, [3]int{0, 1, 1}},
+		{"after 24 hours", 24 * time.Hour, [3]int{0, 0, 1}, [3]int{0, 0, 1}},
+		{"after seven days", 7 * 24 * time.Hour, [3]int{}, [3]int{}},
+	} {
+		for org, project := range projects {
+			t.Run(string(org)+"/"+test.name, func(t *testing.T) {
+				now = initial[org]["*"].ProjectedAt.Add(test.age)
+				credential := hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}
+				scope := hubscope.NativeScope{Organization: org, Project: project, Credential: credential}
+				params := url.Values{"include": {"board"}, "open": {"true"}, "state": {"Todo"}, "completed_window": {"1h"}}
+				legacy, err := service.readBoardRecordsFor(t.Context(), scope, params, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request, err := parseWorkBoardRequest(boardViewParams(t, savedWorkState{View: "board", CompletedWindow: "1h"}, []tracker.ProjectID{project}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				scope.Project = ""
+				view, err := service.readWorkBoard(t.Context(), scope, request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for name, work := range map[string]*tracker.NativeWorkSummary{"legacy": legacy.Work, "board": testBoardWork(view)} {
+					want := []tracker.NativeShippedWindow{
+						{Window: "1h", Shipped: test.shipped[0], Cancelled: test.cancelled[0]},
+						{Window: "24h", Shipped: test.shipped[1], Cancelled: test.cancelled[1]},
+						{Window: "7d", Shipped: test.shipped[2], Cancelled: test.cancelled[2]},
+					}
+					if work == nil || !reflect.DeepEqual(work.ShippedWindows, want) || work.Completed != test.shipped[0] || work.Cancelled != test.cancelled[0] || !work.AsOf.Equal(initial[org]["*"].ProjectedAt) {
+						t.Errorf("%s summary=%+v, want windows=%+v", name, work, want)
+					}
+				}
+			})
 		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(time.Microsecond)
-	if err := service.refreshBoardRecord(t.Context(), "org_first", candidates["org_first"][1], now); err != nil {
-		t.Fatal(err)
-	}
-	updated := read("org_first")
-	if updated["*"].Total != 3 || updated["Done"].Total != 1 || updated["*"].Shipped1h != 0 || updated["Done"].Shipped1h != 0 || updated["*"].Shipped24h != 1 || updated["*"].Cancelled24h != 1 {
-		t.Errorf("expired window changed the wrong counts: %+v", updated)
-	}
-	if updated["*"].Sequence <= initial["org_first"]["*"].Sequence || !updated["*"].ProjectedAt.Equal(now) {
-		t.Errorf("expiry did not advance checkpoint: %+v", updated["*"])
-	}
-	if other := read("org_first_second"); !reflect.DeepEqual(other, initial["org_first_second"]) {
-		t.Errorf("one tenant's refresh changed another tenant: before=%+v after=%+v", initial["org_first_second"], other)
 	}
 }
 
@@ -280,7 +291,7 @@ func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 						return err
 					}
 					issue.Revision = tracker.Revision(item.Revision)
-					row := viewstore.BoardRecord{OrganizationID: org, ProjectID: fixture.project.ID, WorkItemID: issue.WorkItemID, SourceRevision: item.Revision, SourceEventSequence: item.EventSequence, SourceProjectRevision: project.ContentSettingsRevision, Position: viewstore.BoardPosition{State: issue.State, Identifier: "example#1"}, ActorPrincipalID: issue.Actor.PrincipalID, Terminal: true, Running: true, WindowMask: 7, ReporterRelations: &viewstore.BoardReporterRelations{}, Payload: payload, PageIssue: &issue, ListIssue: &issue, ListBytes: 1000, ProjectedAt: now, CreatedAt: now, UpdatedAt: now}
+					row := viewstore.BoardRecord{OrganizationID: org, ProjectID: fixture.project.ID, WorkItemID: issue.WorkItemID, SourceRevision: item.Revision, SourceEventSequence: item.EventSequence, SourceProjectRevision: project.ContentSettingsRevision, Position: viewstore.BoardPosition{State: issue.State, Identifier: "example#1"}, ActorPrincipalID: issue.Actor.PrincipalID, Terminal: true, Running: true, ClosedAt: issue.ClosedAt, ReporterRelations: &viewstore.BoardReporterRelations{}, Payload: payload, PageIssue: &issue, ListIssue: &issue, ListBytes: 1000, ProjectedAt: now, CreatedAt: now, UpdatedAt: now}
 					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: fixture.project.ID, WorkItemID: issue.WorkItemID, ExpectedRevision: item.Revision, ExpectedEventSequence: item.EventSequence, ExpectedProjectRevision: project.ContentSettingsRevision, Current: &row})
 				})
 				if err != nil {
@@ -293,7 +304,7 @@ func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 					model := r.(interface {
 						BoardSummaryModel(context.Context, viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error)
 					})
-					rows, err := model.BoardSummaryModel(t.Context(), viewstore.BoardSelection{ProjectID: fixture.project.ID, Reporter: true, ReporterPrincipalID: owner, Archived: new(false), ExcludeWorkspace: true})
+					rows, err := model.BoardSummaryModel(t.Context(), viewstore.BoardSelection{ProjectID: fixture.project.ID, Reporter: true, ReporterPrincipalID: owner, WindowAsOf: &now, Archived: new(false), ExcludeWorkspace: true})
 					if pending {
 						if !errors.Is(err, searchstore.ErrIndexPending) || len(rows) != 0 {
 							t.Errorf("%s stale counts=%+v error=%v", owner, rows, err)

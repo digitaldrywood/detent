@@ -58,9 +58,6 @@ func seedBoardCards(t *testing.T, service *Service, org tracker.OrganizationID, 
 				Payload: payload, PageIssue: &issue, ListIssue: &issue, ListBytes: 4096, ProjectedAt: now,
 				ReporterRelations: &viewstore.BoardReporterRelations{ReporterStatus: "reported", Dependencies: slices.Clone(ids), Blockers: slices.Clone(card.blockers), DependencyReady: issue.DependencyReady},
 				Display:           viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: card.number, Actor: issue.Actor}}
-			if terminal {
-				row.WindowMask = 7
-			}
 			if err := w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: project, WorkItemID: card.id, ExpectedRevision: stored.Revision, ExpectedEventSequence: stored.EventSequence, ExpectedProjectRevision: record.ContentSettingsRevision, Current: &row}); err != nil {
 				return err
 			}
