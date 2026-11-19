@@ -138,7 +138,7 @@ Linux `.deb` and `.rpm` packages, Windows builds, and checksums are attached to 
 
 Update a release install with `detent update` (add `--yes` for automation). On a runner, `detent update --yes` drains running work before it restarts. Upgrade Homebrew and native package installs through their package manager.
 
-To build from source, download `detent_<version>_source.tar.gz` from a release, verify it against that release's checksums, and run `go build -trimpath -ldflags "$(cat BUILD_LDFLAGS)" -o detent ./cmd/detent` inside it. It needs only Go 1.26. Raw git checkouts need Node 24 and `make build`; see [CONTRIBUTING.md](CONTRIBUTING.md).
+To build from source, download `detent_<version>_source.tar.gz` from a release, verify it against that release's checksums, and run `go build -trimpath -ldflags "$(cat BUILD_LDFLAGS)" -o detent ./cmd/detent` inside it. It needs only Go 1.27.3. Raw git checkouts need Node 24 and `make build`; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 

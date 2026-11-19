@@ -63,7 +63,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.10'
+          go-version: '1.27.3'
           cache: false
 
       - name: Verify release-branch full-suite provenance or recorded owner override
@@ -179,7 +179,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.10'
+          go-version: '1.27.3'
           cache: false
 
       - uses: actions/download-artifact@v8

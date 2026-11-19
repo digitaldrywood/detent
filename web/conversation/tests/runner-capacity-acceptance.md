@@ -6,7 +6,7 @@ two enrolled runners on separate machines, and an isolated PostgreSQL database. 
 plan permits sixteen concurrent jobs so the runner ceilings can be observed. No
 provider process executes and no production system or fleet setting is accessed.
 
-From the workspace root, with Node 24, Go 1.26 and worker scratch configured:
+From the workspace root, with Node 24, Go 1.27.3 and worker scratch configured:
 
 ```sh
 make app

@@ -1,0 +1,13 @@
+diff --git a/taint/taint.go b/taint/taint.go
+--- a/taint/taint.go
++++ b/taint/taint.go
+@@ -33 +33 @@
+-const maxCallerEdges = 1024
++const maxCallerEdges = 4096
+@@ -950,3 +949,0 @@
+-	// Sorting only matters when the cap will truncate the edge set. For smaller
+-	// caller sets, inspect the call graph's existing slice directly so ordinary
+-	// functions do not pay an unnecessary O(n log n) cost.
+@@ -954 +951 @@
+-	if len(node.In) > maxCallerEdges {
++	if len(inEdges) > 1 {

@@ -16,12 +16,12 @@ class PlatformValidationTest(unittest.TestCase):
         path.chmod(0o755)
 
     def test_windows_exact_toolchain(self):
-        for actual in ('go1.26.10', 'go1.26.9'):
+        for actual in ('go1.27.3', 'go1.27.2'):
             with self.subTest(actual=actual), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 source = root / 'source'
                 source.mkdir()
-                (source / 'go.mod').write_text('module example.org/project\n\ngo 1.26.0\ntoolchain go1.26.10\n')
+                (source / 'go.mod').write_text('module example.org/project\n\ngo 1.26.0\ntoolchain go1.27.3\n')
                 state = root / 'cache/windows'
                 state.mkdir(parents=True)
                 (state / 'id_ed25519').touch()
@@ -42,11 +42,11 @@ elif command.startswith('tar '): sys.stdin.buffer.read()
                            DETENT_PLATFORM_CACHE=str(root / 'cache'), ACTUAL=actual, CALLS=str(root / 'calls'))
                 result = subprocess.run(['bash', str(ROOT / 'scripts/validate-windows-local.sh'), str(source)],
                                         env=env, capture_output=True, text=True, timeout=30)
-                self.assertEqual(result.returncode == 0, actual == 'go1.26.10', result.stdout + result.stderr)
+                self.assertEqual(result.returncode == 0, actual == 'go1.27.3', result.stdout + result.stderr)
                 calls = (root / 'calls').read_text()
                 self.assertIn('env GOVERSION', calls)
-                self.assertEqual('go test -short' in calls, actual == 'go1.26.10')
-                if actual != 'go1.26.10':
+                self.assertEqual('go test -short' in calls, actual == 'go1.27.3')
+                if actual != 'go1.27.3':
                     self.assertIn('does not match go.mod', result.stderr)
 
     def test_validated_sources_and_native_linux_platform(self):
@@ -69,7 +69,7 @@ elif command.startswith('tar '): sys.stdin.buffer.read()
             shutil.copyfile(ROOT / 'scripts/validate-platforms-local.sh', scripts / 'validate-platforms-local.sh')
             (scripts / 'linux-validate.Dockerfile').write_text('validated Dockerfile\n')
             (scripts / 'validate-windows-local.sh').write_text('echo validated > "$WINDOWS_CALL"\n')
-            (repo / 'go.mod').write_text('toolchain go1.26.10\n')
+            (repo / 'go.mod').write_text('toolchain go1.27.3\n')
             (repo / 'Makefile').write_text('app:\n\t@true\n')
             git('add', '.')
             git('commit', '-qm', 'validated source')
