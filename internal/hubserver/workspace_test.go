@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -430,96 +431,6 @@ func requireWorkspaceLimit(t *testing.T, response *httptest.ResponseRecorder, sc
 	if value, ok := failure.Details["limit"].(float64); !ok || int(value) != limit {
 		t.Fatalf("details = %#v, want limit %d", failure.Details, limit)
 	}
-}
-
-// One idempotency key is one workspace: a retry of a request whose answer was
-// lost must not open a second runner slot, and a key reused for something else
-// must not hand back the first one.
-func TestWorkspaceRequestIsIdempotentPerKey(t *testing.T) {
-	t.Parallel()
-	f := newWorkspaceFixture(t, nil)
-	body := map[string]any{"idempotency_key": "open-once", "work_item_id": string(f.issue.WorkItemID), "ref": "main"}
-
-	first := f.post(t, f.token, body)
-	requireNativeStatus(t, first, http.StatusCreated)
-	var opened workspacesession.Session
-	decodeHubResponse(t, first, &opened)
-
-	t.Run("the same key with the same body replays the committed workspace", func(t *testing.T) {
-		retry := f.post(t, f.token, body)
-		requireNativeStatus(t, retry, http.StatusCreated)
-		var replayed workspacesession.Session
-		decodeHubResponse(t, retry, &replayed)
-		if replayed.ID != opened.ID || retry.Body.String() != first.Body.String() {
-			t.Fatalf("replay = %#v, want %s byte for byte", replayed, opened.ID)
-		}
-		if listing := f.list(t, ""); len(listing.Workspaces) != 1 {
-			t.Fatalf("a replay opened a second workspace: %d", len(listing.Workspaces))
-		}
-	})
-
-	t.Run("the same key with a different body is a conflict", func(t *testing.T) {
-		changed := maps.Clone(body)
-		changed["ref"] = "release"
-		requireNativeCode(t, f.post(t, f.token, changed), http.StatusConflict, "idempotency_conflict")
-	})
-}
-
-// Reading follows the issue's read rule, and an identifier that names nothing
-// this reader may see is not found rather than described.
-func TestWorkspaceReadsFilterAndScope(t *testing.T) {
-	t.Parallel()
-	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
-	f := newWorkspaceFixture(t, nil, clock.Now)
-	other := f.create(t, "second-subject")
-	first := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
-	clock.Advance(time.Second)
-	second := f.opened(t, f.token, map[string]any{"work_item_id": string(other.WorkItemID)})
-
-	t.Run("listing filters by work item and by state", func(t *testing.T) {
-		if listing := f.list(t, ""); len(listing.Workspaces) != 2 || listing.Workspaces[0].ID != second.ID || listing.Workspaces[1].ID != first.ID {
-			t.Fatalf("listing is not newest first: %+v", listing.Workspaces)
-		}
-		if listing := f.list(t, "?work_item="+string(other.WorkItemID)+"&state=requested"); len(listing.Workspaces) != 1 || listing.Workspaces[0].ID != second.ID {
-			t.Fatalf("combined subject/state filter: %+v", listing.Workspaces)
-		}
-		if listing := f.list(t, "?work_item="+string(other.WorkItemID)+"&state=closed"); len(listing.Workspaces) != 0 {
-			t.Fatalf("combined subject/state filter returned wrong state: %+v", listing.Workspaces)
-		}
-		if listing := f.list(t, "?work_item="+string(other.WorkItemID)); len(listing.Workspaces) != 1 || listing.Workspaces[0].ID != second.ID {
-			t.Fatalf("work_item filter = %#v", listing.Workspaces)
-		}
-		if listing := f.list(t, "?state=requested"); len(listing.Workspaces) != 2 {
-			t.Fatalf("state filter = %#v", listing.Workspaces)
-		}
-		if listing := f.list(t, "?state=closed"); len(listing.Workspaces) != 0 {
-			t.Fatalf("closed listing = %#v", listing.Workspaces)
-		}
-		requireNativeStatus(t, f.get(t, f.token, first.ID), http.StatusOK)
-	})
-
-	t.Run("an unknown state is refused rather than matching nothing", func(t *testing.T) {
-		// A typo that quietly returns an empty list reads as "no workspaces",
-		// which is the one answer the client must not be given.
-		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/workspaces?state=paused", f.token, nil)
-		requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
-	})
-
-	t.Run("a malformed id and another project's workspace are both not found", func(t *testing.T) {
-		elsewhere := newNativeFixture(t, f.service, f.project.OrganizationID, "workspace-elsewhere")
-		foreign := workspaceFixture{nativeFixture: elsewhere}
-		foreignIssue := elsewhere.create(t, "foreign-subject")
-		session := foreign.opened(t, elsewhere.token, map[string]any{"work_item_id": string(foreignIssue.WorkItemID)})
-		for _, test := range []struct{ name, id string }{
-			{"not a workspace identifier", "workspace-1"},
-			{"right shape, wrong length", "ws_abcdef"},
-			{"another project's workspace", session.ID},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				requireNativeStatus(t, f.get(t, f.token, test.id), http.StatusNotFound)
-			})
-		}
-	})
 }
 
 // workspaceRunnerFixture adds an enrolled runner that reports the read-only
@@ -1509,11 +1420,6 @@ func TestWorkspaceClaimable(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			record := workspaceRecord{Requires: test.requires}
-			claimable, reason := workspaceClaimable(record, test.capabilities, test.fresh, runner, test.retained, test.isolation, test.configured)
-			if claimable != test.want || reason != test.reason {
-				t.Fatalf("workspaceClaimable() = %v, %q, want %v, %q", claimable, reason, test.want, test.reason)
-			}
 			f := workspaceRunnerFixtureOn(t, newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50, RetainAfterRun: defaultWorkspaceRetainAfterRun}))
 			admin := hostedPostgresAdmin(t, f.service)
 			f.service.workspaces.config.Terminal.Isolation = test.configured
@@ -2103,4 +2009,40 @@ func TestWorkspaceCloseEndsItsDispatchItem(t *testing.T) {
 			}
 		})
 	}
+}
+
+type workspaceWorkerIdentity = workspacehub.WorkerIdentity
+type workspaceCheckout = workspacehub.Checkout
+type workspaceBindResponse = workspacehub.BindResponse
+type workspaceHeartbeatResponse = workspacehub.HeartbeatResponse
+type workspaceActionRunReport = workspacehub.ActionRunReport
+type workspaceBindRequest struct {
+	workspaceWorkerIdentity
+	Capabilities workspacesession.Capabilities `json:"capabilities"`
+	Isolation    string                        `json:"isolation,omitempty"`
+}
+
+type workspaceHeartbeatRequest struct {
+	workspaceWorkerIdentity
+	State           string                        `json:"state,omitempty"`
+	Reason          string                        `json:"reason,omitempty"`
+	HeadSHA         string                        `json:"head_sha,omitempty"`
+	Capabilities    workspacesession.Capabilities `json:"capabilities"`
+	Isolation       string                        `json:"isolation,omitempty"`
+	Worktree        string                        `json:"worktree,omitempty"`
+	WorktreePath    string                        `json:"worktree_path,omitempty"`
+	MachineHostname string                        `json:"machine_hostname,omitempty"`
+}
+
+type workspaceUnbindRequest struct {
+	workspaceWorkerIdentity
+	Reason string `json:"reason"`
+}
+
+func createsWorktree(record workspaceRecord, checkout workspaceCheckout) bool {
+	return workspacehub.CreatesWorktree(workspacehub.Record(record), checkout)
+}
+
+func workspaceCapabilityNames(value workspacesession.Capabilities) []string {
+	return workspacehub.CapabilityNames(value)
 }

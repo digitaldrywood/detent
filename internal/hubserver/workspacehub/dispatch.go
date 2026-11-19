@@ -1,4 +1,4 @@
-package hubserver
+package workspacehub
 
 import (
 	"context"
@@ -28,9 +28,9 @@ import (
 // that ran that attempt, because nobody else has that worktree.
 
 const (
-	// workspaceItemLabel marks the native issue as a workspace session. The
+	// ItemLabel marks the native issue as a workspace session. The
 	// runner dispatcher selects its hold-open mode from this label.
-	workspaceItemLabel = "detent:workspace"
+	ItemLabel = "detent:workspace"
 	// workspaceItemTitlePrefix names the issue after the workspace it opens.
 	// The subject issue's title is deliberately not repeated: the workspace
 	// item is a dispatch record, not a second copy of the work.
@@ -42,13 +42,13 @@ const (
 // label for itself.
 type workspaceLabelContextKey struct{}
 
-// allowWorkspaceLabel authorizes the reserved workspace label for one call.
-func allowWorkspaceLabel(ctx context.Context) context.Context {
+// AllowLabel authorizes the reserved workspace label for one call.
+func AllowLabel(ctx context.Context) context.Context {
 	return context.WithValue(ctx, workspaceLabelContextKey{}, true)
 }
 
-// workspaceLabelAllowed reports whether this call may set the reserved label.
-func workspaceLabelAllowed(ctx context.Context) bool {
+// LabelAllowed reports whether this call may set the reserved label.
+func LabelAllowed(ctx context.Context) bool {
 	allowed, isBool := ctx.Value(workspaceLabelContextKey{}).(bool)
 	return isBool && allowed
 }
@@ -60,7 +60,7 @@ func workspaceItemTitle(workspaceID string) string {
 
 // workspaceItemBody states what the runner is being asked for. The body is the
 // whole brief a claiming runner sees before it binds.
-func workspaceItemBody(record workspaceRecord) string {
+func workspaceItemBody(record Record) string {
 	body := "Workspace session " + record.ID + " on work item " + record.SubjectWorkItemID + ".\n\n" +
 		"This item asks a runner to open a worktree and hold it for a person's surfaces. " +
 		"No implementation, branch or pull request is expected: the runner binds through the workspace " +
@@ -100,7 +100,7 @@ func joinWords(values []string) string {
 	return joined
 }
 
-type workspaceIssueClosePlan struct {
+type IssueClosePlan struct {
 	plan    hubrecords.WorkItemRecordPlan
 	fields  hubrecords.WorkItemRecordFields
 	version eventstore.CollaborationVersion
@@ -108,16 +108,16 @@ type workspaceIssueClosePlan struct {
 	move    bool
 }
 
-func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope hubscope.NativeScope, item string, now time.Time) (workspaceIssueClosePlan, error) {
-	var out workspaceIssueClosePlan
+func (o *Operations) PrepareIssueClose(ctx context.Context, scope hubscope.NativeScope, item string, now time.Time) (IssueClosePlan, error) {
+	var out IssueClosePlan
 	if item == "" {
 		return out, nil
 	}
-	plan, err := s.loadWorkItemPlan(ctx, scope, item, "", tracker.UpdateIssue{})
+	plan, err := o.LoadWorkItemPlan(ctx, scope, item, "", tracker.UpdateIssue{})
 	if err != nil {
 		return out, err
 	}
-	terminal, found := firstTerminalState(tracker.NativeProject{States: plan.Project.States})
+	terminal, found := FirstTerminalState(tracker.NativeProject{States: plan.Project.States})
 	if !found || plan.Issue.State == terminal {
 		return out, nil
 	}
@@ -128,7 +128,7 @@ func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope hubscope
 	plan.Issue.ClosedAt = &now
 	plan.Fields = []string{"state"}
 	out.plan, out.move = plan, true
-	out.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
+	out.fields, err = o.PrepareWorkItemFields(ctx, scope.Organization, plan)
 	if err != nil {
 		return out, err
 	}
@@ -136,7 +136,7 @@ func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope hubscope
 	if err != nil {
 		return out, err
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(o.RunDetailStore())
 	out.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, RecordID: item, Revision: int64(plan.Issue.Revision)}, raw)
 	if err != nil {
 		return out, err
@@ -152,7 +152,7 @@ func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope hubscope
 	return out, err
 }
 
-func (p workspaceIssueClosePlan) write(ctx context.Context, w tenantstore.Writer) error {
+func (p IssueClosePlan) Write(ctx context.Context, w tenantstore.Writer) error {
 	if !p.move {
 		return nil
 	}
@@ -188,9 +188,9 @@ func workspaceIsolationRefused() error {
 	return &hubapi.NativeError{Code: "forbidden", Message: "The runner's terminal isolation is not allowed by this organization", Status: http.StatusForbidden, PublicMessage: true}
 }
 
-// firstTerminalState reports the project's first terminal workflow state, the
+// FirstTerminalState reports the project's first terminal workflow state, the
 // lane a closed workspace item is transitioned to.
-func firstTerminalState(project tracker.NativeProject) (string, bool) {
+func FirstTerminalState(project tracker.NativeProject) (string, bool) {
 	for _, state := range project.States {
 		if state.Terminal {
 			return state.Name, true
@@ -199,18 +199,18 @@ func firstTerminalState(project tracker.NativeProject) (string, bool) {
 	return "", false
 }
 
-// requireUnreservedLabels refuses the workspace label on issue content that did
+// RequireUnreservedLabels refuses the workspace label on issue content that did
 // not come from the hub. The label selects the runner's hold-open mode, which
 // checks out the repository and keeps the claim until the workspace closes.
 // A tracker writer who could set it would be able to
 // park a runner on any issue indefinitely.
-func requireUnreservedLabels(ctx context.Context, labels []string) error {
-	if workspaceLabelAllowed(ctx) {
+func RequireUnreservedLabels(ctx context.Context, labels []string) error {
+	if LabelAllowed(ctx) {
 		return nil
 	}
 	for _, label := range labels {
-		if strings.EqualFold(strings.TrimSpace(label), workspaceItemLabel) {
-			return hubapi.NativePublicInvalid("Label " + workspaceItemLabel + " is reserved")
+		if strings.EqualFold(strings.TrimSpace(label), ItemLabel) {
+			return hubapi.NativePublicInvalid("Label " + ItemLabel + " is reserved")
 		}
 	}
 	return nil

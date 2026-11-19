@@ -4,13 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"math/rand/v2"
-	"net/http"
 	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacerelay"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
 )
 
@@ -18,30 +16,6 @@ import (
 // machine, the limits, the dispatch association and the sweeps that make the
 // timeouts real. HTTP handlers, worker binding and the relay live in sibling
 // files.
-
-// Workspace failures, in the native error shape of the conversation contract.
-
-// workspaceExists reports a second request on an attempt that already has an
-// open workspace. It names the existing id, because the client's next move is
-// to use it rather than to retry.
-func workspaceExists(id string) error {
-	return &hubapi.NativeError{
-		Code: "workspace_exists", Message: "A workspace is already open on this attempt",
-		Status: http.StatusConflict, Details: map[string]any{"workspace_id": id},
-		PublicMessage: true,
-	}
-}
-
-// workspaceLimit reports the per-organization or per-person cap. It names
-// which one was reached, so the answer is actionable rather than only a
-// refusal.
-func workspaceLimit(scope string, limit int) error {
-	return &hubapi.NativeError{
-		Code: "workspace_limit", Message: "The open workspace limit has been reached",
-		Status: http.StatusUnprocessableEntity, Details: map[string]any{"scope": scope, "limit": limit},
-		PublicMessage: true,
-	}
-}
 
 // workspaceService owns workspace sessions inside the hub.
 type workspaceService struct {
