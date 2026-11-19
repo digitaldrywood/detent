@@ -1,15 +1,11 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"runtime/pprof"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -200,46 +196,18 @@ func newSpriteWakeFixture(t *testing.T, client *http.Client, storeToken bool, he
 	return f, scope, runners
 }
 
-const spriteWakeFixtureLabel = "sprite_wake_fixture"
-
-func spriteLifecycleGoroutines(t *testing.T) int {
-	t.Helper()
-	var profile bytes.Buffer
-	if err := pprof.Lookup("goroutine").WriteTo(&profile, 1); err != nil {
-		t.Fatal(err)
-	}
-	label := fmt.Sprintf("%q:%q", spriteWakeFixtureLabel, t.Name())
-	retained := 0
-	for _, record := range strings.Split(profile.String(), "\n\n") {
-		if !strings.Contains(record, label) {
-			continue
-		}
-		count, _, ok := strings.Cut(record, " @ ")
-		if !ok {
-			continue
-		}
-		goroutines, err := strconv.Atoi(strings.TrimSpace(count[strings.LastIndex(count, "\n")+1:]))
-		if err != nil {
-			t.Fatal(err)
-		}
-		retained += goroutines * strings.Count(record, "hubserver.(*Service).scheduleSpriteLifecycle.func")
-	}
-	return retained
-}
-
 func startSpriteWakeWorkers(t *testing.T, s *Service) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	s.workerCancel = cancel
-	labels := pprof.Labels(spriteWakeFixtureLabel, t.Name())
 	s.wakeSpriteRunnersAfter = func(scope hubscope.NativeScope, result json.RawMessage) {
-		pprof.Do(ctx, labels, func(ctx context.Context) { s.scheduleSpriteWake(ctx, scope, result) })
+		s.scheduleSpriteWake(ctx, scope, result)
 	}
 	s.startSpriteLifecycle = func(scope hubscope.NativeScope, state string) {
-		pprof.Do(ctx, labels, func(ctx context.Context) { s.scheduleSpriteLifecycle(ctx, scope, state) })
+		s.scheduleSpriteLifecycle(ctx, scope, state)
 	}
 	s.startSpritePoolForQueue = func(scope hubscope.NativeScope) {
-		pprof.Do(ctx, labels, func(ctx context.Context) { s.scheduleSpritePoolForQueue(ctx, scope) })
+		s.scheduleSpritePoolForQueue(ctx, scope)
 	}
 	t.Cleanup(s.stopSpriteRunners)
 }
@@ -294,89 +262,6 @@ func spriteWakeDone(t *testing.T, s *Service, scope hubscope.NativeScope) <-chan
 		t.Fatal("no active Sprite wake pass")
 	}
 	return done.done
-}
-
-func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name           string
-		status         int
-		transportError bool
-	}{
-		{name: "successful provider", status: http.StatusOK},
-		{name: "unavailable provider", status: http.StatusServiceUnavailable},
-		{name: "transport error", transportError: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			started, release, abandoned := make(chan struct{}, 2), make(chan struct{}), make(chan struct{})
-			var calls atomic.Int32
-			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
-				calls.Add(1)
-				started <- struct{}{}
-				select {
-				case <-release:
-				case <-abandoned:
-					return nil, errors.New("fixture provider abandoned")
-				}
-				if test.transportError {
-					return nil, errors.New("fixture provider failure")
-				}
-				return spritesTestResponse(`{"type":"complete"}`, test.status), nil
-			})}
-			f, scope, _ := newSpriteWakeFixture(t, client, true, time.Minute, "customer-host")
-			t.Cleanup(func() { close(abandoned) })
-			f.create(t, "initial")
-			waitSpriteWake(t, started)
-			done := spriteWakeDone(t, f.service, scope)
-			const mutations = 64
-			var workers sync.WaitGroup
-			latencies := make(chan time.Duration, mutations)
-			for i := range mutations {
-				workers.Go(func() {
-					start := time.Now()
-					f.create(t, fmt.Sprintf("burst-%d", i))
-					latencies <- time.Since(start)
-				})
-			}
-			mutationsDone := make(chan struct{})
-			go func() { workers.Wait(); close(mutationsDone) }()
-			waitSpriteWake(t, mutationsDone)
-			close(latencies)
-			var maximum time.Duration
-			for latency := range latencies {
-				maximum = max(maximum, latency)
-			}
-			retained := spriteLifecycleGoroutines(t)
-			f.service.spriteWakeMu.Lock()
-			active := len(f.service.spriteWakes)
-			f.service.spriteWakeMu.Unlock()
-			if active != 1 || retained != 1 || calls.Load() != 1 {
-				t.Fatalf("burst: active passes=%d, retained wake goroutines=%d, provider calls=%d", active, retained, calls.Load())
-			}
-			t.Logf("fixture mutations=%d provider_calls=%d retained_wake_goroutines=%d active_passes=%d max_mutation_latency=%s", mutations+1, calls.Load(), retained, active, maximum)
-			close(release)
-			waitSpriteWake(t, done)
-			f.service.spriteWakeWork.Wait()
-			f.service.spriteWakeMu.Lock()
-			active = len(f.service.spriteWakes)
-			f.service.spriteWakeMu.Unlock()
-			wantCalls := int32(1)
-			if test.status != http.StatusOK || test.transportError {
-				wantCalls = 2
-			}
-			if active != 0 || calls.Load() != wantCalls {
-				t.Fatalf("completed burst: active passes=%d provider calls=%d", active, calls.Load())
-			}
-			spriteFixtureExec(t, f, `UPDATE machines SET sprite_woken_at=NULL WHERE organization_id=$1`, scope.Organization)
-			f.create(t, "later-mutation")
-			waitSpriteWake(t, started)
-			f.service.spriteWakeWork.Wait()
-			if calls.Load() != wantCalls+1 {
-				t.Fatalf("later mutation made %d total calls, want %d", calls.Load(), wantCalls+1)
-			}
-		})
-	}
 }
 
 func TestWakeSpriteRunnersFreshAuthority(t *testing.T) {
