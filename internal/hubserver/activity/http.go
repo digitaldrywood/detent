@@ -51,6 +51,13 @@ func (s *HTTPService) Execute(ctx context.Context, call operatortool.Call) (oper
 	if !s.deps.Available() {
 		return operatortool.Result{}, s.deps.Unavailable
 	}
+	if r.Hourly {
+		report, err := s.deps.Service().readHourly(ctx, credential, r, w)
+		if err != nil {
+			return operatortool.Result{}, s.deps.ReadError(err)
+		}
+		return s.deps.Result(report)
+	}
 	report, err := s.deps.Service().Read(ctx, credential, r, w)
 	if err != nil {
 		return operatortool.Result{}, s.deps.ReadError(err)
@@ -60,6 +67,13 @@ func (s *HTTPService) Execute(ctx context.Context, call operatortool.Call) (oper
 
 func (s *HTTPService) Serve(c echo.Context) error {
 	r := operatortool.ActivityRequest{ProjectID: c.QueryParam("project_id"), RunnerID: c.QueryParam("runner_id"), From: c.QueryParam("from"), To: c.QueryParam("to")}
+	if value := c.QueryParam("hourly"); value != "" {
+		hourly, err := strconv.ParseBool(value)
+		if err != nil {
+			return s.deps.Error(c, hubapi.PublicInvalid("Invalid hourly activity filter"))
+		}
+		r.Hourly = hourly
+	}
 	if value := c.QueryParam("limit"); value != "" {
 		limit, err := strconv.Atoi(value)
 		if err != nil || limit < 1 || limit > operatortool.MaxItemLimit {

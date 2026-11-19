@@ -6,6 +6,7 @@ import (
 )
 
 type ActivityRequest struct {
+	Hourly    bool   `json:"hourly,omitempty"`
 	ProjectID string `json:"project_id,omitempty"`
 	RunnerID  string `json:"runner_id,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
@@ -111,6 +112,12 @@ func DecodeActivity(raw json.RawMessage, now time.Time) (ActivityRequest, Analyt
 	if ValidateFleetArguments(Activity, raw) != nil || DecodeArguments(raw, &r) != nil {
 		return r, w, ErrInvalidArguments
 	}
+	if r.Hourly && (r.ProjectID == "" || r.RunnerID != "" || r.From == "" || r.To == "") {
+		return r, w, ErrInvalidArguments
+	}
+	if r.Hourly {
+		w.Bucket = time.Hour
+	}
 	if r.Limit == 0 {
 		r.Limit = DefaultItemLimit
 	}
@@ -130,7 +137,11 @@ func DecodeActivity(raw json.RawMessage, now time.Time) (ActivityRequest, Analyt
 		}
 		*field.target = at.UTC()
 	}
-	if !w.From.Before(w.To) || w.To.After(now) || w.To.Sub(w.From) > 90*24*time.Hour {
+	maxWindow := 90 * 24 * time.Hour
+	if r.Hourly {
+		maxWindow = MaxHourlyActivityWindow
+	}
+	if !w.From.Before(w.To) || w.To.After(now) || w.To.Sub(w.From) > maxWindow {
 		return r, w, ErrInvalidArguments
 	}
 	return r, w, nil

@@ -157,14 +157,14 @@ func (s *session) importReportEscapes(ctx context.Context, records []eventstore.
 }
 
 func (s *session) importReportEvents(ctx context.Context, records []ReportEventProjectionImport) (int, error) {
-	b := newReportBatch(s.organization, "event_id,run_id,attempt_id,project_id,work_item_id,payload_object_key,payload_sha256,legacy_key,legacy_sha,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id", "text", "text", "text", "text", "text", "text", "text", "text", "text", "bigint", "text", "text", "text", "text", "boolean", "text", "text", "boolean", "boolean", "text", "text", "text", "double precision", "text", "text", "bigint", "double precision", "double precision", "double precision", "text", "bigint", "text", "text")
+	b := newReportBatch(s.organization, "event_id,run_id,attempt_id,project_id,work_item_id,payload_object_key,payload_sha256,legacy_key,legacy_sha,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id,activity_stage,activity_no_change_status", "text", "text", "text", "text", "text", "text", "text", "text", "text", "bigint", "text", "text", "text", "text", "boolean", "text", "text", "boolean", "boolean", "text", "text", "text", "double precision", "text", "text", "bigint", "double precision", "double precision", "double precision", "text", "bigint", "text", "text", "text", "text")
 	for _, r := range records {
 		e, p := r.Event, r.Event.Report
 		legacyKey, legacySHA := "", ""
 		if r.Legacy != nil {
 			legacyKey, legacySHA = r.Legacy.PayloadObjectKey, r.Legacy.PayloadSHA256
 		}
-		b.add(e.ID, e.RunID, e.AttemptID, e.ProjectID, e.WorkItemID, e.PayloadObjectKey, e.PayloadSHA256, legacyKey, legacySHA, p.RunSequence, p.RunStatus, p.Role, p.Model, p.Effort, p.Failed, p.FailureClass, p.FailureKind, p.LandingReceipt, p.Landed, p.LandingChangeID, p.ReworkClass, p.ReworkKind, p.DurationSeconds, p.PhaseTimingStatus, p.ProcessEvidenceStatus, p.ProcessPeakMemoryBytes, p.ProcessUserCPUSeconds, p.ProcessSystemCPUSeconds, p.ProcessWallSeconds, p.ProcessLeaseID, p.ProcessFencingToken, p.ProcessRunnerID, p.ProcessMachineID)
+		b.add(e.ID, e.RunID, e.AttemptID, e.ProjectID, e.WorkItemID, e.PayloadObjectKey, e.PayloadSHA256, legacyKey, legacySHA, p.RunSequence, p.RunStatus, p.Role, p.Model, p.Effort, p.Failed, p.FailureClass, p.FailureKind, p.LandingReceipt, p.Landed, p.LandingChangeID, p.ReworkClass, p.ReworkKind, p.DurationSeconds, p.PhaseTimingStatus, p.ProcessEvidenceStatus, p.ProcessPeakMemoryBytes, p.ProcessUserCPUSeconds, p.ProcessSystemCPUSeconds, p.ProcessWallSeconds, p.ProcessLeaseID, p.ProcessFencingToken, p.ProcessRunnerID, p.ProcessMachineID, p.ActivityStage, p.ActivityNoChangeStatus)
 	}
 	var count, legacy, hydrated int
 	err := s.db.QueryRow(ctx, b.source()+`, anchors AS MATERIALIZED (
@@ -180,11 +180,14 @@ UPDATE report_event_facts f SET process_evidence_status=source.process_evidence_
 	if count != len(records) {
 		return 0, corestore.ErrRevisionConflict
 	}
-	if _, err := s.db.Exec(ctx, b.source()+`UPDATE report_event_facts f SET phase_timing_status=source.phase_timing_status FROM source JOIN collaboration_events e ON e.organization_id=$1 AND e.id=source.event_id AND e.project_id=source.project_id AND e.work_item_id=source.work_item_id AND e.run_id=source.run_id AND e.attempt_id=source.attempt_id
- WHERE f.organization_id=$1 AND f.event_id=source.event_id AND f.phase_timing_status='' AND source.phase_timing_status<>'' AND ((e.payload_object_key,e.payload_sha256)=(source.payload_object_key,source.payload_sha256) OR (source.legacy_sha<>'' AND (e.payload_object_key,e.payload_sha256)=(source.legacy_key,source.legacy_sha)))`, b.args...); err != nil {
+	if _, err := s.db.Exec(ctx, b.source()+`UPDATE report_event_facts f SET phase_timing_status=CASE WHEN f.phase_timing_status='' THEN source.phase_timing_status ELSE f.phase_timing_status END,
+ activity_stage=CASE WHEN f.activity_stage='' THEN source.activity_stage ELSE f.activity_stage END,
+ activity_no_change_status=CASE WHEN f.activity_stage='' THEN source.activity_no_change_status ELSE f.activity_no_change_status END
+ FROM source JOIN collaboration_events e ON e.organization_id=$1 AND e.id=source.event_id AND e.project_id=source.project_id AND e.work_item_id=source.work_item_id AND e.run_id=source.run_id AND e.attempt_id=source.attempt_id
+ WHERE f.organization_id=$1 AND f.event_id=source.event_id AND ((f.phase_timing_status='' AND source.phase_timing_status<>'') OR (f.activity_stage='' AND source.activity_stage<>'')) AND ((e.payload_object_key,e.payload_sha256)=(source.payload_object_key,source.payload_sha256) OR (source.legacy_sha<>'' AND (e.payload_object_key,e.payload_sha256)=(source.legacy_key,source.legacy_sha)))`, b.args...); err != nil {
 		return 0, mapError(ctx, err)
 	}
-	if err := s.mergeReportFacts(ctx, b, "report_event_facts", "event_id,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id", "event_id"); err != nil {
+	if err := s.mergeReportFacts(ctx, b, "report_event_facts", "event_id,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id,activity_stage,activity_no_change_status", "event_id"); err != nil {
 		return 0, err
 	}
 	_, err = s.db.Exec(ctx, b.source()+`, candidates AS (

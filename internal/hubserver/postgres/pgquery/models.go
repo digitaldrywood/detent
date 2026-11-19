@@ -4677,6 +4677,8 @@ type ReportEventFact struct {
 	ProcessRunnerID         string
 	ProcessMachineID        string
 	PhaseTimingStatus       string
+	ActivityStage           string
+	ActivityNoChangeStatus  string
 }
 
 type ReportUsageCurrent struct {
