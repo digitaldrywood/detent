@@ -1592,8 +1592,8 @@ func TestNativeClaimPreviewUsesCurrentBlockers(t *testing.T) {
 		if got.Revision != c.issue.Revision {
 			t.Fatalf("dependent revision = %d, want %d", got.Revision, c.issue.Revision)
 		}
-		if !got.DependencyReady || len(got.Blockers) != 1 || got.Blockers[0].ID != c.blocker.WorkItemID || got.Blockers[0].State != "Done" || !got.Blockers[0].Terminal {
-			t.Fatalf("preview readiness = %t, blockers = %+v, want only completed blocker %s", got.DependencyReady, got.Blockers, c.blocker.WorkItemID)
+		if !got.DependencyReady || len(got.Blockers) != 0 || len(got.Dependencies) != 0 {
+			t.Fatalf("ready preview returned %d blockers and %d dependencies", len(got.Blockers), len(got.Dependencies))
 		}
 	}
 	moveBlocker := func(c *candidate, state string) {
@@ -1620,8 +1620,8 @@ func TestNativeClaimPreviewUsesCurrentBlockers(t *testing.T) {
 	if lease.WorkItemID != first.issue.WorkItemID {
 		t.Fatalf("claimed %s, want %s", lease.WorkItemID, first.issue.WorkItemID)
 	}
-	if lease.NativeClaimDependencyFacts == nil || !lease.DependencyReady || len(lease.Blockers) != 1 || lease.Blockers[0].ID != first.blocker.WorkItemID || lease.Blockers[0].State != "Done" || !lease.Blockers[0].Terminal {
-		t.Fatalf("claim dependency facts = %+v, want only completed blocker %s", lease.NativeClaimDependencyFacts, first.blocker.WorkItemID)
+	if lease.NativeClaimDependencyFacts == nil || !lease.DependencyReady || len(lease.Blockers) != 0 {
+		t.Fatalf("ready lease dependency facts = %+v", lease.NativeClaimDependencyFacts)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, first.fixture.base+"/leases/"+string(lease.ID)+"/release", first.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
 

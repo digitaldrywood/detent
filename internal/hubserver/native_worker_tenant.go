@@ -621,7 +621,6 @@ func (s *Service) respondNativeLeaseTenant(c echo.Context, scope hubscope.Native
 	}
 	var lease leasestore.Lease
 	var details NativeLeaseResponseDetails
-	var blockerFacts []tenantstore.WorkItemRelationshipFact
 	ctx := c.Request().Context()
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader := s.nativeLeaseReader(r, scope)
@@ -637,21 +636,17 @@ func (s *Service) respondNativeLeaseTenant(c echo.Context, scope hubscope.Native
 		if details.WorkItemID == "" {
 			return corestore.ErrNotFound
 		}
-		blockerFacts, err = r.WorkItemBlockerFacts(ctx, scope.Project, []tracker.NativeWorkItemID{details.WorkItemID})
-		return err
+		counts, err := r.ClaimOpenBlockerCounts(ctx, tenantstore.ClaimBlockerQuery{Project: scope.Project, WorkItems: []tracker.NativeWorkItemID{details.WorkItemID}, CredentialID: scope.Credential.ID, Now: s.config.Clock(), SampleLimit: nativeClaimBlockerLimit + 1})
+		if err != nil {
+			return err
+		}
+		summary := summarizeNativeClaimBlockers(counts[details.WorkItemID])
+		details.DependencyFacts = &summary
+		return nil
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	blockers, err := s.visibleNativeClaimBlockers(ctx, scope, blockerFacts)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	itemBlockers := blockers[details.WorkItemID]
-	if itemBlockers == nil {
-		itemBlockers = []tracker.NativeDependency{}
-	}
-	details.DependencyFacts = &tracker.NativeClaimDependencyFacts{Blockers: itemBlockers, DependencyReady: nativeClaimDependenciesReady(itemBlockers)}
 	return s.writeNativeLeaseResponse(c, lease, details)
 }
 
@@ -659,9 +654,12 @@ func (s *Service) writeNativeLeaseResponse(c echo.Context, lease leasestore.Leas
 	if details.WorkItemID == "" {
 		return s.nativeAPIError(c, corestore.ErrNotFound)
 	}
-	return c.JSON(http.StatusOK, tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: details.IsolationPolicy,
-		NativeClaimDependencyFacts: details.DependencyFacts,
-		ProviderReservation:        details.ProviderReservation, ServerTime: s.config.Clock().UTC(), PolicyID: details.PolicyID,
+	response := tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: details.IsolationPolicy,
+		ProviderReservation: details.ProviderReservation, ServerTime: s.config.Clock().UTC(), PolicyID: details.PolicyID,
 		ID: tracker.LeaseID(lease.LeaseID), WorkItemID: details.WorkItemID, MachineID: tracker.MachineID(lease.MachineID), SessionID: lease.SessionID,
-		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
+		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt}
+	return c.JSON(http.StatusOK, struct {
+		tracker.NativeLease
+		*nativeClaimBlockerSummary
+	}{response, details.DependencyFacts})
 }

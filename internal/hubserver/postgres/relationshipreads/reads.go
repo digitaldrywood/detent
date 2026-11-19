@@ -77,22 +77,15 @@ func Page(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID,
 	return page, nil
 }
 
-func Facts(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID, workItems []tracker.NativeWorkItemID, blockersOnly bool) ([]tenantstore.WorkItemRelationshipFact, error) {
-	if len(workItems) == 0 || len(workItems) > corestore.MaxRelationshipBatch {
-		return nil, corestore.ErrInvalidPage
-	}
-	ids := make([]string, 0, len(workItems))
-	for _, workItem := range workItems {
-		if workItem == "" {
-			return nil, corestore.ErrInvalidRelationship
-		}
-		ids = append(ids, string(workItem))
+func Facts(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID, workItems []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
+	ids, err := batchIDs(workItems)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := tx.Queries.RelationshipBatch(ctx, pgquery.RelationshipBatchParams{
 		OrganizationID: tx.Organization,
 		WorkItemIds:    ids,
 		ProjectID:      project,
-		BlockersOnly:   blockersOnly,
 	})
 	if err != nil {
 		return nil, pgcore.MapError(ctx, err)
@@ -126,6 +119,38 @@ func Facts(ctx context.Context, tx pgcore.Transaction, project tracker.ProjectID
 		})
 	}
 	return facts, nil
+}
+
+func batchIDs(workItems []tracker.NativeWorkItemID) ([]string, error) {
+	if len(workItems) == 0 || len(workItems) > corestore.MaxRelationshipBatch {
+		return nil, corestore.ErrInvalidPage
+	}
+	ids := make([]string, 0, len(workItems))
+	for _, workItem := range workItems {
+		if workItem == "" {
+			return nil, corestore.ErrInvalidRelationship
+		}
+		ids = append(ids, string(workItem))
+	}
+	return ids, nil
+}
+
+func ClaimOpenBlockerCounts(ctx context.Context, tx pgcore.Transaction, query tenantstore.ClaimBlockerQuery) (map[tracker.NativeWorkItemID]int, error) {
+	ids, err := batchIDs(query.WorkItems)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Queries.ClaimOpenBlockerCounts(ctx, pgquery.ClaimOpenBlockerCountsParams{
+		OrganizationID: tx.Organization, ProjectID: query.Project, WorkItemIds: ids, SampleLimit: query.SampleLimit, CredentialID: query.CredentialID, ObservedAt: query.Now,
+	})
+	if err != nil {
+		return nil, pgcore.MapError(ctx, err)
+	}
+	counts := make(map[tracker.NativeWorkItemID]int, len(rows))
+	for _, row := range rows {
+		counts[row.NativeID] = int(row.OpenCount)
+	}
+	return counts, nil
 }
 
 func relationshipState(state *string) string {
