@@ -266,6 +266,12 @@ func TestValidationCandidatesKeepHistoricalMatchBeyondPage(t *testing.T) {
 	body := issueorigin.Stamp("Scheduled check failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/" + repository + "/actions/runs/123", Fingerprint: fingerprint})
 	requireNativeStatus(t, performHubAPIRequest(t, target.service, http.MethodPost, target.base+"/work-items/"+string(target.issue.WorkItemID)+"/comments", target.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "historical-validation-source"}, Body: body}), http.StatusOK)
 	for pass := range 2 {
+		if pass == 1 {
+			admin := nativeAttemptTestDatabase(t, target.nativeFixture)
+			if _, err := admin.ExecContext(t.Context(), `ALTER TABLE native_attempts ADD COLUMN later_release_worker_pid integer`); err != nil {
+				t.Fatal(err)
+			}
+		}
 		historyRepairImport(t, target, source, 1)
 		if err := target.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			for index, attempt := range attempts {

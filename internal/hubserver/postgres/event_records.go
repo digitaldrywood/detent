@@ -1496,8 +1496,19 @@ func (s *session) ValidationCandidates(ctx context.Context, query tenantstore.Va
 			}
 			return err
 		})
-		batch.Queue(`SELECT * FROM native_attempts WHERE organization_id=$1 AND id=$2`, s.organization, key.attempt).Query(func(rows pgx.Rows) error {
-			value, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[pgquery.NativeAttempt])
+		batch.Queue(`SELECT organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,
+ payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,updated_at,started_at_submicro_ns,runner_tokens_recorded,
+ cleanup_acknowledged_at,runtime_heartbeat_at,runtime_summary_sequence,claim_disposition,local_attempt_id,local_attempt_id_recorded,
+ checkpoint_preserves_source,project_id,usage_pending_sequence,usage_projected_sequence,worker_cleanup_required,failure_sequence,
+ failure_example,failure_class,failure_landing_observed_at,identity_sequence,identity_execution_role,identity_execution_backend,identity_execution_model,
+ identity_execution_reasoning_effort,identity_selection_effort_clamped_from,identity_selection_policy,identity_selection_policy_source,
+ identity_selection_reason,identity_selection_level,identity_selection_requested_model,identity_selection_model_source,
+ identity_selection_effort_source,identity_selection_fallback_reason,identity_selection_backend_source,identity_selection_route_source,
+ identity_backend_id,identity_backend_kind,identity_route,identity_role,identity_provider,identity_provider_provenance,identity_requested_model,
+ identity_requested_model_provenance,identity_resolved_model,identity_resolved_model_provenance,identity_reasoning_effort,
+ identity_reasoning_effort_provenance,identity_service_tier,identity_service_tier_provenance,identity_observed_at
+ FROM native_attempts WHERE organization_id=$1 AND id=$2`, s.organization, key.attempt).Query(func(rows pgx.Rows) error {
+			value, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[pgquery.NativeAttempt])
 			if err == nil {
 				result.Rows[index].Attempt = attemptFromPG(value)
 			}
