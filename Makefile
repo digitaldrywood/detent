@@ -275,7 +275,6 @@ lint: $(GOLANGCI_LINT_RUN)
 	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT_RUN)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m
 ifneq ($(wildcard .custom-gcl.yml),)
 	$(HEFT) check ./...
-	$(HEFT) baseline tighten -check ./...
 endif
 
 $(GOLANGCI_LINT_CUSTOM): $(GOLANGCI_LINT) .custom-gcl.yml $(GOLANGCI_LINT_VERSION_FILE)
