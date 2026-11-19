@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
@@ -1393,4 +1394,101 @@ func (s *Service) actionAuthorizationDeps() coordinator.ActionAuthorizationDeps 
 		Operator:            currentHubOperator,
 		ReadConversation:    s.readPGConversation,
 	}
+}
+
+func (s *Service) bindCoordinatorConnection(ctx context.Context, key string) (context.Context, error) {
+	return coordinator.BindConnection(ctx, key, s.attachCoordinatorConnection)
+}
+
+func (t *coordinatorToolset) actionContext(ctx context.Context, record conversationRecord) (context.Context, error) {
+	return t.actionContextDeps().Context(ctx, record, t.state.users)
+}
+
+func (s *Service) checkCoordinatorMoveAnswer(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, target, answer string) (coordinatorMoveAnswerAttempt, error) {
+	attempt, err := s.moveAnswerDeps().Check(ctx, scope, issue, target, answer)
+	return coordinatorMoveAnswerAttempt{attempt}, err
+}
+
+func (s *Service) postConversationAction(c echo.Context) error {
+	return s.actionHTTPDeps().Post(c)
+}
+
+var coordinatorActionTools = coordinator.ActionTools
+
+func (s *Service) prepareCoordinatorAnswerComment(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem, conversationID string, request tracker.Transition, now time.Time) (*coordinatorAnswerComment, error) {
+	comment, err := coordinator.PrepareAnswerComment(ctx, scope, item, conversationID, request, now, s.runDetailStore())
+	if err != nil {
+		return nil, err
+	}
+	return &coordinatorAnswerComment{comment}, nil
+}
+
+type coordinatorMoveAnswerAttempt struct{ coordinator.MoveAnswerAttempt }
+
+type coordinatorAnswerComment struct{ *coordinator.AnswerComment }
+
+func (a coordinatorMoveAnswerAttempt) recheck(ctx context.Context, w tenantstore.Writer, issueID int64) error {
+	return a.Recheck(ctx, w, issueID)
+}
+
+func (c *coordinatorAnswerComment) write(ctx context.Context, w tenantstore.Writer) error {
+	return c.Write(ctx, w)
+}
+
+func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Action) error {
+	if action.ConversationID == "" || action.Mutation.Source != "chat" {
+		return nil
+	}
+	runtime, ok := s.conversations.Coordinator.(*conversationTurnCoordinator)
+	if !ok {
+		return operatortool.ErrAccessDenied
+	}
+	return coordinator.PublishDecision(ctx, action, runtime.write)
+}
+
+func (s *Service) attachCoordinatorConnection(ctx context.Context) error {
+	if s.operatorChat == nil {
+		return fmt.Errorf("bind coordinator connection: %w", chat.ErrUnavailable)
+	}
+	return s.operatorChat.AttachConnection(ctx)
+}
+
+func (t *coordinatorToolset) actionContextDeps() coordinator.ActionContextDeps {
+	return coordinator.ActionContextDeps{
+		Now:         func() time.Time { return t.coordinator.server.config.Clock() },
+		TurnTimeout: coordinatorTurnTimeout,
+		AccessTime: func(ctx context.Context, at time.Time) context.Context {
+			return context.WithValue(ctx, operatorAccessTimeKey{}, at)
+		},
+		Organization: func(ctx context.Context, org tracker.OrganizationID) context.Context {
+			return context.WithValue(ctx, operatorChatOrganizationKey{}, org)
+		},
+		RestoreConnection: func(ctx context.Context, id string) error {
+			return t.coordinator.server.operatorChat.RestoreConnection(ctx, id)
+		},
+		OriginatingContext: func(ctx context.Context, id, principal, org string) (context.Context, error) {
+			return t.coordinator.server.operatorChat.OriginatingContext(ctx, id, principal, org)
+		},
+	}
+}
+
+func (s *Service) moveAnswerDeps() coordinator.MoveAnswerDeps {
+	return coordinator.MoveAnswerDeps{ReadTenant: s.readConversationTenant, ReadAttempt: s.readNativeAttemptTenant}
+}
+
+func (s *Service) actionHTTPDeps() coordinator.ActionHTTPDeps {
+	return coordinator.ActionHTTPDeps{
+		InvalidRequest:   s.invalidAPIRequest,
+		APIError:         s.nativeAPIError,
+		ReadConversation: s.readPGConversation,
+		Authorize:        s.authorizeConversationScopePG,
+		CatalogWrite:     coordinatorCatalogWrite,
+		Execute:          s.executeCoordinatorAction,
+		Publish:          s.publishCoordinatorDecision,
+	}
+}
+
+func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, target, answer string) error {
+	_, err := s.checkCoordinatorMoveAnswer(ctx, scope, issue, target, answer)
+	return err
 }
