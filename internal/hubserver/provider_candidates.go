@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -260,6 +261,16 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			issue.Dependencies = append(issue.Dependencies, blocker.ID)
 		}
 		issue.DependencyReady = nativeClaimDependenciesReady(issue.Blockers)
+		issue.Dependents = []tracker.NativeDependency{}
+		issue.Related = nil
+		issue.BlockedReason = tracker.DependencyReason{}
+		issue.UnblocksReason = tracker.DependencyReason{}
+		issue.OmittedFields = slices.Clone(issue.OmittedFields)
+		for _, field := range []string{"dependents", "related", "blocked_reason", "unblocks_reason"} {
+			if !slices.Contains(issue.OmittedFields, field) {
+				issue.OmittedFields = append(issue.OmittedFields, field)
+			}
+		}
 		page.Items = append(page.Items, s.nativeIssueResponse(issue))
 	}
 	if len(candidates) == limit {
