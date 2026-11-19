@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -23,15 +24,27 @@ type nativeProgressView struct {
 	Record  *progresscheck.Record `json:"record,omitempty"`
 }
 
+type nativeProgressSnapshot struct {
+	request              progresscheck.Request
+	sequence             int64
+	completedDependency  corestore.WorkItemReference
+	receiptsAfterCleanup []progresscheck.Receipt
+}
+
 func (s *Service) nativeProgressRequest(ctx context.Context, scope hubscope.NativeScope, item, policy, instance string) (progresscheck.Request, int64, error) {
 	return s.nativeProgressRequestTenant(ctx, scope, item, policy, instance)
 }
 
 func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope hubscope.NativeScope, item, policy, instance string) (progresscheck.Request, int64, error) {
+	snapshot, err := s.readNativeProgressSnapshot(ctx, scope, item, policy, instance)
+	return snapshot.request, snapshot.sequence, err
+}
+
+func (s *Service) readNativeProgressSnapshot(ctx context.Context, scope hubscope.NativeScope, item, policy, instance string) (nativeProgressSnapshot, error) {
 	ctx = s.runDetailContext(s.contentContext(ctx))
 	before, _, err := s.readWorkItemRecord(ctx, scope, item)
 	if err != nil {
-		return progresscheck.Request{}, 0, err
+		return nativeProgressSnapshot{}, err
 	}
 	var evidenceSequence int64
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -43,19 +56,20 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope hubscop
 		evidenceSequence, err = owner.ProgressEvidenceSequence(ctx, scope.Project, before.NativeID)
 		return err
 	}); err != nil {
-		return progresscheck.Request{}, 0, err
+		return nativeProgressSnapshot{}, err
 	}
 	recovery, err := s.readNativeRecoveryCommentsTenant(ctx, scope, item, true)
 	if err != nil {
-		return progresscheck.Request{}, 0, err
+		return nativeProgressSnapshot{}, err
 	}
 	request := progresscheck.NativeRequest(recovery, policy, instance)
 	request.EvidenceRevision = strconv.FormatInt(evidenceSequence, 10)
-	defectReceipt, hasDefectReceipt, err := s.nativeProgressDefectReceiptTenant(ctx, scope, item)
+	defectReceipt, completedDependency, err := s.nativeProgressDefectReceiptTenant(ctx, scope, item)
 	if err != nil {
-		return progresscheck.Request{}, 0, err
+		return nativeProgressSnapshot{}, err
 	}
-	if hasDefectReceipt {
+	receiptsAfterCleanup := request.Receipts
+	if defectReceipt.ID != "" {
 		if len(request.Receipts) == progresscheck.MaxReceipts {
 			request.Receipts = request.Receipts[1:]
 		}
@@ -72,16 +86,16 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope hubscop
 			return nil
 		})
 		if err != nil {
-			return progresscheck.Request{}, 0, hubapi.ProjectRecordError(err)
+			return nativeProgressSnapshot{}, hubapi.ProjectRecordError(err)
 		}
 		request.InstanceVersion = version
 	}
 	after, _, err := s.readWorkItemRecord(ctx, scope, item)
 	if err != nil {
-		return progresscheck.Request{}, 0, err
+		return nativeProgressSnapshot{}, err
 	}
 	if before.Revision != after.Revision || int64(recovery.Issue.Revision) != before.Revision {
-		return progresscheck.Request{}, 0, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+		return nativeProgressSnapshot{}, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 	}
 	if before.EventSequence != after.EventSequence {
 		var currentSequence int64
@@ -94,19 +108,20 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope hubscop
 			currentSequence, err = evidence.ProgressEvidenceSequence(ctx, scope.Project, before.NativeID)
 			return err
 		}); err != nil {
-			return progresscheck.Request{}, 0, err
+			return nativeProgressSnapshot{}, err
 		}
 		if currentSequence != evidenceSequence {
-			return progresscheck.Request{}, 0, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+			return nativeProgressSnapshot{}, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 		}
 	}
-	return request, after.EventSequence, nil
+	return nativeProgressSnapshot{request: request, sequence: after.EventSequence, completedDependency: completedDependency, receiptsAfterCleanup: receiptsAfterCleanup}, nil
 }
 
-func (s *Service) nativeProgressDefectReceiptTenant(ctx context.Context, scope hubscope.NativeScope, item string) (progresscheck.Receipt, bool, error) {
-	var defectID tracker.NativeWorkItemID
+func (s *Service) nativeProgressDefectReceiptTenant(ctx context.Context, scope hubscope.NativeScope, item string) (progresscheck.Receipt, corestore.WorkItemReference, error) {
+	var defect corestore.WorkItemReference
 	var defectState string
 	var defectCreated time.Time
+	var owned bool
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		cursor := corestore.WorkItemBlockerCursor{}
 		for range claimPreparationLimit {
@@ -120,8 +135,10 @@ func (s *Service) nativeProgressDefectReceiptTenant(ctx context.Context, scope h
 					return err
 				}
 				state := hubapi.StringValue(blocker.WorkflowStateName)
-				if relationship.CreatedAt.After(defectCreated) || relationship.CreatedAt.Equal(defectCreated) && relationship.WorkItemID > defectID {
-					defectID, defectState, defectCreated = relationship.WorkItemID, state, relationship.CreatedAt
+				if relationship.CreatedAt.After(defectCreated) || relationship.CreatedAt.Equal(defectCreated) && relationship.WorkItemID > defect.WorkItemID {
+					defect = corestore.WorkItemReference{ProjectID: relationship.ProjectID, WorkItemID: relationship.WorkItemID}
+					defectState, defectCreated = state, relationship.CreatedAt
+					owned = strings.HasPrefix(hubapi.StringValue(blocker.NativeSourceKey), nativeProgressDependencySourcePrefix)
 				}
 			}
 			if len(page) <= corestore.MaxPageSize {
@@ -133,12 +150,16 @@ func (s *Service) nativeProgressDefectReceiptTenant(ctx context.Context, scope h
 		return corestore.ErrInvalidPage
 	})
 	if err != nil {
-		return progresscheck.Receipt{}, false, hubapi.ProjectRecordError(err)
+		return progresscheck.Receipt{}, corestore.WorkItemReference{}, hubapi.ProjectRecordError(err)
 	}
-	if defectID == "" || defectState != "Done" {
-		return progresscheck.Receipt{}, false, nil
+	if defect.WorkItemID == "" || defectState != "Done" {
+		return progresscheck.Receipt{}, corestore.WorkItemReference{}, nil
 	}
-	return progresscheck.Receipt{ID: string(defectID) + ":done", Step: "system_defect", Outcome: "fixed"}, true, nil
+	receipt := progresscheck.Receipt{ID: string(defect.WorkItemID) + ":done", Step: "system_defect", Outcome: "fixed"}
+	if !owned {
+		defect = corestore.WorkItemReference{}
+	}
+	return receipt, defect, nil
 }
 
 func (s *Service) getNativeProgress(c echo.Context) error {
@@ -178,13 +199,21 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}
+	publicationHash, err := hubapi.CommandHash(input)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence, expectedRevision: input.ExpectedRevision, publicationHash: publicationHash}
 	if id != input.RequestID {
-		return s.nativeAPIError(c, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict})
+		record, err := owner.replayAfterCleanup(c.Request().Context(), input.RequestID, id, sequence)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, record)
 	}
 	if !request.NeedsCheck() {
 		return s.nativeAPIError(c, hubapi.NativeInvalid("Progress decision requires a non-progressing previous attempt"))
 	}
-	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence, expectedRevision: input.ExpectedRevision}
 	record, err := owner.Publish(c.Request().Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: input.Decision})
 	if err != nil {
 		return s.nativeAPIError(c, err)
