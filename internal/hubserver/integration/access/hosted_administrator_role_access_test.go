@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -231,7 +232,13 @@ func TestHostedProviderRoleBoundsRoleAccess(t *testing.T) {
 		t.Helper()
 		hubfixture.RequireStatus(t, f.Request(t, users[name], http.MethodGet, f.Base, nil), read)
 		writes++
-		command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("write-%d", writes)}, Title: "role write", Body: "role write" + hubfixture.IssueContractSections, State: "Todo"}
+		seed := fmt.Sprintf("%s/write-%d", name, writes)
+		command := tracker.CreateIssue{
+			Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("write-%d", writes)},
+			Title:    "role write " + testenv.DistinctText(seed+"/title", 6),
+			Body:     testenv.DistinctText(seed, 24) + hubfixture.IssueContractSections,
+			State:    "Todo",
+		}
 		hubfixture.RequireStatus(t, f.Request(t, users[name], http.MethodPost, f.Base+"/work-items", command), write)
 	}
 	for _, name := range []string{"owner", "admin", "demoted", "viewer", "granted"} {
