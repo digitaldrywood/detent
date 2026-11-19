@@ -56,7 +56,7 @@ func TestLocalBoardImportRefusals(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			before := localBoardCounts(t, hub.Admin)
-			response := hub.Request(t, http.MethodPost, f.Base+"/local-board-import", test.Token, localboard.Request{Record: test.record})
+			response := hub.Request(t, http.MethodPost, f.Base+"/local-board-import", test.token, localboard.Request{Record: test.record})
 			hubfixture.RequireStatus(t, response, test.status)
 			if strings.Contains(response.Body.String(), "title-secret") || strings.Contains(response.Body.String(), "body-secret") {
 				t.Fatal("error exposed issue content")
