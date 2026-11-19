@@ -20,7 +20,7 @@ func (e *nativeExecution) fencedAttempt(ctx context.Context) (tracker.NativeAtte
 	client := e.claim.source.NativeClient()
 	attempt, err := client.NativeAttempt(ctx, e.claim.lease.WorkItemID, e.data.AttemptID)
 	if err != nil {
-		return attempt, e.executionError(ctx, err)
+		return attempt, err
 	}
 	if attempt.LeaseID != e.claim.lease.ID || attempt.FencingToken != e.claim.lease.FencingToken || attempt.AttemptID != e.data.AttemptID || attempt.RunID != e.data.RunID || attempt.PolicyID != e.data.PolicyID || !reflect.DeepEqual(attempt.Identity, e.data.Identity) {
 		return attempt, runner.ErrExecutionAuthorityUnavailable
@@ -42,7 +42,7 @@ func (e *nativeExecution) sendGeneration(ctx context.Context, diff *tracker.Atte
 	}
 	attempt, readErr := e.fencedAttempt(ctx)
 	if readErr != nil {
-		return readErr
+		return e.executionError(ctx, readErr)
 	}
 	if attempt.ClaimReleasedAt != nil || attempt.Outcome != "" {
 		return runner.ErrExecutionAuthorityUnavailable
@@ -163,6 +163,15 @@ func (e *nativeExecution) stopAttempt(ctx context.Context) (*tracker.NativeAttem
 	err := api.ReconcileTerminal(ctx, func() (bool, error) {
 		attempt, err := e.fencedAttempt(ctx)
 		if err != nil {
+			pendingStart := e.data.Sequence == 0 && e.pending != nil && e.pending.Type == "run.started" && e.pending.Data.Sequence == 1
+			var refusal *APIError
+			if pendingStart && errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == "not_found" {
+				if err := e.receiptAuthority(ctx); err != nil {
+					return false, err
+				}
+				_, err = e.claim.source.NativeClient().ValidateLease(ctx, e.claim.lease)
+			}
+			err = e.executionError(ctx, err)
 			return nativeTransportUnavailable(err), err
 		}
 		if attempt.ClaimReleasedAt != nil {
@@ -254,6 +263,7 @@ func (e *nativeExecution) verifyReceipt(ctx context.Context) error {
 func interruptedRunEvent(data tracker.NativeRunData) tracker.NativeRunEvent {
 	data.Sequence++
 	data.Outcome, data.Handoff = "interrupted", nil
+	data.ArtifactIDs = nil
 	if data.Runtime != nil {
 		runtime := *data.Runtime
 		runtime.Phase = "completed"

@@ -831,7 +831,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 		if (expired || finishErr != nil || interrupted) && rejection == nil {
 			attempt, err := e.fencedAttempt(ctx)
 			if err != nil {
-				return errors.Join(finishErr, err)
+				return errors.Join(finishErr, e.executionError(ctx, err))
 			}
 			if attempt.ClaimReleasedAt != nil {
 				releasedAttempt = &attempt
@@ -1054,7 +1054,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 		if e.receipt != nil && errors.Is(err, runner.ErrOperatorStopped) {
 			attempt, readErr := e.fencedAttempt(ctx)
 			if readErr != nil {
-				return readErr
+				return e.executionError(ctx, readErr)
 			}
 			return e.deliverStoppedReceipt(ctx, &attempt)
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -132,5 +133,74 @@ func TestGateDiffDelivery(t *testing.T) {
 				t.Fatalf("mismatched diff: release %v, steps %d, error %v", attempt.ClaimReleasedAt, len(attempt.Steps), err)
 			}
 		})
+	}
+}
+
+func TestStopWithUndeliveredStart(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Stop before start delivery")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	ctx, lease := t.Context(), e.claim.lease
+	requests := fixtureClient(h.native.Transport()).requests
+	next := requests.Load()
+	var original tracker.NativeRunEvent
+	posts := 0
+	requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/events") {
+			posts++
+			if posts == 1 {
+				if err := json.NewDecoder(r.Body).Decode(&original); err != nil {
+					return nil, err
+				}
+				return nil, io.ErrUnexpectedEOF
+			}
+		}
+		return next.RoundTrip(r)
+	}))
+	if err := e.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); !nativeTransportUnavailable(err) || original.Type != "run.started" || original.Data.Sequence != 1 {
+		t.Fatalf("start = %s at %d, error %v", original.Type, original.Data.Sequence, err)
+	}
+	if _, err := h.native.ValidateLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	stopErr := h.scheduler.ReleaseClaim(ctx, issue.ID, runner.FinalStateOperatorStopped)
+	if _, err := h.native.ValidateLease(ctx, lease); stopErr != nil || !nativeLeaseLost(err) || posts != 1 {
+		t.Fatalf("stop error %v, lease validation %v, event POSTs %d", stopErr, err, posts)
+	}
+	if err := h.native.AppendEvent(ctx, lease.WorkItemID, original); !nativeLeaseLost(err) {
+		t.Fatalf("late start error %v", err)
+	}
+	_, err := h.admin.NativeAttempt(ctx, lease.WorkItemID, original.Data.AttemptID)
+	var refusal *APIError
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusNotFound || refusal.Code != "not_found" {
+		t.Fatalf("late start attempt lookup %v", err)
+	}
+}
+
+func TestStopWithCheckpointArtifacts(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Stop after checkpoint upload")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	ctx, lease := t.Context(), e.claim.lease
+	if err := e.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	data := e.data
+	data.Sequence++
+	data.ArtifactIDs = []string{"artifact_" + strings.Repeat("a", 32)}
+	data.Handoff = &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"}
+	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":checkpoint"}, Type: "run.checkpointed", SchemaVersion: 1, Data: data}
+	if err := h.native.AppendEvent(ctx, lease.WorkItemID, event); err != nil {
+		t.Fatal(err)
+	}
+	stopErr := h.scheduler.ReleaseClaim(ctx, issue.ID, runner.FinalStateOperatorStopped)
+	attempt, err := h.admin.NativeAttempt(ctx, lease.WorkItemID, data.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopErr != nil || attempt.Sequence != 3 || attempt.Outcome != "interrupted" || attempt.ClaimReleasedAt == nil || !reflect.DeepEqual(attempt.Checkpoint, data.Handoff) || !reflect.DeepEqual(attempt.ArtifactIDs, data.ArtifactIDs) {
+		t.Fatalf("stop error %v, sequence %d, outcome %q, released %v, checkpoint %+v, artifacts %v", stopErr, attempt.Sequence, attempt.Outcome, attempt.ClaimReleasedAt, attempt.Checkpoint, attempt.ArtifactIDs)
 	}
 }
