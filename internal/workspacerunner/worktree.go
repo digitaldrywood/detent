@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
-	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -197,7 +197,7 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 		args = append([]string{"-C", dir}, args...)
 	}
 	command := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- arguments are fixed subcommands and validated commit ids or ref names; git runs without a shell.
-	output, err := procgroup.CommandOutput(ctx, command, true)
+	output, err := commandshell.CommandOutput(ctx, command, true)
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", args[len(args)-1], err, strings.TrimSpace(string(output)))
 	}

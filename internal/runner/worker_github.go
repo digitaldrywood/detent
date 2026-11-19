@@ -25,6 +25,7 @@ import (
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -489,7 +490,7 @@ func defaultWorkerGitHubToken(ctx context.Context) (string, error) {
 	}
 	cmd := exec.CommandContext(ctx, path, "auth", "token") // #nosec G204 -- gh path is PATH-resolved and arguments are fixed.
 	cmd.Env = hostGitHubCLIEnviron()
-	output, err := procgroup.CommandOutput(ctx, cmd, true)
+	output, err := commandshell.CommandOutput(ctx, cmd, true)
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
@@ -635,7 +636,7 @@ func (p workerGitHubPolicy) verifyCLIAuthentication(ctx context.Context, environ
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, "gh", "auth", "token", "--hostname", p.cliHost()) // #nosec G204 -- fixed executable/subcommand; configured host is a separate flag value, never shell code.
 	procgroup.SetEnvironment(cmd, environment)
-	output, err := procgroup.CommandOutput(probeCtx, cmd, false)
+	output, err := commandshell.CommandOutput(probeCtx, cmd, false)
 	if err != nil || strings.TrimSpace(string(output)) != p.Token {
 		return p.monitorError("credential_handoff", errors.New("instance worker.github_token resolved but worker gh cannot read the selected credential from GH_CONFIG_DIR"))
 	}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -212,7 +213,7 @@ func checkpointCommand(ctx context.Context, turn AgentTurnRequest, cmd *exec.Cmd
 	cmd.WaitDelay = 5 * time.Second
 	procgroup.SetEnvironment(cmd, turn.Environment)
 	procgroup.SetTempDir(cmd, turn.TempDir)
-	output, err := procgroup.CommandOutput(ctx, cmd, false)
+	output, err := commandshell.CommandOutput(ctx, cmd, false)
 	return strings.TrimSpace(string(output)), err
 }
 

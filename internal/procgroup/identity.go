@@ -1,11 +1,12 @@
 package procgroup
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os/exec"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/shell"
 )
 
 const DefaultTerminationGrace = 250 * time.Millisecond
@@ -86,7 +87,7 @@ func WithStartAcknowledgement(ctx context.Context, acknowledge func(Identity) er
 func StartAuthorized(ctx context.Context, cmd *exec.Cmd) error {
 	acknowledge, _ := ctx.Value(startAcknowledgementKey{}).(func(Identity) error)
 	if acknowledge == nil {
-		if ctx.Value(commandOwnerKey{}) != nil {
+		if shell.HasCommandStarter(ctx) {
 			return errors.New("native process requires a launch acknowledgement")
 		}
 		return Start(cmd)
@@ -103,23 +104,17 @@ func StartAuthorized(ctx context.Context, cmd *exec.Cmd) error {
 }
 
 type CommandOwner func(context.Context, *exec.Cmd, Identity) (func(error) error, error)
-type commandOwnerKey struct{}
 
 func WithCommandOwner(ctx context.Context, owner CommandOwner) context.Context {
-	return context.WithValue(ctx, commandOwnerKey{}, owner)
-}
-
-func StartCommand(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
-	owner, _ := ctx.Value(commandOwnerKey{}).(CommandOwner)
-	if owner == nil {
-		if ctx.Value(commandOwnerKey{}) != nil {
+	return shell.WithCommandStarter(ctx, func(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
+		if owner == nil {
 			return nil, errors.New("native command has no process owner")
 		}
-		if err := cmd.Start(); err != nil {
-			return nil, err
-		}
-		return cmd.Wait, nil
-	}
+		return startOwnedCommand(ctx, cmd, owner)
+	})
+}
+
+func startOwnedCommand(ctx context.Context, cmd *exec.Cmd, owner CommandOwner) (func() error, error) {
 	Configure(ctx, cmd)
 	var finish func(error) error
 	launch := WithStartAcknowledgement(ctx, func(id Identity) (err error) {
@@ -136,31 +131,4 @@ func StartCommand(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
 		return nil, err
 	}
 	return func() error { return finish(Wait(cmd)) }, nil
-}
-
-func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
-	wait, err := StartCommand(ctx, cmd)
-	if err != nil {
-		return err
-	}
-	return wait()
-}
-
-func CommandOutput(ctx context.Context, cmd *exec.Cmd, combined bool) ([]byte, error) {
-	if ctx.Value(commandOwnerKey{}) == nil {
-		if combined {
-			return cmd.CombinedOutput()
-		}
-		return cmd.Output()
-	}
-	if cmd.Stdout != nil || combined && cmd.Stderr != nil {
-		return nil, errors.New("command output already configured")
-	}
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	if combined {
-		cmd.Stderr = &output
-	}
-	err := RunCommand(ctx, cmd)
-	return output.Bytes(), err
 }

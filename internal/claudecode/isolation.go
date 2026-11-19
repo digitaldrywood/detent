@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 func IsolationSettings(p isolation.Policy) (map[string]any, error) {
@@ -66,7 +67,7 @@ func VerifySandboxCommand(ctx context.Context, cmd *exec.Cmd, settings map[strin
 		return errors.Join(err, input.Close())
 	}
 	cmd.Stderr = io.Discard
-	wait, err := procgroup.StartCommand(ctx, cmd)
+	wait, err := commandshell.StartCommand(ctx, cmd)
 	if err != nil {
 		return errors.Join(err, input.Close())
 	}

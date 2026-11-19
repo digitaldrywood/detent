@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 func (b *AgentBackend) BillingBasis(ctx context.Context, process runner.AgentProcessRequest) (string, error) {
@@ -32,7 +33,7 @@ func (b *AgentBackend) BillingBasis(ctx context.Context, process runner.AgentPro
 	procgroup.Configure(ctx, cmd)
 	output := newTailBuffer(16 * 1024)
 	cmd.Stdout = output
-	if err := procgroup.RunCommand(ctx, cmd); err != nil {
+	if err := commandshell.RunCommand(ctx, cmd); err != nil {
 		return "unknown", errors.New("claude authentication observation unavailable")
 	}
 	var status struct {

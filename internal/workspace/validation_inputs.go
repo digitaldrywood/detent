@@ -13,7 +13,6 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
@@ -43,7 +42,7 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	if resolve == nil {
 		return evidence
 	}
-	output, err := procgroup.CommandOutput(ctx, resolve, false)
+	output, err := commandshell.CommandOutput(ctx, resolve, false)
 	if err != nil {
 		return evidence
 	}

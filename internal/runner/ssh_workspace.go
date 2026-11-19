@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -63,7 +64,7 @@ func PrepareSSHSource(ctx context.Context, cfg config.Config, workdir, repositor
 	procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: turn.Environment.Variables})
 	// Clone diagnostics are intentionally omitted: transport URLs and credential
 	// helpers can include secrets. The failure stays instance-owned.
-	if err := procgroup.RunCommand(ctx, cmd); err != nil {
+	if err := commandshell.RunCommand(ctx, cmd); err != nil {
 		return fmt.Errorf("prepare SSH source checkout: %w", err)
 	}
 	return nil

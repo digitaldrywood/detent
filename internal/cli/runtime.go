@@ -15,8 +15,8 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 const (
@@ -663,7 +663,7 @@ func runGHAuthTokenWithCommandContext(
 	if env != nil {
 		status.Env = env
 	}
-	if err := procgroup.RunCommand(commandCtx, status); err != nil {
+	if err := commandshell.RunCommand(commandCtx, status); err != nil {
 		if commandCtx.Err() != nil {
 			return "", commandCtx.Err()
 		}
@@ -674,7 +674,7 @@ func runGHAuthTokenWithCommandContext(
 	if env != nil {
 		cmd.Env = env
 	}
-	output, err := procgroup.CommandOutput(commandCtx, cmd, false)
+	output, err := commandshell.CommandOutput(commandCtx, cmd, false)
 	if commandCtx.Err() != nil {
 		return "", commandCtx.Err()
 	}

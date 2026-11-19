@@ -295,6 +295,11 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			workspaceIssue := workspaceIssue("native", issue)
+			previousAttempt := "attempt_previous"
+			if test.gitRef && (test.changedHead || test.dirty) {
+				previousAttempt = "attempt_11111111111111111111111111111111"
+				workspaceIssue.AttemptWorkspace = workspace.AttemptWorkspace{Organization: "org_example", Project: "native", Attempt: previousAttempt}
+			}
 			info, err := gitWorkspace.Create(ctx, workspaceIssue)
 			if err != nil {
 				t.Fatal(err)
@@ -324,7 +329,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: role, Backend: "codex", Model: "example-model", Default: true}}
 			owner := newNativeSessionOwner(approved)
 			resume := AgentResume{ThreadID: "persisted-thread", SessionID: "persisted-session"}
-			sessionID := owner.seed("attempt_previous", store.SessionStart{ProjectID: "native", IssueID: issue.ID, StartedAt: started, RequestedModel: "example-model", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: role, RuntimeIdentity: identity}, resume, store.SessionFinish{FinalState: test.status})
+			sessionID := owner.seed(previousAttempt, store.SessionStart{ProjectID: "native", IssueID: issue.ID, StartedAt: started, RequestedModel: "example-model", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: role, RuntimeIdentity: identity}, resume, store.SessionFinish{FinalState: test.status})
 			sessions := owner.client("attempt_current")
 			deps := Dependencies{ProcessSource: emptyProcessSource, ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: sessions, Workspace: backend, AgentBackend: agent}
 			restarted, err := NewRunner(deps)
@@ -333,7 +338,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			}
 			checkpoint := executionCheckpoint(&local)
 			checkpoint.Resume = "resume_session"
-			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{AttemptID: "attempt_previous", MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{Identity: identity}}}}}}
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{AttemptID: previousAttempt, MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{Identity: identity}}}}}}
 			if !test.legacyEffort {
 				execution.recovery.Attempts[0].Identity.ReasoningEffort = test.priorEffort
 			}
@@ -401,7 +406,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			request := RunRequest{ProjectID: "native", Policy: approved, Issue: issue, Mode: RunModeImplement, Execution: runExecution}
+			request := RunRequest{AttemptWorkspace: workspaceIssue.AttemptWorkspace, ProjectID: "native", Policy: approved, Issue: issue, Mode: RunModeImplement, Execution: runExecution}
 			if test.privateCheckout {
 				request.AttemptWorkspace = workspace.AttemptWorkspace{Organization: "org_example", Project: "native", Attempt: "attempt_22222222222222222222222222222222"}
 				execution.recovery.Attempts[0].AttemptID = "attempt_11111111111111111111111111111111"

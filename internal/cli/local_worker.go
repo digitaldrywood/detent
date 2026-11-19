@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procstart"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,7 +33,7 @@ func workerProtocolPreflight(ctx context.Context, path string) error {
 	cmd := detentupdate.ReleaseCommand(probeCtx, path, SSHProbeArgument)
 	procgroup.Configure(probeCtx, cmd)
 	cmd.WaitDelay = time.Second
-	output, err := procgroup.CommandOutput(probeCtx, cmd, false)
+	output, err := commandshell.CommandOutput(probeCtx, cmd, false)
 	if err != nil {
 		return fmt.Errorf("probe worker protocol: %w", err)
 	}

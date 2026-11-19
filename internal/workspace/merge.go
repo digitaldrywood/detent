@@ -440,6 +440,14 @@ func ValidationProcessOwnerFromContext(ctx context.Context) ValidationProcessOwn
 	return owner
 }
 
+func WithAttemptWorkspace(ctx context.Context, attempt AttemptWorkspace) context.Context {
+	if attempt == (AttemptWorkspace{}) {
+		return ctx
+	}
+	ctx = context.WithValue(ctx, attemptWorkspaceContextKey{}, attempt)
+	return procgroup.WithCommandOwner(ctx, ownAttemptCommand)
+}
+
 func ownAttemptCommand(ctx context.Context, cmd *exec.Cmd, id procgroup.Identity) (func(error) error, error) {
 	if attempt := AttemptWorkspaceFromContext(ctx); attempt != (AttemptWorkspace{}) && attempt.Key() == "" {
 		return nil, errors.New("native command requires an exact attempt")
@@ -618,7 +626,7 @@ func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.Command
 		Architecture string `json:"GOHOSTARCH"`
 		Version      string `json:"GOVERSION"`
 	}
-	output, err := procgroup.CommandOutput(ctx, probe, false)
+	output, err := commandshell.CommandOutput(ctx, probe, false)
 	if err == nil && json.Unmarshal(output, &observed) == nil {
 		environment := gate.CheckEnvironment{OS: observed.OS, Architecture: observed.Architecture, GoVersion: observed.Version}
 		if environment.Valid() {

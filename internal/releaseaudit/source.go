@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 type GitSource struct {
@@ -101,7 +101,7 @@ func (s *GitSource) git(ctx context.Context, arguments ...string) ([]byte, error
 	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + s.scratch, "TMPDIR=" + s.scratch, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_OPTIONAL_LOCKS=0", "GIT_NO_REPLACE_OBJECTS=1", "GIT_NO_LAZY_FETCH=1", "GIT_TERMINAL_PROMPT=0"}
 	output := &boundedOutput{limit: maxDocumentBytes}
 	command.Stdout = output
-	err := procgroup.RunCommand(ctx, command)
+	err := commandshell.RunCommand(ctx, command)
 	if err != nil {
 		return nil, fmt.Errorf("read pinned release audit source: %w", err)
 	}

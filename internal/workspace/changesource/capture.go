@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
@@ -188,7 +189,7 @@ func Verify(ctx context.Context, source tracker.ChangeSource, bundle []byte) (er
 		command.Stdin = bytes.NewReader(input)
 		command.WaitDelay = gitexec.WaitDelay
 		procgroup.Configure(ctx, command)
-		return procgroup.RunCommand(ctx, command)
+		return commandshell.RunCommand(ctx, command)
 	}
 	if err := git(nil, "init", "--bare", "--object-format=sha1", "--template="); err != nil {
 		return err
