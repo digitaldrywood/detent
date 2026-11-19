@@ -5,10 +5,15 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/localboard"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) localBoardDeps() coreimport.LocalBoardDeps {
@@ -48,4 +53,15 @@ func (s *Service) importLocalBoard(c echo.Context) error {
 
 func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.NativeScope, request localboard.Request) (localboard.Result, error) {
 	return s.localBoardDeps().ImportLocalBoardRecord(ctx, scope, request)
+}
+
+const backgroundStorageBudget = storageconversion.BackgroundBudget
+const storageConversionRows = storageconversion.MaxRows
+
+func (s *Service) convertPostgresStorage(ctx context.Context, tenant hubmaintenance.Tenant, limit int) (int, error) {
+	return storageconversion.ConvertTenant(ctx, tenant, limit, func(organization tracker.OrganizationID) storageconversion.Storage {
+		return postgres.NewConversionStorage(s.database.postgres, organization, s.runDetailStore(), func(ctx context.Context, _ storageconversion.Candidate, raw []byte) ([]byte, error) {
+			return hubcontent.ResolveStorageJSON(s.freshRunDetailContext(ctx), raw)
+		})
+	})
 }
