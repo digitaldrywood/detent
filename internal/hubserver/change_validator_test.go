@@ -1736,7 +1736,6 @@ func seedValidatorReviewHistory(t *testing.T, f nativeFixture, admin *sql.DB, ch
 		{`INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,actor_envelope_known) SELECT $1,$2,$3,'evt_retained_'||n,i.event_sequence+n,'comment.created',1,'system','example',$4,$5,$6,$7,$8,true FROM issues i CROSS JOIN generate_series(1,20000)n WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3`, []any{org, f.project.ID, item, now, event.PayloadObjectKey, event.PayloadSHA256, event.PayloadBytes, event.PayloadContentBytes}},
 		{`UPDATE issues SET event_sequence=event_sequence+20000 WHERE organization_id=$1 AND project_id=$2 AND native_id=$3`, []any{org, f.project.ID, item}},
 		{`INSERT INTO native_command_states(organization_id,actor_id,operation,command_key,request_hash,created_at,response_expired) SELECT $1,$2,'example.history',n::text,repeat('a',64),$3,true FROM generate_series(1,10000)n`, []any{org, actor, now}},
-		{`ANALYZE change_evidence,collaboration_events,native_command_states,issues,change_requests`, nil},
 	} {
 		if _, err := admin.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
 			t.Fatalf("seed review history: %v\n%s", err, statement.query)
