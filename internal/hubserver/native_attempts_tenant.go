@@ -390,7 +390,7 @@ func projectAttemptEvidence(result *tracker.NativeAttempt, snapshot hubrecords.T
 				break
 			}
 			if budget < 0 {
-				return hubapi.NativePublicInvalid("Attempt evidence exceeds the 1048576-byte read limit")
+				return hubapi.NativePublicInvalid("Complete attempt evidence requires pagination above the 1048576-byte read limit")
 			}
 			evidence = append(evidence, file)
 		}
@@ -411,8 +411,8 @@ func readTenantAttemptEvidence(ctx context.Context, r tenantstore.Reader, snapsh
 	if err != nil {
 		return err
 	}
-	if len(records) > 200 {
-		return hubapi.NativePublicInvalid("Attempt evidence exceeds the 200-reference read bound")
+	if len(records) > 200 && !snapshot.EvidencePage {
+		return hubapi.NativePublicInvalid("Complete attempt evidence requires pagination above 200 references")
 	}
 	snapshot.Evidence, snapshot.EvidenceRows = true, records
 	return nil

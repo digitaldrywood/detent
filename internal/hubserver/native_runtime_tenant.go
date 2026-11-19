@@ -73,10 +73,11 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 }
 
 type runtimeAttemptSelector struct {
-	evidenceAfter string
-	attemptID     string
-	latest        bool
-	failures      *runtimeFailureRows
+	firstEvidencePage bool
+	evidenceAfter     string
+	attemptID         string
+	latest            bool
+	failures          *runtimeFailureRows
 }
 
 type runtimeFailureRows struct {
@@ -215,9 +216,9 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 		}
 		snapshot.attempt = hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
 		snapshot.leasePolicy = leasePolicy
-		snapshot.attempt.Evidence, snapshot.attempt.EvidencePage = true, true
+		snapshot.attempt.EvidencePage = selector.firstEvidencePage || selector.evidenceAfter != ""
 		if selector.evidenceAfter == "" || selector.evidenceAfter == "start" {
-			snapshot.attempt.EvidenceRows, err = r.AttachmentEvidence(ctx, scope.Project, row.NativeID, attempt.ID, 201)
+			err = readTenantAttemptEvidence(ctx, r, &snapshot.attempt)
 		} else {
 			anchor, readErr := r.Attachment(ctx, scope.Project, selector.evidenceAfter)
 			if readErr != nil {
@@ -226,6 +227,7 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 			if anchor.Metadata.WorkItemID != string(row.NativeID) || anchor.EvidenceAttemptID != attempt.ID {
 				return corestore.ErrNotFound
 			}
+			snapshot.attempt.Evidence = true
 			snapshot.attempt.EvidenceRows, err = r.AttachmentEvidenceAfter(ctx, scope.Project, row.NativeID, attempt.ID, anchor.Metadata.CreatedAt, anchor.Metadata.ID, 201)
 		}
 		if err != nil {

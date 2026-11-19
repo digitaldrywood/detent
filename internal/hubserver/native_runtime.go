@@ -207,13 +207,14 @@ func (s *Service) getNativeRuntime(c echo.Context) error {
 		}
 		selector = c.QueryParam("attempt_id")
 	}
-	if after := c.QueryParam("evidence_after"); after != "" {
-		if after != "start" && !hubapi.ValidID(after, "att") || !hubapi.ValidID(selector, "attempt") || c.QueryParams().Has("admission") {
+	if c.QueryParams().Has("evidence_after") {
+		after := c.QueryParam("evidence_after")
+		if after != "" && after != "start" && !hubapi.ValidID(after, "att") || !hubapi.ValidID(selector, "attempt") || c.QueryParams().Has("admission") {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attempt evidence cursor"))
 		}
 		ctx, cancel := context.WithTimeout(s.withRequestDetails(s.runDetailContext(c.Request().Context())), hubapi.ReadTimeout)
 		defer cancel()
-		evidence, _, _, err := s.readSelectedNativeRuntimeTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), runtimeAttemptSelector{attemptID: selector, evidenceAfter: after})
+		evidence, _, _, err := s.readSelectedNativeRuntimeTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), runtimeAttemptSelector{attemptID: selector, evidenceAfter: after, firstEvidencePage: after == ""})
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}

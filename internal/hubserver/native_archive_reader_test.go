@@ -165,8 +165,16 @@ func TestRuntimeEvidenceEnvelope(t *testing.T) {
 		CompletionBody: strings.Repeat("a", (1<<20)-(12<<10)),
 		Evidence:       []tracker.NativeEvidence{{AttachmentID: "att_" + strings.Repeat("a", 32), Caption: strings.Repeat("<", 3072)}},
 	}}}
+	legacy := httptest.NewRecorder()
+	if err := nativeArchiveJSON(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), legacy), http.StatusOK, result); err != nil {
+		t.Fatal(err)
+	}
+	var refusal hubapi.APIErrorResponse
+	if legacy.Code != http.StatusUnprocessableEntity || json.Unmarshal(legacy.Body.Bytes(), &refusal) != nil || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "Complete runtime input exceeds") {
+		t.Fatalf("legacy runner received no explicit response size error: status %d", legacy.Code)
+	}
 	recorder := httptest.NewRecorder()
-	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), recorder)
+	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/?evidence_after=", nil), recorder)
 	if err := nativeArchiveJSON(c, http.StatusOK, result); err != nil {
 		t.Fatal(err)
 	}

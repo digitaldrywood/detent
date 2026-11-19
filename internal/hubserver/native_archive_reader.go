@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"slices"
 
 	"github.com/labstack/echo/v4"
@@ -77,7 +78,10 @@ func nativeArchiveJSON(c echo.Context, status int, value any) error {
 	if err != nil {
 		return err
 	}
-	if result, ok := value.(tracker.NativeRuntimeEvidence); ok && len(raw) > 1<<20 && result.Attempt != nil && len(result.Attempt.Evidence) > 0 {
+	if result, ok := value.(tracker.NativeRuntimeEvidence); ok && len(raw) > 1<<20 {
+		if !c.QueryParams().Has("evidence_after") || c.QueryParam("evidence_after") != "" || result.Attempt == nil || len(result.Attempt.Evidence) == 0 {
+			return c.JSON(http.StatusUnprocessableEntity, hubapi.APIErrorResponse{Code: "invalid_request", Message: "Complete runtime input exceeds the 1048576-byte response limit"})
+		}
 		result.Attempt.Evidence = nil
 		result.Attempt.NextEvidenceAfter = "start"
 		if !slices.Contains(result.Attempt.Unavailable, "evidence") {

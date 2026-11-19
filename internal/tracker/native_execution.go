@@ -19,6 +19,7 @@ const NativeExecutionCapability = "fenced_run_history"
 const NativePreStartConversationBindingCapability = "native_pre_start_conversation_binding"
 
 const NativeRuntimeEvidenceCapability = "native_runtime_evidence"
+const NativeAttemptEvidencePageCapability = "native_attempt_evidence_page"
 const NativePreProviderFailureCapability = "native_pre_provider_failure"
 const NativeAdmissionEvidenceCapability = "native_admission_evidence"
 const NativeAdmissionObservationCapability = "native_admission_observation"
