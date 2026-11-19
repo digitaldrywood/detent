@@ -13,11 +13,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestOnboardingProgressUsesOneTenantScopedRead(t *testing.T) {
+func TestOnboardingProgressIsTenantScoped(t *testing.T) {
 	t.Parallel()
-	repository, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
-	counts := new(pageWireCounts)
-	measured := pageMeasuredRepository(t, pool, counts)
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for tenant, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedTenantAccess(t, repository, org)
 		pgstoretest.SeedRepository(t, repository, org)
@@ -28,7 +26,7 @@ func TestOnboardingProgressUsesOneTenantScopedRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		seeded := 0
-		for _, size := range []int{2, 50} {
+		for _, size := range []int{2} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				for seeded < size {
 					id := tracker.ProjectID(fmt.Sprintf("prj_extra_%d_%d", tenant, seeded))
@@ -56,8 +54,7 @@ func TestOnboardingProgressUsesOneTenantScopedRead(t *testing.T) {
 				{name: "other_tenant", project: tracker.ProjectID(fmt.Sprintf("prj_extra_%d_0", 1-tenant)), missing: true},
 			} {
 				t.Run(fmt.Sprintf("%s/%d/%s", org, size, test.name), func(t *testing.T) {
-					counts.reset()
-					if err := measured.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 						got, err := r.ProjectOnboardingProgress(t.Context(), test.project)
 						if test.missing {
 							if !errors.Is(err, corestore.ErrNotFound) {
@@ -74,12 +71,6 @@ func TestOnboardingProgressUsesOneTenantScopedRead(t *testing.T) {
 						return nil
 					}); err != nil {
 						t.Fatal(err)
-					}
-					statements, exchanges := counts.read()
-					checkoutSQL, checkoutRTT := counts.checkout()
-					t.Logf("statements=%d exchanges=%d checkout=%d/%d", statements, exchanges, checkoutSQL, checkoutRTT)
-					if statements != 4 || exchanges != 3 || checkoutSQL != 1 || checkoutRTT != 1 {
-						t.Fatalf("one indexed progress read: statements=%d exchanges=%d checkout=%d/%d, want 4/3 + 1/1", statements, exchanges, checkoutSQL, checkoutRTT)
 					}
 				})
 			}

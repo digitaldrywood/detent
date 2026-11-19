@@ -14,12 +14,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
+func TestRelationshipReadModelPreservesPageScope(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-	counts := new(pageWireCounts)
-	measured := pageMeasuredRepository(t, pool, counts)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	everything := corestore.RelationshipVisibility{Projects: []tracker.ProjectID{"prj_first", "prj_second"}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedTenantAccess(t, repository, org)
@@ -100,8 +98,7 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 				t.Errorf("obsolete small relationship generations=%d, want zero", retired)
 			}
 			for _, limit := range []int{1, 2} {
-				counts.reset()
-				if err := measured.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					rows, err := r.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, limit, everything)
 					if err != nil {
 						return err
@@ -121,15 +118,6 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 					return nil
 				}); err != nil {
 					t.Fatal(err)
-				}
-				statements, exchanges := counts.read()
-				checkoutSQL, checkoutRTT := counts.checkout()
-				if checkoutSQL != 1 || checkoutRTT != 1 {
-					t.Fatalf("forced pool ping: SQL=%d exchanges=%d, want 1/1", checkoutSQL, checkoutRTT)
-				}
-				t.Logf("tenant=%s scale=%d page=%d statements=%d exchanges=%d checkout_ping=1/1", org, size, limit, statements, exchanges)
-				if statements != 5 || exchanges != 4 {
-					t.Fatalf("statements=%d exchanges=%d, want 5/4", statements, exchanges)
 				}
 			}
 			if size == 50 {

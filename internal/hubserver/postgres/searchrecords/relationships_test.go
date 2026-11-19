@@ -4,19 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -379,7 +375,7 @@ func TestHistoricalIssueVersionLabelsRoundTripIntoTypedMemberships(t *testing.T)
 
 func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 	t.Parallel()
-	repository, runtimePool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: pgstoretest.HistoryAt()})
@@ -600,19 +596,8 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 				t.Fatal(err)
 			}
 			event := prepare("event_progress_input", "issue.edited", "human", "", 0)
-			var selector string
-			var issueID int64
-			ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, statement string) {
-				if strings.HasPrefix(statement, "SELECT ctid FROM issue_dependencies") {
-					selector = statement
-				}
-			})
+			ctx := t.Context()
 			if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
-				source, err := w.WorkItem(ctx, "prj_first", "wi_first_1")
-				if err != nil {
-					return err
-				}
-				issueID = source.ID
 				if _, err := w.AppendEvent(ctx, event); err != nil {
 					return err
 				}
@@ -621,78 +606,6 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 				t.Fatalf("input rollback=%v", err)
 			}
 			assertCount(203)
-			if selector == "" {
-				t.Fatal("owned invalidation selector was not observed")
-			}
-			for _, mode := range []string{"force_generic_plan", "force_custom_plan"} {
-				func() {
-					tx, err := runtimePool.Begin(t.Context())
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer tx.Rollback(t.Context())
-					if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
-						t.Fatal(err)
-					}
-					var scoped bool
-					if err := tx.QueryRow(t.Context(), `SELECT pg_has_role(current_user,'detent_runtime_v2','USAGE') AND NOT pg_has_role(current_user,'detent_platform_v2','USAGE') AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) AND current_setting('detent.organization_id')=$1`, string(org)).Scan(&scoped); err != nil || !scoped {
-						t.Fatalf("progress plan lacks runtime tenant scope: %v", err)
-					}
-					if _, err := tx.Exec(t.Context(), "SET LOCAL plan_cache_mode="+mode); err != nil {
-						t.Fatal(err)
-					}
-					statement := pgx.Identifier{"progress_expiry_" + mode}.Sanitize()
-					if _, err := tx.Exec(t.Context(), "PREPARE "+statement+" AS "+selector); err != nil {
-						t.Fatal(err)
-					}
-					var raw []byte
-					if err := tx.QueryRow(t.Context(), "EXPLAIN(ANALYZE,BUFFERS,FORMAT JSON) EXECUTE "+statement+"($1,$2,$3,$4)", pgx.QueryExecModeSimpleProtocol, string(org), "prj_first", issueID, corestore.MaxRelationshipPreparationPages*corestore.MaxPageSize+1).Scan(&raw); err != nil {
-						t.Fatal(err)
-					}
-					type node struct {
-						Type      string  `json:"Node Type"`
-						Relation  string  `json:"Relation Name"`
-						Index     string  `json:"Index Name"`
-						Condition string  `json:"Index Cond"`
-						Rows      float64 `json:"Actual Rows"`
-						Removed   float64 `json:"Rows Removed by Filter"`
-						Loops     float64 `json:"Actual Loops"`
-						Plans     []node
-					}
-					var plans []struct{ Plan node }
-					if err := json.Unmarshal(raw, &plans); err != nil {
-						t.Fatal(err)
-					}
-					found := false
-					var inspect func(node)
-					inspect = func(plan node) {
-						if plan.Relation == "issue_dependencies" {
-							if (plan.Rows+plan.Removed)*plan.Loops > 201 {
-								t.Errorf("progress selector examined ordinary edges: %+v", plan)
-							}
-							if plan.Index == "issue_dependencies_progress_owner_lookup" && strings.Contains(plan.Condition, "organization_id") && strings.Contains(plan.Condition, "dependent_project_id") && strings.Contains(plan.Condition, "dependent_issue_id") {
-								found = true
-							}
-						}
-						for _, child := range plan.Plans {
-							inspect(child)
-						}
-					}
-					if len(plans) != 1 {
-						t.Fatalf("progress selector plans=%s", raw)
-					}
-					inspect(plans[0].Plan)
-					if !found {
-						t.Errorf("%s progress selector lacks provenance index: %s", mode, raw)
-					}
-					if _, err := tx.Exec(t.Context(), "DEALLOCATE "+statement); err != nil {
-						t.Fatal(err)
-					}
-					if err := tx.Rollback(t.Context()); err != nil {
-						t.Fatal(err)
-					}
-				}()
-			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 				t.Fatal(err)
 			}

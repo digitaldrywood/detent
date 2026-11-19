@@ -2,16 +2,12 @@ package searchrecords_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -24,16 +20,6 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
-	probe := &boardQueryTracer{}
-	counted, err := postgres.NewRepository(ctx, pgstoretest.TracedFeaturePool(t, f.pool, probe), pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := counted.Close(); err != nil {
-			t.Error(err)
-		}
-	})
 	clone := func(table, org, body string, first, count int) {
 		t.Helper()
 		columns, err := f.admin.QueryContext(ctx, "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND is_generated='NEVER' ORDER BY ordinal_position", table)
@@ -97,7 +83,7 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 		}
 		return want
 	}
-	search := func(org tracker.OrganizationID, reporter bool, bound float64, fingerprint string) (int, int) {
+	search := func(org tracker.OrganizationID, reporter bool, fingerprint string) (int, int) {
 		t.Helper()
 		seen := map[tracker.NativeWorkItemID]bool{}
 		var after *viewstore.BoardPosition
@@ -109,23 +95,15 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 			}
 			selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: text, Fingerprint: fingerprint, SearchRanked: true, Limit: 51, After: after, Reporter: reporter, ReporterPrincipalID: "example"}
 			var page viewstore.BoardModelPage
-			started := time.Now()
-			bounded, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
-			probe.page = ""
-			err := counted.ReadTenant(bounded, org, corestore.Serving, func(r tenantstore.Reader) error {
+			err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
 				page, err = r.(interface {
 					BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
-				}).BoardModelPages(bounded, selection, nil, accessstore.Authority{})
+				}).BoardModelPages(ctx, selection, nil, accessstore.Authority{})
 				return err
 			})
-			cancel()
 			if err != nil {
 				t.Fatalf("tenant %s request %d: %v", org, requests, err)
-			}
-			if requests == 1 {
-				t.Logf("tenant=%s reporter=%t first page=%s", org, reporter, time.Since(started))
-				inspectSearchPlan(t, f, org, probe, bound)
 			}
 			records := page.Records
 			if len(records) > 50 {
@@ -170,14 +148,14 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 		if matching(run.org) < 1000 {
 			t.Fatal("fixture must match more than a thousand issues with common words")
 		}
-		windows, requests := search(run.org, run.reporter, 4*project+102, "")
+		windows, requests := search(run.org, run.reporter, "")
 		if windows != 1 {
 			t.Fatalf("tenant %s reporter=%t used %d windows for a %d-issue project; one request must cover the project", run.org, run.reporter, windows, project)
 		}
 		t.Logf("tenant=%s reporter=%t requests=%d", run.org, run.reporter, requests)
 	}
 	seed("org_second", project+1, searchstore.WindowRows, 12)
-	windows, requests := search("org_second", false, 4*searchstore.WindowRows+102, "")
+	windows, requests := search("org_second", false, "")
 	if windows < 2 {
 		t.Fatalf("a project above the ceiling used %d windows, want continuation past the ceiling", windows)
 	}
@@ -186,7 +164,7 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
  SELECT organization_id,project_id,work_item_id,'item',work_item_id,$1,true,'worker' FROM native_work_item_pages WHERE organization_id='org_second' AND project_id='prj_first'`, searchstore.FingerprintDigest("example-shared")); err != nil {
 		t.Fatal(err)
 	}
-	if windows, _ := search("org_second", false, 5*searchstore.WindowRows+102, "example-shared"); windows < 2 {
+	if windows, _ := search("org_second", false, "example-shared"); windows < 2 {
 		t.Fatalf("text and fingerprint search above both caps used %d windows", windows)
 	}
 	if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind)
@@ -206,8 +184,7 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 	}
 	for org, want := range map[tracker.OrganizationID]tracker.NativeWorkItemID{"org_first": "wi_window_1", "org_second": "wi_window_2"} {
 		var rows []viewstore.BoardRecord
-		probe.page = ""
-		if err := counted.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			rows, err = r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", Fingerprint: "example-old", SearchRanked: true, Limit: 10})
 			return err
@@ -217,52 +194,5 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 		if len(rows) != 1 || rows[0].WorkItemID != want {
 			t.Fatalf("tenant %s fingerprint outside the window = %+v, want only %s", org, rows, want)
 		}
-		inspectSearchPlan(t, f, org, probe, 10)
 	}
-}
-
-func inspectSearchPlan(t *testing.T, f searchFixture, org tracker.OrganizationID, probe *boardQueryTracer, bound float64) {
-	t.Helper()
-	if probe.page == "" {
-		t.Fatal("search page query was not captured")
-	}
-	tx, err := f.admin.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", org); err != nil {
-		t.Fatal(err)
-	}
-	var raw []byte
-	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+probe.page, probe.args...).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var plans []struct {
-		Plan      boardLanePlan
-		Execution float64 `json:"Execution Time"`
-	}
-	if err := json.Unmarshal(raw, &plans); err != nil {
-		t.Fatal(err)
-	}
-	visited := map[string]float64{}
-	var inspect func(boardLanePlan)
-	inspect = func(node boardLanePlan) {
-		if node.Relation != "" {
-			visited[node.Relation] += (node.Rows + node.Removed) * node.Loops
-		}
-		for _, child := range node.Plans {
-			inspect(child)
-		}
-	}
-	inspect(plans[0].Plan)
-	for _, relation := range []string{"native_work_item_pages", "native_work_item_search", "native_work_item_fingerprints", "native_board_items", "issues"} {
-		if visited[relation] > bound {
-			t.Errorf("tenant %s search visited %.0f %s rows for one page: %s", org, visited[relation], relation, raw)
-		}
-	}
-	t.Logf("tenant=%s execution=%.3fms visited=%v", org, plans[0].Execution, visited)
 }

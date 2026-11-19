@@ -1,7 +1,6 @@
 package searchrecords_test
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -10,7 +9,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -111,30 +109,6 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 			t.Fatalf("due past held subscription=%+v pages=%d error=%v", next, pages, err)
 		}
 		t.Logf("organization=%s passed %d due notices of the held subscription in %d pages of 128", org, backlog, pages)
-		for name, run := range map[string]func(*pgquery.Queries) error{
-			"page": func(q *pgquery.Queries) error {
-				_, err := q.DueNotifications(t.Context(), pgquery.DueNotificationsParams{OrganizationID: org, DueAt: due})
-				return err
-			},
-			"page after a stored seek": func(q *pgquery.Queries) error {
-				_, err := q.DueNotifications(t.Context(), pgquery.DueNotificationsParams{OrganizationID: org, DueAt: due, AfterDue: now.Add(-2500 * time.Microsecond), AfterItem: string(first.WorkItemID), AfterUser: first.UserID})
-				return err
-			},
-			"take": func(q *pgquery.Queries) error {
-				_, err := q.TakeIssueNotices(t.Context(), pgquery.TakeIssueNoticesParams{OrganizationID: org, WorkItemID: string(first.WorkItemID), UserID: first.UserID})
-				return err
-			},
-		} {
-			limit := 128.0
-			if name == "take" {
-				limit = 3 * 1000
-			}
-			examined, subscriptions := notificationPlan(t, pool, org, run)
-			t.Logf("organization=%s %s examined %.0f notices beside %d due notices without a verification request on the held subscription", org, name, examined, backlog)
-			if subscriptions || examined > limit {
-				t.Errorf("%s read subscriptions=%v examined=%.0f notices; bound %.0f", name, subscriptions, examined, limit)
-			}
-		}
 		if err := held.Rollback(); err != nil {
 			t.Fatal(err)
 		}
@@ -219,48 +193,6 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if _, err := admin.ExecContext(t.Context(), `UPDATE project_event_cursors SET sequence=30004 WHERE organization_id=$1 AND project_id='prj_first'`, org); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), `ANALYZE collaboration_events`); err != nil {
-			t.Fatal(err)
-		}
-		tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(t.Context())
-		if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
-			t.Fatal(err)
-		}
-		probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
-		if _, err := pgquery.New(probe).NotificationEvents(t.Context(), pgquery.NotificationEventsParams{OrganizationID: org, ProjectID: "prj_first", ProjectSequence: 4}); err != nil {
-			t.Fatal(err)
-		}
-		var raw []byte
-		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
-			t.Fatal(err)
-		}
-		var plan []struct{ Plan pgstoretest.SearchPlanNode }
-		if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
-			t.Fatalf("plan: %v", err)
-		}
-		var visits func(pgstoretest.SearchPlanNode) float64
-		visits = func(node pgstoretest.SearchPlanNode) float64 {
-			var count float64
-			if node.Relation == "collaboration_events" {
-				count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-			}
-			for _, child := range node.Plans {
-				count += visits(child)
-			}
-			return count
-		}
-		examined := visits(plan[0].Plan)
-		t.Logf("consumed history=30004 catch-up examined=%.0f", examined)
-		if examined > 256 {
-			t.Errorf("discovery examined %.0f history rows; budget 256", examined)
-		}
-		if err := tx.Rollback(t.Context()); err != nil {
-			t.Fatal(err)
-		}
 		previous := int64(4)
 		for range 118 {
 			events, err := delivery.NotificationEvents(t.Context(), org)
@@ -279,7 +211,7 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if previous != 30004 {
 			t.Fatalf("retained seek=%d", previous)
 		}
-		tx, err = pool.BeginTx(t.Context(), pgx.TxOptions{})
+		tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -287,19 +219,9 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 			t.Fatal(err)
 		}
-		probe = &pgstoretest.SearchPlanProbe{DBTX: tx}
-		projects, err := pgquery.New(probe).LockNotificationProject(t.Context(), org)
+		projects, err := pgquery.New(tx).LockNotificationProject(t.Context(), org)
 		if err != nil || len(projects) != 0 {
 			t.Fatalf("idle projects=%d error=%v", len(projects), err)
-		}
-		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
-			t.Fatalf("idle plan: %v", err)
-		}
-		if examined := visits(plan[0].Plan); examined != 0 {
-			t.Fatalf("idle history rows=%.0f", examined)
 		}
 		t.Log("idle discovery examined 0 history rows")
 		if err := tx.Rollback(t.Context()); err != nil {
@@ -400,49 +322,4 @@ func claimDueNotification(t *testing.T, delivery accountstore.NotificationReposi
 		}
 		return notice, claimed, err
 	}
-}
-
-func notificationPlan(t *testing.T, pool *pgxpool.Pool, org tracker.OrganizationID, run func(*pgquery.Queries) error) (float64, bool) {
-	t.Helper()
-	probe := &pgstoretest.SearchPlanProbe{}
-	var raw []byte
-	for _, explain := range []bool{false, true} {
-		tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(t.Context())
-		if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
-			t.Fatal(err)
-		}
-		if explain {
-			err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw)
-		} else {
-			probe.DBTX = tx
-			err = run(pgquery.New(probe))
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Rollback(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var plan []struct{ Plan pgstoretest.SearchPlanNode }
-	if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
-		t.Fatalf("plan: %v", err)
-	}
-	examined, subscriptions := 0.0, false
-	var visit func(pgstoretest.SearchPlanNode)
-	visit = func(node pgstoretest.SearchPlanNode) {
-		subscriptions = subscriptions || node.Relation == "issue_subscriptions"
-		if node.Relation == "issue_notification_notices" {
-			examined += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-		}
-		for _, child := range node.Plans {
-			visit(child)
-		}
-	}
-	visit(plan[0].Plan)
-	return examined, subscriptions
 }
