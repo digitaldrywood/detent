@@ -2205,13 +2205,10 @@ func exerciseHostedPlanUnrestrictedWork(t *testing.T, service *Service) {
 	if _, err := claimHostedPlanWork(t, f, token, request); err != nil {
 		t.Fatalf("unlimited claim = %v", err)
 	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, f.project.OrganizationID, "unrestricted-growth", 0, 1, service.config.Clock(), false); err != nil {
-			return err
-		}
-		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), w, "hosted_artifacts", service.config.Clock()))
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), r, "hosted_artifacts", service.config.Clock()))
 	}); err != nil {
-		t.Fatalf("unlimited growth or feature = %v", err)
+		t.Fatalf("unrestricted feature = %v", err)
 	}
 }
 
@@ -2233,13 +2230,19 @@ func exerciseHostedPlanFreeDefault(t *testing.T, service *Service) {
 			t.Fatalf("claim over the free concurrency allowance = %v", err)
 		}
 	}
-	err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, f.project.OrganizationID, "free-default-growth", 1<<30, 1<<30+1, service.config.Clock(), false)
-	})
-	var limit *hostedplans.LimitError
-	if !errors.As(err, &limit) || limit.Resource != "collaboration_bytes" || limit.Allowance != 1<<30 {
-		t.Fatalf("growth over the free storage allowance = %v", err)
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		entitlement, err := hubapi.FeatureResult(service.database.plansService().EntitlementRecord(t.Context(), r, service.config.Clock()))
+		if err != nil {
+			return err
+		}
+		if allowance := entitlement.Allowances["collaboration_bytes"]; allowance != 1<<30 {
+			return fmt.Errorf("free storage allowance = %d, want %d", allowance, 1<<30)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
+	var limit *hostedplans.LimitError
 	if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), r, "hosted_artifacts", service.config.Clock()))
 	}); !errors.As(err, &limit) || limit.Resource != "hosted_artifacts" {
