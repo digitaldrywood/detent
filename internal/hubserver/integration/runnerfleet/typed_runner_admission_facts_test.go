@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -19,11 +20,11 @@ import (
 
 func TestTypedRunnerAdmissionFacts(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
+	repository := hubtest.Repository(t)
 	now := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
 	expires := now.Add(time.Hour)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedStartupOrganization(t, repository, organization)
+		hubtest.Organization(t, repository, hubtest.OrganizationOptions{ID: organization, Now: now})
 		observations := make(map[string]map[tracker.ProjectID]tracker.NativeAdmissionObservation)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			for index := range 2 {
@@ -50,7 +51,7 @@ func TestTypedRunnerAdmissionFacts(t *testing.T) {
 				for projectIndex := range 2 {
 					project := tracker.ProjectID(fmt.Sprintf("project-%d", projectIndex))
 					if index == 0 {
-						if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+						if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Profile: "native"}, States: hubtest.States()}); err != nil {
 							return err
 						}
 					}

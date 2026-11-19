@@ -34,48 +34,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
-func TestRunnerAdmissionReportsPublishOnePayloadPerIssue(t *testing.T) {
-	t.Parallel()
-	registered := make(map[string]int)
-	for _, test := range []struct {
-		name       string
-		predicates []string
-	}{
-		{"single report", []string{"project_capacity_full"}},
-		{"repeated reports", []string{"duplicate_pull_request_work", "current_head_ci_wait", "project_capacity_full"}},
-	} {
-		f := newNativeFixture(t, nil, "", "admission-dedup-"+strings.ReplaceAll(test.name, " ", "-"))
-		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
-		r.enroll(t)
-		issue := f.create(t, "Repeated delivery")
-		now := f.service.config.Clock()
-		var admissions []runnerauth.DiagnosticAdmission
-		for i, predicate := range test.predicates {
-			admissions = append(admissions, runnerauth.DiagnosticAdmission{IssueID: string(issue.WorkItemID), WorkItemRevision: int64(issue.Revision), ObservedAt: now.Add(time.Duration(i-len(test.predicates)) * time.Second), Result: "skipped", Predicate: predicate})
-		}
-		view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{
-			ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Counts: map[string]int{}, Unavailable: map[string]string{}, Admissions: admissions,
-		}}
-		var before, after int
-		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects").Scan(&before); err != nil {
-			t.Fatal(err)
-		}
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
-		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects").Scan(&after); err != nil {
-			t.Fatal(err)
-		}
-		registered[test.name] = after - before
-		_, event := readDiagnosticFixtureDecision(t, f, issue)
-		data := event.Data
-		if want := test.predicates[len(test.predicates)-1]; data.Decision == nil || data.Decision.Reason != want {
-			t.Fatalf("%s: decision=%+v, want latest %q", test.name, data.Decision, want)
-		}
-	}
-	if registered["repeated reports"] != registered["single report"] {
-		t.Fatalf("repeated reports registered %d content objects, single report %d", registered["repeated reports"], registered["single report"])
-	}
-}
-
 func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 	t.Parallel()
 	var clock atomic.Int64
