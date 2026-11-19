@@ -104,7 +104,7 @@ func TestWorkspaceOpenLimitsNameTheScopeReached(t *testing.T) {
 	other := hubtest.Credential(t, hub.Repository, project.Organization(), hubtest.CredentialOptions{Projects: []tracker.ProjectID{project.Project.ID}, Now: hub.Now()})
 	post := func(t *testing.T, token string) *httptest.ResponseRecorder {
 		t.Helper()
-		return hub.Request(t, http.MethodPost, project.Base+"/workspaces", map[string]string{"work_item_id": string(issue.WorkItemID), "idempotency_key": hubapi.NewID("open")})
+		return hub.Request(t, http.MethodPost, project.Base+"/workspaces", token, map[string]string{"work_item_id": string(issue.WorkItemID), "idempotency_key": hubapi.NewID("open")})
 	}
 	for range 2 {
 		hubfixture.RequireStatus(t, post(t, project.Token), http.StatusCreated)
