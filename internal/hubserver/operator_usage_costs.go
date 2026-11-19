@@ -49,7 +49,7 @@ func (e hubProjectExecutor) monthlyUsageCosts(ctx context.Context, arguments jso
 		if err := e.service.requireHostedProject(ctx, nil, scope, false); err != nil {
 			return operatortool.Result{}, hubscope.OperatorAuthorizationError(err)
 		}
-		if err := e.service.database.authorizeNativeProject(ctx, scope); err != nil {
+		if err := authorizeNativeProject(ctx, e.service.database, scope); err != nil {
 			return operatortool.Result{}, hubscope.OperatorAuthorizationError(err)
 		}
 	}

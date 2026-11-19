@@ -53,12 +53,12 @@ func TestPostgresNativeProjectAuthorizationRejectsDeletedProjectsAndRemovedRunne
 				t.Fatal(err)
 			}
 			scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: hubapi.APICredential{ID: runner, Hash: apikey.HashToken(runner), Scope: hubapi.APIScopeWorker, NativeOnly: true, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runner, MachineID: tracker.MachineID(runner)}, OrganizationID: organization}}}
-			if err := db.authorizeNativeProject(t.Context(), scope); err != nil {
+			if err := authorizeNativeProject(t.Context(), db, scope); err != nil {
 				t.Fatalf("organization runner without token grant: %v", err)
 			}
 			mismatched := scope
 			mismatched.Credential.Runner.OrganizationID = "org_other"
-			if err := db.authorizeNativeProject(t.Context(), mismatched); !hubapi.IsNativeNotFound(err) {
+			if err := authorizeNativeProject(t.Context(), db, mismatched); !hubapi.IsNativeNotFound(err) {
 				t.Fatalf("mismatched runner organization: %v", err)
 			}
 			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -66,11 +66,11 @@ func TestPostgresNativeProjectAuthorizationRejectsDeletedProjectsAndRemovedRunne
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.authorizeNativeProject(t.Context(), scope); !hubapi.IsNativeNotFound(err) {
+			if err := authorizeNativeProject(t.Context(), db, scope); !hubapi.IsNativeNotFound(err) {
 				t.Fatalf("removed runner: %v", err)
 			}
 			scope.Credential = hubapi.APICredential{ID: admin, Hash: apikey.HashToken(admin), Scope: hubapi.APIScopeAdmin}
-			if err := db.authorizeNativeProject(t.Context(), scope); err != nil {
+			if err := authorizeNativeProject(t.Context(), db, scope); err != nil {
 				t.Fatalf("live project administrator: %v", err)
 			}
 			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -82,7 +82,7 @@ func TestPostgresNativeProjectAuthorizationRejectsDeletedProjectsAndRemovedRunne
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.authorizeNativeProject(t.Context(), scope); !hubapi.IsNativeNotFound(err) {
+			if err := authorizeNativeProject(t.Context(), db, scope); !hubapi.IsNativeNotFound(err) {
 				t.Fatalf("deleted project administrator: %v", err)
 			}
 		})

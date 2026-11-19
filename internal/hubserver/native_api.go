@@ -401,7 +401,7 @@ func (s *Service) resolveNativeRequestScope(readCtx context.Context, c echo.Cont
 	return s.resolveHubauthNativeScope(readCtx, c)
 }
 
-func (d *database) authorizeNativeProject(ctx context.Context, scope hubscope.NativeScope) error {
+func authorizeNativeProject(ctx context.Context, d *database, scope hubscope.NativeScope) error {
 	if d.postgres == nil {
 		return hubapi.NativeNotFound()
 	}

@@ -168,7 +168,7 @@ func (s *Service) authorizeHostedKeyRequest(ctx context.Context, credential huba
 		if err := s.requireHostedProject(ctx, nil, scope, false); err != nil {
 			return err
 		}
-		if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
+		if err := authorizeNativeProject(ctx, s.database, scope); err != nil {
 			return err
 		}
 	}
