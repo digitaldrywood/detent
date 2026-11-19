@@ -61,7 +61,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 				issue.ClosedAt = new(now.Add(-30 * time.Minute))
 			}
 			if state == "Cancelled" {
-				issue.ClosedAt = new(now.Add(-3 * time.Hour))
+				issue.ClosedAt = new(now.Add(-45 * time.Minute))
 			}
 			raw, err := json.Marshal(issue)
 			if err != nil {
@@ -130,7 +130,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if legacy.Work == nil || legacy.Work.Completed != 1 || legacy.Work.Cancelled != 1 || len(legacy.Work.Lanes) != 3 || len(legacy.Work.ShippedWindows) != 3 || legacy.Work.ShippedWindows[0].Shipped != 1 || legacy.Work.ShippedWindows[0].Cancelled != 0 {
+		if legacy.Work == nil || legacy.Work.Completed != 1 || legacy.Work.Cancelled != 1 || len(legacy.Work.Lanes) != 3 || len(legacy.Work.ShippedWindows) != 3 || legacy.Work.ShippedWindows[0].Shipped != 1 || legacy.Work.ShippedWindows[0].Cancelled != 1 {
 			t.Errorf("%s legacy windows=%+v", org, legacy.Work)
 		}
 
@@ -180,10 +180,10 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 			})
 		}
 
-		if all.Shipped1h != 1 || all.Shipped24h != 1 || all.Shipped7d != 1 || all.Cancelled1h != 0 || all.Cancelled24h != 1 || all.Cancelled7d != 1 {
+		if all.Shipped1h != 1 || all.Shipped24h != 1 || all.Shipped7d != 1 || all.Cancelled1h != 1 || all.Cancelled24h != 1 || all.Cancelled7d != 1 {
 			t.Errorf("%s summary windows=%+v", org, all)
 		}
-		if done.Shipped1h != 1 || done.Shipped24h != 1 || cancelled.Cancelled1h != 0 || cancelled.Cancelled24h != 1 {
+		if done.Shipped1h != 1 || done.Shipped24h != 1 || cancelled.Cancelled1h != 1 || cancelled.Cancelled24h != 1 {
 			t.Errorf("%s lane windows done=%+v cancelled=%+v", org, done, cancelled)
 		}
 		if !all.ProjectedAt.Equal(now) || all.Sequence == 0 {
@@ -215,6 +215,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 		age                time.Duration
 		shipped, cancelled [3]int
 	}{
+		{"inclusive cancelled one-hour boundary", 15 * time.Minute, [3]int{1, 1, 1}, [3]int{1, 1, 1}},
 		{"inclusive one-hour boundary", 30 * time.Minute, [3]int{1, 1, 1}, [3]int{0, 1, 1}},
 		{"after one hour", 30*time.Minute + time.Microsecond, [3]int{0, 1, 1}, [3]int{0, 1, 1}},
 		{"after 24 hours", 24 * time.Hour, [3]int{0, 0, 1}, [3]int{0, 0, 1}},
