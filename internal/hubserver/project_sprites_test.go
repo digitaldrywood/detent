@@ -1,15 +1,11 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"runtime/pprof"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -200,46 +196,18 @@ func newSpriteWakeFixture(t *testing.T, client *http.Client, storeToken bool, he
 	return f, scope, runners
 }
 
-const spriteWakeFixtureLabel = "sprite_wake_fixture"
-
-func spriteLifecycleGoroutines(t *testing.T) int {
-	t.Helper()
-	var profile bytes.Buffer
-	if err := pprof.Lookup("goroutine").WriteTo(&profile, 1); err != nil {
-		t.Fatal(err)
-	}
-	label := fmt.Sprintf("%q:%q", spriteWakeFixtureLabel, t.Name())
-	retained := 0
-	for _, record := range strings.Split(profile.String(), "\n\n") {
-		if !strings.Contains(record, label) {
-			continue
-		}
-		count, _, ok := strings.Cut(record, " @ ")
-		if !ok {
-			continue
-		}
-		goroutines, err := strconv.Atoi(strings.TrimSpace(count[strings.LastIndex(count, "\n")+1:]))
-		if err != nil {
-			t.Fatal(err)
-		}
-		retained += goroutines * strings.Count(record, "hubserver.(*Service).scheduleSpriteLifecycle.func")
-	}
-	return retained
-}
-
 func startSpriteWakeWorkers(t *testing.T, s *Service) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	s.workerCancel = cancel
-	labels := pprof.Labels(spriteWakeFixtureLabel, t.Name())
 	s.wakeSpriteRunnersAfter = func(scope hubscope.NativeScope, result json.RawMessage) {
-		pprof.Do(ctx, labels, func(ctx context.Context) { s.scheduleSpriteWake(ctx, scope, result) })
+		s.scheduleSpriteWake(ctx, scope, result)
 	}
 	s.startSpriteLifecycle = func(scope hubscope.NativeScope, state string) {
-		pprof.Do(ctx, labels, func(ctx context.Context) { s.scheduleSpriteLifecycle(ctx, scope, state) })
+		s.scheduleSpriteLifecycle(ctx, scope, state)
 	}
 	s.startSpritePoolForQueue = func(scope hubscope.NativeScope) {
-		pprof.Do(ctx, labels, func(ctx context.Context) { s.scheduleSpritePoolForQueue(ctx, scope) })
+		s.scheduleSpritePoolForQueue(ctx, scope)
 	}
 	t.Cleanup(s.stopSpriteRunners)
 }
