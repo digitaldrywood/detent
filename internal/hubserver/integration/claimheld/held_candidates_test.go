@@ -9,9 +9,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/jackc/pgx/v5/multitracer"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
@@ -38,25 +35,20 @@ const heldReport = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\n
 type heldFixture struct {
 	hubfixture.Native
 	details *countingDetails
-	trace   *candidateTrace
 	runner  hubfixture.Runner
 }
 
 func newHeldFixture(t *testing.T) heldFixture {
 	t.Helper()
 	details := &countingDetails{DetailStore: hubtest.NewDetails()}
-	trace := &candidateTrace{}
-	h := hubfixture.OpenPool(t, hubfixture.Config{RunDetails: details}, func(config *pgxpool.Config) {
-		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, trace)
-	})
-	return newHeldProject(t, h, "", details, trace, hubfixture.States())
+	return newHeldProject(t, hubfixture.Open(t, hubfixture.Config{RunDetails: details}), "", details, hubfixture.States())
 }
 
-func newHeldProject(t *testing.T, h *hubfixture.Hub, organization tracker.OrganizationID, details *countingDetails, trace *candidateTrace, states []tracker.NativeState) heldFixture {
+func newHeldProject(t *testing.T, h *hubfixture.Hub, organization tracker.OrganizationID, details *countingDetails, states []tracker.NativeState) heldFixture {
 	t.Helper()
 	p := hubfixture.NewNativeWith(t, h, organization, hubtest.ProjectOptions{Name: "Example project " + hubapi.NewID("fixture"), States: states})
 	hubfixture.ApprovePolicy(t, h, p.Base+"/policy", hubfixture.Policy())
-	f := heldFixture{Native: p, details: details, trace: trace}
+	f := heldFixture{Native: p, details: details}
 	f.runner = f.enroll(t)
 	return f
 }

@@ -72,8 +72,8 @@ func (f heldFixture) scanAs(t *testing.T, r hubfixture.Runner, session string) (
 func TestScanCursorProgressesPastHydrationRefusals(t *testing.T) {
 	t.Parallel()
 	const refused = 230
-	h, details, trace := openPlanHub(t)
-	f := newHeldProject(t, h, "", details, trace, hubserver.HostedProjectStates())
+	h, details := openHeldHub(t)
+	f := newHeldProject(t, h, "", details, hubserver.HostedProjectStates())
 	for index := range refused {
 		f.createIn(t, fmt.Sprintf("Unreviewed landing %d", index), 0, "Merging")
 	}
@@ -116,7 +116,7 @@ func TestScanCursorProgressesPastHydrationRefusals(t *testing.T) {
 	if after, _ := f.cursor(t, f.runner); after != before {
 		t.Fatalf("second runner moved the first runner's cursor: %+v -> %+v", before, after)
 	}
-	tenant := newHeldProject(t, h, hubfixture.Secondary, details, trace, hubserver.HostedProjectStates())
+	tenant := newHeldProject(t, h, hubfixture.Secondary, details, hubserver.HostedProjectStates())
 	for index := range 5 {
 		tenant.createIn(t, fmt.Sprintf("Tenant landing %d", index), 0, "Merging")
 	}
