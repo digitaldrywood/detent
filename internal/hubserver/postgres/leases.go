@@ -228,7 +228,7 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 	return page, nil
 }
 
-const sourceCheckpointAttempts = `SELECT *
+const sourceCheckpointAttempts = `SELECT organization_id,id,project_id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,updated_at,started_at_submicro_ns,runner_tokens_recorded,cleanup_acknowledged_at,runtime_heartbeat_at,runtime_summary_sequence,claim_disposition,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,worker_cleanup_required,usage_pending_sequence,usage_projected_sequence,failure_sequence,failure_example,failure_class,failure_landing_observed_at,worker_pid,worker_pgid,worker_started_at,worker_start_key,worker_runner_id,worker_retired_at,` + attemptIdentitySelect + `,verdict_evidence_revision,verdict_attempted_step,verdict_success,verdict_outcome,verdict_reason,verdict_next_step,verdict_disposition
 FROM native_attempts WHERE organization_id=$1 AND issue_id=$2
 AND checkpoint_object_key IS NOT NULL AND checkpoint_preserves_source IS DISTINCT FROM FALSE
 ORDER BY fencing_token DESC LIMIT $3`
