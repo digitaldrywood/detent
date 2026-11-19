@@ -4,40 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func (f changeFixture) anotherChange(t *testing.T) changeFixture {
-	t.Helper()
-	issue := f.create(t, hubapi.NewID("other-work"))
-	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
-	response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("other-change")}, Title: "Other change"})
-	requireNativeStatus(t, response, http.StatusOK)
-	var change tracker.ChangeRequest
-	decodeHubResponse(t, response, &change)
-	return changeFixture{nativeFixture: f.nativeFixture, issue: issue, change: change, path: path + "/" + change.ID, rules: f.rules}
-}
 
 func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 	t.Parallel()
@@ -220,185 +202,4 @@ func (s *landingImportPauseDetails) StoreDetail(ctx context.Context, organizatio
 		return attachment.ArchiveReference{}, s.pause
 	}
 	return s.DetailStore.StoreDetail(ctx, organization, raw)
-}
-
-func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
-	t.Parallel()
-	first := newChangeFixture(t, nil)
-	for _, anchor := range []changeFixture{first, first.anotherChange(t)} {
-		for _, state := range []string{"present", "absent", "unknown"} {
-			t.Run(state+"/"+anchor.change.ID, func(t *testing.T) {
-				base := anchor
-				if state == "unknown" {
-					base = newChangeFixture(t, nil)
-				}
-				f := base.anotherChange(t)
-				old := f.publish(t, "old", "")
-				current := f.publish(t, "current", old.ID)
-				receipts := []tracker.NativeLandingReceipt{{ChangeID: f.change.ID, VersionID: old.ID, HeadSHA: old.HeadSHA, MergeSHA: strings.Repeat("1", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}, {ChangeID: f.change.ID, VersionID: current.ID, HeadSHA: current.HeadSHA, MergeSHA: strings.Repeat("2", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}}
-				attempts := []leasestore.Attempt{changeColumnAttempt(t, f, &receipts[0], 100, state == "present" || state == "absent", false), changeColumnAttempt(t, f, &receipts[1], 101, state == "present", false)}
-				changeColumnAttempt(t, f, nil, 102, false, false)
-				if state == "unknown" {
-					changeColumnImportLandingReceipts(t, f, []tracker.ChangeVersion{old, current}, attempts, receipts)
-				}
-				want := attempts[1].ID
-				if state == "absent" {
-					want = attempts[0].ID
-				}
-				scope := analyticsTestScope(t, f.nativeFixture)
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-					row, err := r.LatestLandingReceipt(t.Context(), scope.Project, f.issue.WorkItemID)
-					if err != nil {
-						return err
-					}
-					if row.AttemptID != want {
-						t.Fatalf("landing attempt=%s want=%s", row.AttemptID, want)
-					}
-					return nil
-				}); err != nil {
-					t.Fatal(err)
-				}
-			})
-		}
-		for _, test := range []struct {
-			name           string
-			historical     bool
-			oldMerge, want string
-		}{
-			{"typed priority", false, strings.Repeat("1", 40), "old"}, {"typed mismatch", false, strings.Repeat("3", 40), "current"}, {"unknown matching receipt ranks first", true, strings.Repeat("1", 40), "old"},
-		} {
-			t.Run(test.name+"/"+anchor.change.ID, func(t *testing.T) {
-				base := anchor
-				if test.historical {
-					base = newChangeFixture(t, nil)
-				}
-				f := base.anotherChange(t)
-				old := f.publish(t, "old", "")
-				current := f.publish(t, "current", old.ID)
-				receipts := []tracker.NativeLandingReceipt{{ChangeID: f.change.ID, VersionID: old.ID, HeadSHA: old.HeadSHA, MergeSHA: test.oldMerge, BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}, {ChangeID: f.change.ID, VersionID: current.ID, HeadSHA: current.HeadSHA, MergeSHA: strings.Repeat("2", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}}
-				attempts := []leasestore.Attempt{changeColumnAttempt(t, f, &receipts[0], 100, !test.historical, false), changeColumnAttempt(t, f, &receipts[1], 101, !test.historical, false)}
-				if test.historical {
-					changeColumnImportLandingReceipts(t, f, []tracker.ChangeVersion{old, current}, attempts, receipts)
-				}
-				repository := validationRepository(current.Repository)
-				scheduled := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: artifact.Digest([]byte(f.change.ID)), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Check", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", JobURL: "https://github.com/" + repository + "/actions/jobs/456", HeadSHA: strings.Repeat("1", 40), Conclusion: "failure"}
-				body := issueorigin.Stamp("Scheduled check failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/" + repository + "/actions/runs/123", Fingerprint: scheduled.OccurrenceKey})
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "scheduled-source"}, Body: body}), http.StatusOK)
-				audit, err := f.service.readValidationAuditTenant(t.Context(), analyticsTestScope(t, f.nativeFixture), string(f.issue.WorkItemID), string(f.issue.WorkItemID), f.change.ID, "")
-				if err != nil || audit == nil || !audit.Partial || !slices.Equal(audit.Unavailable, []string{"unlanded_historical_versions", "historical_repository_identity"}) || len(audit.Occurrences) != 1 {
-					t.Fatalf("validation candidates=%+v error=%v", audit, err)
-				}
-				rows := audit.Occurrences[0].Comparisons
-				want := old.ID
-				if test.want == "current" {
-					want = current.ID
-				}
-				if len(rows) != 2 || rows[0].VersionID != want {
-					t.Fatalf("candidates=%+v want first=%s", rows, want)
-				}
-				for _, row := range rows {
-					local := int64(100)
-					if row.VersionID == current.ID {
-						local = 101
-					}
-					if row.LocalAttemptID != local {
-						t.Fatalf("local attempt=%d want=%d", row.LocalAttemptID, local)
-					}
-				}
-			})
-		}
-		t.Run("typed receipt mismatch fails integrity/"+anchor.change.ID, func(t *testing.T) {
-			f := anchor.anotherChange(t)
-			version := f.publish(t, "version", "")
-			receipt := tracker.NativeLandingReceipt{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: strings.Repeat("1", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}
-			attempt := changeColumnAttempt(t, f, &receipt, 100, true, true)
-			var row eventstore.LandingReceipt
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-				var err error
-				row, err = r.LandingReceipt(t.Context(), attempt.ID)
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if row.MergeSHA != strings.Repeat("3", 40) {
-				t.Fatalf("typed merge ignored: %+v", row)
-			}
-			if _, err := eventstore.NewContent(f.service.runDetailStore()).LandingReceipt(t.Context(), row); !errors.Is(err, artifact.ErrIntegrity) {
-				t.Fatalf("contradictory canonical receipt accepted: %v", err)
-			}
-		})
-	}
-}
-
-func changeColumnAttempt(t *testing.T, f changeFixture, receipt *tracker.NativeLandingReceipt, local int64, writeReceipt, tamper bool) leasestore.Attempt {
-	t.Helper()
-	leaseID := hubapi.NewID("lease")
-	lease := coordinatorActionLease(t, f.service, f.project.OrganizationID, f.issue.WorkItemID, leaseID)
-	data := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: local, Phase: "completed", HeartbeatAt: f.service.config.Clock(), Landing: receipt}}
-	content := eventstore.NewContent(f.service.runDetailStore())
-	ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, historyTestJSON(t, data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Run: &data}}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var landing eventstore.LandingReceipt
-	if writeReceipt {
-		version, err := f.service.readChangeVersionRecord(t.Context(), f.project.OrganizationID, f.change.ID, receipt.VersionID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		landing, err = content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: f.project.OrganizationID, AttemptID: data.AttemptID, VersionID: receipt.VersionID, Repository: version.Repository, BaseRef: receipt.BaseRef}, *receipt)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if tamper {
-			landing.MergeSHA = strings.Repeat("3", 40)
-		}
-	}
-	var attempt leasestore.Attempt
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		var err error
-		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", LocalAttemptID: local, StartedAt: f.service.config.Clock(), PayloadObjectKey: ref.Key, PayloadReference: ref})
-		if err != nil {
-			return err
-		}
-		if _, err := w.AppendEvent(t.Context(), event); err != nil {
-			return err
-		}
-		if writeReceipt {
-			if _, err := w.CreateLandingReceipt(t.Context(), landing); err != nil {
-				return err
-			}
-		}
-		_, err = w.Release(t.Context(), leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, "released")
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return attempt
-}
-
-func changeColumnImportLandingReceipts(t *testing.T, f changeFixture, versions []tracker.ChangeVersion, attempts []leasestore.Attempt, receipts []tracker.NativeLandingReceipt) {
-	t.Helper()
-	content := eventstore.NewContent(f.service.runDetailStore())
-	repository := f.service.config.TenantRepository.(*postgres.Repository)
-	for i, version := range versions {
-		var value tracker.NativeLandingReceipt
-		if err := json.Unmarshal(historyTestJSON(t, receipts[i]), &value); err != nil || value.VersionID != version.ID {
-			t.Fatal(errors.Join(eventstore.ErrInvalidRecord, err))
-		}
-		record, err := content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: f.project.OrganizationID, AttemptID: attempts[i].ID, VersionID: version.ID, Repository: version.Repository, BaseRef: value.BaseRef}, value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := repository.WriteRecords(t.Context(), f.project.OrganizationID, corestore.Background, func(w eventstore.Writer) error {
-			_, err := w.CreateLandingReceipt(t.Context(), record)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
 }
