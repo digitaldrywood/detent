@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 const WaitDelay = time.Second
@@ -121,7 +121,7 @@ func withInputCommand(ctx context.Context, dir string, env []string, fileOutput 
 }
 
 func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
-	return procgroup.RunCommand(ctx, cmd)
+	return commandshell.RunCommand(ctx, cmd)
 }
 
 const DefaultRemote = "origin"
@@ -194,7 +194,7 @@ func WithinLimit(ctx context.Context, workspacePath string, env []string, maxByt
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	wait, err := procgroup.StartCommand(ctx, cmd)
+	wait, err := commandshell.StartCommand(ctx, cmd)
 	if err != nil {
 		return "", false, fmt.Errorf("git diff start: %w", err)
 	}

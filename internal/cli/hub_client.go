@@ -17,11 +17,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -294,7 +294,7 @@ func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, "git", "config", "--get", "remote.origin.url")
 	cmd.Dir = selected.Workdir
-	remote, err := procgroup.CommandOutput(commandCtx, cmd, false)
+	remote, err := commandshell.CommandOutput(commandCtx, cmd, false)
 	if err != nil {
 		return ""
 	}

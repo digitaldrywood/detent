@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 const (
@@ -156,7 +157,7 @@ func (s *Session) goRoot(ctx context.Context) string {
 		procgroup.Configure(ctx, cmd)
 		cmd.Dir = s.root
 		cmd.WaitDelay = testWaitDelay
-		output, err := procgroup.CommandOutput(ctx, cmd, false)
+		output, err := commandshell.CommandOutput(ctx, cmd, false)
 		if err != nil {
 			s.logger.Warn("resolve GOROOT for go test receipts; GOROOT reads are not reusable", "error", err)
 			return

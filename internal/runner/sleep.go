@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"strconv"
 
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -47,7 +47,7 @@ func startSleepInhibitor(ctx context.Context, platform string, command func(cont
 		cancel()
 		return nil, err
 	}
-	wait, err := procgroup.StartCommand(held, cmd)
+	wait, err := commandshell.StartCommand(held, cmd)
 	if err != nil {
 		closeErr := input.Close()
 		cancel()

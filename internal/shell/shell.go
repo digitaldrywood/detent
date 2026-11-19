@@ -1,7 +1,9 @@
 package shell
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -223,4 +225,54 @@ func isPOSIXShell(base string) bool {
 	default:
 		return false
 	}
+}
+
+type CommandStarter func(context.Context, *exec.Cmd) (func() error, error)
+type commandStarterKey struct{}
+
+func WithCommandStarter(ctx context.Context, starter CommandStarter) context.Context {
+	return context.WithValue(ctx, commandStarterKey{}, starter)
+}
+
+func HasCommandStarter(ctx context.Context) bool { return ctx.Value(commandStarterKey{}) != nil }
+
+func StartCommand(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
+	if value := ctx.Value(commandStarterKey{}); value != nil {
+		starter := value.(CommandStarter)
+		if starter == nil {
+			return nil, errors.New("native command has no process owner")
+		}
+		return starter(ctx, cmd)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return cmd.Wait, nil
+}
+
+func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
+	wait, err := StartCommand(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	return wait()
+}
+
+func CommandOutput(ctx context.Context, cmd *exec.Cmd, combined bool) ([]byte, error) {
+	if !HasCommandStarter(ctx) {
+		if combined {
+			return cmd.CombinedOutput()
+		}
+		return cmd.Output()
+	}
+	if cmd.Stdout != nil || combined && cmd.Stderr != nil {
+		return nil, errors.New("command output already configured")
+	}
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	if combined {
+		cmd.Stderr = &output
+	}
+	err := RunCommand(ctx, cmd)
+	return output.Bytes(), err
 }

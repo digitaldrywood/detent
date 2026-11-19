@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 const BundleCommit = "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8"
@@ -88,7 +88,7 @@ func validateDocument(ctx context.Context, directory, kind string, content []byt
 	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + directory, "TMPDIR=" + directory, "TMP=" + directory, "TEMP=" + directory}
 	var diagnostics validationOutput
 	command.Stdout, command.Stderr = &diagnostics, &diagnostics
-	if err := procgroup.RunCommand(ctx, command); err != nil {
+	if err := commandshell.RunCommand(ctx, command); err != nil {
 		var exit *exec.ExitError
 		if ctx.Err() == nil && errors.As(err, &exit) && exit.ExitCode() == 1 {
 			return &documentValidationError{diagnostics: diagnostics.String()}

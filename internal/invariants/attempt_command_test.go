@@ -87,7 +87,7 @@ func checkAttemptCommands(t *testing.T, packagesByPath []*packages.Package) {
 
 func authorizedTransport(pkg, file, name string) bool {
 	switch pkg + "/" + file + ":" + name {
-	case "antigravity/process.go:RunTurn", "claudecode/process.go:RunTurn", "opencode/process.go:RunTurn", "piagent/process.go:RunTurn", "codex/transport.go:NewTransport", "workspace/hook.go:runHookCommand", "workspace/merge.go:runValidationCommand", "procgroup/identity.go:StartCommand":
+	case "antigravity/process.go:RunTurn", "claudecode/process.go:RunTurn", "opencode/process.go:RunTurn", "piagent/process.go:RunTurn", "codex/transport.go:NewTransport", "workspace/hook.go:runHookCommand", "workspace/merge.go:runValidationCommand", "procgroup/identity.go:startOwnedCommand":
 		return true
 	}
 	return false
@@ -95,11 +95,11 @@ func authorizedTransport(pkg, file, name string) bool {
 
 func rawAttemptCommandAllowance(pkg, file, function string) int {
 	switch pkg + "/" + file + ":" + function {
-	case "procgroup/identity.go:CommandOutput":
+	case "shell/shell.go:CommandOutput":
 		return 2
-	case "procgroup/identity.go:StartCommand", "procgroup/identity.go:StartAuthorized", "procgroup/start_other.go:Start",
+	case "shell/shell.go:StartCommand", "procgroup/identity.go:StartAuthorized", "procgroup/start_other.go:Start",
 		"procgroup/process_group_unix.go:startAcknowledged", "procgroup/process_group_windows.go:startWindows",
-		"procgroup/inspection_other_unix.go:inspectProcessGroup", "procgroup/inspection_other_unix.go:inspectProcess", "procgroup/process_group_unix.go:observeProcesses",
+		"procgroup/process_group_unix.go:inspectOtherUnixGroup", "procgroup/process_group_unix.go:inspectOtherUnixProcess", "procgroup/process_group_unix.go:observeProcesses",
 		"releaseaudit/sandbox_cgroup_linux.go:runSandboxCgroupCommand",
 		"gobudget/wrapper.go:RunWrapper", "gotestreceipt/wrapper.go:runTest", "gotestreceipt/wrapper.go:run",
 		"cli/local_worker.go:runLocalWorkerLaunch", "cli/controller_process.go:startControllerProcess",

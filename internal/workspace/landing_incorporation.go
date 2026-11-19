@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -97,7 +98,7 @@ func VerifyLandingIncorporation(ctx context.Context, proof tracker.LandingIncorp
 		command.Stdin = bytes.NewReader(input)
 		command.WaitDelay = workspaceCommandWaitDelay
 		procgroup.Configure(ctx, command)
-		output, err := procgroup.CommandOutput(ctx, command, false)
+		output, err := commandshell.CommandOutput(ctx, command, false)
 		return string(output), err
 	}
 	if _, err := git(nil, "init", "--bare", "--template="); err != nil {

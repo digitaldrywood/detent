@@ -13,8 +13,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 const (
@@ -128,7 +128,7 @@ type codexFeatureLister func(ctx context.Context, binary string, env []string) (
 func listCodexFeatures(ctx context.Context, binary string, env []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, binary, "features", "list") // #nosec G204 -- the binary is the operator-configured coordinator command.
 	cmd.Env = env
-	return procgroup.CommandOutput(ctx, cmd, false)
+	return commandshell.CommandOutput(ctx, cmd, false)
 }
 
 // verifyCoordinatorCodexFeatures fails closed when the installed Codex does

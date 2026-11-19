@@ -14,7 +14,7 @@ import (
 
 	_ "golang.org/x/image/webp"
 
-	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 type GitCapture struct {
@@ -40,7 +40,7 @@ func gitRead(ctx context.Context, directory string, limit int, args ...string) (
 	command.Dir = directory
 	out := &boundedBuffer{limit: limit}
 	command.Stdout = out
-	if err := procgroup.RunCommand(ctx, command); err != nil {
+	if err := commandshell.RunCommand(ctx, command); err != nil {
 		return nil, errors.Join(ErrInvalid, err)
 	}
 	return out.Bytes(), nil
