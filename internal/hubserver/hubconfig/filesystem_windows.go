@@ -1,4 +1,4 @@
-package hubserver
+package hubconfig
 
 import (
 	"fmt"

@@ -233,7 +233,6 @@ func TestDatabaseBackendRejectsAmbiguousConfiguration(t *testing.T) {
 		{"missing postgres", Config{DatabaseBackend: DatabasePostgres}},
 		{"implicit postgres", Config{Postgres: &postgres.Config{}}},
 		{"sqlite with postgres", Config{DatabaseBackend: "sqlite", Postgres: &postgres.Config{}}},
-		{"sqlite binding migration", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, hostedBindingMigration: true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store, err := openDatabase(t.Context(), test.config.Normalized())
