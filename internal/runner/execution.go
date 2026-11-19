@@ -547,14 +547,14 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			copy := *change
 			copy.ReusedDispositionAttemptID = result.reusedDispositionAttemptID
 			result.NativeChange = &copy
-			if copy.SecurityAudit != nil && copy.SecurityAudit.Verdict == "wait" {
-				result.FinalMessage = copy.SecurityAudit.Run.CompletionMessage(result.FinalMessage)
-			}
 		}
 		var reviewErr *NativeImplementationReviewError
 		if result.NativeChange != nil && errors.As(runErr, &reviewErr) {
 			result.NativeChange.ImplementationReviewError = reviewErr.Error()
 		}
+	}
+	if change := result.NativeChange; change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "wait" {
+		result.FinalMessage = change.SecurityAudit.Run.CompletionMessage(result.FinalMessage)
 	}
 	if runErr == nil && result.FinalState == FinalStateCompleted {
 		readCtx, readCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
