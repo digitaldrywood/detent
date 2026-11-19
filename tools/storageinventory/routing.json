@@ -19904,7 +19904,8 @@
       "disposition": "target-adapter",
       "families": [
         "access",
-        "core"
+        "core",
+        "fleet"
       ],
       "inventory": {
         "operations": {
@@ -19912,8 +19913,10 @@
           "session.RelationshipProjects:SQL": 1
         },
         "tables": [
+          "hub/api_tokens",
           "hub/hosted_project_grants",
           "hub/projects",
+          "hub/runner_identities",
           "hub/token_grants"
         ]
       }
