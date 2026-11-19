@@ -360,7 +360,7 @@ func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore
 	return s.changeCapacity().ReserveRenewal(ctx, w, scope, prepared, lease, capacity)
 }
 
-func (s *Service) publishChangeVersionRecord(c echo.Context) error {
+func (s *Service) publishChangeVersion(c echo.Context) error {
 	return s.changeVersionPublication().PublishChangeVersionRecord(c)
 }
 
