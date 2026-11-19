@@ -10,6 +10,7 @@ type Scenario struct {
 	ImportedVersion      bool
 	FinalMessage         string
 	WantDisposition      *tracker.NativeDisposition
+	WantReworkCandidate  bool
 	Enrolled             bool
 	RestartCompletion    bool
 	LegacyReleaseRestart bool

@@ -1498,8 +1498,19 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "succeeded" || recovery.Attempts[0].TerminalFailure != nil || !reflect.DeepEqual(recovery.Attempts[0].Disposition, test.WantDisposition) || !reflect.DeepEqual(recovery.Attempts[0].Checkpoint, checkpoint) {
 					t.Fatalf("blocked Rework lost its durable handoff: %+v, %v", recovery.Attempts, err)
 				}
-				if len(h.candidatesIn(t, "Rework")) != 0 || h.state(t, issue.ID) != "Blocked" {
-					t.Fatal("blocked unchanged source was immediately offered again")
+				candidates := h.candidatesIn(t, "Rework")
+				if test.WantReworkCandidate {
+					if len(candidates) != 1 || candidates[0].ID != issue.ID || candidates[0].State != "Rework" {
+						t.Fatalf("machine-blocked item was not offered in Rework: %+v", candidates)
+					}
+					if got := h.state(t, issue.ID); got != "Rework" {
+						t.Fatalf("claim left the machine-blocked item in %s, want Rework", got)
+					}
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled"); err != nil {
+						t.Fatal(err)
+					}
+				} else if len(candidates) != 0 || h.state(t, issue.ID) != "Blocked" {
+					t.Fatal("dependency-blocked item was offered before its prerequisite cleared")
 				}
 				return
 			}
