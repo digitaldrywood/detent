@@ -4972,17 +4972,22 @@
           "session.CommentPage:generated:GetCommentCursor": 1,
           "session.CommentPage:generated:PageComments": 1,
           "session.CommentPage:query-receiver": 2,
+          "session.RunnerWorkItemKeys:Query": 1,
+          "session.RunnerWorkItemKeys:SQL": 1,
           "session.ScanComments:generated:CommentScanThrough": 1,
           "session.ScanComments:generated:ScanComments": 1,
           "session.ScanComments:query-receiver": 2,
           "session.ScanWorkItems:generated:ScanWorkItems": 1,
-          "session.ScanWorkItems:generated:WorkItemScanThrough": 1,
-          "session.ScanWorkItems:query-receiver": 2,
+          "session.ScanWorkItems:query-receiver": 1,
           "session.WorkItemPage:generated:GetWorkItemCursor": 1,
           "session.WorkItemPage:generated:PageWorkItems": 1,
-          "session.WorkItemPage:query-receiver": 2
+          "session.WorkItemPage:query-receiver": 2,
+          "session.workItemScanCursor:generated:WorkItemScanThrough": 1,
+          "session.workItemScanCursor:query-receiver": 1
         },
-        "tables": []
+        "tables": [
+          "hub/issues"
+        ]
       }
     },
     "internal/hubserver/postgres/cutover_contract.go": {
