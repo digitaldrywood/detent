@@ -2,7 +2,9 @@ package nativechange
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 
@@ -106,4 +108,26 @@ func (e *nativeExecution) retryStoppedReceipt(ctx context.Context, observation *
 	e.generationDiff, e.lastDiff = &next, &next
 	e.setReceiptSequence(sequence + 1)
 	return e.flush(ctx)
+}
+
+func (e *nativeExecution) hasPendingGate() bool {
+	return e.pending != nil && e.pending.Type == "run.checkpointed" && e.pendingReceipt != nil && e.pendingReceipt.verifyPublication == nil
+}
+
+func (e *nativeExecution) reconcileStoppedGate(ctx context.Context, attempt *tracker.NativeAttempt) error {
+	gate := e.pending
+	if !checkpoint.SameRun(gate.Data, attempt.NativeRunData) {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
+	if attempt.Sequence == gate.Data.Sequence && reflect.DeepEqual(attempt.Steps, gate.Data.Steps) && reflect.DeepEqual(attempt.Handoff, gate.Data.Handoff) {
+		return nil
+	}
+	if err := e.flush(ctx); err != nil {
+		if errors.Is(err, runner.ErrOperatorStopped) && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && ctx.Err() == nil {
+			return nil
+		}
+		return err
+	}
+	attempt.NativeRunData = gate.Data
+	return nil
 }

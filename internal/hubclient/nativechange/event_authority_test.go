@@ -1,14 +1,13 @@
 package nativechange
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -335,14 +335,23 @@ func TestStoppedReceiptAfterBufferedObservation(t *testing.T) {
 			replies = append(replies, "batch arrives after second cleanup")
 		}
 		for _, reply := range replies {
-			t.Run(batch+"/"+reply, func(t *testing.T) {
-				testStoppedBatchDelivery(t, batch, reply)
-			})
+			t.Run(batch+"/"+reply, func(t *testing.T) { testStoppedBatchDelivery(t, batch, reply, "") })
+		}
+		if batch == "before checkpoint" {
+			replies = append(replies, "rebuilt checkpoint never arrived")
+		}
+		if batch == "before checkpoint" || batch == "never arrived" {
+			replies = append(replies, "checkpoint wins interruption", "interruption wins checkpoint")
+		}
+		for _, reply := range replies {
+			for _, source := range []string{"verifiable", "changed base", "removed source"} {
+				t.Run("release/"+batch+"/"+reply+"/"+source, func(t *testing.T) { testStoppedBatchDelivery(t, batch, reply, source) })
+			}
 		}
 	}
 }
 
-func testStoppedBatchDelivery(t *testing.T, batch, reply string) {
+func testStoppedBatchDelivery(t *testing.T, batch, reply, releaseSource string) {
 	t.Helper()
 	h := newNativeChangeHub(t, true)
 	issue := h.createInProgress(t, "Retain completed gate")
@@ -365,6 +374,11 @@ func testStoppedBatchDelivery(t *testing.T, batch, reply string) {
 	if err := e.Checkpoint(t.Context(), source); err != nil {
 		t.Fatal(err)
 	}
+	if releaseSource != "" {
+		if err := e.PrepareFinish(t.Context(), "interrupted", "", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
 	base := e.data.Sequence
 	worker, stop := context.WithCancelCause(t.Context())
 	defer stop(nil)
@@ -376,112 +390,7 @@ func testStoppedBatchDelivery(t *testing.T, batch, reply string) {
 		}
 	}
 
-	client := fixtureClient(h.native.Transport())
-	next := client.requests.Load()
-	var inflight *http.Request
-	var batches, diffPosts int
-	var sequences []int64
-	var payload []byte
-	deliverBatch := func(wantStatus int) {
-		t.Helper()
-		if inflight == nil {
-			t.Fatal("no batch in flight")
-		}
-		resp, err := next.RoundTrip(inflight)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != wantStatus {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("batch returned %d, want %d: %s", resp.StatusCode, wantStatus, body)
-		}
-		inflight = nil
-	}
-	miss := reply == "checkpoint never arrived"
-	lose := reply == "lost"
-	loseConflict := reply == "conflict reply lost"
-	client.requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/diff") {
-			diffPosts++
-			resp, err := next.RoundTrip(r)
-			if diffPosts == 2 && reply == "source changes before rebuilt checkpoint" {
-				baseHead = nativeChangeFixtureHead("c")
-			}
-			return resp, err
-		}
-		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/events") {
-			return next.RoundTrip(r)
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		var event tracker.NativeRunEvent
-		if err := json.Unmarshal(body, &event); err != nil {
-			t.Fatal(err)
-		}
-		if event.Type == "run.observed" {
-			batches++
-			if worker.Err() != nil || batches != 1 || len(event.PriorEvents) != 1 || event.PriorEvents[0].Data.Sequence != base+1 || event.Data.Sequence != base+2 {
-				t.Fatalf("unexpected batch at %d, send %d, stop %v", event.Data.Sequence, batches, context.Cause(worker))
-			}
-			if batch == "acknowledged" || batch == "stop during batch reply" {
-				resp, err := next.RoundTrip(r)
-				if batch == "stop during batch reply" {
-					stop(runner.ErrOperatorStopped)
-				}
-				return resp, err
-			}
-			inflight = r.Clone(t.Context())
-			if batch == "before stop" {
-				deliverBatch(http.StatusOK)
-			}
-			return nil, ErrUnavailable
-		}
-		seq := event.Data.Sequence
-		if event.Type != "run.checkpointed" || len(event.PriorEvents) != 0 {
-			t.Fatalf("unexpected %s with %d prior events", event.Type, len(event.PriorEvents))
-		}
-		if batch != "unsent" && event.IdempotencyKey != e.data.AttemptID+":"+strconv.FormatInt(seq, 10)+":receipt" {
-			t.Fatalf("checkpoint %d key = %q", seq, event.IdempotencyKey)
-		}
-		if len(sequences) > 0 && sequences[len(sequences)-1] == seq && !bytes.Equal(payload, body) {
-			t.Fatalf("retry changed checkpoint %d", seq)
-		}
-		sequences, payload = append(sequences, seq), body
-		if miss {
-			miss = false
-			return nil, ErrUnavailable
-		}
-		if batch == "before checkpoint" && inflight != nil {
-			deliverBatch(http.StatusOK)
-		}
-		resp, err := next.RoundTrip(r)
-		if err == nil && resp.StatusCode == http.StatusConflict && reply == "source changes before rebuilt diff" {
-			baseHead = nativeChangeFixtureHead("c")
-		}
-		if err == nil && resp.StatusCode == http.StatusConflict && loseConflict {
-			loseConflict = false
-			resp.Body.Close()
-			return nil, ErrUnavailable
-		}
-		if err == nil && resp.StatusCode == http.StatusOK {
-			if reply == "stop during checkpoint reply" {
-				stop(runner.ErrOperatorStopped)
-			}
-			if batch == "after checkpoint" && reply != "batch arrives after second cleanup" && inflight != nil {
-				deliverBatch(http.StatusConflict)
-			}
-			if lose {
-				lose = false
-				resp.Body.Close()
-				return nil, ErrUnavailable
-			}
-		}
-		return resp, err
-	}))
+	trace := testsupport.TraceStoppedCheckpoint(t, fixtureClient(h.native.Transport()).requests, batch, reply, e.data.AttemptID, base, worker, func() { stop(runner.ErrOperatorStopped) }, func() { baseHead = nativeChangeFixtureHead("c") })
 	recordCtx := ctx
 	if batch == "unsent" {
 		stop(runner.ErrOperatorStopped)
@@ -494,7 +403,66 @@ func testStoppedBatchDelivery(t *testing.T, batch, reply string) {
 	}
 	stop(runner.ErrOperatorStopped)
 	if batch == "before read" {
-		deliverBatch(http.StatusOK)
+		trace.DeliverBatch(http.StatusOK)
+	}
+	if releaseSource != "" {
+		if len(trace.Sequences) == 0 {
+			err = e.flush(cleanup)
+			if err != nil && !nativeTransportUnavailable(err) && !(strings.HasPrefix(reply, "source changes") && errors.Is(err, runner.ErrOperatorStopped)) {
+				t.Fatal(err)
+			}
+		}
+		switch releaseSource {
+		case "changed base":
+			baseHead = nativeChangeFixtureHead("c")
+		case "removed source":
+			e.SetDiffSource(nil)
+		case "verifiable":
+			baseHead = nativeChangeFixtureHead("a")
+		}
+		posts, diffs := len(trace.Sequences), trace.DiffPosts
+		err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, runner.FinalStateOperatorStopped)
+		if err != nil {
+			t.Fatalf("release with checkpoint POSTs %v: %v", trace.Sequences, err)
+		}
+		wantConflicts := 0
+		if releaseSource != "verifiable" && (reply == "checkpoint wins interruption" || batch == "before checkpoint" && reply == "checkpoint never arrived") {
+			wantConflicts = 1
+		}
+		if trace.InterruptionConflicts != wantConflicts {
+			t.Fatalf("interruption conflicts = %d, want %d", trace.InterruptionConflicts, wantConflicts)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, runner.FinalStateOperatorStopped); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			t.Fatalf("release after acknowledgement = %v", err)
+		}
+		if reply == "batch arrives after second cleanup" {
+			trace.DeliverBatch(http.StatusConflict)
+		}
+		if (releaseSource != "verifiable" || reply == "lost") && (len(trace.Sequences) != posts || trace.DiffPosts != diffs) {
+			t.Fatalf("release sent checkpoint POSTs %v or %d diff POSTs", trace.Sequences[posts:], trace.DiffPosts-diffs)
+		}
+		wantGate := releaseSource == "verifiable" || slices.Contains([]string{"received", "lost", "stop during checkpoint reply", "batch arrives after second cleanup", "checkpoint wins interruption"}, reply)
+		wantSequence := base + 1
+		if !slices.Contains([]string{"unsent", "never arrived", "after checkpoint"}, batch) {
+			wantSequence += 2
+		}
+		if wantGate {
+			wantSequence++
+		}
+		attempt, err := h.admin.NativeAttempt(t.Context(), e.claim.lease.WorkItemID, e.data.AttemptID)
+		if attempt.Sequence != wantSequence {
+			t.Fatalf("interruption sequence = %d, want %d, error %v", attempt.Sequence, wantSequence, err)
+		}
+		if err != nil || attempt.ClaimReleasedAt == nil || attempt.Outcome != "interrupted" || len(attempt.Steps) > 1 || (len(attempt.Steps) == 1) != wantGate {
+			t.Fatalf("released %v, outcome %q, steps %d, want gate %t, error %v", attempt.ClaimReleasedAt, attempt.Outcome, len(attempt.Steps), wantGate, err)
+		}
+		if wantGate {
+			step := attempt.Steps[0]
+			if step.Step != "validation" || !reflect.DeepEqual(step.Validation, &result) || !reflect.DeepEqual(step.Source, source) {
+				t.Fatalf("retained gate = %+v", step)
+			}
+		}
+		return
 	}
 	if strings.HasPrefix(reply, "source changes") {
 		wantDiffs := 1
@@ -502,19 +470,19 @@ func testStoppedBatchDelivery(t *testing.T, batch, reply string) {
 			wantDiffs = 2
 		}
 		for range 2 {
-			if err := e.flush(cleanup); !errors.Is(err, runner.ErrOperatorStopped) || diffPosts != wantDiffs || !slices.Equal(sequences, []int64{base + 1}) {
-				t.Fatalf("changed source: diff POSTs %d, checkpoint sequences %v, error %v", diffPosts, sequences, err)
+			if err := e.flush(cleanup); !errors.Is(err, runner.ErrOperatorStopped) || trace.DiffPosts != wantDiffs || !slices.Equal(trace.Sequences, []int64{base + 1}) {
+				t.Fatalf("changed source: diff POSTs %d, checkpoint sequences %v, error %v", trace.DiffPosts, trace.Sequences, err)
 			}
 		}
 		return
 	}
 	for range 2 {
 		if err = e.flush(cleanup); err != nil && !nativeTransportUnavailable(err) {
-			t.Fatalf("cleanup after checkpoint sequences %v: %v", sequences, err)
+			t.Fatalf("cleanup after checkpoint sequences %v: %v", trace.Sequences, err)
 		}
 	}
 	if reply == "batch arrives after second cleanup" {
-		deliverBatch(http.StatusConflict)
+		trace.DeliverBatch(http.StatusConflict)
 	}
 	want := base + 1
 	if batch == "acknowledged" || batch == "stop during batch reply" || batch == "before stop" || batch == "before read" || batch == "before checkpoint" {
@@ -530,11 +498,11 @@ func testStoppedBatchDelivery(t *testing.T, batch, reply string) {
 	case "checkpoint never arrived", "conflict reply lost":
 		wantSeqs = append([]int64{wantSeqs[0]}, wantSeqs...)
 	}
-	if err != nil || !slices.Equal(sequences, wantSeqs) || (batches == 0) != (batch == "unsent") {
-		t.Fatalf("batches %d, checkpoint sequences %v, want %v, error %v", batches, sequences, wantSeqs, err)
+	if err != nil || !slices.Equal(trace.Sequences, wantSeqs) || (trace.Batches == 0) != (batch == "unsent") {
+		t.Fatalf("batches %d, checkpoint sequences %v, want %v, error %v", trace.Batches, trace.Sequences, wantSeqs, err)
 	}
-	if err := e.flush(cleanup); err != nil || !slices.Equal(sequences, wantSeqs) {
-		t.Fatalf("acknowledged cleanup sent another event: %v, %v", sequences, err)
+	if err := e.flush(cleanup); err != nil || !slices.Equal(trace.Sequences, wantSeqs) {
+		t.Fatalf("acknowledged cleanup sent another event: %v, %v", trace.Sequences, err)
 	}
 	attempt, err := h.admin.NativeAttempt(t.Context(), e.claim.lease.WorkItemID, e.data.AttemptID)
 	if err != nil || attempt.Sequence != want || len(attempt.Steps) != 1 {
