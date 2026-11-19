@@ -21,8 +21,6 @@ type toolCall func(context.Context, conversations.ConversationRecord, runner.Age
 
 type ToolDeps struct {
 	ConversationID          string
-	CatalogCallName         string
-	CatalogFindName         string
 	Logger                  *slog.Logger
 	RunDetailContext        func(context.Context) context.Context
 	EndSegment              func(context.Context)

@@ -662,7 +662,7 @@ func (s *Service) stopNativeRunCommand(ctx context.Context, scope hubscope.Nativ
 }
 
 func (s *Service) coordinatorCatalog(ctx context.Context) ([]operatortool.Definition, error) {
-	return coordinator.Catalog(ctx, (hostedOperatorExecutor{service: s}).ListTools, coordinatorCatalogExcluded)
+	return coordinator.Catalog(ctx, (hostedOperatorExecutor{service: s}).ListTools, coordinator.CatalogExcluded)
 }
 
 func (t *coordinatorToolset) findTools(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -719,7 +719,7 @@ func (t *coordinatorToolset) catalogToolDeps() coordinator.CatalogToolDeps {
 		WithOperator: s.withOperatorCatalog,
 		Catalog:      s.coordinatorCatalog,
 		Execute:      (hostedOperatorExecutor{service: s}).Execute,
-		Excluded:     coordinatorCatalogExcluded,
+		Excluded:     coordinator.CatalogExcluded,
 	}
 }
 
@@ -1221,7 +1221,7 @@ func (t *coordinatorToolset) spritePreviewDeps() coordinator.SpritePreviewDeps {
 }
 
 func (t *coordinatorToolset) tools() []runner.AgentTool {
-	return coordinator.Tools(append(append(append(append(append(append(append(coordinatorActionTools(), coordinatorWorkflowTools()...), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...), coordinatorScreenTools()...), coordinatorSettingsTools()...), coordinatorCatalogTools()...))
+	return coordinator.Tools()
 }
 
 func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
@@ -1262,11 +1262,9 @@ type coordinatorIssue = coordinator.IssueExplanation
 
 func (t *coordinatorToolset) toolDeps() coordinator.ToolDeps {
 	deps := coordinator.ToolDeps{
-		ConversationID:  t.state.conversationID,
-		CatalogCallName: coordinatorToolCallTool,
-		CatalogFindName: coordinatorToolFindTools,
-		Logger:          t.coordinator.logger,
-		EndSegment:      t.state.endTextSegment,
+		ConversationID: t.state.conversationID,
+		Logger:         t.coordinator.logger,
+		EndSegment:     t.state.endTextSegment,
 		ReadConversation: func(ctx context.Context) (conversationRecord, error) {
 			return t.coordinator.readConversation(ctx, nil, t.state.conversationID)
 		},
@@ -1492,3 +1490,16 @@ func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope hubsc
 	_, err := s.checkCoordinatorMoveAnswer(ctx, scope, issue, target, answer)
 	return err
 }
+
+var coordinatorCatalogWrite = coordinator.CatalogWrite
+var coordinatorCatalogRequirement = coordinator.CatalogRequirement
+var coordinatorCatalogExcluded = coordinator.CatalogExcluded
+
+func (t *coordinatorToolset) workflowEvidence(ctx context.Context, record conversationRecord) map[string]any {
+	return coordinator.WorkflowEvidence(ctx, record, t.execute)
+}
+
+const (
+	coordinatorToolFindTools = coordinator.FindToolsName
+	coordinatorToolCallTool  = coordinator.CallToolName
+)
