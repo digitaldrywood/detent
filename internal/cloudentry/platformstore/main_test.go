@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/multitracer"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jackc/pgx/v5"
@@ -75,7 +74,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func rolePool(t *testing.T, admin *sql.DB, group, attributes string, wrappers ...pgx.QueryTracer) *pgxpool.Pool {
+func rolePool(t *testing.T, admin *sql.DB, group, attributes string) *pgxpool.Pool {
 	t.Helper()
 	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	password := uuid.NewString()
@@ -105,10 +104,6 @@ func rolePool(t *testing.T, admin *sql.DB, group, attributes string, wrappers ..
 	}
 	native := template.NativeConfig(t, admin, name, password)
 	native.MaxConns = 3
-	if len(wrappers) > 0 {
-		native.MaxConns = 10
-		native.ConnConfig.Tracer = multitracer.New(append([]pgx.QueryTracer{native.ConnConfig.Tracer}, wrappers...)...)
-	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), native)
 	if err != nil {
 		t.Fatal(err)
