@@ -58,11 +58,15 @@ func (f *runnerEventSession) AppendEvent(ctx context.Context, record eventstore.
 	f.events[record.ID] = record
 	if record.Report != nil {
 		p := record.Report
-		f.pending.Queue(`INSERT INTO report_event_facts (organization_id,event_id,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) ON CONFLICT (organization_id,event_id) DO UPDATE SET phase_timing_status=EXCLUDED.phase_timing_status WHERE report_event_facts.phase_timing_status='' AND EXCLUDED.phase_timing_status<>''`, f.session.organization, record.ID, p.RunSequence, p.RunStatus, p.Role, p.Model, p.Effort, p.Failed, p.FailureClass, p.FailureKind, p.LandingReceipt, p.Landed, p.LandingChangeID, p.ReworkClass, p.ReworkKind, p.DurationSeconds, p.PhaseTimingStatus, p.ProcessEvidenceStatus, p.ProcessPeakMemoryBytes, p.ProcessUserCPUSeconds, p.ProcessSystemCPUSeconds, p.ProcessWallSeconds, p.ProcessLeaseID, p.ProcessFencingToken, p.ProcessRunnerID, p.ProcessMachineID)
-		f.pending.Queue(`SELECT run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`, f.session.organization, record.ID).QueryRow(func(row pgx.Row) error {
+		f.pending.Queue(insertReportEventProjection+` ON CONFLICT (organization_id,event_id) DO UPDATE SET
+phase_timing_status=CASE WHEN report_event_facts.phase_timing_status='' THEN EXCLUDED.phase_timing_status ELSE report_event_facts.phase_timing_status END,
+activity_stage=CASE WHEN report_event_facts.activity_stage='' THEN EXCLUDED.activity_stage ELSE report_event_facts.activity_stage END,
+activity_no_change_status=CASE WHEN report_event_facts.activity_stage='' THEN EXCLUDED.activity_no_change_status ELSE report_event_facts.activity_no_change_status END
+WHERE (report_event_facts.phase_timing_status='' AND EXCLUDED.phase_timing_status<>'') OR (report_event_facts.activity_stage='' AND EXCLUDED.activity_stage<>'')`,
+			append([]any{f.session.organization, record.ID}, reportEventProjectionFields(p)...)...)
+		f.pending.Queue(selectReportEventProjection, f.session.organization, record.ID).QueryRow(func(row pgx.Row) error {
 			var actual reportstore.EventProjection
-			if err := row.Scan(&actual.RunSequence, &actual.RunStatus, &actual.Role, &actual.Model, &actual.Effort, &actual.Failed, &actual.FailureClass, &actual.FailureKind, &actual.LandingReceipt, &actual.Landed, &actual.LandingChangeID, &actual.ReworkClass, &actual.ReworkKind, &actual.DurationSeconds, &actual.PhaseTimingStatus, &actual.ProcessEvidenceStatus, &actual.ProcessPeakMemoryBytes, &actual.ProcessUserCPUSeconds, &actual.ProcessSystemCPUSeconds, &actual.ProcessWallSeconds, &actual.ProcessLeaseID, &actual.ProcessFencingToken, &actual.ProcessRunnerID, &actual.ProcessMachineID); err != nil {
+			if err := row.Scan(reportEventProjectionFields(&actual)...); err != nil {
 				return err
 			}
 			if actual != *p {

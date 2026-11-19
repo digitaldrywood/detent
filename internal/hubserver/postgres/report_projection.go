@@ -57,18 +57,55 @@ func (r *Repository) ImportReportEventProjections(ctx context.Context, records [
 	return legacyAnchors, nil
 }
 
+const reportEventProjectionColumns = "run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id,activity_stage,activity_no_change_status"
+
+const insertReportEventProjection = `INSERT INTO report_event_facts (organization_id,event_id,` + reportEventProjectionColumns + `)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`
+
+const selectReportEventProjection = `SELECT ` + reportEventProjectionColumns + ` FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`
+
+func reportEventProjectionFields(p *reportstore.EventProjection) []any {
+	return []any{
+		&p.RunSequence,
+		&p.RunStatus,
+		&p.Role,
+		&p.Model,
+		&p.Effort,
+		&p.Failed,
+		&p.FailureClass,
+		&p.FailureKind,
+		&p.LandingReceipt,
+		&p.Landed,
+		&p.LandingChangeID,
+		&p.ReworkClass,
+		&p.ReworkKind,
+		&p.DurationSeconds,
+		&p.PhaseTimingStatus,
+		&p.ProcessEvidenceStatus,
+		&p.ProcessPeakMemoryBytes,
+		&p.ProcessUserCPUSeconds,
+		&p.ProcessSystemCPUSeconds,
+		&p.ProcessWallSeconds,
+		&p.ProcessLeaseID,
+		&p.ProcessFencingToken,
+		&p.ProcessRunnerID,
+		&p.ProcessMachineID,
+		&p.ActivityStage,
+		&p.ActivityNoChangeStatus,
+	}
+}
+
 func (s *session) putReportEventProjection(ctx context.Context, event eventstore.Event) error {
 	if event.Report == nil {
 		return nil
 	}
 	p := event.Report
-	_, err := s.db.Exec(ctx, `INSERT INTO report_event_facts (organization_id,event_id,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id,activity_stage,activity_no_change_status)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28) ON CONFLICT (organization_id,event_id) DO UPDATE SET activity_stage=CASE WHEN report_event_facts.activity_stage='' THEN EXCLUDED.activity_stage ELSE report_event_facts.activity_stage END,activity_no_change_status=CASE WHEN report_event_facts.activity_stage='' THEN EXCLUDED.activity_no_change_status ELSE report_event_facts.activity_no_change_status END,phase_timing_status=CASE WHEN report_event_facts.phase_timing_status='' THEN EXCLUDED.phase_timing_status ELSE report_event_facts.phase_timing_status END,process_evidence_status=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_evidence_status ELSE report_event_facts.process_evidence_status END,process_peak_memory_bytes=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_peak_memory_bytes ELSE report_event_facts.process_peak_memory_bytes END,process_user_cpu_seconds=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_user_cpu_seconds ELSE report_event_facts.process_user_cpu_seconds END,process_system_cpu_seconds=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_system_cpu_seconds ELSE report_event_facts.process_system_cpu_seconds END,process_wall_seconds=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_wall_seconds ELSE report_event_facts.process_wall_seconds END,process_lease_id=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_lease_id ELSE report_event_facts.process_lease_id END,process_fencing_token=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_fencing_token ELSE report_event_facts.process_fencing_token END,process_runner_id=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_runner_id ELSE report_event_facts.process_runner_id END,process_machine_id=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_machine_id ELSE report_event_facts.process_machine_id END WHERE (report_event_facts.process_evidence_status='unknown' AND EXCLUDED.process_evidence_status<>'unknown') OR (report_event_facts.phase_timing_status='' AND EXCLUDED.phase_timing_status<>'') OR (report_event_facts.activity_stage='' AND EXCLUDED.activity_stage<>'')`, s.organization, event.ID, p.RunSequence, p.RunStatus, p.Role, p.Model, p.Effort, p.Failed, p.FailureClass, p.FailureKind, p.LandingReceipt, p.Landed, p.LandingChangeID, p.ReworkClass, p.ReworkKind, p.DurationSeconds, p.PhaseTimingStatus, p.ProcessEvidenceStatus, p.ProcessPeakMemoryBytes, p.ProcessUserCPUSeconds, p.ProcessSystemCPUSeconds, p.ProcessWallSeconds, p.ProcessLeaseID, p.ProcessFencingToken, p.ProcessRunnerID, p.ProcessMachineID, p.ActivityStage, p.ActivityNoChangeStatus)
+	_, err := s.db.Exec(ctx, insertReportEventProjection+` ON CONFLICT (organization_id,event_id) DO UPDATE SET activity_stage=CASE WHEN report_event_facts.activity_stage='' THEN EXCLUDED.activity_stage ELSE report_event_facts.activity_stage END,activity_no_change_status=CASE WHEN report_event_facts.activity_stage='' THEN EXCLUDED.activity_no_change_status ELSE report_event_facts.activity_no_change_status END,phase_timing_status=CASE WHEN report_event_facts.phase_timing_status='' THEN EXCLUDED.phase_timing_status ELSE report_event_facts.phase_timing_status END,process_evidence_status=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_evidence_status ELSE report_event_facts.process_evidence_status END,process_peak_memory_bytes=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_peak_memory_bytes ELSE report_event_facts.process_peak_memory_bytes END,process_user_cpu_seconds=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_user_cpu_seconds ELSE report_event_facts.process_user_cpu_seconds END,process_system_cpu_seconds=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_system_cpu_seconds ELSE report_event_facts.process_system_cpu_seconds END,process_wall_seconds=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_wall_seconds ELSE report_event_facts.process_wall_seconds END,process_lease_id=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_lease_id ELSE report_event_facts.process_lease_id END,process_fencing_token=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_fencing_token ELSE report_event_facts.process_fencing_token END,process_runner_id=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_runner_id ELSE report_event_facts.process_runner_id END,process_machine_id=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_machine_id ELSE report_event_facts.process_machine_id END WHERE (report_event_facts.process_evidence_status='unknown' AND EXCLUDED.process_evidence_status<>'unknown') OR (report_event_facts.phase_timing_status='' AND EXCLUDED.phase_timing_status<>'') OR (report_event_facts.activity_stage='' AND EXCLUDED.activity_stage<>'')`, append([]any{s.organization, event.ID}, reportEventProjectionFields(p)...)...)
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	var actual reportstore.EventProjection
-	err = s.db.QueryRow(ctx, `SELECT run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id,activity_stage,activity_no_change_status FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`, s.organization, event.ID).Scan(&actual.RunSequence, &actual.RunStatus, &actual.Role, &actual.Model, &actual.Effort, &actual.Failed, &actual.FailureClass, &actual.FailureKind, &actual.LandingReceipt, &actual.Landed, &actual.LandingChangeID, &actual.ReworkClass, &actual.ReworkKind, &actual.DurationSeconds, &actual.PhaseTimingStatus, &actual.ProcessEvidenceStatus, &actual.ProcessPeakMemoryBytes, &actual.ProcessUserCPUSeconds, &actual.ProcessSystemCPUSeconds, &actual.ProcessWallSeconds, &actual.ProcessLeaseID, &actual.ProcessFencingToken, &actual.ProcessRunnerID, &actual.ProcessMachineID, &actual.ActivityStage, &actual.ActivityNoChangeStatus)
+	err = s.db.QueryRow(ctx, selectReportEventProjection, s.organization, event.ID).Scan(reportEventProjectionFields(&actual)...)
 	if err != nil {
 		return mapError(ctx, err)
 	}
