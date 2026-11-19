@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/changelanding"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -51,7 +52,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 	}
 	var change tracker.ChangeRequest
 	var changeRow eventstore.Change
-	var transition *changeWorkflowTransition
+	var transition *changelanding.WorkflowTransition
 	plan := hubrecords.WorkItemRecordPlan{Current: check.current, Project: check.project, Issue: check.issue, EventType: "issue.edited"}
 	var fields hubrecords.WorkItemRecordFields
 	var version eventstore.CollaborationVersion
@@ -62,7 +63,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			if err != nil {
 				return nil, err
 			}
-			transition, err = s.prepareChangeWorkflowTransition(ctx, scope, change, check.approval, true, now)
+			transition, err = s.changeWorkflow().PrepareChangeWorkflowTransition(ctx, scope, change, check.approval, true, now)
 			if err != nil {
 				return nil, err
 			}
@@ -116,23 +117,23 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			}
 			events = append(events, event)
 		}
-		if transition != nil && transition.eligible {
-			transition.plan.Issue.ReleaseDelivery = &delivery
-			transition.plan.Issue.Revision++
-			transition.version.Revision++
-			raw, err := json.Marshal(s.nativeIssueResponse(transition.plan.Issue))
+		if transition != nil && transition.Eligible {
+			transition.Plan.Issue.ReleaseDelivery = &delivery
+			transition.Plan.Issue.Revision++
+			transition.Version.Revision++
+			raw, err := json.Marshal(s.nativeIssueResponse(transition.Plan.Issue))
 			if err != nil {
 				return nil, err
 			}
-			transition.version, err = content.PrepareCollaborationVersion(ctx, transition.version, raw)
+			transition.Version, err = content.PrepareCollaborationVersion(ctx, transition.Version, raw)
 			if err != nil {
 				return nil, err
 			}
-			raw, err = json.Marshal(tracker.CollaborationEvent{ID: transition.event.ID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: transition.plan.Issue.Revision, FromState: plan.Issue.State, ToState: transition.plan.Issue.State, Reason: "user_requested"}})
+			raw, err = json.Marshal(tracker.CollaborationEvent{ID: transition.Event.ID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: transition.Plan.Issue.Revision, FromState: plan.Issue.State, ToState: transition.Plan.Issue.State, Reason: "user_requested"}})
 			if err != nil {
 				return nil, err
 			}
-			transition.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
+			transition.Event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 			if err != nil {
 				return nil, err
 			}
@@ -185,7 +186,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 		}
 		if !unchanged {
 			if transition != nil {
-				if _, err := s.lockChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
+				if _, err := s.changeWorkflow().LockChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
 					return err
 				}
 			}
@@ -223,9 +224,9 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 					return err
 				}
 			}
-			if transition != nil && transition.eligible {
-				transition.plan.Current.Revision++
-				if err := s.applyChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
+			if transition != nil && transition.Eligible {
+				transition.Plan.Current.Revision++
+				if err := s.changeWorkflow().ApplyChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
 					return err
 				}
 			}

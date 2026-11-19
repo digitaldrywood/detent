@@ -561,7 +561,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 	}
 	var transition *changeWorkflowTransition
 	if workflowPlan != nil {
-		transition = workflowPlan.transition
+		transition = rootChangeWorkflowTransition(workflowPlan.Transition)
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {

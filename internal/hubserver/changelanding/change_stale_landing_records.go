@@ -1,4 +1,4 @@
-package hubserver
+package changelanding
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
@@ -25,10 +26,10 @@ type staleLandingItem struct {
 	Found  bool
 }
 
-type staleLandingRoutes struct {
+type StaleLandingRoutes struct {
 	lanes []string
 	items []staleLandingItem
-	moves []*changeWorkflowTransition
+	moves []*WorkflowTransition
 }
 
 type staleLandingReader interface {
@@ -44,7 +45,7 @@ func readStaleLandingItems(ctx context.Context, r staleLandingReader, project tr
 	for _, lane := range lanes {
 		var after int64
 		complete := false
-		for range claimPreparationLimit {
+		for range corestore.MaxRelationshipPreparationPages {
 			rows, err := owner.HealthSourceItems(ctx, project, lane, after, corestore.MaxPageSize)
 			if err != nil {
 				return nil, err
@@ -81,21 +82,21 @@ func staleLandingTarget(project tracker.NativeProject, current string) string {
 	return target
 }
 
-func (s *Service) prepareStaleLandingRoutes(ctx context.Context, scope hubscope.NativeScope, approval hubrecords.ChangeVersionApproval, now time.Time) (*staleLandingRoutes, error) {
-	project, err := s.readProjectRecord(ctx, scope)
+func (s *Workflow) PrepareStaleLandingRoutes(ctx context.Context, scope hubscope.NativeScope, approval hubrecords.ChangeVersionApproval, now time.Time) (*StaleLandingRoutes, error) {
+	project, err := s.deps.ReadProjectRecord(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
-	routes := &staleLandingRoutes{}
+	routes := &StaleLandingRoutes{}
 	for _, state := range project.States {
-		if !state.Terminal && strings.EqualFold(strings.TrimSpace(state.Name), landingLane) {
+		if !state.Terminal && strings.EqualFold(strings.TrimSpace(state.Name), changerules.LandingLane) {
 			routes.lanes = append(routes.lanes, state.Name)
 		}
 	}
 	if len(routes.lanes) == 0 {
 		return routes, nil
 	}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		routes.items, err = readStaleLandingItems(ctx, r, scope.Project, routes.lanes)
 		return err
@@ -103,7 +104,7 @@ func (s *Service) prepareStaleLandingRoutes(ctx context.Context, scope hubscope.
 	if err != nil {
 		return nil, err
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(s.deps.RunDetailStore())
 	for _, item := range routes.items {
 		current := item.Change.CurrentVersionID
 		if !item.Found || current == nil || item.Change.LandedVersionID != nil && *item.Change.LandedVersionID == *current {
@@ -111,7 +112,7 @@ func (s *Service) prepareStaleLandingRoutes(ctx context.Context, scope hubscope.
 		}
 		var row eventstore.Version
 		var active bool
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			if row, err = r.Version(ctx, item.Change.ID, *current); err != nil {
 				return err
@@ -137,19 +138,19 @@ func (s *Service) prepareStaleLandingRoutes(ctx context.Context, scope hubscope.
 		if err != nil {
 			return nil, err
 		}
-		move, err := s.prepareChangeWorkflowRoute(ctx, scope, change, approval, changeWorkflowRoute{rework: true, reason: "stale_policy", target: staleLandingTarget}, now)
+		move, err := s.prepareChangeWorkflowRoute(ctx, scope, change, approval, workflowRoute{rework: true, reason: "stale_policy", target: staleLandingTarget}, now)
 		if err != nil {
 			return nil, err
 		}
-		if move == nil || !move.eligible {
-			return nil, hubapi.NativeInvalid("The workflow allows no move from " + landingLane + " to a landing refusal lane")
+		if move == nil || !move.Eligible {
+			return nil, hubapi.NativeInvalid("The workflow allows no move from " + changerules.LandingLane + " to a landing refusal lane")
 		}
 		routes.moves = append(routes.moves, move)
 	}
 	return routes, nil
 }
 
-func (s *Service) applyStaleLandingRoutes(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, routes *staleLandingRoutes) error {
+func (s *Workflow) ApplyStaleLandingRoutes(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, routes *StaleLandingRoutes) error {
 	if routes == nil || len(routes.lanes) == 0 {
 		return nil
 	}
@@ -161,12 +162,16 @@ func (s *Service) applyStaleLandingRoutes(ctx context.Context, w tenantstore.Wri
 		return corestore.ErrRevisionConflict
 	}
 	for _, move := range routes.moves {
-		if _, err := s.lockChangeWorkflowTransition(ctx, w, scope, move); err != nil {
+		if _, err := s.LockChangeWorkflowTransition(ctx, w, scope, move); err != nil {
 			return err
 		}
-		if err := s.applyChangeWorkflowTransition(ctx, w, scope, move); err != nil {
+		if err := s.ApplyChangeWorkflowTransition(ctx, w, scope, move); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r *StaleLandingRoutes) HasMoves() bool {
+	return r != nil && len(r.moves) > 0
 }

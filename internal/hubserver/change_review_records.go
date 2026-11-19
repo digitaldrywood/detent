@@ -250,7 +250,7 @@ prepareReview:
 			}
 			var transition *changeWorkflowTransition
 			if workflowPlan != nil {
-				transition = workflowPlan.transition
+				transition = rootChangeWorkflowTransition(workflowPlan.Transition)
 			}
 			if independent != nil {
 				refusal, err := s.checkIndependentRepairs(ctx, w, scope, independent)

@@ -140,7 +140,7 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		if stale != nil && len(stale.moves) > 0 {
+		if stale.HasMoves() {
 			if err := w.LockRelationshipGraph(ctx); err != nil {
 				return err
 			}
