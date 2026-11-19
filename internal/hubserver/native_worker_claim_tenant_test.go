@@ -1562,25 +1562,7 @@ func TestNativeClaimPreviewUsesCurrentBlockers(t *testing.T) {
 			t.Fatalf("fixture dependency facts = %+v, ready = %t", issue.Blockers, issue.DependencyReady)
 		}
 		issue.Revision++
-		version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{
-			OrganizationID: organization, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision),
-		}, historyTestJSON(t, issue))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			row, err := w.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
-			if err != nil {
-				return err
-			}
-			if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
-				return err
-			}
-			_, err = w.CreateCollaborationVersion(t.Context(), version)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
+		storeClaimPreviewRevision(t, f, issue, historyTestJSON(t, issue))
 		return candidate{fixture: f, runner: runner, issue: issue, blocker: blocker}
 	}
 	first := makeCandidate("org_first")
@@ -1649,4 +1631,89 @@ func TestNativeClaimPreviewUsesCurrentBlockers(t *testing.T) {
 	request.SessionID = "reopened"
 	response = performHubAPIRequest(t, service, http.MethodPost, first.fixture.base+"/claims", first.runner.redemption.Credential, request)
 	requireNativeError(t, response, http.StatusConflict, "no_claimable_work")
+}
+
+func TestNativeClaimPreviewOmitsPrivateHistoricalRelationships(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "Example project")
+	private := newNativeFixture(t, f.service, f.project.OrganizationID, "Private example project")
+	dependent := private.create(t, "Private dependent")
+	related := private.create(t, "Private related item")
+	runner := prepareRunnerForScope(t, f, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	runner.enroll(t)
+	runner.reportCapacity(t)
+	credential := runner.redemption.Credential
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, private.base+"/work-items/"+string(dependent.WorkItemID), credential, nil), http.StatusNotFound)
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+
+	issue := f.create(t, "Example candidate")
+	issue.Revision++
+	issue.Dependents = []tracker.NativeDependency{{ID: dependent.WorkItemID, ProjectID: private.project.ID, Title: dependent.Title}}
+	issue.Related = []tracker.NativeDependency{{ID: related.WorkItemID, ProjectID: private.project.ID, Title: related.Title}}
+	issue.BlockedReason = tracker.DependencyReason{Text: "Private blocked reason", Basis: "private basis", CurrentBasis: "private current basis", Revision: 1}
+	issue.UnblocksReason = tracker.DependencyReason{Text: "Private unblocks reason", Basis: "private basis", CurrentBasis: "private current basis", Revision: 2}
+	issue.OmittedFields = []string{"change_sequence", "dependents"}
+	historical := historyTestJSON(t, issue)
+	storeClaimPreviewRevision(t, f, issue, historical)
+
+	request := tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID}}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", credential, request)
+	requireNativeStatus(t, response, http.StatusOK)
+	var page tracker.NativeCapacityPage
+	decodeHubResponse(t, response, &page)
+	if len(page.Items) != 1 || page.Items[0].WorkItemID != issue.WorkItemID || page.Items[0].Revision != issue.Revision {
+		t.Fatalf("preview did not return the historical candidate revision: %+v", page.Items)
+	}
+	got := page.Items[0]
+	if len(got.Dependents) != 0 || len(got.Related) != 0 || got.BlockedReason != (tracker.DependencyReason{}) || got.UnblocksReason != (tracker.DependencyReason{}) {
+		t.Fatal("preview returned private historical relationship fields")
+	}
+	slices.Sort(got.OmittedFields)
+	wantOmitted := []string{"blocked_reason", "change_sequence", "dependents", "related", "unblocks_reason"}
+	if !slices.Equal(got.OmittedFields, wantOmitted) {
+		t.Fatalf("omitted_fields = %v, want %v", got.OmittedFields, wantOmitted)
+	}
+	for _, privateValue := range []string{string(private.project.ID), string(dependent.WorkItemID), string(related.WorkItemID), dependent.Title, related.Title, issue.BlockedReason.Text, issue.UnblocksReason.Text} {
+		if strings.Contains(response.Body.String(), privateValue) {
+			t.Fatal("preview body contained a private historical relationship value")
+		}
+	}
+	var version eventstore.CollaborationVersion
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		version, err = r.CollaborationVersion(t.Context(), string(issue.WorkItemID), int64(issue.Revision))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := eventstore.NewContent(f.service.runDetailStore()).CollaborationVersion(t.Context(), version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, historical) {
+		t.Fatal("preview changed the stored revision payload")
+	}
+}
+
+func storeClaimPreviewRevision(t *testing.T, f nativeFixture, issue tracker.NativeIssue, raw []byte) {
+	t.Helper()
+	version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{
+		OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision),
+	}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		row, err := w.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
+			return err
+		}
+		_, err = w.CreateCollaborationVersion(t.Context(), version)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
