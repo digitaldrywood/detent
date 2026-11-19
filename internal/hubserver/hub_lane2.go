@@ -1147,9 +1147,8 @@ func spriteFactValue(value *string) string {
 	return runnerfleet.SpriteFactValue(value)
 }
 
-func runtimeRunnersFromSnapshot(snapshot runnerstore.RuntimeCapacitySnapshot, scope hubscope.NativeScope, now time.Time) []runnerauth.Runner {
-	providers := runtimeProviderCapacity(snapshot.Providers)
-	return runnerfleet.RuntimeRunnersFromSnapshot(landingCapacityKey, providers.view, snapshot, scope, now)
+func runtimeRunnersFromSnapshot(snapshot runnerstore.RuntimeCapacitySnapshot, _ hubscope.NativeScope, now time.Time) []runnerauth.Runner {
+	return runnerfleet.RuntimeRunnersFromSnapshot(landingCapacityKey, snapshot, now)
 }
 
 func runtimeLandingCapacity(snapshot runnerstore.RuntimeProviderSnapshot, project tracker.ProjectID) (bool, int) {
