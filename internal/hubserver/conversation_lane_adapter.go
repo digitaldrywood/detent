@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -625,5 +627,96 @@ func (t *coordinatorToolset) settingsPreviewDeps() coordinator.SettingsPreviewDe
 			return (hubProjectExecutor{s}).command(ctx, call, projectCommandPreview)
 		},
 		ProjectError: projectToolError,
+	}
+}
+
+var coordinatorSlashActionTools = coordinator.SlashActionTools
+var coordinatorActionError = coordinator.ActionError
+
+type coordinatorCatalogEntry = coordinator.CatalogEntry
+
+func (t *coordinatorToolset) slashAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewSlashAction(ctx, record, call, t.slashActionDeps())
+}
+
+func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewStopRun(ctx, record, call, t.stopRunPreviewDeps())
+}
+
+func (s *Service) executeCoordinatorStopRun(ctx context.Context, scope hubscope.NativeScope, action chat.Action) (chat.ActionExecution, error) {
+	return coordinator.ExecuteStopRun(ctx, scope, action, s.stopNativeRunCommand)
+}
+
+func (s *Service) stopNativeRunCommand(ctx context.Context, scope hubscope.NativeScope, requestID string, request coordinatorStopRunArguments) (json.RawMessage, error) {
+	return coordinator.StopRun(ctx, scope, requestID, request, s.transitionNativeIssueTenantWithStop)
+}
+
+func (s *Service) coordinatorCatalog(ctx context.Context) ([]operatortool.Definition, error) {
+	return coordinator.Catalog(ctx, (hostedOperatorExecutor{service: s}).ListTools, coordinatorCatalogExcluded)
+}
+
+func (t *coordinatorToolset) findTools(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.catalogToolDeps().FindTools(ctx, record, call)
+}
+
+func (t *coordinatorToolset) callTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.catalogToolDeps().CallTool(ctx, record, call)
+}
+
+func (s *Service) executeCoordinatorCatalogCall(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return coordinator.ExecuteCatalogCall(ctx, action, s.catalogExecutionDeps())
+}
+
+func (s *Service) resolveCoordinatorIssue(ctx context.Context, scope hubscope.NativeScope, reference string) (tracker.NativeIssue, error) {
+	return s.resolveOperatorNativeItem(ctx, nil, scope, reference)
+}
+
+func (t *coordinatorToolset) slashActionDeps() coordinator.SlashActionDeps {
+	s := t.coordinator.server
+	return coordinator.SlashActionDeps{
+		ProposalDeps:  t.proposalDeps(),
+		ResolveIssue:  s.resolveCoordinatorIssue,
+		ReadProject:   s.readProjectRecord,
+		ProjectAction: t.projectAction,
+	}
+}
+
+func (t *coordinatorToolset) stopRunPreviewDeps() coordinator.StopRunPreviewDeps {
+	s := t.coordinator.server
+	return coordinator.StopRunPreviewDeps{
+		ActionContext: t.actionContext,
+		Submit:        t.submitCoordinatorAction,
+		ResolveIssue:  s.resolveCoordinatorIssue,
+		ReadProject:   s.readProjectRecord,
+		ActiveLease:   s.readCoordinatorStopRunLease,
+		Now:           s.config.Clock,
+	}
+}
+
+func (s *Service) readCoordinatorStopRunLease(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID) (lease leasestore.Lease, err error) {
+	err = s.readConversationTenant(ctx, scope.Organization, func(r tenantstore.Reader) error {
+		lease, err = coordinator.ReadStopRunLease(ctx, r, scope, item, s.authorizeAccessScope)
+		return err
+	})
+	return lease, err
+}
+
+func (t *coordinatorToolset) catalogToolDeps() coordinator.CatalogToolDeps {
+	s := t.coordinator.server
+	return coordinator.CatalogToolDeps{
+		ProposalDeps: t.proposalDeps(),
+		Operator:     currentHubOperator,
+		WithOperator: s.withOperatorCatalog,
+		Catalog:      s.coordinatorCatalog,
+		Execute:      (hostedOperatorExecutor{service: s}).Execute,
+		Excluded:     coordinatorCatalogExcluded,
+	}
+}
+
+func (s *Service) catalogExecutionDeps() coordinator.CatalogExecutionDeps {
+	return coordinator.CatalogExecutionDeps{
+		BindConnection: s.bindCoordinatorConnection,
+		Catalog:        s.coordinatorCatalog,
+		Execute:        (hostedOperatorExecutor{service: s}).Execute,
 	}
 }
