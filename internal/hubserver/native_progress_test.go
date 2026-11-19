@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -265,7 +266,14 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 					t.Fatalf("publication failure retained %d defects", count)
 				}
 			}
-			published, err := owner.Publish(t.Context(), record)
+			lease := nativeAttemptFixtureLease(t, reporter, issue, "upgrade-"+string(outcome))
+			releaseWriter := owner
+			releaseWriter.scope.Credential, _, err = f.service.authenticateAPIToken(t.Context(), reporter.redemption.Credential, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			releaseWriter.leaseID, releaseWriter.fencingToken, releaseWriter.expectedRevision = lease.ID, lease.FencingToken, issue.Revision
+			published, err := releaseWriter.Publish(t.Context(), record)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -287,6 +295,25 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if !reflect.DeepEqual(view.Record, &published) {
 				t.Fatalf("GET lost the retained decision without a POST digest: %+v", view.Record)
 			}
+			input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: lease.ID, FencingToken: lease.FencingToken}, RequestID: id, PolicyID: request.PolicyID, Instance: request.Instance, Decision: decision, ExpectedRevision: issue.Revision}
+			post := func() *httptest.ResponseRecorder {
+				return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+request.IssueID+"/progress", reporter.redemption.Credential, input)
+			}
+			for _, reason := range []string{decision.Reason, "A different valid reason"} {
+				input.Decision.Reason = reason
+				response := post()
+				requireNativeStatus(t, response, http.StatusOK)
+				var retained progresscheck.Record
+				decodeHubResponse(t, response, &retained)
+				if !reflect.DeepEqual(published, retained) {
+					t.Fatalf("digestless POST replay returned %+v, want %+v", retained, published)
+				}
+			}
+			input.ExpectedRevision++
+			requireNativeError(t, post(), http.StatusConflict, "revision_conflict")
+			input.ExpectedRevision = issue.Revision
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", reporter.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			requireNativeError(t, post(), http.StatusConflict, "stale_fencing_token")
 			var comments int
 			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, scope.Organization, scope.Project, issue.WorkItemID).Scan(&comments); err != nil {
 				t.Fatal(err)

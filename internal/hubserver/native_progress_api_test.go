@@ -37,9 +37,10 @@ type progressPublicationContextKey struct{}
 
 type progressPublicationRepository struct {
 	*postgres.Repository
-	before  bool
-	fired   bool
-	observe func() error
+	skipWrites int
+	before     bool
+	fired      bool
+	observe    func() error
 }
 
 func (r *progressPublicationRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, use func(tenantstore.Reader) error) error {
@@ -61,6 +62,10 @@ func (r *progressPublicationRepository) ReadTenantSnapshot(ctx context.Context, 
 func (r *progressPublicationRepository) beforeWrite(ctx context.Context) error {
 	reads, marked := ctx.Value(progressPublicationContextKey{}).(*int)
 	if !marked || r.before || r.fired || *reads < 1 {
+		return nil
+	}
+	if r.skipWrites > 0 {
+		r.skipWrites--
 		return nil
 	}
 	r.fired = true
@@ -500,6 +505,8 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 	}{
 		{name: "decision comment does not create new evidence"},
 		{name: "absent open", cleanupReplay: "matrix", open: true},
+		{name: "ordinary replay during usage", cleanupReplay: "usage", open: true, active: true},
+		{name: "cleanup replay during usage", cleanupReplay: "usage", edges: 1, active: true},
 		{name: "absent done", cleanupReplay: "matrix"},
 		{name: "one open", cleanupReplay: "matrix", edges: 1, open: true},
 		{name: "one done", cleanupReplay: "matrix", edges: 1},
@@ -744,7 +751,42 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				return
 			}
 			requireNativeStatus(t, response, http.StatusOK)
-			second := post(input)
+			replayDuring := func(deliver func()) *httptest.ResponseRecorder {
+				t.Helper()
+				currentID, err := read().Request.ID()
+				if err != nil {
+					t.Fatal(err)
+				}
+				repository := f.service.config.TenantRepository.(*postgres.Repository)
+				guard := &progressPublicationRepository{Repository: repository, observe: func() error {
+					deliver()
+					return nil
+				}}
+				if currentID == id {
+					guard.skipWrites = 1
+				}
+				f.service.config.TenantRepository = guard
+				defer func() { f.service.config.TenantRepository = repository }()
+				request := newHubAPIRequest(t, http.MethodPost, path+"/progress", f.worker, input)
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, request.WithContext(context.WithValue(t.Context(), progressPublicationContextKey{}, new(int))))
+				if !guard.fired {
+					t.Fatal("event was not delivered at replay authorization")
+				}
+				return response
+			}
+			var second *httptest.ResponseRecorder
+			if test.cleanupReplay == "usage" {
+				second = replayDuring(func() {
+					observed := started
+					observed.IdempotencyKey, observed.Type, observed.Data.Sequence = hubapi.NewID("usage"), "run.observed", 2
+					observed.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: f.now}
+					observed.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "code-model", Input: 10, Currency: "USD"}}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, observed), http.StatusOK)
+				})
+			} else {
+				second = post(input)
+			}
 			requireNativeStatus(t, second, http.StatusOK)
 			if test.cleanupReplay != "" {
 				var first, replay progresscheck.Record
@@ -823,16 +865,22 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				input.LeaseID, input.FencingToken = f.lease.ID, f.lease.FencingToken
 				requireNativeError(t, post(input), http.StatusConflict, "revision_conflict")
 			case "human":
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "new-evidence-after-cleanup"}, Body: "New failure details from the operator"}), http.StatusOK)
+				during := replayDuring(func() {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "new-evidence-after-cleanup"}, Body: "New failure details from the operator"}), http.StatusOK)
+				})
+				requireNativeError(t, during, http.StatusConflict, "revision_conflict")
 				requireNativeError(t, post(input), http.StatusConflict, "revision_conflict")
 			case "source":
-				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes", testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "new-change-after-cleanup"}, Title: "Updated source"})
-				requireNativeStatus(t, response, http.StatusOK)
-				var change tracker.ChangeRequest
-				decodeHubResponse(t, response, &change)
-				version := changeTestInput()
-				bundle := changeTestSource(t, &version)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes/"+change.ID+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "new-version-after-cleanup"}, ChangeVersionInput: version, SourceBundle: bundle}), http.StatusOK)
+				during := replayDuring(func() {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes", testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "new-change-after-cleanup"}, Title: "Updated source"})
+					requireNativeStatus(t, response, http.StatusOK)
+					var change tracker.ChangeRequest
+					decodeHubResponse(t, response, &change)
+					version := changeTestInput()
+					bundle := changeTestSource(t, &version)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes/"+change.ID+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "new-version-after-cleanup"}, ChangeVersionInput: version, SourceBundle: bundle}), http.StatusOK)
+				})
+				requireNativeError(t, during, http.StatusConflict, "revision_conflict")
 				requireNativeError(t, post(input), http.StatusConflict, "revision_conflict")
 			}
 			if test.cleanupReplay != "" {
