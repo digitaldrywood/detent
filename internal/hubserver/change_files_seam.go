@@ -8,9 +8,12 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/changefiles"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -22,6 +25,9 @@ func (s *Service) changeFilesService(caller hubscope.NativeScope) *changefiles.S
 		},
 		ReadChange: func(ctx context.Context, scope hubapi.Scope, item, id string) (tracker.ChangeRequest, error) {
 			return s.readChangeRecord(ctx, caller, item, id)
+		},
+		SourceAccess: func(ctx context.Context, item tracker.NativeWorkItemID) error {
+			return s.authorizeChangeSource(ctx, caller, item)
 		},
 		ReadVersion: s.readChangeVersionRecord,
 		Receipt: func(ctx context.Context, scope hubapi.Scope, operation, key, hash string) (json.RawMessage, bool, error) {
@@ -52,6 +58,30 @@ func (s *Service) viewChangeFileRecordCommand(ctx context.Context, scope hubscop
 func (s *Service) changeSource(c echo.Context) error {
 	return s.changeFilesService(hubscope.NativeRequestScope(c)).Source(c)
 }
+
+func (s *Service) authorizeChangeSource(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID) error {
+	if scope.Credential.Scope != hubapi.APIScopeWorker && scope.Credential.Runner.RunnerID == "" {
+		return nil
+	}
+	var lease leasestore.Lease
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.WorkItem(ctx, scope.Project, item)
+		if err != nil {
+			return err
+		}
+		if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project || row.NativeID != item {
+			return corestore.ErrNotFound
+		}
+		lease, err = r.ActiveLeaseForIssue(ctx, row.ID)
+		return err
+	})
+	if err != nil {
+		return hubapi.ProjectRecordError(err)
+	}
+	_, err = s.validateRunnerLeaseTenant(ctx, scope, tracker.LeaseID(lease.LeaseID), tracker.FencingToken(lease.FencingToken))
+	return hubapi.ProjectRecordError(err)
+}
+
 func (s *Service) verifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) error {
 	return hubapi.FromFeatureError(changefiles.VerifySource(ctx, s.sourceVerification, source, bundle))
 }

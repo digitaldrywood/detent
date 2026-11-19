@@ -16,8 +16,12 @@ func (s *Service) Source(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := s.deps.Scope(c)
-	change, err := s.deps.ReadChange(ctx, scope, c.Param("item"), c.Param("change"))
+	item := c.Param("item")
+	change, err := s.deps.ReadChange(ctx, scope, item, c.Param("change"))
 	if err != nil {
+		return s.deps.Error(c, err)
+	}
+	if err := s.deps.SourceAccess(ctx, tracker.NativeWorkItemID(item)); err != nil {
 		return s.deps.Error(c, err)
 	}
 	row, err := s.deps.ReadVersion(ctx, scope.Organization, change.ID, c.Param("version"))
