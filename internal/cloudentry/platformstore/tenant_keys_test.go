@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -54,16 +53,7 @@ func TestTenantKeyConcurrentReads(t *testing.T) {
 	}
 	config := testConfig(t)
 	config.Pool = PoolConfig{MaxConnections: 10, ServingConnections: 8, BackgroundConnections: 1}
-	pool := rolePool(t, db, postgres.PlatformRoleName, "")
-	r, err := New(t.Context(), pool, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := r.Close(); err != nil {
-			t.Error(err)
-		}
-	}()
+	r := repository(t, db, config)
 	seedOrganizations(t, r)
 	if _, err := db.ExecContext(t.Context(), `UPDATE platform.organizations SET managed=true`); err != nil {
 		t.Fatal(err)
