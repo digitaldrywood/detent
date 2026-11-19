@@ -21,7 +21,7 @@ func (r retainedVersionReader) RuntimeChange(context.Context, tracker.NativeWork
 func (r retainedVersionReader) Recovery(context.Context, tracker.NativeWorkItemID) (tracker.NativeRecovery, error) {
 	return tracker.NativeRecovery{}, nil
 }
-func (r retainedVersionReader) RuntimeEvidence(context.Context, tracker.NativeWorkItemID, string, ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+func (r retainedVersionReader) ValidatorEvidence(context.Context, tracker.NativeWorkItemID, string) (tracker.NativeRuntimeEvidence, error) {
 	return r.runtime, nil
 }
 

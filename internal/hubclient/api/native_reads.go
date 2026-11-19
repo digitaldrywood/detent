@@ -234,8 +234,7 @@ func (c *NativeClient) ReadAgentTool(ctx context.Context, call runner.AgentToolC
 			}
 			var evidence tracker.NativeRuntimeEvidence
 			if request.Cursor != "" {
-				params := url.Values{"native_attempt_id": {selector}, "evidence_after": {request.Cursor}}
-				err = c.client.request(ctx, http.MethodGet, c.base()+"/work-items/"+url.PathEscape(string(id))+"/runtime?"+params.Encode(), nil, &evidence)
+				evidence, err = c.attemptEvidencePage(ctx, id, selector, request.Cursor)
 			} else {
 				evidence, err = c.RuntimeEvidence(ctx, id, selector)
 			}

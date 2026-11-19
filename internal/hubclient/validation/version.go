@@ -18,7 +18,7 @@ import (
 type VersionReader interface {
 	RuntimeChange(context.Context, tracker.NativeWorkItemID, string) (tracker.ChangeDetail, error)
 	Recovery(context.Context, tracker.NativeWorkItemID) (tracker.NativeRecovery, error)
-	RuntimeEvidence(context.Context, tracker.NativeWorkItemID, string, ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error)
+	ValidatorEvidence(context.Context, tracker.NativeWorkItemID, string) (tracker.NativeRuntimeEvidence, error)
 }
 type VersionAuthority interface {
 	Retain(context.Context, tracker.AttemptDiffRequest) error
@@ -118,7 +118,7 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 				return runner.NativeValidation{}, errors.New("security audit retained source patch is unavailable")
 			}
 		}
-		runtime, err := reader.RuntimeEvidence(ctx, state.Lease.WorkItemID, state.Data.AttemptID)
+		runtime, err := reader.ValidatorEvidence(ctx, state.Lease.WorkItemID, state.Data.AttemptID)
 		if err != nil {
 			return runner.NativeValidation{}, err
 		}

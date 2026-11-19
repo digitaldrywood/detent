@@ -112,6 +112,9 @@ func TestNativeValidatorReceivesAcceptedSecurityAudit(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/capabilities"):
 					value = nativeCapabilities{Features: []string{tracker.NativeRuntimeEvidenceCapability}}
 				case strings.HasSuffix(r.URL.Path, "/runtime"):
+					if r.URL.Query().Has("evidence_after") {
+						t.Error("validator sent an evidence cursor to a Hub without pagination")
+					}
 					value = runtime
 				case strings.HasSuffix(r.URL.Path, "/changes/change_example"):
 					page := operatortool.ChangeResult{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_example", Detail: &detail, Read: &operatortool.ChangeRead{VersionID: version.ID, Sections: map[string]operatortool.ChangeReadPage{}}}

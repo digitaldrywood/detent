@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -234,10 +235,10 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 		foreignItem := foreign.create(t, "Other example item")
 		foreignWorker := foreign.worker(t, "foreign-reader")
 		selectPostgresHubTestOrganization(service, organization.ID)
-		for _, count := range []int{201, 1000} {
+		for _, count := range []int{128, 200, 201, 1000} {
 			t.Run(fmt.Sprint(count), func(t *testing.T) {
 				_, err := adminDB.ExecContext(t.Context(), `INSERT INTO attachments (organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at,work_item_id,evidence_attempt_id,evidence_caption)
- SELECT $1,$2,'att_'||lpad(to_hex(i),32,'0'),$3,'evidence.txt','text/plain',1,repeat('a',64),$4,$5,$6,CASE WHEN i<=32 AND $7=1000 THEN repeat('<',1024) ELSE 'Example evidence' END FROM generate_series(1,$7::int) i`, organization.ID, project.ID, credentialID, clock.Now(), issue.WorkItemID, started.Data.AttemptID, count)
+ SELECT $1,$2,'att_'||lpad(to_hex(i),32,'0'),$3,'evidence.txt','text/plain',1,repeat('a',64),$4,$5,$6,CASE WHEN $7=200 OR (i<=32 AND $7=1000) THEN repeat('<',1024) WHEN $7=128 THEN repeat('x',512) ELSE 'Example evidence' END FROM generate_series(1,$7::int) i`, organization.ID, project.ID, credentialID, clock.Now(), issue.WorkItemID, started.Data.AttemptID, count)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -246,7 +247,26 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 						t.Error(err)
 					}
 				})
-				first, err := native.RuntimeEvidence(t.Context(), issue.WorkItemID, started.Data.AttemptID)
+				legacy, err := native.RuntimeEvidence(t.Context(), issue.WorkItemID, started.Data.AttemptID)
+				if count == 128 {
+					if err != nil || legacy.Attempt == nil {
+						t.Fatalf("legacy runtime: %v", err)
+					}
+					if len(legacy.Attempt.Evidence) != count || legacy.Attempt.NextEvidenceAfter != "" || slices.Contains(legacy.Attempt.Unavailable, "evidence") {
+						t.Fatalf("legacy runner received %d of %d descriptors", len(legacy.Attempt.Evidence), count)
+					}
+					for i, descriptor := range legacy.Attempt.Evidence {
+						if descriptor.AttachmentID != fmt.Sprintf("att_%032x", i+1) || descriptor.Caption != strings.Repeat("x", 512) {
+							t.Fatalf("incorrect legacy evidence at offset %d", i)
+						}
+					}
+				} else {
+					var refusal *api.APIError
+					if !errors.As(err, &refusal) || refusal.Status != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "Complete attempt evidence requires pagination") || legacy.Attempt != nil {
+						t.Fatalf("legacy runner did not receive an explicit incomplete-input error: %v", err)
+					}
+				}
+				first, err := native.ValidatorEvidence(t.Context(), issue.WorkItemID, started.Data.AttemptID)
 				if err != nil || first.Attempt == nil || first.Attempt.NextEvidenceAfter == "" || !slices.Contains(first.Attempt.Unavailable, "evidence") || len(first.Attempt.Evidence) == 0 || len(first.Attempt.Evidence) > 200 {
 					t.Fatalf("validator received unbounded or unmarked input: %v", err)
 				}
@@ -265,10 +285,7 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 				after := ""
 				seen := make(map[string]bool)
 				for {
-					path := runtimePath
-					if after != "" {
-						path += "&evidence_after=" + after
-					}
+					path := runtimePath + "&evidence_after=" + after
 					page := performHubAPIRequest(t, service, http.MethodGet, path, token, nil)
 					requireNativeStatus(t, page, http.StatusOK)
 					if page.Body.Len() >= 1<<20 {
