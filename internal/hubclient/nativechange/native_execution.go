@@ -980,6 +980,35 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 	return nil
 }
 
+func executionEventData(kind string, current tracker.NativeRunData) tracker.NativeRunData {
+	data := tracker.NativeRunData{
+		RunID: current.RunID, AttemptID: current.AttemptID, PolicyID: current.PolicyID,
+		LeaseID: current.LeaseID, FencingToken: current.FencingToken, Sequence: current.Sequence,
+		MachineID: current.MachineID, RunnerID: current.RunnerID, SessionID: current.SessionID,
+		Identity: current.Identity, Runtime: current.Runtime, Steps: current.Steps, ProcessUsage: current.ProcessUsage,
+	}
+	if runtime := data.Runtime; runtime != nil && runtime.Landing != nil && (runtime.Landing.FromState != "" || runtime.Landing.TargetState != "") {
+		observation, landing := *runtime, *runtime.Landing
+		landing.FromState, landing.TargetState = "", ""
+		observation.Landing = &landing
+		data.Runtime = &observation
+	}
+	if kind != "run.started" {
+		data.Usage = current.Usage
+	}
+	switch kind {
+	case "run.checkpointed":
+		data.Handoff, data.ArtifactIDs = current.Handoff, current.ArtifactIDs
+	case "run.finished":
+		data.Outcome, data.Finalization = current.Outcome, current.Finalization
+		data.Disposition, data.CompletionBody = current.Disposition, current.CompletionBody
+		if data.Outcome != "succeeded" {
+			data.TerminalFailure = current.TerminalFailure
+		}
+	}
+	return data
+}
+
 func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, immediate ...bool) error {
 	return e.appendReceipt(ctx, kind, outcome, checkpoint, nil, immediate...)
 }
@@ -1016,6 +1045,7 @@ func (e *nativeExecution) appendReceipt(ctx context.Context, kind, outcome strin
 	data.Handoff = checkpoint
 	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
 	if len(immediate) == 0 && e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 && !e.runtimeHeartbeatDue(data.Runtime) {
+		event.Data = executionEventData(kind, data)
 		encoded, err := json.Marshal(event)
 		if err != nil {
 			return err
@@ -1047,6 +1077,11 @@ func (e *nativeExecution) appendReceipt(ctx context.Context, kind, outcome strin
 func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if e.pending == nil {
 		return nil
+	}
+	e.pending.Data = executionEventData(e.pending.Type, e.pending.Data)
+	for i := range e.pending.PriorEvents {
+		prior := &e.pending.PriorEvents[i]
+		prior.Data = executionEventData(prior.Type, prior.Data)
 	}
 	done := e.diagnosticOperation("append." + e.pending.Type)
 	defer func() { done(err) }()
@@ -1179,12 +1214,21 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	checkpoint := e.data.Handoff
 	runtime := e.data.Runtime
 	observedUsage := e.data.Usage
-	e.data = e.pending.Data
-	for _, entry := range observedUsage {
-		if entry.SourceID != "" {
-			e.data.Usage = mergeNativeUsage(e.data.Usage, entry)
+	published := e.pending.Data
+	published.Evidence = e.data.Evidence
+	if e.pending.Type != "run.checkpointed" {
+		published.ArtifactIDs = e.data.ArtifactIDs
+	}
+	if e.pending.Type == "run.started" {
+		published.Usage = observedUsage
+	} else {
+		for _, entry := range observedUsage {
+			if entry.SourceID != "" {
+				published.Usage = mergeNativeUsage(published.Usage, entry)
+			}
 		}
 	}
+	e.data = published
 	if e.data.Runtime != nil {
 		e.runtimePublishedAt = e.data.Runtime.HeartbeatAt
 	}

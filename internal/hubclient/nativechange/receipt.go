@@ -217,7 +217,7 @@ func (e *nativeExecution) stopAttempt(ctx context.Context) (*tracker.NativeAttem
 
 func (r *completedReceipt) prepareStandalone(attempt *tracker.NativeAttempt, original *tracker.NativeRunEvent) {
 	if r.standalone == nil || r.standalone.Data.Sequence != attempt.Sequence+1 {
-		data := attempt.NativeRunData
+		data := executionEventData("run.checkpointed", attempt.NativeRunData)
 		data.Sequence++
 		data.Handoff = original.Data.Handoff
 		if r.gate != nil {
@@ -260,10 +260,10 @@ func (e *nativeExecution) verifyReceipt(ctx context.Context) error {
 	return e.receiptAuthority(ctx)
 }
 
-func interruptedRunEvent(data tracker.NativeRunData) tracker.NativeRunEvent {
+func interruptedRunEvent(current tracker.NativeRunData) tracker.NativeRunEvent {
+	current.Outcome = "interrupted"
+	data := executionEventData("run.finished", current)
 	data.Sequence++
-	data.Outcome, data.Handoff = "interrupted", nil
-	data.ArtifactIDs = nil
 	if data.Runtime != nil {
 		runtime := *data.Runtime
 		runtime.Phase = "completed"
