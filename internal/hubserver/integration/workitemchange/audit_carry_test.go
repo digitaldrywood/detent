@@ -173,10 +173,6 @@ func TestReviewPriorAuditAuthorization(t *testing.T) {
 		t.Run(string(f.Organization)+"/current item", func(t *testing.T) {
 			check(t, f.Hub, f.Organization, f.Tokens[0], http.StatusOK, &want)
 		})
-		t.Run(string(f.Organization)+"/operator", func(t *testing.T) {
-			operator := hubtest.Credential(t, f.Hub.Repository, f.Organization, hubtest.CredentialOptions{Scope: "operator", KeyScope: "read", Projects: []tracker.ProjectID{project}})
-			check(t, f.Hub, f.Organization, operator.Token, http.StatusOK, &want)
-		})
 		t.Run(string(f.Organization)+"/human", func(t *testing.T) {
 			hosted := hubfixture.Hosted{Hub: f.Hub, Provider: f.Hub.Config.Hosted.Provider.(*hubfixture.HostedProvider), Project: project}
 			user := hosted.User(t, "audit_reader", "member", "reader@example.test", "read", "")
@@ -195,6 +191,12 @@ func TestReviewPriorAuditAuthorization(t *testing.T) {
 			check(t, f.Hub, f.Organization, f.Tokens[1], http.StatusNotFound, nil)
 		})
 	}
+	t.Run("operator", func(t *testing.T) {
+		hub := hubfixture.Open(t, hubfixture.Config{})
+		scope := hubfixture.NewNativeWith(t, hub, "", hubtest.ProjectOptions{ID: project})
+		want := seedPriorAuditEvidence(t, scope, change, "Operator read evidence", false)
+		check(t, hub, scope.Organization(), scope.Token, http.StatusOK, &want)
+	})
 	t.Run("other tenant", func(t *testing.T) {
 		check(t, first.Hub, second.Organization, first.Tokens[0], http.StatusNotFound, nil)
 	})
