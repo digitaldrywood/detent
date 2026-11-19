@@ -4,9 +4,9 @@ import (
 	"math"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -57,14 +57,7 @@ type RunnerObservation struct {
 	Observation Observation
 }
 
-type RunnerFacts struct {
-	WorkItemID string
-	RunnerID   string
-	MachineID  string
-	Placement  string
-	StartedAt  time.Time
-	EndedAt    time.Time
-}
+type RunnerFacts = hubrecords.RunnerUsageFacts
 
 func BuildRunnerObservations(request tracker.NativeRunEvent, prices Prices, facts RunnerFacts) ([]RunnerObservation, error) {
 	var observations []RunnerObservation

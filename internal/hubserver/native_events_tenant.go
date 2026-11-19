@@ -28,37 +28,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/mutation"
-	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type NativeRunEventAuthority struct {
-	BatchThrough          int64
-	Termination           bool
-	Scope                 hubscope.NativeScope
-	OrganizationID        tracker.OrganizationID
-	ProjectID             tracker.ProjectID
-	WorkItem              corestore.WorkItem
-	Lease                 leasestore.Lease
-	DispatchGeneration    int64
-	UsageCorrection       bool
-	ReplayPrefix          bool
-	Publication           *preparedNativePRPublication
-	UsageCosts            []billingstore.CostObservation
-	UsageReport           reportstore.AttemptUsage
-	UsageFacts            *runnerUsageFacts
-	Landing               *nativeLandingAuthority
-	Event                 tracker.NativeRunEvent
-	RequireSelector       bool
-	LegacySelectorChecked bool
-}
-
-type nativeLandingAuthority struct {
-	change eventstore.Change
-	method string
-}
 
 func nativeLandingClaim(event tracker.NativeRunEvent) *tracker.NativeLandingReceipt {
 	if event.Data.Runtime == nil || event.Data.Runtime.Landing == nil || event.Data.Runtime.Landing.ChangeID == "" {
@@ -92,10 +64,10 @@ func validateNativeLandingAuthority(ctx context.Context, reader tenantstore.Read
 		return unrecorded
 	}
 	proof := authority.Landing
-	if proof == nil || proof.change.ID != change.ID || proof.change.PayloadObjectKey != change.PayloadObjectKey || proof.change.PayloadSHA256 != change.PayloadSHA256 || proof.change.PayloadBytes != change.PayloadBytes || proof.change.PayloadContentBytes != change.PayloadContentBytes {
+	if proof == nil || proof.Change.ID != change.ID || proof.Change.PayloadObjectKey != change.PayloadObjectKey || proof.Change.PayloadSHA256 != change.PayloadSHA256 || proof.Change.PayloadBytes != change.PayloadBytes || proof.Change.PayloadContentBytes != change.PayloadContentBytes {
 		return corestore.ErrSerializationFailure
 	}
-	if proof.method != l.Method {
+	if proof.Method != l.Method {
 		return unrecorded
 	}
 	return nil
@@ -135,7 +107,7 @@ func validateNativeFinalizationAuthority(ctx context.Context, reader tenantstore
 	return nil
 }
 
-func (s *Service) prepareNativeLandingAuthority(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, content *eventstore.Content, changeID string) (nativeLandingAuthority, bool, error) {
+func (s *Service) prepareNativeLandingAuthority(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, content *eventstore.Content, changeID string) (hubrecords.NativeLandingAuthority, bool, error) {
 	var change eventstore.Change
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -143,48 +115,23 @@ func (s *Service) prepareNativeLandingAuthority(ctx context.Context, scope hubsc
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-		return nativeLandingAuthority{}, false, nil
+		return hubrecords.NativeLandingAuthority{}, false, nil
 	}
 	if err != nil {
-		return nativeLandingAuthority{}, false, err
+		return hubrecords.NativeLandingAuthority{}, false, err
 	}
 	if change.ProjectID != scope.Project || change.WorkItemID != item || change.LandedVersionID == nil {
-		return nativeLandingAuthority{}, false, nil
+		return hubrecords.NativeLandingAuthority{}, false, nil
 	}
 	value, err := content.Change(ctx, change)
 	if err != nil {
-		return nativeLandingAuthority{}, false, err
+		return hubrecords.NativeLandingAuthority{}, false, err
 	}
 	landed := value.Landed
 	if landed == nil || change.LandedHeadSHA == nil || change.LandedMergeSHA == nil || change.LandedBaseRef == nil || landed.VersionID != *change.LandedVersionID || landed.HeadSHA != *change.LandedHeadSHA || landed.MergeSHA != *change.LandedMergeSHA || landed.BaseRef != *change.LandedBaseRef {
-		return nativeLandingAuthority{}, false, artifact.ErrIntegrity
+		return hubrecords.NativeLandingAuthority{}, false, artifact.ErrIntegrity
 	}
-	return nativeLandingAuthority{change: change, method: landed.Method}, true, nil
-}
-
-type NativeRunEventParticipant interface {
-	ValidateNativeRunEvent(context.Context, tenantstore.Reader, *NativeRunEventAuthority) error
-	ApplyNativeRunEvent(context.Context, tenantstore.Writer, NativeRunEventAuthority) error
-	ValidateNativeLeaseMutation(context.Context, tenantstore.Reader, *NativeLeaseAuthority) error
-	ApplyNativeLeaseMutation(context.Context, tenantstore.Writer, NativeLeaseAuthority) error
-	NativeLeaseResponse(context.Context, tenantstore.Reader, hubscope.NativeScope, leasestore.Lease) (NativeLeaseResponseDetails, error)
-}
-
-type NativeLeaseAuthority struct {
-	Scope                 hubscope.NativeScope
-	WorkItem              corestore.WorkItem
-	Lease                 leasestore.Lease
-	Request               tracker.NativeLeaseMutation
-	Operation             string
-	LegacySelectorChecked bool
-}
-
-type NativeLeaseResponseDetails struct {
-	WorkItemID          tracker.NativeWorkItemID
-	PolicyID            string
-	IsolationPolicy     *isolation.Policy
-	ProviderReservation *providercapacity.Reservation
-	DependencyFacts     *nativeClaimBlockerSummary
+	return hubrecords.NativeLandingAuthority{Change: change, Method: landed.Method}, true, nil
 }
 
 type preparedNativeRunEvent struct {
@@ -588,10 +535,10 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 			return nil, nativeRejection(hubapi.NativePublicInvalid("Execution identity must match the authenticated lease owner"), "owner_validation", "data")
 		}
 		event.Data.MachineID, event.Data.SessionID, event.Data.RunnerID = tracker.MachineID(lease.MachineID), lease.SessionID, scope.Credential.Runner.RunnerID
-		var landingProof *nativeLandingAuthority
+		var landingProof *hubrecords.NativeLandingAuthority
 		if l := nativeLandingClaim(event); !termination && l != nil && l.Landed {
 			for _, previous := range prepared {
-				if proof := previous.authority.Landing; proof != nil && proof.change.ID == l.ChangeID {
+				if proof := previous.authority.Landing; proof != nil && proof.Change.ID == l.ChangeID {
 					landingProof = proof
 					break
 				}

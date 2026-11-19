@@ -175,23 +175,3 @@ func (s *Service) nativeRelationshipLink(relation corestore.Relationship) tracke
 	}
 	return link
 }
-
-const nativeClaimBlockerLimit = 1
-
-type nativeClaimBlocker struct {
-	Terminal bool `json:"terminal"`
-}
-
-type nativeClaimBlockerSummary struct {
-	Blockers          []nativeClaimBlocker `json:"blockers"`
-	BlockersTruncated bool                 `json:"blockers_truncated,omitempty"`
-	DependencyReady   bool                 `json:"dependency_ready"`
-}
-
-func summarizeNativeClaimBlockers(open int) nativeClaimBlockerSummary {
-	return nativeClaimBlockerSummary{
-		Blockers:          make([]nativeClaimBlocker, min(open, nativeClaimBlockerLimit)),
-		BlockersTruncated: open > nativeClaimBlockerLimit,
-		DependencyReady:   open == 0,
-	}
-}

@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -123,7 +124,7 @@ func (s *Service) projectOnboardingBatchTenant(ctx context.Context, organization
 				raw, err := eventstore.NewContent(s.runDetailStoreFor(policyCtx)).Receipt(policyCtx, eventstore.Receipt{OrganizationID: organization, PayloadObjectKey: revision.PayloadObjectKey, PayloadSHA256: revision.PayloadSHA256, PayloadBytes: revision.PayloadBytes, PayloadContentBytes: revision.PayloadContentBytes})
 				var approval policy.Approval
 				if err == nil {
-					approval, err = decodeProjectPolicy(policyCtx, string(organization)+"/"+string(rows[i].ProjectID), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: hubapi.FormatHubTime(revision.ApprovedAt)})
+					approval, err = hubrecords.DecodeProjectPolicy(policyCtx, string(organization)+"/"+string(rows[i].ProjectID), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: hubapi.FormatHubTime(revision.ApprovedAt)})
 				}
 				if err != nil {
 					failureMu.Lock()

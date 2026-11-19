@@ -21,7 +21,7 @@
       "files": 440,
       "loc": 96700,
       "test-files": 490,
-      "test-funcs": 1422
+      "test-funcs": 1419
     },
     "github.com/digitaldrywood/detent/internal/hubserver/postgres": {
       "files": 263,

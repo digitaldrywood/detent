@@ -6,7 +6,7 @@ import (
 	"reflect"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -28,68 +28,60 @@ func tenantPRPublicationRecord(authority NativeRunEventAuthority, publication tr
 	return eventstore.NativePRPublication{OrganizationID: authority.OrganizationID, VersionID: publication.VersionID, ChangeID: publication.ChangeID, Repository: publication.Repository, BaseRef: publication.BaseRef, Branch: publication.Branch, HeadSHA: publication.HeadSHA, PolicyID: publication.PolicyID, SourceAttemptID: publication.SourceAttemptID, RecorderAttemptID: authority.Event.Data.AttemptID, External: publication.External}
 }
 
-type preparedNativePRPublication struct {
-	change   eventstore.Change
-	version  eventstore.Version
-	record   eventstore.NativePRPublication
-	diff     leasestore.AttemptDiff
-	retained bool
-}
-
-func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *NativeRunEventAuthority, previous *tracker.NativeRunData) (preparedNativePRPublication, error) {
+func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *NativeRunEventAuthority, previous *tracker.NativeRunData) (hubrecords.PreparedNativePRPublication, error) {
 	data := authority.Event.Data
 	publication := tenantRunPRPublication(data)
 	if data.Handoff != nil && data.Finalization != nil && data.Handoff.Publication != nil && data.Finalization.Publication != nil && !reflect.DeepEqual(data.Handoff.Publication, data.Finalization.Publication) {
-		return preparedNativePRPublication{}, nativeExecutionConflict("PR publication receipts disagree")
+		return hubrecords.PreparedNativePRPublication{}, nativeExecutionConflict("PR publication receipts disagree")
 	}
 	if publication == nil {
-		return preparedNativePRPublication{}, nil
+		return hubrecords.PreparedNativePRPublication{}, nil
 	}
-	prepared := preparedNativePRPublication{record: tenantPRPublicationRecord(*authority, *publication)}
+	prepared := hubrecords.PreparedNativePRPublication{Record: tenantPRPublicationRecord(*authority, *publication)}
 	err := s.config.TenantRepository.ReadTenant(ctx, authority.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
-		prepared.change, err = reader.Change(ctx, publication.ChangeID)
+		prepared.Change, err = reader.Change(ctx, publication.ChangeID)
 		if err != nil {
 			return err
 		}
-		prepared.version, err = reader.Version(ctx, publication.ChangeID, publication.VersionID)
+		prepared.Version, err = reader.Version(ctx, publication.ChangeID, publication.VersionID)
 		if err != nil {
 			return err
 		}
 		stored, err := reader.PRPublication(ctx, publication.VersionID)
 		if err == nil {
-			expected := prepared.record
+			expected := prepared.Record
 			expected.RecorderAttemptID = stored.RecorderAttemptID
 			if expected != stored {
 				return corestore.ErrRevisionConflict
 			}
-			prepared.retained = true
+			prepared.Retained = true
 			return nil
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		prepared.diff, err = reader.LatestAttemptDiff(ctx, authority.ProjectID, data.AttemptID, tracker.DiffSourceAttempt)
+		prepared.Diff, err = reader.LatestAttemptDiff(ctx, authority.ProjectID, data.AttemptID, tracker.DiffSourceAttempt)
 		return err
 	})
 	if err != nil {
-		return preparedNativePRPublication{}, err
+		return hubrecords.PreparedNativePRPublication{}, err
 	}
-	change := prepared.change
-	version, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).Version(ctx, prepared.version)
+	change := prepared.Change
+	version, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).Version(ctx, prepared.Version)
 	if err != nil {
-		return preparedNativePRPublication{}, err
+		return hubrecords.PreparedNativePRPublication{}, err
 	}
 	if change.ProjectID != authority.ProjectID || change.WorkItemID != authority.WorkItem.NativeID || change.CurrentVersionID == nil || *change.CurrentVersionID != publication.VersionID || !version.Policy.Gates.GitHubPullRequest || !publication.Matches(publication.ChangeID, version) {
-		return preparedNativePRPublication{}, nativeExecutionConflict("PR publication no longer matches the current Change version or source")
+		return hubrecords.PreparedNativePRPublication{}, nativeExecutionConflict("PR publication no longer matches the current Change version or source")
 	}
-	if !prepared.retained {
+	if !prepared.Retained {
 		if previous == nil || previous.Handoff == nil || previous.Handoff.ExternalEffect != "pr_create" || previous.Handoff.EffectState != "confirmed" || previous.Handoff.EffectID != publication.EffectID("pr_create") || previous.Handoff.Change == nil || *previous.Handoff.Change != publication.SourceVersion || previous.Handoff.HeadSHA != publication.HeadSHA {
-			return preparedNativePRPublication{}, nativeExecutionConflict("PR publication requires its exact confirmed checkpoint")
+			return hubrecords.PreparedNativePRPublication{}, nativeExecutionConflict("PR publication requires its exact confirmed checkpoint")
 		}
-		diff := prepared.diff
+		diff := prepared.Diff
 		if diff.WorkItemID != authority.WorkItem.NativeID || diff.Producer.ID != data.AttemptID || diff.Producer.LeaseID != data.LeaseID || diff.Producer.FencingToken != data.FencingToken || diff.HeadSHA != publication.HeadSHA || diff.Generation.Seq < data.Sequence || diff.Generation.Seq > authority.BatchThrough {
-			return preparedNativePRPublication{}, corestore.ErrRevisionConflict
+			return hubrecords.PreparedNativePRPublication{}, corestore.ErrRevisionConflict
 		}
 	}
 	return prepared, nil
@@ -112,15 +104,15 @@ func (s *Service) validateTenantPRPublication(ctx context.Context, reader tenant
 	if err != nil {
 		return err
 	}
-	if change.OrganizationID != authority.OrganizationID || change.ProjectID != authority.ProjectID || change.WorkItemID != authority.WorkItem.NativeID || hubapi.ValueOrEmpty(change.CurrentVersionID) != publication.VersionID || !reflect.DeepEqual(version, prepared.version) {
+	if change.OrganizationID != authority.OrganizationID || change.ProjectID != authority.ProjectID || change.WorkItemID != authority.WorkItem.NativeID || hubapi.ValueOrEmpty(change.CurrentVersionID) != publication.VersionID || !reflect.DeepEqual(version, prepared.Version) {
 		return corestore.ErrRevisionConflict
 	}
-	if prepared.retained {
+	if prepared.Retained {
 		stored, err := reader.PRPublication(ctx, publication.VersionID)
 		if err != nil {
 			return err
 		}
-		expected := prepared.record
+		expected := prepared.Record
 		expected.RecorderAttemptID = stored.RecorderAttemptID
 		if expected != stored {
 			return corestore.ErrRevisionConflict
@@ -131,7 +123,7 @@ func (s *Service) validateTenantPRPublication(ctx context.Context, reader tenant
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(diff, prepared.diff) {
+	if !reflect.DeepEqual(diff, prepared.Diff) {
 		return corestore.ErrRevisionConflict
 	}
 	return nil

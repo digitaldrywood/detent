@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -19,7 +20,7 @@ var errPreviewInputsTooLarge = errors.New("claim preview scheduling inputs excee
 
 type nativeClaimPreviewIssue struct {
 	tracker.NativeIssue
-	Blockers []nativeClaimBlocker `json:"blockers"`
+	Blockers []hubrecords.NativeClaimBlocker `json:"blockers"`
 }
 
 type nativeClaimPreviewPage []byte

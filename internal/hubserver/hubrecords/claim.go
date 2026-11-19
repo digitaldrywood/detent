@@ -105,3 +105,23 @@ type PlacementSnapshot struct {
 type ClaimPlacementSnapshot struct {
 	Snapshot *PlacementSnapshot `json:"-"`
 }
+
+const NativeClaimBlockerLimit = 1
+
+type NativeClaimBlocker struct {
+	Terminal bool `json:"terminal"`
+}
+
+type NativeClaimBlockerSummary struct {
+	Blockers          []NativeClaimBlocker `json:"blockers"`
+	BlockersTruncated bool                 `json:"blockers_truncated,omitempty"`
+	DependencyReady   bool                 `json:"dependency_ready"`
+}
+
+func SummarizeNativeClaimBlockers(open int) NativeClaimBlockerSummary {
+	return NativeClaimBlockerSummary{
+		Blockers:          make([]NativeClaimBlocker, min(open, NativeClaimBlockerLimit)),
+		BlockersTruncated: open > NativeClaimBlockerLimit,
+		DependencyReady:   open == 0,
+	}
+}
