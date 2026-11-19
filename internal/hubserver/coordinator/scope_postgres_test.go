@@ -1,6 +1,7 @@
-package hubserver
+package coordinator
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -9,9 +10,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -22,10 +26,27 @@ import (
 
 func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
+	repository := hubtest.Repository(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := &Service{config: Config{TenantRepository: repository, Clock: func() time.Time { return now }}}
-	coordinator := &conversationTurnCoordinator{server: service, service: &conversationService{Server: service.conversationServer()}}
+	clock := func() time.Time { return now }
+	auth := hubauth.New(hubauth.Deps{Now: clock})
+	authorize := func(ctx context.Context, reader accessstore.Reader, scope hubscope.NativeScope, write bool) error {
+		return auth.Authorize(ctx, reader, conversations.ScopeInput(scope), write)
+	}
+	readTenant := func(ctx context.Context, org tracker.OrganizationID, read func(tenantstore.Reader) error) error {
+		return repository.ReadTenant(ctx, org, corestore.Serving, read)
+	}
+	records := RecordDeps{ReadTenant: readTenant, Authorize: authorize}
+	runnerReads := RunnerDeps{
+		SnapshotAvailable: true,
+		ReadSnapshot:      readTenant,
+		Authorize:         authorize,
+		Now:               clock,
+		View: func(row runnerstore.RoutingRecord, _ time.Time, _ runnerstore.UrgentUpdate) runnerauth.Runner {
+			id := row.Record.Identity
+			return runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: id.RunnerID}, OrganizationID: id.OrganizationID, Routing: runnerauth.Routing{Scope: id.Scope, ProjectIDs: id.ProjectIDs}}
+		},
+	}
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, organization := range organizations {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -36,7 +57,7 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 				return err
 			}
 			for _, project := range []tracker.ProjectID{"project_first", "project_second"} {
-				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Slug: strings.ReplaceAll(string(project), "_", "-"), Profile: "native", CreatedAt: now}, States: nativeFixtureStates()}); err != nil {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Slug: strings.ReplaceAll(string(project), "_", "-"), Profile: "native", CreatedAt: now}, States: hubtest.States()}); err != nil {
 					return err
 				}
 			}
@@ -69,14 +90,14 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 	for _, organization := range organizations {
 		scope := hubscope.NativeScope{Organization: organization, Project: "project_first", Credential: hubapi.APICredential{ID: "owner", Hash: string(organization), Scope: hubapi.APIScopeOperator}}
 		for _, page := range []struct {
-			args coordinatorRunnerArguments
+			args RunnerArguments
 			ids  []string
 		}{
-			{coordinatorRunnerArguments{}, []string{"runner_a", "runner_b"}},
-			{coordinatorRunnerArguments{Limit: 1, Offset: 1}, []string{"runner_b"}},
-			{coordinatorRunnerArguments{RunnerID: "runner_a"}, []string{"runner_a"}},
+			{RunnerArguments{}, []string{"runner_a", "runner_b"}},
+			{RunnerArguments{Limit: 1, Offset: 1}, []string{"runner_b"}},
+			{RunnerArguments{RunnerID: "runner_a"}, []string{"runner_a"}},
 		} {
-			runners, err := service.coordinatorRunners(t.Context(), scope, page.args)
+			runners, err := runnerReads.Runners(t.Context(), scope, page.args)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,12 +110,12 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 				}
 			}
 		}
-		if _, err := service.coordinatorRunner(t.Context(), scope, "runner_foreign"); err == nil {
+		if _, err := runnerReads.Runner(t.Context(), scope, "runner_foreign"); err == nil {
 			t.Fatal("runner from another project was visible")
 		}
-		record := conversationRecord{OrganizationID: organization, ProjectID: scope.Project, Visibility: conversation.VisibilityShared}
+		record := conversations.ConversationRecord{OrganizationID: organization, ProjectID: scope.Project, Visibility: conversation.VisibilityShared}
 		for _, write := range []bool{false, true} {
-			if err := coordinator.authorizeRecord(t.Context(), scope, record, write); err != nil {
+			if err := records.AuthorizeRecord(t.Context(), scope, record, write); err != nil {
 				t.Fatalf("same scope %s write=%t: %v", organization, write, err)
 			}
 			for _, other := range organizations {
@@ -104,14 +125,14 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 				foreign := record
 				foreign.OrganizationID = other
 				var refusal *hubapi.NativeError
-				if err := coordinator.authorizeRecord(t.Context(), scope, foreign, write); !errors.As(err, &refusal) || refusal.Code != "not_found" {
+				if err := records.AuthorizeRecord(t.Context(), scope, foreign, write); !errors.As(err, &refusal) || refusal.Code != "not_found" {
 					t.Errorf("foreign organization %s write=%t: %v", other, write, err)
 				}
 			}
 			foreign := record
 			foreign.ProjectID = "project_second"
 			var refusal *hubapi.NativeError
-			if err := coordinator.authorizeRecord(t.Context(), scope, foreign, write); !errors.As(err, &refusal) || refusal.Code != "not_found" {
+			if err := records.AuthorizeRecord(t.Context(), scope, foreign, write); !errors.As(err, &refusal) || refusal.Code != "not_found" {
 				t.Errorf("foreign project %s write=%t: %v", organization, write, err)
 			}
 		}
