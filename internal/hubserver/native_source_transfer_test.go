@@ -36,7 +36,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 		sameRunner, advanced                                                 bool
 		hosted                                                               bool
 		replacement, stopped, acknowledged                                   bool
-		worker, retired, restart                                             bool
+		worker, retired, restart, revoked                                    bool
 	}{
 		{name: "transfer retains a nondispatchable lane and human label", held: true, released: true, status: http.StatusOK},
 		{name: "transfer and duplicate request", released: true, status: http.StatusOK},
@@ -54,7 +54,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 		{name: "worker without receipt before checkpoint and release", worker: true, running: true, released: true, status: http.StatusUnprocessableEntity},
 		{name: "worker retired and attempt cleanup acknowledged", worker: true, retired: true, stopped: true, running: true, acknowledged: true, status: http.StatusOK},
 		{name: "worker outstanding after attempt cleanup acknowledged", worker: true, stopped: true, running: true, acknowledged: true, status: http.StatusUnprocessableEntity},
-		{name: "worker outstanding after terminal release", worker: true, released: true, status: http.StatusUnprocessableEntity},
+		{name: "recover published source after runner revocation", worker: true, released: true, revoked: true, status: http.StatusOK},
 		{name: "released selected running attempt", running: true, released: true, status: http.StatusUnprocessableEntity},
 		{name: "active execution", running: true, status: http.StatusUnprocessableEntity},
 		{name: "hosted recovery explains active execution", running: true, hosted: true, status: http.StatusUnprocessableEntity},
@@ -394,7 +394,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 			var observed sourceRecoveryView
 			decodeHubResponse(t, recoveryRead, &observed)
 			if test.worker {
-				if observed.Quiesced != (test.status == http.StatusOK) {
+				if !test.revoked && observed.Quiesced != (test.status == http.StatusOK) {
 					t.Errorf("source recovery quiesced = %t, transfer should return %d", observed.Quiesced, test.status)
 				}
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(a.binding.MachineID)+"/heartbeat?attempt_worker_after=", a.redemption.Credential, struct{}{})
@@ -434,6 +434,12 @@ func TestNativeSourceTransfer(t *testing.T) {
 			token := testHubAdminToken
 			if test.denied {
 				token = f.token
+			}
+			if test.revoked {
+				runnerPath := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runners/" + a.binding.RunnerID
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, runnerPath, testHubAdminToken, nil), http.StatusNoContent)
+				foreign := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign-source")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.path+"/versions/"+version.ID+"/source", foreign.token, nil), http.StatusUnauthorized)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/source-recovery", token, request)
 			if response.Code >= 500 {
@@ -708,7 +714,22 @@ func TestNativeSourceTransfer(t *testing.T) {
 				return
 			}
 			claim.MachineID, claim.SessionID = b.binding.MachineID, "destination"
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", b.redemption.Credential, claim), http.StatusOK)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", b.redemption.Credential, claim)
+			requireNativeStatus(t, response, http.StatusOK)
+			if test.revoked {
+				var replacement tracker.NativeLease
+				decodeHubResponse(t, response, &replacement)
+				if replacement.WorkItemID != lease.WorkItemID || replacement.FencingToken <= lease.FencingToken {
+					t.Fatalf("replacement lease does not own the work item with a fresh fence: %+v", replacement)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/validate", b.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken}), http.StatusOK)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, f.path+"/versions/"+version.ID+"/source", b.redemption.Credential, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				if !bytes.Equal(response.Body.Bytes(), bundle) {
+					t.Fatal("replacement runner restored different source")
+				}
+				return
+			}
 			event.IdempotencyKey, event.Data.Sequence = "late-owner", 4
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusConflict)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", a.redemption.Credential, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "late-publication", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedVersionID: version.ID, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusConflict)
