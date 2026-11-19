@@ -508,10 +508,6 @@ func TestReadPoolExhaustionReturnsLoggedDeadline(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 }
 
-func installReadQueryCounter(config *pgxpool.Config) {
-	config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, entryKeyBoardTrace{})
-}
-
 type auditDeadlineTrace struct{ inserts, bounded *atomic.Int64 }
 
 func (trace auditDeadlineTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {

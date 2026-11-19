@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,8 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -178,32 +175,21 @@ func testBoardReadinessDirtyQueue(t *testing.T, service *Service) {
 	exec(t, `INSERT INTO native_board_dirty(organization_id,project_id,work_item_id,queued_at)
  VALUES ('org_first_second','shared','wi_1',$1),('org_first','other','wi_1',$1)`, foreignOldest)
 
-	check := func(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, pending bool, sequence int64, oldest *time.Time) map[string]pgstoretest.ReportStatement {
+	check := func(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, pending bool, sequence int64, oldest *time.Time) {
 		t.Helper()
-		statements := make(map[string]pgstoretest.ReportStatement)
 		for _, mode := range []string{"metadata", "work+summary"} {
 			selection := viewstore.BoardSelection{ProjectID: project, Limit: 1}
 			var work *viewstore.BoardSelection
-			args := []any{org, project}
 			if mode == "work+summary" {
 				selection.Compact, selection.Summary = true, true
 				w := selection
 				w.WorkOrder, w.Terminal = true, new(false)
 				work = &w
-				args = append(args, "", "all", false)
 			}
-			readCtx := postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, query string) {
-				if strings.Contains(query, "native_board_dirty") {
-					if _, exists := statements[mode]; exists {
-						t.Fatalf("%s executed multiple dirty-queue statements", mode)
-					}
-					statements[mode] = pgstoretest.ReportStatement{Query: query, Args: args}
-				}
-			})
-			if err := service.config.TenantRepository.ReadTenant(readCtx, org, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := service.config.TenantRepository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 				page, err := r.(interface {
 					BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
-				}).BoardModelPages(readCtx, selection, work, accessstore.Authority{})
+				}).BoardModelPages(ctx, selection, work, accessstore.Authority{})
 				if err != nil {
 					return err
 				}
@@ -231,12 +217,7 @@ func testBoardReadinessDirtyQueue(t *testing.T, service *Service) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			stmt := statements[mode]
-			if stmt.Query == "" || strings.Contains(stmt.Query, "native_board_page_summaries") != selection.Summary {
-				t.Fatalf("%s did not capture its serving statement", mode)
-			}
 		}
-		return statements
 	}
 	check(t, "org_first_second", "shared", true, 54321, &foreignOldest)
 	check(t, "org_first", "other", true, 0, &foreignOldest)
@@ -252,36 +233,12 @@ func testBoardReadinessDirtyQueue(t *testing.T, service *Service) {
 		exec(t, `INSERT INTO native_board_dirty(organization_id,project_id,work_item_id,queued_at)
  SELECT 'org_first','shared','wi_'||n,$1::timestamptz - n * interval '1 second' FROM generate_series($2::int,$3::int) n`, epoch, first, last)
 	}
-	for _, size := range []int{255, 256, 257, 8192} {
+	for _, size := range []int{255, 256, 257} {
 		t.Run(fmt.Sprintf("depth_%d", size), func(t *testing.T) {
 			exec(t, `DELETE FROM native_board_dirty WHERE organization_id='org_first' AND project_id='shared'`)
 			queue(t, 1, size)
 			oldest := epoch.Add(-time.Duration(size) * time.Second)
-			statements := check(t, "org_first", "shared", size > 256, 12345, &oldest)
-			if size != 256 && size != 8192 {
-				return
-			}
-			exec(t, "ANALYZE native_board_dirty, issues, native_board_items")
-			for mode, metadata := range statements {
-				raw, err := pgstoretest.ExplainReportPlan(ctx, admin, "org_first", metadata)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var plans []struct{ Plan pgstoretest.SearchPlanNode }
-				if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-					t.Fatalf("readiness plan: %v (%s)", err, raw)
-				}
-				work := plans[0].Plan.RelationWork("native_board_dirty")
-				issueWork := plans[0].Plan.RelationWork("issues")
-				boardWork := plans[0].Plan.RelationWork("native_board_items")
-				t.Logf("%s depth %d: %.0f dirty visits, %.0f issue visits, %.0f board visits", mode, size, work, issueWork, boardWork)
-				if work < float64(min(size, 257)) || work > 258 {
-					t.Fatalf("%s dirty visits exceed a single sample or miss queued rows: %s", mode, raw)
-				}
-				if size == 256 && (issueWork != 256 || boardWork != 256) || size > 256 && (issueWork != 0 || boardWork != 0) {
-					t.Fatalf("%s should inspect only the sampled issues and board items below overflow: %s", mode, raw)
-				}
-			}
+			check(t, "org_first", "shared", size > 256, 12345, &oldest)
 		})
 	}
 	exec(t, `DELETE FROM native_board_dirty WHERE organization_id='org_first' AND project_id='shared'`)

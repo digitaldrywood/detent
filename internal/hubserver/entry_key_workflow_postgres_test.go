@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,8 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/multitracer"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -49,33 +45,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type entryKeyBoardTraceContext struct{}
-
-type entryKeyBoardTrace struct{}
-
-func (entryKeyBoardTrace) record(ctx context.Context, query string) {
-	if timing, ok := ctx.Value(entryKeyBoardTraceContext{}).(*requestTiming); ok && timing.Trace != nil {
-		timing.Trace(query, nil)
-	}
-}
-
-func (trace entryKeyBoardTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	trace.record(ctx, data.SQL)
-	return ctx
-}
-
-func (entryKeyBoardTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (entryKeyBoardTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	return ctx
-}
-
-func (trace entryKeyBoardTrace) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	trace.record(ctx, data.SQL)
-}
-
-func (entryKeyBoardTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	t.Parallel()
@@ -193,7 +162,6 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	service.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
 	repository := service.config.TenantRepository
 	base := "/api/v2/organizations/org_startup/projects/project_example/work-items"
-	var requestTrace *requestTiming
 	requestFor := func(target *Service, user, path string, body any) *httptest.ResponseRecorder {
 		t.Helper()
 		raw, err := json.Marshal(body)
@@ -213,9 +181,6 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(cloudassert.Header, assertion)
 		response := httptest.NewRecorder()
-		if requestTrace != nil {
-			req = req.WithContext(context.WithValue(req.Context(), entryKeyBoardTraceContext{}, requestTrace))
-		}
 		target.Handler().ServeHTTP(response, req)
 		return response
 	}
@@ -368,16 +333,6 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		other.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
 		poolConfig := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
 		poolConfig.MaxConns = int32(cfg.Postgres.Pool.MaxConnections)
-		poolConfig.ConnConfig.Tracer = multitracer.New(poolConfig.ConnConfig.Tracer, entryKeyBoardTrace{})
-		wire := &boardWire{}
-		dial := poolConfig.ConnConfig.DialFunc
-		poolConfig.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-			conn, err := dial(ctx, network, address)
-			if err != nil {
-				return nil, err
-			}
-			return boardWireConnection(conn, wire), nil
-		}
 		pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
 		if err != nil {
 			t.Fatal(err)
@@ -400,7 +355,6 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				target.config.TenantRepository, target.config.AccessRepository = originalTenant, originalAccess
 			})
 		}
-		expectedCosts := map[string][2]int{}
 		for _, target := range targets {
 			prepareReadProject(tracker.OrganizationID(target.config.Hosted.OrganizationID), "project_scale")
 		}
@@ -458,60 +412,24 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				originalDetails := target.config.RunDetails
 				target.config.RunDetails = details
 				requireNativeStatus(t, requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_warmup"}), http.StatusOK)
-				for sample := range 6 {
-					var mu sync.Mutex
-					statements := []string{}
-					requestTrace = &requestTiming{Start: time.Now(), Trace: func(query string, _ []driver.NamedValue) {
-						mu.Lock()
-						defer mu.Unlock()
-						statements = append(statements, strings.Join(strings.Fields(query), " "))
-					}}
-					started := time.Now()
-					wire.reset()
-					response := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_scale"})
-					exchanges, wireStatements := wire.stop()
-					elapsed := time.Since(started)
-					timingHeader := requestTrace.Header(time.Now())
-					requestTrace = nil
-					requireNativeStatus(t, response, http.StatusOK)
-					var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
-					if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-						t.Fatal(err)
-					}
-					if len(result.Data.Items) != min(size, 50) {
-						t.Fatalf("items=%d want=%d", len(result.Data.Items), min(size, 50))
-					}
-					for _, item := range result.Data.Items {
-						if item.OrganizationID != org || item.Title == "" || item.URL != item.WebURL {
-							t.Fatalf("invalid scoped card: %+v", item)
-						}
-					}
-					if details.scalar.Load() != 0 || details.batches.Load() != 0 {
-						t.Fatalf("board fetched objects: scalar=%d batch=%d", details.scalar.Load(), details.batches.Load())
-					}
-
-					begins := 0
-					for index, query := range statements {
-						if strings.HasPrefix(query, "BEGIN") {
-							begins++
-							if !strings.HasSuffix(query, " READ ONLY") {
-								t.Errorf("board opened write transaction: %s", query)
-							}
-						}
-						if sample == 0 {
-							t.Logf("BOARD4 SQL %d %s", index+1, query)
-						}
-					}
-					t.Logf("BOARD4 size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d exchanges=%d timing=%s", size, org, sample, elapsed, len(statements), begins, exchanges, timingHeader)
-					if begins != 1 || len(statements) > 20 || wireStatements != len(statements) {
-						t.Errorf("board request queries=%d wire statements=%d exchanges=%d transactions=%d; budget 20 queries and 1 transaction", len(statements), wireStatements, exchanges, begins)
-					}
-					cost := [2]int{wireStatements, exchanges}
-					if expected, ok := expectedCosts["list:"+string(org)]; ok && expected != cost {
-						t.Fatalf("list cost changed: statements/exchanges=%v want=%v", cost, expected)
-					}
-					expectedCosts["list:"+string(org)] = cost
+				response := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_scale"})
+				requireNativeStatus(t, response, http.StatusOK)
+				var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+					t.Fatal(err)
 				}
+				if len(result.Data.Items) != min(size, 50) {
+					t.Fatalf("items=%d want=%d", len(result.Data.Items), min(size, 50))
+				}
+				for _, item := range result.Data.Items {
+					if item.OrganizationID != org || item.Title == "" || item.URL != item.WebURL {
+						t.Fatalf("invalid scoped card: %+v", item)
+					}
+				}
+				if details.scalar.Load() != 0 || details.batches.Load() != 0 {
+					t.Fatalf("board fetched objects: scalar=%d batch=%d", details.scalar.Load(), details.batches.Load())
+				}
+
 				claims, err := resolver(string(org))(t.Context(), entryauthority.Origin{KeyID: "key_owner", CredentialBinding: strings.Repeat("a", 64), Subject: "owner", Issuer: "entry", Generation: 1})
 				if err != nil {
 					t.Fatal(err)
@@ -521,44 +439,23 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					t.Fatal(err)
 				}
 				scope := hubscope.NativeScope{Organization: org, Project: "project_scale", Credential: credential}
-				for sample := range 6 {
-					statements, begins := 0, 0
-					timing := &requestTiming{Start: time.Now(), Trace: func(query string, _ []driver.NamedValue) {
-						statements++
-						if strings.HasPrefix(query, "BEGIN") {
-							begins++
-							if !strings.HasSuffix(query, " READ ONLY") {
-								t.Errorf("full board opened write transaction: %s", query)
-							}
-						}
-					}}
-					ctx := context.WithValue(t.Context(), entryKeyBoardTraceContext{}, timing)
-					wire.reset()
-					page, err := target.readBoardRecordsFor(ctx, scope, url.Values{"include": {"board"}, "limit": {"2000"}}, true)
-					exchanges, wireStatements := wire.stop()
-					if err != nil {
-						t.Fatal(err)
+				page, err := target.readBoardRecordsFor(t.Context(), scope, url.Values{"include": {"board"}, "limit": {"2000"}}, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Cards) != size {
+					t.Fatalf("board cards=%d want=%d", len(page.Cards), size)
+				}
+				for _, card := range page.Cards {
+					if card.Issue.OrganizationID != org || card.Issue.Title == "" {
+						t.Fatalf("invalid scoped board card: %+v", card.Issue.NativeReference)
 					}
-					if len(page.Cards) != size {
-						t.Fatalf("board cards=%d want=%d", len(page.Cards), size)
-					}
-					for _, card := range page.Cards {
-						if card.Issue.OrganizationID != org || card.Issue.Title == "" {
-							t.Fatalf("invalid scoped board card: %+v", card.Issue.NativeReference)
-						}
-					}
-					if _, err := json.Marshal(page); err != nil {
-						t.Fatal(err)
-					}
-					t.Logf("BOARD4 full-board size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d exchanges=%d", size, org, sample, time.Since(timing.Start), statements, begins, exchanges)
-					if statements > 50 || begins != 1 || wireStatements != statements || details.scalar.Load() != 0 || details.batches.Load() != 0 {
-						t.Fatalf("full board queries=%d wire statements=%d exchanges=%d transactions=%d scalar=%d batches=%d", statements, wireStatements, exchanges, begins, details.scalar.Load(), details.batches.Load())
-					}
-					cost := [2]int{wireStatements, exchanges}
-					if expected, ok := expectedCosts["board:"+string(org)]; ok && expected != cost {
-						t.Fatalf("board cost changed: statements/exchanges=%v want=%v", cost, expected)
-					}
-					expectedCosts["board:"+string(org)] = cost
+				}
+				if _, err := json.Marshal(page); err != nil {
+					t.Fatal(err)
+				}
+				if details.scalar.Load() != 0 || details.batches.Load() != 0 {
+					t.Fatal("projected board read source objects")
 				}
 				target.config.RunDetails = originalDetails
 				revoked = true

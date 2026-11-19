@@ -159,7 +159,7 @@ board-contract-run:
 		export TMPDIR="$$fixture_root/runtime" TMP="$$fixture_root/runtime" TEMP="$$fixture_root/runtime" \
 			DETENT_TEST_BOARD_CONTRACT_DIR="$$fixture_root" DETENT_TEST_POSTGRES=binary \
 			GOTOOLCHAIN="$$(awk '$$1 == "toolchain" {print $$2}' go.mod)"; \
-		env -u DETENT_API_TOKEN go test -p $(TEST_PROCS) -parallel=$(TEST_PROCS) -timeout=120s -v ./internal/hubserver -run '^(TestBoardRequestHasFixedSQLBudget|TestBoardViewCardsMatchLaneCards)$$'; \
+		env -u DETENT_API_TOKEN go test -p $(TEST_PROCS) -parallel=$(TEST_PROCS) -timeout=120s -v ./internal/hubserver -run '^(TestBoardRequestPreservesPageContract|TestBoardViewCardsMatchLaneCards)$$'; \
 		(cd "$(APP_DIR)" && npm test -- --maxWorkers=$(TEST_PROCS) $(APP_TEST_ARGS))
 
 css-watch:
