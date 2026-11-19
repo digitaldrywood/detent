@@ -104,7 +104,7 @@ func TestNativeResourceAuthorizationSetsTenantScope(t *testing.T) {
 				t.Error("unauthorized handler was called")
 				return c.NoContent(http.StatusNoContent)
 			}, service.Deps.Native(hubauth.Operator))
-			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v2/organizations/"+test.organization+"/work-items/wi_example", nil)
+			request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v2/organizations/"+test.organization+"/work-items/wi_example", nil)
 			request.Header.Set(echo.HeaderAuthorization, "Bearer "+test.token)
 			response := httptest.NewRecorder()
 			e.ServeHTTP(response, request)
