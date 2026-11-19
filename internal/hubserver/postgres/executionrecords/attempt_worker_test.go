@@ -34,7 +34,7 @@ func TestAttemptWorkerInventory(t *testing.T) {
 			if err := w.RegisterMachine(ctx, leasestore.Machine{OrganizationID: org, ID: "machine_1", Hostname: "example", Capacity: 3, Version: "example"}); err != nil {
 				return err
 			}
-			itemIDs := []int64{3, 4, 5}
+			itemIDs := []int64{3, 4, 5, 6}
 			if i == 0 {
 				for peer := range runnerauth.AttemptWorkerPageSize {
 					itemIDs = append(itemIDs, int64(10+peer))
@@ -59,7 +59,7 @@ func TestAttemptWorkerInventory(t *testing.T) {
 			}
 			lease := pgstoretest.ClaimLease(t, repository, org, claim)
 			event := pgstoretest.AttemptEvent(lease)
-			event.WorkerCleanupRequired = new(false)
+			event.WorkerCleanupRequired = new(id >= 6)
 			if typed {
 				pid := int32(100*i) + int32(id)
 				event.Worker = &tracker.NativeAttemptWorker{PID: pid, PGID: pid, StartedAt: lease.AcquiredAt.Truncate(time.Microsecond), StartKey: fmt.Sprintf("birth-%d-%d", i, id)}
@@ -210,6 +210,22 @@ func TestAttemptWorkerInventory(t *testing.T) {
 			for peerIndex := range runnerauth.AttemptWorkerPageSize {
 				makeAttempt(int64(10+peerIndex), "peer", "machine_2", true)
 			}
+			legacyRelease, legacyOwner := makeAttempt(6, "runner", "machine_1", false)
+			if err := write(func(w tenantstore.Writer) error {
+				_, err := w.Release(ctx, pgstoretest.LeaseFence(legacyRelease), "released")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.(runnerstore.ClaimStateReader).RunnerClaimState(ctx, "runner", project, "", runnerauth.AttemptWorkerPageSize, newLease.AcquiredAt)
+				if err == nil && (len(page.Candidates) != 1 || page.Candidates[0].AttemptID != legacyOwner.ID || page.Next != "") {
+					t.Fatalf("typed peers hid released legacy owner: %+v", page)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			page := readLimit("runner", "machine_1", "", runnerauth.AttemptWorkerPageSize, newLease.AcquiredAt)
 			if len(page.Workers) != 3 || page.Workers[0].AttemptID != event.ID || page.Workers[1].AttemptID != live.ID || page.Workers[2].AttemptID != legacy.ID || page.Next != "" {
 				t.Fatalf("full peer page hid runner's own inventory: %+v", page)
@@ -222,7 +238,7 @@ func TestAttemptWorkerInventory(t *testing.T) {
 				return err
 			}
 			attempt, err := w.Attempt(ctx, event.ID)
-			if err == nil && (attempt.CleanupAcknowledgedAt == nil || attempt.Status != "succeeded" || attempt.Sequence != finished.Sequence) {
+			if err == nil && (attempt.CleanupAcknowledgedAt != nil || attempt.Status != "succeeded" || attempt.Sequence != finished.Sequence) {
 				t.Fatalf("retirement changed the terminal attempt: %+v", attempt)
 			}
 			return err

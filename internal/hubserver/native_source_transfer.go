@@ -220,7 +220,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 		attempt := snapshot.attempt.Attempt
 		unacknowledged := run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release" && attempt.CleanupAcknowledgedAt == nil
 		interrupted = snapshot.attempt.Lease.ReleasedAt != nil && unacknowledged
-		view.Quiesced = snapshot.attempt.Lease.ReleasedAt != nil && !unacknowledged && (attempt.Status == "succeeded" || attempt.Status == "failed" || attempt.Status == "cancelled")
+		view.Quiesced = snapshot.attempt.Lease.ReleasedAt != nil && !unacknowledged && attempt.SourceExecutionFinished()
 	}
 	if snapshot.version != nil {
 		row := *snapshot.version

@@ -147,8 +147,8 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope hubscop
 		if attempt.Sequence != snapshot.Attempt.Sequence || attempt.PayloadObjectKey != snapshot.Attempt.PayloadObjectKey || attempt.LeaseID != snapshot.Attempt.LeaseID || attempt.FencingToken != snapshot.Attempt.FencingToken {
 			return hubapi.NativeConflict(view.Revision - 1)
 		}
-		if attempt.Status != "succeeded" && attempt.Status != "failed" && attempt.Status != "cancelled" {
-			return sourceRecoveryRefusal("Source execution must be terminal")
+		if !attempt.SourceExecutionFinished() {
+			return sourceRecoveryRefusal("Source execution must be terminal with all registered workers retired")
 		}
 		locker, ok := w.(leasestore.UnreleasedIssueLeaseLocker)
 		if !ok {

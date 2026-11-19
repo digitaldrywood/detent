@@ -2233,6 +2233,7 @@ type NativeAttempt struct {
 	WorkerStartedAt                    *time.Time
 	WorkerStartKey                     *string
 	WorkerRunnerID                     *string
+	WorkerRetiredAt                    *time.Time
 }
 
 type NativeAttemptEvent struct {

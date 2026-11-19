@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -634,8 +635,33 @@ type NativeAttemptWorker struct {
 	StartKey  string    `json:"start_key"`
 }
 
+var submicrosecondWorkerStart = regexp.MustCompile(`[.,][0-9]{6}0*[1-9]`)
+
+func (w *NativeAttemptWorker) UnmarshalJSON(data []byte) error {
+	type fields NativeAttemptWorker
+	var wire struct {
+		fields
+		StartedAt json.RawMessage `json:"started_at"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	if submicrosecondWorkerStart.Match(wire.StartedAt) {
+		return errors.New("worker start time exceeds microsecond precision")
+	}
+	if err := json.Unmarshal(wire.StartedAt, &wire.fields.StartedAt); err != nil {
+		return err
+	}
+	*w = NativeAttemptWorker(wire.fields)
+	return nil
+}
+
 func (w NativeAttemptWorker) Valid() bool {
-	return w.PID > 0 && w.PGID > 0 && !w.StartedAt.IsZero() && len(w.StartKey) <= MaxAttemptWorkerStartKeyBytes && strings.TrimSpace(w.StartKey) != ""
+	year := w.StartedAt.UTC().Year()
+	return w.PID > 0 && w.PGID > 0 && !w.StartedAt.IsZero() && year >= 0 && year <= 9999 &&
+		w.StartedAt.Nanosecond()%int(time.Microsecond) == 0 && len(w.StartKey) <= MaxAttemptWorkerStartKeyBytes && strings.TrimSpace(w.StartKey) != ""
 }
 
 type NativeRunData struct {

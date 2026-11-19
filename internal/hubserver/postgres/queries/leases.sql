@@ -161,11 +161,11 @@ worker_start_key=COALESCE(sqlc.narg(worker_start_key)::text,worker_start_key),
 worker_runner_id=CASE WHEN sqlc.narg(worker_pid)::integer IS NOT NULL AND worker_runner_id IS NULL
  THEN (SELECT a.runner_id FROM runner_lease_assignments a WHERE a.organization_id=native_attempts.organization_id AND a.lease_id=native_attempts.lease_id)
  ELSE worker_runner_id END,
-cleanup_acknowledged_at=CASE
+worker_retired_at=CASE
  WHEN sqlc.narg(worker_pid)::integer IS NOT NULL AND ROW(worker_pid,worker_pgid,worker_started_at,worker_start_key) IS DISTINCT FROM
       ROW(sqlc.narg(worker_pid)::integer,sqlc.narg(worker_pgid)::integer,sqlc.narg(worker_started_at)::timestamptz,sqlc.narg(worker_start_key)::text) THEN NULL
- WHEN sqlc.arg(termination)::boolean AND worker_pid IS NULL THEN sqlc.arg(now)
- ELSE cleanup_acknowledged_at END,
+ ELSE worker_retired_at END,
+cleanup_acknowledged_at=CASE WHEN sqlc.arg(termination)::boolean THEN sqlc.arg(now) ELSE cleanup_acknowledged_at END,
 status=CASE WHEN sqlc.arg(usage_correction)::boolean THEN status ELSE sqlc.arg(status) END,
 payload_object_key=sqlc.arg(payload_object_key),
 checkpoint_object_key=COALESCE(sqlc.narg(checkpoint_object_key),checkpoint_object_key),
@@ -211,7 +211,7 @@ WHERE native_attempts.organization_id=sqlc.arg(organization_id) AND native_attem
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND run_id=sqlc.arg(run_id)
 AND (sqlc.arg(local_attempt_id)::bigint=0 OR local_attempt_id IS NULL OR local_attempt_id=sqlc.arg(local_attempt_id))
 AND dispatch_generation=sqlc.arg(dispatch_generation) AND sequence=sqlc.arg(next_sequence)-1
-AND (sqlc.narg(worker_pid)::integer IS NULL OR worker_pid IS NULL OR cleanup_acknowledged_at IS NOT NULL
+AND (sqlc.narg(worker_pid)::integer IS NULL OR worker_pid IS NULL OR worker_retired_at IS NOT NULL
  OR ROW(worker_pid,worker_pgid,worker_started_at,worker_start_key) IS NOT DISTINCT FROM
     ROW(sqlc.narg(worker_pid)::integer,sqlc.narg(worker_pgid)::integer,sqlc.narg(worker_started_at)::timestamptz,sqlc.narg(worker_start_key)::text))
 AND (status='running' OR status='interrupted' AND sqlc.arg(status)='running' OR sqlc.arg(usage_correction)::boolean AND status=sqlc.arg(status) OR sqlc.arg(termination)::boolean AND status IN ('interrupted','cancelled') AND sqlc.arg(status)='cancelled')
@@ -339,7 +339,7 @@ SELECT id,false AS coverage_unknown FROM matches
 UNION ALL SELECT '' AS id,coverage_unknown FROM unprojected;
 
 -- name: AcknowledgeAttemptWorker :one
-UPDATE native_attempts n SET cleanup_acknowledged_at=coalesce(n.cleanup_acknowledged_at,sqlc.arg(acknowledged_at)::timestamptz)
+UPDATE native_attempts n SET worker_retired_at=coalesce(n.worker_retired_at,sqlc.arg(acknowledged_at)::timestamptz)
 FROM leases l, runner_lease_assignments a, work_item_identities i
 WHERE n.organization_id=sqlc.arg(organization_id) AND n.project_id=sqlc.arg(project_id) AND n.id=sqlc.arg(attempt_id)
 AND n.lease_id=sqlc.arg(lease_id) AND n.fencing_token=sqlc.arg(fencing_token) AND n.worker_runner_id=sqlc.arg(runner_id)

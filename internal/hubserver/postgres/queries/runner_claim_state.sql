@@ -7,15 +7,15 @@ ORDER BY l.lease_id LIMIT 10001;
 
 -- name: RunnerReleasedAttemptCandidates :many
 WITH page AS MATERIALIZED (
-SELECT n.id,n.issue_id,n.lease_id,n.status,n.cleanup_acknowledged_at,n.worker_cleanup_required,n.runtime_summary_sequence,n.sequence,n.fencing_token,n.worker_pid FROM native_attempts n
+SELECT n.id,n.issue_id,n.lease_id,n.worker_cleanup_required,n.runtime_summary_sequence,n.sequence,n.fencing_token FROM native_attempts n
 WHERE n.organization_id=sqlc.arg(organization_id) AND n.project_id=sqlc.arg(project_id) AND n.id>sqlc.arg(after_id)
-AND n.cleanup_acknowledged_at IS NULL AND n.status IN ('running','interrupted','cancelled') AND (n.worker_cleanup_required IS DISTINCT FROM FALSE OR n.runtime_summary_sequence IS DISTINCT FROM n.sequence)
+AND n.worker_pid IS NULL AND n.cleanup_acknowledged_at IS NULL AND n.status IN ('running','interrupted','cancelled') AND (n.worker_cleanup_required IS DISTINCT FROM FALSE OR n.runtime_summary_sequence IS DISTINCT FROM n.sequence)
 ORDER BY n.id LIMIT sqlc.arg(page_size)
 )
 SELECT page.id AS scanned_id,
 CASE WHEN i.project_id=sqlc.arg(project_id) AND a.runner_id=sqlc.arg(runner_id)
 AND l.machine_id=sqlc.arg(machine_id) AND l.issue_id=page.issue_id AND l.fencing_token=page.fencing_token
-AND page.worker_pid IS NULL AND (page.worker_cleanup_required IS DISTINCT FROM FALSE OR page.runtime_summary_sequence IS DISTINCT FROM page.sequence) AND l.released_at IS NOT NULL AND page.cleanup_acknowledged_at IS NULL AND page.status IN ('running','interrupted','cancelled')
+AND l.released_at IS NOT NULL
 THEN i.native_id ELSE '' END::text AS work_item_id,
 COALESCE(page.worker_cleanup_required AND page.runtime_summary_sequence=page.sequence,false)::boolean AS cleanup_known
 FROM page
@@ -33,7 +33,7 @@ WITH page AS MATERIALIZED (
  SELECT n.id,n.issue_id,n.lease_id,n.fencing_token,n.worker_pid,n.worker_pgid,n.worker_started_at,n.worker_start_key
  FROM native_attempts n
  WHERE n.organization_id=sqlc.arg(organization_id) AND n.project_id=sqlc.arg(project_id) AND n.worker_runner_id=sqlc.arg(runner_id)
- AND n.worker_pid IS NOT NULL AND n.cleanup_acknowledged_at IS NULL AND n.id>sqlc.arg(after_id)
+ AND n.worker_pid IS NOT NULL AND n.worker_retired_at IS NULL AND n.id>sqlc.arg(after_id)
  ORDER BY n.id LIMIT sqlc.arg(page_size)
 )
 SELECT page.id,i.native_id AS work_item_id,page.lease_id,page.fencing_token,l.machine_id,l.expires_at,

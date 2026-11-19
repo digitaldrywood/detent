@@ -19,6 +19,8 @@ func TestAttemptWorkerIdentityMigration(t *testing.T) {
 	lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
 	event := pgstoretest.AttemptEvent(lease)
 	pgstoretest.RecordLeaseAttempt(t, repository, org, event)
+	other := pgstoretest.AttemptEvent(pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(2)))
+	pgstoretest.RecordLeaseAttempt(t, repository, org, other)
 
 	ctx := t.Context()
 	provider, err := pgstoretest.MigrationProvider(db)
@@ -59,13 +61,48 @@ func TestAttemptWorkerIdentityMigration(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE native_attempts SET worker_pid=1,worker_pgid=2,worker_started_at=now(),worker_start_key=repeat('é',64),worker_runner_id='runner' WHERE organization_id=$1 AND id=$2`, org, event.ID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.ExecContext(ctx, `UPDATE native_attempts SET cleanup_acknowledged_at=now() WHERE organization_id=$1 AND id=$2`, org, event.ID); err != nil {
+		t.Fatal(err)
+	}
+	const retirement = 20261119062927
+	if _, err := provider.UpTo(ctx, retirement); err != nil {
+		t.Fatal(err)
+	}
+	var pending, legacySeek, typedSeek bool
+	err = db.QueryRowContext(ctx, `SELECT worker_retired_at IS NULL AND cleanup_acknowledged_at IS NULL AND worker_pid=1,
+		(SELECT indexdef LIKE '%worker_pid IS NULL%' FROM pg_indexes WHERE indexname='native_attempts_pending_cleanup_idx'),
+		(SELECT indexdef LIKE '%worker_retired_at IS NULL%' FROM pg_indexes WHERE indexname='native_attempts_worker_inventory_idx')
+		FROM native_attempts WHERE organization_id=$1 AND id=$2`, org, event.ID).Scan(&pending, &legacySeek, &typedSeek)
+	if err != nil || !pending || !legacySeek || !typedSeek {
+		t.Fatalf("upgraded owner pending=%t legacy seek=%t worker seek=%t: %v", pending, legacySeek, typedSeek, err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE native_attempts SET cleanup_acknowledged_at=now() WHERE organization_id=$1 AND id=$2`, org, event.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE native_attempts SET worker_pid=2,worker_pgid=2,worker_started_at=now(),worker_start_key='second-worker',worker_runner_id='runner',worker_retired_at=now(),cleanup_acknowledged_at=now() WHERE organization_id=$1 AND id=$2`, org, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, version); err != nil {
+		t.Fatal(err)
+	}
+	err = db.QueryRowContext(ctx, `SELECT cleanup_acknowledged_at IS NULL AND worker_pid=1,
+		(SELECT indexdef NOT LIKE '%worker_pid%' FROM pg_indexes WHERE indexname='native_attempts_pending_cleanup_idx'),
+		(SELECT indexdef LIKE '%cleanup_acknowledged_at IS NULL%' FROM pg_indexes WHERE indexname='native_attempts_worker_inventory_idx')
+		FROM native_attempts WHERE organization_id=$1 AND id=$2`, org, event.ID).Scan(&pending, &legacySeek, &typedSeek)
+	if err != nil || !pending || !legacySeek || !typedSeek {
+		t.Fatalf("rollback owner pending=%t legacy seek=%t worker seek=%t: %v", pending, legacySeek, typedSeek, err)
+	}
+	var acknowledged bool
+	if err := db.QueryRowContext(ctx, `SELECT cleanup_acknowledged_at IS NOT NULL FROM native_attempts WHERE organization_id=$1 AND id=$2`, org, other.ID).Scan(&acknowledged); err != nil || !acknowledged {
+		t.Fatalf("rollback lost acknowledged attempt with retired worker: %t, %v", acknowledged, err)
+	}
 	if _, err := provider.DownTo(ctx, previous); err != nil {
 		t.Fatal(err)
 	}
 	var attempt, columns, indexes int
 	err = db.QueryRowContext(ctx, `SELECT
 		(SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND id=$2 AND sequence=1),
-		(SELECT count(*) FROM pg_attribute WHERE attrelid='native_attempts'::regclass AND NOT attisdropped AND attname IN ('worker_pid','worker_pgid','worker_started_at','worker_start_key','worker_runner_id')),
+		(SELECT count(*) FROM pg_attribute WHERE attrelid='native_attempts'::regclass AND NOT attisdropped AND attname IN ('worker_pid','worker_pgid','worker_started_at','worker_start_key','worker_runner_id','worker_retired_at')),
 		(SELECT count(*) FROM pg_indexes WHERE indexname='native_attempts_pending_cleanup_idx' AND indexdef NOT LIKE '%worker_pid%') + (SELECT count(*) FROM pg_indexes WHERE indexname='native_attempts_worker_inventory_idx')`, org, event.ID).Scan(&attempt, &columns, &indexes)
 	if err != nil || attempt != 1 || columns != 0 || indexes != 1 {
 		t.Fatalf("rollback attempt=%d columns=%d indexes=%d: %v", attempt, columns, indexes, err)
