@@ -464,6 +464,7 @@ type HistoryDataOmission struct {
 }
 
 type CollaborationData struct {
+	CommentCursor     int64                    `json:"comment_cursor,omitempty"`
 	BlockerAttemptID  string                   `json:"blocker_attempt_id,omitempty"`
 	Decision          *NativeSchedulerDecision `json:"decision,omitempty"`
 	Change            *NativeChangeReference   `json:"change,omitempty"`

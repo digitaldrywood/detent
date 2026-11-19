@@ -405,6 +405,7 @@ type LandingObservation struct {
 }
 
 type WorkflowTransitionReader interface {
+	RecoveryCommentHistory(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (string, int64, error)
 	LatestWorkflowTransition(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
 	LatestSchedulerDecision(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
 }

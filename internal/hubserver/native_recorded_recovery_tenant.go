@@ -27,7 +27,7 @@ func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope hubsc
 	if request.BlockerAttemptID == "" || request.PolicyID == "" {
 		return nil, tracker.ErrStaleFencingToken
 	}
-	recovery, err := s.planRecordedRecoveryTenant(ctx, scope, row, issue, request.BlockerAttemptID)
+	recovery, err := s.planRecordedRecoveryTenant(ctx, scope, row, issue, request.BlockerAttemptID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope hubsc
 	return recovery, nil
 }
 
-func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, issue tracker.NativeIssue, attemptID string) (*leasestore.RecordedRecovery, error) {
+func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, issue tracker.NativeIssue, attemptID string, advance bool) (*leasestore.RecordedRecovery, error) {
 	if issue.Profile != "native" || issue.Archived || !strings.EqualFold(issue.State, "Blocked") {
 		return nil, corestore.ErrRevisionConflict
 	}
@@ -105,13 +105,6 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 	if !valid || issueContractWorkerHumanAction(row, issue) != nil || claimapi.RecordedHumanHold(attempt.Status, attempt.TerminalFailure, attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
 		return nil, corestore.ErrRevisionConflict
 	}
-	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt)
-	if err != nil {
-		return nil, err
-	}
-	if question {
-		return nil, corestore.ErrRevisionConflict
-	}
 	var bound policystore.LeasePolicy
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -127,6 +120,13 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 	dependencies, ok := claimapi.RecordedRecoveryDependencies(attempt.Disposition, string(scope.Project))
 	staleBase := attempt.Disposition != nil && attempt.Disposition.ReasonCode == "stale_base"
 	if !ok || !machine && !staleBase && len(dependencies) == 0 {
+		return nil, corestore.ErrRevisionConflict
+	}
+	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt, advance)
+	if err != nil {
+		return nil, err
+	}
+	if question {
 		return nil, corestore.ErrRevisionConflict
 	}
 	var source *tracker.NativeChangeReference
@@ -195,7 +195,7 @@ func (s *Service) recordedWorkerMachineHold(ctx context.Context, scope hubscope.
 	if !claimapi.RecordedMachineFailure(attempt.Status, run.TerminalFailure, run.Disposition) || !valid || len(dependencies) != 0 || run.Disposition != nil && run.Disposition.ReasonCode == "stale_base" {
 		return nil, nil
 	}
-	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt)
+	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt, true)
 	if err != nil || question {
 		return nil, err
 	}
@@ -212,58 +212,6 @@ func recordedRetryLane(ctx context.Context, content *eventstore.Content, approve
 		return "", err
 	}
 	return workflow.Config.Tracker.BlockedRecovery.TargetState, nil
-}
-
-func (s *Service) recordedWorkpadQuestion(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, attempt leasestore.Attempt) (bool, error) {
-	type commentVersion struct {
-		row     corestore.Comment
-		version eventstore.CollaborationVersion
-	}
-	var versions []commentVersion
-	var incomplete bool
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		reader, ok := r.(eventstore.AttemptEventPageReader)
-		if !ok {
-			return hubapi.NativeRunEventStorageUnavailable()
-		}
-		start, err := reader.AttemptEvents(ctx, scope.Project, row.NativeID, attempt.ID, 0, 1)
-		if err != nil {
-			return err
-		}
-		if len(start) == 0 {
-			incomplete = true
-			return nil
-		}
-		comments, err := r.Comments(ctx, scope.Project, row.NativeID, start[0].Sequence, corestore.MaxPageSize)
-		if err != nil {
-			return err
-		}
-		incomplete = len(comments) == corestore.MaxPageSize
-		for _, comment := range comments {
-			if comment.Deleted || comment.ActorKind != "runner" && comment.ActorKind != "human" {
-				continue
-			}
-			version, err := r.CollaborationVersion(ctx, comment.ID, comment.Revision)
-			if err != nil {
-				return err
-			}
-			versions = append(versions, commentVersion{row: comment, version: version})
-		}
-		return nil
-	})
-	if err != nil || incomplete {
-		return incomplete, err
-	}
-	for _, version := range versions {
-		comment, err := s.hydrateCommentRecord(ctx, version.row, version.version)
-		if err != nil {
-			return false, err
-		}
-		if claimapi.RecordedWorkpadQuestion(comment.Body) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func recordedMachineRetryLane(project projectstore.Record, from, preferred string) string {
@@ -355,8 +303,8 @@ func recordedBlockedLane(issue tracker.NativeIssue, attempt tracker.NativeAttemp
 	}
 }
 
-func (s *Service) readRecordedRecoveryIntent(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, issue tracker.NativeIssue) (*leasestore.RecordedRecovery, error) {
-	recovery, err := s.planRecordedRecoveryTenant(ctx, scope, row, issue, "")
+func (s *Service) readRecordedRecoveryIntent(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, issue tracker.NativeIssue, advance bool) (*leasestore.RecordedRecovery, error) {
+	recovery, err := s.planRecordedRecoveryTenant(ctx, scope, row, issue, "", advance)
 	if err == nil {
 		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			owner, ok := r.(leasestore.RecordedRecoveryWriter)
@@ -443,7 +391,7 @@ func (s *Service) readClaimRecoveryIntent(ctx context.Context, scope hubscope.Na
 	if err != nil {
 		return nil, err
 	}
-	return s.readRecordedRecoveryIntent(ctx, scope, row, issue)
+	return s.readRecordedRecoveryIntent(ctx, scope, row, issue, true)
 }
 
 func (s *Service) prepareNativeClaimRecoveryWrite(ctx context.Context, scope hubscope.NativeScope, recovery *leasestore.RecordedRecovery) (func(context.Context, tenantstore.Writer) error, error) {
