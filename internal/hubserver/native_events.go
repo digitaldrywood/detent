@@ -27,6 +27,10 @@ func validateNativeRunEvent(request tracker.NativeRunEvent) error {
 	if request.Worker != nil && (request.Type != "run.started" && request.Type != "run.observed" || !request.Worker.Valid()) {
 		return nativeRejection(hubapi.NativeInvalid("Worker identity requires a complete launch on start or observe"), "event_validation", "worker")
 	}
+	if data.Sequence == 1 && data.Runtime != nil && data.Runtime.WorkerLaunch != nil && data.Runtime.WorkerLaunch.Bootstrap &&
+		(request.Type != "run.started" || request.Worker == nil) {
+		return nativeRejection(hubapi.NativeInvalid("Worker bootstrap requires a fenced start"), "event_validation", "worker")
+	}
 	if data.Runtime != nil && data.Sequence <= 0 || request.Type == "run.observed" && data.Runtime == nil {
 		return nativeRejection(hubapi.NativeInvalid("Runtime evidence requires an ordered observation"), "event_validation", "data")
 	}

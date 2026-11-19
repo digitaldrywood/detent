@@ -138,3 +138,41 @@ func (c *SSHCallbacks) Finish(ctx context.Context, at time.Time) error {
 	}
 	return errors.Join(errs...)
 }
+
+func (c *SSHCallbacks) RegisterOverlappingWorker(ctx context.Context, request RunRequest, worker store.WorkerProcessRegistration) (func(context.Context) error, error) {
+	owner, ok := c.store.(workerRegistrationStore)
+	if !ok {
+		return nil, ErrExecutionAuthorityUnavailable
+	}
+	ctx = bindSessionExecution(ctx, c.store, c.execution)
+	id, err := owner.StartSession(ctx, store.SessionStart{
+		ProjectID: request.ProjectID, IssueID: request.Issue.ID, Identifier: request.Issue.Identifier,
+		IssueURL: request.Issue.URL, WorkAttemptID: request.WorkAttemptID, StartedAt: worker.StartedAt,
+		AgentBackendKind: "host", AgentRole: "execution_worker",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := owner.UpdateSessionWorkerProcess(ctx, id, worker); err != nil {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		return nil, errors.Join(err, owner.FinishSession(cleanup, id, store.SessionFinish{CompletedAt: time.Now().UTC(), FinalState: FinalStateFailed}))
+	}
+	return func(ctx context.Context) error {
+		ctx = bindSessionExecution(ctx, c.store, c.execution)
+		now := time.Now().UTC()
+		if err := owner.MarkSessionWorkerProcessReaped(ctx, id, store.WorkerProcessReap{
+			ReapedAt: now, Outcome: "already_exited", Reason: "execution worker exited",
+		}); err != nil {
+			if errors.Is(err, ErrExecutionAuthorityUnavailable) {
+				return nil
+			}
+			return err
+		}
+		err := owner.FinishSession(ctx, id, store.SessionFinish{CompletedAt: now, FinalState: FinalStateCompleted})
+		if errors.Is(err, ErrExecutionAuthorityUnavailable) {
+			return nil
+		}
+		return err
+	}, nil
+}

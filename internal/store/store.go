@@ -433,6 +433,7 @@ type SessionProviderIdentity struct {
 }
 
 type WorkerProcessIdentity struct {
+	StartKey  string `json:",omitempty"`
 	PID       int
 	GroupID   int
 	StartedAt time.Time

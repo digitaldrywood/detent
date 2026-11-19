@@ -32,6 +32,10 @@ type NativeExecutionIdentity struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
+func WorkerBootstrapIdentity() NativeExecutionIdentity {
+	return NativeExecutionIdentity{Role: "worker", Backend: "local_worker", Model: "pending"}
+}
+
 type NativeCheckpoint struct {
 	Publication     *NativePRPublication   `json:"publication,omitempty"`
 	Resume          string                 `json:"resume"`
@@ -117,6 +121,7 @@ type NativeRuntimeObservation struct {
 }
 
 type NativeWorkerLaunch struct {
+	Bootstrap        bool      `json:"bootstrap,omitempty"`
 	HubVersion       string    `json:"hub_version,omitempty"`
 	PID              int       `json:"pid"`
 	GroupID          int       `json:"pgid"`

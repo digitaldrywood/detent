@@ -39,17 +39,18 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		}
 	}
 	for _, test := range []struct {
-		name        string
-		edit        func(*ChangeSource)
-		pending     string
-		published   bool
-		unpublished bool
-		previous    bool
-		absent      bool
-		corrupt     bool
-		transferred bool
-		locked      bool
-		integrated  bool
+		name           string
+		edit           func(*ChangeSource)
+		pending        string
+		published      bool
+		unpublished    bool
+		previous       bool
+		absent         bool
+		corrupt        bool
+		transferred    bool
+		locked         bool
+		integrated     bool
+		attemptPrivate bool
 	}{
 		{name: "additional advertised ref", edit: editBundle(bytes.Replace(capture.Bundle, []byte("\n\n"), []byte("\n"+head+" refs/heads/extra\n\n"), 1))},
 		{name: "wrong advertised head", edit: editBundle(bytes.Replace(capture.Bundle, []byte(head+" HEAD"), []byte(base+" HEAD"), 1))},
@@ -66,6 +67,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		{name: "newer clean published head survives older source restoration", published: true},
 		{name: "integrated target head is preserved and restored", published: true, integrated: true},
 		{name: "superseded published source is preserved and restored", published: true, previous: true},
+		{name: "published source is restored into an upgraded private checkout", published: true, previous: true, attemptPrivate: true},
 		{name: "corrupt retained source preserves existing workspace", published: true, previous: true, corrupt: true},
 		{name: "superseded branch without workspace is preserved and restored", published: true, previous: true, absent: true},
 		{name: "superseded Hub-only source is preserved and restored", unpublished: true, previous: true},
@@ -131,6 +133,9 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 				if test.absent {
 					runGit(t, dir, "worktree", "remove", info.Path)
 				}
+				if test.attemptPrivate {
+					issue.AttemptWorkspace = AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_" + strings.Repeat("3", 32)}
+				}
 				restored, restoreErr := backend.Create(t.Context(), issue)
 				if (test.previous || test.transferred || test.integrated) && !test.corrupt {
 					if restoreErr != nil {
@@ -141,6 +146,12 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					}
 					if got := readFile(t, filepath.Join(restored.Path, "source.txt")); got != "reviewed source\n" {
 						t.Fatalf("restored source bytes=%q", got)
+					}
+					if test.attemptPrivate {
+						if restored.Path == info.Path || strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")) != newer {
+							t.Fatal("upgraded source recovery changed the legacy checkout")
+						}
+						return
 					}
 					paths, err := filepath.Glob(filepath.Join(backend.(*LocalGit).root, ".detent", "quarantine", "*"))
 					if err != nil || len(paths) != 1 {

@@ -235,6 +235,8 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
+	AttemptWorkspace           AttemptWorkspace
+	RecoveryAttemptWorkspace   AttemptWorkspace
 	hookOwner                  *hookproc.Owner
 	CleanupInUse               bool
 	cleanupPublishedReviewHead string
@@ -980,6 +982,9 @@ func (l *LocalGit) AfterRun(ctx context.Context, info Info, issue Issue) {
 
 func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 	key := issueKey(issue)
+	if attempt := issue.AttemptWorkspace.Key(); attempt != "" {
+		key = attempt + "--" + key
+	}
 	path, err := l.workspacePathForIssue(issue, key)
 	if err != nil {
 		return Info{}, err
@@ -997,6 +1002,10 @@ func (l *LocalGit) Existing(issue Issue) (Info, error) {
 	exists, isDir, err := pathExists(info.Path)
 	if err != nil {
 		return Info{}, err
+	}
+	if !exists && issue.AttemptWorkspace.Key() != "" {
+		issue.AttemptWorkspace = AttemptWorkspace{}
+		return l.Existing(issue)
 	}
 	if !exists || !isDir {
 		return Info{}, ErrMissingWorkspace
@@ -1035,7 +1044,11 @@ func (l *LocalGit) BranchHold(ctx context.Context, issue Issue) (BranchHold, boo
 func (l *LocalGit) normalizeInfo(info Info, issue Issue) (Info, error) {
 	key := info.Key
 	if key == "" {
-		key = issueKey(issue)
+		defaultInfo, err := l.infoForIssue(issue)
+		if err != nil {
+			return Info{}, err
+		}
+		key = defaultInfo.Key
 	}
 	path := info.Path
 	if path == "" {
@@ -2105,11 +2118,20 @@ func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPat
 		return "", fmt.Errorf("resolve worker workspace: %w", err)
 	}
 	scratchRoot := WorkerScratchRoot(workspacePath)
-	scratchPath = filepath.Join(scratchRoot, "attempt-"+uuid.NewString())
+	key := AttemptWorkspaceFromContext(ctx).Key()
+	if key != "" {
+		scratchRoot = filepath.Join(scratchRoot, key)
+	}
 	if err := ensurePrivateDirectories(workerScratchBase(), scratchRoot); err != nil {
 		return "", fmt.Errorf("create worker scratch: %w", err)
 	}
-	if err := os.Mkdir(scratchPath, 0o700); err != nil {
+	if key == "" {
+		scratchPath = filepath.Join(scratchRoot, "attempt-"+uuid.NewString())
+		err = os.Mkdir(scratchPath, 0o700)
+	} else {
+		scratchPath, err = os.MkdirTemp(scratchRoot, "scratch-")
+	}
+	if err != nil {
 		return "", fmt.Errorf("create worker scratch: %w", err)
 	}
 	return scratchPath, nil

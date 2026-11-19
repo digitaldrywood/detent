@@ -344,7 +344,7 @@ func (l *LocalGit) validOwnershipRecord(ctx context.Context, relativePath string
 func (record cleanupOwnershipRecord) issue() Issue {
 	issue := Issue{ProjectID: record.ProjectID, ID: record.IssueID, Identifier: record.Identifier, WorkspaceSession: record.WorkspaceSession}
 	for _, key := range []string{issueKey(issue), legacyIssueKey(issue)} {
-		if version, ok := strings.CutPrefix(record.Key, key+"-review-"); ok && version != "" {
+		if version, ok := strings.CutPrefix(checkoutIssueKey(record.Key), key+"-review-"); ok && version != "" {
 			issue.ReviewVersionID = version
 			break
 		}
@@ -534,6 +534,7 @@ func (l *LocalGit) inferNativeOwnership(record *cleanupOwnershipRecord) {
 }
 
 func issueOwnsKey(issue Issue, key string) bool {
+	key = checkoutIssueKey(key)
 	return issueKey(issue) == key || nativeProjectID(issue) != "" && legacyIssueKey(issue) == key
 }
 

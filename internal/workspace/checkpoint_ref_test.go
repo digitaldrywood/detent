@@ -634,3 +634,77 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 		t.Fatalf("remaining source lost: %q", got)
 	}
 }
+
+func TestAttemptPrivateCheckoutRecoversLegacyCheckpoint(t *testing.T) {
+	t.Parallel()
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{ID: "wi_example", Identifier: "prj_example#1"}
+	legacy, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCheckpointFile(t, legacy.Path, "recovered.txt", "legacy checkpoint content\n")
+	checkpoint, pushed, err := backend.PushCheckpointRef(t.Context(), legacy, issue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
+	if err != nil || !pushed {
+		t.Fatalf("legacy checkpoint push=%t error=%v", pushed, err)
+	}
+	issue.AttemptWorkspace = AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_" + strings.Repeat("1", 32)}
+	existing, err := backend.Existing(issue)
+	if err != nil || existing.Path != legacy.Path {
+		t.Fatalf("upgraded recovery cannot read legacy worktree: %+v %v", existing, err)
+	}
+	issue.Checkpoint = &CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, TreeSHA: checkpoint.TreeSHA}
+	first, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Path == legacy.Path || first.Branch == legacy.Branch || filepath.Dir(first.Path) != bestEffortCanonicalPath(root) {
+		t.Fatalf("new worktree reused the old layout: legacy=%+v new=%+v", legacy, first)
+	}
+	for _, checkout := range []Info{legacy, first} {
+		content, err := os.ReadFile(filepath.Join(checkout.Path, "recovered.txt"))
+		if err != nil || string(content) != "legacy checkpoint content\n" {
+			t.Fatalf("checkpoint content in %s is %q, error %v", checkout.Path, content, err)
+		}
+	}
+	reused, err := backend.Existing(issue)
+	if err != nil || reused.Path != first.Path {
+		t.Fatalf("existing checkout did not prefer the canonical path: %+v %v", reused, err)
+	}
+	issue.AttemptWorkspace.Attempt = "attempt_" + strings.Repeat("2", 32)
+	second, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Path == first.Path || second.Branch == first.Branch || second.Path == legacy.Path {
+		t.Fatalf("two attempts share a checkout: legacy=%+v first=%+v second=%+v", legacy, first, second)
+	}
+	for _, identity := range []AttemptWorkspace{
+		{Organization: "org_example", Project: "prj_example", Attempt: "attempt_" + strings.Repeat("1", 32)},
+		{Organization: "org_example", Project: "prj_example", Attempt: "attempt_" + strings.Repeat("2", 32)},
+	} {
+		scratch, err := PrepareWorkerScratch(WithAttemptWorkspace(t.Context(), identity), legacy.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if filepath.Dir(scratch) != filepath.Join(WorkerScratchRoot(legacy.Path), identity.Key()) {
+			t.Fatalf("scratch %s lacks private attempt parent", scratch)
+		}
+		if err := CleanupWorkerScratch(legacy.Path, scratch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		if err := RemoveWorkerScratchRoot(legacy.Path); err != nil {
+			t.Error(err)
+		}
+	})
+}

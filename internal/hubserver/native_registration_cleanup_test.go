@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -113,6 +115,43 @@ func TestTenantRunReconnectPreservesWorkerCleanupIdentity(t *testing.T) {
 			cleared.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", WorkerLaunch: &invalid}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], cleared), http.StatusUnprocessableEntity)
 
+		})
+	}
+}
+
+func TestWorkerBootstrapBindsIdentityOnce(t *testing.T) {
+	t.Parallel()
+	placeholder := tracker.WorkerBootstrapIdentity()
+	reserved := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example"}
+	resolved := reserved
+	resolved.ReasoningEffort = "high"
+	unreserved := reserved
+	unreserved.Model = "other"
+	for _, test := range []struct {
+		name                         string
+		before, after                tracker.NativeExecutionIdentity
+		starting, continues, refuses bool
+	}{
+		{name: "unreserved worker binds selected provider", before: placeholder, after: resolved, starting: true},
+		{name: "reserved worker binds reasoning effort", before: reserved, after: resolved, starting: true},
+		{name: "reserved worker cannot change models", before: reserved, after: unreserved, starting: true, refuses: true},
+		{name: "bound worker cannot change identity", before: resolved, after: unreserved, refuses: true},
+		{name: "bound worker cannot reenter bootstrap", before: resolved, after: resolved, continues: true, refuses: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			start := time.Unix(1, 0).UTC()
+			previous := tracker.NativeRunData{
+				RunID: "run_example", AttemptID: "attempt_example", LeaseID: "lease_example", FencingToken: 1,
+				Sequence: 1, Identity: &test.before,
+				Runtime: &tracker.NativeRuntimeObservation{WorkerLaunch: &tracker.NativeWorkerLaunch{Bootstrap: test.starting, PID: 12, ProcessStart: start}},
+			}
+			next := previous
+			next.Sequence, next.Identity = 2, &test.after
+			next.Runtime = &tracker.NativeRuntimeObservation{WorkerLaunch: &tracker.NativeWorkerLaunch{Bootstrap: test.continues, PID: 12, ProcessStart: start}}
+			err := preserveTenantRunCleanup(&previous, &next)
+			if test.refuses && !errors.Is(err, leasestore.ErrAttemptConflict) || !test.refuses && err != nil {
+				t.Fatalf("bootstrap identity update: %v", err)
+			}
 		})
 	}
 }
