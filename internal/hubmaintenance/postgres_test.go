@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/multitracer"
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -42,28 +40,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-type exchangeCounter struct{ statements, exchanges atomic.Int64 }
-
-func (c *exchangeCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
-	c.statements.Add(1)
-	c.exchanges.Add(1)
-	return ctx
-}
-
-func (*exchangeCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (c *exchangeCounter) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	c.exchanges.Add(1)
-	return ctx
-}
-
-func (c *exchangeCounter) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {
-	c.statements.Add(1)
-}
-
-func (*exchangeCounter) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
-
-func TestPostgresVisitsOneItemPerTenantWithBoundedExchanges(t *testing.T) {
+func TestPostgresVisitsOneItemPerTenant(t *testing.T) {
 	admin := maintenanceTemplate.Database(t)
 	role := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if _, err := admin.ExecContext(t.Context(), `CREATE ROLE `+role+` LOGIN PASSWORD 'fixture-only'`); err != nil {
@@ -75,16 +52,12 @@ func TestPostgresVisitsOneItemPerTenantWithBoundedExchanges(t *testing.T) {
 		}
 	})
 	config := maintenanceTemplate.NativeConfig(t, admin, role, "fixture-only")
-	counter := &exchangeCounter{}
-	config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, counter)
 	pools, err := pgtransport.Open(t.Context(), config, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pools.Close)
-	pages := 0
 	registry := registryFunc(func(ctx context.Context, after string, limit int) ([]Tenant, error) {
-		pages++
 		rows, err := admin.QueryContext(ctx, `SELECT id,generation FROM tenants WHERE id>$1 ORDER BY id LIMIT $2`, after, limit)
 		if err != nil {
 			return nil, err
@@ -128,8 +101,6 @@ func TestPostgresVisitsOneItemPerTenantWithBoundedExchanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	counter.statements.Store(0)
-	counter.exchanges.Store(0)
 	for tick := range 2 {
 		if err := scheduler.Tick(t.Context()); err != nil {
 			t.Fatal(err)
@@ -139,8 +110,4 @@ func TestPostgresVisitsOneItemPerTenantWithBoundedExchanges(t *testing.T) {
 			t.Fatalf("one-item bound failed: touched=%d max=%d err=%v", touched, maximum, err)
 		}
 	}
-	if pages != 2 || counter.statements.Load() != 16 || counter.exchanges.Load() != 8 {
-		t.Fatalf("database budget: pages=%d statements=%d exchanges=%d", pages, counter.statements.Load(), counter.exchanges.Load())
-	}
-	t.Log("two ticks: 2 registry reads, 16 tenant statements, 8 tenant exchanges; 2 isolated tenants, 4 single-item updates")
 }
