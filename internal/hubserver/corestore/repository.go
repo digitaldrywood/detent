@@ -193,6 +193,15 @@ type Page[T any] struct {
 	Next  Cursor
 }
 
+type RunnerWorkItemKey struct {
+	ID       int64
+	NativeID tracker.NativeWorkItemID
+}
+
+type RunnerWorkItemReader interface {
+	RunnerWorkItemKeys(context.Context, tracker.ProjectID, string, ScanCursor, int) (Scan[RunnerWorkItemKey], error)
+}
+
 type Scan[T any] struct {
 	Items []T
 	Next  ScanCursor
