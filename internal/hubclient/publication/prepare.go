@@ -14,10 +14,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+var ErrSourceChanged = errors.New("PR publication source, current version or review requirements changed; reconcile the current Change before retrying")
+
 type Authority interface {
 	Authorize(context.Context) error
 	ExecutionError(context.Context, error) error
-	Checkpoint(context.Context, tracker.NativeCheckpoint) error
+	Checkpoint(context.Context, tracker.NativeCheckpoint, func(context.Context) error) error
 	CheckSource(tracker.ChangeDetail, tracker.AttemptDiffRequest) error
 }
 type Result struct{ Receipt *tracker.NativePRPublication }
@@ -81,7 +83,7 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 				return err
 			}
 			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != executionState.Repository || current.Summary.Status == "stale_policy" && !reconcileStale || current.Change.CurrentLanding() != nil {
-				return errors.New("PR publication source, current version or review requirements changed; reconcile the current Change before retrying")
+				return ErrSourceChanged
 			}
 			// Inherited effects need restored source proof. Effects started by
 			// this execution already passed publication authorization.
@@ -178,6 +180,10 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 			if kind == "git_push" && state == "pending" {
 				checkpoint.ExpectedHeadSHA = publication.ExpectedHeadSHA
 			}
+			var verify func(context.Context) error
+			if checkpoint.ExternalEffect == kind && checkpoint.EffectState == "pending" && (state == "confirmed" || state == "ambiguous") {
+				verify = authorize
+			}
 			checkpoint.ExternalEffect, checkpoint.EffectState = kind, state
 			checkpoint.Publication = nil
 			checkpoint.EffectID = binding.EffectID(kind)
@@ -185,7 +191,7 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 			if state == "none" {
 				checkpoint.ExternalEffect, checkpoint.EffectID, checkpoint.ExpectedHeadSHA = "none", "", ""
 			}
-			if err := host.Checkpoint(ctx, checkpoint); err != nil {
+			if err := host.Checkpoint(ctx, checkpoint, verify); err != nil {
 				return err
 			}
 			if kind == "pr_create" && state == "confirmed" {
@@ -218,7 +224,7 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 		}
 		checkpoint := *executionState.Data.Handoff
 		checkpoint.Publication = receipt
-		if err := host.Checkpoint(ctx, checkpoint); err != nil {
+		if err := host.Checkpoint(ctx, checkpoint, nil); err != nil {
 			return Result{}, err
 		}
 		return Result{Receipt: receipt}, nil

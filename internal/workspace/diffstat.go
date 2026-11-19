@@ -261,6 +261,17 @@ func gitDiffStat(ctx context.Context, workspacePath string, includeIndex bool) (
 	return observation.stat, err
 }
 
+func VerifyWorkspaceDigest(ctx context.Context, path, head string) (string, error) {
+	observed, err := observeGitDiff(ctx, path, true)
+	if err != nil {
+		return "", err
+	}
+	if observed.stat.HeadSHA != head {
+		return "", errors.New("workspace head changed during diff capture")
+	}
+	return workspaceRecoveryFingerprint(head, observed.stat.Fingerprint), nil
+}
+
 type gitDiffObservation struct {
 	stat           DiffStat
 	trackedPaths   []string

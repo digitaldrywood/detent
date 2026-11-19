@@ -33,8 +33,9 @@ type SSHExecutionSources struct {
 }
 
 type sshDiff struct {
-	Request tracker.AttemptDiffRequest
-	Present bool
+	WorkspaceDigest string `json:",omitempty"`
+	Request         tracker.AttemptDiffRequest
+	Present         bool
 }
 
 func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
@@ -97,7 +98,10 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 			return nil, errors.New("SSH evidence workspace is unavailable")
 		}
 		return invokeSSHMethod(ctx, evidence, "", args)
-	case "source.diff":
+	case "source.diff", "source.verifyDiff":
+		if method == "source.verifyDiff" {
+			ctx = VerifyDiffSource(ctx)
+		}
 		if len(args) != 0 {
 			return nil, errors.New("invalid SSH diff arguments")
 		}
@@ -105,7 +109,7 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 			return sshDiff{}, nil
 		}
 		request, present := diff(ctx)
-		return sshDiff{Request: request, Present: present}, nil
+		return sshDiff{Request: request, Present: present, WorkspaceDigest: request.WorkspaceDigest}, nil
 	case "source.capture":
 		if directory == "" {
 			return nil, errors.New("SSH artifact workspace is unavailable")
@@ -240,9 +244,14 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 	if diff, ok := c.execution.(DiffExecution); ok {
 		diff.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 			var result sshDiff
-			if err := peer.Call(ctx, "source.diff", &result); err != nil {
+			method := "source.diff"
+			if verifyingDiff(ctx) {
+				method = "source.verifyDiff"
+			}
+			if err := peer.Call(ctx, method, &result); err != nil {
 				return tracker.AttemptDiffRequest{}, false
 			}
+			result.Request.WorkspaceDigest = result.WorkspaceDigest
 			return result.Request, result.Present
 		})
 	}

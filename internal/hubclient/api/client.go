@@ -319,7 +319,7 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	switch input.(type) {
 	case runnersession.Mutation:
 		authorize = nativeEffectError
-	case tracker.NativeRunEvent:
+	case tracker.NativeRunEvent, tracker.AttemptDiffRequest:
 		authorize, _ = ctx.Value(executionEventAuthorityKey{}).(func(context.Context) error)
 	}
 	if authorize != nil {

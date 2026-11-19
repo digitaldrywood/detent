@@ -227,6 +227,17 @@ type ArtifactSourceExecution interface {
 // belongs to. It reports false when there is nothing to post.
 type AttemptDiffSource func(context.Context) (tracker.AttemptDiffRequest, bool)
 
+type verifyDiffKey struct{}
+
+func VerifyDiffSource(ctx context.Context) context.Context {
+	return context.WithValue(ctx, verifyDiffKey{}, true)
+}
+
+func verifyingDiff(ctx context.Context) bool {
+	verify, _ := ctx.Value(verifyDiffKey{}).(bool)
+	return verify
+}
+
 // DiffExecution is an Execution that also stores the attempt's diff before
 // every run event that references it. The runner installs the source once it
 // has a worktree; the execution decides when to call it, so the diff is always
@@ -309,6 +320,12 @@ func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, iss
 			// posted without patches rather than with a patch set that stops
 			// partway through the change.
 			request.Files = tracker.StripDiffPatches(request.Files)
+		}
+		if verifyingDiff(ctx) {
+			request.WorkspaceDigest, err = workspace.VerifyWorkspaceDigest(ctx, info.Path, request.HeadSHA)
+			if err != nil {
+				return tracker.AttemptDiffRequest{}, false
+			}
 		}
 		return request, true
 	}
@@ -819,10 +836,16 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 						if runErr != nil {
 							err = runErr
 						} else if receipt.ExitCode != 0 {
-							attributeCommandFailure(ctx, commands, info, validationIssue, issue.BaseRef, &receipt)
+							if executionCancellation(req) == nil {
+								attributeCommandFailure(ctx, commands, info, validationIssue, issue.BaseRef, &receipt)
+							}
 							receipt.Stage = gate.StageSourceFinalization
 							receipt = tracker.PublicGateResult(receipt)
 							err = &workspace.ValidationError{Stage: workspace.ValidationStageSourceFinalization, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
+							binding.Validation = &receipt
+							if recordErr := recordStep(ctx, req.Execution, binding); recordErr != nil {
+								err = errors.Join(err, recordErr)
+							}
 							if recordErr := recorder.RecordSourceValidation(ctx, receipt); recordErr != nil {
 								err = errors.Join(err, recordErr)
 							}
@@ -890,6 +913,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			diffs.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 				if current, available := source(ctx); available {
 					return current, true
+				}
+				if verifyingDiff(ctx) {
+					return tracker.AttemptDiffRequest{}, false
 				}
 				return finalDiff, true
 			})

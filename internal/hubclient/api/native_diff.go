@@ -24,6 +24,10 @@ func NativeAttemptDiffPath(attemptID string) (string, error) {
 // list without patches, which is what the Diff contract says the producer does, so the file
 // list and its counts survive a change too large to store in full.
 func (c *NativeClient) PostAttemptDiff(ctx context.Context, attemptID string, request tracker.AttemptDiffRequest) (tracker.AttemptDiffReceipt, error) {
+	return c.PostExecutionDiff(ctx, attemptID, &request, nativeEffectError)
+}
+
+func (c *NativeClient) PostExecutionDiff(ctx context.Context, attemptID string, request *tracker.AttemptDiffRequest, authorize func(context.Context) error) (tracker.AttemptDiffReceipt, error) {
 	var receipt tracker.AttemptDiffReceipt
 	path, err := NativeAttemptDiffPath(attemptID)
 	if err != nil {
@@ -31,10 +35,7 @@ func (c *NativeClient) PostAttemptDiff(ctx context.Context, attemptID string, re
 	}
 	request.Files, _ = tracker.NormalizeDiffFiles(request.Files)
 	post := func() error {
-		if err := nativeEffectError(ctx); err != nil {
-			return err
-		}
-		return c.client.request(ctx, http.MethodPost, c.base()+path, request, &receipt)
+		return c.client.request(context.WithValue(ctx, executionEventAuthorityKey{}, authorize), http.MethodPost, c.base()+path, *request, &receipt)
 	}
 	err = post()
 	if err == nil || !attemptDiffTooLarge(err) {

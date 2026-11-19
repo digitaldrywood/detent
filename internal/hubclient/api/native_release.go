@@ -18,10 +18,17 @@ const (
 func (c *NativeClient) ReleaseTerminal(ctx context.Context, lease tracker.NativeLease, reason string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalReleaseTimeout)
 	defer cancel()
+	return ReconcileTerminal(ctx, func() (bool, error) {
+		err := c.Release(ctx, lease, reason)
+		return !ClaimLost(err) && NativeTransportUnavailable(err), err
+	})
+}
+
+func ReconcileTerminal(ctx context.Context, operation func() (bool, error)) error {
 	backoff := terminalReleaseBackoff
 	for attempt := 0; ; attempt++ {
-		err := c.Release(ctx, lease, reason)
-		if err == nil || ClaimLost(err) || !NativeTransportUnavailable(err) || ctx.Err() != nil {
+		retry, err := operation()
+		if !retry || ctx.Err() != nil {
 			return err
 		}
 		if attempt == 0 {

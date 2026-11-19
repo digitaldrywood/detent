@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/stoptest"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -31,6 +32,7 @@ import (
 
 type stoppedFinalizationWorkspace struct {
 	*workspace.LocalGit
+	noGate  bool
 	started chan workspace.Info
 	resume  chan struct{}
 }
@@ -39,6 +41,9 @@ func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, inf
 	w.started <- info
 	select {
 	case <-w.resume:
+		if w.noGate {
+			return gate.CommandResult{}, context.Canceled
+		}
 		return w.LocalGit.RunReviewCommand(ctx, info, issue, command)
 	case <-ctx.Done():
 		return gate.CommandResult{}, ctx.Err()
@@ -47,7 +52,7 @@ func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, inf
 
 func TestNativeStopDuringHostFinalization(t *testing.T) {
 	isolateNativeChangeGit(t)
-	for _, mode := range []string{"stop", "stop with scheduler restart", "stop prioritized Todo", "stop prioritized Todo with scheduler restart", "stop prioritized Todo at default rank three", "stop prioritized Todo at default rank three with scheduler restart", "stop prioritized Todo with custom priority map with scheduler restart", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
+	for _, mode := range []string{"stop", "stop with late observation", "stop with two undelivered interruptions", "stop with lost interruption reply", "stop with failed gate", "stop with scheduler restart", "stop prioritized Todo", "stop prioritized Todo with scheduler restart", "stop prioritized Todo at default rank three", "stop prioritized Todo at default rank three with scheduler restart", "stop prioritized Todo with custom priority map with scheduler restart", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			testNativeStopDuringHostFinalization(t, mode)
@@ -266,8 +271,12 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend := &stoppedFinalizationWorkspace{LocalGit: local, started: make(chan workspace.Info, 1), resume: make(chan struct{})}
-	agent, err := runner.NewRunner(runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true"}}, Prompt: "Complete the issue"}})
+	backend := &stoppedFinalizationWorkspace{LocalGit: local, noGate: mode == "stop with late observation", started: make(chan workspace.Info, 1), resume: make(chan struct{})}
+	gateCommand := "true"
+	if mode == "stop with failed gate" {
+		gateCommand = "false"
+	}
+	agent, err := runner.NewRunner(runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand}}, Prompt: "Complete the issue"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,6 +431,10 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		}
 		return
 	}
+	var checkDelivery func(tracker.NativeAttempt)
+	if mode == "stop with late observation" || mode == "stop with two undelivered interruptions" || mode == "stop with lost interruption reply" {
+		checkDelivery = stoptest.InterruptionFault(t, fixtureClient(h.native.Transport()).requests, h.scheduler.RunExecution(issue.ID).(runner.RuntimeExecution), mode)
+	}
 	todo := strings.Contains(mode, "Todo")
 	if todo {
 		if err := orch.Drain(t.Context()); err != nil {
@@ -492,7 +505,14 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil || len(recovery.Attempts) != 1 || !interrupted.Load() || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Outcome != "interrupted" && (recovery.Attempts[0].Outcome != "cancelled" || recovery.Attempts[0].CleanupAcknowledgedAt == nil) || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA == "" || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
 		t.Fatalf("stopped checkpoint or native outcome = %+v, %v", recovery.Attempts, err)
 	}
-	if runtime := recovery.Attempts[0].Runtime; runtime == nil || runtime.Validation == nil || runtime.Validation.ExitCode != 0 || runtime.Validation.HeadSHA != recovery.Attempts[0].Checkpoint.HeadSHA {
+	if checkDelivery != nil {
+		checkDelivery(recovery.Attempts[0])
+	}
+	wantExit := 0
+	if mode == "stop with failed gate" {
+		wantExit = 1
+	}
+	if runtime := recovery.Attempts[0].Runtime; mode != "stop with late observation" && (runtime == nil || runtime.Validation == nil || runtime.Validation.ExitCode != wantExit || runtime.Validation.HeadSHA != recovery.Attempts[0].Checkpoint.HeadSHA) {
 		t.Fatalf("in-flight successful validation receipt was lost: %+v", runtime)
 	}
 	h.scheduler.mu.Lock()
