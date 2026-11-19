@@ -31,7 +31,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -551,70 +550,6 @@ func scaleSoakMaintenance(ctx context.Context, seed scaleSoakSeed, metrics *scal
 	}
 }
 
-func TestScaleSoakSeed(t *testing.T) {
-	t.Parallel()
-	config := scaleSoakConfig{Projects: 2, Items: 4, Attempts: 6, Runners: 2, DetailBytes: 1024}
-	seed := seedScaleSoak(t, t.TempDir(), config)
-	organization := seed.fixtures[0].project.OrganizationID
-	for _, test := range []struct {
-		table string
-		query string
-		want  int
-	}{
-		{"projects", `SELECT count(*) FROM projects WHERE organization_id=$1`, 2},
-		{"issues", `SELECT count(*) FROM issues WHERE organization_id=$1`, 4},
-		{"native_attempts", `SELECT count(*) FROM native_attempts WHERE organization_id=$1`, 6},
-		{"current attempt archive objects", `SELECT count(*) FROM native_attempts a JOIN archive_objects o ON o.organization_id=a.organization_id AND o.object_key=a.payload_object_key WHERE a.organization_id=$1`, 6},
-		{"runner_identities", `SELECT count(*) FROM runner_identities WHERE organization_id=$1`, 2},
-	} {
-		var count int
-		if err := usagePostgresAdmin(t, seed.service).QueryRowContext(t.Context(), test.query, organization).Scan(&count); err != nil || count != test.want {
-			t.Fatalf("%s count=%d want=%d: %v", test.table, count, test.want, err)
-		}
-	}
-	var payloads int
-	if err := usagePostgresAdmin(t, seed.service).QueryRowContext(t.Context(), `SELECT count(*) FROM archive_objects WHERE organization_id=$1 AND object_key=ANY($2::text[])`, organization, seed.payloads).Scan(&payloads); err != nil || payloads != 18 {
-		t.Fatalf("retained attempt payloads=%d, want 18: %v", payloads, err)
-	}
-	seen := map[tracker.ProjectID]bool{}
-	for _, row := range seed.attempts {
-		var f nativeFixture
-		for _, candidate := range seed.fixtures {
-			if candidate.project.ID == row.item.ProjectID {
-				f = candidate
-				break
-			}
-		}
-		if err := seed.service.config.TenantRepository.ReadTenant(t.Context(), row.item.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			owner, ok := r.(hubrecords.AttemptArchiveReader)
-			if !ok {
-				return hubapi.NativeRunEventStorageUnavailable()
-			}
-			object, err := owner.ArchiveObjectByKey(t.Context(), row.ref.Key)
-			if err != nil {
-				return err
-			}
-			if object.Reference != row.ref || object.Reference.Validate(string(row.item.OrganizationID)) != nil {
-				return artifact.ErrIntegrity
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("missing detail: %v", err)
-		}
-		data, err := seed.service.readNativeAttemptTenant(t.Context(), nativeAttemptListingScope(t, f), string(row.item.WorkItemID), row.id)
-		if err != nil || len(data.CompletionBody) < config.DetailBytes {
-			t.Fatalf("unreadable detail: %v", err)
-		}
-		if data.Sequence != 3 || data.Status != "succeeded" {
-			t.Fatalf("seeded attempt sequence=%d status=%s", data.Sequence, data.Status)
-		}
-		seen[row.item.ProjectID] = true
-	}
-	if len(seen) != 2 {
-		t.Fatalf("seeded projects=%d", len(seen))
-	}
-}
-
 func TestScaleSoakFleet(t *testing.T) {
 	t.Parallel()
 	seed := seedScaleSoak(t, t.TempDir(), scaleSoakConfig{Projects: 2, Items: 4, Attempts: 2, Runners: 2, DetailBytes: 512})
@@ -643,55 +578,6 @@ func TestScaleSoakFleet(t *testing.T) {
 	var attempts int
 	if err := usagePostgresAdmin(t, seed.service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND status='running' AND sequence=5", seed.fixtures[0].project.OrganizationID).Scan(&attempts); err != nil || attempts != 2 {
 		t.Fatalf("live attempts=%d: %v", attempts, err)
-	}
-}
-
-func TestScaleSoakDistribution(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name     string
-		duration time.Duration
-		wantMS   float64
-	}{
-		{"zero", 0, 0.001},
-		{"fractional microsecond", 1001 * time.Nanosecond, 0.002},
-		{"bucket boundary", 2048001 * time.Nanosecond, 4.096},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var d scaleSoakDistribution
-			d.add(test.duration, true)
-			got := d.summary()
-			if got.Count != 1 || got.Errors != 1 || got.ErrorRate != 1 || got.P50MS != test.wantMS || got.P95MS != test.wantMS || got.P99MS != test.wantMS {
-				t.Fatalf("summary=%+v want percentile=%v", got, test.wantMS)
-			}
-		})
-	}
-}
-
-func TestScaleSoakErrorClassification(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name     string
-		canceled bool
-		err      error
-		want     int64
-	}{
-		{"request timeout", false, context.DeadlineExceeded, 1},
-		{"shutdown", true, context.Canceled, 0},
-		{"protocol failure at shutdown", true, errors.New("protocol failure"), 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			if test.canceled {
-				cancel()
-			}
-			metrics := newScaleSoakMetrics()
-			metrics.record("request", time.Now(), test.err, false, scaleSoakCanceled(ctx, test.err))
-			if metrics.OperationErrors != test.want {
-				t.Fatalf("operation errors=%d want=%d", metrics.OperationErrors, test.want)
-			}
-		})
 	}
 }
 

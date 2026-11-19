@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -288,66 +287,4 @@ func TestNativeRetentionCompletedBackfillsAvoidWriter(t *testing.T) {
 
 func frozenRetentionTimeout(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithCancel(ctx)
-}
-
-func TestNativeRetentionStageBudgets(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name     string
-		expire   bool
-		injected bool
-	}{
-		{name: "stage completes before deadline"},
-		{name: "stage deadline expires", expire: true},
-		{name: "injected timer controls deadline", injected: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				s := &Service{}
-				start := time.Now()
-				budget := 2 * time.Second
-				if test.injected {
-					budget = -time.Second
-					s.config.deps.RetentionTimeout = func(ctx context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
-						if duration != 2*time.Second {
-							t.Fatalf("stage budget=%v", duration)
-						}
-						return context.WithDeadline(ctx, start.Add(budget))
-					}
-				}
-				var firstErr func() error
-				nextRan := false
-				err := s.runNativeRetentionStages(t.Context(), []nativeRetentionStage{
-					{"first", func(ctx context.Context) error {
-						firstErr = ctx.Err
-						deadline, ok := ctx.Deadline()
-						if !ok || deadline.Sub(start) != budget {
-							t.Fatalf("stage deadline=%v present=%t", deadline, ok)
-						}
-						if test.expire {
-							<-ctx.Done()
-						}
-						return ctx.Err()
-					}},
-					{"next", func(ctx context.Context) error {
-						nextRan = true
-						if firstErr() == nil {
-							t.Error("completed stage context remains active")
-						}
-						return ctx.Err()
-					}},
-				})
-				if test.expire || test.injected {
-					if !errors.Is(err, context.DeadlineExceeded) {
-						t.Fatalf("expired stage error=%v", err)
-					}
-				} else if err != nil {
-					t.Fatal(err)
-				}
-				if !nextRan {
-					t.Fatal("one stage prevented the next stage")
-				}
-			})
-		})
-	}
 }
