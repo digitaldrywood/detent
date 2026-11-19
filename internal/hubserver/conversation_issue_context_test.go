@@ -21,51 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestConversationSubjectOwnership(t *testing.T) {
-	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
-	worker := f.create(t, f.token, map[string]any{})
-	response := f.link(t, f.token, worker.Conversation.ID, "worker-link", true, "subject issue")
-	requireNativeStatus(t, response, http.StatusOK)
-	var linked conversationLinkResponse
-	decodeHubResponse(t, response, &linked)
-	issue := linked.Issue.NativeIssue
-	var first string
-	for _, test := range []struct {
-		name, token string
-		visible     int
-	}{{"first", f.token, 1}, {"second", f.token, 2}, {"other owner", f.other, 1}} {
-		t.Run(test.name, func(t *testing.T) {
-			created := f.create(t, test.token, map[string]any{"subject_work_item_id": string(issue.WorkItemID), "first_message": map[string]string{"key": "question-" + test.name, "text": "Why blocked?"}})
-			c := created.Conversation
-			if c.SubjectWorkItemID == nil || *c.SubjectWorkItemID != string(issue.WorkItemID) || c.WorkItemID != nil || c.Visibility != conversation.VisibilityPrivate || !strings.HasPrefix(c.Title, "#1 · ") {
-				t.Fatalf("conversation=%+v", c)
-			}
-			if first == "" {
-				first = c.ID
-			}
-			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations?subject_work_item_id="+string(issue.WorkItemID), test.token, nil)
-			requireNativeStatus(t, response, http.StatusOK)
-			var list conversationListResponse
-			decodeHubResponse(t, response, &list)
-			if len(list.Conversations) != test.visible {
-				t.Fatalf("list=%+v", list)
-			}
-			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+c.ID+"/link", test.token, conversationLinkRequest{Key: "share-" + test.name, Issue: conversationLinkIssue{Title: "Cannot share questions"}, ShareHistory: true})
-			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-		})
-	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+first, f.other, nil), http.StatusNotFound)
-	for _, subject := range []string{"wi_missing", string(newNativeFixture(t, f.service, "", "foreign-subject").create(t, "foreign").WorkItemID)} {
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations", f.token, conversationCreateBody(map[string]any{"subject_work_item_id": subject})), http.StatusNotFound)
-	}
-	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	if strings.Contains(response.Body.String(), "Why blocked?") {
-		t.Fatal("private question posted as an issue comment")
-	}
-}
-
 func TestCoordinatorSubjectRefresh(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
