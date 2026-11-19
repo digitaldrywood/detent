@@ -56,22 +56,7 @@ A plan names the acceptance criteria, the intended code and test changes, valida
 
 ## Delivery policy
 
-Land the exact reviewed candidate through the project’s configured delivery path. Honor required forge queues and configured branch protection, and serialize target-ref updates. Queueing stays under the item’s lease. Resolve conflicts through ordinary Git and regeneration. Changes to live branch protection require separate operator authorization.
-
-**Existing queue and landing checks:** `TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch`,
-`TestDelegateNativeMergeQueueIssuesCachesQueueEntries`,
-`TestNativeMergeQueueReviewReworkAfterEnqueue`,
-`TestNativeMergeQueueWithdrawalDoesNotBlockDone`,
-`TestNativeMergeQueueSkippedChecks`, `TestNativeMergeQueueNeutralChecks`,
-`TestNativeMergeQueueHeadBudget`, and
-`TestNativeMergeQueueBudgetSurvivesRestart` in `internal/orchestrator`.
-`TestLocalGitLandingReplacement` in `internal/workspace` enforces superseded
-landing ownership, cleanup and retention of moved or unknown heads.
-
-**Existing branch protection and regeneration checks:** `TestDoctorRespectsProjectCIPolicy` in `internal/cli`;
-`TestIndividuallyValidBranchesRejectIntegratedCollision` in
-`tools/migrationcheck`; `make check-migrations`. Doctor reports live branch
-protection as project evidence; the operator verifies live settings.
+Land the exact reviewed candidate through the project’s configured delivery path. Honor required forge queues and configured branch protection, and serialize target-ref updates. Never bypass a configured queue with a programmatic merge. Queueing stays under the item’s lease. Resolve conflicts through ordinary Git and regeneration, never landing-time renumbering or shared version edits. Changes to live branch protection require separate operator authorization.
 
 ## Validation
 
