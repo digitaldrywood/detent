@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -121,11 +122,94 @@ func TestPostgresPriorAuditEvidence(t *testing.T) {
 	})
 }
 
+func TestReviewPriorAuditAuthorization(t *testing.T) {
+	t.Parallel()
+	first := hubfixture.NewLeasedRunners(t)
+	config := hubfixture.StartupConfig()
+	config.Hosted.OrganizationID = "org_other"
+	config.Hosted.WorkOSOrganizationID = "provider_org_other"
+	second := hubfixture.SeedLeasedRunners(t, hubfixture.OpenStartupOn(t, first.Admin, config), "org_other")
+	const project tracker.ProjectID = "prj_runner"
+	const change = "change_example"
+	const otherChange = "change_other_item"
+	for _, fixture := range []struct {
+		runners  hubfixture.LeasedRunners
+		evidence string
+	}{{first, "First disposition"}, {second, "Second disposition"}} {
+		f := fixture.runners
+		scope := hubfixture.Native{Hub: f.Hub, Project: tracker.NativeProject{OrganizationID: f.Organization, ID: project}}
+		want := seedPriorAuditEvidenceForItem(t, scope, f.Leases[0].WorkItemID, change, fixture.evidence, false)
+		t.Run(string(f.Organization)+"/current item", func(t *testing.T) {
+			response := f.Hub.Request(t, http.MethodGet, priorAuditPath(f.Organization, project, change), f.Tokens[0], nil)
+			hubfixture.RequireStatus(t, response, http.StatusOK)
+			var got securityaudit.Evidence
+			hubfixture.Decode(t, response, &got)
+			if got.Run.ID != 70 || len(got.Run.Findings) != 1 || !reflect.DeepEqual(got.Dispositions, []securityaudit.Disposition{want}) {
+				t.Fatalf("unexpected prior audit evidence: %+v", got)
+			}
+		})
+		t.Run(string(f.Organization)+"/other item", func(t *testing.T) {
+			response := f.Hub.Request(t, http.MethodGet, priorAuditPath(f.Organization, project, change), f.Tokens[1], nil)
+			hubfixture.RequireStatus(t, response, http.StatusNotFound)
+		})
+	}
+	t.Run("other tenant", func(t *testing.T) {
+		response := first.Hub.Request(t, http.MethodGet, priorAuditPath(second.Organization, project, change), first.Tokens[0], nil)
+		hubfixture.RequireStatus(t, response, http.StatusNotFound)
+	})
+	t.Run("expired lease", func(t *testing.T) {
+		lease := first.Leases[0]
+		_, err := first.Admin.ExecContext(t.Context(), `UPDATE leases SET acquired_at=acquired_at-interval '2 hours', renewed_at=renewed_at-interval '2 hours', expires_at=expires_at-interval '2 hours' WHERE organization_id=$1 AND lease_id=$2 AND fencing_token=$3`, first.Organization, lease.ID, lease.FencingToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := first.Hub.Request(t, http.MethodGet, priorAuditPath(first.Organization, project, change), first.Tokens[0], nil)
+		hubfixture.RequireStatus(t, response, http.StatusNotFound)
+	})
+	t.Run("released lease", func(t *testing.T) {
+		lease := second.Leases[0]
+		if err := second.Hub.Repository.WriteTenant(t.Context(), second.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken)}, "released")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		response := second.Hub.Request(t, http.MethodGet, priorAuditPath(second.Organization, project, change), second.Tokens[0], nil)
+		hubfixture.RequireStatus(t, response, http.StatusNotFound)
+	})
+	t.Run("revoked credential", func(t *testing.T) {
+		scope := hubfixture.Native{Hub: first.Hub, Project: tracker.NativeProject{OrganizationID: first.Organization, ID: project}}
+		seedPriorAuditEvidenceForItem(t, scope, first.Leases[1].WorkItemID, otherChange, "Other item disposition", false)
+		path := priorAuditPath(first.Organization, project, otherChange)
+		token := first.Tokens[1]
+		hubfixture.RequireStatus(t, first.Hub.Request(t, http.MethodGet, path, token, nil), http.StatusOK)
+		credential, err := scope.Credential(t, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := first.Hub.Repository.WriteTenant(t.Context(), first.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.RevokeAccessCredential(t.Context(), credential.ID, first.Hub.Now())
+		}); err != nil {
+			t.Fatal(err)
+		}
+		hubfixture.RequireStatus(t, first.Hub.Request(t, http.MethodGet, path, token, nil), http.StatusUnauthorized)
+	})
+}
+
+func priorAuditPath(organization tracker.OrganizationID, project tracker.ProjectID, change string) string {
+	query := url.Values{"change_id": {change}, "version_id": {change + "_v2"}, "repository": {hubfixture.ChangeInput().Repository}}
+	return hubfixture.ProjectBase(organization, project) + "/security-audits/evidence?" + query.Encode()
+}
+
 func seedPriorAuditEvidence(t *testing.T, scope hubfixture.Native, changeID, evidence string, pageable bool) securityaudit.Disposition {
+	t.Helper()
+	return seedPriorAuditEvidenceForItem(t, scope, scope.Create(t, changeID).WorkItemID, changeID, evidence, pageable)
+}
+
+func seedPriorAuditEvidenceForItem(t *testing.T, scope hubfixture.Native, item tracker.NativeWorkItemID, changeID, evidence string, pageable bool) securityaudit.Disposition {
 	t.Helper()
 	ctx := t.Context()
 	org := scope.Organization()
-	issue := scope.Create(t, changeID)
 	content := eventstore.NewContent(scope.Hub.Config.RunDetails)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	marshal := func(value any) []byte {
@@ -136,7 +220,7 @@ func seedPriorAuditEvidence(t *testing.T, scope hubfixture.Native, changeID, evi
 		}
 		return raw
 	}
-	change, err := content.PrepareChange(ctx, org, marshal(tracker.ChangeRequest{ID: changeID, OrganizationID: org, ProjectID: scope.Project.ID, WorkItemID: issue.WorkItemID, Title: "Example", Revision: 1, CreatedAt: now, UpdatedAt: now}))
+	change, err := content.PrepareChange(ctx, org, marshal(tracker.ChangeRequest{ID: changeID, OrganizationID: org, ProjectID: scope.Project.ID, WorkItemID: item, Title: "Example", Revision: 1, CreatedAt: now, UpdatedAt: now}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +242,7 @@ func seedPriorAuditEvidence(t *testing.T, scope hubfixture.Native, changeID, evi
 		versions = append(versions, version)
 	}
 	prior := versions[0]
-	run := securityaudit.Run{ID: 70, ProjectID: string(scope.Project.ID), IssueID: string(issue.WorkItemID), Repository: prior.Repository, BaseSHA: prior.BaseSHA, HeadSHA: prior.HeadSHA, Verdict: securityaudit.VerdictFail,
+	run := securityaudit.Run{ID: 70, ProjectID: string(scope.Project.ID), IssueID: string(item), Repository: prior.Repository, BaseSHA: prior.BaseSHA, HeadSHA: prior.HeadSHA, Verdict: securityaudit.VerdictFail,
 		Findings: []securityaudit.Finding{{ID: "finding_example", Certainty: securityaudit.CertaintyUndetermined, UnresolvedFact: "Does the route reach the guard?", Path: "internal/example/handler.go", CheckCommand: "go test ./internal/example -run TestRouteGuard"}}}
 	review := tracker.ChangeReview{ID: "review_example", VersionID: prior.ID, Decision: "changes_requested", CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{VersionID: prior.ID, SessionID: run.ID, Run: run}}
 	if changeID == "change_other" {
