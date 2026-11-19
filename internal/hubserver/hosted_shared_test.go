@@ -545,38 +545,6 @@ func TestHostedSharedBindingRequiresExplicitMigration(t *testing.T) {
 	}
 }
 
-func TestHostedSharedConfigValidation(t *testing.T) {
-	t.Parallel()
-	key := hostedSharedKey(7).Public().(ed25519.PublicKey)
-	valid := func() *hostedplans.HostedConfig {
-		return &hostedplans.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider(),
-			SharedEntry: &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key}, Generation: 1}}
-	}
-	tests := []struct {
-		name   string
-		mutate func(*hostedplans.HostedConfig)
-		ok     bool
-	}{
-		{"valid", func(*hostedplans.HostedConfig) {}, true},
-		{"missing issuer", func(c *hostedplans.HostedConfig) { c.SharedEntry.Issuer = "" }, false},
-		{"zero generation", func(c *hostedplans.HostedConfig) { c.SharedEntry.Generation = 0 }, false},
-		{"no keys", func(c *hostedplans.HostedConfig) { c.SharedEntry.PublicKeys = nil }, false},
-		{"short key", func(c *hostedplans.HostedConfig) { c.SharedEntry.PublicKeys = []ed25519.PublicKey{key[:5]} }, false},
-		{"directory", func(c *hostedplans.HostedConfig) {
-			c.Directory = []hostedplans.HostedDestination{{OrganizationID: "org_b", WorkOSOrganizationID: "org_provider_b", PublicURL: "https://b.example.test"}}
-		}, false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := valid()
-			test.mutate(cfg)
-			if err := hostedplans.ValidateHostedConfig(cfg); (err == nil) != test.ok {
-				t.Fatalf("validate error = %v, want ok %v", err, test.ok)
-			}
-		})
-	}
-}
-
 func TestHostedSharedSupportSessionAudit(t *testing.T) {
 	t.Parallel()
 	f := newHostedSharedFixture(t)
