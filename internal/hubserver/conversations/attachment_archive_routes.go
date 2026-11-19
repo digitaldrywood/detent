@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -21,22 +20,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-func (s *Service) registerAttachmentArchiveRoutes(e *echo.Echo) {
-	if !s.hostedShared() {
-		return
-	}
-	base := attachmentMetadataBase + "/archives/:item"
-	e.POST(base+"/check", s.checkAttachmentArchive, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
-	e.POST(base, s.recordAttachmentArchive, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
-	e.GET(base+"/:digest", s.readAttachmentArchive, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
-}
-
-func (s *Service) checkAttachmentArchive(c echo.Context) error {
+func (s AttachmentArchiveHTTP) CheckAttachmentArchive(c echo.Context) error {
 	var input struct {
 		Reference *attachment.ArchiveReference `json:"reference,omitempty"`
 	}
 	if err := hubapi.DecodeAPIJSON(c, &input); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return s.deps.InvalidRequest(c, err)
 	}
 	if input.Reference != nil {
 		return s.writeAttachmentArchive(c, *input.Reference, false)
@@ -44,28 +33,28 @@ func (s *Service) checkAttachmentArchive(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := hubscope.NativeRequestScope(c)
-	row, _, err := s.readWorkItemRecord(ctx, scope, c.Param("item"))
+	row, _, err := s.deps.ReadWorkItem(ctx, scope, c.Param("item"))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.APIError(c, err)
 	}
-	if err := requireReporterTriage(scope, tracker.NativeIssue{State: hubapi.StringValue(row.WorkflowStateName)}); err != nil {
-		return s.nativeAPIError(c, err)
+	if err := s.deps.RequireReporterTriage(scope, tracker.NativeIssue{State: hubapi.StringValue(row.WorkflowStateName)}); err != nil {
+		return s.deps.APIError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]string{"principal_id": scope.Credential.ID})
 }
 
-func (s *Service) recordAttachmentArchive(c echo.Context) error {
+func (s AttachmentArchiveHTTP) RecordAttachmentArchive(c echo.Context) error {
 	var ref attachment.ArchiveReference
 	if err := hubapi.DecodeAPIJSON(c, &ref); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return s.deps.InvalidRequest(c, err)
 	}
 	return s.writeAttachmentArchive(c, ref, true)
 }
 
-func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveReference, publish bool) error {
+func (s AttachmentArchiveHTTP) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveReference, publish bool) error {
 	scope := hubscope.NativeRequestScope(c)
 	if ref.Validate(string(scope.Organization)) != nil {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid archive reference"))
+		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid archive reference"))
 	}
 	ctx := c.Request().Context()
 	scope.Action = operatortool.UploadAttachment
@@ -73,12 +62,12 @@ func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveR
 	if ref.BindingID != "" {
 		identity = ref.BindingID + "\n" + identity
 	}
-	record := attachmentstore.ArchiveRecord{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "att_" + artifact.Digest([]byte(string(scope.Organization) + "\n" + identity))[:32], Uploader: scope.Credential.ID, CreatedAt: s.config.Clock(), Reference: ref}
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+	record := attachmentstore.ArchiveRecord{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "att_" + artifact.Digest([]byte(string(scope.Organization) + "\n" + identity))[:32], Uploader: scope.Credential.ID, CreatedAt: s.deps.Now(), Reference: ref}
+	err := s.deps.WriteTenant(ctx, scope.Organization, func(w tenantstore.Writer) error {
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		if _, err := s.attachmentWriteAuthority(ctx, w, scope, nil); err != nil {
+		if _, err := s.deps.WriteAuthority(ctx, w, scope, nil); err != nil {
 			return err
 		}
 		row, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(c.Param("item")))
@@ -88,7 +77,7 @@ func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveR
 		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
-		if err := requireReporterTriage(scope, tracker.NativeIssue{State: hubapi.StringValue(row.WorkflowStateName)}); err != nil {
+		if err := s.deps.RequireReporterTriage(scope, tracker.NativeIssue{State: hubapi.StringValue(row.WorkflowStateName)}); err != nil {
 			return err
 		}
 		if publish {
@@ -98,7 +87,7 @@ func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveR
 		if err != nil || !created {
 			return err
 		}
-		limit, err := s.attachmentQuotaLimit(ctx, w)
+		limit, err := s.deps.QuotaLimit(ctx, w)
 		if err != nil {
 			return err
 		}
@@ -116,7 +105,7 @@ func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveR
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
+		return s.deps.APIError(c, hubapi.ProjectRecordError(err))
 	}
 	c.Response().Header().Set("Cache-Control", "private, no-store")
 	if !publish {
@@ -125,18 +114,18 @@ func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveR
 	return c.JSON(http.StatusCreated, ref)
 }
 
-func (s *Service) readAttachmentArchive(c echo.Context) error {
+func (s AttachmentArchiveHTTP) ReadAttachmentArchive(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := hubscope.NativeRequestScope(c)
 	if !artifact.ValidHash(c.Param("digest"), 64) {
-		return s.nativeAPIError(c, hubapi.NativeNotFound())
+		return s.deps.APIError(c, hubapi.NativeNotFound())
 	}
-	if _, _, err := s.readWorkItemRecord(ctx, scope, c.Param("item")); err != nil {
-		return s.nativeAPIError(c, err)
+	if _, _, err := s.deps.ReadWorkItem(ctx, scope, c.Param("item")); err != nil {
+		return s.deps.APIError(c, err)
 	}
 	if scope.Credential.HostedRole == "reporter" {
-		return s.nativeAPIError(c, hubapi.NativeNotFound())
+		return s.deps.APIError(c, hubapi.NativeNotFound())
 	}
 	query := attachmentstore.ArchiveQuery{ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(c.Param("item")), Digest: c.Param("digest"), Section: c.QueryParam("section")}
 	if c.QueryParams().Has("binding") {
@@ -146,18 +135,18 @@ func (s *Service) readAttachmentArchive(c echo.Context) error {
 	if query.Section != "" {
 		revision, err := strconv.ParseInt(c.QueryParam("revision"), 10, 64)
 		if err != nil || revision < 1 {
-			return s.nativeAPIError(c, hubapi.NativeNotFound())
+			return s.deps.APIError(c, hubapi.NativeNotFound())
 		}
 		query.Revision = revision
 		if strings.HasPrefix(query.Section, "conversation:") {
-			if _, err := s.readPGConversation(ctx, scope, strings.TrimPrefix(query.Section, "conversation:")); err != nil {
-				return s.nativeAPIError(c, err)
+			if _, err := s.deps.ReadConversation(ctx, scope, strings.TrimPrefix(query.Section, "conversation:")); err != nil {
+				return s.deps.APIError(c, err)
 			}
 		}
 	}
 	var ref attachment.ArchiveReference
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+	err := s.deps.ReadTenant(ctx, scope.Organization, func(r tenantstore.Reader) error {
+		if err := s.deps.Authorize(ctx, r, scope, false); err != nil {
 			return err
 		}
 		var err error
@@ -165,7 +154,7 @@ func (s *Service) readAttachmentArchive(c echo.Context) error {
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
+		return s.deps.APIError(c, hubapi.ProjectRecordError(err))
 	}
 	c.Response().Header().Set("Cache-Control", "private, no-store")
 	return c.JSON(http.StatusOK, ref)

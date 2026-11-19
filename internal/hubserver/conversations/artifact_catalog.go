@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -19,15 +19,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) registerArtifactCatalogRoutes(e *echo.Echo) {
-	e.POST(hubapi.NativeBase+"/artifact-services/:service/catalog", s.artifactCatalog)
-	e.POST("/api/v2/organizations/:organization/artifact-services/:service/catalog", s.artifactCatalog)
-	e.PUT(hubapi.NativeBase+"/artifact-services/:service/catalog-policy", s.setArtifactCatalogPolicy, s.requireOnboardingAdmin())
-}
-
-func (s *Service) catalogPublisherScope(ctx context.Context, r postgres.ArtifactCatalogReader, command artifact.CatalogCommand, credential hubapi.APICredential, write bool) (hubscope.NativeScope, artifact.Binding, error) {
+func (s ArtifactCatalogHTTP) catalogPublisherScope(ctx context.Context, r postgres.ArtifactCatalogReader, command artifact.CatalogCommand, credential hubapi.APICredential, write bool) (hubscope.NativeScope, artifact.Binding, error) {
 	org := tracker.OrganizationID(command.OrganizationID)
-	if s.config.Hosted != nil && org != s.accessOrganization() {
+	if s.deps.Hosted && org != s.deps.Organization() {
 		return hubscope.NativeScope{}, artifact.Binding{}, artifact.ErrDenied
 	}
 	project := tracker.ProjectID(command.ProjectID)
@@ -43,11 +37,11 @@ func (s *Service) catalogPublisherScope(ctx context.Context, r postgres.Artifact
 		return hubscope.NativeScope{}, artifact.Binding{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	scope := hubscope.NativeScope{Organization: org, Project: project, Credential: credential}
-	if err := s.authorizeAccessScope(ctx, tenant, scope, write); err != nil {
+	if err := s.deps.Authorize(ctx, tenant, scope, write); err != nil {
 		return scope, artifact.Binding{}, artifact.ErrDenied
 	}
 	current, err := tenant.AccessCredential(ctx, credential.ID)
-	if err != nil || !current.Valid(credential.Hash, s.config.Clock()) || current.Scope != string(hubapi.APIScopeWorker) || !current.NativeOnly {
+	if err != nil || !current.Valid(credential.Hash, s.deps.Now()) || current.Scope != string(hubapi.APIScopeWorker) || !current.NativeOnly {
 		return scope, artifact.Binding{}, artifact.ErrDenied
 	}
 	if _, err := tenant.AccessTokenGrant(ctx, current.ID, project, credential.HostedRole); err != nil {
@@ -60,11 +54,11 @@ func (s *Service) catalogPublisherScope(ctx context.Context, r postgres.Artifact
 	return scope, binding, nil
 }
 
-func (s *Service) artifactCatalog(c echo.Context) error {
-	if s.database.postgres == nil {
+func (s ArtifactCatalogHTTP) ArtifactCatalog(c echo.Context) error {
+	if !s.deps.StorageAvailable {
 		return c.NoContent(http.StatusServiceUnavailable)
 	}
-	credential, _, err := s.authenticateAPIRequest(c)
+	credential, _, err := s.deps.Authenticate(c)
 	if err != nil || credential.Scope != hubapi.APIScopeWorker || !credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" || c.Request().Header.Get(echo.HeaderAuthorization) == "" {
 		return c.JSON(http.StatusForbidden, struct {
 			Code string `json:"code"`
@@ -83,12 +77,12 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 		p := artifact.Policy{ID: row.CatalogPolicyID, Limits: artifact.Limits{RetainedBytes: row.CatalogRetainedLimit, ReservedBytes: row.CatalogReservedLimit, ArtifactBytes: row.CatalogArtifactLimit, UploadBytes: row.CatalogUploadLimit, RetentionSeconds: row.CatalogRetentionSeconds}, AbandonedUploadSeconds: row.CatalogAbandonedSeconds, DeletionRecordSeconds: row.CatalogDeletionSeconds, BackupSeconds: row.CatalogBackupSeconds}
 		orgRetained, orgReserved := int64(1<<60), int64(1<<60)
 		if binding.Mode == "hosted" {
-			plans := s.database.plansService().Plans()
+			plans := s.deps.Plans().Plans()
 			billing, ok := r.(billingstore.Reader)
 			if !ok || plans == nil || plans.WindowSeconds <= 0 {
 				return artifact.Config{}, artifact.ErrQuota
 			}
-			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, billing, s.config.Clock()))
+			entitlement, err := hubapi.FeatureResult(s.deps.Plans().EntitlementRecord(ctx, billing, s.deps.Now()))
 			if err != nil {
 				return artifact.Config{}, err
 			}
@@ -165,43 +159,43 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 		default:
 			return nil
 		}
-		err = writer.CatalogExecutionAuthority(ctx, postgres.CatalogExecutionAuthorityInput{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(reservation.WorkItemID), AttemptID: reservation.AttemptID, RunID: reservation.RunID, LeaseID: reservation.LeaseID, FencingToken: reservation.FencingToken, ServiceID: command.ServiceID, IdempotencyKey: reservation.Key, Kind: reservation.Kind, Bytes: reservation.Bytes, Now: s.config.Clock()})
+		err = writer.CatalogExecutionAuthority(ctx, postgres.CatalogExecutionAuthorityInput{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(reservation.WorkItemID), AttemptID: reservation.AttemptID, RunID: reservation.RunID, LeaseID: reservation.LeaseID, FencingToken: reservation.FencingToken, ServiceID: command.ServiceID, IdempotencyKey: reservation.Key, Kind: reservation.Kind, Bytes: reservation.Bytes, Now: s.deps.Now()})
 		if err != nil {
 			return artifact.ErrDenied
 		}
 		return nil
 	}
-	owner, err := cataloghub.New(s.database.postgres, policy, cataloghub.Options{Authorize: authorize, Now: s.config.Clock})
+	owner, err := s.deps.NewCatalog(policy, cataloghub.Options{Authorize: authorize, Now: s.deps.Now})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.APIError(c, err)
 	}
 	handler, err := artifact.NewCatalogHandler(owner, func(context.Context, string, artifact.CatalogCommand) error { return nil })
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.APIError(c, err)
 	}
 	handler.ServeHTTP(c.Response(), c.Request())
 	return nil
 }
 
-func (s *Service) setArtifactCatalogPolicy(c echo.Context) error {
-	if s.database.postgres == nil {
+func (s ArtifactCatalogHTTP) SetArtifactCatalogPolicy(c echo.Context) error {
+	if !s.deps.StorageAvailable {
 		return c.NoContent(http.StatusServiceUnavailable)
 	}
 	scope := hubscope.NativeRequestScope(c)
 	scope.RequireHostedAdmin = true
 	var policy artifact.Policy
 	if err := hubapi.DecodeAPIJSON(c, &policy); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return s.deps.InvalidRequest(c, err)
 	}
 	if err := policy.Validate(); err != nil {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid artifact catalog policy"))
+		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid artifact catalog policy"))
 	}
-	err := s.database.postgres.WriteArtifactCatalog(c.Request().Context(), scope.Organization, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+	err := s.deps.WriteCatalog(c.Request().Context(), scope.Organization, func(w postgres.ArtifactCatalogWriter) error {
 		tenant, ok := w.(tenantstore.Reader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		if err := s.authorizeAccessScope(c.Request().Context(), tenant, scope, true); err != nil {
+		if err := s.deps.Authorize(c.Request().Context(), tenant, scope, true); err != nil {
 			return err
 		}
 		if scope.Credential.Hosted == nil {
@@ -214,7 +208,7 @@ func (s *Service) setArtifactCatalogPolicy(c echo.Context) error {
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.APIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
