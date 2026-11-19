@@ -19,7 +19,7 @@
     },
     "github.com/digitaldrywood/detent/internal/hubserver": {
       "files": 440,
-      "loc": 96700,
+      "loc": 96600,
       "test-files": 490,
       "test-funcs": 1422
     },

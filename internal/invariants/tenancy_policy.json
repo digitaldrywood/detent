@@ -590,7 +590,7 @@
       "organization:appOrganizationID": 1
     },
     "internal/hubserver/change_columns.go": {
-      "organization:appOrganizationID": 2
+      "organization:appOrganizationID": 1
     },
     "internal/hubserver/change_content.go": {
       "organization:accessOrganization": 1

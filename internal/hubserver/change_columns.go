@@ -3,17 +3,11 @@ package hubserver
 import (
 	"context"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/changeapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type changeColumnCursor struct {
-	Review         string
-	Checkpoint     string
-	CheckpointTurn bool
-}
+type changeColumnCursor = changeapi.ColumnCursor
 
 func (s *Service) populateChangeColumns(ctx context.Context) error {
 	var cursor changeColumnCursor
@@ -23,25 +17,11 @@ func (s *Service) populateChangeColumns(ctx context.Context) error {
 	case string:
 		cursor.Review = prior
 	}
-	checkpointTurn := cursor.CheckpointTurn
-	cursor.CheckpointTurn = !cursor.CheckpointTurn
 	defer func() { s.changeColumnAfter = cursor }()
-	if checkpointTurn {
-		next, err := s.populateCheckpointSource(ctx, tracker.OrganizationID(s.appOrganizationID()), cursor.Checkpoint)
-		if next != "" || err == nil {
-			cursor.Checkpoint = next
-		}
-		return err
-	}
-	owner, ok := s.config.TenantRepository.(interface {
-		BackfillCurrentChangeReviewsAfter(context.Context, tracker.OrganizationID, *eventstore.Content, int, string) (int, string, error)
+	return changeapi.PopulateChangeColumns(ctx, &cursor, changeapi.ColumnDeps{
+		Repository:               s.config.TenantRepository,
+		Organization:             func() tracker.OrganizationID { return tracker.OrganizationID(s.appOrganizationID()) },
+		RunDetailStore:           s.runDetailStore,
+		PopulateCheckpointSource: s.populateCheckpointSource,
 	})
-	if !ok {
-		return hubapi.NativeWorkItemStorageUnavailable()
-	}
-	_, next, err := owner.BackfillCurrentChangeReviewsAfter(ctx, tracker.OrganizationID(s.appOrganizationID()), eventstore.NewContent(s.runDetailStore()), corestore.MaxPageSize, cursor.Review)
-	if next != "" || err == nil {
-		cursor.Review = next
-	}
-	return err
 }
