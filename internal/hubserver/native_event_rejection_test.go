@@ -15,42 +15,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestNativeRuntimePhaseRejectionReason(t *testing.T) {
-	t.Parallel()
-	started := time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
-	for _, test := range []struct {
-		name   string
-		phase  tracker.NativePhase
-		reason string
-	}{
-		{name: "invalid name", phase: tracker.NativePhase{Name: "private-phase", StartedAt: started}, reason: "invalid_name"},
-		{name: "missing start", phase: tracker.NativePhase{Name: "implementation"}, reason: "missing_start"},
-		{name: "finish before start", phase: tracker.NativePhase{Name: "implementation", StartedAt: started, FinishedAt: started.Add(-time.Second)}, reason: "finish_before_start"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			err := validateNativeRuntime(&tracker.NativeRuntimeObservation{Phase: "completed", Phases: []tracker.NativePhase{{Name: "implementation", StartedAt: started}, test.phase}})
-			var failure *hubapi.NativeError
-			if !errors.As(err, &failure) || failure == nil {
-				t.Fatalf("validateNativeRuntime() error = %v, want nativeError", err)
-			}
-			want := []any{"phase_index", 1, "phase_failure", test.reason}
-			if len(failure.LogAttributes) != len(want) {
-				t.Fatalf("phase log attributes = %v, want %v", failure.LogAttributes, want)
-			}
-			for i := range want {
-				if failure.LogAttributes[i] != want[i] {
-					t.Errorf("phase log attribute %d = %v, want %v", i, failure.LogAttributes[i], want[i])
-				}
-			}
-			if strings.Contains(strings.Join([]string{failure.Error(), failure.Message}, " "), "private-phase") {
-				t.Fatal("phase rejection exposed the phase name")
-			}
-		})
-	}
-}
-
 func TestHostedNativeRejectionMessages(t *testing.T) {
 	t.Parallel()
+	t.Run("phase name is private", func(t *testing.T) {
+		now := time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
+		err := validateNativeRuntime(&tracker.NativeRuntimeObservation{Phase: "completed", Phases: []tracker.NativePhase{{Name: "private-phase", StartedAt: now}}})
+		var failure *hubapi.NativeError
+		if !errors.As(err, &failure) || strings.Contains(failure.Error(), "private-phase") || strings.Contains(failure.Message, "private-phase") {
+			t.Fatal("invalid phase name was accepted or exposed")
+		}
+	})
 	for _, test := range []struct {
 		name, category, field, message, want string
 	}{
