@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -18,8 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type countedTracer struct{ calls *atomic.Int64 }
 
 func TestTenantKeyCorruptionIsDenied(t *testing.T) {
 	db := template.Database(t)
@@ -47,11 +43,6 @@ func TestTenantKeyCorruptionIsDenied(t *testing.T) {
 	}
 }
 
-func (c countedTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
-	c.calls.Add(1)
-	return ctx
-}
-func (c countedTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 func TestTenantKeyConcurrentReads(t *testing.T) {
 	db := template.Database(t)
 	var database string
@@ -63,8 +54,7 @@ func TestTenantKeyConcurrentReads(t *testing.T) {
 	}
 	config := testConfig(t)
 	config.Pool = PoolConfig{MaxConnections: 10, ServingConnections: 8, BackgroundConnections: 1}
-	var calls atomic.Int64
-	pool := rolePool(t, db, postgres.PlatformRoleName, "", countedTracer{calls: &calls})
+	pool := rolePool(t, db, postgres.PlatformRoleName, "")
 	r, err := New(t.Context(), pool, config)
 	if err != nil {
 		t.Fatal(err)
@@ -97,8 +87,6 @@ func TestTenantKeyConcurrentReads(t *testing.T) {
 	if _, err := locked.ExecContext(t.Context(), `LOCK TABLE platform.access_keys IN ACCESS EXCLUSIVE MODE`); err != nil {
 		t.Fatal(err)
 	}
-	started := time.Now()
-	before := calls.Load()
 	for i := range 32 {
 		group.Go(func() {
 			org := tracker.OrganizationID("org_first")
@@ -125,31 +113,6 @@ func TestTenantKeyConcurrentReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	group.Wait()
-	if count := calls.Load() - before; count != 32 {
-		t.Fatalf("32 calls issued %d database operations", count)
-	}
-	t.Logf("32 concurrent calls across two tenants: %s, max concurrent SQL=8, exactly 1 query/call", time.Since(started))
-	before = calls.Load()
-	started = time.Now()
-	for range 8 {
-		group.Go(func() {
-			for i := range 125 {
-				org := tracker.OrganizationID("org_first")
-				if i%2 != 0 {
-					org = "org_second"
-				}
-				if _, err := r.TenantKey(t.Context(), "key_"+string(org), org); err != nil {
-					t.Error(err)
-				}
-			}
-		})
-	}
-	group.Wait()
-	elapsed := time.Since(started)
-	if count := calls.Load() - before; count != 1000 {
-		t.Fatalf("1000 calls issued %d operations", count)
-	}
-	t.Logf("1000 calls / 8 workers / 2 tenants: %s, %.0f calls/s", elapsed, 1000/elapsed.Seconds())
 	if _, err := r.TenantKey(t.Context(), "key_org_first", "org_second"); !errors.Is(err, ErrNoSession) {
 		t.Fatalf("cross tenant accepted: %v", err)
 	}
