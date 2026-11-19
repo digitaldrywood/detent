@@ -2289,7 +2289,7 @@ workspace paths, provider session state, manifest contents, source, diffs, raw
 transcripts, storage credentials, signed URLs or artifact bytes through handoffs.
 
 A `git_ref` checkpoint names work the runner pushed to the project's own Git
-remote (INV-17): a commit whose parent is the item branch head and whose tree
+remote: a commit whose parent is the item branch head and whose tree
 holds every uncommitted change, force-pushed with plain `git push` to
 `refs/detent/checkpoints/<work_item_id>`. The item branch is never rewritten,
 the ref raises no branch push event, and Hub stores only the reference. Runners
@@ -2325,7 +2325,7 @@ cursor ends the list. Source identity and revision must still match across pages
 and runner-administration authority, a command request identity, the expected
 issue revision and exact `version_id`. The selected `destination_runner_id` is
 recorded and audited but no longer routes claims: any eligible runner restores
-the source. The command and its read are retired with INV-17 source transfer.
+the source. The [INV-17 migration](invariants.md#inv-17--hub-owned-assignment-and-retained-item-worktrees) retires the command and its read.
 The command records an issue edit and reuses dispatch generation without changing
 workflow lanes, human/delivery holds, Change versions, validation or reviews.
 
