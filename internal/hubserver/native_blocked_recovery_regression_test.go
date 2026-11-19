@@ -22,6 +22,7 @@ import (
 )
 
 func TestAuditDispositionRecoversRecordedBlockedLane(t *testing.T) {
+	t.Run("resume in one tenant", testResumeClearedAuditAcrossTenants)
 	for _, name := range []string{"partial and final clearance", "receipt replay", "concurrent operator stop", "newer version", "independent question"} {
 		t.Run(name, func(t *testing.T) {
 			f := newDispatchGuardFixture(t)
@@ -30,21 +31,10 @@ func TestAuditDispositionRecoversRecordedBlockedLane(t *testing.T) {
 				configureDispatchGuardState(t, f, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo", "Blocked"}})
 			}
 			prior := f.reload(t)
-			key := securityaudit.Key{ProjectID: string(prior.ProjectID), Repository: "example-org/example-project", PRNumber: 1, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40)}
-			run := securityaudit.Run{ID: 70, ProjectID: key.ProjectID, IssueID: string(prior.WorkItemID), Repository: key.Repository, PRNumber: key.PRNumber, BaseSHA: key.BaseSHA, HeadSHA: key.HeadSHA,
-				Verdict: securityaudit.VerdictFail, ExitStatus: securityaudit.ExitStatusSuccess, InvocationID: "audit-example", WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: f.now, StartedAt: f.now, CompletedAt: f.now,
-				OutputBytes: 2, OutputDigest: securityaudit.OutputDigest("{}"), Summary: "Example audit", ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(),
-				Findings: []securityaudit.Finding{{ID: "finding_one", Severity: "p1", Certainty: securityaudit.CertaintyUndetermined, UnresolvedFact: "Does the route call the guard?"}, {ID: "finding_two", Severity: "p2", Certainty: securityaudit.CertaintyUndetermined, UnresolvedFact: "Does rejection prevent a write?"}}}
-			change, version, review := seedBlockedAuditReview(t, f, prior, run)
-			f.completionBody = run.CompletionMessage("The audit needs an answer.")
-			f.finish(t, &tracker.NativeDisposition{Status: workpad.StatusBlocked, HumanAction: true})
-			current := f.reload(t)
-			itemPath := f.base + "/work-items/" + string(current.WorkItemID)
-			mutation := tracker.Mutation{IdempotencyKey: "audit-hold", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}
-			hold := tracker.Transition{Mutation: mutation, ExpectedRevision: current.Revision, State: "Blocked", Reason: "worker_progress", ReasonDetail: f.completionBody}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/workflow", f.worker, hold), http.StatusOK)
-			mutation.IdempotencyKey = "audit-question"
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/comments", f.worker, tracker.CreateComment{Mutation: mutation, Body: f.completionBody}), http.StatusOK)
+			run, key := blockedAuditRun(f)
+			change, version, review := blockOnAuditReview(t, f, run)
+			itemPath := f.base + "/work-items/" + string(prior.WorkItemID)
+			mutation := tracker.Mutation{LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}
 			if name == "independent question" {
 				mutation.IdempotencyKey = "product-question"
 				question := tracker.CreateComment{Mutation: mutation, Body: workpad.BlockedDetail("", "Choose the default visibility.")}
@@ -91,22 +81,112 @@ func TestAuditDispositionRecoversRecordedBlockedLane(t *testing.T) {
 	}
 }
 
+func blockedAuditRun(f dispatchGuardFixture) (securityaudit.Run, securityaudit.Key) {
+	key := securityaudit.Key{ProjectID: string(f.project.ID), Repository: "example-org/example-project", PRNumber: 1, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40)}
+	run := securityaudit.Run{ID: 70, ProjectID: key.ProjectID, IssueID: string(f.issue.WorkItemID), Repository: key.Repository, PRNumber: key.PRNumber, BaseSHA: key.BaseSHA, HeadSHA: key.HeadSHA,
+		Verdict: securityaudit.VerdictFail, ExitStatus: securityaudit.ExitStatusSuccess, InvocationID: "audit-example", WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: f.now, StartedAt: f.now, CompletedAt: f.now,
+		OutputBytes: 2, OutputDigest: securityaudit.OutputDigest("{}"), Summary: "Example audit", ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(),
+		Findings: []securityaudit.Finding{{ID: "finding_one", Severity: "p1", Certainty: securityaudit.CertaintyUndetermined, UnresolvedFact: "Does the route call the guard?"}, {ID: "finding_two", Severity: "p2", Certainty: securityaudit.CertaintyUndetermined, UnresolvedFact: "Does rejection prevent a write?"}}}
+	return run, key
+}
+
+func testResumeClearedAuditAcrossTenants(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	configureHubOwnedBlockedRecovery(t, f)
+	prior := f.issue
+	run, key := blockedAuditRun(f)
+	run.Findings = run.Findings[:1]
+	blockOnAuditReview(t, f, run)
+	itemPath := f.base + "/work-items/" + string(prior.WorkItemID)
+	mutation := tracker.Mutation{LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}
+	org := prior.OrganizationID + "_second"
+	peer := newNativeFixtureWithProjectID(t, f.service, org, "Other tenant project", f.project.ID)
+	other := dispatchGuardFixture{conversationWorkerFixture: &conversationWorkerFixture{nativeFixture: peer, now: f.now, policy: f.policy}, worktreeState: "clean"}
+	approveHubTestPolicy(t, f.service, peer.base+"/policy", hubTestPolicy())
+	configureHubOwnedBlockedRecovery(t, other)
+	other.issue = peer.create(t, "Other audit item")
+	other.runner = conversationWorkerRunner(t, peer)
+	other.worker = other.runner.redemption.Credential
+	other.runner.reportCapacity(t)
+	other.claim(t)
+	otherRun := run
+	otherRun.IssueID = string(other.issue.WorkItemID)
+	blockOnAuditReview(t, other, otherRun)
+	other.release(t)
+	otherBlocked := other.reload(t)
+	if otherBlocked.State != "Blocked" {
+		t.Fatalf("other tenant started in %s", otherBlocked.State)
+	}
+	for i := range 401 {
+		if i > 0 && i%75 == 0 {
+			f.advance(time.Minute)
+		}
+		mutation.IdempotencyKey = fmt.Sprintf("progress-%d", i)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/comments", f.worker, tracker.CreateComment{Mutation: mutation, Body: "Progress recorded."}), http.StatusOK)
+	}
+	f.release(t)
+	blocked := f.reload(t)
+	if blocked.State != "Blocked" {
+		t.Fatalf("item awaiting disposition was in %s", blocked.State)
+	}
+	command := securityaudit.DispositionCommand{RequestID: "clear-audit", Key: key, FindingID: run.Findings[0].ID, Confirm: true, Evidence: "The focused route test exercised the guard."}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/security-audits/dispositions", testHubAdminToken, command), http.StatusOK)
+	if got := f.reload(t); got.State != "Blocked" || got.Revision != blocked.Revision {
+		t.Fatalf("disposition crossed the page bound: %s at revision %d", got.State, got.Revision)
+	}
+	f.runner.reportCapacity(t)
+	claim := hubOwnedRecoveryClaim(f, "resume-cleared-audit")
+	claim.WorkItemID = blocked.WorkItemID
+	claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+	if claimed.Code != http.StatusOK {
+		t.Fatalf("next recovery claim status = %d, want 200: %s", claimed.Code, claimed.Body.String())
+	}
+	if got := f.reload(t); got.State != prior.State || got.Revision != blocked.Revision+1 {
+		t.Fatalf("next claim left cleared item in %s at revision %d", got.State, got.Revision)
+	}
+	if got := other.reload(t); got.State != "Blocked" || got.Revision != otherBlocked.Revision {
+		t.Fatalf("other tenant moved to %s at revision %d", got.State, got.Revision)
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/security-audits/70/dispositions", other.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var receipts []securityaudit.Disposition
+	decodeHubResponse(t, response, &receipts)
+	if len(receipts) != 0 {
+		t.Fatalf("other tenant has %d dispositions", len(receipts))
+	}
+}
+
+func blockOnAuditReview(t *testing.T, f dispatchGuardFixture, run securityaudit.Run) (eventstore.Change, tracker.ChangeVersion, eventstore.Evidence) {
+	t.Helper()
+	change, version, review := seedBlockedAuditReview(t, f, f.issue, run)
+	f.completionBody = run.CompletionMessage("The audit needs an answer.")
+	f.finish(t, &tracker.NativeDisposition{Status: workpad.StatusBlocked, HumanAction: true})
+	current := f.reload(t)
+	path := f.base + "/work-items/" + string(current.WorkItemID)
+	mutation := tracker.Mutation{IdempotencyKey: "audit-hold", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}
+	hold := tracker.Transition{Mutation: mutation, ExpectedRevision: current.Revision, State: "Blocked", Reason: "worker_progress", ReasonDetail: f.completionBody}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, hold), http.StatusOK)
+	mutation.IdempotencyKey = "audit-question"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.worker, tracker.CreateComment{Mutation: mutation, Body: f.completionBody}), http.StatusOK)
+	return change, version, review
+}
+
 func seedBlockedAuditReview(t *testing.T, f dispatchGuardFixture, item tracker.NativeIssue, run securityaudit.Run) (eventstore.Change, tracker.ChangeVersion, eventstore.Evidence) {
 	t.Helper()
 	ctx := t.Context()
 	content := eventstore.NewContent(f.service.runDetailStore())
-	changeID := hubapi.NewID("change")
+	const changeID = "change_shared_audit"
 	change, err := content.PrepareChange(ctx, item.OrganizationID, auditRecoveryJSON(t, tracker.ChangeRequest{ID: changeID, OrganizationID: item.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.WorkItemID, Title: "Example change", Revision: 1, CreatedAt: f.now, UpdatedAt: f.now}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	version := tracker.ChangeVersion{ID: hubapi.NewID("version"), ChangeID: changeID, Number: 1, CreatedAt: f.now,
+	version := tracker.ChangeVersion{ID: "version_shared_audit", ChangeID: changeID, Number: 1, CreatedAt: f.now,
 		ChangeVersionInput: tracker.ChangeVersionInput{Repository: run.Repository, BaseSHA: run.BaseSHA, HeadSHA: run.HeadSHA, AttemptID: f.attempt, PolicyID: f.policy}}
 	row, err := content.PrepareVersion(ctx, item.OrganizationID, auditRecoveryJSON(t, version))
 	if err != nil {
 		t.Fatal(err)
 	}
-	review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version.ID, CreatedAt: f.now, Decision: "changes_requested", SecurityAudit: &tracker.SecurityAuditReview{VersionID: version.ID, SessionID: run.ID, Run: run}}
+	review := tracker.ChangeReview{ID: "review_shared_audit", VersionID: version.ID, CreatedAt: f.now, Decision: "changes_requested", SecurityAudit: &tracker.SecurityAuditReview{VersionID: version.ID, SessionID: run.ID, Run: run}}
 	evidence, err := content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: item.OrganizationID, ChangeID: changeID, VersionID: &version.ID, Kind: "review", CreatedAt: f.now}, auditRecoveryJSON(t, review))
 	if err != nil {
 		t.Fatal(err)

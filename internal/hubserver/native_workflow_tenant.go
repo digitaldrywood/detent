@@ -566,7 +566,7 @@ func (s *Service) prepareOrTransitionNativeIssue(ctx context.Context, scope hubs
 			} else if recordedRecovery {
 				var err error
 				if auditRecovery {
-					err = s.authorizeRecordedRecoveryState(ctx, w, scope, *recovery, claim.audit)
+					err = s.authorizeRecordedRecoveryState(ctx, w, scope, *recovery)
 				} else {
 					err = s.authorizeRecordedRecoveryTenant(ctx, w, scope, *recovery)
 				}
