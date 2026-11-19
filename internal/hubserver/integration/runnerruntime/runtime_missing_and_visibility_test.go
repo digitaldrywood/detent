@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -34,17 +36,27 @@ func TestNativeRuntimeHidesUnreadableProjectDependencies(t *testing.T) {
 	t.Parallel()
 	f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
 	foreign := hubfixture.NewNative(t, f.Hub, f.Project.OrganizationID, "runtime-foreign")
-	{
-		const key = "first"
-		item := f.Create(t, "visible "+key)
-		hidden := foreign.Create(t, "hidden "+key)
-		itemPath := f.Base + "/work-items/" + string(item.WorkItemID)
-		response := f.Hub.Request(t, http.MethodPost, itemPath+"/dependencies", hubfixture.AdminToken, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "runtime-hidden-" + key}, ExpectedRevision: item.Revision, RelatedWorkItemID: hidden.WorkItemID, Operation: "add"})
-		hubfixture.RequireStatus(t, response, http.StatusOK)
-		response = f.Hub.Request(t, http.MethodGet, itemPath+"/runtime", f.Token, nil)
-		hubfixture.RequireStatus(t, response, http.StatusOK)
-		if body := response.Body.String(); strings.Contains(body, string(hidden.WorkItemID)) || strings.Contains(body, hidden.Title) {
-			t.Fatalf("runtime evidence leaked dependency from unreadable project: %s", body)
-		}
+	item := f.Create(t, "Visible runtime item")
+	hidden := foreign.Create(t, "Unreadable runtime dependency")
+	ctx := t.Context()
+	edge := corestore.Relationship{
+		OrganizationID:    f.Project.OrganizationID,
+		ProjectID:         f.Project.ID,
+		WorkItemID:        item.WorkItemID,
+		RelatedProjectID:  foreign.Project.ID,
+		RelatedWorkItemID: hidden.WorkItemID,
+		Type:              "dependency",
+		Provenance:        "native",
+	}
+	if err := f.Hub.Repository.WriteTenant(ctx, f.Project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetRelationship(ctx, edge, "add", f.Hub.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	itemPath := f.Base + "/work-items/" + string(item.WorkItemID)
+	response := f.Request(t, http.MethodGet, itemPath+"/runtime", nil)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
+	if body := response.Body.String(); strings.Contains(body, string(hidden.WorkItemID)) || strings.Contains(body, hidden.Title) {
+		t.Fatalf("runtime evidence leaked dependency from unreadable project: %s", body)
 	}
 }
