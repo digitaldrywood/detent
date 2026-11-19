@@ -2,6 +2,7 @@ package access_test
 
 import (
 	"crypto/ed25519"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +22,7 @@ import (
 )
 
 type entryCatalogFixture struct {
+	admin         *sql.DB
 	repository    *postgres.Repository
 	organizations []string
 	handlers      map[string]http.Handler
@@ -36,7 +38,7 @@ func openEntryCatalog(t *testing.T, configure ...func(*hubfixture.Config)) entry
 	admin := hubtest.Database(t)
 	repository := hubtest.RepositoryOn(t, admin)
 	fixture := entryCatalogFixture{
-		repository: repository, organizations: []string{"org_startup", "org_other"},
+		admin: admin, repository: repository, organizations: []string{"org_startup", "org_other"},
 		handlers: make(map[string]http.Handler), key: key,
 	}
 	keys, details := hubfixture.SecretKeys(t), hubtest.NewDetails()
