@@ -222,12 +222,8 @@ func seedRecoveryDependencies(t *testing.T, admin *sql.DB, org tracker.Organizat
 		`DELETE FROM issue_dependencies WHERE organization_id=$1 AND dependent_issue_id=1`,
 		`INSERT INTO issues(organization_id,id,native_id,project_id,number,title,workflow_state_name) SELECT $1,n,'wi_dependency_'||n,'prj_1',n-1,'Example','Done' FROM generate_series(4,$2::bigint+2) n ON CONFLICT (organization_id,id) DO NOTHING`,
 		`UPDATE issues SET workflow_state_name='Done' WHERE organization_id=$1 AND id>=3 AND workflow_state_name IS DISTINCT FROM 'Done'`,
-		`ANALYZE issues`,
-		`ANALYZE work_item_identities`,
 		`INSERT INTO issue_dependencies(organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id) SELECT $1,'prj_1',1,'prj_1',n FROM generate_series(3,$2::bigint+2) n`,
 		`ALTER TABLE issue_dependencies ENABLE TRIGGER USER`,
-		`ANALYZE issue_dependencies`,
-		`ANALYZE project_workflow_states`,
 	} {
 		args := []any{}
 		if strings.Contains(query, "$1") {
