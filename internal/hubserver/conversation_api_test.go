@@ -1235,7 +1235,8 @@ func TestConversationAPILink(t *testing.T) {
 	// The first message queues a coordinator control before the link, so the
 	// queue holds one control already.
 	objects := &conversationContentFixture{}
-	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ControlQueueSize: 3, ArchiveContents: objects})
+	var sink conversationLogSink
+	f := newConversationAPIFixtureConfig(t, &ConversationConfig{Enabled: true, ControlQueueSize: 3, ArchiveContents: objects}, Config{Logger: slog.New(slog.NewJSONHandler(&sink, nil))})
 	dispatches := 0
 	f.service.config.ConversationDispatch = conversationDispatchRequestFunc(func(_ context.Context, _ tenantstore.Writer, project tracker.ProjectID, item string, _ leasestore.Fence, _ time.Time) error {
 		if project != f.project.ID || item == "" {
@@ -1307,19 +1308,33 @@ func TestConversationAPILink(t *testing.T) {
 		}
 	})
 	t.Run("linked message queues", func(t *testing.T) {
-		response := f.command(t, f.token, record.ID, conversation.Command{Key: "q1", Kind: conversation.CommandMessage, Text: "Also update the docs"})
+		const queuedText = "Private queued text sentinel"
+		const staleText = "Private stale text sentinel"
+		const overflowText = "Private overflow text sentinel"
+		response := f.command(t, f.token, record.ID, conversation.Command{Key: "q1", Kind: conversation.CommandMessage, Text: queuedText})
 		requireNativeStatus(t, response, http.StatusOK)
 		var receipt conversation.Receipt
 		decodeHubResponse(t, response, &receipt)
 		if receipt.Status != conversation.DeliveryQueued {
 			t.Fatalf("receipt = %#v", receipt)
 		}
-		response = f.command(t, f.token, record.ID, conversation.Command{Key: "q-stale", Kind: conversation.CommandMessage, Text: "Steer", Expected: conversation.Expected{AttemptID: "att_none"}})
+		response = f.command(t, f.token, record.ID, conversation.Command{Key: "q-stale", Kind: conversation.CommandMessage, Text: staleText, Expected: conversation.Expected{AttemptID: "att_none"}})
 		requireNativeError(t, response, http.StatusConflict, "stale_execution")
 		response = f.command(t, f.token, record.ID, conversation.Command{Key: "q2", Kind: conversation.CommandMessage, Text: "And tests"})
 		requireNativeStatus(t, response, http.StatusOK)
-		response = f.command(t, f.token, record.ID, conversation.Command{Key: "q3", Kind: conversation.CommandMessage, Text: "Too many"})
+		response = f.command(t, f.token, record.ID, conversation.Command{Key: "q3", Kind: conversation.CommandMessage, Text: overflowText})
 		requireNativeError(t, response, http.StatusServiceUnavailable, "queue_full")
+		for _, event := range []string{"conversation.receipt", "API request refused", "conversation.queue_full"} {
+			if len(sink.events(t, event)) == 0 {
+				t.Errorf("command did not log %s", event)
+			}
+		}
+		logs := sink.text()
+		for _, private := range []string{queuedText, staleText, overflowText} {
+			if strings.Contains(logs, private) {
+				t.Error("conversation command logs contain private message text")
+			}
+		}
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			_, found, err := r.Command(t.Context(), record.ID, "q3")
 			if err == nil && found {

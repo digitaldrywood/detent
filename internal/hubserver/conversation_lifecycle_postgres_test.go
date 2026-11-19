@@ -3,6 +3,8 @@ package hubserver
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,12 +22,15 @@ import (
 
 func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T) {
 	t.Parallel()
+	const privateText = "Private interrupted conversation text sentinel"
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	repository := projectRecordPostgres(t)
 	f := newConversationTenantFixture(t, repository, now)
 	f.service.config.TenantRepository = repository
 	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 	f.service.config.Clock = func() time.Time { return now }
+	var sink conversationLogSink
+	f.service.conversations.Logger = slog.New(slog.NewJSONHandler(&sink, nil))
 	owner := conversationLifecyclePostgresOwner(t, f, now)
 
 	var issue corestore.WorkItem
@@ -56,14 +61,14 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 		restartID = conversation.NewConversationID()
 		if _, err := writer.CreateConversation(t.Context(), conversationstore.Conversation{
 			OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: restartID, OwnerPrincipalID: owner.ID, Origin: conversationOriginUser,
-			Title: "Restart recovery", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1,
+			Title: privateText, Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1,
 			Execution:   conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{AttemptID: "attempt_restart", RunID: "run_restart", LeaseID: "lease_restart", FencingToken: 1}, Capabilities: conversation.Capabilities{Steer: true}, UpdatedAt: now},
 			Preferences: conversation.DefaultPreferences(), CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
 			return fmt.Errorf("create restart conversation: %w", err)
 		}
 		for range conversationLifecycleBatchSize + 1 {
-			message := conversationMessageToStore(f.project.OrganizationID, conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: restartID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "Example interrupted response", Delivery: conversation.DeliverySending, Actor: conversation.Actor{Kind: conversation.ActorRunner}, CreatedAt: now, UpdatedAt: now})
+			message := conversationMessageToStore(f.project.OrganizationID, conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: restartID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: privateText, Delivery: conversation.DeliverySending, Actor: conversation.Actor{Kind: conversation.ActorRunner}, CreatedAt: now, UpdatedAt: now})
 			if _, err := writer.CreateMessage(t.Context(), message); err != nil {
 				return fmt.Errorf("create restart message: %w", err)
 			}
@@ -120,6 +125,14 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	defer cancelWake()
 	if err := f.service.conversations.Start(t.Context()); err != nil {
 		t.Fatalf("selected PostgreSQL startup lifecycle: %v", err)
+	}
+	for _, event := range []string{"conversation.restart_normalized", "conversation.wake_pending"} {
+		if len(sink.events(t, event)) == 0 {
+			t.Errorf("startup did not log %s", event)
+		}
+	}
+	if strings.Contains(sink.text(), privateText) {
+		t.Error("conversation restart logs contain private text")
 	}
 	select {
 	case <-staleWake.wake:
