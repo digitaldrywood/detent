@@ -32,6 +32,7 @@ type AuditDispositionWriter interface {
 }
 
 type LatestAuditReviewReader interface {
+	AuditReviewDispositions(context.Context, tracker.ProjectID, string, int64) ([]AuditDisposition, error)
 	LatestAuditReviewSequence(context.Context, string, string) (int64, error)
 }
 

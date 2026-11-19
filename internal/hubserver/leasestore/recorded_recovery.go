@@ -9,24 +9,26 @@ import (
 )
 
 type RecordedRecovery struct {
-	Source                  *tracker.NativeChangeReference
-	ExpectedRevision        int64
-	EventSequence           int64
-	ProjectID               tracker.ProjectID
-	WorkItemID              tracker.NativeWorkItemID
-	Attempt                 Attempt
-	ReportEventID           string
-	ReportSequence          int64
-	ReportRevision          int64
-	WorkflowEventID         string
-	WorkflowSequence        int64
-	WorkflowObjectKey       string
-	DependencyNumbers       []int64
-	MergedDependencyNumbers []int64
-	Policy                  policystore.Revision
-	AttemptPolicyID         string
-	State                   string
-	Now                     time.Time
+	AuditReviewEvidenceRevision int64
+	AuditEvidenceSequence       int64
+	Source                      *tracker.NativeChangeReference
+	ExpectedRevision            int64
+	EventSequence               int64
+	ProjectID                   tracker.ProjectID
+	WorkItemID                  tracker.NativeWorkItemID
+	Attempt                     Attempt
+	ReportEventID               string
+	ReportSequence              int64
+	ReportRevision              int64
+	WorkflowEventID             string
+	WorkflowSequence            int64
+	WorkflowObjectKey           string
+	DependencyNumbers           []int64
+	MergedDependencyNumbers     []int64
+	Policy                      policystore.Revision
+	AttemptPolicyID             string
+	State                       string
+	Now                         time.Time
 }
 
 type RecordedRecoveryWriter interface {

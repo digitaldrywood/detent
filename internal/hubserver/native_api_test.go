@@ -49,6 +49,11 @@ type nativeFixture struct {
 
 func newNativeFixture(t *testing.T, service *Service, organization tracker.OrganizationID, name string) nativeFixture {
 	t.Helper()
+	return newNativeFixtureWithProjectID(t, service, organization, name, tracker.ProjectID(hubapi.NewID("prj")))
+}
+
+func newNativeFixtureWithProjectID(t *testing.T, service *Service, organization tracker.OrganizationID, name string, id tracker.ProjectID) nativeFixture {
+	t.Helper()
 	if service == nil {
 		service = newPostgresNativeService(t, Config{})
 	}
@@ -58,7 +63,7 @@ func newNativeFixture(t *testing.T, service *Service, organization tracker.Organ
 			organization = "org_first"
 		}
 	}
-	project := tracker.NativeProject{OrganizationID: organization, ID: tracker.ProjectID(hubapi.NewID("prj")), Name: name, States: nativeFixtureStates(), Profile: "native", RequireDependencies: true}
+	project := tracker.NativeProject{OrganizationID: organization, ID: id, Name: name, States: nativeFixtureStates(), Profile: "native", RequireDependencies: true}
 	token := hubapi.TokenResponse{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}
 	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {

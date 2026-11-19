@@ -60,14 +60,18 @@ WHERE requested.organization_id=$1 AND requested.project_id=$2 AND requested.cha
 	if result.Review.Sequence == 0 {
 		return result, nil
 	}
+	result.Dispositions, err = s.AuditReviewDispositions(ctx, query.Project, query.ChangeID, result.Review.Sequence)
+	return result, err
+}
+
+func (s *session) AuditReviewDispositions(ctx context.Context, project tracker.ProjectID, change string, sequence int64) ([]eventstore.AuditDisposition, error) {
 	rows, err := s.db.Query(ctx, `SELECT id,change_id,review_sequence,audit_session_id,finding_id,status,actor_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes
 FROM runner_audit_dispositions WHERE organization_id=$1 AND project_id=$2 AND change_id=$3 AND review_sequence=$4 ORDER BY id LIMIT 201`,
-		s.organization, query.Project, query.ChangeID, result.Review.Sequence)
+		s.organization, project, change, sequence)
 	if err != nil {
-		return result, mapError(ctx, err)
+		return nil, mapError(ctx, err)
 	}
-	result.Dispositions, err = s.scanAuditDispositions(ctx, query.Project, rows)
-	return result, err
+	return s.scanAuditDispositions(ctx, project, rows)
 }
 
 func (s *session) LatestAuditReviewSequence(ctx context.Context, change, version string) (int64, error) {

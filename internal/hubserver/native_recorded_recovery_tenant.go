@@ -106,11 +106,16 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 		return nil, corestore.ErrRevisionConflict
 	}
 	var clearedQuestion recordedAuditQuestion
-	if audit == nil {
-		if claimapi.RecordedHumanHold(attempt.Status, attempt.TerminalFailure, attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
-			return nil, corestore.ErrRevisionConflict
+	if audit == nil && typedWorkerHumanAction(transition.Data.ReasonDetail) {
+		audit, err = s.changeAuditEvidence().ClearedAuditHold(ctx, scope, row.NativeID, nil)
+		if err != nil {
+			return nil, err
 		}
-	} else {
+	}
+	if audit == nil && claimapi.RecordedHumanHold(attempt.Status, attempt.TerminalFailure, attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
+		return nil, corestore.ErrRevisionConflict
+	}
+	if audit != nil {
 		if approved.PolicyID != audit.PolicyID || !recordedAuditHold(*audit, transition, attempt) {
 			return nil, corestore.ErrRevisionConflict
 		}
@@ -170,6 +175,10 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 		ReportEventID: snapshot.Event.ID, ReportSequence: snapshot.Event.Sequence, ReportRevision: max(snapshot.Event.EventRevision, snapshot.Attempt.WorkItemRevision),
 		WorkflowEventID: lane.ID, WorkflowSequence: lane.Sequence, WorkflowObjectKey: lane.PayloadObjectKey,
 		DependencyNumbers: []int64{}, MergedDependencyNumbers: []int64{}, Policy: approved, AttemptPolicyID: attempt.PolicyID, State: state, ExpectedRevision: row.Revision, EventSequence: row.EventSequence, Source: source, Now: s.config.Clock().UTC(),
+	}
+	if audit != nil {
+		prepared.AuditReviewEvidenceRevision = audit.ReviewEvidenceRevision
+		prepared.AuditEvidenceSequence = audit.EvidenceSequence
 	}
 	for number, merged := range dependencies {
 		prepared.DependencyNumbers = append(prepared.DependencyNumbers, number)
@@ -340,7 +349,7 @@ func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenants
 	if err := s.authorizeRecordedRecoveryRunner(ctx, w, scope); err != nil {
 		return err
 	}
-	return s.authorizeRecordedRecoveryState(ctx, w, scope, recovery, nil)
+	return s.authorizeRecordedRecoveryState(ctx, w, scope, recovery)
 }
 
 func (s *Service) authorizeRecordedRecoveryRunner(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope) error {
@@ -369,7 +378,7 @@ func (s *Service) authorizeRecordedRecoveryRunner(ctx context.Context, w tenants
 	return nil
 }
 
-func (s *Service) authorizeRecordedRecoveryState(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, recovery leasestore.RecordedRecovery, audit *releaseaudits.AuditHoldClearance) error {
+func (s *Service) authorizeRecordedRecoveryState(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, recovery leasestore.RecordedRecovery) error {
 	if recovery.Policy.PolicyID != "" {
 		current, err := w.ProjectPolicy(ctx, scope.Project)
 		if err != nil {
@@ -394,7 +403,7 @@ func (s *Service) authorizeRecordedRecoveryState(ctx context.Context, w tenantst
 		if change.ID != recovery.Source.ChangeID || hubapi.StringValue(change.CurrentVersionID) != recovery.Source.VersionID {
 			return corestore.ErrRevisionConflict
 		}
-		if audit != nil && (change.ReviewEvidenceRevision != audit.ReviewEvidenceRevision || change.EvidenceSequence != audit.EvidenceSequence) {
+		if recovery.AuditEvidenceSequence != 0 && (change.ReviewEvidenceRevision != recovery.AuditReviewEvidenceRevision || change.EvidenceSequence != recovery.AuditEvidenceSequence) {
 			return corestore.ErrRevisionConflict
 		}
 		version, err := w.Version(ctx, change.ID, recovery.Source.VersionID)
