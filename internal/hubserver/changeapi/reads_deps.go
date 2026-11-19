@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -36,7 +38,7 @@ type ReadsDeps struct {
 	ValidChangeReadSection               func(string) bool
 	ChangeLimit                          func(operatortool.ChangeArguments) int
 	RecoveryRecordFragment               func(*tracker.NativeRecoveryPage, []byte, int64, string) error
-	AppendBoundedChangeEvidence          func(*tracker.ChangeDetail, eventstore.Evidence, []byte) error
+	BoundReview                          func(*gate.ValidatorResult) *gate.ValidatorResult
 }
 
 type Reads struct {

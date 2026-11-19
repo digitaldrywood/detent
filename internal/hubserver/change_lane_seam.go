@@ -139,7 +139,7 @@ func (s *Service) changeReads() *changeapi.Reads {
 		ValidChangeReadSection:               validChangeReadSection,
 		ChangeLimit:                          changeLimit,
 		RecoveryRecordFragment:               recoveryRecordFragment,
-		AppendBoundedChangeEvidence:          appendBoundedChangeEvidence,
+		BoundReview:                          boundedChangeReviewResult,
 	})
 }
 
@@ -691,4 +691,161 @@ func (s *Service) changeHTTP() *changeapi.HTTP {
 		HostedOrganization:              s.changeHostedOrganization,
 		ChangeResult:                    (hubChangeApplication{service: s}).result,
 	})
+}
+
+func (s *Service) listChangeRecords(ctx context.Context, scope hubscope.NativeScope, item string) ([]tracker.ChangeRequest, error) {
+	return s.changeRecordReader().ListChangeRecords(ctx, scope, item)
+}
+
+func (s *Service) filterChangeRecord(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest) (tracker.ChangeRequest, bool, error) {
+	return s.changeRecordReader().FilterChangeRecord(ctx, scope, change)
+}
+
+func (s *Service) readChangeRecord(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.ChangeRequest, error) {
+	return s.changeRecordReader().ReadChangeRecord(ctx, scope, item, id)
+}
+
+func (s *Service) readChangeVersionRecord(ctx context.Context, organization tracker.OrganizationID, changeID, versionID string) (eventstore.Version, error) {
+	return s.changeRecordReader().ReadChangeVersionRecord(ctx, organization, changeID, versionID)
+}
+
+func (s *Service) selectedChangeDetail(ctx context.Context, scope hubscope.NativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {
+	return s.changeRecordReader().SelectedChangeDetail(ctx, scope, item, id, now)
+}
+
+func (s *Service) nativeClaimCurrentChangeDetail(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan, now time.Time) (tracker.ChangeDetail, error) {
+	return s.changeRecordReader().NativeClaimCurrentChangeDetail(ctx, scope, plan, now)
+}
+
+func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, id string, now time.Time) (tracker.ChangeSummary, error) {
+	return s.changeRecordReader().SelectedCurrentChangeSummary(ctx, scope, item, id, now)
+}
+
+func (s *Service) hydrateCurrentChangeDetail(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows hubrecords.CurrentChangePolicyRows, now time.Time) (tracker.ChangeDetail, error) {
+	return s.changeRecordReader().HydrateCurrentChangeDetail(ctx, scope, item, changeRecord, versionRecord, policyRows, now)
+}
+
+func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows hubrecords.CurrentChangePolicyRows, now time.Time, facts *tenantstore.BoardChangeRows, approval *hubrecords.ChangeVersionApproval, workload corestore.Workload) (tracker.ChangeDetail, error) {
+	return s.changeRecordReader().HydrateCurrentChangeDetailWithFacts(ctx, scope, item, changeRecord, versionRecord, policyRows, now, facts, approval, workload)
+}
+
+func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows hubrecords.CurrentChangePolicyRows, now time.Time, facts *tenantstore.BoardChangeRows, approval *hubrecords.ChangeVersionApproval, workload corestore.Workload, recovery bool) (tracker.ChangeDetail, error) {
+	return s.changeRecordReader().HydrateCurrentChangeDetailSelection(ctx, scope, item, changeRecord, versionRecord, policyRows, now, facts, approval, workload, recovery)
+}
+
+func (s *Service) selectedLatestChangeSummary(ctx context.Context, scope hubscope.NativeScope, item string, now time.Time) (tracker.NativeChangeReference, tracker.ChangeSummary, bool, error) {
+	return s.changeRecordReader().SelectedLatestChangeSummary(ctx, scope, item, now)
+}
+
+func (s *Service) loadChangeExternalRecord(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, detail *tracker.ChangeDetail) error {
+	return s.changeRecordReader().LoadChangeExternalRecord(ctx, scope, item, detail)
+}
+
+func (s *Service) changeRecordReader() *changeapi.RecordReader {
+	return changeapi.NewRecordReader(changeapi.RecordReaderDeps{
+		Repository:                              s.config.TenantRepository,
+		RunDetailStore:                          s.runDetailStore,
+		ReadWorkItemRecord:                      s.readWorkItemRecord,
+		HydrateWorkItemRecord:                   s.hydrateWorkItemRecord,
+		HydrateChangeVersion:                    s.hydrateChangeVersion,
+		HydrateChangeVersionWithRows:            s.hydrateChangeVersionWithRows,
+		RunDetailStoreFor:                       s.runDetailStoreFor,
+		SummarizeChangeWithAuditDispositions:    s.summarizeChangeWithAuditDispositions,
+		SummarizeChangeWithAuditDispositionsFor: s.summarizeChangeWithAuditDispositionsFor,
+		ReadBoundedChangePushes:                 s.readBoundedChangePushes,
+		HydrateChangeSummaryPolicy:              hydrateChangeSummaryPolicy,
+		BoardCurrentApproval:                    boardCurrentApproval,
+		FilterBoardChangeRecord:                 filterBoardChangeRecord,
+
+		ExternalPullRequestNumber: externalPullRequestNumber,
+		SplitRepositoryFullName:   splitRepositoryFullName,
+	})
+}
+
+func (s *Service) changeRecordReceipt(ctx context.Context, scope hubscope.NativeScope, operation, key, hash string) (json.RawMessage, bool, error) {
+	return s.changeRecordReceipts().ChangeRecordReceipt(ctx, scope, operation, key, hash)
+}
+
+func (s *Service) authorizedChangeRecordReceipt(ctx context.Context, scope hubscope.NativeScope, operation, key, hash string) (json.RawMessage, bool, error) {
+	return s.changeRecordReceipts().AuthorizedChangeRecordReceipt(ctx, scope, operation, key, hash)
+}
+
+func (s *Service) lockChangeRecordOperation(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item, changeID, versionID string) (eventstore.Change, error) {
+	return s.changeRecordReceipts().LockChangeRecordOperation(ctx, w, scope, item, changeID, versionID)
+}
+
+func (s *Service) changeOperationRecordReceipt(ctx context.Context, scope hubscope.NativeScope, item, changeID, versionID, operation, key, hash string) (json.RawMessage, bool, error) {
+	return s.changeRecordReceipts().ChangeOperationRecordReceipt(ctx, scope, item, changeID, versionID, operation, key, hash)
+}
+
+func (s *Service) changeRecordReceipts() *changeapi.RecordReceipts {
+	return changeapi.NewRecordReceipts(changeapi.RecordReceiptsDeps{
+		Repository:                   s.config.TenantRepository,
+		Clock:                        s.config.Clock,
+		RunDetailStore:               s.runDetailStore,
+		AuthorizeAccessScope:         s.authorizeAccessScope,
+		AuthorizeWorkItemRecordScope: s.authorizeWorkItemRecordScope,
+		HasAccessRepository:          s.config.AccessRepository != nil,
+	})
+}
+
+func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, sourceKey string, value any) error {
+	return s.changeRecordMutations().ChangeRecordEvidenceMutation(c, kind, versionID, sourceKey, value)
+}
+
+func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscope.NativeScope, item, changeID, operation, kind, versionID, sourceKey string, value any) (json.RawMessage, error) {
+	return s.changeRecordMutations().ChangeRecordEvidenceCommand(ctx, scope, item, changeID, operation, kind, versionID, sourceKey, value)
+}
+
+func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.SubmitChangeCheck) error {
+	return s.changeRecordMutations().ChangeCheckRecordMutation(c, request)
+}
+
+func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChange) error {
+	return s.changeRecordMutations().CreateChangeRecord(c, request)
+}
+
+func (s *Service) createChangeRecordCommand(ctx context.Context, scope hubscope.NativeScope, itemID, operation string, request tracker.CreateChange) (json.RawMessage, error) {
+	return s.changeRecordMutations().CreateChangeRecordCommand(ctx, scope, itemID, operation, request)
+}
+
+func (s *Service) changeRecordMutations() *changeapi.RecordMutations {
+	return changeapi.NewRecordMutations(changeapi.RecordMutationsDeps{
+		Repository:                        s.config.TenantRepository,
+		Clock:                             s.config.Clock,
+		BoardRefresh:                      s.boardRefresh,
+		CurrentTime:                       s.database.currentTime,
+		RunDetailContext:                  s.runDetailContext,
+		RunDetailStore:                    s.runDetailStore,
+		NativeAPIError:                    s.nativeAPIError,
+		ReadChangeRecord:                  s.readChangeRecord,
+		ReadChangeVersionRecord:           s.readChangeVersionRecord,
+		ChangeRecordReceipt:               s.changeRecordReceipt,
+		ReadWorkItemRecord:                s.readWorkItemRecord,
+		AuthorizeAccessScope:              s.authorizeAccessScope,
+		AuthorizeWorkItemRecordScope:      s.authorizeWorkItemRecordScope,
+		RunnerSessionFence:                s.runnerSessionFence,
+		RecheckHostedChangeCheckPrincipal: s.recheckHostedChangeCheckPrincipal,
+		RequireHostedChangeCheckPrincipal: s.requireHostedChangeCheckPrincipal,
+		ChangeReviewRecordMutation:        s.changeReviewRecordMutation,
+		HydrateChangeSummaryPolicy:        hydrateChangeSummaryPolicy,
+		ValidateNativeProvenance:          validateNativeProvenance,
+		PrepareQualityEscapeTenant:        s.prepareQualityEscapeTenant,
+		PrepareChangeCheckWorkflow:        s.changeWorkflow().PrepareChangeCheckWorkflow,
+		RecheckChangeReviewWorkflow:       s.changeWorkflow().RecheckChangeReviewWorkflow,
+		LockChangeWorkflowTransition:      s.changeWorkflow().LockChangeWorkflowTransition,
+		ApplyChangeWorkflowTransition:     s.changeWorkflow().ApplyChangeWorkflowTransition,
+		Hosted:                            s.config.Hosted != nil,
+		InvalidClock:                      ErrInvalidClock,
+		HasPlans:                          func() bool { return s.database.plansService().Plans() != nil },
+		RequireCollaboration:              s.requireReleaseCollaboration,
+		AttachmentReferences:              cloudContentAttachmentReferences,
+		ChangeReviewContentFields: func(request tracker.ReviewChange) []changefiles.ContentField {
+			return changeAttachmentFields(changeReviewContentFields(request))
+		},
+	})
+}
+
+func appendBoundedChangeEvidence(detail *tracker.ChangeDetail, row eventstore.Evidence, raw []byte) error {
+	return changeapi.AppendBoundedChangeEvidence(detail, row, raw, boundedChangeReviewResult)
 }

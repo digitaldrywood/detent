@@ -329,7 +329,7 @@ func (s *Reads) readChangeRecordSection(ctx context.Context, scope hubscope.Nati
 			if err != nil {
 				return operatortool.ChangeReadPage{}, err
 			}
-			if err := s.deps.AppendBoundedChangeEvidence(result.Detail, row, raw); err != nil {
+			if err := AppendBoundedChangeEvidence(result.Detail, row, raw, s.deps.BoundReview); err != nil {
 				return operatortool.ChangeReadPage{}, err
 			}
 		}
@@ -440,7 +440,7 @@ func (s *Reads) readBoundedChangeSummary(ctx context.Context, scope hubscope.Nat
 		if err != nil {
 			return tracker.ChangeSummary{}, err
 		}
-		if err := s.deps.AppendBoundedChangeEvidence(&detail, row, raw); err != nil {
+		if err := AppendBoundedChangeEvidence(&detail, row, raw, s.deps.BoundReview); err != nil {
 			return tracker.ChangeSummary{}, err
 		}
 	}

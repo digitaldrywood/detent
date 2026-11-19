@@ -2064,14 +2064,14 @@
         "tables": []
       }
     },
-    "internal/hubserver/conversation_coordinator_catalog.go": {
+    "internal/hubserver/coordinator/catalog.go": {
       "disposition": "non-storage",
       "families": [
         "non-storage"
       ],
       "inventory": {
         "operations": {
-          "coordinatorToolset.findTools:Query": 1
+          "CatalogToolDeps.FindTools:Query": 1
         },
         "tables": []
       }
@@ -2531,7 +2531,7 @@
         ]
       }
     },
-    "internal/hubserver/native_runtime.go": {
+    "internal/hubserver/executionapi/native_runtime.go": {
       "atomic_groups": [
         "claim"
       ],
@@ -2546,7 +2546,7 @@
       ],
       "inventory": {
         "operations": {
-          "Service.getNativeRuntime:SQL": 1
+          "RuntimeDeps.GetNativeRuntime:SQL": 1
         },
         "tables": []
       }
@@ -20338,14 +20338,14 @@
         "tables": []
       }
     },
-    "internal/hubserver/workspace_operator.go": {
+    "internal/hubserver/workspacehub/operator.go": {
       "disposition": "non-storage",
       "families": [
         "non-storage"
       ],
       "inventory": {
         "operations": {
-          "Service.readWorkspaceTool:Query": 1
+          "Operator.ReadTool:Query": 1
         },
         "tables": []
       }

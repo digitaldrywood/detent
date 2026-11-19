@@ -1,14 +1,16 @@
-package hubserver
+package changeapi
 
 import (
 	"encoding/json"
+
+	"github.com/digitaldrywood/detent/internal/gate"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func appendBoundedChangeEvidence(detail *tracker.ChangeDetail, row eventstore.Evidence, raw []byte) error {
+func AppendBoundedChangeEvidence(detail *tracker.ChangeDetail, row eventstore.Evidence, raw []byte, boundReview func(*gate.ValidatorResult) *gate.ValidatorResult) error {
 	switch row.Kind {
 	case "review":
 		var value tracker.ChangeReview
@@ -29,8 +31,8 @@ func appendBoundedChangeEvidence(detail *tracker.ChangeDetail, row eventstore.Ev
 				return eventstore.ErrInvalidRecord
 			}
 		}
-		value.Validator = boundedChangeReviewResult(value.Validator)
-		value.ImplementationReview = boundedChangeReviewResult(value.ImplementationReview)
+		value.Validator = boundReview(value.Validator)
+		value.ImplementationReview = boundReview(value.ImplementationReview)
 		detail.Reviews = append(detail.Reviews, value)
 	case "check":
 		var value tracker.ChangeCheck
