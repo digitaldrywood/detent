@@ -44,7 +44,7 @@ func TestHostedMaintenancePreservesRequestBatchReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := (Config{DatabaseBackend: DatabasePostgres, RunDetails: store}).normalized()
+	cfg := (Config{DatabaseBackend: DatabasePostgres, RunDetails: store}).Normalized()
 	batch, ok := cfg.RunDetails.(attachment.DetailBatchStore)
 	if !ok {
 		t.Fatal("normalization removed batched request reads")
@@ -127,7 +127,7 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 			started := make(chan *hubmaintenance.Scheduler, 2)
 			cfg.Hosted.OrganizationID = string(org)
 			cfg.Hosted.WorkOSOrganizationID = "provider_" + string(org)
-			cfg.deps.RunMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, _ func(error)) error {
+			cfg.Deps().RunMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, _ func(error)) error {
 				started <- scheduler
 				<-ctx.Done()
 				return ctx.Err()
@@ -263,7 +263,7 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 			t.Run(string(org), func(t *testing.T) {
 				cfg.Hosted.OrganizationID = string(org)
 				cfg.Hosted.WorkOSOrganizationID = "provider_" + string(org)
-				cfg.deps.RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+				cfg.Deps().RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 					<-ctx.Done()
 					return ctx.Err()
 				}
@@ -341,7 +341,7 @@ func TestHostedMaintenanceCloseJoinsScheduler(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	started := make(chan struct{})
 	exited := make(chan struct{})
-	cfg.deps.RunMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, report func(error)) error {
+	cfg.Deps().RunMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, report func(error)) error {
 		defer close(exited)
 		close(started)
 		return scheduler.Run(ctx, report)
@@ -377,7 +377,7 @@ func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cfg.deps.RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	cfg.Deps().RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}

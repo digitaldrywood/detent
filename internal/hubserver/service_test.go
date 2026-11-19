@@ -179,7 +179,7 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan struct{})
 	runResult := make(chan error, 1)
-	cfg.deps.Listen = func(ctx context.Context, network, address string) (net.Listener, error) {
+	cfg.Deps().Listen = func(ctx context.Context, network, address string) (net.Listener, error) {
 		var listenConfig net.ListenConfig
 		listener, err := listenConfig.Listen(ctx, network, address)
 		if err != nil {

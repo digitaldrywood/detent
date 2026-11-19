@@ -240,7 +240,7 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newWriteLoadFixture(t, 50000, test.runners, test.sessions)
-			f.service.config.deps.RequestTimeout = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+			f.service.config.Deps().RequestTimeout = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
 				return context.WithCancel(ctx)
 			}
 			measuring.Lock()
@@ -668,7 +668,7 @@ func TestRunnerHeartbeatDeadlineReleasesItsTransaction(t *testing.T) {
 		}
 		return live
 	}
-	f.service.config.deps.RequestTimeout = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	f.service.config.Deps().RequestTimeout = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
 		inner, cancel := context.WithCancel(ctx)
 		if ctx.Value(deadlineProbeKey{}) == nil {
 			return inner, cancel
