@@ -2,12 +2,11 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/operatorcommands"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -19,36 +18,7 @@ type scheduledAttributionRecord struct {
 }
 
 func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan, data tracker.CollaborationData) (scheduledAttributionRecord, error) {
-	p := scheduledAttributionRecord{plan: plan}
-	var err error
-	p.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
-	if err != nil {
-		return p, err
-	}
-	content := eventstore.NewContent(s.runDetailStore())
-	id, revision, at := string(plan.Issue.WorkItemID), int64(plan.Issue.Revision), plan.Issue.UpdatedAt
-	value := any(plan.Issue)
-	if plan.Comment.ID != "" {
-		id, revision, at = plan.Comment.ID, int64(plan.Comment.Revision), plan.Comment.UpdatedAt
-		value = plan.Comment
-		data.CommentID = plan.Comment.ID
-	}
-	data.Revision = tracker.Revision(revision)
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return p, err
-	}
-	p.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Current.NativeID, RecordID: id, Revision: revision}, raw)
-	if err != nil {
-		return p, err
-	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.Current.NativeID, Type: plan.EventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: at, Data: data})
-	if err != nil {
-		return p, err
-	}
-	p.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
-	if err != nil {
-		return p, err
-	}
-	return p, err
+	deps := operatorcommands.ScheduledAttributionDeps{PrepareFields: s.prepareWorkItemFields, Details: s.runDetailStore}
+	record, err := deps.PrepareRecord(ctx, scope, plan, data)
+	return scheduledAttributionRecord{plan: record.Plan, fields: record.Fields, version: record.Version, event: record.Event}, err
 }

@@ -1,4 +1,4 @@
-package hubserver
+package operatorcommands
 
 import (
 	"context"
@@ -17,19 +17,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope.NativeScope, operation, repository, item string, request tracker.CreateIssue) (json.RawMessage, error) {
+func (s ScheduledAttributionDeps) commit(ctx context.Context, scope hubscope.NativeScope, operation, repository, item string, request tracker.CreateIssue) (json.RawMessage, error) {
 	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
-	if raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || err != nil {
+	if raw, found, err := s.Receipt(ctx, scope, operation, request.IdempotencyKey, hash); found || err != nil {
 		return raw, err
 	}
-	content := eventstore.NewContent(s.runDetailStore())
-	var records []scheduledAttributionRecord
+	content := eventstore.NewContent(s.Details())
+	var records []ScheduledAttributionRecord
 	var original hubrecords.WorkItemRecordPlan
 	if item != "" {
-		original, err = s.loadWorkItemPlan(ctx, scope, item, "", tracker.CreateComment{})
+		original, err = s.LoadWorkItemPlan(ctx, scope, item, "", tracker.CreateComment{})
 		if err != nil {
 			return nil, err
 		}
@@ -44,21 +44,21 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope
 				plan.Issue.State = "Rework"
 				plan.Issue.Terminal = hubrecords.TenantProjectStateTerminal(plan.Project, "Rework")
 				plan.Issue.Revision++
-				plan.Issue.UpdatedAt = s.config.Clock()
+				plan.Issue.UpdatedAt = s.Now()
 				plan.Issue.LastActivityAt = plan.Issue.UpdatedAt
 				plan.EventType = "workflow.transitioned"
-				p, err := s.prepareScheduledAttributionRecord(ctx, scope, plan, tracker.CollaborationData{FromState: "Done", ToState: "Rework", Reason: string(gate.ReasonValidatorRework)})
+				p, err := s.PrepareRecord(ctx, scope, plan, tracker.CollaborationData{FromState: "Done", ToState: "Rework", Reason: string(gate.ReasonValidatorRework)})
 				if err != nil {
 					return nil, err
 				}
 				records = append(records, p)
 				plan.Current.EventSequence++
 			}
-			plan, err = s.planWorkItemRecord(ctx, scope, plan, tracker.CreateComment{Body: request.Body})
+			plan, err = s.PlanWorkItemRecord(ctx, scope, plan, tracker.CreateComment{Body: request.Body})
 			if err != nil {
 				return nil, err
 			}
-			p, err := s.prepareScheduledAttributionRecord(ctx, scope, plan, tracker.CollaborationData{})
+			p, err := s.PrepareRecord(ctx, scope, plan, tracker.CollaborationData{})
 			if err != nil {
 				return nil, err
 			}
@@ -71,17 +71,17 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope
 	if err != nil {
 		return nil, err
 	}
-	now := s.config.Clock().UTC()
+	now := s.Now().UTC()
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err
 	}
 	var replay *eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
-		if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
+		if err := s.AuthorizeWorkItem(ctx, w, scope); err != nil {
 			return err
 		}
 		previous, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
@@ -109,10 +109,8 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope
 		if currentRepository != repository {
 			return corestore.ErrRevisionConflict
 		}
-		if s.config.Hosted != nil {
-			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
-				return err
-			}
+		if err := s.RequireCollaboration(ctx, w, now); err != nil {
+			return err
 		}
 		if item != "" {
 			if !hubrecords.SameWorkItemProjectPlan(original.Project, project) {
@@ -127,18 +125,18 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope
 			}
 		}
 		for _, p := range records {
-			if err := hubrecords.WriteWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
+			if err := hubrecords.WriteWorkItemRecord(ctx, w, p.Plan, p.Fields); err != nil {
 				return err
 			}
-			if _, err := w.CreateCollaborationVersion(ctx, p.version); err != nil {
+			if _, err := w.CreateCollaborationVersion(ctx, p.Version); err != nil {
 				return err
 			}
-			if _, err := w.AppendEvent(ctx, p.event); err != nil {
+			if _, err := w.AppendEvent(ctx, p.Event); err != nil {
 				return err
 			}
 		}
 		if scope.Credential.Hosted != nil {
-			audit := projectRecordActor(scope).Audit
+			audit := s.ProjectActor(scope).Audit
 			audit.Event, audit.Route, audit.Status = "action", operation, http.StatusOK
 			audit.RecordedAt = now
 			audit.RecordedAtNS = now.UnixNano()
