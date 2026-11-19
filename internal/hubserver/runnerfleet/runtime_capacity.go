@@ -1,16 +1,16 @@
 package runnerfleet
 
 import (
+	"slices"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
-	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func RuntimeRunnersFromSnapshot(landingCapacityKey func(tracker.MachineID, string, string) string, providerView func(string, providercapacity.Report, time.Time, ...string) providercapacity.View, snapshot runnerstore.RuntimeCapacitySnapshot, scope hubscope.NativeScope, now time.Time) []runnerauth.Runner {
+func RuntimeRunnersFromSnapshot(landingCapacityKey func(tracker.MachineID, string, string) string, snapshot runnerstore.RuntimeCapacitySnapshot, now time.Time) []runnerauth.Runner {
+	providers := RuntimeProviderCapacity(landingCapacityKey, snapshot.Providers)
 	result := make([]runnerauth.Runner, 0, len(snapshot.Records))
 	for _, record := range snapshot.Records {
 		runner := record.Runner
@@ -35,7 +35,7 @@ func RuntimeRunnersFromSnapshot(landingCapacityKey func(tracker.MachineID, strin
 			}
 		}
 		for _, report := range record.Reports {
-			runner.ProviderCapacity = append(runner.ProviderCapacity, providerView(runner.RunnerID, report, now))
+			runner.ProviderCapacity = append(runner.ProviderCapacity, providers.View(runner.RunnerID, report, now))
 		}
 		result = append(result, runner)
 	}
@@ -71,4 +71,33 @@ func RuntimeLandingCapacity(unknown int, snapshot runnerstore.RuntimeProviderSna
 		return false, unknown
 	}
 	return true, 0
+}
+
+func RuntimeProviderCapacity(landingCapacityKey func(tracker.MachineID, string, string) string, snapshot runnerstore.RuntimeProviderSnapshot) ProviderCapacitySnapshot {
+	result := ProviderCapacitySnapshot{Truncated: snapshot.OwnersTruncated || snapshot.CandidatesTruncated, groups: map[string][]ProviderAccount{}}
+	for _, report := range snapshot.Reports {
+		if !report.CapacityOwner {
+			continue
+		}
+		result.reports = append(result.reports, ProviderAccount{RunnerID: report.RunnerID, Report: report.Report})
+	}
+	for _, lease := range snapshot.Leases {
+		if lease.Reservation == nil {
+			continue
+		}
+		reservation := *lease.Reservation
+		if reservation.Backend == "git" && reservation.Role == "merge" {
+			group := landingCapacityKey(lease.MachineID, lease.CapacityProject, lease.SessionID)
+			if group != "" {
+				group += "/" + lease.RunnerID
+				account := ProviderAccount{RunnerID: lease.RunnerID, Report: reservation.Report}
+				if slices.ContainsFunc(result.groups[group], func(other ProviderAccount) bool { return SharedProviderAccount(account, other) }) {
+					continue
+				}
+				result.groups[group] = append(result.groups[group], account)
+			}
+		}
+		result.Reservations = append(result.Reservations, ProviderReservation{RunnerID: lease.RunnerID, Reservation: reservation})
+	}
+	return result
 }
