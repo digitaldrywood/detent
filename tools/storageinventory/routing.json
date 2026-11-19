@@ -2987,6 +2987,25 @@
         ]
       }
     },
+    "internal/hubserver/postgres/activity_hourly.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "activity"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.ActivityHourly:generated:ActivityHourlyWindowPopulation": 1,
+          "session.ActivityHourly:query-receiver": 1,
+          "session.readHourlyLandings:generated:ActivityHourlyLandings": 1,
+          "session.readHourlyLandings:query-receiver": 1,
+          "session.readHourlyOutcomes:generated:ActivityHourlyAttemptIDs": 1,
+          "session.readHourlyOutcomes:generated:ActivityHourlyOutcomes": 1,
+          "session.readHourlyOutcomes:query-receiver": 2
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/archive_objects.go": {
       "disposition": "target-adapter",
       "families": [
@@ -12269,6 +12288,23 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261119224706_activity_hourly_outcomes.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "activity",
+        "event",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/change_landing_receipts",
+          "hub/native_attempts"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -12750,17 +12786,27 @@
         "core",
         "event",
         "lease",
+        "source",
         "workspace"
       ],
       "inventory": {
         "operations": {
+          "Queries.ActivityHourlyAttemptIDs:Query": 1,
+          "Queries.ActivityHourlyLandings:Query": 1,
+          "Queries.ActivityHourlyOutcomes:Query": 1,
+          "Queries.ActivityHourlyWindowPopulation:QueryRow": 1,
           "Queries.ActivityIssueLinks:Query": 1,
           "Queries.ActivityLatestRunEvents:Query": 1,
+          "activityHourlyAttemptIDs:SQL": 1,
+          "activityHourlyLandings:SQL": 1,
+          "activityHourlyOutcomes:SQL": 1,
+          "activityHourlyWindowPopulation:SQL": 1,
           "activityIssueLinks:SQL": 1,
           "activityLatestRunEvents:SQL": 1
         },
         "tables": [
           "hub/change_issue_links",
+          "hub/change_landing_receipts",
           "hub/change_requests",
           "hub/change_versions",
           "hub/collaboration_events",
@@ -15847,16 +15893,22 @@
         "core",
         "event",
         "lease",
+        "source",
         "workspace"
       ],
       "inventory": {
         "operations": {
           "SQL": 1,
+          "query:ActivityHourlyAttemptIDs:many": 1,
+          "query:ActivityHourlyLandings:many": 1,
+          "query:ActivityHourlyOutcomes:many": 1,
+          "query:ActivityHourlyWindowPopulation:one": 1,
           "query:ActivityIssueLinks:many": 1,
           "query:ActivityLatestRunEvents:many": 1
         },
         "tables": [
           "hub/change_issue_links",
+          "hub/change_landing_receipts",
           "hub/change_requests",
           "hub/change_versions",
           "hub/collaboration_events",

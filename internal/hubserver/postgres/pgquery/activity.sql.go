@@ -7,9 +7,322 @@ package pgquery
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const activityHourlyAttemptIDs = `-- name: ActivityHourlyAttemptIDs :many
+SELECT a.id,i.native_id::text AS work_item_id,a.updated_at AS finished_at
+FROM (
+ SELECT selected.organization_id,selected.project_id,selected.issue_id,selected.id,selected.updated_at
+ FROM native_attempts selected
+ WHERE selected.organization_id=$1 AND selected.project_id=$2 AND selected.status<>'running'
+   AND selected.updated_at>=$3::timestamptz AND selected.updated_at<$4::timestamptz
+ ORDER BY selected.updated_at DESC,selected.id DESC LIMIT $5
+) a
+JOIN work_item_identities i ON i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.id=a.issue_id
+WHERE $6::text='' OR EXISTS (
+ SELECT 1 FROM issues owned WHERE owned.organization_id=a.organization_id AND owned.project_id=a.project_id AND owned.id=a.issue_id AND owned.actor_principal_id=$6
+)
+ORDER BY a.updated_at DESC,a.id DESC LIMIT $7
+`
+
+type ActivityHourlyAttemptIDsParams struct {
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	WindowFrom      time.Time
+	WindowTo        time.Time
+	PopulationLimit int32
+	Principal       string
+	ReferenceLimit  int32
+}
+
+type ActivityHourlyAttemptIDsRow struct {
+	ID         string
+	WorkItemID string
+	FinishedAt time.Time
+}
+
+func (q *Queries) ActivityHourlyAttemptIDs(ctx context.Context, arg ActivityHourlyAttemptIDsParams) ([]ActivityHourlyAttemptIDsRow, error) {
+	rows, err := q.db.Query(ctx, activityHourlyAttemptIDs,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WindowFrom,
+		arg.WindowTo,
+		arg.PopulationLimit,
+		arg.Principal,
+		arg.ReferenceLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActivityHourlyAttemptIDsRow{}
+	for rows.Next() {
+		var i ActivityHourlyAttemptIDsRow
+		if err := rows.Scan(&i.ID, &i.WorkItemID, &i.FinishedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const activityHourlyLandings = `-- name: ActivityHourlyLandings :many
+WITH landing_versions AS MATERIALIZED (
+ SELECT v.organization_id,v.project_id,v.id,v.change_id,v.landed_at,v.landed_merge_sha,v.landed_base_ref
+ FROM change_versions v
+ WHERE v.organization_id=$3 AND v.project_id=$4 AND v.landing_history_known
+   AND v.landed_at>=$5::timestamptz AND v.landed_at<$6::timestamptz
+ ORDER BY v.landed_at DESC,v.change_id DESC,v.id DESC LIMIT $7
+)
+SELECT v.id,v.change_id,proof.attempt_id,v.landed_at,
+       least(cohort.observed,$1::bigint-1)::bigint AS linked_attempts,
+       CASE WHEN cohort.observed>=$1::bigint OR cohort.terminal<cohort.observed
+            OR (prior.fencing_token IS NULL AND NOT EXISTS (
+             SELECT 1 FROM collaboration_events e WHERE e.organization_id=v.organization_id AND e.project_id=v.project_id
+               AND e.work_item_id=i.native_id AND e.type='issue.created' AND e.recorded_at<=v.landed_at
+            )) THEN 'partial' ELSE 'complete' END::text AS history_coverage
+FROM landing_versions v
+CROSS JOIN LATERAL (
+ SELECT r.attempt_id,r.issue_id,r.fencing_token,r.repository_identity
+ FROM change_landing_receipts r
+ WHERE r.organization_id=v.organization_id AND r.version_id=v.id AND r.project_id=v.project_id AND r.change_id=v.change_id
+   AND r.merge_sha=v.landed_merge_sha AND r.base_ref=v.landed_base_ref
+ ORDER BY r.fencing_token,r.attempt_id LIMIT 1
+) proof
+JOIN work_item_identities i ON i.organization_id=v.organization_id AND i.project_id=v.project_id AND i.id=proof.issue_id
+LEFT JOIN LATERAL (
+ SELECT r.fencing_token FROM change_landing_receipts r
+ WHERE r.organization_id=v.organization_id AND r.project_id=v.project_id AND r.issue_id=proof.issue_id
+   AND r.repository_identity=proof.repository_identity AND r.fencing_token<proof.fencing_token
+ ORDER BY r.fencing_token DESC,r.attempt_id DESC LIMIT 1
+) prior ON true
+CROSS JOIN LATERAL (
+ SELECT count(*) AS observed,count(ref.outcome_event_id) AS terminal
+ FROM (
+  SELECT a.id,a.organization_id FROM native_attempts a
+  WHERE a.organization_id=v.organization_id AND a.project_id=v.project_id AND a.issue_id=proof.issue_id
+    AND a.fencing_token>coalesce(prior.fencing_token,0) AND a.fencing_token<=proof.fencing_token
+  ORDER BY a.fencing_token DESC LIMIT $1
+ ) a
+ LEFT JOIN report_attempt_facts ref ON ref.organization_id=a.organization_id AND ref.attempt_id=a.id
+) cohort
+WHERE $2::text='' OR EXISTS (
+ SELECT 1 FROM issues owned WHERE owned.organization_id=v.organization_id AND owned.project_id=v.project_id AND owned.id=i.id AND owned.actor_principal_id=$2
+)
+ORDER BY v.landed_at DESC,v.change_id DESC,v.id DESC
+`
+
+type ActivityHourlyLandingsParams struct {
+	HistoryLimit   int64
+	Principal      string
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WindowFrom     time.Time
+	WindowTo       time.Time
+	LandingLimit   int32
+}
+
+type ActivityHourlyLandingsRow struct {
+	ID              string
+	ChangeID        string
+	AttemptID       string
+	LandedAt        *time.Time
+	LinkedAttempts  int64
+	HistoryCoverage string
+}
+
+func (q *Queries) ActivityHourlyLandings(ctx context.Context, arg ActivityHourlyLandingsParams) ([]ActivityHourlyLandingsRow, error) {
+	rows, err := q.db.Query(ctx, activityHourlyLandings,
+		arg.HistoryLimit,
+		arg.Principal,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WindowFrom,
+		arg.WindowTo,
+		arg.LandingLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActivityHourlyLandingsRow{}
+	for rows.Next() {
+		var i ActivityHourlyLandingsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChangeID,
+			&i.AttemptID,
+			&i.LandedAt,
+			&i.LinkedAttempts,
+			&i.HistoryCoverage,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const activityHourlyOutcomes = `-- name: ActivityHourlyOutcomes :many
+WITH attempts AS MATERIALIZED (
+ SELECT a.organization_id,a.id,a.issue_id,a.project_id,a.status,a.started_at,a.updated_at,
+        a.verdict_attempted_step,a.verdict_outcome,a.verdict_success,a.verdict_reason,a.verdict_next_step,a.verdict_disposition
+ FROM native_attempts a
+ WHERE a.organization_id=$2 AND a.project_id=$3 AND a.status<>'running'
+   AND a.updated_at>=$4::timestamptz AND a.updated_at<$5::timestamptz
+ ORDER BY a.updated_at DESC,a.id DESC LIMIT $6
+), facts AS (
+ SELECT date_trunc('hour',a.updated_at,'UTC')::timestamptz AS hour,
+        coalesce(nullif(nullif(f.activity_stage,''),'unknown'),nullif(a.verdict_attempted_step,''),'unknown')::text AS ending_stage,
+        a.status AS outcome,
+        coalesce(nullif(f.failure_kind,''),nullif(f.failure_class,''),CASE WHEN a.status='succeeded' THEN 'not_applicable' ELSE 'unknown' END)::text AS failure_reason,
+        coalesce(nullif(a.verdict_outcome,''),'unavailable')::text AS verdict,a.verdict_success,coalesce(nullif(a.verdict_reason,''),'unknown')::text AS reason,
+        coalesce(nullif(a.verdict_next_step,''),'unknown')::text AS next_step,coalesce(nullif(a.verdict_disposition,''),'unknown')::text AS disposition,
+        CASE WHEN recent.activity_no_change_status='accepted' OR f.activity_no_change_status='accepted' THEN 'accepted'
+             ELSE coalesce(nullif(nullif(recent.activity_no_change_status,''),'unknown'),nullif(f.activity_no_change_status,''),'unknown')
+        END AS no_change_status,
+        greatest(0,extract(epoch FROM a.updated_at-a.started_at))::double precision AS elapsed
+ FROM attempts a
+ LEFT JOIN report_attempt_facts ref ON ref.organization_id=a.organization_id AND ref.attempt_id=a.id
+ LEFT JOIN report_event_facts f ON f.organization_id=ref.organization_id AND f.event_id=ref.outcome_event_id
+ LEFT JOIN report_event_facts recent ON recent.organization_id=ref.organization_id AND recent.event_id=ref.latest_event_id
+ WHERE $7::text='' OR EXISTS (
+  SELECT 1 FROM issues i WHERE i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.id=a.issue_id AND i.actor_principal_id=$7
+ )
+)
+SELECT hour,ending_stage,outcome,failure_reason,verdict,verdict_success,reason,next_step,disposition,
+       count(*) AS attempts,coalesce(sum(elapsed),0)::double precision AS elapsed,
+       count(*) FILTER (WHERE no_change_status='accepted') AS accepted_no_change,
+       count(*) FILTER (WHERE outcome='succeeded' AND no_change_status='unknown') AS unknown_no_change
+FROM facts
+GROUP BY hour,ending_stage,outcome,failure_reason,verdict,verdict_success,reason,next_step,disposition
+ORDER BY hour,ending_stage,outcome,failure_reason,verdict,verdict_success,reason,next_step,disposition
+LIMIT $1
+`
+
+type ActivityHourlyOutcomesParams struct {
+	GroupLimit      int32
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	WindowFrom      time.Time
+	WindowTo        time.Time
+	PopulationLimit int32
+	Principal       string
+}
+
+type ActivityHourlyOutcomesRow struct {
+	Hour             time.Time
+	EndingStage      string
+	Outcome          string
+	FailureReason    string
+	Verdict          string
+	VerdictSuccess   pgtype.Bool
+	Reason           string
+	NextStep         string
+	Disposition      string
+	Attempts         int64
+	Elapsed          float64
+	AcceptedNoChange int64
+	UnknownNoChange  int64
+}
+
+func (q *Queries) ActivityHourlyOutcomes(ctx context.Context, arg ActivityHourlyOutcomesParams) ([]ActivityHourlyOutcomesRow, error) {
+	rows, err := q.db.Query(ctx, activityHourlyOutcomes,
+		arg.GroupLimit,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WindowFrom,
+		arg.WindowTo,
+		arg.PopulationLimit,
+		arg.Principal,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActivityHourlyOutcomesRow{}
+	for rows.Next() {
+		var i ActivityHourlyOutcomesRow
+		if err := rows.Scan(
+			&i.Hour,
+			&i.EndingStage,
+			&i.Outcome,
+			&i.FailureReason,
+			&i.Verdict,
+			&i.VerdictSuccess,
+			&i.Reason,
+			&i.NextStep,
+			&i.Disposition,
+			&i.Attempts,
+			&i.Elapsed,
+			&i.AcceptedNoChange,
+			&i.UnknownNoChange,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const activityHourlyWindowPopulation = `-- name: ActivityHourlyWindowPopulation :one
+SELECT (
+ SELECT count(*) FROM (
+  SELECT 1 FROM native_attempts a
+  WHERE a.organization_id=$1 AND a.project_id=$2 AND a.status<>'running'
+    AND a.updated_at>=$3::timestamptz AND a.updated_at<$4::timestamptz
+  ORDER BY a.updated_at DESC,a.id DESC LIMIT $5
+ ) attempts
+) AS attempts, (
+ SELECT count(*) FROM (
+  SELECT 1 FROM change_versions v
+  WHERE v.organization_id=$1 AND v.project_id=$2 AND v.landing_history_known
+    AND v.landed_at>=$3::timestamptz AND v.landed_at<$4::timestamptz
+  ORDER BY v.landed_at DESC,v.change_id DESC,v.id DESC LIMIT $6
+ ) landings
+) AS landings
+`
+
+type ActivityHourlyWindowPopulationParams struct {
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	WindowFrom      time.Time
+	WindowTo        time.Time
+	PopulationLimit int32
+	LandingLimit    int32
+}
+
+type ActivityHourlyWindowPopulationRow struct {
+	Attempts int64
+	Landings int64
+}
+
+func (q *Queries) ActivityHourlyWindowPopulation(ctx context.Context, arg ActivityHourlyWindowPopulationParams) (ActivityHourlyWindowPopulationRow, error) {
+	row := q.db.QueryRow(ctx, activityHourlyWindowPopulation,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WindowFrom,
+		arg.WindowTo,
+		arg.PopulationLimit,
+		arg.LandingLimit,
+	)
+	var i ActivityHourlyWindowPopulationRow
+	err := row.Scan(&i.Attempts, &i.Landings)
+	return i, err
+}
 
 const activityIssueLinks = `-- name: ActivityIssueLinks :many
 SELECT requested.id::bigint AS id,wi.workspace_id,coalesce(linked.change_id,'')::text AS change_id,coalesce(v.external_url,'')::text AS publication_url
