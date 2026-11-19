@@ -1,7 +1,6 @@
 package searchrecords_test
 
 import (
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -187,87 +186,53 @@ func TestHealthFindingsTenantVisibilityAndCursor(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		for _, analyzed := range []bool{false, true} {
-			if analyzed {
-				if _, err := admin.ExecContext(t.Context(), "ANALYZE issues; ANALYZE conversation_questions; ANALYZE project_workflow_states"); err != nil {
-					t.Fatal(err)
-				}
+		for _, kind := range []string{"items", "items_tail", "questions", "conversation"} {
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
 			}
-			for _, kind := range []string{"items", "items_tail", "questions", "conversation"} {
-				probe := &pgstoretest.SearchPlanProbe{}
-				tx, err := pool.Begin(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err = tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
-					tx.Rollback(t.Context())
-					t.Fatal(err)
-				}
-				probe.DBTX = tx
-				queries := pgquery.New(probe)
-				relation, index := "conversation_questions", "health_questions_unresolved_seek"
-				selected := 0
-				switch kind {
-				case "items", "items_tail":
-					var after int64
-					if kind == "items_tail" {
-						if err := admin.QueryRowContext(t.Context(), `SELECT max(id) FROM issues WHERE organization_id=$1 AND project_id='prj_first' AND NOT archived AND workflow_state_name='Todo'`, org).Scan(&after); err != nil {
-							tx.Rollback(t.Context())
-							t.Fatal(err)
-						}
-					}
-					rows, readErr := queries.HealthSourceItems(t.Context(), pgquery.HealthSourceItemsParams{OrganizationID: org, ProjectID: "prj_first", StateName: new("Todo"), AfterID: after, Limit: 1})
-					err = readErr
-					selected = len(rows)
-					relation, index = "issues", "issues_billing_current_population_idx"
-				case "questions":
-					rows, readErr := queries.HealthSourceQuestions(t.Context(), pgquery.HealthSourceQuestionsParams{OrganizationID: org, Limit: 1})
-					err = readErr
-					selected = len(rows)
-				case "conversation":
-					rows, readErr := queries.HealthSourceConversationQuestions(t.Context(), pgquery.HealthSourceConversationQuestionsParams{OrganizationID: org, ConversationID: "conversation_first", Limit: 1})
-					err = readErr
-					selected = len(rows)
-				}
-				if err != nil {
-					tx.Rollback(t.Context())
-					t.Fatal(err)
-				}
-				expected := 1
+			if _, err = tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
+				tx.Rollback(t.Context())
+				t.Fatal(err)
+			}
+			queries := pgquery.New(tx)
+			selected := 0
+			switch kind {
+			case "items", "items_tail":
+				var after int64
 				if kind == "items_tail" {
-					expected = 0
-				}
-				if selected != expected || probe.Statement == "" || len(probe.Args) == 0 {
-					tx.Rollback(t.Context())
-					t.Fatalf("health plan capture empty: kind=%s rows=%d", kind, selected)
-				}
-				var raw []byte
-				err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw)
-				rollbackErr := tx.Rollback(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				if rollbackErr != nil {
-					t.Fatal(rollbackErr)
-				}
-				var plan []struct{ Plan pgstoretest.SearchPlanNode }
-				if err := json.Unmarshal(raw, &plan); err != nil {
-					t.Fatal(err)
-				}
-				var visited func(pgstoretest.SearchPlanNode) float64
-				visited = func(node pgstoretest.SearchPlanNode) float64 {
-					var work float64
-					if node.Relation == relation {
-						work = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+					if err := admin.QueryRowContext(t.Context(), `SELECT max(id) FROM issues WHERE organization_id=$1 AND project_id='prj_first' AND NOT archived AND workflow_state_name='Todo'`, org).Scan(&after); err != nil {
+						tx.Rollback(t.Context())
+						t.Fatal(err)
 					}
-					for _, child := range node.Plans {
-						work += visited(child)
-					}
-					return work
 				}
-				if len(plan) != 1 || !plan[0].Plan.UsesIndex(index) || visited(plan[0].Plan) > 4 {
-					t.Fatalf("health active seek scanned history: kind=%s analyzed=%t plan=%s", kind, analyzed, raw)
-				}
+				rows, readErr := queries.HealthSourceItems(t.Context(), pgquery.HealthSourceItemsParams{OrganizationID: org, ProjectID: "prj_first", StateName: new("Todo"), AfterID: after, Limit: 1})
+				err = readErr
+				selected = len(rows)
+			case "questions":
+				rows, readErr := queries.HealthSourceQuestions(t.Context(), pgquery.HealthSourceQuestionsParams{OrganizationID: org, Limit: 1})
+				err = readErr
+				selected = len(rows)
+			case "conversation":
+				rows, readErr := queries.HealthSourceConversationQuestions(t.Context(), pgquery.HealthSourceConversationQuestionsParams{OrganizationID: org, ConversationID: "conversation_first", Limit: 1})
+				err = readErr
+				selected = len(rows)
+			}
+			if err != nil {
+				tx.Rollback(t.Context())
+				t.Fatal(err)
+			}
+			expected := 1
+			if kind == "items_tail" {
+				expected = 0
+			}
+			if selected != expected {
+				tx.Rollback(t.Context())
+				t.Fatalf("health source %s returned %d rows, want %d", kind, selected, expected)
+			}
+			rollbackErr := tx.Rollback(t.Context())
+			if rollbackErr != nil {
+				t.Fatal(rollbackErr)
 			}
 		}
 

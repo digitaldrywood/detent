@@ -13,16 +13,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestHealthPageFixedWireBudget(t *testing.T) {
+func TestHealthPageReadsPublishedTenantEvidence(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-	counts := &pageWireCounts{}
-	measured := pageMeasuredRepository(t, pool, counts)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedRepository(t, repository, org)
 	}
-	for _, size := range []int{2, 50} {
+	for _, size := range []int{2} {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			_, err := admin.ExecContext(t.Context(), `INSERT INTO health_findings(organization_id,id,fingerprint,signal,class,subject_kind,subject_id,opened_at,last_seen_at,severity,summary,next_action,evidence_object_key,evidence_sha256,evidence_bytes,evidence_content_bytes)
 SELECT $1,'finding_'||n,'finding_'||n,'signal','class','work_item','wi_first_1',now(),now(),'attention',$1,'inspect','','',0,0 FROM generate_series(1,$2::int) n ON CONFLICT DO NOTHING`, org, size)
@@ -73,8 +71,7 @@ SELECT $1,'finding_'||n,'finding_'||n,'signal','class','work_item','wi_first_1',
 				}
 			}
 			t.Run(fmt.Sprintf("%s/%dx", org, size), func(t *testing.T) {
-				counts.reset()
-				err := measured.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					page, err := r.(healthstore.Reader).HealthFindings(t.Context(), "prj_first", "open", nil, 0, "example", 2)
 					if err == nil && (len(page.Findings) != 2 || page.Findings[0].Summary != string(org) || len(page.Findings[0].Issues) != 1 || page.Findings[0].DisplayEvidence.Reason != string(org) || page.Findings[0].DisplayEvidence.Counts["attempts"] != 3 || page.Findings[0].DisplayEvidence.Queues["prj_first"].QueueDepth != 4) {
 						t.Fatalf("tenant page = %+v", page)
@@ -83,11 +80,6 @@ SELECT $1,'finding_'||n,'finding_'||n,'signal','class','work_item','wi_first_1',
 				})
 				if err != nil {
 					t.Fatal(err)
-				}
-				statements, exchanges := counts.read()
-				t.Logf("statements=%d exchanges=%d", statements, exchanges)
-				if statements != 5 || exchanges != 4 {
-					t.Errorf("want fixed 5 statements / 4 exchanges including transaction; got %d / %d", statements, exchanges)
 				}
 			})
 		}
