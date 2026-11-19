@@ -14,8 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const boardSearchVocabulary = `ARRAY['the','runner','lease','review','change','magazine','count','reason','code','release','search','index','project','issue','tenant','board','worker','commit','branch','landing','deploy','policy','queue','retry','budget','storage','postgres','hub','token','report','failure','timeout','window','cursor','page','body','title','label','state','done','cancel','todo','progress','agent','codex','claude','gate','test','suite','package']`
-
 func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 	t.Parallel()
 	f := newBoardSearchFixture(t)
@@ -56,13 +54,13 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	seed := func(org string, first, count, words int) {
+	seed := func(org string, first, count, matchEvery int) {
 		t.Helper()
 		if _, err := f.admin.ExecContext(ctx, `INSERT INTO issues(organization_id,project_id,native_id,number,title,actor_kind,actor_principal_id,workflow_state_name)
  SELECT $1,'prj_first','wi_window_'||n,n+10,'Example','human','example','Todo' FROM generate_series($2::integer,$3::integer) n`, org, first, first+count-1); err != nil {
 			t.Fatal(err)
 		}
-		body := fmt.Sprintf("(SELECT string_agg((%s)[1+abs(hashtext(n::text||':'||g::text))%%50],' ') FROM generate_series(1,%d) g)", boardSearchVocabulary, words)
+		body := fmt.Sprintf("(CASE WHEN n %% %d = 0 THEN 'magazine count reason code' ELSE 'runner review lease' END)", matchEvery)
 		clone("native_board_items", org, "''", first, count)
 		clone("native_work_item_pages", org, body, first, count)
 		if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_search(organization_id,project_id,work_item_id,number,terms)
@@ -136,7 +134,7 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 	}
 	const project = 2200
 	for _, org := range []string{"org_first", "org_second"} {
-		seed(org, 1, project, 400)
+		seed(org, 1, project, 2)
 	}
 	for _, run := range []struct {
 		org      tracker.OrganizationID
@@ -151,7 +149,7 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 		}
 		t.Logf("tenant=%s reporter=%t requests=%d", run.org, run.reporter, requests)
 	}
-	seed("org_second", project+1, searchstore.WindowRows, 12)
+	seed("org_second", project+1, searchstore.WindowRows, 50)
 	windows, requests := search("org_second", false, "")
 	if windows < 2 {
 		t.Fatalf("a project above the ceiling used %d windows, want continuation past the ceiling", windows)
