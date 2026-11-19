@@ -17,11 +17,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 )
 
-func TestConversationReferenceBounds(t *testing.T) {
-	t.Parallel()
+func openConversationTestHub(t *testing.T) *hubfixture.Hub {
+	t.Helper()
 	var mu sync.Mutex
 	objects := map[string][]byte{}
-	h := hubfixture.Open(t, hubfixture.Config{
+	return hubfixture.Open(t, hubfixture.Config{
 		Conversation: &hubserver.ConversationConfig{Enabled: true},
 		Content: func(_ context.Context, req entryauthority.ContentRequest) ([]byte, error) {
 			mu.Lock()
@@ -37,6 +37,11 @@ func TestConversationReferenceBounds(t *testing.T) {
 			return bytes.Clone(data), nil
 		},
 	})
+}
+
+func TestConversationReferenceBounds(t *testing.T) {
+	t.Parallel()
+	h := openConversationTestHub(t)
 	post := func(t *testing.T, p hubfixture.Native, text string) string {
 		t.Helper()
 		created := p.Request(t, http.MethodPost, p.Base+"/conversations", conversations.ConversationCreateRequest{Key: "create", Title: "References"})
