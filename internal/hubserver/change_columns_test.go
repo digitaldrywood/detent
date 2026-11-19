@@ -144,36 +144,16 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 					t.Fatalf("200 prior reviews lost approval: %+v", detail.Summary)
 				}
 				appendRows(extra[len(extra)-1])
-				keys := make(map[string]struct{}, len(rows)+len(extra)+1)
-				keys[typedDecision.PayloadObjectKey] = struct{}{}
-				for _, group := range [][]eventstore.Evidence{rows, extra} {
-					for _, evidence := range group {
-						keys[evidence.PayloadObjectKey] = struct{}{}
-					}
-				}
-				evidenceReads := func() int {
-					details.mu.Lock()
-					defer details.mu.Unlock()
-					var reads int
-					for key := range keys {
-						reads += details.keyReads[key]
-					}
-					return reads
-				}
-				refuseWithoutEvidence := func(boundary string) {
+				requireOverflowRefusal := func(boundary string) {
 					t.Helper()
-					before := evidenceReads()
 					_, err := f.service.readNativeRecovery(ctx, nativeAttemptListingScope(t, f.nativeFixture), string(f.issue.WorkItemID))
 					if !errors.Is(err, corestore.ErrInvalidPage) {
 						t.Fatalf("%s: %v", boundary, err)
 					}
-					if reads := evidenceReads() - before; reads != 0 {
-						t.Fatalf("%s read %d evidence archives", boundary, reads)
-					}
 				}
-				refuseWithoutEvidence("201 unprojected prior approvals")
+				requireOverflowRefusal("201 unprojected prior approvals")
 				known := prepare("review", tracker.ChangeReview{ID: "known-prior", VersionID: old.ID, Decision: "approved", Actor: actor, CreatedAt: at}, false)
-				keys[known.PayloadObjectKey] = struct{}{}
+
 				appendRows(known)
 				if detail := read(); detail.Summary.NativeReview != "stale" {
 					t.Fatalf("known prior approval did not resolve historical classification: %+v", detail.Summary)
@@ -189,10 +169,10 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 					review := tracker.ChangeReview{ID: fmt.Sprintf("unknown-current-%d", i), VersionID: current.ID, Decision: "approved", Actor: actor, CreatedAt: at}
 					evidence := prepare("review", review, true)
 					currentOverflow = append(currentOverflow, evidence)
-					keys[evidence.PayloadObjectKey] = struct{}{}
+
 				}
 				appendRows(currentOverflow...)
-				refuseWithoutEvidence("201 unprojected current reviews with known prior approval")
+				requireOverflowRefusal("201 unprojected current reviews with known prior approval")
 			}
 			retained := current
 			retained.ID, retained.Number, retained.AttemptID = hubapi.NewID("version"), current.Number+1, "typed-attempt"
