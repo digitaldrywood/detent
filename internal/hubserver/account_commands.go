@@ -2,13 +2,10 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"errors"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedaccounts"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -75,82 +72,18 @@ func (s *Service) createHostedOrganizationFor(ctx context.Context, credential hu
 	return s.config.Hosted.OrganizationID, nil
 }
 
-type accountReceipt struct {
-	Kind    string               `json:"kind"`
-	Retry   string               `json:"retry"`
-	Hash    string               `json:"hash"`
-	Outcome string               `json:"outcome"`
-	Output  operatoradmin.Output `json:"output"`
-}
+type accountReceipt = hostedaccounts.Receipt
 
-func (s *Service) replayHostedAccountReceipt(ctx context.Context, credential hubapi.APICredential, m mutation.Metadata) (operatoradmin.Output, bool, error) {
-	raw, err := s.readAccessAccountReceipt(ctx, credential.Hosted.Subject, m.RetryIdentity)
-	if errors.Is(err, sql.ErrNoRows) {
-		return operatoradmin.Output{}, false, nil
-	}
-	if err != nil {
-		return operatoradmin.Output{}, true, err
-	}
-	var receipt accountReceipt
-	if json.Unmarshal([]byte(raw), &receipt) != nil {
-		return operatoradmin.Output{}, true, operatoradmin.ErrUnavailable
-	}
-	if receipt.Hash != m.InputHash {
-		return operatoradmin.Output{}, true, mutation.ErrConflict
-	}
-	if receipt.Outcome != "succeeded" {
-		return operatoradmin.Output{}, true, mutation.ErrUncertain
-	}
-	return receipt.Output, true, nil
-}
-
-// Account setup has no customer token row. Its receipts therefore reuse the
-// existing hosted audit ledger; the pending receipt is reserved under the
-// organization row lock before any provider call.
-func (s *Service) executeHostedAccountFor(ctx context.Context, credential hubapi.APICredential, name string, in operatoradmin.Input, m mutation.Metadata) (operatoradmin.Output, error) {
-	if output, replayed, err := s.replayHostedAccountReceipt(ctx, credential, m); replayed {
-		return output, err
-	}
-	record := func(recordCtx context.Context, outcome string, out operatoradmin.Output, reserve bool) error {
-		return s.storeAccessAccountReceipt(recordCtx, credential, accountReceipt{Kind: "account_administration", Retry: m.RetryIdentity, Hash: m.InputHash, Outcome: outcome, Output: out}, m, reserve)
-	}
-	if err := record(ctx, "pending", operatoradmin.Output{}, true); errors.Is(err, errAccountReceiptExists) {
-		output, replayed, err := s.replayHostedAccountReceipt(ctx, credential, m)
-		if !replayed {
-			return operatoradmin.Output{}, mutation.ErrUncertain
-		}
-		return output, err
-	} else if err != nil {
-		return operatoradmin.Output{}, err
-	}
-	output := operatoradmin.Output{Reconnect: true}
-	var err error
-	switch name {
-	case operatortool.OrganizationCreate:
-		output.ResourceID, err = s.createHostedOrganizationFor(ctx, credential, in.Name)
-		output.URL = s.config.Hosted.PublicURL + "/auth/oidc/start"
-	case operatortool.InvitationAccept:
-		session, sessionErr := s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
-		if sessionErr != nil {
-			return operatoradmin.Output{}, sessionErr
-		}
-		err = s.acceptHostedInvitationIDFor(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, in.InvitationID)
-		output.ResourceID = in.InvitationID
-		output.URL = s.config.Hosted.PublicURL + "/auth/oidc/start"
-	case operatortool.SupportStart:
-		output.ResourceID = s.config.Hosted.OrganizationID
-		output.URL = s.config.Hosted.PublicURL + "/support"
-		output.Data = json.RawMessage(`{"interactive_required":true}`)
-	default:
-		return operatoradmin.Output{}, operatoradmin.ErrUnavailable
-	}
-	if err != nil {
-		return operatoradmin.Output{}, err
-	}
-	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer cancel()
-	if err := record(persist, "succeeded", output, false); err != nil {
-		return operatoradmin.Output{}, mutation.ErrUncertain
-	}
-	return output, nil
+func (s *Service) executeHostedAccountFor(ctx context.Context, credential hubapi.APICredential, name string, in operatoradmin.Input, metadata mutation.Metadata) (operatoradmin.Output, error) {
+	service := hostedaccounts.New(hostedaccounts.Deps{
+		Now:                s.config.Clock,
+		HostedOrganization: s.config.Hosted.OrganizationID,
+		PublicURL:          s.config.Hosted.PublicURL,
+		ReadReceipt:        s.readAccessAccountReceipt,
+		StoreReceipt:       s.storeAccessAccountReceipt,
+		CreateOrganization: s.createHostedOrganizationFor,
+		StoredSession:      s.storedWebSession,
+		AcceptInvitation:   s.acceptHostedInvitationIDFor,
+	})
+	return service.Execute(ctx, credential, name, in, metadata)
 }

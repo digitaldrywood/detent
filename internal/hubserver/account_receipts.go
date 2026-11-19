@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedaccounts"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -42,7 +43,7 @@ func (s *Service) readAccessAccountReceipt(ctx context.Context, actor, retry str
 	return string(raw), err
 }
 
-var errAccountReceiptExists = errors.New("account receipt already exists")
+var errAccountReceiptExists = hostedaccounts.ErrReceiptExists
 
 func (s *Service) storeAccessAccountReceipt(ctx context.Context, credential hubapi.APICredential, receipt accountReceipt, metadata mutation.Metadata, reserve bool) error {
 	store := s.runDetailStore()
