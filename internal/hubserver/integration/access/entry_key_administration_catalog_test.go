@@ -1,9 +1,10 @@
-package hubserver
+package access_test
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,37 +17,51 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type entryCatalogInvitationProvider struct{ *hubfixture.HostedProvider }
+
+func (p entryCatalogInvitationProvider) InvitationByID(ctx context.Context, id string) (auth.Invitation, error) {
+	return p.Invitation(ctx, id)
+}
+
+func (p entryCatalogInvitationProvider) AcceptInvitationByID(ctx context.Context, id, user string) error {
+	return p.AcceptInvitation(ctx, id, user)
+}
+
 func TestPostgresEntryKeyAdministrationCatalog(t *testing.T) {
 	t.Parallel()
-	f := newSharedRouteFixture(t, func(cfg *Config) {
+	providers := map[string]*hubfixture.HostedProvider{}
+	f := openEntryCatalog(t, func(cfg *hubfixture.Config) {
 		plans := hostedplans.PilotPlans()
 		cfg.Hosted.Plans = &plans
 		org := cfg.Hosted.OrganizationID
-		cfg.Hosted.Provider = newHostedSecurityProvider()
+		providers[org] = cfg.Hosted.Provider.(*hubfixture.HostedProvider)
+		cfg.Hosted.Provider = entryCatalogInvitationProvider{providers[org]}
 		cfg.Hosted.SharedEntry.ResolveKey = func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 			return cloudassert.Claims{Issuer: origin.Issuer, Generation: origin.Generation, Audience: org, ProviderOrganization: "provider_" + org, Subject: origin.Subject, Role: "owner", Kind: cloudassert.KindKey, ExpiresAt: time.Now().Add(time.Minute), Key: &apikey.KeyAuthority{ID: origin.KeyID, CredentialBinding: origin.CredentialBinding, Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}}, nil
 		}
 	})
-	for _, org := range []string{"org_startup", "org_other"} {
+	for _, org := range f.organizations {
 		t.Run(org, func(t *testing.T) {
-			service := f.services[org]
-			provider := service.config.Hosted.Provider.(*hostedSecurityProvider)
+			provider := providers[org]
 			for _, suffix := range []string{"owner", "member"} {
 				id := org + "_" + suffix
 				member := auth.Membership{ID: id, UserID: id, OrganizationID: "provider_" + org, Status: "active"}
 				member.Role.Slug = suffix
-				provider.members[id] = member
+				provider.Mu.Lock()
+				provider.Members[id] = member
+				provider.Mu.Unlock()
 			}
 			organization := tracker.OrganizationID(org)
-			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := f.repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				now := time.Now().UTC()
-				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project", Name: "Example", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project", Name: "Example", Profile: "native"}, States: hubfixture.States()}); err != nil {
 					return err
 				}
 				if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: org + "_owner", ProjectID: "project", CanWrite: true}); err != nil {
@@ -64,9 +79,9 @@ func TestPostgresEntryKeyAdministrationCatalog(t *testing.T) {
 				c.Key = &apikey.KeyAuthority{ID: org + "_key", CredentialBinding: strings.Repeat("e", 64), Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}
 			}
 			catalog := f.request(t, org, "/internal/v1/keys/catalog", `{}`, keyClaims)
-			requireNativeStatus(t, catalog, http.StatusOK)
+			hubfixture.RequireStatus(t, catalog, http.StatusOK)
 			var definitions []operatortool.Definition
-			decodeHubResponse(t, catalog, &definitions)
+			hubfixture.Decode(t, catalog, &definitions)
 			for _, test := range []struct {
 				name string
 				args map[string]any
@@ -83,7 +98,7 @@ func TestPostgresEntryKeyAdministrationCatalog(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					definition, _ := operatortool.Lookup(test.name)
-					if !entryKeyHasDefinition(definitions, test.name) {
+					if !slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == test.name }) {
 						t.Errorf("%s missing from signed catalog", test.name)
 					}
 					if !definition.Annotations.ReadOnly {
@@ -97,17 +112,17 @@ func TestPostgresEntryKeyAdministrationCatalog(t *testing.T) {
 						for _, restrict := range []func(*cloudassert.Claims){func(c *cloudassert.Claims) { c.Key.Permission = apikey.ScopeRead }, func(c *cloudassert.Claims) { c.Role = "viewer" }} {
 							deniedClaims := func(c *cloudassert.Claims) { keyClaims(c); restrict(c) }
 							deniedCatalog := f.request(t, org, "/internal/v1/keys/catalog", `{}`, deniedClaims)
-							requireNativeStatus(t, deniedCatalog, http.StatusOK)
+							hubfixture.RequireStatus(t, deniedCatalog, http.StatusOK)
 							var deniedDefinitions []operatortool.Definition
-							decodeHubResponse(t, deniedCatalog, &deniedDefinitions)
-							if entryKeyHasDefinition(deniedDefinitions, test.name) {
+							hubfixture.Decode(t, deniedCatalog, &deniedDefinitions)
+							if slices.ContainsFunc(deniedDefinitions, func(d operatortool.Definition) bool { return d.Name == test.name }) {
 								t.Fatal("restricted administrator tool advertised")
 							}
-							requireNativeStatus(t, f.request(t, org, "/internal/v1/keys/call", string(body), deniedClaims), http.StatusForbidden)
+							hubfixture.RequireStatus(t, f.request(t, org, "/internal/v1/keys/call", string(body), deniedClaims), http.StatusForbidden)
 						}
 					}
 					response := f.request(t, org, "/internal/v1/keys/call", string(body), keyClaims)
-					requireNativeStatus(t, response, http.StatusOK)
+					hubfixture.RequireStatus(t, response, http.StatusOK)
 					if definition.Annotations.ReadOnly {
 						if !strings.Contains(response.Body.String(), org) {
 							t.Fatal("read lost tenant identity")
@@ -115,13 +130,13 @@ func TestPostgresEntryKeyAdministrationCatalog(t *testing.T) {
 						return
 					}
 					var result struct{ Action chat.Action }
-					decodeHubResponse(t, response, &result)
+					hubfixture.Decode(t, response, &result)
 					if result.Action.Status != chat.ActionSucceeded {
 						t.Fatalf("administration failed: %s", response.Body)
 					}
 				})
 			}
-			if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 				member, err := r.AccessMember(t.Context(), org+"_member")
 				if err == nil && (member.Active || member.Role != "viewer") {
 					t.Error("member role did not persist")
@@ -130,8 +145,15 @@ func TestPostgresEntryKeyAdministrationCatalog(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if provider.invitations["invitation_1"].State != "revoked" || provider.members[org+"_member"].Role.Slug != "viewer" {
-				t.Fatal("provider mutations did not complete")
+			invitation, err := provider.Invitation(t.Context(), "invitation_1")
+			if err != nil || invitation.State != "revoked" {
+				t.Fatalf("provider invitation = %+v, error = %v", invitation, err)
+			}
+			provider.Mu.Lock()
+			member := provider.Members[org+"_member"]
+			provider.Mu.Unlock()
+			if member.Role.Slug != "viewer" {
+				t.Fatal("provider role change did not complete")
 			}
 		})
 	}
