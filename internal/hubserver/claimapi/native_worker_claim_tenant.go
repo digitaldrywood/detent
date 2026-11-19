@@ -51,6 +51,8 @@ type Deps struct {
 	AuthorizeAccess                  func(context.Context, accessstore.Reader, hubscope.NativeScope, bool) error
 	Logger                           *slog.Logger
 	RunEventsEnabled                 func() bool
+	ReadRecoveryIntent               func(context.Context, hubscope.NativeScope, corestore.WorkItem, eventstore.CollaborationVersion) (*leasestore.RecordedRecovery, error)
+	PrepareRecoveryWrite             func(context.Context, hubscope.NativeScope, *leasestore.RecordedRecovery) (func(context.Context, tenantstore.Writer) error, error)
 	DetailsFor                       func(context.Context) attachment.DetailStore
 	PrepareCancellation              func(context.Context, hubscope.NativeScope, int64, bool) (*leasestore.AttemptCancellation, error)
 	EvaluateContract                 func(hubrecords.NativeClaimPlan) (ContractEvaluation, error)
@@ -138,6 +140,19 @@ func (d Deps) ClaimNativeIssueTenant(ctx context.Context, scope hubscope.NativeS
 		sourcePending := false
 		for _, rows := range scan.Plans {
 			candidate := rows.Candidate
+			candidateRequest := request
+			candidateRequest.WorkItemID = candidate.WorkItemID
+			if rows.Project.Core.Profile == "native" && strings.EqualFold(candidate.State, "Blocked") {
+				recovered, err := d.PlanNativeClaimRecovery(ctx, scope, candidateRequest, rows)
+				if errors.Is(err, ErrNoClaimableWork) {
+					position = ClaimCandidateCursor(candidate)
+					continue
+				}
+				if err != nil {
+					return leasestore.Lease{}, err
+				}
+				rows = recovered
+			}
 			if candidate.SourceUnclassified {
 				state, err := d.classifyClaimCandidateSource(ctx, scope, candidate, &sourceBudget)
 				if err != nil {
@@ -151,6 +166,7 @@ func (d Deps) ClaimNativeIssueTenant(ctx context.Context, scope hubscope.NativeS
 					position = ClaimCandidateCursor(candidate)
 					continue
 				}
+				rows.Candidate.SourceUnclassified = false
 			}
 			rows.Placement = placement
 			plan, err := d.HydrateNativeClaimPlan(ctx, scope, request, now, rows, descriptor)
@@ -174,8 +190,6 @@ func (d Deps) ClaimNativeIssueTenant(ctx context.Context, scope hubscope.NativeS
 				position = ClaimCandidateCursor(candidate)
 				continue
 			}
-			candidateRequest := request
-			candidateRequest.WorkItemID = candidate.WorkItemID
 			outranked, err := d.nativeClaimOutranked(ctx, scope, candidateRequest, plan, now)
 			if err != nil {
 				return leasestore.Lease{}, err
@@ -272,6 +286,42 @@ func (d Deps) ClaimNativeIssueTenant(ctx context.Context, scope hubscope.NativeS
 		return leasestore.Lease{}, recordErr
 	}
 	return lease, err
+}
+
+func (d Deps) PlanNativeClaimRecovery(ctx context.Context, scope hubscope.NativeScope, claim tracker.NativeClaim, plan hubrecords.NativeClaimPlan) (hubrecords.NativeClaimPlan, error) {
+	recovery, err := d.ReadRecoveryIntent(ctx, scope, plan.Item, plan.Version)
+	if err != nil {
+		return plan, err
+	}
+	if recovery == nil || recovery.Policy.PolicyID != claim.PolicyID || !claimIncludesRecoveredState(claim, recovery.State) {
+		return plan, ErrNoClaimableWork
+	}
+	plan.Recovery = recovery
+	plan.Item.WorkflowStateName = &recovery.State
+	plan.Candidate.State = recovery.State
+	plan.LatestAttemptFound = false
+	if !strings.EqualFold(recovery.State, "Merging") {
+		return plan, nil
+	}
+	plans := []hubrecords.NativeClaimPlan{plan}
+	if err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return ReadNativeClaimChangeFacts(ctx, r, scope, plans)
+	}); err != nil {
+		return plan, err
+	}
+	if err := d.PrepareNativeClaimLegacyAuditFacts(ctx, scope, plans); err != nil {
+		return plan, err
+	}
+	if err := d.PrepareNativeClaimApprovals(ctx, scope, plans); err != nil {
+		return plan, err
+	}
+	return plans[0], nil
+}
+
+func claimIncludesRecoveredState(claim tracker.NativeClaim, state string) bool {
+	return len(claim.WorkflowStates) == 0 || slices.ContainsFunc(claim.WorkflowStates, func(wanted string) bool {
+		return strings.EqualFold(strings.TrimSpace(wanted), state)
+	})
 }
 
 type requestedClaimRefusal struct {
@@ -633,6 +683,7 @@ func (d Deps) ReadNativeClaimCandidates(ctx context.Context, scope hubscope.Nati
 			}
 		}
 		query := NativeTenantCandidateQuery(scope, request, "", now)
+		query.IncludeRecordedRecovery = true
 		sourceRevision, err := nativeClaimSelectionSourceRevision(project, policy, query)
 		if err != nil {
 			return err
@@ -758,12 +809,34 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 		return leasestore.Lease{}, ErrNoClaimableWork
 	}
 	if len(request.ProviderCandidates) > 0 && !slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) {
-		candidate := slices.IndexFunc(request.ProviderCandidates, func(candidate tracker.NativeCapacityCandidate) bool {
-			return candidate.WorkItemID == plan.Candidate.WorkItemID
-		})
-		if candidate < 0 || int64(request.ProviderCandidates[candidate].Revision) != plan.Candidate.Revision {
+		candidate := nativeClaimProviderCandidate(request, plan.Candidate.WorkItemID)
+		matches, err := d.nativeClaimProviderRevisionMatches(ctx, scope, plan, candidate)
+		if err != nil {
+			return leasestore.Lease{}, err
+		}
+		if !matches {
 			return leasestore.Lease{}, ProviderWait("provider_candidate_changed", "Work item changed after local model selection; refresh before claiming")
 		}
+	}
+	claimRevision := plan.Item.Revision
+	var recoveryWrite func(context.Context, tenantstore.Writer) error
+	if plan.Recovery != nil {
+		if plan.Candidate.SourceUnclassified {
+			budget := claimSourceBudget{remaining: ClaimSourceClassificationLimit}
+			state, err := d.classifyClaimCandidateSource(ctx, scope, plan.Candidate, &budget)
+			if err != nil {
+				return leasestore.Lease{}, err
+			}
+			if state != claimSourceKnown {
+				return leasestore.Lease{}, ErrNoClaimableWork
+			}
+		}
+		var err error
+		recoveryWrite, err = d.PrepareRecoveryWrite(ctx, scope, plan.Recovery)
+		if err != nil {
+			return leasestore.Lease{}, err
+		}
+		claimRevision++
 	}
 	runnerAPI := true
 	if plan.Descriptor.Configuration != nil {
@@ -773,7 +846,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 		}
 		runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
 	}
-	decision := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.Item.NativeID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: "native_claim", Outcome: "claimed", Reason: "A current fenced lease owns this item", At: now, WorkItemRevision: tracker.Revision(plan.Item.Revision)}}}
+	decision := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.Item.NativeID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: "native_claim", Outcome: "claimed", Reason: "A current fenced lease owns this item", At: now, WorkItemRevision: tracker.Revision(claimRevision)}}}
 	if (hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending) && plan.ChangeReady && plan.Change.VersionID != "" {
 		decision.Data.Change = new(plan.Change)
 	}
@@ -852,7 +925,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 		if err := w.LockRelationshipGraph(ctx); err != nil {
 			return err
 		}
-		if plan.Project.Core.Profile == "github_compatible" || slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) || request.LandingCapacity > 0 || plan.LandingRequired || plan.Issue.IssueContract != nil && plan.Issue.IssueContract.ReleaseDelivery != nil {
+		if plan.Recovery != nil || plan.Project.Core.Profile == "github_compatible" || slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) || request.LandingCapacity > 0 || plan.LandingRequired || plan.Issue.IssueContract != nil && plan.Issue.IssueContract.ReleaseDelivery != nil {
 			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
@@ -946,12 +1019,24 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 			replay = &replayLease
 		}
 		if replay == nil {
+			if recoveryWrite != nil {
+				if err := recoveryWrite(ctx, w); err != nil {
+					if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, tracker.ErrStaleFencingToken) {
+						return ErrNoClaimableWork
+					}
+					return err
+				}
+				item, err = w.WorkItemByID(ctx, scope.Project, item.ID)
+				if err != nil {
+					return err
+				}
+			}
 			query := NativeTenantCandidateQuery(scope, request, plan.Candidate.WorkItemID, authoritativeNow)
 			page, err := w.CandidatePage(ctx, query)
 			if err != nil {
 				return err
 			}
-			if len(page.Items) != 1 || page.Items[0].Revision != plan.Candidate.Revision {
+			if len(page.Items) != 1 || page.Items[0].Revision != claimRevision {
 				return ErrNoClaimableWork
 			}
 			latest, err := w.LatestAttempt(ctx, item.ID)
@@ -1373,6 +1458,43 @@ func nativeClaimProviderCandidate(request tracker.NativeClaim, item tracker.Nati
 	return nil
 }
 
+func (d Deps) nativeClaimProviderRevisionMatches(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan, candidate *tracker.NativeCapacityCandidate) (bool, error) {
+	if candidate == nil {
+		return false, nil
+	}
+	revision := int64(candidate.Revision)
+	if revision == plan.Candidate.Revision {
+		return true, nil
+	}
+	if plan.Replay == nil || revision != plan.Candidate.Revision-1 || plan.Replay.WorkItemRevision != plan.Candidate.Revision {
+		return false, nil
+	}
+	var transition eventstore.Event
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(eventstore.WorkflowTransitionReader)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		var err error
+		transition, err = reader.LatestWorkflowTransition(ctx, scope.Project, candidate.WorkItemID)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if transition.ActorKind != "runner" || !strings.EqualFold(transition.FromState, "Blocked") || transition.EventRevision != plan.Replay.WorkItemRevision || transition.RecordedAt.After(plan.Replay.AcquiredAt) {
+		return false, nil
+	}
+	event, err := eventstore.NewContent(d.DetailsFor(ctx)).Event(ctx, transition)
+	if err != nil {
+		return false, err
+	}
+	return event.Data.Reason == "dependency_ready" && event.Data.BlockerAttemptID != "", nil
+}
+
 func ReadTenantProviderReservation(ctx context.Context, r claimstore.Reader, lease tracker.LeaseID) (claimstore.ProviderReservation, bool, error) {
 	reservation, err := r.ProviderReservation(ctx, lease)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -1388,6 +1510,12 @@ func (d Deps) ReadNativeClaimPlan(ctx context.Context, scope hubscope.NativeScop
 	plan, err := d.ReadNativeClaimPlanRows(ctx, scope, request, now, nil, nil, hubrecords.NativeClaimPlan{})
 	if err != nil {
 		return hubrecords.NativeClaimPlan{}, err
+	}
+	if plan.Replay == nil && plan.Project.Core.Profile == "native" && strings.EqualFold(plan.Candidate.State, "Blocked") {
+		plan, err = d.PlanNativeClaimRecovery(ctx, scope, request, plan)
+		if err != nil {
+			return hubrecords.NativeClaimPlan{}, err
+		}
 	}
 	if err := d.PrepareNativeClaimLegacyAuditFacts(ctx, scope, []hubrecords.NativeClaimPlan{plan}); err != nil {
 		return hubrecords.NativeClaimPlan{}, err
@@ -1447,13 +1575,15 @@ func (d Deps) ReadNativeClaimPlanRows(ctx context.Context, scope hubscope.Native
 				return tracker.ErrLeaseConflict
 			}
 			if len(request.ProviderCandidates) > 0 && !slices.ContainsFunc(request.ProviderCandidates, func(c tracker.NativeCapacityCandidate) bool {
-				return c.WorkItemID == candidate.WorkItemID && int64(c.Revision) == candidate.Revision
+				return c.WorkItemID == candidate.WorkItemID
 			}) {
 				return tracker.ErrLeaseConflict
 			}
 		}
 		if candidate == nil {
-			page, err := r.CandidatePage(ctx, NativeTenantCandidateQuery(scope, request, request.WorkItemID, now))
+			query := NativeTenantCandidateQuery(scope, request, request.WorkItemID, now)
+			query.IncludeRecordedRecovery = true
+			page, err := r.CandidatePage(ctx, query)
 			if err != nil {
 				return err
 			}

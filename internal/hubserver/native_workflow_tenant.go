@@ -48,6 +48,15 @@ func (s *Service) transitionNativeIssueTenantFromChat(ctx context.Context, scope
 }
 
 func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments, conversationID string) (json.RawMessage, error) {
+	return s.prepareOrTransitionNativeIssue(ctx, scope, item, request, stop, conversationID, nil)
+}
+
+type nativeClaimRecoveryWrite struct {
+	recovery *leasestore.RecordedRecovery
+	write    func(context.Context, tenantstore.Writer) error
+}
+
+func (s *Service) prepareOrTransitionNativeIssue(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments, conversationID string, claim *nativeClaimRecoveryWrite) (json.RawMessage, error) {
 	batchRouting := scope.IntegrationOwned && scope.IntegrationRepository != "" && scope.GitHubIntakeRevision != nil && scope.GitHubIntakeRevision.BatchID != "" && scope.GitHubIntakeRevision.Revision > 0 && scope.Credential.Scope == hubapi.APIScopeAdmin && scope.Credential.Runner.RunnerID == "" && request.Reason == "user_requested" && request.State != "Cancelled" && stop == nil
 	if batchRouting {
 		batch, err := s.loadGitHubBatchRecord(ctx, scope)
@@ -135,6 +144,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			return nil, err
 		}
 		if found {
+			if claim != nil {
+				return nil, ErrNoClaimableWork
+			}
 			if receipt.ResponseExpired {
 				return nil, commandResponseExpired()
 			}
@@ -212,7 +224,14 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if !hubrecords.DispatchableProjectState(project, request.State) {
 				return nil, hubapi.NativeConflict(tracker.Revision(row.Revision))
 			}
-			recovery, err = s.prepareRecordedRecoveryTenant(ctx, scope, row, issue, request)
+			if claim != nil {
+				recovery = claim.recovery
+				if row.Revision != recovery.ExpectedRevision || row.EventSequence != recovery.EventSequence {
+					return nil, ErrNoClaimableWork
+				}
+			} else {
+				recovery, err = s.prepareRecordedRecoveryTenant(ctx, scope, row, issue, request)
+			}
 			if err != nil {
 				if errors.Is(err, corestore.ErrRevisionConflict) {
 					return nil, hubapi.NativeConflict(tracker.Revision(row.Revision))
@@ -228,8 +247,25 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 		}
 		destination := request.State
+		var retryPolicy policystore.Revision
 		if machineHold != nil {
-			destination = issue.State
+			if hubrecords.DispatchableProjectState(project, issue.State) {
+				destination = issue.State
+			} else {
+				_, retryPolicy, err = s.readTenantProjectPolicyRevision(ctx, scope.Organization, scope.Project)
+				if err != nil {
+					return nil, err
+				}
+				if retryPolicy.PolicyID != "" {
+					retry, err := recordedRetryLane(ctx, content, retryPolicy)
+					if err != nil {
+						return nil, err
+					}
+					if retry = recordedMachineRetryLane(project, issue.State, retry); retry != "" {
+						destination = retry
+					}
+				}
+			}
 		}
 		previousContract, err := json.Marshal(issue.IssueContract)
 		if err != nil {
@@ -279,6 +315,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
+		if retryPolicy.PolicyID != "" && (!policyFound || !sameTenantProjectPolicyRevisionContent(retryPolicy, policyRevision)) {
+			continue
+		}
 		if stop != nil {
 			stopState = request.State
 		}
@@ -296,7 +335,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
-		unchanged := machineHold != nil || human && stop == nil && previousState == destination && bytes.Equal(previousContract, currentContract)
+		unchanged := machineHold != nil && previousState == destination || human && stop == nil && previousState == destination && bytes.Equal(previousContract, currentContract)
 		if unchanged {
 			issue.Revision = tracker.Revision(row.Revision)
 			issue.UpdatedAt = previousUpdatedAt
@@ -657,6 +696,10 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			committed = responseRaw
 			return nil
+		}
+		if claim != nil {
+			claim.write = write
+			return nil, nil
 		}
 		if recordedRecovery {
 			err = s.writeNativeClaimCommand(ctx, scope, write)

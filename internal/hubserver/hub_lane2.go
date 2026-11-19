@@ -604,6 +604,8 @@ func (s *Service) runnerClaimDeps() claimapi.Deps {
 		AuthorizeAccess:                  s.authorizeAccessScope,
 		Logger:                           s.config.Logger,
 		RunEventsEnabled:                 func() bool { return s.config.NativeRunEvents != nil },
+		ReadRecoveryIntent:               s.readClaimRecoveryIntent,
+		PrepareRecoveryWrite:             s.prepareNativeClaimRecoveryWrite,
 		DetailsFor:                       s.runDetailStoreFor,
 		PrepareCancellation:              s.prepareRunnerClaimCancellation,
 		EvaluateContract:                 evaluateRunnerClaimContract,
