@@ -908,6 +908,7 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 		secondTenant        bool
 		failure             *tracker.NativeTerminalFailure
 		lost                bool
+		releasedBeforeWrite bool
 		route, disposition  string
 	}{
 		{name: "partial success", outcome: "success", step: "implement"},
@@ -916,8 +917,10 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 		{name: "cancellation", outcome: "cancelled", step: "implement"},
 		{name: "acceptance setup failed on a passing head", outcome: "failed", step: "validator", route: "acceptance",
 			failure: &tracker.NativeTerminalFailure{Stage: "validator", Attribution: "instance", ErrorClass: "validator", Error: "acceptance checkout failed"}},
+		{name: "failed gate contradicts model", outcome: "failed", step: "implement", route: "implement"},
 		{name: "new source invalidates passing head", outcome: "success", step: "implement", route: "project_gate"},
 		{name: "verified landing", outcome: "success", step: "implement", disposition: "landed"},
+		{name: "lease released before write", outcome: "success", step: "implement", releasedBeforeWrite: true},
 		{name: "lost lease", outcome: "cancelled", step: "lease_release", lost: true},
 		{name: "accepted no change", outcome: "success", step: "implement", secondTenant: true, disposition: "accepted_no_change"},
 	} {
@@ -929,6 +932,9 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 			fixture := &conversationWorkerFixture{nativeFixture: project, runner: runner, worker: runner.redemption.Credential,
 				issue: project.create(t, tc.name), policy: f.policy, now: f.now}
 			fixture.claim(t)
+			if !tc.releasedBeforeWrite {
+				t.Cleanup(func() { fixture.release(t) })
+			}
 			path := fixture.base + "/work-items/" + string(fixture.issue.WorkItemID)
 			attemptID, lease := fixture.attempt, fixture.lease
 			query := path + "/progress?attempt=" + url.QueryEscape(attemptID)
@@ -939,6 +945,7 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 				rules := tracker.ChangeReviewPolicy{PolicyID: fixture.policy, RequireReview: true}
 				requireNativeStatus(t, with(http.MethodPut, fixture.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "terminal-verdict-rules"}, Policy: rules}), http.StatusOK)
 			}
+			var publishedHead string
 			if tc.route != "" || tc.disposition == "landed" {
 				response := with(http.MethodPost, path+"/changes", testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("change")}, Title: "Pinned source"})
 				requireNativeStatus(t, response, http.StatusOK)
@@ -946,6 +953,7 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 				decodeHubResponse(t, response, &change)
 				source := changeTestInput()
 				bundle := changeTestSource(t, &source)
+				publishedHead = source.HeadSHA
 				source.Validation = &gate.CommandResult{Stage: gate.StageSourceFinalization, Command: "make check", HeadSHA: source.HeadSHA, TreeSHA: strings.Repeat("c", 40), DurationNS: 1}
 				response = with(http.MethodPost, path+"/changes/"+change.ID+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("version")}, ChangeVersionInput: source, SourceBundle: bundle})
 				requireNativeStatus(t, response, http.StatusOK)
@@ -973,6 +981,9 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 				if tc.failure != nil {
 					tc.failure.ObservedAt = fixture.now
 				}
+				if tc.name == "failed gate contradicts model" {
+					event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: fixture.now, Validation: &gate.CommandResult{Stage: gate.StageSourceFinalization, Command: "make check", HeadSHA: publishedHead, TreeSHA: strings.Repeat("c", 40), ExitCode: 1, DurationNS: 1}}
+				}
 				if tc.route == "project_gate" {
 					event.Data.Finalization = &tracker.NativeFinalization{Changed: true, ObservedAt: fixture.now, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("e", 40)}
 				}
@@ -993,7 +1004,6 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 						Mutation: tracker.Mutation{IdempotencyKey: "verified-no-change-transition"}, State: "Done", ExpectedRevision: issue.Revision, Reason: "user_requested",
 					}), http.StatusOK)
 				}
-				fixture.release(t)
 			} else {
 				f.advance(time.Hour)
 				fixture.now = f.now
@@ -1045,6 +1055,9 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 				delete(decision, "step")
 				decision["disposition"] = tc.disposition
 			}
+			if tc.name == "failed gate contradicts model" {
+				decision["step"], decision["succeeded"] = "merge", true
+			}
 			publication := map[string]any{
 				"attempt_id": attemptID, "request_id": pending.RequestID, "evidence_revision": pending.Request.EvidenceRevision,
 				"lease_id": lease.ID, "fencing_token": strconv.FormatInt(int64(lease.FencingToken), 10),
@@ -1055,8 +1068,37 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 				requireNativeStatus(t, with(http.MethodPost, path+"/progress", unrelatedRunner.redemption.Credential, publication), http.StatusUnauthorized)
 				decision["step"], decision["disposition"] = "", "landed"
 				requireNativeStatus(t, with(http.MethodPost, path+"/progress", fixture.worker, publication), http.StatusUnprocessableEntity)
+				decision["disposition"] = "blocked"
+				requireNativeStatus(t, with(http.MethodPost, path+"/progress", fixture.worker, publication), http.StatusUnprocessableEntity)
 				decision["step"] = "implement"
 				delete(decision, "disposition")
+			}
+			if tc.lost || tc.releasedBeforeWrite {
+				if tc.releasedBeforeWrite {
+					repository := fixture.service.config.TenantRepository.(*postgres.Repository)
+					guard := &progressPublicationRepository{Repository: repository, observe: func() error {
+						fixture.release(t)
+						return nil
+					}}
+					fixture.service.config.TenantRepository = guard
+					defer func() { fixture.service.config.TenantRepository = repository }()
+					request := newHubAPIRequest(t, http.MethodPost, path+"/progress", fixture.worker, publication)
+					response = httptest.NewRecorder()
+					fixture.service.Handler().ServeHTTP(response, request.WithContext(context.WithValue(t.Context(), progressPublicationContextKey{}, new(int))))
+					if !guard.fired {
+						t.Fatal("lease was not released before the verdict transaction")
+					}
+				} else {
+					response = with(http.MethodPost, path+"/progress", fixture.worker, publication)
+				}
+				requireNativeStatus(t, response, http.StatusConflict)
+				response = with(http.MethodGet, query, fixture.worker, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &pending)
+				if pending.Record != nil || pending.Current {
+					t.Fatal("lost lease persisted a verdict")
+				}
+				return
 			}
 			var responses [2]*httptest.ResponseRecorder
 			var group sync.WaitGroup
@@ -1077,6 +1119,13 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 			decodeHubResponse(t, response, &pending)
 			if pending.Record == nil || pending.Record.NextStep != pending.Request.Terminal.NextStep || pending.Record.Disposition != tc.disposition || !pending.Current {
 				t.Fatalf("recorded Hub route = %+v, request = %+v", pending.Record, pending.Request.Terminal)
+			}
+			if tc.name == "failed gate contradicts model" {
+				var after progresscheck.TerminalView
+				decodeHubResponse(t, response, &after)
+				if after.Request.Terminal.Outcome != "failed" || after.Record.NextStep != "implement" || after.Record.Decision.Step != "merge" {
+					t.Fatalf("model changed authoritative outcome or route: %+v", after)
+				}
 			}
 			if tc.name != "partial success" {
 				return
