@@ -70,6 +70,23 @@ FROM runner_audit_dispositions WHERE organization_id=$1 AND project_id=$2 AND ch
 	return result, err
 }
 
+func (s *session) LatestAuditReviewSequence(ctx context.Context, change, version string) (int64, error) {
+	var sequence int64
+	err := s.db.QueryRow(ctx, `SELECT latest.sequence FROM (
+ SELECT candidates.sequence FROM (
+  (SELECT sequence FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND version_id=$3
+   AND kind='review' AND review_kind='security_audit' AND NOT review_landing ORDER BY sequence DESC LIMIT 1)
+  UNION ALL
+  (SELECT sequence FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND version_id=$3
+   AND kind='review' AND review_kind='security_audit' AND review_landing ORDER BY sequence DESC LIMIT 1)
+ ) candidates ORDER BY candidates.sequence DESC LIMIT 1
+) latest WHERE NOT EXISTS (
+ SELECT 1 FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND version_id=$3
+ AND kind='review' AND review_kind='' AND sequence>latest.sequence
+)`, s.organization, change, version).Scan(&sequence)
+	return sequence, mapError(ctx, err)
+}
+
 func (s *session) priorAuditReviews(ctx context.Context, query eventstore.PriorAuditQuery, result *eventstore.PriorAuditSnapshot) error {
 	const pageSize = 16
 	rows, err := s.db.Query(ctx, `SELECT sequence,version_id,kind,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,

@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -17,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/releaseaudits"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -27,7 +27,7 @@ func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope hubsc
 	if request.BlockerAttemptID == "" || request.PolicyID == "" {
 		return nil, tracker.ErrStaleFencingToken
 	}
-	recovery, err := s.planRecordedRecoveryTenant(ctx, scope, row, issue, request.BlockerAttemptID, true)
+	recovery, err := s.planRecordedRecoveryTenant(ctx, scope, row, issue, request.BlockerAttemptID, true, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope hubsc
 	return recovery, nil
 }
 
-func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, issue tracker.NativeIssue, attemptID string, advance bool) (*leasestore.RecordedRecovery, error) {
+func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, issue tracker.NativeIssue, attemptID string, advance bool, audit *releaseaudits.AuditHoldClearance) (*leasestore.RecordedRecovery, error) {
 	if issue.Profile != "native" || issue.Archived || !strings.EqualFold(issue.State, "Blocked") {
 		return nil, corestore.ErrRevisionConflict
 	}
@@ -102,8 +102,19 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 		return nil, err
 	}
 	prior, valid := recordedBlockedLane(issue, attempt, report, transition)
-	if !valid || issueContractWorkerHumanAction(row, issue) != nil || claimapi.RecordedHumanHold(attempt.Status, attempt.TerminalFailure, attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
+	if !valid || issueContractWorkerHumanAction(row, issue) != nil {
 		return nil, corestore.ErrRevisionConflict
+	}
+	var clearedQuestion recordedAuditQuestion
+	if audit == nil {
+		if claimapi.RecordedHumanHold(attempt.Status, attempt.TerminalFailure, attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
+			return nil, corestore.ErrRevisionConflict
+		}
+	} else {
+		if approved.PolicyID != audit.PolicyID || !recordedAuditHold(*audit, transition, attempt) {
+			return nil, corestore.ErrRevisionConflict
+		}
+		clearedQuestion = auditQuestion(*audit, transition.Actor.PrincipalID)
 	}
 	var bound policystore.LeasePolicy
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -119,10 +130,10 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 	machine := claimapi.RecordedMachineFailure(attempt.Status, attempt.TerminalFailure, attempt.Disposition)
 	dependencies, ok := claimapi.RecordedRecoveryDependencies(attempt.Disposition, string(scope.Project))
 	staleBase := attempt.Disposition != nil && attempt.Disposition.ReasonCode == "stale_base"
-	if !ok || !machine && !staleBase && len(dependencies) == 0 {
+	if !ok || audit == nil && !machine && !staleBase && len(dependencies) == 0 {
 		return nil, corestore.ErrRevisionConflict
 	}
-	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt, advance)
+	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt, advance, clearedQuestion)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +141,9 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 		return nil, corestore.ErrRevisionConflict
 	}
 	var source *tracker.NativeChangeReference
-	if staleBase {
+	if audit != nil {
+		source = &audit.Source
+	} else if staleBase {
 		source, err = s.verifyRecordedRecoveryBase(ctx, scope, row, project, attempt.Checkpoint)
 		if err != nil {
 			return nil, err
@@ -138,6 +151,9 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 	}
 	state := prior
 	if !recordedRecoveryStateAllowed(project, issue.State, state) {
+		if audit != nil {
+			return nil, corestore.ErrRevisionConflict
+		}
 		state, err = recordedRetryLane(ctx, content, approved)
 		if err != nil {
 			return nil, err
@@ -195,7 +211,7 @@ func (s *Service) recordedWorkerMachineHold(ctx context.Context, scope hubscope.
 	if !claimapi.RecordedMachineFailure(attempt.Status, run.TerminalFailure, run.Disposition) || !valid || len(dependencies) != 0 || run.Disposition != nil && run.Disposition.ReasonCode == "stale_base" {
 		return nil, nil
 	}
-	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt, true)
+	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt, true, recordedAuditQuestion{})
 	if err != nil || question {
 		return nil, err
 	}
@@ -304,7 +320,7 @@ func recordedBlockedLane(issue tracker.NativeIssue, attempt tracker.NativeAttemp
 }
 
 func (s *Service) readRecordedRecoveryIntent(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, issue tracker.NativeIssue, advance bool) (*leasestore.RecordedRecovery, error) {
-	recovery, err := s.planRecordedRecoveryTenant(ctx, scope, row, issue, "", advance)
+	recovery, err := s.planRecordedRecoveryTenant(ctx, scope, row, issue, "", advance, nil)
 	if err == nil {
 		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			owner, ok := r.(leasestore.RecordedRecoveryWriter)
@@ -314,16 +330,20 @@ func (s *Service) readRecordedRecoveryIntent(ctx context.Context, scope hubscope
 			return owner.AuthorizeRecordedRecovery(ctx, *recovery)
 		})
 	}
-	var failure *hubapi.NativeError
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, tracker.ErrStaleFencingToken) ||
-		errors.Is(err, artifact.ErrMissing) || errors.Is(err, artifact.ErrIntegrity) ||
-		errors.As(err, &failure) && failure.Code == "not_found" {
+	if recordedRecoveryIneligible(err) {
 		return nil, nil
 	}
 	return recovery, err
 }
 
 func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, recovery leasestore.RecordedRecovery) error {
+	if err := s.authorizeRecordedRecoveryRunner(ctx, w, scope); err != nil {
+		return err
+	}
+	return s.authorizeRecordedRecoveryState(ctx, w, scope, recovery, nil)
+}
+
+func (s *Service) authorizeRecordedRecoveryRunner(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope) error {
 	now := s.config.Clock().UTC()
 	credential, err := w.AccessCredential(ctx, scope.Credential.ID)
 	if err != nil {
@@ -346,6 +366,10 @@ func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenants
 	if !allowed {
 		return tracker.ErrMachineNotFound
 	}
+	return nil
+}
+
+func (s *Service) authorizeRecordedRecoveryState(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, recovery leasestore.RecordedRecovery, audit *releaseaudits.AuditHoldClearance) error {
 	if recovery.Policy.PolicyID != "" {
 		current, err := w.ProjectPolicy(ctx, scope.Project)
 		if err != nil {
@@ -370,6 +394,9 @@ func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenants
 		if change.ID != recovery.Source.ChangeID || hubapi.StringValue(change.CurrentVersionID) != recovery.Source.VersionID {
 			return corestore.ErrRevisionConflict
 		}
+		if audit != nil && (change.ReviewEvidenceRevision != audit.ReviewEvidenceRevision || change.EvidenceSequence != audit.EvidenceSequence) {
+			return corestore.ErrRevisionConflict
+		}
 		version, err := w.Version(ctx, change.ID, recovery.Source.VersionID)
 		if err != nil {
 			return err
@@ -382,7 +409,7 @@ func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenants
 	if !ok {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
-	recovery.Now = now
+	recovery.Now = s.config.Clock().UTC()
 	return writer.AuthorizeRecordedRecovery(ctx, recovery)
 }
 
@@ -395,10 +422,17 @@ func (s *Service) readClaimRecoveryIntent(ctx context.Context, scope hubscope.Na
 }
 
 func (s *Service) prepareNativeClaimRecoveryWrite(ctx context.Context, scope hubscope.NativeScope, recovery *leasestore.RecordedRecovery) (func(context.Context, tenantstore.Writer) error, error) {
-	command := nativeClaimRecoveryWrite{recovery: recovery}
+	return s.prepareNativeRecordedRecoveryWrite(ctx, scope, recovery, nil)
+}
+
+func (s *Service) prepareNativeRecordedRecoveryWrite(ctx context.Context, scope hubscope.NativeScope, recovery *leasestore.RecordedRecovery, audit *releaseaudits.AuditHoldClearance) (func(context.Context, tenantstore.Writer) error, error) {
+	command := nativeRecordedRecoveryWrite{recovery: recovery, audit: audit}
 	request := tracker.Transition{
 		Mutation:         tracker.Mutation{IdempotencyKey: "recorded-recovery/" + recovery.WorkflowEventID, LeaseID: tracker.LeaseID(recovery.Attempt.LeaseID), FencingToken: tracker.FencingToken(recovery.Attempt.FencingToken)},
 		ExpectedRevision: tracker.Revision(recovery.ExpectedRevision), State: recovery.State, Reason: "dependency_ready", BlockerAttemptID: recovery.Attempt.ID, PolicyID: recovery.Policy.PolicyID,
+	}
+	if audit != nil {
+		request.ReasonDetail = "Security audit findings cleared."
 	}
 	_, err := s.prepareOrTransitionNativeIssue(ctx, scope, string(recovery.WorkItemID), request, nil, "", &command)
 	var conflict *hubapi.NativeError
