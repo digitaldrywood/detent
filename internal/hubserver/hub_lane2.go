@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -560,4 +561,30 @@ func (s *Service) prepareAttemptClaimFacts(ctx context.Context, snapshot hubreco
 
 func answeredClaimKind(data tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint) string {
 	return claimapi.AnsweredClaimKind(data, checkpoint)
+}
+
+const claimPreparationLimit = claimapi.ClaimPreparationLimit
+
+func providerWait(code, message string) error {
+	return claimapi.ProviderWait(code, message)
+}
+
+func isProviderWait(err error) bool {
+	return claimapi.IsProviderWait(err)
+}
+
+func validateProviderCandidates(candidates []tracker.NativeCapacityCandidate) error {
+	return claimapi.ValidateProviderCandidates(candidates)
+}
+
+func validateProviderReports(reports []providercapacity.Report) error {
+	return claimapi.ValidateProviderReports(reports)
+}
+
+func mergeRunnerProviderReports(previous, reports []providercapacity.Report, now time.Time) []providercapacity.Report {
+	return claimapi.MergeRunnerProviderReports(previous, reports, now)
+}
+
+func validateTenantProviderAttempt(ctx context.Context, reader tenantstore.Reader, runnerID string, data tracker.NativeRunData, now time.Time) error {
+	return claimapi.ValidateTenantProviderAttempt(ctx, reader, runnerID, data, now)
 }
