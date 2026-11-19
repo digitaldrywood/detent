@@ -163,6 +163,7 @@ func (d Deps) nativeClaimOutranked(ctx context.Context, scope hubscope.NativeSco
 			projectRequest := request
 			projectRequest.PolicyID, projectRequest.WorkItemID, projectRequest.SessionID, projectRequest.ProviderCandidates = current.PolicyID, "", "", nil
 			query := NativeTenantCandidateQuery(projectScope, projectRequest, "", now)
+			query.IncludeRecordedRecovery = true
 			sourceRevision, err := nativeClaimSelectionSourceRevision(project, current, query)
 			if err != nil {
 				return err
@@ -267,6 +268,16 @@ func (d Deps) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor
 	var descriptor *policy.Descriptor
 	var resolver *runner.BoardIdentityResolver
 	for _, rows := range plans {
+		if rows.Project.Core.Profile == "native" && hubapi.StringsEqualFold(rows.Candidate.State, "Blocked") {
+			recovered, err := d.PlanNativeClaimRecovery(ctx, competitor.scope, competitor.request, rows)
+			if errors.Is(err, ErrNoClaimableWork) {
+				continue
+			}
+			if err != nil {
+				return false, false, err
+			}
+			rows = recovered
+		}
 		plan, err := d.HydrateNativeClaimPlan(ctx, competitor.scope, competitor.request, now, rows, descriptor)
 		if errors.Is(err, ErrNoClaimableWork) {
 			continue
