@@ -1211,12 +1211,8 @@ func TestNativeClaimRefusesWorkBlockedByHiddenDependency(t *testing.T) {
 			if lease.NativeClaimDependencyFacts == nil || !lease.DependencyReady {
 				t.Fatal("claim did not report dependency readiness")
 			}
-			if hidden {
-				if len(lease.Blockers) != 0 {
-					t.Fatalf("claim exposed hidden blockers: %+v", lease.Blockers)
-				}
-			} else if len(lease.Blockers) != 1 || lease.Blockers[0].ID != blocker.WorkItemID || lease.Blockers[0].State != "Done" || !lease.Blockers[0].Terminal {
-				t.Fatalf("claim blockers = %+v, want completed blocker %s", lease.Blockers, blocker.WorkItemID)
+			if len(lease.Blockers) != 0 {
+				t.Fatalf("ready lease returned %d blockers", len(lease.Blockers))
 			}
 		})
 	}

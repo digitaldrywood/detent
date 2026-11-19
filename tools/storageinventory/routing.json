@@ -14462,10 +14462,12 @@
         "access",
         "core",
         "event",
+        "fleet",
         "lease"
       ],
       "inventory": {
         "operations": {
+          "Queries.ClaimOpenBlockerCounts:Query": 1,
           "Queries.DeleteDependency:Exec": 1,
           "Queries.DeleteRelated:Exec": 1,
           "Queries.DeleteWorkItemLabels:Exec": 1,
@@ -14484,6 +14486,7 @@
           "Queries.UpsertHubDependency:Exec": 1,
           "Queries.WorkItemBlockers:Query": 1,
           "Queries.WorkItemLabelPage:Query": 1,
+          "claimOpenBlockerCounts:SQL": 1,
           "deleteDependency:SQL": 1,
           "deleteRelated:SQL": 1,
           "deleteWorkItemLabels:SQL": 1,
@@ -14504,6 +14507,7 @@
           "workItemLabelPage:SQL": 1
         },
         "tables": [
+          "hub/api_tokens",
           "hub/collaboration_events",
           "hub/issue_dependencies",
           "hub/issue_relationships",
@@ -14511,7 +14515,9 @@
           "hub/leases",
           "hub/native_attempts",
           "hub/organizations",
-          "hub/projects"
+          "hub/projects",
+          "hub/runner_identities",
+          "hub/token_grants"
         ]
       }
     },
@@ -17102,11 +17108,13 @@
         "access",
         "core",
         "event",
+        "fleet",
         "lease"
       ],
       "inventory": {
         "operations": {
           "SQL": 1,
+          "query:ClaimOpenBlockerCounts:many": 1,
           "query:DeleteDependency:execrows": 1,
           "query:DeleteRelated:execrows": 1,
           "query:DeleteWorkItemLabels:exec": 1,
@@ -17127,6 +17135,7 @@
           "query:WorkItemLabelPage:many": 1
         },
         "tables": [
+          "hub/api_tokens",
           "hub/collaboration_events",
           "hub/issue_dependencies",
           "hub/issue_relationships",
@@ -17134,7 +17143,9 @@
           "hub/leases",
           "hub/native_attempts",
           "hub/organizations",
-          "hub/projects"
+          "hub/projects",
+          "hub/runner_identities",
+          "hub/token_grants"
         ]
       }
     },

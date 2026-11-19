@@ -11,11 +11,11 @@ import (
 )
 
 func (s *session) WorkItemRelationshipFacts(ctx context.Context, project tracker.ProjectID, workItems []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
-	return relationshipreads.Facts(ctx, s.transactionHandle(), project, workItems, false)
+	return relationshipreads.Facts(ctx, s.transactionHandle(), project, workItems)
 }
 
-func (s *session) WorkItemBlockerFacts(ctx context.Context, project tracker.ProjectID, workItems []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
-	return relationshipreads.Facts(ctx, s.transactionHandle(), project, workItems, true)
+func (s *session) ClaimOpenBlockerCounts(ctx context.Context, query tenantstore.ClaimBlockerQuery) (map[tracker.NativeWorkItemID]int, error) {
+	return relationshipreads.ClaimOpenBlockerCounts(ctx, s.transactionHandle(), query)
 }
 
 func (s *session) RelationshipProjects(ctx context.Context, authority accessstore.Authority, projects []tracker.ProjectID, now time.Time) (map[tracker.ProjectID]bool, error) {

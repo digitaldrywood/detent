@@ -176,34 +176,22 @@ func (s *Service) nativeRelationshipLink(relation corestore.Relationship) tracke
 	return link
 }
 
-func (s *Service) visibleNativeClaimBlockers(ctx context.Context, scope hubscope.NativeScope, facts []tenantstore.WorkItemRelationshipFact) (map[tracker.NativeWorkItemID][]tracker.NativeDependency, error) {
-	projects := map[tracker.ProjectID]bool{}
-	for _, fact := range facts {
-		if fact.RelatedProjectVisible {
-			projects[fact.Relationship.RelatedProjectID] = true
-		}
-	}
-	allowed, err := s.relationshipProjectAccess(ctx, scope, projects)
-	if err != nil {
-		return nil, err
-	}
-	byItem := map[tracker.NativeWorkItemID][]tracker.NativeDependency{}
-	for _, fact := range facts {
-		relation := fact.Relationship
-		if !allowed[relation.RelatedProjectID] {
-			continue
-		}
-		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
-			continue
-		}
-		byItem[fact.WorkItemID] = append(byItem[fact.WorkItemID], s.nativeRelationshipLink(relation))
-	}
-	for _, blockers := range byItem {
-		slices.SortFunc(blockers, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
-	}
-	return byItem, nil
+const nativeClaimBlockerLimit = 1
+
+type nativeClaimBlocker struct {
+	Terminal bool `json:"terminal"`
 }
 
-func nativeClaimDependenciesReady(blockers []tracker.NativeDependency) bool {
-	return !slices.ContainsFunc(blockers, func(blocker tracker.NativeDependency) bool { return !blocker.Terminal })
+type nativeClaimBlockerSummary struct {
+	Blockers          []nativeClaimBlocker `json:"blockers"`
+	BlockersTruncated bool                 `json:"blockers_truncated,omitempty"`
+	DependencyReady   bool                 `json:"dependency_ready"`
+}
+
+func summarizeNativeClaimBlockers(open int) nativeClaimBlockerSummary {
+	return nativeClaimBlockerSummary{
+		Blockers:          make([]nativeClaimBlocker, min(open, nativeClaimBlockerLimit)),
+		BlockersTruncated: open > nativeClaimBlockerLimit,
+		DependencyReady:   open == 0,
+	}
 }

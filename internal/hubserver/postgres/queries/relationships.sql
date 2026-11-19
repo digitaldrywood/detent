@@ -84,19 +84,16 @@ WITH requested AS (
     FROM requested
     JOIN issues source ON source.organization_id=sqlc.arg(organization_id) AND source.project_id=sqlc.arg(project_id) AND source.native_id=requested.native_id
     JOIN issue_dependencies d ON d.organization_id=source.organization_id AND d.blocker_project_id=source.project_id AND d.blocker_issue_id=source.id
-    WHERE NOT sqlc.arg(blockers_only)::boolean
     UNION ALL
     SELECT source.native_id, 'related'::text, 'related'::text, r.second_project_id, r.second_issue_id, r.created_at
     FROM requested
     JOIN issues source ON source.organization_id=sqlc.arg(organization_id) AND source.project_id=sqlc.arg(project_id) AND source.native_id=requested.native_id
     JOIN issue_relationships r ON r.organization_id=source.organization_id AND r.first_project_id=source.project_id AND r.first_issue_id=source.id
-    WHERE NOT sqlc.arg(blockers_only)::boolean
     UNION ALL
     SELECT source.native_id, 'related'::text, 'related'::text, r.first_project_id, r.first_issue_id, r.created_at
     FROM requested
     JOIN issues source ON source.organization_id=sqlc.arg(organization_id) AND source.project_id=sqlc.arg(project_id) AND source.native_id=requested.native_id
     JOIN issue_relationships r ON r.organization_id=source.organization_id AND r.second_project_id=source.project_id AND r.second_issue_id=source.id
-    WHERE NOT sqlc.arg(blockers_only)::boolean
 )
 SELECT c.work_item_id,c.relationship_type,c.direction,c.related_project_id,target.native_id,c.created_at,target.number,target.title,target.workflow_state_name,COALESCE(states.terminal,false),COALESCE(states.dispatchable,false),target.actor_principal_id,COALESCE(organizations.slug,'') AS organization_slug,projects.slug AS project_slug,
     COALESCE(closed.closed_at,'0001-01-01 00:00:00+00'::timestamptz) AS closed_at,
@@ -121,6 +118,32 @@ LEFT JOIN LATERAL (
         ORDER BY attempts.fencing_token DESC LIMIT 1
     ) started ON true
 ORDER BY c.work_item_id,c.relationship_type,c.direction,c.related_project_id,target.native_id;
+
+-- name: ClaimOpenBlockerCounts :many
+SELECT source.native_id, COUNT(*)::integer AS open_count
+FROM issues source
+CROSS JOIN LATERAL (
+    SELECT 1
+    FROM issue_dependencies d
+    JOIN issues blocker ON blocker.organization_id=d.organization_id AND blocker.project_id=d.blocker_project_id AND blocker.id=d.blocker_issue_id
+    LEFT JOIN project_workflow_states state ON state.organization_id=blocker.organization_id AND state.project_id=blocker.project_id AND state.name=blocker.workflow_state_name
+    WHERE d.organization_id=source.organization_id AND d.dependent_project_id=source.project_id AND d.dependent_issue_id=source.id
+      AND NOT COALESCE(state.terminal,false)
+      AND (blocker.project_id=source.project_id OR EXISTS (
+          SELECT 1 FROM projects p
+          JOIN runner_identities r ON r.organization_id=p.organization_id AND r.token_id=sqlc.arg(credential_id)
+          JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
+          WHERE p.organization_id=blocker.organization_id AND p.id=blocker.project_id AND p.deleted_at IS NULL AND p.profile='native'
+            AND r.state='active' AND r.removed_at IS NULL AND r.expires_at>sqlc.arg(observed_at)::timestamptz
+            AND t.scope='worker' AND t.key_kind='service' AND t.revoked_at IS NULL AND t.created_at<=sqlc.arg(observed_at) AND (t.expires_at IS NULL OR t.expires_at>sqlc.arg(observed_at))
+            AND (r.scope='organization' OR EXISTS (
+                SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=p.id
+            ))
+      ))
+    LIMIT sqlc.arg(sample_limit)::integer
+) unresolved
+WHERE source.organization_id=sqlc.arg(organization_id) AND source.project_id=sqlc.arg(project_id) AND source.native_id=ANY(sqlc.arg(work_item_ids)::text[])
+GROUP BY source.native_id;
 
 -- name: LockRelationshipGraph :one
 SELECT organization_id FROM organizations

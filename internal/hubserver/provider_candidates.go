@@ -23,6 +23,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type nativeClaimPreviewIssue struct {
+	tracker.NativeIssue
+	Blockers []nativeClaimBlocker `json:"blockers"`
+}
+
+type nativeClaimPreviewPage struct {
+	Items []nativeClaimPreviewIssue `json:"items"`
+	Next  tracker.WorkItemID        `json:"next,omitempty"`
+}
+
 func (s *Service) previewProviderCandidates(c echo.Context) error {
 	var request tracker.NativeCapacityPreview
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
@@ -42,7 +52,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeCapacityPreview, now time.Time) (tracker.NativeCapacityPage, error) {
+func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeCapacityPreview, now time.Time) (nativeClaimPreviewPage, error) {
 	ctx = s.withRequestDetails(ctx)
 	limit := request.Limit
 	if limit == 0 {
@@ -50,12 +60,12 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	}
 	var candidates []claimstore.Candidate
 	var plans []hubrecords.NativeClaimPlan
-	var blockerFacts []tenantstore.WorkItemRelationshipFact
+	var openBlockers map[tracker.NativeWorkItemID]int
 	var projectPolicy policystore.Revision
 	var identity runnerstore.Identity
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return tracker.NativeCapacityPage{}, hubapi.NativeRunEventStorageUnavailable()
+		return nativeClaimPreviewPage{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -164,23 +174,19 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			ids = append(ids, plan.Candidate.WorkItemID)
 		}
 		if len(ids) > 0 {
-			blockerFacts, err = r.WorkItemBlockerFacts(ctx, scope.Project, ids)
+			openBlockers, err = r.ClaimOpenBlockerCounts(ctx, tenantstore.ClaimBlockerQuery{Project: scope.Project, WorkItems: ids, CredentialID: scope.Credential.ID, Now: now, SampleLimit: nativeClaimBlockerLimit + 1})
 			return err
 		}
 		return nil
 	})
 	if err != nil {
-		return tracker.NativeCapacityPage{}, err
-	}
-	blockers, err := s.visibleNativeClaimBlockers(ctx, scope, blockerFacts)
-	if err != nil {
-		return tracker.NativeCapacityPage{}, err
+		return nativeClaimPreviewPage{}, err
 	}
 	if err := s.prepareNativeClaimLegacyAuditFacts(ctx, scope, plans); err != nil {
-		return tracker.NativeCapacityPage{}, err
+		return nativeClaimPreviewPage{}, err
 	}
 	if err := s.prepareNativeClaimApprovals(ctx, scope, plans); err != nil {
-		return tracker.NativeCapacityPage{}, err
+		return nativeClaimPreviewPage{}, err
 	}
 	refs := []attachment.ArchiveReference{}
 	if len(plans) > 0 {
@@ -206,11 +212,11 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	if len(plans) > 0 {
 		loaded, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).ProjectPolicy(ctx, projectPolicy)
 		if err != nil {
-			return tracker.NativeCapacityPage{}, err
+			return nativeClaimPreviewPage{}, err
 		}
 		descriptor = &loaded
 		if err := loaded.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
-			return tracker.NativeCapacityPage{}, &hubapi.NativeError{Code: "selector_no_match", Message: err.Error(), Status: http.StatusConflict}
+			return nativeClaimPreviewPage{}, &hubapi.NativeError{Code: "selector_no_match", Message: err.Error(), Status: http.StatusConflict}
 		}
 	}
 	for index := range plans {
@@ -222,13 +228,13 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			continue
 		}
 		if err != nil {
-			return tracker.NativeCapacityPage{}, err
+			return nativeClaimPreviewPage{}, err
 		}
 		plans[index] = plan
 	}
 	landingCapacityChecked := false
 	landingCapacityAvailable := false
-	page := tracker.NativeCapacityPage{Items: []tracker.NativeIssue{}}
+	page := nativeClaimPreviewPage{Items: []nativeClaimPreviewIssue{}}
 	for _, plan := range plans {
 		if plan.Candidate.WorkItemID == "" {
 			continue
@@ -243,7 +249,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			if !landingCapacityChecked {
 				landingCapacityAvailable, err = s.nativeClaimLandingCapacityAvailable(ctx, scope.Organization, scope.Project, request.LandingCapacity, now)
 				if err != nil {
-					return tracker.NativeCapacityPage{}, err
+					return nativeClaimPreviewPage{}, err
 				}
 				landingCapacityChecked = true
 			}
@@ -252,15 +258,12 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			}
 		}
 		issue := plan.Issue
-		issue.Blockers = blockers[issue.WorkItemID]
-		if issue.Blockers == nil {
-			issue.Blockers = []tracker.NativeDependency{}
-		}
-		issue.Dependencies = make([]tracker.NativeWorkItemID, 0, len(issue.Blockers))
-		for _, blocker := range issue.Blockers {
-			issue.Dependencies = append(issue.Dependencies, blocker.ID)
-		}
-		issue.DependencyReady = nativeClaimDependenciesReady(issue.Blockers)
+		summary := summarizeNativeClaimBlockers(openBlockers[issue.WorkItemID])
+		issue.Blockers = nil
+		issue.Dependencies = []tracker.NativeWorkItemID{}
+		issue.DependencyReady = summary.DependencyReady
+		issue.IgnoreDependencies = !plan.Project.Core.RequireDependencies
+		issue.BlockersTruncated = summary.BlockersTruncated
 		issue.Dependents = []tracker.NativeDependency{}
 		issue.Related = nil
 		issue.BlockedReason = tracker.DependencyReason{}
@@ -271,7 +274,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 				issue.OmittedFields = append(issue.OmittedFields, field)
 			}
 		}
-		page.Items = append(page.Items, s.nativeIssueResponse(issue))
+		page.Items = append(page.Items, nativeClaimPreviewIssue{NativeIssue: s.nativeIssueResponse(issue), Blockers: summary.Blockers})
 	}
 	if len(candidates) == limit {
 		page.Next = tracker.WorkItemID(candidates[len(candidates)-1].ID)
