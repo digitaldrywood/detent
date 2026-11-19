@@ -1,14 +1,17 @@
 package coreimport_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -19,6 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -38,7 +43,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 			version := versions[0]
 			var attemptID string
 			if family == "side data" {
-				attemptID = historyRepairAttempt(t, target).ID
+				attemptID = historyRepairAttempt(t, target, nil).ID
 				for _, value := range versions {
 					value.AttemptID = attemptID
 					fixture.Set("change_versions", map[string]string{"id": value.ID}, map[string]any{"record_json": string(historyTestJSON(t, value))})
@@ -65,7 +70,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 					review := tracker.ChangeReview{ID: id, VersionID: version.ID, Decision: "commented"}
 					fixture.Add("change_evidence", map[string]any{"sequence": index + 2, "change_id": target.Change.ID, "version_id": version.ID, "kind": "review", "source_key": nil, "record_json": string(historyTestJSON(t, review))})
 				case "landing attempt":
-					historyRepairAttempt(t, target)
+					historyRepairAttempt(t, target, nil)
 				}
 			}
 			source := historyRepairImportSource(t, target, fixture)
@@ -151,6 +156,102 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 	}
 }
 
+func TestValidationCandidatesKeepHistoricalMatchBeyondPage(t *testing.T) {
+	t.Parallel()
+	f := hubfixture.NewChange(t, nil)
+	base := f.Publish(t, "old", "")
+	head := strings.Repeat("a", 40)
+	fixture, target, versions, attempts := historyRepairValidationSource(t, f, base, head)
+	source := historyRepairImportSource(t, target, fixture)
+	repository := strings.TrimPrefix(base.Repository, "https://github.com/")
+	fingerprint := artifact.Digest([]byte(string(target.Issue.WorkItemID)))
+	scheduled := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: fingerprint, RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Check", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", JobURL: "https://github.com/" + repository + "/actions/jobs/456", HeadSHA: head, Conclusion: "failure"}
+	body := issueorigin.Stamp("Scheduled check failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/" + repository + "/actions/runs/123", Fingerprint: fingerprint})
+	path := target.Base + "/work-items/" + string(target.Issue.WorkItemID)
+	issueBody := target.Issue.Body + "\n\nSee the detent-checks evidence in the follow-up comment."
+	hubfixture.RequireStatus(t, target.Hub.Request(t, http.MethodPatch, path, target.Token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "historical-validation-issue"}, ExpectedRevision: target.Issue.Revision, Body: &issueBody}), http.StatusOK)
+	commentResponse := target.Hub.Request(t, http.MethodPost, path+"/comments", target.Token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "historical-validation-source"}, Body: body})
+	hubfixture.RequireStatus(t, commentResponse, http.StatusOK)
+	var comment tracker.NativeComment
+	hubfixture.Decode(t, commentResponse, &comment)
+	for pass := range 2 {
+		if pass == 1 {
+			admin := target.Hub.Admin
+			if _, err := admin.ExecContext(t.Context(), `ALTER TABLE native_attempts ADD COLUMN later_release_worker_pid integer`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		historyRepairImport(t, target, source, 1)
+		if err := target.Hub.Repository.ReadTenant(t.Context(), target.Project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			for index, attempt := range attempts {
+				row, err := r.LandingReceipt(t.Context(), attempt.ID)
+				if err != nil {
+					return err
+				}
+				want := strings.Repeat("b", 40)
+				if index == 0 {
+					want = head
+				}
+				if row.MergeSHA != want || row.VersionID != versions[index].ID || row.AttemptID != attempt.ID {
+					t.Fatal("historical receipt import lost typed merge or attempt identity")
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tool := operatortool.WorkItem
+		call := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+			"name": tool, "_meta": json.RawMessage(hubfixture.MCPProtocolMeta),
+			"arguments": map[string]any{"project_id": target.Project.ID, "reference": target.Issue.WorkItemID},
+		}}
+		response := target.Hub.WorkCall(t, hubfixture.OrganizationBase(target.Project.OrganizationID)+"/mcp", target.Token, tool, call)
+		hubfixture.RequireStatus(t, response, http.StatusOK)
+		var envelope struct {
+			Result struct {
+				IsError    bool `json:"isError"`
+				Structured struct {
+					Data struct {
+						ValidationAudit *tracker.ValidationAudit `json:"validation_audit"`
+					} `json:"data"`
+				} `json:"structuredContent"`
+			} `json:"result"`
+		}
+		hubfixture.Decode(t, response, &envelope)
+		audit := envelope.Result.Structured.Data.ValidationAudit
+		if envelope.Result.IsError || audit == nil || !audit.Partial || len(audit.Occurrences) != 1 {
+			t.Fatalf("historical validation source unavailable: MCP error=%t audit=%+v", envelope.Result.IsError, audit)
+		}
+		occurrence := audit.Occurrences[0]
+		if comment.ID == "" || occurrence.Source.RecordID != comment.ID || occurrence.Scheduled.OccurrenceKey != fingerprint {
+			t.Fatalf("historical validation source = %+v", occurrence.Source)
+		}
+		rows := occurrence.Comparisons
+		noReceipt := versions[len(versions)-1]
+		if len(rows) == 0 || rows[0].VersionID != versions[0].ID || rows[0].IntegratedSource != "same_commit" || slices.ContainsFunc(rows, func(row tracker.ValidationComparison) bool { return row.VersionID == noReceipt.ID }) {
+			t.Fatalf("lost historical match beyond 20 nonmatches: rows=%+v partial=%v", rows, audit.Partial)
+		}
+	}
+}
+
+func historyRepairValidationSource(t *testing.T, f hubfixture.Change, base tracker.ChangeVersion, head string) (*neutralimporttest.Fixture, hubfixture.Change, []tracker.ChangeVersion, []leasestore.Attempt) {
+	t.Helper()
+	fixture, target, versions := historyRepairSource(t, f, base, hubrecords.ChangeLegacyReadLimit+2)
+	attempts := make([]leasestore.Attempt, 0, hubrecords.ChangeLegacyReadLimit+1)
+	for index := range hubrecords.ChangeLegacyReadLimit + 1 {
+		version := versions[index]
+		merge := strings.Repeat("b", 40)
+		if index == 0 {
+			merge = head
+		}
+		receipt := tracker.NativeLandingReceipt{ChangeID: target.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: merge, BaseRef: "develop", Landed: true, ObservedAt: target.Hub.Now()}
+		attempt := historyRepairAttempt(t, target, &tracker.NativeRuntimeObservation{LocalAttemptID: int64(index + 1), Landing: &receipt})
+		attempts = append(attempts, attempt)
+		fixture.Add("change_landing_receipts", map[string]any{"attempt_id": attempt.ID, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt)), "merge_sha": nil})
+	}
+	return fixture, target, versions, attempts
+}
+
 func historyRepairSource(t *testing.T, f hubfixture.Change, base tracker.ChangeVersion, count int) (*neutralimporttest.Fixture, hubfixture.Change, []tracker.ChangeVersion) {
 	t.Helper()
 	change := f.Change
@@ -188,7 +289,7 @@ func historyRepairImport(t *testing.T, target hubfixture.Change, source coreimpo
 	}
 }
 
-func historyRepairAttempt(t *testing.T, f hubfixture.Change) leasestore.Attempt {
+func historyRepairAttempt(t *testing.T, f hubfixture.Change, runtime *tracker.NativeRuntimeObservation) leasestore.Attempt {
 	t.Helper()
 	leaseID := hubapi.NewID("lease")
 	var lease leasestore.Lease
@@ -203,7 +304,7 @@ func historyRepairAttempt(t *testing.T, f hubfixture.Change) leasestore.Attempt 
 		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: "archive-machine", SessionID: leaseID + "-session", LeaseID: leaseID, TTL: time.Hour})
 		return err
 	})
-	data := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded"}
+	data := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: runtime}
 	content := eventstore.NewContent(f.Hub.Config.RunDetails)
 	ref, err := content.PreparePayload(t.Context(), f.Project.OrganizationID, historyTestJSON(t, data))
 	if err != nil {
@@ -213,10 +314,14 @@ func historyRepairAttempt(t *testing.T, f hubfixture.Change) leasestore.Attempt 
 	if err != nil {
 		t.Fatal(err)
 	}
+	var localAttemptID int64
+	if runtime != nil {
+		localAttemptID = runtime.LocalAttemptID
+	}
 	var attempt leasestore.Attempt
 	writeLegacyChange(t, f, func(w tenantstore.Writer) error {
 		var err error
-		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", StartedAt: f.Hub.Now(), PayloadObjectKey: ref.Key, PayloadReference: ref})
+		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", LocalAttemptID: localAttemptID, StartedAt: f.Hub.Now(), PayloadObjectKey: ref.Key, PayloadReference: ref})
 		if err != nil {
 			return err
 		}

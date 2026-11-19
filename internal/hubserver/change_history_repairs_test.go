@@ -7,12 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net/http"
 	"slices"
-	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/coreimport"
@@ -21,11 +18,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
-	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -119,64 +114,6 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 				historyRepairImport(t, target, source, 1)
 				read(hubrecords.ChangeLegacyReadLimit+1, "converted history hid older evidence")
 			})
-		}
-	}
-}
-
-func TestValidationCandidatesKeepHistoricalMatchBeyondPage(t *testing.T) {
-	t.Parallel()
-	f := newChangeFixture(t, nil)
-	base := f.publish(t, "old", "")
-	head := strings.Repeat("a", 40)
-	fixture, target, versions, attempts := historyRepairValidationSource(t, f, base, head)
-	source := historyRepairImportSource(t, target, fixture)
-	scope := analyticsTestScope(t, target.nativeFixture)
-	repository := validationRepository(base.Repository)
-	fingerprint := artifact.Digest([]byte(string(target.issue.WorkItemID)))
-	scheduled := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: fingerprint, RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Check", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", JobURL: "https://github.com/" + repository + "/actions/jobs/456", HeadSHA: head, Conclusion: "failure"}
-	body := issueorigin.Stamp("Scheduled check failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/" + repository + "/actions/runs/123", Fingerprint: fingerprint})
-	requireNativeStatus(t, performHubAPIRequest(t, target.service, http.MethodPost, target.base+"/work-items/"+string(target.issue.WorkItemID)+"/comments", target.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "historical-validation-source"}, Body: body}), http.StatusOK)
-	for pass := range 2 {
-		if pass == 1 {
-			admin := nativeAttemptTestDatabase(t, target.nativeFixture)
-			if _, err := admin.ExecContext(t.Context(), `ALTER TABLE native_attempts ADD COLUMN later_release_worker_pid integer`); err != nil {
-				t.Fatal(err)
-			}
-		}
-		historyRepairImport(t, target, source, 1)
-		if err := target.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-			for index, attempt := range attempts {
-				row, err := r.LandingReceipt(t.Context(), attempt.ID)
-				if err != nil {
-					return err
-				}
-				want := strings.Repeat("b", 40)
-				if index == 0 {
-					want = head
-				}
-				if row.MergeSHA != want || row.VersionID != versions[index].ID || row.AttemptID != attempt.ID {
-					t.Fatal("historical receipt import lost typed merge or attempt identity")
-				}
-			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		issue, err := coordinatorActionIssue(t.Context(), target.service, scope.Organization, scope.Project, target.issue.WorkItemID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		audit, err := target.service.readValidationAuditRecord(t.Context(), scope, issue, nil)
-		if err != nil || audit == nil || !audit.Partial || len(audit.Occurrences) != 1 {
-			t.Fatalf("historical validation source unavailable: audit=%+v error=%v", audit, err)
-		}
-		rows := audit.Occurrences[0].Comparisons
-		noReceipt := versions[len(versions)-1]
-		if len(rows) != 20 || rows[0].VersionID != versions[0].ID || rows[0].IntegratedSource != "same_commit" || slices.ContainsFunc(rows, func(row tracker.ValidationComparison) bool { return row.VersionID == noReceipt.ID }) {
-			t.Fatalf("lost historical match beyond 20 nonmatches: rows=%+v partial=%v", rows, audit.Partial)
-		}
-		if pass != 0 && (rows[0].VersionID != versions[0].ID || rows[0].IntegratedSource != "same_commit") {
-			t.Fatal("legacy receipts hid older match")
 		}
 	}
 }
@@ -300,40 +237,6 @@ func historyRepairImport(t *testing.T, target changeFixture, source coreimport.C
 	}
 }
 
-func historyRepairAttempt(t *testing.T, f changeFixture, data tracker.NativeRunData) leasestore.Attempt {
-	t.Helper()
-	leaseID := hubapi.NewID("lease")
-	lease := coordinatorActionLease(t, f.service, f.project.OrganizationID, f.issue.WorkItemID, leaseID)
-	data.AttemptID, data.RunID, data.LeaseID, data.FencingToken, data.Sequence, data.Outcome = hubapi.NewID("attempt"), hubapi.NewID("run"), tracker.LeaseID(leaseID), tracker.FencingToken(lease.FencingToken), 1, "succeeded"
-	content := eventstore.NewContent(f.service.runDetailStore())
-	ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, historyTestJSON(t, data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Run: &data}}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var local int64
-	if data.Runtime != nil {
-		local = data.Runtime.LocalAttemptID
-	}
-	var attempt leasestore.Attempt
-	coordinatorFixtureWrite(t, f.service, f.project.OrganizationID, func(w tenantstore.Writer) error {
-		var err error
-		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", LocalAttemptID: local, StartedAt: f.service.config.Clock(), PayloadObjectKey: ref.Key, PayloadReference: ref})
-		if err != nil {
-			return err
-		}
-		if _, err := w.AppendEvent(t.Context(), event); err != nil {
-			return err
-		}
-		_, err = w.Release(t.Context(), leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, "released")
-		return err
-	})
-	return attempt
-}
-
 type historyRepairPauseDetails struct {
 	attachment.DetailStore
 	marker  []byte
@@ -347,22 +250,4 @@ func (s *historyRepairPauseDetails) StoreDetail(ctx context.Context, organizatio
 		return attachment.ArchiveReference{}, s.failure
 	}
 	return s.DetailStore.StoreDetail(ctx, organization, raw)
-}
-
-func historyRepairValidationSource(t *testing.T, f changeFixture, base tracker.ChangeVersion, head string) (*neutralimporttest.Fixture, changeFixture, []tracker.ChangeVersion, []leasestore.Attempt) {
-	t.Helper()
-	fixture, target, versions := historyRepairSource(t, f, base, hubrecords.ChangeLegacyReadLimit+2)
-	attempts := make([]leasestore.Attempt, 0, hubrecords.ChangeLegacyReadLimit+1)
-	for index := range hubrecords.ChangeLegacyReadLimit + 1 {
-		version := versions[index]
-		merge := strings.Repeat("b", 40)
-		if index == 0 {
-			merge = head
-		}
-		receipt := tracker.NativeLandingReceipt{ChangeID: target.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: merge, BaseRef: "develop", Landed: true, ObservedAt: target.service.config.Clock()}
-		attempt := historyRepairAttempt(t, target, tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: int64(index + 1), Landing: &receipt}})
-		attempts = append(attempts, attempt)
-		fixture.Add("change_landing_receipts", map[string]any{"attempt_id": attempt.ID, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt)), "merge_sha": nil})
-	}
-	return fixture, target, versions, attempts
 }
