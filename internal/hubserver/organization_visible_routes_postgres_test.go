@@ -148,7 +148,8 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		claims := cloudassert.Claims{Issuer: "entry", Audience: organization, Generation: 1, Kind: cloudassert.KindBrowser, Method: method, Path: path, BodyDigest: cloudassert.BodyDigest(raw), IssuedAt: now, ExpiresAt: now.Add(20 * time.Second), ID: id, Subject: subject, Email: subject + "@example.test", ProviderOrganization: "provider_" + organization, ProviderSession: "session_" + subject, SessionCreatedAt: now, SessionExpiresAt: now.Add(time.Hour), AccessExpiresAt: now.Add(time.Hour), Role: role, Binding: cloudassert.AuthorizationBinding("shared-"+subject, organization, "session_"+subject), CSRF: cloudassert.CSRFToken("shared-"+subject, organization)}
+		issued := time.Now().UTC()
+		claims := cloudassert.Claims{Issuer: "entry", Audience: organization, Generation: 1, Kind: cloudassert.KindBrowser, Method: method, Path: path, BodyDigest: cloudassert.BodyDigest(raw), IssuedAt: issued, ExpiresAt: issued.Add(20 * time.Second), ID: id, Subject: subject, Email: subject + "@example.test", ProviderOrganization: "provider_" + organization, ProviderSession: "session_" + subject, SessionCreatedAt: now, SessionExpiresAt: now.Add(time.Hour), AccessExpiresAt: now.Add(time.Hour), Role: role, Binding: cloudassert.AuthorizationBinding("shared-"+subject, organization, "session_"+subject), CSRF: cloudassert.CSRFToken("shared-"+subject, organization)}
 		assertion, err := cloudassert.Sign(key, claims)
 		if err != nil {
 			t.Fatal(err)
