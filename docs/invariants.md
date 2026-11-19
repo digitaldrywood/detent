@@ -29,140 +29,41 @@ HTTP bypasses remain review boundaries. See the
 
 ## INV-1 — Lane ownership
 
-The orchestrator is the only writer of tracker lane state. Workers report
-outcomes through the selected tracker's completion contract; they never write
-lane labels, status fields or approval comments. Native workers report through
-the authenticated final outcome, and the host owns publication and lane writes.
-The lane ledger owns state transitions; connector adapters forward them
-without deciding, and raw HTTP tracker writes must not bypass that boundary.
+The Hub’s orchestrator alone applies lane transitions and grants one fenced renewable lease per item across phases. Workers submit authenticated outcomes. Lease loss ends their authority and makes the item eligible for continuation from its last recorded phase commit.
 
-Execution ownership is a fenced, renewed lease held by one controller through
-outcome publication and lease release. Worker exit alone never frees capacity.
-Expiry returns the item to claim eligibility under current source custody and
-human intent; no recovery park or park-clearing sweep owns that return.
+Blocked is reserved for an explicit operator stop or a genuine unresolved decision or permission request. Record the request as a typed `human_action`, surface it durably to the human and release executing capacity. Only authorized human action clears the request. Machine failures use the retry loop.
 
-Blocked has a closed list of causes: an explicit human question or permission
-request with a typed `human_action`, or an explicit operator stop. Machine
-failures, including validation, missing checks, delivery and retry exhaustion,
-retry in a dispatchable lane through the existing retry owner and never
-synthesize a human prerequisite. Derived hold metadata requires an owner,
-source revision and expiry; wiping it and recomputing must produce the same
-dispatch decision.
+Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
 
-For native projects, a supplied repository workflow definition owns the state
-and transition model; UI, API and MCP cannot override a repository-controlled
-workflow, and definition authority does not transfer issue-move ownership.
+**Existing lane and lease checks:** `TestRepositorySources` in `internal/invariants`, `TestRetainedWorkAttemptsExpireOnTick`, `TestHubSchedulingReadinessBeforeClaim`, `TestBlockedRecoveryRecomputesDispatchWithoutDerivedHolds` and `TestStoredHoldRequiresProvenance` in `internal/orchestrator`, and `TestPostgresEntryKeyMoveItem` and `TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays` in `internal/hubserver`. `TestLocalSessionProcessOwnership` in `internal/runner`, `TestNativeDelayedResponsesPreserveSuccessor` in `internal/hubclient/dispatch` and `TestLocalWorkerReleaseAndPolicyCoexistence` in `internal/cli` cover process exit, finalization and release retries.
 
-**Lease enforcement:** `TestRetainedWorkAttemptsExpireOnTick` and
-`TestHubSchedulingReadinessBeforeClaim` in `internal/orchestrator` and `TestTimeoutWorkAttemptsProcessEvidence` and
-`TestStartupTimeoutWorkAttemptsScope` in `internal/store`.
+**Existing workflow authority checks:** `TestRepositoryNativeWorkflowProjection` in `internal/config`, `TestNativeCloudWorkflowFallback` in `internal/project`, and `TestHostedProjectWorkflowConfiguration`, `TestProjectPolicyAuthorizationAndAtomicClaims` and `TestHostedProjectTools` in `internal/hubserver`.
 
-**Closed-list enforcement:** `TestBlockedRecoveryRecomputesDispatchWithoutDerivedHolds`
-and `TestStoredHoldRequiresProvenance` in `internal/orchestrator`, plus the
-lane writer's typed-intent and metadata validation.
-
-**Enforcement:** `TestRepositorySources` in `internal/invariants`;
-`TestPostgresEntryKeyMoveItem` and
-`TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays` in
-`internal/hubserver`. Review rejects
-lane-write bypasses and new ownership exceptions.
-`TestLocalSessionProcessOwnership` in `internal/runner`,
-`TestNativeDelayedResponsesPreserveSuccessor` in `internal/hubclient`, and
-`TestLocalWorkerReleaseAndPolicyCoexistence` in `internal/cli` preserve execution
-ownership across process exit, finalization and release retries.
-
-**Workflow authority enforcement:** `TestRepositoryNativeWorkflowProjection` in
-`internal/config`, `TestNativeCloudWorkflowFallback` in `internal/project`, and
-`TestHostedProjectWorkflowConfiguration`, `TestProjectPolicyAuthorizationAndAtomicClaims`
-and `TestHostedProjectTools` in `internal/hubserver`.
+**Existing human-action checks:** `TestINV14DispatchQuestionTool`, `TestINV14LegacyQuestionRowDispatch`, `TestFirstHumanBlockerCompletionReachesBlocked`, `TestWorkpadHumanActionSnapshot` and `TestWorkpadHumanActionClearanceRecoversBlockedIssue` in `internal/orchestrator`.
 
 ## INV-2 — Instance-owned infrastructure failures
 
-Infrastructure failures attach to the instance, never to the issue, whether
-they happen before the first agent turn or during a turn. Backend startup,
-protocol, credential, network and workspace-hook failures do not consume the
-issue's failure allowance or authorize source repair. Retry accounting
-distinguishes genuine code failures from instance interruptions, and unknown
-infrastructure diagnostics remain instance intake. A workspace error is forge
-unavailability only when a matching forge host and Git read operation fail;
-an unrelated hook failure cannot inherit that classification.
-
-Native landing conflicts and failed landing commands are source refusals, not
-infrastructure failures or shipped work. Landing refusal destinations belong
-to the workflow owner: conflicts, moved heads and command gate failures prefer configured
-Rework, other refusals prefer the configured review lane, and terminal,
-operator-only and self-transitions are excluded. Recovery and Rework resume
-only from a verified preserved source checkpoint; unknown changes and
-unavailable authority are refusals, never checkpoint rewrites or relaxed
-comparisons. Human and permission holds retain their authority. Pre-provider checkpoint
-and recovery refusals, including changed local checkpoints and policy mismatches,
-retry through the existing instance owner with capped backoff. They never
-write Blocked or consume an issue failure allowance. Unavailable execution
-authority still forbids lane writes; retry never relaxes source verification.
-
-**Enforcement:** `TestPreTurnFailuresRetryWithoutPausingProject`,
-`TestObservedLanePreTurnFailureRemainsInstanceOwned`,
-`TestWorkspacePreparationRetriesIssueWithoutPausingProject`,
-`TestClassifyWorkspaceForgeReadFailure`,
-`TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
-`TestRecoverDurableWorkspaceGitReadWait`,
-`TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker`, and
-`TestNativeLandingRunCompletion` and `TestNativeChangeRunCompletion`
-in `internal/orchestrator`;
-`TestNativeExecutionSettlesFinishedRun` in `internal/hubclient`;
-`TestClaimCandidatesRequireUnansweredWorkItem`,
-`TestClaimCandidatesRetryInstancePreProviderFailures` and
-`TestHealthRunnerSetupFindings` in `internal/hubserver`;
-`TestLocalGitCreateReadsPublishedBranchWithRepositoryCredential` in
-`internal/workspace`;
-`TestNativeExecutionLandsReviewedVersion` in `internal/hubclient`;
-`TestNativeRunnerOpensChangeAndLeavesDispatch` in `internal/hubclient`;
-`TestLocalGitLandChangeViaGitHub` in `internal/workspace`;
-`TestWorkerCredentialBlockerError` in `internal/runner`;
-`TestIssueSpendSinceExcludesInstanceInfrastructureAttempts`
-in `internal/store`; `TestNativeInterruptedCodeRecoversPersistedSession` in
-`internal/runner`; `TestNativePlannerAutomaticHandoff` in `internal/hubclient`.
-Review preserves instance attribution outside those cases.
+Merged into [INV-3](#inv-3--net-zero-mechanisms).
 
 ## INV-3 — Net-zero mechanisms
 
-A change that adds or expands a brake, breaker, lease, park, recovery path,
-revocation, reason code or reconciliation loop must remove or consolidate an
-existing one in the same change, and the remedy for a misbehaving mechanism is
-never a guard. Do not add configuration keys, CLI subcommands or dashboard
-surfaces to work around a mechanism. Fix the mechanism.
+Use one execution loop and retry owner. Adding or expanding a protection or recovery mechanism requires removing or consolidating one. Reuse valid phase receipts, repair rejected work in place and decide the next phase from current workflow intent, typed dependencies, source, review, access, lease and capacity. Subscription usage never affects dispatch, claim eligibility, capacity, scheduling or retries.
 
-Constant lane-transition reasons must use the
-[existing vocabulary](../internal/invariants/source_policy.json). Dynamic
-forwarding functions require reviewed formatted-source SHA-256 entries.
-Renaming a mechanism or updating a snapshot does not establish removal or
-consolidation. Provider messages, operator reasons and decision helpers remain
-review boundaries.
+Infrastructure failures belong to the instance. Retry the failed phase with capped jittered backoff and keep valid work and receipts. Machine failures stay dispatchable. Reconcile uncertain publication against the remote ref. A match with the intended SHA confirms publication, an unchanged or absent ref permits a compare-and-swap push, and a moved ref returns the item to Rework.
 
-Machine failures have one retry owner. Per-issue failure, progress, spend,
-dispatch-loop, token-ceiling and workspace retry brakes are consolidated into
-it; machine failures stay dispatchable with growing attempts and capped
-jittered backoff. A retry resumes at the first step whose receipt is no
-longer valid for the current source, policy and review state; it never repeats
-a step whose receipt is still valid. A rejected review, gate or audit result with any change-caused or unknown
-finding, or new human feedback, returns work to implementation on the same
-source. An outcome proven entirely independent of the change waits on typed
-repair dependencies in a dispatchable lane, then resumes through this same
-retry owner at the first invalid receipt.
-Only verified changed source resets the attempt count.
-Spending limits belong to the existing budget policy, not to retry brakes;
-historical brake metadata never vetoes the next attempt, and explicit human
-action and operator stops retain their authority.
+Lease renewal proves ownership only, and the existing stall owner ends a quiet provider session and restarts it in place. At the end of each round, an AI verdict judges progress against the issue’s acceptance criteria and open findings, never by commits or activity.
 
-**Enforcement:** `TestRepositorySources` and `TestSourceViolations` in
+Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
+
+**Existing source and consolidation checks:** `TestRepositorySources` and `TestSourceViolations` in
 `internal/invariants`; `TestChunkCoverage`, `TestLargeAuditAggregation` and
 `TestChunkSourceAndContinuation` in `internal/securityaudit`, and
 `TestRunnerChunkedAudit` in `internal/runner`. Review verifies removal or
 consolidation.
 
-**Retry enforcement:** `TestMachineFailuresUseRetryOwner`,
+**Existing retry checks:** `TestMachineFailuresUseRetryOwner`,
 `TestMachineRetrySurvivesStoreRestart`, `TestDerivedHoldDispatchEquivalence`,
-`TestHandleRunResultResetsRetryAfterProgress`, and
+`TestHandleRunResultResetsRetryAfterProgress`,
 `TestBackendCapacityHelperBoundaries` and
 `TestPruneBudgetRefusalsReevaluatesDailyCap` in `internal/orchestrator`.
 `FuzzSafetyCriticalOrchestratorBoundaries` retains completion-evidence,
@@ -170,101 +71,19 @@ capacity resume arithmetic, capped backoff, dispatch ordering and priority-only
 real-capacity acquisition coverage. The retired-symbol checks prevent restoring
 the deleted per-issue brake owners.
 
+**Existing instance failure checks:** `TestPreTurnFailuresRetryWithoutPausingProject`, `TestObservedLanePreTurnFailureRemainsInstanceOwned`, `TestWorkspacePreparationRetriesIssueWithoutPausingProject`, `TestClassifyWorkspaceForgeReadFailure`, `TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`, `TestRecoverDurableWorkspaceGitReadWait`, `TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker`, `TestNativeLandingRunCompletion` and `TestNativeChangeRunCompletion` in `internal/orchestrator`. `TestClaimCandidatesRequireUnansweredWorkItem` and `TestClaimCandidatesRetryInstancePreProviderFailures` in `internal/hubserver`, `TestHealthRunnerSetupFindings` in `internal/hubserver/healthsignals`, `TestLocalGitCreateReadsPublishedBranchWithRepositoryCredential` and `TestLocalGitLandChangeViaGitHub` in `internal/workspace`, `TestWorkerCredentialBlockerError` and `TestNativeInterruptedCodeRecoversPersistedSession` in `internal/runner`, `TestNativeExecutionSettlesFinishedRun`, `TestNativeExecutionLandsReviewedVersion` and `TestNativeRunnerOpensChangeAndLeavesDispatch` in `internal/hubclient/nativechange`, and `TestNativePlannerAutomaticHandoff` in `internal/hubclient/planner`.
+
+**Existing eligibility and reconciliation checks:** `TestMutationDocuments` in `internal/invariants`, `TestApprovedPolicyClaimExposure`, `TestNativeDerivedHoldDispatchEquivalence` and `TestReviewConversationHistoryDoesNotVetoLanding` in `internal/hubserver`, `TestNativeRecoveryWipeDerivedHold` and `TestNativePublicationRecoveryOnAnyRunner` in `internal/runner`, and `TestAttemptRecoveryAfterPolicyChange` and `TestOrphanRecoveryRetainsPolicyAcrossHubTransition` in `internal/orchestrator`.
+
 ## INV-4 — Native merge queue
 
-This rule applies only to projects whose configured delivery is GitHub pull
-requests; native projects, this repository included, land Changes through the
-runner. Merges go through the repository's merge queue when one exists. Without a
-queue, Detent uses its serialized merge worker. Other repositories retain
-their chosen settings. Queue ownership belongs to the current PR head, and
-Detent never bypasses a configured queue with a programmatic merge.
-
-**Enforcement:** `TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch`,
-`TestDelegateNativeMergeQueueIssuesCachesQueueEntries`,
-`TestNativeMergeQueueReviewReworkAfterEnqueue`,
-`TestNativeMergeQueueWithdrawalDoesNotBlockDone`,
-`TestNativeMergeQueueSkippedChecks`, `TestNativeMergeQueueNeutralChecks`,
-`TestNativeMergeQueueHeadBudget`, and
-`TestNativeMergeQueueBudgetSurvivesRestart` in `internal/orchestrator`.
-`TestLocalGitLandingReplacement` in `internal/workspace` enforces superseded
-landing ownership, cleanup and retention of moved or unknown heads.
-The `detent doctor` queue diagnostic reports programmatic merges while a queue
-is present; live queue settings require operator inspection.
+Moved to [Delivery policy](../WORKFLOW.md#delivery-policy).
 
 ## INV-5 — Local validation and release evidence
 
-GitHub Actions runs no validation. No workflow triggers on `pull_request`,
-`merge_group` or `schedule`, and no workflow step runs Go tests, lint, vet,
-security scans or browser journeys. The only pull-request event is
-`.github/workflows/cla.yml` on `pull_request_target`, which runs only
-`contributor-assistant/github-action` without checking out or executing PR
-code. This repository requires no branch status check.
+Acceptance and release decisions require authentic evidence bound to the exact source and relevant inputs. Reuse it only while those inputs remain valid. [WORKFLOW.md](../WORKFLOW.md#evidence-policy) specifies the commands, independent reviews and release authority.
 
-Each Change passes the finalization gate (`make check-landing`) on its own
-reviewed head before landing. Develop accepts integration risk between Changes
-that merge cleanly; `scripts/release-validate-local.sh develop` runs the full
-suite, `make check-release`, on our own hardware through `detent validate`, so
-passing Go test binaries are reused from Hub receipts, and posts
-`develop-full-ci` on the exact commit. Ordinary landing waits for no additional
-CI producer or full-suite validation.
-
-A Go test receipt reuses a pass only for a hermetic test binary: one whose
-complete input set is the binary, its flags, its package directory relative to
-the checkout, the Go runtime environment, and the files and environment
-variables it observably reads. A binary that starts a subprocess, opens a
-missing relative path, reads an input that disappeared or changed while it ran,
-reads a path outside the checkout, GOROOT and temporary directories, or whose
-package source changed while it ran is never recorded. Code that runs before
-Go's test log starts (`init`, `TestMain`, package variables and the package
-functions and methods they reach), inspected in every package file regardless
-of build constraints, is held to the same rule: a file read, glob or process
-start there prevents recording, named environment reads there join the input
-set, and an unnamed or shadowed read there or an environment listing anywhere
-in the package keys the whole environment in its observed order. Read files
-are fingerprinted by mode and content; stat-only inputs by size and mode, plus
-modification time for temporary files, because a fresh checkout's timestamps
-carry no meaning. Checkout and temporary directory prefixes in environment
-values are normalized only to their length, so relocating to an equal-length
-path is the only difference a receipt ignores. Like Go's own test cache,
-receipts do not observe `Readlink` or `syscall.Getenv` during tests,
-modification-time assertions on checkout files, the length of the path
-`syscall.Getwd` returns, or network, clock and host state other than files and
-environment; a test whose result depends on them is a defect under the
-repository test rules, which already forbid ambient state, running processes
-and real time.
-
-Only a green `make check-release` on the exact release branch head produces
-release evidence: `scripts/release-validate-local.sh release/vX.Y` posts
-`scheduled-full-ci` on that head, and develop evidence is never reused after
-cherry-picks. Every release starts from a frozen develop snapshot on a release
-branch, fixes land on develop first and are cherry-picked with `-x` by
-`scripts/release-pick.sh` as direct signed pushes with no pull request, and no develop prerelease or source-gate-only deployment
-path exists. Stable tags are created only by `release-finalize.yml` in GitHub
-Actions, after the latest `scheduled-full-ci` status on the current release
-head is successful and, only when the repository variable
-`DETENT_RELEASE_REQUIRE_AUDIT=true`, its latest `release-security-audit`
-status is successful (a human owner's recorded
-`release-override/<version>` tag signed by a primary key listed at the exact
-release head may waive `scheduled-full-ci` and `platform-full-ci`), and the latest
-`platform-full-ci` status on the nearest validated ancestor (including the head)
-is successful and no older than 24 hours unless waived by that signed owner
-override. When the audit is off, a verified owner override may be the only
-release evidence. Platform validation runs daily on
-local Colima, using the validated source and pinned toolchain. Release API calls belong
-to operators and GitHub Actions, never Detent runners. The release flow is
-specified in [the release workflow](../WORKFLOW.md#release).
-
-**Enforcement:** checks assert outcomes only: `ci.yml`,
-`windows-tests.yml` and `portability-stress.yml` do not exist; no workflow
-triggers on `pull_request`, `merge_group` or `schedule`, `pull_request_target`
-is limited to the `cla.yml` exception, and no workflow step runs validation
-commands; `release-finalize.yml` triggers only on `workflow_dispatch` and runs
-`scripts/release-finalize.sh`; the finalizer tags only when every required
-status is green on the exact current release head, except `scheduled-full-ci`
-with a recorded owner override, and never redispatches a tag
-whose provenance no longer matches; and `release.yml` verifies provenance of the
-exact tagged commit before building.
-`TestRepositoryWorkflow`, `TestRepositoryHasNoPullRequestActions`, and
+**Existing evidence and release checks:** `TestRepositoryWorkflow`, `TestRepositoryHasNoPullRequestActions`, and
 `TestWorkflowViolations` in `internal/invariants`;
 `TestReleaseWorkflowAuthenticatesExactCommitProvenance` in the repository root;
 `TestValidateCommandReusesGoTestReceiptsAcrossCheckouts` in `internal/cli`;
@@ -293,95 +112,32 @@ to other backends.
 
 ## INV-7 — Machine issue identity
 
-Machine-filed issues carry an origin stamp and a problem fingerprint. A new
-report of an open problem becomes an occurrence on that issue, never a
-duplicate. A report matching a closed issue is ignored, unless scheduled
-validation shows a fixed problem failing again, which starts a new issue. A
-human's Cancelled or no-dispatch decision is never overridden. Interactive
-native filing first returns likely duplicates and related items, and creates
-nothing until the filer explicitly confirms the issue is distinct; machine
-reports and supported imports deduplicate by fingerprint instead.
+Machine defects have stable provenance and fingerprints. Update the existing incident only when evidence or disposition changes. Respect human cancellation and allow explicitly authorized, already-deduplicated filing without another confirmation. Retain historical occurrences without per-round issue narration.
 
-**Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
+Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
+
+**Existing issue identity checks:** `TestMachineIssueTool` in `internal/orchestrator`;
 `TestNativeMachineDefectOccurrences` and `TestNativeReleaseStabilizationOccurrences` in `internal/hubserver` and
 `TestDefectFingerprint` in `internal/issueorigin`;
-`TestManagerPreservesClosedFinding` in
-`internal/intake`; `TestNativeMachineIntakeAuthorityAndFingerprint` in
-`internal/hubclient`; `TestParseProblems`, `TestReport`, and `TestCloudReport`
+`TestNativeMachineIntakeAuthorityAndFingerprint` in
+`internal/hubclient/dispatch`; `TestParseProblems`, `TestReport`, and `TestCloudReport`
 in `tools/cifailure`. Review checks fingerprint stability.
 
 ## INV-8 — No strict freshness protection
 
-This repository does not require strict up-to-date branch protection on
-branches Detent merges into. Managed projects may require strict freshness;
-Detent honors their branch rules. Code changes do not authorize live settings
-changes. Concurrent changes resolve through ordinary Git conflict handling and
-regenerated output, never landing-time renumbering or shared version edits.
-
-**Enforcement:** `TestDoctorRespectsProjectCIPolicy` in `internal/cli`;
-`TestIndividuallyValidBranchesRejectIntegratedCollision` in
-`tools/migrationcheck`; `make check-migrations`. Doctor reports live branch
-protection as project evidence; the operator verifies live settings.
+Moved to [Delivery policy](../WORKFLOW.md#delivery-policy).
 
 ## INV-9 — Retired mechanisms
 
-These stay retired, and runtime code must not restore them under any name:
-lane revocation, indeterminate-lane stops, per-issue infrastructure parking,
-root-level `rateLimit` in mutation documents (obtain budget information through
-a separate query), the rolling landing barrier with its Red landing hold,
-repair, bisection and automatic revert owners, uncertain-publication and
-`manual_recovery` holds, repository-policy approval as a claim or publication
-gate, server-side MCP confirmation modes, YOLO, pending approval actions and the
-`/chat/approval` page, historical external-blocker answers, per-item answer
-cooldowns, recorded-dependency recovery fences, sticky reason strings, consumed
-recovery signatures, generic managed/fingerprint and cross-host park vetoes,
-and remembered review-conversation refusals.
-
-Current facts replace them: publication reconciles the remote ref against the
-intended SHA, typed dependencies and current review/check evidence own
-readiness, and the Hub enforces key scope, project access and current grants on
-every call. Historical tables, migrations and legacy decoding remain readable;
-they do not authorize restarting a retired owner. Documentation and negative
-fixtures may name retired mechanisms, and removing a forbidden symbol from a
-list does not authorize its resurrection.
-
-**Enforcement:** `TestRepositorySources`, `TestSourceViolations`, and
-`TestMutationDocuments` in `internal/invariants` reject retired identifiers,
-assembled constants and GraphQL mutation budget queries, including aliases
-and fragments. `TestApprovedPolicyClaimExposure` in `internal/hubserver`
-preserves claim exposure across approved-policy behavior and release drift.
-INV-2's behavioral checks preserve infrastructure attribution.
-`TestNativeRecoveryWipeDerivedHold` and `TestNativePublicationRecoveryOnAnyRunner`
-in `internal/runner`, `TestNativeExecutionSettlesFinishedRun` in
-`internal/hubclient`, `TestLocalGitLandChangeViaGitHub` in `internal/workspace`,
-and `TestNativeChangeRunCompletion` in `internal/orchestrator` enforce effect
-reconciliation and dispatch equivalence after removing stored hold judgments.
-`TestAttemptRecoveryAfterPolicyChange` and
-`TestOrphanRecoveryRetainsPolicyAcrossHubTransition` in `internal/orchestrator`
-preserve retry availability and pinned continuation identity after policy changes.
-`TestNativeDerivedHoldDispatchEquivalence` and
-`TestReviewConversationHistoryDoesNotVetoLanding` in `internal/hubserver`,
-`TestDerivedHoldDispatchEquivalence` in `internal/orchestrator`, and the retired
-symbol checks in `internal/invariants` cover the retired vetoes. Review covers
-novel names, reflection and generated semantic equivalents.
+Merged into [INV-3](#inv-3--net-zero-mechanisms).
 
 ## INV-10 — Priority only picks the next job
 
-Priority picks the next job. Free capacity is never held, reserved or kept idle
-for a project, lane or priority. When a slot frees, dispatch the highest-ranked
-READY request; if higher-ranked projects have nothing ready, dispatch whatever
-is ready. The system never cancels, stops or preempts running work; only a user
-cancels work.
+Priority chooses the next executable work. Active work keeps its execution slot, and retained item leases reserve no idle execution slots. Enforce configured capacity and access limits and explicit operator stops using current facts.
 
-Paid project Sprite capacity is the exception: project allocations keep paid
-capacity with its configured project unless the pool explicitly opts in to
-sharing idle capacity. Compatible releases and ordinary policy changes never
-drain a runner or withhold its free slots; only a critical security release, a
-concrete incompatibility or intentional operator maintenance uses the existing
-drain owner. Native claim eligibility has one candidate owner, recomputed from
-current facts, and admission reads never change eligibility.
+Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
 
-**Enforcement:** `TestGlobalDispatchGatePriorityOnlyPicksNextJob`,
+**Existing dispatch and capacity checks:** `TestGlobalDispatchGatePriorityOnlyPicksNextJob`,
 `TestGlobalDispatchGateReadyRequests`,
 `TestGlobalDispatchGateConcurrentReadyRequests`,
 `TestQueuedDispatchRanksIndependentRequests`,
@@ -405,39 +161,9 @@ Review rejects semantic reservation and preemption substitutes.
 
 ## INV-11 — Retired
 
-Human mechanism scope approval before Todo is retired. Mechanism growth is
-governed by INV-3, and visible UI scope by INV-15.
-
 ## INV-12 — Native toolchain caches
 
-Workers inherit the host's native toolchain caches; cache contents may affect
-speed but never correctness for runner jobs. An enrolled local Cloud runner
-manages the host Go build cache resolved by `go env GOCACHE`, including
-`GOCACHE` and `go env -w` settings, using its existing cache program, job scratch
-pins, admission and eviction protocol. Age expiry removes entries whose
-last-use mtime is older than `max_age`, at least 25 hours. Size eviction of
-the managed cache reclaims unpinned entries whose last-use mtime is more than
-3 hours old, oldest first toward the budget; the window covers Go's hourly
-mtime refresh plus native builds of up to two hours. Caches without the cache
-program keep a 25-hour size-eviction window. Size budgets and disk pressure
-never evict entries within the window, and pinned outputs remain available
-until job scratch cleanup. Bursts inside the window may grow the shared cache above its budget;
-the budget is not a hard size cap. Runtime
-stores share maintenance and the cache program without exclusive ownership;
-a persistent owner marker never prevents a second or replacement runtime store
-from participating. Native Go consumers share the same gentle trimming policy, with the same best-effort guarantee as Go's own trimming: an entry older than the window that a native build reuses at the instant it is removed can still be lost.
-The previous `detent/go-build` directory is neither created nor deleted.
-No cache is keyed per project or attempt, and no new cache configuration is
-introduced; new `workspace.*cache*` keys are rejected. Per-attempt isolation is
-limited to the host-provided `TMPDIR`/`TMP`/`TEMP`.
-
-Apart from the resolved build cache, its cache program, the shared Go
-admission budget's `-p`, `-trimpath` and `-toolexec` defaults, and the go test
-receipt wrapper's `-trimpath` and `-exec` in gate and validator commands, the
-runner must not set toolchain cache, home or flag variables (such as
-`GOMODCACHE`, `GOFLAGS`, `npm_config_cache`, `CARGO_HOME` or `PIP_CACHE_DIR`)
-unless the operator explicitly passes them through. Host values and explicit
-overrides, including an operator-provided `GOCACHEPROG`, are preserved.
+Use native toolchain caches for speed only, preserving configured environments and active process outputs. Workspace and cache cleanup must preserve live work.
 
 **Enforcement:** `TestINV12WorkerInheritsToolchainEnvironment`,
 `TestINV12BackendToolchainEnvironment` in `internal/runner`;
@@ -451,50 +177,11 @@ overrides, including an operator-provided `GOCACHEPROG`, are preserved.
 
 ## INV-13 — A board card is a title and one status line
 
-A board card renders its identity row, the title, at most one status line and
-the existing priority controls. The status line contains at most 48 Unicode
-characters and names the wait in actionable words. Scheduler evidence, tracker
-ages, absolute timestamps, token counts, fact grids and diagnostic text are not
-card content; existing observations belong in the detail sheet and hover
-titles, subject to INV-15. Adding card body content or lengthening the status
-line changes this rule. The card layout is specified in the
-[design system](design-system/patterns.md#work-board-and-issues).
-
-**Enforcement:** `TestINV13BoardCardContent`,
-`TestINV13SheetObservations`, and `TestBoardCardSignalBudget` in
-`internal/web/templates`, plus the board-card content contract in
-`web/conversation/tests/components/work.test.tsx`. The existing Cloud board
-browser fixture checks split-footer containment and grouping across densities
-and themes; browser review checks one-line status and effort visibility.
+Moved to the [work-board contract](design-system/patterns.md#work-board-and-issues).
 
 ## INV-14 — Workers never wait on a human question
 
-Workers receive no `ask_human_question` tool. Dispatch and completion do not
-consult legacy `human_questions` rows. Those rows remain readable historical
-receipts; Detent neither writes them nor projects them as active waits.
-
-A real product decision or physical action uses the current canonical
-Workpad's structured `detent-status` block with `status: blocked` and a
-concrete `human_action`. Native workers forbidden to write Workpad comments
-report through the authenticated final outcome; the existing native completion
-owner settles human attention in Blocked. Prose cannot replace authoritative
-typed status or fabricate a landed version.
-
-A human action is cleared only by an authorized human, either through a newer
-Workpad or by moving the item out of Blocked through the transition owner; the
-answer is recorded on the item when one was given. Ordinary replies never clear
-it. Existing recovery owns the return to executable work. Infrastructure and
-forge failures remain instance-owned. Human approvals, operator pins,
-protections and actual backend approval declines retain their authority.
-
-**Enforcement:** `TestINV14DispatchQuestionTool`,
-`TestINV14LegacyQuestionRowDispatch`,
-`TestFirstHumanBlockerCompletionReachesBlocked`,
-`TestWorkpadHumanActionSnapshot`, and
-`TestWorkpadHumanActionClearanceRecoversBlockedIssue` in
-`internal/orchestrator`; `TestLegacyHumanQuestionReceiptsReadable` in
-`internal/store`; `TestOperationsWorkpadHumanAction` in `internal/web`;
-`TestBoardCardSignalBudget` in `internal/web/templates`.
+Merged into [INV-1](#inv-1--lane-ownership).
 
 ## INV-15 — Visible UI changes require a human-authored issue
 
@@ -517,72 +204,27 @@ work for a human to author or rewrite; they do not build them.
 **Enforcement:** Review applies [AGENTS.md](../AGENTS.md#ui). No additional gate,
 configuration, reason code or UI surface enforces this rule.
 
-## INV-16 — The tracker database is the only shared knowledge channel
+## INV-16 — The Hub carries execution context and Git carries source
 
-Agents, runs and issues share knowledge only through the selected tracker
-database: issue bodies, comments, the Workpad, Change records and run
-history. Agents never use repository files to pass knowledge between issues
-or runs. The repository holds product source and normative documentation,
-never a shared log or notebook.
+<a id="inv-16--the-tracker-database-is-the-only-shared-knowledge-channel"></a>
 
-Per-change evidence, rationale and verification go in the Change description
-or issue comments through the authorized tracker owner. No change appends
-evidence, notes or history to a shared repository file. No repository file is
-append-only by convention. Edit documentation to state the current rule or
-contract; do not accumulate per-change narratives. Historical evidence remains
-recoverable through git history.
+The Hub carries issue direction, phase receipts, verdicts and findings. Git carries source commits. Agents never carry execution state through repository notes or machine issue-comment streams. Human discussion and final outcomes remain in the tracker.
 
-Only a change to an invariant's rule or its enforcing check edits
-`docs/invariants.md`. Following an unchanged invariant requires no edit, and
-a change that edits the document without changing a rule or check fails
-review. Implementation detail that moves with ordinary feature work belongs
-in the enforcing tests and package documentation, not in an invariant.
-The current completion contract owns tracker publication; this rule grants
-workers no additional write authority.
+Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
 
-**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#repository-invariants). This is a review rule;
-it adds no check, gate, configuration or runtime mechanism.
+**Existing history and receipt checks:** `TestNativeRuntimeCheckpointsDoNotGrowHistory` and `TestNativeAttemptTerminalActivityReceipts` in `internal/hubclient/runtimeevidence`. Review checks publication ownership against [AGENTS.md](../AGENTS.md#repository-invariants).
 
-## INV-17 — Runners are stateless, like GitHub Actions runners
+## INV-17 — Hub-owned assignment and retained item worktrees
 
-A runner needs only its install configuration: the Hub URL, its identity, a
-capacity limit, one workspace root that it owns, and a declared GitHub
-credential: a configured worker credential or, when none is configured, the
-host's authenticated GitHub CLI, whose login jobs then use. Nothing else about the machine may change which work it can
-claim or how a job behaves: not other directories, symlinks, existing
-checkouts, shell profiles, other tool logins or files left behind by earlier
-jobs. A missing or expired declared credential is an instance setup failure.
+<a id="inv-17--runners-are-stateless-like-github-actions-runners"></a>
 
-Every job starts in a workspace the runner prepares itself under its workspace
-root, from an exact commit or a Hub-stored source bundle. Work a job must keep
-(commits, uncommitted changes, plan and validation receipts) is published to
-the Hub when the job checkpoints or ends; the copy on the machine is only a
-cache. Any eligible runner can claim any item. No item is pinned to the machine
-that last ran it, and losing a machine loses no work.
+The Hub alone owns assignment and execution authority through one fenced, renewable item lease. The runner retains the same worktree across the item’s phases and retries. Each completed phase pushes ordinary commits and records commit-bound receipts in the Hub. After lease loss, a new runner resumes from the last pushed phase commit at the first phase without a valid receipt, and uncommitted work may be lost.
 
-Verified execution artifacts are immutable versioned caches. The existing startup and update owner
-resolves and verifies releases; new attempts acquire its latest prepared compatible
-artifact without release discovery. Discovery failures preserve that verified
-selection, never authorize an unchecked binary, and never clear an explicit
-critical or incompatible update refusal. A captured artifact remains owned
-until its workers and cleanup finish; only then may an obsolete artifact be
-removed. Execution processes access ephemeral process state through the controller's
-bounded typed protocol. Durable job ownership, leases, checkpoints, recovery,
-retries, completion and history belong to PostgreSQL through authenticated Hub
-APIs. Runners never open a local application database, including in-memory
-SQLite, and never use local files or queues as recovery or execution authority.
-A runner restart reconstructs its authorized work from Hub records.
+Runners use their declared install configuration. Keep unrelated jobs independent of machine-local state. Never open a local application database, discover configuration by scanning the machine, route work by where it previously ran, or use local files or queues as execution or recovery authority.
 
-A change may not add machine-local state that later jobs depend on, discover
-configuration by scanning the machine, or route work by where earlier work
-ran. A failure caused by machine-local state is fixed by publishing that state
-to the Hub or removing the dependency, never by adding pinning, transfer or
-recovery logic. Existing local-only checkpoints, source-owner pinning and
-source transfer are being removed under this rule; no change may extend them.
+Enforcement: migration in progress under PLAN-ONE-SESSION; existing tests listed below remain until their code is replaced.
 
-**Enforcement:** Review applies this rule to changes in runner, workspace,
-hubclient, recovery and placement code. This is a review rule; it adds no
-check, gate, configuration or runtime mechanism.
+**Existing workspace and recovery checks:** `TestCheckpointAuthorityAndJournalFailures` and `TestNativePublicationRecoveryOnAnyRunner` in `internal/runner`. Review checks assignment and workspace custody in runner, workspace, Hub client, recovery and placement changes.
 
 ## INV-18 — Hub writes stay small
 
@@ -701,17 +343,7 @@ run; it never blocks merging or releasing.
 
 ## INV-22 — Tests never use production credentials or systems
 
-No test, fixture, harness, smoke run or development environment uses an active
-production credential or reaches a production system. A production credential
-is one that consumes real usage or quota, or acts on production data: email
-delivery, model provider, production Hub, tracker and deploy keys. Sandbox and
-test-mode credentials, such as Stripe test keys or a WorkOS development
-environment, are allowed. A production key may stay in a development
-environment file only commented out, for reference.
-
-Code under test that reads a credential from the process environment is
-isolated from the developer's shell: its test package clears that variable or
-injects a fake sender or client before any test runs.
+Automated tests and development use isolated fixtures and no production credentials or effects. Explicitly authorized operational release checks follow the [release procedure](../WORKFLOW.md#release) and are recorded as production operations.
 
 **Enforcement:** a test package whose code under test reads a credential from
 the environment clears it in `TestMain` or injects a fake. Review rejects a
