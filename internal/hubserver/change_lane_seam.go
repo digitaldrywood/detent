@@ -597,3 +597,98 @@ func changeAttachmentFields(fields []cloudContentField) []changefiles.ContentFie
 	}
 	return result
 }
+
+func (s *Service) hostedChangeCheckPrincipal(c echo.Context, credential hubapi.APICredential) bool {
+	return s.changeHTTP().HostedChangeCheckPrincipal(c, credential)
+}
+
+func (s *Service) requireHostedChangeCheckPrincipal(ctx context.Context, scope hubscope.NativeScope) (eventstore.ReviewPolicy, error) {
+	return s.changeHTTP().RequireHostedChangeCheckPrincipal(ctx, scope)
+}
+
+func (s *Service) recheckHostedChangeCheckPrincipal(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, approved eventstore.ReviewPolicy) error {
+	return s.changeHTTP().RecheckHostedChangeCheckPrincipal(ctx, r, scope, approved)
+}
+
+func (s *Service) requireChangeReviewer() echo.MiddlewareFunc {
+	return s.changeHTTP().RequireChangeReviewer()
+}
+
+func (s *Service) requireChangeReviewPolicyAdmin() echo.MiddlewareFunc {
+	return s.changeHTTP().RequireChangeReviewPolicyAdmin()
+}
+
+func (s *Service) getChangeReviewPolicy(c echo.Context) error {
+	return s.changeHTTP().GetChangeReviewPolicy(c)
+}
+
+func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
+	return s.changeHTTP().ApproveChangeReviewPolicy(c)
+}
+
+func (s *Service) listChanges(c echo.Context) error {
+	return s.changeHTTP().ListChanges(c)
+}
+
+func (s *Service) readChanges(ctx context.Context, scope hubscope.NativeScope, item string) ([]tracker.ChangeRequest, error) {
+	return s.changeHTTP().ReadChanges(ctx, scope, item)
+}
+
+func (s *Service) createChange(c echo.Context) error {
+	return s.changeHTTP().CreateChange(c)
+}
+
+func (s *Service) getChange(c echo.Context) error {
+	return s.changeHTTP().GetChange(c)
+}
+
+func changeDetailResponse(detail tracker.ChangeDetail) tracker.ChangeDetail {
+	return changeapi.ChangeDetailResponse(detail)
+}
+
+func changeVersionResponse(version tracker.ChangeVersion) tracker.ChangeVersion {
+	return changeapi.ChangeVersionResponse(version)
+}
+
+func (s *Service) reviewChange(c echo.Context) error {
+	return s.changeHTTP().ReviewChange(c)
+}
+
+func (s *Service) submitChangeCheck(c echo.Context) error {
+	return s.changeHTTP().SubmitChangeCheck(c)
+}
+
+func (s *Service) discussChange(c echo.Context) error {
+	return s.changeHTTP().DiscussChange(c)
+}
+
+func (s *Service) changeHTTP() *changeapi.HTTP {
+	return changeapi.NewHTTP(changeapi.HTTPDeps{
+		RunDetailContext:                s.runDetailContext,
+		StorageArchiveContent:           s.storageArchiveContent,
+		AuthorizeAccessScope:            s.authorizeAccessScope,
+		AuthorizeWorkItemRecordScope:    s.authorizeWorkItemRecordScope,
+		ReviewChangeRecordCommand:       s.reviewChangeRecordCommand,
+		Repository:                      s.config.TenantRepository,
+		Clock:                           s.config.Clock,
+		NativeAPIError:                  s.nativeAPIError,
+		InvalidAPIRequest:               s.invalidAPIRequest,
+		RequireNativeScope:              s.requireNativeScope,
+		RequireInstanceAdmin:            s.requireInstanceAdmin,
+		RequireOnboardingAdmin:          s.requireOnboardingAdmin,
+		RunDetailStore:                  s.runDetailStore,
+		ChangeReviewPolicyRecord:        s.changeReviewPolicyRecord,
+		ApproveChangeReviewPolicyRecord: s.approveChangeReviewPolicyRecord,
+		ListChangeRecords:               s.listChangeRecords,
+		CreateChangeRecord:              s.createChangeRecord,
+		SelectedChangeDetail:            s.selectedChangeDetail,
+		ReadBoundedChangeRecord:         s.readBoundedChangeRecord,
+		ChangeRecordEvidenceMutation:    s.changeRecordEvidenceMutation,
+		ChangeCheckRecordMutation:       s.changeCheckRecordMutation,
+		SameNativeClaimReviewPolicy:     sameNativeClaimReviewPolicy,
+		NativeArchiveJSON:               nativeArchiveJSON,
+		ChangeCheckRequest:              changeCheckRequest,
+		HostedOrganization:              s.changeHostedOrganization,
+		ChangeResult:                    (hubChangeApplication{service: s}).result,
+	})
+}
