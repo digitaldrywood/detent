@@ -6,6 +6,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const recordedRecoveryCandidate = `(p.profile='native' AND lower(ws.name)='blocked' AND EXISTS (
+ SELECT 1 FROM (SELECT ev.actor_kind, ev.event_revision FROM collaboration_events ev
+  WHERE ev.organization_id=i.organization_id AND ev.project_id=i.project_id AND ev.work_item_id=i.native_id
+  AND ev.type='workflow.transitioned' ORDER BY ev.sequence DESC LIMIT 1) lane
+ WHERE lane.actor_kind='runner' AND (lane.event_revision=0 OR lane.event_revision=i.revision)))`
+
 func (s *session) RunnerRecoveryEligibility(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (bool, error) {
 	now, err := s.leaseTime(ctx)
 	if err != nil {
@@ -14,7 +20,7 @@ func (s *session) RunnerRecoveryEligibility(ctx context.Context, project tracker
 	var eligible bool
 	err = s.db.QueryRow(ctx, `SELECT NOT i.archived
  AND COALESCE(NOT ws.terminal,false)
- AND (ws.dispatchable OR EXISTS (
+ AND (ws.dispatchable OR `+recordedRecoveryCandidate+` OR EXISTS (
   SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id
   AND l.released_at IS NULL AND l.expires_at>$4))
  AND lower(trim(COALESCE(ws.name,'')))<>'cancelled'

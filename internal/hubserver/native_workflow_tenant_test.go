@@ -125,6 +125,12 @@ func TestWorkerBlockedMoveRecordsCurrentContractHumanAction(t *testing.T) {
 						}
 						return
 					}
+					if test.evidence == "failure" {
+						if after.State != current.State || after.Revision != current.Revision {
+							t.Fatalf("instance failure moved the item: state=%q revision=%d", after.State, after.Revision)
+						}
+						return
+					}
 					if after.State != "Blocked" {
 						t.Fatalf("accepted hold left state %q", after.State)
 					}

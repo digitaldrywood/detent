@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -19,6 +20,7 @@ func TestRunnerRecoveryEligibilityIncludesHiddenDependencyAuthority(t *testing.T
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Blocked"}, {Name: "In Progress"}, {Name: "Done", Terminal: true}}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		var ownedLease leasestore.Lease
@@ -61,6 +63,25 @@ func TestRunnerRecoveryEligibilityIncludesHiddenDependencyAuthority(t *testing.T
 					return err
 				}
 			}
+			held, err := w.WorkItem(t.Context(), "prj_shared", "wi_held")
+			if err != nil {
+				return err
+			}
+			kind, operation := "runner", ""
+			if organization == "org_second" {
+				kind, operation = "human", "operator_stop"
+			}
+			value := tracker.CollaborationEvent{ID: "event_held", OrganizationID: organization, ProjectID: held.ProjectID, AggregateType: "issue",
+				AggregateID: held.NativeID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: kind, PrincipalID: "example"},
+				RecordedAt: time.Now().UTC(), Data: tracker.CollaborationData{Revision: tracker.Revision(held.Revision), FromState: "Todo", ToState: "Blocked", Operation: operation},
+			}
+			event, err := content.PrepareEvent(t.Context(), organization, pgstoretest.HistoryJSON(t, value))
+			if err != nil {
+				return err
+			}
+			if _, err := w.AppendEvent(t.Context(), event); err != nil {
+				return err
+			}
 			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "machine_owned", Hostname: "example", Capacity: 1}); err != nil {
 				return err
 			}
@@ -102,7 +123,7 @@ func TestRunnerRecoveryEligibilityIncludesHiddenDependencyAuthority(t *testing.T
 				want    bool
 			}{
 				{project: "prj_shared", item: "wi_ready", want: true},
-				{project: "prj_shared", item: "wi_held"},
+				{project: "prj_shared", item: "wi_held", want: organization == "org_first"},
 				{project: "prj_shared", item: "wi_terminal"},
 				{project: "prj_shared", item: "wi_hidden"},
 				{project: "prj_shared", item: "wi_resolved", want: true},

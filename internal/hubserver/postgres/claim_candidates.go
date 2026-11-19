@@ -236,6 +236,12 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	if query.IncludeUnclassifiedSource {
 		sourceColumn = unclassifiedSource
 	}
+	dispatchable := "ws.dispatchable=true"
+	recovery := "false"
+	if query.IncludeRecordedRecovery {
+		recovery = recordedRecoveryCandidate
+		dispatchable = "(" + dispatchable + " OR " + recovery + ")"
+	}
 	statement := `SELECT i.id,i.revision,i.number,i.native_id,lower(trim(ws.name)),f.author_login,f.repository,
 	 f.assignees,
  ARRAY(SELECT l.label FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id ORDER BY l.label),
@@ -245,7 +251,7 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
  JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name
  JOIN issue_claim_facts f ON f.organization_id=i.organization_id AND f.project_id=i.project_id AND f.work_item_id=i.native_id
  LEFT JOIN LATERAL (SELECT e.scope,e.rank,e.priority_override FROM queue_entries e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND ($3='' OR e.scope=$4) ORDER BY CASE WHEN e.scope=$4 THEN 0 ELSE 1 END,e.scope LIMIT 1) q ON true
- WHERE i.organization_id=$1 AND i.project_id=$2 AND (p.profile='native' OR (p.profile='github_compatible' AND ps.repository_enabled AND lower(f.repository)=lower(ps.repository))) AND p.deleted_at IS NULL AND i.archived=false AND ws.dispatchable=true AND ws.terminal=false AND lower(trim(ws.name))<>'cancelled'
+ WHERE i.organization_id=$1 AND i.project_id=$2 AND (p.profile='native' OR (p.profile='github_compatible' AND ps.repository_enabled AND lower(f.repository)=lower(ps.repository))) AND p.deleted_at IS NULL AND i.archived=false AND ` + dispatchable + ` AND ws.terminal=false AND lower(trim(ws.name))<>'cancelled'
  AND (NOT p.require_dependencies OR NOT EXISTS(SELECT 1 FROM issue_dependencies d JOIN issues blocker ON blocker.organization_id=d.organization_id AND blocker.project_id=d.blocker_project_id AND blocker.id=d.blocker_issue_id LEFT JOIN project_workflow_states blocker_state ON blocker_state.organization_id=blocker.organization_id AND blocker_state.project_id=blocker.project_id AND blocker_state.name=blocker.workflow_state_name WHERE d.organization_id=i.organization_id AND d.dependent_project_id=i.project_id AND d.dependent_issue_id=i.id AND (blocker_state.name IS NULL OR blocker_state.terminal=false)))
  AND NOT EXISTS(SELECT 1 FROM github_imports g WHERE g.organization_id=i.organization_id AND g.project_id=i.project_id AND g.work_item_id=i.native_id AND g.work_item_id<>'' AND g.intake_pending)
  AND (q.scope IS NOT NULL OR $3='')
@@ -255,18 +261,20 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		statement += ` AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>$5)`
 	}
 	if !query.IncludeUnclassifiedSource {
-		statement += ` AND NOT ` + unclassifiedSource
+		statement += ` AND (NOT ` + unclassifiedSource + ` OR ` + recovery + `)`
 	}
 	if !query.IncludeLeasedAnchor && query.WorkItemID == "" || query.ExcludeSatisfiedAnchor {
-		statement += ` AND NOT ` + currentDispatchSatisfied
+		statement += ` AND (NOT ` + currentDispatchSatisfied + ` OR ` + recovery + `)`
 	}
 	filters := []struct {
 		values []string
 		expr   string
 	}{
-		{normalizedClaimValues(query.States), "lower(trim(ws.name))"},
 		{normalizedClaimValues(query.Authors), "f.author_login"},
 		{normalizedClaimValues(query.Repositories), "f.repository"},
+	}
+	if states := normalizedClaimValues(query.States); len(states) > 0 {
+		statement += " AND (lower(trim(ws.name))=ANY(" + bind(states) + "::text[]) OR " + recovery + ")"
 	}
 	var filterSQL strings.Builder
 	for _, filter := range filters {
