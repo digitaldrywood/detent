@@ -30,11 +30,13 @@ func TestValidatorPublicationTransfersLargeResultOnce(t *testing.T) {
 		lost      bool
 		archive   bool
 		wrongHash bool
+		stale     bool
 	}{
 		{name: "legacy inline", bytes: 600 << 10},
 		{name: "inline with oversized response", bytes: 1000 << 10, lost: true},
 		{name: "inline with different receipt", bytes: 1000 << 10, lost: true, wrongHash: true},
 		{name: "oversized result with lost acknowledgement", bytes: 1300 << 10, lost: true, archive: true},
+		{name: "oversized result with lease lost before replay", bytes: 1300 << 10, lost: true, archive: true, stale: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 7}
@@ -114,6 +116,11 @@ func TestValidatorPublicationTransfersLargeResultOnce(t *testing.T) {
 						t.Fatal("second acknowledgement changed the command")
 					}
 					original = raw
+					if test.stale && posts == 2 {
+						w.WriteHeader(http.StatusConflict)
+						w.Write([]byte(`{"code":"stale_fencing_token"}`))
+						return
+					}
 					w.WriteHeader(http.StatusBadGateway)
 					w.Write([]byte(`{"code":"unavailable"}`))
 					return

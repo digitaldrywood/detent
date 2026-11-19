@@ -250,11 +250,10 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 		return nil
 	}
 	err = send()
-	if !NativeTransportUnavailable(err) || ctx.Err() != nil {
-		return err
+	if NativeTransportUnavailable(err) && ctx.Err() == nil {
+		err = send()
 	}
-	err = send()
-	if !NativeTransportUnavailable(err) || ctx.Err() != nil {
+	if ctx.Err() != nil || !NativeTransportUnavailable(err) && !ClaimLost(err) {
 		return err
 	}
 	return c.reconcileValidatorReceipt(ctx, item, id, version, request.IdempotencyKey, raw, err)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"reflect"
 
@@ -13,12 +12,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -36,7 +38,7 @@ func (s *HTTP) ReviewChange(c echo.Context) error {
 	}
 	ctx := hubcontent.IsolateContentContext(s.deps.RunDetailContext(c.Request().Context()))
 	item, change, version := c.Param("item"), c.Param("change"), c.Param("version")
-	payload, err := s.readValidatorArchive(ctx, scope, item, *request.ValidatorArchive)
+	payload, err := s.readValidatorArchive(ctx, scope, item, *request.ValidatorArchive, request.Mutation)
 	if err != nil {
 		return s.deps.NativeAPIError(c, err)
 	}
@@ -57,11 +59,13 @@ func (s *HTTP) ReviewChange(c echo.Context) error {
 	return c.JSON(http.StatusOK, ack)
 }
 
-func (s *HTTP) readValidatorArchive(ctx context.Context, scope hubscope.NativeScope, item string, input changerequest.ValidatorArchiveReference) (changerequest.ValidatorArchive, error) {
+func (s *HTTP) readValidatorArchive(ctx context.Context, scope hubscope.NativeScope, item string, input changerequest.ValidatorArchiveReference, mutation tracker.Mutation) (changerequest.ValidatorArchive, error) {
 	var payload changerequest.ValidatorArchive
 	var ref attachment.ArchiveReference
+	sessions := executionapi.SessionDeps{AuthorizeAccess: s.deps.AuthorizeAccessScope}
+	fence := runnersession.Mutation{LeaseID: mutation.LeaseID, FencingToken: mutation.FencingToken}
 	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.deps.AuthorizeAccessScope(ctx, r, scope, false); err != nil {
+		if _, _, err := sessions.RunnerSessionFence(ctx, r, scope, fence, item, false); err != nil {
 			return err
 		}
 		var err error
@@ -85,12 +89,60 @@ func (s *HTTP) readValidatorArchive(ctx context.Context, scope hubscope.NativeSc
 	if artifact.Digest(raw) != input.ContentSHA256 {
 		return payload, artifact.ErrIntegrity
 	}
+	if !validValidatorArchiveJSON(raw) {
+		return payload, hubapi.NativePublicInvalid("Invalid validator archive payload")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&payload) != nil || decoder.Decode(new(any)) != io.EOF {
+	if decoder.Decode(&payload) != nil {
 		return payload, hubapi.NativePublicInvalid("Invalid validator archive payload")
 	}
 	return payload, nil
+}
+
+func validValidatorArchiveJSON(raw []byte) bool {
+	if len(raw) > attachment.MaxArchiveBytes {
+		return false
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(raw) {
+		return false
+	}
+	shapeBudget := hubapi.MaxAPIRequestBodyBytes / int(reflect.TypeFor[gate.CommandResult]().Size())
+	var containers []byte
+	var quoted, escaped bool
+	for _, b := range raw {
+		if quoted {
+			if escaped {
+				escaped = false
+				continue
+			}
+			quoted = b != '"'
+			escaped = b == '\\'
+			continue
+		}
+		switch b {
+		case '"':
+			quoted = true
+			continue
+		case '{', '[':
+			containers = append(containers, b)
+		case '}', ']':
+			containers = containers[:len(containers)-1]
+			continue
+		case ',':
+			if containers[len(containers)-1] != '[' {
+				continue
+			}
+		default:
+			continue
+		}
+		shapeBudget--
+		if shapeBudget < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *HTTP) getValidatorPublicationReceipt(c echo.Context) error {
