@@ -3,10 +3,10 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"maps"
 	"slices"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/coordinator"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -25,34 +25,22 @@ func (s *Service) coordinatorSlackIntegration(ctx context.Context, organization 
 	}
 	var result slackIntegrationStatus
 	err := reader.ReadSlack(ctx, organization, corestore.Serving, func(r postgres.SlackReader) error {
-		row, err := r.SlackIntegration(ctx)
-		if err == nil {
-			if row.OrganizationID != organization {
-				return corestore.ErrTenantMismatch
-			}
-			result.ChannelName = row.ChannelName
-			result.LastDeliveryFailed, result.LastStatusCode = row.LastDeliveryFailed, int(row.LastStatusCode)
-			if row.LastSuccessAt != nil {
-				stamp := hubapi.FormatHubTime(*row.LastSuccessAt)
-				result.LastSuccessAt = &stamp
-			}
-			if row.LastFailureAt != nil {
-				stamp := hubapi.FormatHubTime(*row.LastFailureAt)
-				result.LastFailureAt = &stamp
-			}
-		} else if !errors.Is(err, corestore.ErrNotFound) {
-			return err
+		state, err := coordinator.ReadSlackState(ctx, r, organization, slackWebhookSecret)
+		row := state.Integration
+		result.ChannelName = row.ChannelName
+		result.LastDeliveryFailed, result.LastStatusCode = row.LastDeliveryFailed, int(row.LastStatusCode)
+		if row.LastSuccessAt != nil {
+			stamp := hubapi.FormatHubTime(*row.LastSuccessAt)
+			result.LastSuccessAt = &stamp
 		}
-		secret, err := r.AccessSecret(ctx, "", slackWebhookSecret)
-		if err == nil {
-			if secret.OrganizationID != organization || secret.ProjectID != "" || secret.Kind != slackWebhookSecret {
-				return corestore.ErrTenantMismatch
-			}
+		if row.LastFailureAt != nil {
+			stamp := hubapi.FormatHubTime(*row.LastFailureAt)
+			result.LastFailureAt = &stamp
+		}
+		if state.WebhookConfigured {
 			result.Webhook = maskedSlackWebhook
-		} else if !errors.Is(err, corestore.ErrNotFound) {
-			return err
 		}
-		return nil
+		return err
 	})
 	return result, err
 }
