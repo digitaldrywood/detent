@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerfleet"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -439,4 +441,86 @@ func (s *Service) runnerOwnsRunEvents() bool {
 
 func runnerSessionProcessAuthority(key string) string {
 	return executionapi.RunnerSessionProcessAuthority(key)
+}
+
+func (s *Service) runnerDependencyDeps() executionapi.DependencyDeps {
+	return executionapi.DependencyDeps{
+		Repository:      s.config.TenantRepository,
+		Details:         s.runDetailStore,
+		AuthorizeAccess: s.authorizeAccessScope,
+		WriteClaim:      s.writeNativeClaimCommand,
+		LoadPlan:        s.loadWorkItemPlan,
+		PlanWorkItem:    s.planWorkItemRecord,
+		PrepareFields:   s.prepareWorkItemFields,
+	}
+}
+
+type preparedRunnerDependencies struct {
+	state   *executionapi.PreparedRunnerDependencies
+	final   corestore.WorkItem
+	version eventstore.CollaborationVersion
+}
+
+func normalizeRunnerDependencyDisposition(data *tracker.NativeRunData, project projectstore.Metadata) {
+	executionapi.NormalizeRunnerDependencyDisposition(data, project)
+}
+
+func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.NativeScope, source corestore.WorkItem, event tracker.NativeRunEvent) (*preparedRunnerDependencies, bool, error) {
+	state, changed, err := s.runnerDependencyDeps().PrepareRunnerDependencies(ctx, scope, source, event)
+	if state == nil {
+		return nil, changed, err
+	}
+	return &preparedRunnerDependencies{state: state, final: state.Final, version: state.Version}, changed, err
+}
+
+func (s *Service) writeRunnerDependenciesCommand(ctx context.Context, scope hubscope.NativeScope, command eventstore.RunCommand, dependencies *preparedRunnerDependencies, write func(context.Context, tenantstore.Writer) error) error {
+	return s.runnerDependencyDeps().WriteRunnerDependenciesCommand(ctx, scope, command, dependencies.state, write)
+}
+
+func applyRunnerDependencies(ctx context.Context, w tenantstore.Writer, dependencies *preparedRunnerDependencies) error {
+	return executionapi.ApplyRunnerDependencies(ctx, w, dependencies.state)
+}
+
+func (s *Service) runnerSpendDeps() executionapi.SpendDeps {
+	return executionapi.SpendDeps{
+		Repository:      s.config.TenantRepository,
+		HTTPError:       s.nativeAPIError,
+		AuthorizeAccess: s.authorizeAccessScope,
+	}
+}
+
+func (s *Service) getRunnerSpend(c echo.Context) error {
+	return s.runnerSpendDeps().GetRunnerSpend(c)
+}
+
+func (s *Service) getRunnerModelQuantiles(c echo.Context) error {
+	return s.runnerSpendDeps().GetRunnerModelQuantiles(c)
+}
+
+func (s *Service) runnerUsageDeps() executionapi.UsageDeps {
+	return executionapi.UsageDeps{
+		Repository:       s.config.TenantRepository,
+		HTTPError:        s.nativeAPIError,
+		AuthorizeAccess:  s.authorizeAccessScope,
+		ReadAttempt:      s.readNativeAttemptTenant,
+		Plans:            func() *hostedplans.HostedPlansConfig { return s.database.plansService().Plans() },
+		Entitlement:      s.runnerUsageEntitlement,
+		HasRequestBudget: func(ctx context.Context) bool { return ctx.Value(runnerRequestBudgetContext{}) == true },
+	}
+}
+
+func (s *Service) accountRunnerUsage(c echo.Context) error {
+	return s.runnerUsageDeps().AccountRunnerUsage(c)
+}
+
+func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstore.Writer, now time.Time, receiptID string, completion, heartbeat bool) error {
+	return s.runnerUsageDeps().ApplyRunnerTenantUsage(ctx, writer, now, receiptID, completion, heartbeat)
+}
+
+func (s *Service) checkRunnerAdmission(ctx context.Context, writer billingstore.Writer, now time.Time, counted int64, metrics ...string) error {
+	return s.runnerUsageDeps().CheckRunnerAdmission(ctx, writer, now, counted, metrics...)
+}
+
+func (s *Service) runnerUsageEntitlement(ctx context.Context, r billingstore.Reader, now time.Time) (hostedplans.HostedEntitlement, error) {
+	return hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, now))
 }

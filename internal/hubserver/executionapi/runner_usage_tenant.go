@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
@@ -7,11 +7,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
-func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstore.Writer, now time.Time, receiptID string, completion, heartbeat bool) error {
-	plans := s.database.plansService().Plans()
+func (d UsageDeps) ApplyRunnerTenantUsage(ctx context.Context, writer billingstore.Writer, now time.Time, receiptID string, completion, heartbeat bool) error {
+	plans := d.Plans()
 	if plans == nil {
 		return nil
 	}
@@ -19,8 +18,8 @@ func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstor
 	apply := func(id, metric string, limit int64) (billingstore.UsageResult, error) {
 		return writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: writer.BillingOrganization(), ID: id + "/" + metric, WindowStart: windowStart, Metric: metric, Amount: 1}, limit)
 	}
-	if ctx.Value(runnerRequestBudgetContext{}) != true {
-		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, writer, now))
+	if !d.HasRequestBudget(ctx) {
+		entitlement, err := d.Entitlement(ctx, writer, now)
 		if err != nil {
 			return err
 		}
@@ -44,8 +43,8 @@ func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstor
 	return nil
 }
 
-func (s *Service) checkRunnerAdmission(ctx context.Context, writer billingstore.Writer, now time.Time, counted int64, metrics ...string) error {
-	plans := s.database.plansService().Plans()
+func (d UsageDeps) CheckRunnerAdmission(ctx context.Context, writer billingstore.Writer, now time.Time, counted int64, metrics ...string) error {
+	plans := d.Plans()
 	if plans == nil {
 		return nil
 	}
@@ -53,7 +52,7 @@ func (s *Service) checkRunnerAdmission(ctx context.Context, writer billingstore.
 	if !ok {
 		return nil
 	}
-	entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, writer, now))
+	entitlement, err := d.Entitlement(ctx, writer, now)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -21,6 +23,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+type DependencyDeps struct {
+	Repository      tenantstore.Repository
+	Details         func() attachment.DetailStore
+	AuthorizeAccess func(context.Context, accessstore.Reader, hubscope.NativeScope, bool) error
+	WriteClaim      func(context.Context, hubscope.NativeScope, func(context.Context, tenantstore.Writer) error) error
+	LoadPlan        func(context.Context, hubscope.NativeScope, string, string, any) (hubrecords.WorkItemRecordPlan, error)
+	PlanWorkItem    func(context.Context, hubscope.NativeScope, hubrecords.WorkItemRecordPlan, any) (hubrecords.WorkItemRecordPlan, error)
+	PrepareFields   func(context.Context, tracker.OrganizationID, hubrecords.WorkItemRecordPlan) (hubrecords.WorkItemRecordFields, error)
+}
+
 type preparedRunnerDependency struct {
 	plan    hubrecords.WorkItemRecordPlan
 	fields  hubrecords.WorkItemRecordFields
@@ -28,15 +40,15 @@ type preparedRunnerDependency struct {
 	history eventstore.Event
 }
 
-type preparedRunnerDependencies struct {
+type PreparedRunnerDependencies struct {
 	source    corestore.WorkItem
-	final     corestore.WorkItem
-	version   eventstore.CollaborationVersion
+	Final     corestore.WorkItem
+	Version   eventstore.CollaborationVersion
 	endpoints []corestore.WorkItem
 	changes   []preparedRunnerDependency
 }
 
-func normalizeRunnerDependencyDisposition(data *tracker.NativeRunData, project projectstore.Metadata) {
+func NormalizeRunnerDependencyDisposition(data *tracker.NativeRunData, project projectstore.Metadata) {
 	if data.Disposition == nil {
 		return
 	}
@@ -64,7 +76,7 @@ func normalizeRunnerDependencyDisposition(data *tracker.NativeRunData, project p
 	data.Disposition = &disposition
 }
 
-func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.NativeScope, source corestore.WorkItem, event tracker.NativeRunEvent) (*preparedRunnerDependencies, bool, error) {
+func (d DependencyDeps) PrepareRunnerDependencies(ctx context.Context, scope hubscope.NativeScope, source corestore.WorkItem, event tracker.NativeRunEvent) (*PreparedRunnerDependencies, bool, error) {
 	if event.Type != "run.finished" || event.Data.Outcome != "succeeded" {
 		return nil, false, nil
 	}
@@ -78,7 +90,7 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 	if signal == nil || signal.Status != workpad.StatusBlocked || signal.HumanAction != "" || signal.ReasonCode != "" || len(signal.Blockers) == 0 {
 		return nil, false, nil
 	}
-	plan, err := s.loadWorkItemPlan(ctx, scope, string(source.NativeID), "", nil)
+	plan, err := d.LoadPlan(ctx, scope, string(source.NativeID), "", nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -93,10 +105,10 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 	if len(refs) > corestore.MaxPageSize {
 		return nil, false, hubapi.NativePublicInvalid("Completion report contains too many dependencies")
 	}
-	result := &preparedRunnerDependencies{source: source, final: source, endpoints: []corestore.WorkItem{source}}
+	result := &PreparedRunnerDependencies{source: source, Final: source, endpoints: []corestore.WorkItem{source}}
 	var existing map[tracker.NativeWorkItemID]bool
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+	err = d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
 			return err
 		}
 		ids := make([]tracker.NativeWorkItemID, 0, len(refs))
@@ -132,22 +144,22 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 	if len(result.endpoints) == 0 {
 		return nil, false, nil
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(d.Details())
 	for _, target := range result.endpoints[1:] {
 		if existing[target.NativeID] {
 			continue
 		}
-		plan.Current = result.final
+		plan.Current = result.Final
 		plan.Issue.Dependencies = slices.Clone(plan.Issue.Dependencies)
 		plan.Related = target
 		plan.RelationshipOperate, plan.RelationshipType = "add", "dependency"
 		plan.Relationship = &corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: source.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: target.NativeID, Type: "dependency"}
-		plan, err = s.planWorkItemRecord(ctx, scope, plan, tracker.DependencyMutation{ExpectedRevision: plan.Issue.Revision, RelatedWorkItemID: target.NativeID, Operation: "add"})
+		plan, err = d.PlanWorkItem(ctx, scope, plan, tracker.DependencyMutation{ExpectedRevision: plan.Issue.Revision, RelatedWorkItemID: target.NativeID, Operation: "add"})
 		if err != nil {
 			return nil, false, err
 		}
 		change := preparedRunnerDependency{plan: plan}
-		change.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
+		change.fields, err = d.PrepareFields(ctx, scope.Organization, plan)
 		if err != nil {
 			return nil, false, err
 		}
@@ -168,9 +180,9 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 			return nil, false, err
 		}
 		result.changes = append(result.changes, change)
-		result.final.Revision = int64(plan.Issue.Revision)
-		result.final.EventSequence++
-		result.version = change.version
+		result.Final.Revision = int64(plan.Issue.Revision)
+		result.Final.EventSequence++
+		result.Version = change.version
 	}
 	if len(result.changes) == 0 {
 		return nil, false, nil
@@ -178,9 +190,9 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 	return result, true, nil
 }
 
-func (s *Service) writeRunnerDependenciesCommand(ctx context.Context, scope hubscope.NativeScope, command eventstore.RunCommand, dependencies *preparedRunnerDependencies, write func(context.Context, tenantstore.Writer) error) error {
-	return s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
-		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+func (d DependencyDeps) WriteRunnerDependenciesCommand(ctx context.Context, scope hubscope.NativeScope, command eventstore.RunCommand, dependencies *PreparedRunnerDependencies, write func(context.Context, tenantstore.Writer) error) error {
+	return d.WriteClaim(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
+		if err := d.AuthorizeAccess(ctx, w, scope, true); err != nil {
 			return err
 		}
 		if err := w.LockRelationshipGraph(ctx); err != nil {
@@ -218,7 +230,7 @@ func (s *Service) writeRunnerDependenciesCommand(ctx context.Context, scope hubs
 	})
 }
 
-func applyRunnerDependencies(ctx context.Context, w tenantstore.Writer, dependencies *preparedRunnerDependencies) error {
+func ApplyRunnerDependencies(ctx context.Context, w tenantstore.Writer, dependencies *PreparedRunnerDependencies) error {
 	for _, change := range dependencies.changes {
 		if err := w.SetRelationship(ctx, *change.plan.Relationship, "add", change.plan.Issue.UpdatedAt); err != nil {
 			return err
