@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -61,11 +62,11 @@ func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
 	repository := h.Repository
 	owner := h.User(t, "review_admin", "owner", "review-admin@example.test", "write", "")
 	items := h.Base + "/work-items"
-	created := h.Request(t, owner, http.MethodPost, items, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bounded-role-issue"}, Title: "Example private issue", Body: hubfixture.IssueBody(), State: "Todo"})
+	created := h.Request(t, owner, http.MethodPost, items, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bounded-role-issue"}, Title: "Example authorization source " + testenv.DistinctText("bounded authority primary title", 8), Body: testenv.DistinctText("bounded authority primary body", 32) + "\n" + hubfixture.IssueContractSections, State: "Todo"})
 	hubfixture.RequireStatus(t, created, http.StatusOK)
 	var issue tracker.NativeIssue
 	hubfixture.Decode(t, created, &issue)
-	created = h.Request(t, owner, http.MethodPost, items, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bounded-secondary-issue"}, Title: "Example secondary issue", Body: hubfixture.IssueBody(), State: "Todo"})
+	created = h.Request(t, owner, http.MethodPost, items, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bounded-secondary-issue"}, Title: "Example transferred issue " + testenv.DistinctText("bounded authority secondary title", 8), Body: testenv.DistinctText("bounded authority secondary body", 32) + "\n" + hubfixture.IssueContractSections, State: "Todo"})
 	hubfixture.RequireStatus(t, created, http.StatusOK)
 	var secondary tracker.NativeIssue
 	hubfixture.Decode(t, created, &secondary)
