@@ -458,26 +458,7 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope hubsco
 }
 
 func (s *Service) configurationRequestAuthority(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, _ time.Time, operation string) error {
-	if scope.Credential.Runner.RunnerID != "" {
-		return hubapi.NativeNotFound()
-	}
-	if scope.Credential.Hosted == nil && scope.Credential.EntryKey == nil && scope.Credential.Scope != hubapi.APIScopeAdmin {
-		return hubapi.NativeNotFound()
-	}
-	scope.RequireHostedAdmin = true
-	if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
-		return err
-	}
-	if operation == "resume_local_project" && scope.Credential.Hosted != nil {
-		grant, err := r.AccessProjectGrant(ctx, scope.Credential.Hosted.Subject, scope.Project, scope.Credential.HostedRole)
-		if err != nil {
-			return err
-		}
-		if !grant.ManageRunner {
-			return hubapi.NativeNotFound()
-		}
-	}
-	return nil
+	return hubscope.AuthorizeConfiguration(ctx, r, scope, operation, s.authorizeWorkItemRecordScope)
 }
 func configurationIdempotencyConflict() error {
 	return &hubapi.NativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: 409, PublicMessage: true}

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -184,7 +185,7 @@ func (c Config) normalized() Config {
 		c.Clock = time.Now
 	}
 	if c.TenantRepository != nil && c.ConversationWorkerAuthority == nil {
-		c.ConversationWorkerAuthority = tenantRunnerAuthority{now: c.Clock}
+		c.ConversationWorkerAuthority = conversations.NewTenantWorkerAuthority(c.Clock)
 	}
 	c.GitHubWebhookSecret = append([]byte(nil), c.GitHubWebhookSecret...)
 	c.InitialAdminToken = append([]byte(nil), c.InitialAdminToken...)

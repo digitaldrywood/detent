@@ -2,16 +2,13 @@ package hubserver
 
 import (
 	"context"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -49,59 +46,8 @@ func (s *Service) requestAuth() *hubauth.Authenticator {
 	return hubauth.New(deps)
 }
 func (s *Service) authInput(scope hubscope.NativeScope) hubauth.Input {
-	input := hubauth.Input{Organization: scope.Organization, Project: scope.Project, Credential: hubscope.AuthCredential(scope.Credential), Admin: scope.RequireHostedAdmin, Action: scope.Action, IntegrationRepository: scope.IntegrationRepository, IntegrationOwned: scope.IntegrationOwned}
-	if scope.GitHubIntakeRevision != nil {
-		input.IntegrationFence = func(ctx context.Context, r accessstore.Reader) error {
-			if fence := scope.GitHubIntakeRevision; fence != nil {
-				if fence.BatchID != "" {
-					owner, ok := r.(projectstore.IntakeBatchReader)
-					if !ok {
-						return accessstore.ErrDenied
-					}
-					batch, err := owner.ProjectIntakeBatch(ctx, scope.Project)
-					if err != nil {
-						return err
-					}
-					if batch.ID != fence.BatchID || batch.Revision != fence.Revision || batch.Status != "discovering" && batch.Status != "importing" {
-						return corestore.ErrRevisionConflict
-					}
-					if fence.Authority == nil {
-						return operatortool.ErrAccessDenied
-					}
-					reader, ok := r.(tenantstore.Reader)
-					if !ok {
-						return hubapi.ErrPostgresFeatureUnavailable
-					}
-					if err := s.gitHubBatchRequestAuthority(ctx, reader, *fence.Authority, fence.RequireAdminKey); err != nil {
-						return err
-					}
-					if fence.Reporter != nil {
-						if err := s.requireGitHubBatchRunner(ctx, reader, *fence.Reporter, fence.Reporter.Credential.Runner.RunnerID, scope.IntegrationRepository, s.config.Clock()); err != nil {
-							return err
-						}
-					}
-
-				}
-				if fence.ImportID != "" {
-					owner, ok := r.(projectstore.GitHubImportReader)
-					if !ok {
-						return accessstore.ErrDenied
-					}
-					job, err := owner.GitHubImport(ctx, scope.Project, fence.ImportID)
-					if err != nil {
-						return err
-					}
-					if job.Revision != fence.Revision {
-						return corestore.ErrRevisionConflict
-					}
-				}
-			}
-			return nil
-		}
-	}
-	return input
+	return hubscope.AuthInput(scope, s.gitHubBatchRequestAuthority, s.requireGitHubBatchRunner, func() time.Time { return s.config.Clock() })
 }
-
 func (s *Service) operatorAuthOptions() hubauth.OperatorOptions {
 	options := hubauth.OperatorOptions{
 		Classify: hubscope.OperatorAuthorizationError,

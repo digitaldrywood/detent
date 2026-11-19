@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -19,7 +19,7 @@ type tenantRunnerAuthority struct {
 
 func (a tenantRunnerAuthority) VerifyConversationWorker(ctx context.Context, reader tenantstore.Reader, worker ConversationWorkerIdentity) error {
 	if a.now == nil || worker.Organization == "" || worker.Project == "" || worker.Runner.RunnerID == "" || !worker.Runner.Valid() {
-		return conversationWorkerAuthorityUnavailable()
+		return hubapi.FromFeatureError(ConversationWorkerAuthorityUnavailable())
 	}
 	identity, err := reader.RunnerIdentityByCredential(ctx, worker.Credential.ID)
 	if err != nil {
@@ -52,4 +52,6 @@ func (a tenantRunnerAuthority) VerifyConversationWorker(ctx context.Context, rea
 	return nil
 }
 
-var _ ConversationWorkerAuthority = tenantRunnerAuthority{}
+func NewTenantWorkerAuthority(now func() time.Time) ConversationWorkerAuthority {
+	return tenantRunnerAuthority{now: now}
+}
