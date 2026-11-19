@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
@@ -237,4 +238,153 @@ func (s *Service) artifactHTTP() conversations.ArtifactHTTP {
 		AuthorizeUpload: s.authorizeArtifactUploadTenant,
 		ReadStoredGrant: s.readArtifactGrantTenant,
 	})
+}
+
+func (s *Service) registerCloudAttachmentRoutes(e *echo.Echo) {
+	if !s.hostedShared() {
+		return
+	}
+	s.registerAttachmentArchiveRoutes(e)
+	read := s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator)
+	write := s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator)
+	e.POST(attachmentMetadataBase+"/check", s.checkCloudAttachment, write)
+	e.POST(attachmentMetadataBase, s.recordCloudAttachment, write)
+	e.POST(hubapi.NativeBase+"/attempts/:attempt/evidence/check", s.checkCloudAttachment, s.requireNativeScope(hubapi.APIScopeWorker))
+	e.POST(hubapi.NativeBase+"/attempts/:attempt/evidence", s.recordCloudAttachment, s.requireNativeScope(hubapi.APIScopeWorker))
+	e.GET(attachmentMetadataBase+"/:attachment", s.getCloudAttachment, read)
+	e.DELETE(attachmentMetadataBase+"/:attachment", s.deleteCloudAttachment, s.requireNativeScope(hubapi.APIScopeOperator))
+	e.POST(attachmentMetadataBase+"/:attachment/reference", s.referenceCloudAttachment, write)
+	e.POST("/internal/v1/attachments/expired", s.expiredCloudAttachments)
+	e.POST("/internal/v1/attachments/deleted", s.finishCloudAttachmentDeletion)
+	e.POST("/internal/v1/attachments/exists", s.cloudAttachmentExists)
+}
+
+func (s *Service) readCloudAttachment(ctx context.Context, scope hubscope.NativeScope, id string) (attachment.Metadata, error) {
+	return s.readAttachmentRecordTenant(ctx, scope, id)
+}
+
+func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope hubscope.NativeScope, id string, input attachment.SourceReference, fence tracker.Mutation) error {
+	return s.referenceCloudAttachmentTenant(ctx, scope, id, input, fence)
+}
+
+func (s *Service) checkCloudAttachment(c echo.Context) error {
+	return s.attachmentHTTP().CheckCloudAttachment(c)
+}
+
+func (s *Service) recordCloudAttachment(c echo.Context) error {
+	return s.attachmentHTTP().RecordCloudAttachment(c)
+}
+
+func (s *Service) getCloudAttachment(c echo.Context) error {
+	return s.attachmentHTTP().GetCloudAttachment(c)
+}
+
+func (s *Service) deleteCloudAttachment(c echo.Context) error {
+	return s.attachmentHTTP().DeleteCloudAttachment(c)
+}
+
+func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope hubscope.NativeScope, id string) error {
+	return s.attachmentHTTP().DeleteCloudAttachmentCommand(ctx, scope, id)
+}
+
+func (s *Service) referenceCloudAttachment(c echo.Context) error {
+	return s.attachmentHTTP().ReferenceCloudAttachment(c)
+}
+
+func (s *Service) expiredCloudAttachments(c echo.Context) error {
+	return s.attachmentHTTP().ExpiredCloudAttachments(c)
+}
+
+func (s *Service) finishCloudAttachmentDeletion(c echo.Context) error {
+	return s.attachmentHTTP().FinishCloudAttachmentDeletion(c)
+}
+
+func (s *Service) cloudAttachmentExists(c echo.Context) error {
+	return s.attachmentHTTP().CloudAttachmentExists(c)
+}
+
+func (s *Service) registerAttachmentArchiveRoutes(e *echo.Echo) {
+	if !s.hostedShared() {
+		return
+	}
+	base := attachmentMetadataBase + "/archives/:item"
+	e.POST(base+"/check", s.checkAttachmentArchive, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
+	e.POST(base, s.recordAttachmentArchive, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
+	e.GET(base+"/:digest", s.readAttachmentArchive, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
+}
+
+func (s *Service) checkAttachmentArchive(c echo.Context) error {
+	return s.attachmentArchiveHTTP().CheckAttachmentArchive(c)
+}
+
+func (s *Service) recordAttachmentArchive(c echo.Context) error {
+	return s.attachmentArchiveHTTP().RecordAttachmentArchive(c)
+}
+
+func (s *Service) readAttachmentArchive(c echo.Context) error {
+	return s.attachmentArchiveHTTP().ReadAttachmentArchive(c)
+}
+
+func (s *Service) getCloudContentSettings(c echo.Context) error {
+	return s.contentSettingsHTTP().GetCloudContentSettings(c)
+}
+
+func (s *Service) updateCloudContentSettings(c echo.Context) error {
+	return s.contentSettingsHTTP().UpdateCloudContentSettings(c)
+}
+
+func (s *Service) attachmentHTTP() conversations.AttachmentHTTP {
+	return conversations.NewAttachmentHTTP(conversations.AttachmentHTTPDeps{
+		StorageAvailable:  s.config.TenantRepository != nil,
+		APIError:          s.nativeAPIError,
+		CheckEvidence:     s.checkAttachmentEvidence,
+		Authorize:         s.authorizeAccessScope,
+		QuotaLimit:        s.attachmentQuotaLimit,
+		ReadTenant:        s.readConversationTenant,
+		SharedClaims:      hostedSharedClaims,
+		PrepareUpload:     s.prepareCloudAttachmentTenant,
+		RecordUpload:      s.recordCloudAttachmentTenant,
+		ReadMetadata:      s.readCloudAttachment,
+		DeleteMetadata:    s.deleteCloudAttachmentTenant,
+		ReferenceMetadata: s.referenceCloudAttachmentCommand,
+		Expired:           s.expiredCloudAttachmentsTenant,
+		FinishDeletion:    s.finishCloudAttachmentDeletionTenant,
+	})
+}
+
+func (s *Service) attachmentArchiveHTTP() conversations.AttachmentArchiveHTTP {
+	return conversations.NewAttachmentArchiveHTTP(conversations.AttachmentArchiveHTTPDeps{
+		Now:                   s.config.Clock,
+		APIError:              s.nativeAPIError,
+		InvalidRequest:        s.invalidAPIRequest,
+		ReadWorkItem:          s.readWorkItemRecord,
+		RequireReporterTriage: requireReporterTriage,
+		WriteAuthority:        s.attachmentWriteAuthority,
+		QuotaLimit:            s.attachmentQuotaLimit,
+		ReadConversation:      s.readPGConversation,
+		Authorize:             s.authorizeAccessScope,
+		ReadTenant:            s.readConversationTenant,
+		WriteTenant:           s.writeConversationTenant,
+	})
+}
+
+func (s *Service) contentSettingsHTTP() conversations.ContentSettingsHTTP {
+	return conversations.NewContentSettingsHTTP(conversations.ContentSettingsHTTPDeps{
+		StorageAvailable: s.config.TenantRepository != nil,
+		APIError:         s.nativeAPIError,
+		InvalidRequest:   s.invalidAPIRequest,
+		ReadProject:      s.readProjectMetadata,
+		MutationFeature:  hostedMutationFeature,
+		UpdateProject: func(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, req conversations.ContentSettingsRequest) (json.RawMessage, error) {
+			return s.executeProjectRecordMutation(ctx, scope, options, req.Mutation, req)
+		},
+	})
+}
+
+func (s *Service) readConversationTenant(ctx context.Context, org tracker.OrganizationID, read func(tenantstore.Reader) error) error {
+	return s.config.TenantRepository.ReadTenant(ctx, org, corestore.Serving, read)
+}
+
+func (s *Service) writeConversationTenant(ctx context.Context, org tracker.OrganizationID, write func(tenantstore.Writer) error) error {
+	return s.config.TenantRepository.WriteTenant(ctx, org, corestore.Serving, write)
 }
