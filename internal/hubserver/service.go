@@ -278,7 +278,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		secretRewrapReady:  make(chan struct{}),
 		secretRewrapDone:   make(chan struct{}),
 		boardRefresh:       make(chan struct{}, 1),
-		clientBuild:        conversationClientIdentity(cfg.staticFiles(), cfg.Version, cfg.Clock()),
+		clientBuild:        conversationClientIdentity(staticFiles(cfg.StaticFS), cfg.Version, cfg.Clock()),
 		pullRequests:       newPullRequestCache(),
 	}
 	if database.postgres != nil && !cfg.CredentialMaintenance {

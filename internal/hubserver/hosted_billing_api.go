@@ -282,7 +282,7 @@ func hostedBillingAPI(c echo.Context) bool {
 }
 
 func (s *Service) hostedBillingReturn(bool) string {
-	if _, err := fs.Stat(s.config.staticFiles(), conversationClientShell); err == nil {
+	if _, err := fs.Stat(staticFiles(s.config.StaticFS), conversationClientShell); err == nil {
 		return s.config.Hosted.PublicURL + s.hostedPath("/settings/billing")
 	}
 	return s.config.Hosted.PublicURL + s.hostedPath("/organization/billing")
