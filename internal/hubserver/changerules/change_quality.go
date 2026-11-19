@@ -1,4 +1,4 @@
-package hubserver
+package changerules
 
 import (
 	"context"
@@ -23,7 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape tracker.QualityEscape) error {
+func ValidateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape tracker.QualityEscape) error {
 	if snapshot == nil {
 		return hubapi.NativePublicInvalid("Landing contract snapshot unavailable; a human must classify historical evidence")
 	}
@@ -58,14 +58,14 @@ type tenantQualityWitness struct {
 	version eventstore.CollaborationVersion
 }
 
-type preparedTenantQualityEscape struct {
+type PreparedQualityEscape struct {
 	landing   eventstore.VersionLanding
 	previous  *eventstore.Evidence
 	scheduled *tenantQualityWitness
 	reopen    *eventstore.Event
 }
 
-func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.DiscussChange, now time.Time) (*preparedTenantQualityEscape, error) {
+func (s *QualityEscapes) PrepareQualityEscapeTenant(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.DiscussChange, now time.Time) (*PreparedQualityEscape, error) {
 	escape := request.Escape
 	if escape == nil {
 		return nil, nil
@@ -73,15 +73,15 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope
 	if err := escape.Validate(); err != nil {
 		return nil, hubapi.NativeInvalid(err.Error())
 	}
-	prepared := &preparedTenantQualityEscape{}
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	prepared := &PreparedQualityEscape{}
+	repository, ok := s.deps.Repository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var previous eventstore.Evidence
 	var project projectstore.Record
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+		if err := s.deps.AuthorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
 		owner, ok := r.(eventstore.VersionLandingReader)
@@ -127,7 +127,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope
 	if err != nil {
 		return nil, err
 	}
-	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	content := eventstore.NewContent(s.deps.RunDetailStoreFor(ctx))
 	landing, err := content.VersionLanding(ctx, prepared.landing)
 	if err != nil {
 		return nil, err
@@ -139,7 +139,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope
 		return nil, hubapi.NativePublicInvalid("Human classification overrides require a human browser session")
 	}
 	if escape.Cause != "infrastructure" && !escape.HumanOverride {
-		if err := validateQualityBasis(landing.Quality, *escape); err != nil {
+		if err := ValidateQualityBasis(landing.Quality, *escape); err != nil {
 			return nil, err
 		}
 	}
@@ -189,21 +189,21 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope
 	return prepared, nil
 }
 
-func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope hubscope.NativeScope, escape tracker.QualityEscape) (*tenantQualityWitness, error) {
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+func (s *QualityEscapes) prepareScheduledQualityWitness(ctx context.Context, scope hubscope.NativeScope, escape tracker.QualityEscape) (*tenantQualityWitness, error) {
+	repository, ok := s.deps.Repository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	candidates := []tenantQualityWitness{}
 	clipped := false
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+		if err := s.deps.AuthorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
 		cursor := corestore.ScanCursor{}
 		items := []corestore.WorkItem{}
-		for len(items) < maxAnalyticsPopulation {
-			page, err := r.ScanWorkItems(ctx, scope.Project, cursor, min(corestore.MaxPageSize, maxAnalyticsPopulation-len(items)))
+		for len(items) < s.deps.PopulationLimit {
+			page, err := r.ScanWorkItems(ctx, scope.Project, cursor, min(corestore.MaxPageSize, s.deps.PopulationLimit-len(items)))
 			if err != nil {
 				return err
 			}
@@ -212,7 +212,7 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope hubs
 				break
 			}
 			cursor = page.Next
-			if len(items) == maxAnalyticsPopulation {
+			if len(items) == s.deps.PopulationLimit {
 				clipped = true
 			}
 		}
@@ -222,7 +222,7 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope hubs
 			}
 			candidates = append(candidates, tenantQualityWitness{item: item})
 		}
-		budget := maxAnalyticsPopulation - len(items)
+		budget := s.deps.PopulationLimit - len(items)
 		for _, item := range items {
 			if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				continue
@@ -288,13 +288,13 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope hubs
 	for _, candidate := range candidates {
 		var body string
 		if candidate.comment == nil {
-			issue, err := s.hydrateCanonicalWorkItemRecord(ctx, candidate.item, candidate.version)
+			issue, err := s.deps.HydrateCanonicalWorkItemRecord(ctx, candidate.item, candidate.version)
 			if err != nil {
 				return nil, err
 			}
 			body = issue.Body
 		} else {
-			comment, err := s.hydrateCommentRecord(ctx, *candidate.comment, candidate.version)
+			comment, err := s.deps.HydrateCommentRecord(ctx, *candidate.comment, candidate.version)
 			if err != nil {
 				return nil, err
 			}
@@ -316,7 +316,7 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope hubs
 	return nil, hubapi.NativePublicInvalid("Scheduled escape must quote an existing red scheduled-suite occurrence; candidate commits alone do not establish attribution")
 }
 
-func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, escape tracker.QualityEscape, prepared *preparedTenantQualityEscape) error {
+func RecheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, escape tracker.QualityEscape, prepared *PreparedQualityEscape) error {
 	owner, ok := w.(eventstore.VersionLandingReader)
 	if !ok {
 		return hubapi.NativeWorkItemStorageUnavailable()

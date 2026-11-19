@@ -1,4 +1,4 @@
-package hubserver
+package releasefeed
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -18,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, request tracker.AssociateReleasePick, publishing bool) (releaseDeliveryRows, error) {
+func (s *Delivery) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, request tracker.AssociateReleasePick, publishing bool) (releaseDeliveryRows, error) {
 	var rows releaseDeliveryRows
 	var err error
 	rows.project, err = r.ProjectRecord(ctx, scope.Project)
@@ -28,7 +29,7 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	if rows.project.Core.DeletedAt != nil {
 		return rows, corestore.ErrNotFound
 	}
-	rows.checkoutVerified, err = r.RunnerCheckoutVerified(ctx, scope.Project, rows.project.Settings.CheckoutRepository, s.config.Clock())
+	rows.checkoutVerified, err = r.RunnerCheckoutVerified(ctx, scope.Project, rows.project.Settings.CheckoutRepository, s.deps.Clock())
 	if err != nil {
 		return rows, err
 	}
@@ -83,7 +84,7 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return rows, err
 	}
-	rows.policy, err = readCurrentChangePolicyRows(ctx, r, scope)
+	rows.policy, err = changerules.ReadCurrentChangePolicyRows(ctx, r, scope)
 	if err != nil {
 		return rows, err
 	}
@@ -116,12 +117,12 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	return rows, nil
 }
 
-func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.AssociateReleasePick, now time.Time, publishing bool) (releaseDeliveryCheck, error) {
+func (s *Delivery) prepareReleaseDeliveryCheck(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.AssociateReleasePick, now time.Time, publishing bool) (releaseDeliveryCheck, error) {
 	plan := releaseDeliveryCheck{request: request, publishing: publishing}
-	if s.config.TenantRepository == nil {
+	if s.deps.Repository == nil {
 		return plan, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeReleaseScope(ctx, r, scope); err != nil {
 			return err
 		}
@@ -132,7 +133,7 @@ func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope hubscop
 	if err != nil {
 		return plan, hubapi.ProjectRecordError(err)
 	}
-	plan.issue, err = s.hydrateWorkItemRecord(ctx, plan.current, plan.version)
+	plan.issue, err = s.deps.HydrateWorkItemRecord(ctx, plan.current, plan.version)
 	if err != nil {
 		return plan, err
 	}
@@ -146,8 +147,8 @@ func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope hubscop
 		return plan, hubapi.NativePublicInvalid("Release delivery requires a current workflow state")
 	}
 	plan.existing = plan.deliveryRow.ReleaseDelivery
-	content := eventstore.NewContent(s.runDetailStore())
-	approved, err := hydrateCurrentChangeVersionApproval(ctx, content, scope, plan.policy, "")
+	content := eventstore.NewContent(s.deps.RunDetailStore())
+	approved, err := s.deps.HydrateCurrentChangeVersionApproval(ctx, content, scope, plan.policy, "")
 	if err != nil {
 		return plan, err
 	}
@@ -158,7 +159,7 @@ func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope hubscop
 	if publishing && request.PRNumber > 0 && !plan.found {
 		return plan, hubapi.NativeInvalid("Existing PR publication requires an associated delivery")
 	}
-	if plan.found && (!sameReleasePickDelivery(plan.existing.ReleasePickInput, request.ReleasePickInput) || plan.existing.ReleasePickInput != request.ReleasePickInput && (plan.existing.BaseSHA == request.BaseSHA || plan.existing.HeadSHA == request.HeadSHA)) {
+	if plan.found && (!s.deps.SameReleasePickDelivery(plan.existing.ReleasePickInput, request.ReleasePickInput) || plan.existing.ReleasePickInput != request.ReleasePickInput && (plan.existing.BaseSHA == request.BaseSHA || plan.existing.HeadSHA == request.HeadSHA)) {
 		return plan, hubapi.NativePublicInvalid("Refresh must retain the release delivery identity and replace its exact base and head")
 	}
 	if plan.issue.Terminal || plan.issue.Archived || plan.issue.IgnoreDependencies || !plan.facts.DependsOnSource {
@@ -168,8 +169,8 @@ func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope hubscop
 		return plan, hubapi.NativePublicInvalid("Release delivery requires project dependency admission")
 	}
 	project := tracker.NativeProject{States: plan.project.States}
-	if plan.found && strings.EqualFold(plan.issue.State, landingLane) {
-		if target := reworkTarget(project, plan.issue.State); target == "" || target == plan.issue.State {
+	if plan.found && strings.EqualFold(plan.issue.State, changerules.LandingLane) {
+		if target := changerules.ReworkTarget(project, plan.issue.State); target == "" || target == plan.issue.State {
 			return plan, hubapi.NativePublicInvalid("Release refresh requires a workflow transition back to source capture")
 		}
 	}
@@ -185,7 +186,7 @@ func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope hubscop
 	if !terminal || *plan.change.LandedBaseRef != "develop" || *plan.change.LandedMergeSHA != request.SourceMergeSHA {
 		return plan, hubapi.NativePublicInvalid("Source dependency must have a recorded merged develop Change")
 	}
-	if !plan.checkoutVerified || !validCheckoutRepository(plan.project.Settings.CheckoutRepository) || plan.project.Core.Profile != "native" || request.Repository != "https://github.com/"+plan.project.Settings.CheckoutRepository || plan.sourceVersion.Repository != request.Repository {
+	if !plan.checkoutVerified || !s.deps.ValidCheckoutRepository(plan.project.Settings.CheckoutRepository) || plan.project.Core.Profile != "native" || request.Repository != "https://github.com/"+plan.project.Settings.CheckoutRepository || plan.sourceVersion.Repository != request.Repository {
 		return plan, hubapi.NativePublicInvalid("Source and release delivery must share the project's configured repository")
 	}
 
@@ -198,7 +199,7 @@ func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope hubscop
 	return plan, nil
 }
 
-func (s *Service) recheckReleaseDelivery(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, plan releaseDeliveryCheck) error {
+func (s *Delivery) recheckReleaseDelivery(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, plan releaseDeliveryCheck) error {
 	if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 		return err
 	}
@@ -211,7 +212,7 @@ func (s *Service) recheckReleaseDelivery(ctx context.Context, w tenantstore.Writ
 	if _, err := w.LockChange(ctx, plan.change.ID); err != nil {
 		return err
 	}
-	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
+	if err := s.deps.RequireCollaboration(ctx, w, s.deps.Clock()); err != nil {
 		return err
 	}
 	current, err := s.readReleaseDeliveryRows(ctx, w, scope, string(plan.current.NativeID), plan.request, plan.publishing)
@@ -224,11 +225,11 @@ func (s *Service) recheckReleaseDelivery(ctx context.Context, w tenantstore.Writ
 	return nil
 }
 
-func (s *Service) authorizeReleaseScope(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) error {
+func (s *Delivery) authorizeReleaseScope(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) error {
 	if scope.Credential.Scope != hubapi.APIScopeOperator && scope.Credential.Scope != hubapi.APIScopeAdmin || scope.Credential.Runner.RunnerID != "" {
 		return hubapi.NativeNotFound()
 	}
-	if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
+	if err := s.deps.AuthorizeWorkItemRecordScope(ctx, r, scope); err != nil {
 		return err
 	}
 	if scope.Credential.Hosted == nil {
@@ -243,7 +244,7 @@ func (s *Service) authorizeReleaseScope(ctx context.Context, r tenantstore.Reade
 	return nil
 }
 
-func readReleaseDeliveryContractFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID, states []tracker.NativeState) (hubrecords.ReleaseDeliveryContractFacts, error) {
+func ReadReleaseDeliveryContractFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID, states []tracker.NativeState) (hubrecords.ReleaseDeliveryContractFacts, error) {
 	var rows hubrecords.ReleaseDeliveryContractFacts
 	delivery, err := r.ReleaseDelivery(ctx, scope.Project, item)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -285,10 +286,10 @@ func readReleaseDeliveryContractFacts(ctx context.Context, r tenantstore.Reader,
 	return rows, err
 }
 
-func releaseDeliveryContractFactsCurrent(plan hubrecords.NativeClaimPlan, contract config.IssueContract) bool {
+func ReleaseDeliveryContractFactsCurrent(plan hubrecords.NativeClaimPlan, contract config.IssueContract) bool {
 	delegated := plan.Issue.IssueContract.ReleaseDelivery
 	rows := plan.ReleaseDelivery
-	if plan.Descriptor.Authored == nil || plan.Descriptor.ID != delegated.PolicyID || policy.Digest([]byte(plan.Issue.Body)) != delegated.BodySHA256 || !releaseDeliverySectionsMatch(plan.Issue.Body, contract.ReleaseDeliveryBody()) {
+	if plan.Descriptor.Authored == nil || plan.Descriptor.ID != delegated.PolicyID || policy.Digest([]byte(plan.Issue.Body)) != delegated.BodySHA256 || !changerules.ReleaseDeliverySectionsMatch(plan.Issue.Body, contract.ReleaseDeliveryBody()) {
 		return false
 	}
 	if rows.Delivery == nil || plan.Issue.IgnoreDependencies || !plan.Project.Core.RequireDependencies || !rows.DependsOnSource || !rows.SourceTerminal {
@@ -298,12 +299,12 @@ func releaseDeliveryContractFactsCurrent(plan hubrecords.NativeClaimPlan, contra
 	return change.OrganizationID == rows.Delivery.OrganizationID && change.ProjectID == rows.Delivery.ProjectID && change.WorkItemID == rows.Delivery.SourceIssueID && change.ID == rows.Delivery.SourceChangeID && change.CurrentVersionID != nil && *change.CurrentVersionID != "" && change.LandedVersionID != nil && *change.CurrentVersionID == *change.LandedVersionID && change.LandedBaseRef != nil && *change.LandedBaseRef == "develop" && change.LandedMergeSHA != nil && *change.LandedMergeSHA == rows.Delivery.SourceMergeSHA
 }
 
-func readNativeClaimReleaseDeliveryFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
+func ReadNativeClaimReleaseDeliveryFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
 	for i := range plans {
 		if plans[i].Item.IssueContractObjectKey == nil {
 			continue
 		}
-		rows, err := readReleaseDeliveryContractFacts(ctx, r, scope, plans[i].Item.NativeID, plans[i].Project.States)
+		rows, err := ReadReleaseDeliveryContractFacts(ctx, r, scope, plans[i].Item.NativeID, plans[i].Project.States)
 		if err != nil {
 			return err
 		}

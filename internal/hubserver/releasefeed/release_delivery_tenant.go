@@ -1,4 +1,4 @@
-package hubserver
+package releasefeed
 
 import (
 	"context"
@@ -14,15 +14,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readReleaseDeliveryIssue(ctx context.Context, scope hubscope.NativeScope, item string) (tracker.NativeIssue, error) {
-	if s.config.TenantRepository == nil {
+func (s *Delivery) readReleaseDeliveryIssue(ctx context.Context, scope hubscope.NativeScope, item string) (tracker.NativeIssue, error) {
+	if s.deps.Repository == nil {
 		return tracker.NativeIssue{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	row, _, err := s.readWorkItemRecord(ctx, scope, item)
+	row, _, err := s.deps.ReadWorkItemRecord(ctx, scope, item)
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
-	delivery, found, err := s.readReleaseDeliveryRecord(ctx, scope, item)
+	delivery, found, err := s.ReadReleaseDeliveryRecord(ctx, scope, item)
 	var issue tracker.NativeIssue
 	issue.Revision = tracker.Revision(row.Revision)
 	if found {
@@ -31,23 +31,23 @@ func (s *Service) readReleaseDeliveryIssue(ctx context.Context, scope hubscope.N
 	return issue, err
 }
 
-func (s *Service) replayReleaseAssociation(ctx context.Context, scope hubscope.NativeScope, item, operation string, request tracker.AssociateReleasePick, hash string, delivery tracker.ReleaseDelivery) ([]byte, error) {
+func (s *Delivery) replayReleaseAssociation(ctx context.Context, scope hubscope.NativeScope, item, operation string, request tracker.AssociateReleasePick, hash string, delivery tracker.ReleaseDelivery) ([]byte, error) {
 	raw, err := json.Marshal(delivery)
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.Clock()}, raw)
+	receipt, err := eventstore.NewContent(s.deps.RunDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.deps.Clock()}, raw)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+	if err := s.deps.RecheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 			return err
 		}
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
+		if err := s.deps.RequireCollaboration(ctx, w, s.deps.Clock()); err != nil {
 			return err
 		}
 		if _, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item)); err != nil {
@@ -86,12 +86,12 @@ func (s *Service) replayReleaseAssociation(ctx context.Context, scope hubscope.N
 	return raw, releaseAssociationError(err)
 }
 
-func (s *Service) releaseAssociationReceipt(ctx context.Context, scope hubscope.NativeScope, operation, key, hash string) ([]byte, bool, error) {
-	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+func (s *Delivery) releaseAssociationReceipt(ctx context.Context, scope hubscope.NativeScope, operation, key, hash string) ([]byte, bool, error) {
+	if err := s.deps.RecheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, false, err
 	}
 	var receipt eventstore.Receipt
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err := s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 			return err
 		}
@@ -108,10 +108,10 @@ func (s *Service) releaseAssociationReceipt(ctx context.Context, scope hubscope.
 	if receipt.RequestHash != hash {
 		return nil, false, hubapi.NativeConflict(0)
 	}
-	if receipt.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= receipt.ResponseReplayUntilNs {
+	if receipt.ResponseReplayUntilNs > 0 && s.deps.Clock().UnixNano() >= receipt.ResponseReplayUntilNs {
 		return nil, false, receiptstore.ErrExpired
 	}
-	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
+	raw, err := eventstore.NewContent(s.deps.RunDetailStore()).Receipt(ctx, receipt)
 	return raw, err == nil, err
 }
 
@@ -122,14 +122,14 @@ func releaseAssociationError(err error) error {
 	return hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) recordReleaseAssociationAudit(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, operation string) error {
+func (s *Delivery) recordReleaseAssociationAudit(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, operation string) error {
 	if scope.Credential.Hosted == nil {
 		return nil
 	}
-	audit := projectRecordActor(scope).Audit
+	audit := s.deps.ProjectRecordActor(scope).Audit
 	audit.Event, audit.Route, audit.Status = "action", operation, 200
 	audit.ProjectID = scope.Project
-	audit.RecordedAt = s.config.Clock().UTC()
+	audit.RecordedAt = s.deps.Clock().UTC()
 	audit.RecordedAtNS = audit.RecordedAt.UnixNano()
 	_, err := w.RecordAccessAudit(ctx, audit)
 	return err

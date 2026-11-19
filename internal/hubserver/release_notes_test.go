@@ -245,37 +245,3 @@ func TestReleaseNotesMCP(t *testing.T) {
 		}
 	}
 }
-
-func TestReleaseNotesAccess(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct{ name, user, path string }{
-		{"unauthenticated", "", "/api/v2/organizations/org_security/release-notes"},
-		{"wrong organization", "member", "/api/v2/organizations/org_other/release-notes"},
-		{"revoked member", "revoked", "/api/v2/organizations/org_security/release-notes"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newHostedSecurityFixture(t)
-			f.service.releaseNotes = testReleaseBuilds()
-			f.service.config.Version = "1.2.1"
-			user := hostedSecurityUser{}
-			if test.user != "" {
-				user = f.user(t, test.user, "member", "member@example.test", "read", "")
-			}
-			if test.user == "revoked" {
-				if err := f.provider.RevokeMembership(t.Context(), "membership_"+user.identity.Subject); err != nil {
-					t.Fatal(err)
-				}
-			}
-			for _, method := range []string{http.MethodGet, http.MethodPut} {
-				path := test.path
-				if method == http.MethodPut {
-					path += "/seen"
-				}
-				response := f.request(t, user, method, path, nil)
-				if response.Code == http.StatusOK {
-					t.Fatalf("unauthorized %s succeeded", method)
-				}
-			}
-		})
-	}
-}

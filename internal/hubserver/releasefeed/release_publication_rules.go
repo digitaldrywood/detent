@@ -1,4 +1,4 @@
-package hubserver
+package releasefeed
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
-func (s *Service) checkReleasePublicationRules(ctx context.Context, scope hubscope.NativeScope, plan releaseDeliveryCheck, approved hubrecords.ChangeVersionApproval) error {
+func (s *Delivery) checkReleasePublicationRules(ctx context.Context, scope hubscope.NativeScope, plan releaseDeliveryCheck, approved hubrecords.ChangeVersionApproval) error {
 	historicalSource := false
 	if plan.publishing {
 		issue := plan.issue
@@ -27,15 +27,15 @@ func (s *Service) checkReleasePublicationRules(ctx context.Context, scope hubsco
 		}
 		attempt := plan.attempt.Attempt
 		if attempt.ID != "" && attempt.Status == "succeeded" && attempt.WorkItemRevision >= plan.current.Revision && attempt.DispatchGeneration >= plan.current.DispatchGeneration {
-			run, err := s.hydrateNativeAttemptTenant(ctx, plan.attempt, s.config.Clock())
+			run, err := s.deps.HydrateNativeAttemptTenant(ctx, plan.attempt, s.deps.Clock())
 			if err != nil {
 				return err
 			}
-			if answeredClaimKind(run.NativeRunData, run.Checkpoint) != "" {
+			if s.deps.AnsweredClaimKind(run.NativeRunData, run.Checkpoint) != "" {
 				return hubapi.NativePublicInvalid("Delivery retains an unanswered attempt hold")
 			}
 		}
-		content := eventstore.NewContent(s.runDetailStore())
+		content := eventstore.NewContent(s.deps.RunDetailStore())
 		sourceVersion, err := content.Version(ctx, plan.sourceVersion)
 		if err != nil {
 			return err

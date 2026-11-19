@@ -1,4 +1,4 @@
-package hubserver
+package releasefeed
 
 import (
 	"context"
@@ -8,65 +8,66 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
+func (s *Delivery) GetReleaseDeliveryStatus(c echo.Context) error {
 	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	issue, err := s.readReleaseDeliveryIssue(ctx, scope, c.Param("item"))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
 	if issue.ReleaseDelivery == nil {
-		return s.nativeAPIError(c, hubapi.NativeNotFound())
+		return s.deps.NativeAPIError(c, hubapi.NativeNotFound())
 	}
-	verifier, ok := s.config.ReconcileBackend.(ReleaseDeliveryVerifier)
+	verifier, ok := s.deps.DeliveryVerifier()
 	if !ok {
-		return s.nativeAPIError(c, errors.New("release repository transport is unavailable"))
+		return s.deps.NativeAPIError(c, errors.New("release repository transport is unavailable"))
 	}
 	status, err := verifier.ReleaseDeliveryStatus(ctx, issue.ReleaseDelivery.ReleasePickInput)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
 	current, err := s.readReleaseDeliveryIssue(ctx, scope, c.Param("item"))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
 	if current.Revision != issue.Revision || current.ReleaseDelivery == nil || *current.ReleaseDelivery != *issue.ReleaseDelivery {
-		return s.nativeAPIError(c, hubapi.NativeConflict(current.Revision))
+		return s.deps.NativeAPIError(c, hubapi.NativeConflict(current.Revision))
 	}
 	return c.JSON(http.StatusOK, status)
 }
 
-func (s *Service) prepareReleasePick(ctx context.Context, scope hubscope.NativeScope, item string, r tracker.AssociateReleasePick) error {
+func (s *Delivery) prepareReleasePick(ctx context.Context, scope hubscope.NativeScope, item string, r tracker.AssociateReleasePick) error {
 	if scope.Credential.Scope != hubapi.APIScopeOperator && scope.Credential.Scope != hubapi.APIScopeAdmin || scope.Credential.Runner.RunnerID != "" {
 		return hubapi.NativeNotFound()
 	}
-	if err := validateReleasePick(r); err != nil {
+	if err := s.deps.ValidateReleasePick(r); err != nil {
 		return err
 	}
-	if s.config.TenantRepository == nil {
+	if s.deps.Repository == nil {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
-	connector, _, _, err := s.projectRepositoryBinding(ctx, nil, scope)
+	repository, configured, err := s.deps.CheckoutRepository(ctx, scope)
 	if err != nil {
 		return err
 	}
-	if connector == nil || r.Repository != "https://github.com/"+connector.Repository {
+	if !configured || r.Repository != "https://github.com/"+repository {
 		return hubapi.NativePublicInvalid("Release PR repository must match the project's configured repository")
 	}
-	existing, found, err := s.readReleaseDeliveryRecord(ctx, scope, item)
+	existing, found, err := s.ReadReleaseDeliveryRecord(ctx, scope, item)
 	if err != nil {
 		return err
 	}
 	if found && existing.ReleasePickInput == r.ReleasePickInput {
 		return nil
 	}
-	verifier, ok := s.config.ReconcileBackend.(ReleasePickVerifier)
+	verifier, ok := s.deps.PickVerifier()
 	if !ok {
 		return errors.New("repository transport does not support release provenance verification")
 	}
@@ -77,7 +78,7 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope hubscope.NativeS
 		}
 	}
 	if err := verify(); err != nil {
-		if errors.Is(err, ErrReleasePickMismatch) {
+		if errors.Is(err, githubcontract.ErrReleasePickMismatch) {
 			return hubapi.NativePublicInvalid("Release PR provenance verification failed")
 		}
 		return fmt.Errorf("verify release PR: %w", err)
@@ -85,19 +86,19 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope hubscope.NativeS
 	return nil
 }
 
-func (s *Service) associateReleasePick(c echo.Context) error {
+func (s *Delivery) AssociateReleasePick(c echo.Context) error {
 	var r tracker.AssociateReleasePick
 	if err := hubapi.DecodeAPIJSON(c, &r); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return s.deps.InvalidAPIRequest(c, err)
 	}
 	if err := s.prepareReleasePick(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), r); err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
-	ctx := hubcontent.IsolateContentContext(s.runDetailContext(c.Request().Context()))
-	raw, err := s.associateReleasePickTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Request().Method+" "+c.Request().URL.EscapedPath(), r)
+	ctx := hubcontent.IsolateContentContext(s.deps.RunDetailContext(c.Request().Context()))
+	raw, err := s.AssociateReleasePickTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Request().Method+" "+c.Request().URL.EscapedPath(), r)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
-	s.pullRequests.invalidate(pullRequestCacheKey(hubscope.NativeRequestScope(c), c.Param("item")))
+	s.deps.InvalidatePullRequests(hubscope.NativeRequestScope(c), c.Param("item"))
 	return c.JSONBlob(http.StatusOK, raw)
 }

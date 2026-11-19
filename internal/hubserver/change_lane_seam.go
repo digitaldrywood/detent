@@ -8,15 +8,23 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/changeapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/changefiles"
 	"github.com/digitaldrywood/detent/internal/hubserver/changelanding"
 	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/releaseaudits"
+	"github.com/digitaldrywood/detent/internal/hubserver/releasefeed"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -394,4 +402,181 @@ func validateVersionAttachments(ctx context.Context, r tenantstore.Reader, scope
 
 func bindVersionAttachments(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item string, artifacts []tracker.ChangeArtifact) error {
 	return bindChangeRecordContent(ctx, w, scope, item, nil, artifacts, "artifacts")
+}
+
+func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
+	return s.changeDelivery().GetReleaseDeliveryStatus(c)
+}
+
+func (s *Service) associateReleasePick(c echo.Context) error {
+	return s.changeDelivery().AssociateReleasePick(c)
+}
+
+func readReleaseDeliveryContractFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID, states []tracker.NativeState) (hubrecords.ReleaseDeliveryContractFacts, error) {
+	return releasefeed.ReadReleaseDeliveryContractFacts(ctx, r, scope, item, states)
+}
+
+func releaseDeliveryContractFactsCurrent(plan hubrecords.NativeClaimPlan, contract config.IssueContract) bool {
+	return releasefeed.ReleaseDeliveryContractFactsCurrent(plan, contract)
+}
+
+func readNativeClaimReleaseDeliveryFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
+	return releasefeed.ReadNativeClaimReleaseDeliveryFacts(ctx, r, scope, plans)
+}
+
+func (s *Service) readReleaseDeliveryRecord(ctx context.Context, scope hubscope.NativeScope, item string) (tracker.ReleaseDelivery, bool, error) {
+	return s.changeDelivery().ReadReleaseDeliveryRecord(ctx, scope, item)
+}
+
+func (s *Service) prepareReleasePublication(ctx context.Context, scope hubscope.NativeScope, item string, r tracker.PublishReleasePick) (tracker.ReleasePickPublication, error) {
+	return s.changeDelivery().PrepareReleasePublication(ctx, scope, item, r)
+}
+
+func (s *Service) publishReleasePick(c echo.Context) error {
+	return s.changeDelivery().PublishReleasePick(c)
+}
+
+func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.PublishReleasePick, result tracker.ReleasePickPublication) (json.RawMessage, error) {
+	return s.changeDelivery().RecordReleasePublicationCommand(ctx, scope, item, request, result)
+}
+
+func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope.NativeScope, item, operation string, request tracker.AssociateReleasePick) (json.RawMessage, error) {
+	return s.changeDelivery().AssociateReleasePickTenant(ctx, scope, item, operation, request)
+}
+
+func (s *Service) changeDelivery() *releasefeed.Delivery {
+	return releasefeed.NewDelivery(releasefeed.DeliveryDeps{
+		Repository:                          s.config.TenantRepository,
+		Clock:                               s.config.Clock,
+		BoardRefresh:                        s.boardRefresh,
+		RunDetailContext:                    s.runDetailContext,
+		RunDetailStore:                      s.runDetailStore,
+		InvalidAPIRequest:                   s.invalidAPIRequest,
+		NativeAPIError:                      s.nativeAPIError,
+		RecheckProjectRecordMutation:        s.recheckProjectRecordMutation,
+		AuthorizeWorkItemRecordScope:        s.authorizeWorkItemRecordScope,
+		ReadWorkItemRecord:                  s.readWorkItemRecord,
+		HydrateWorkItemRecord:               s.hydrateWorkItemRecord,
+		ReadChangeRecord:                    s.readChangeRecord,
+		NativeIssueResponse:                 s.nativeIssueResponse,
+		PrepareWorkItemFields:               s.prepareWorkItemFields,
+		PrepareChangeWorkflowTransition:     s.prepareChangeWorkflowTransition,
+		LockChangeWorkflowTransition:        s.lockChangeWorkflowTransition,
+		ApplyChangeWorkflowTransition:       s.applyChangeWorkflowTransition,
+		HydrateNativeAttemptTenant:          s.hydrateNativeAttemptTenant,
+		HydrateCurrentChangeVersionApproval: hydrateCurrentChangeVersionApproval,
+		AnsweredClaimKind:                   answeredClaimKind,
+		ApproveReleaseDeliveryContract:      approveReleaseDeliveryContract,
+		ProjectRecordActor:                  projectRecordActor,
+		ValidCheckoutRepository:             validCheckoutRepository,
+		ValidateReleasePick:                 validateReleasePick,
+		ValidatePreparedReleasePick:         validatePreparedReleasePick,
+		SameReleasePickDelivery:             sameReleasePickDelivery,
+		RequireCollaboration:                s.requireReleaseCollaboration,
+		HasPlans:                            func() bool { return s.database.plansService().Plans() != nil },
+		CheckoutRepository:                  s.releaseCheckoutRepository,
+		InvalidatePullRequests: func(scope hubscope.NativeScope, item string) {
+			s.pullRequests.invalidate(pullRequestCacheKey(scope, item))
+		},
+		DeliveryVerifier: func() (githubcontract.ReleaseDeliveryVerifier, bool) {
+			v, ok := s.config.ReconcileBackend.(ReleaseDeliveryVerifier)
+			return v, ok
+		},
+		PickVerifier: func() (githubcontract.ReleasePickVerifier, bool) {
+			v, ok := s.config.ReconcileBackend.(ReleasePickVerifier)
+			return v, ok
+		},
+		PickPublisher: func() (githubcontract.ReleasePickPublisher, bool) {
+			v, ok := s.config.ReconcileBackend.(ReleasePickPublisher)
+			return v, ok
+		},
+	})
+}
+
+func (s *Service) releaseCheckoutRepository(ctx context.Context, scope hubscope.NativeScope) (string, bool, error) {
+	connector, _, _, err := s.projectRepositoryBinding(ctx, nil, scope)
+	if err != nil || connector == nil {
+		return "", false, err
+	}
+	return connector.Repository, true, nil
+}
+
+func (s *Service) requireReleaseCollaboration(ctx context.Context, r tenantstore.Reader, now time.Time) error {
+	return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", now))
+}
+
+func prepareChangeContent(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	return changefiles.PrepareChangeContent(ctx, organization, data)
+}
+
+func prepareMeteredContent(ctx context.Context, organization string, data []byte, billable bool) (attachment.ArchiveReference, error) {
+	return changefiles.PrepareMeteredContent(ctx, organization, data, billable)
+}
+
+func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference, billable bool) error {
+	return s.changeContent().RegisterChangeContent(ctx, organization, ref, billable)
+}
+
+func (s *Service) registerConfigurationContent(ctx context.Context, organization string, ref attachment.ArchiveReference) error {
+	return s.changeContent().RegisterConfigurationContent(ctx, organization, ref)
+}
+
+func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore.Writer, organization string, ref attachment.ArchiveReference, billable, withinAllowance bool) error {
+	return s.changeContent().RegisterChangeContentRecord(ctx, w, organization, ref, billable, withinAllowance)
+}
+
+func (s *Service) checkChangeContentAllowance(ctx context.Context, organization string, refs map[string]attachment.ArchiveReference, next attachment.ArchiveReference) error {
+	return s.changeContent().CheckChangeContentAllowance(ctx, organization, refs, next)
+}
+
+func (s *Service) changeContent() *changefiles.Content {
+	return changefiles.NewContent(changefiles.ContentDeps{
+		Repository: s.config.TenantRepository,
+		Clock:      s.config.Clock,
+		Plans:      func() *hostedplans.HostedPlansConfig { return s.database.plansService().Plans() },
+		EntitlementRecord: func(ctx context.Context, r billingstore.Reader, now time.Time) (hostedplans.HostedEntitlement, error) {
+			return s.database.plansService().EntitlementRecord(ctx, r, now)
+		},
+	})
+}
+
+func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape tracker.QualityEscape) error {
+	return changerules.ValidateQualityBasis(snapshot, escape)
+}
+
+type preparedTenantQualityEscape = changerules.PreparedQualityEscape
+
+func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.DiscussChange, now time.Time) (*preparedTenantQualityEscape, error) {
+	return s.changeQuality().PrepareQualityEscapeTenant(ctx, scope, change, request, now)
+}
+
+func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, escape tracker.QualityEscape, prepared *preparedTenantQualityEscape) error {
+	return changerules.RecheckTenantQualityEscape(ctx, w, scope, change, escape, prepared)
+}
+
+func (s *Service) changeQuality() *changerules.QualityEscapes {
+	return changerules.NewQualityEscapes(changerules.QualityEscapesDeps{
+		PopulationLimit:                maxAnalyticsPopulation,
+		Repository:                     s.config.TenantRepository,
+		AuthorizeAccessScope:           s.authorizeAccessScope,
+		RunDetailStoreFor:              s.runDetailStoreFor,
+		HydrateCanonicalWorkItemRecord: s.hydrateCanonicalWorkItemRecord,
+		HydrateCommentRecord:           s.hydrateCommentRecord,
+	})
+}
+
+func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string, locked bool) ([]string, error) {
+	return changefiles.ValidateRecordContent(ctx, r, scope, changeAttachmentFields(fields), artifacts, artifactName, locked, cloudContentAttachmentReferences)
+}
+
+func bindChangeRecordContent(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item string, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string) error {
+	return changefiles.BindRecordContent(ctx, w, scope, item, changeAttachmentFields(fields), artifacts, artifactName, cloudContentAttachmentReferences)
+}
+
+func changeAttachmentFields(fields []cloudContentField) []changefiles.ContentField {
+	result := make([]changefiles.ContentField, len(fields))
+	for i, field := range fields {
+		result[i] = changefiles.ContentField{Name: field.name, Value: field.value}
+	}
+	return result
 }
