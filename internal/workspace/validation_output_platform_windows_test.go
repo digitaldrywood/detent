@@ -53,6 +53,7 @@ func TestReview1973WindowsHostValidationWaitsForAcknowledgement(t *testing.T) {
 					return nil
 				}}, nil
 			})
+			ctx = WithProcessSource(ctx, func(context.Context, string) ([]int, error) { return nil, nil })
 			result, err := backend.RunReviewCommand(ctx, info, issue, `echo executed>"`+marker+`"`)
 			if registrations == 0 {
 				t.Fatalf("validation never reached registration: %v", err)

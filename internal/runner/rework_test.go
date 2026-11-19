@@ -1013,7 +1013,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			if ownedIssue.AttemptWorkspace.Key() != "" {
-				r.store = &fakeSessionStore{sessionID: 1}
+				r.store = newNativeSessionOwner(request.Policy).client(ownedIssue.AttemptWorkspace.Attempt)
 			}
 			if test.resume {
 				r.store = &fakeSessionStore{sessionID: 2, resumeState: store.AgentResumeState{DetentSessionID: 1, ProviderThreadID: "source-thread", ProviderSessionID: "source-session", RequestedModel: "provider_default", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode}}

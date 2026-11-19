@@ -81,13 +81,7 @@ func TestLocalGitReviewCommandRerunsExternalRuntimeInputs(t *testing.T) {
 	for name, content := range map[string]string{
 		"go.mod": "module example.test/runtime\n\ngo 1.26.0\n",
 		"runtime_test.go": `package runtimefixture
-import ("os"; "testing"
-
- "github.com/digitaldrywood/detent/internal/workspace"
- "github.com/digitaldrywood/detent/internal/workspace/internal/gitfixture"
- "github.com/digitaldrywood/detent/internal/gotestreceipt"
- "github.com/digitaldrywood/detent/internal/workspace/hookproc"
- "context")
+import ("os"; "testing")
 func TestExternalFixture(t *testing.T) {
  data, err := os.ReadFile(os.Getenv("DETENT_RUNTIME_FIXTURE"))
  if err != nil || string(data) != "ready" { t.Fatalf("external fixture unavailable: %v", err) }
