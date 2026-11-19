@@ -321,10 +321,14 @@ func TestArchiveSectionIsolation(t *testing.T) {
 func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "archive-rowid")
+	repository, ok := f.service.config.TenantRepository.(*postgres.Repository)
+	if !ok {
+		t.Fatal("archive fixture lacks a PostgreSQL repository")
+	}
 	historical := newArchiveRevisionFixture(t, f, "Historical revision", 1)
 	current := f.create(t, "New revision")
 	var live corestore.WorkItem
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), historical.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := repository.ReadTenant(t.Context(), historical.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		live, err = r.WorkItem(t.Context(), historical.scope.Project, current.WorkItemID)
 		return err
@@ -334,6 +338,9 @@ func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
 	historical.table.Rows[0][0] = archiveRevisionCells(t, live.ID)[0]
 	ref, data, _ := historical.publish(t)
 	f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+		if connections := repository.Stats().AcquiredConns(); connections != 0 {
+			t.Fatalf("archive read holds %d PostgreSQL connections", connections)
+		}
 		if got != ref {
 			t.Fatal("wrong archive")
 		}
@@ -343,18 +350,31 @@ func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
 	if _, err := archivedVersionPayload(section, string(current.WorkItemID), 1); !errors.Is(err, corestore.ErrNotFound) {
 		t.Fatalf("reused numeric identity matched another record: %v", err)
 	}
-	for _, test := range []struct {
-		id    tracker.NativeWorkItemID
-		title string
-	}{{historical.issue.WorkItemID, "Historical revision"}, {current.WorkItemID, "New revision"}} {
-		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(test.id)+"/versions/1", f.token, nil)
+	requireRetiredRevision := func() {
+		t.Helper()
+		err := repository.ReadTenant(t.Context(), historical.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.CollaborationVersion(t.Context(), string(historical.issue.WorkItemID), 1)
+			return err
+		})
+		if !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("retired revision should be absent from live versions: %v", err)
+		}
+	}
+	requireVersion := func(id tracker.NativeWorkItemID, title string) {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id)+"/versions/1", f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
-		if issue.WorkItemID != test.id || issue.Title != test.title {
+		if issue.WorkItemID != id || issue.Title != title {
 			t.Fatalf("revision after rowid reuse: %+v", issue)
 		}
 	}
+	f.service.tokenUseWork.Wait()
+	requireRetiredRevision()
+	requireVersion(historical.issue.WorkItemID, historical.issue.Title)
+	requireRetiredRevision()
+	requireVersion(current.WorkItemID, current.Title)
 }
 
 func TestArchiveQueryScopesLiveFallback(t *testing.T) {
