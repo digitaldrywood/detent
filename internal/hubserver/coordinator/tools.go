@@ -22,8 +22,8 @@ const (
 	coordinatorToolProposeIssue  = "propose_issue"
 )
 
-func Tools(families []runner.AgentTool) []runner.AgentTool {
-	return append([]runner.AgentTool{
+func Tools() []runner.AgentTool {
+	tools := []runner.AgentTool{
 		Tool("read_skill", "Read one built-in Detent skill's guidance by name or alias from the Available skills catalog.", `{"type":"object","required":["name"],"properties":{"name":{"type":"string"}},"additionalProperties":false}`),
 		Tool(coordinatorToolListAttention,
 			"List issues that need attention, grouped as blocked, waiting_for_input, running and review. Scope is this conversation's project or every project the user can read.",
@@ -37,7 +37,11 @@ func Tools(families []runner.AgentTool) []runner.AgentTool {
 		Tool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
-	}, families...)
+	}
+	for _, family := range [][]runner.AgentTool{ActionTools(), WorkflowTools(), SlashActionTools(), SpriteTools(), RunnerTools(), ScreenTools(), SettingsTools(), CatalogTools()} {
+		tools = append(tools, family...)
+	}
+	return tools
 }
 
 // handle runs one tool call. Errors are returned to the model as
@@ -49,7 +53,7 @@ func (t ToolDeps) Handle(ctx context.Context, call runner.AgentToolCall) (runner
 	t.EndSegment(ctx)
 	result, err := t.Execute(ctx, call)
 	if err != nil {
-		if WorkflowTool(call.Name) || call.Name == "get_runners" || call.Name == "set_runner_tier" || t.IsSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) || call.Name == t.CatalogCallName {
+		if WorkflowTool(call.Name) || call.Name == "get_runners" || call.Name == "set_runner_tier" || t.IsSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) || call.Name == CallToolName {
 			err = ActionError(err)
 		}
 		if WorkflowMutation(call.Name) || call.Name == "set_runner_tier" || t.SpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
@@ -176,9 +180,9 @@ func (t ToolDeps) Execute(ctx context.Context, call runner.AgentToolCall) (any, 
 			return nil, err
 		}
 		return t.ExplainIssue(ctx, record, readable, args.WorkItemID)
-	case t.CatalogFindName:
+	case FindToolsName:
 		return t.FindTools(ctx, record, call)
-	case t.CatalogCallName:
+	case CallToolName:
 		return t.CallTool(ctx, record, call)
 	case "load_split_issue_skill":
 		return LoadSplitIssueSkill(call.Arguments)

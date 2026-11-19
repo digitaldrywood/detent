@@ -356,3 +356,16 @@ func ExecuteWorkflow(ctx context.Context, action chat.Action, deps WorkflowExecu
 	deps.Audit(ctx, action, "submitted")
 	return chat.ActionExecution{Message: message, Data: raw}, nil
 }
+
+func WorkflowEvidence(ctx context.Context, record conversations.ConversationRecord, execute func(context.Context, runner.AgentToolCall) (any, error)) map[string]any {
+	evidence := map[string]any{"organization_id": record.OrganizationID, "project_id": record.ProjectID}
+	for _, name := range []string{"get_project_integration", "get_project_policy", "get_runners", operatortool.LocalProjectConfiguration} {
+		result, err := execute(ctx, runner.AgentToolCall{Name: name, Arguments: json.RawMessage(`{}`)})
+		if err != nil {
+			evidence[name] = map[string]string{"unavailable": ActionError(err).Error()}
+		} else {
+			evidence[name] = result
+		}
+	}
+	return evidence
+}

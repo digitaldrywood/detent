@@ -3,6 +3,10 @@ package coordinator
 import (
 	"context"
 	"encoding/json"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
@@ -51,4 +55,30 @@ type ActionAuthorizationDeps struct {
 	CatalogRequirement  func(chat.Action) operatortool.Requirement
 	Operator            func(context.Context) (hubapi.APICredential, error)
 	ReadConversation    func(context.Context, hubscope.NativeScope, string) (conversations.ConversationRecord, error)
+}
+
+type ActionContextDeps struct {
+	Now                func() time.Time
+	TurnTimeout        time.Duration
+	AccessTime         func(context.Context, time.Time) context.Context
+	Organization       func(context.Context, tracker.OrganizationID) context.Context
+	RestoreConnection  func(context.Context, string) error
+	OriginatingContext func(context.Context, string, string, string) (context.Context, error)
+}
+
+type MoveAnswerDeps struct {
+	ReadTenant  func(context.Context, tracker.OrganizationID, func(tenantstore.Reader) error) error
+	ReadAttempt func(context.Context, hubscope.NativeScope, string, string) (tracker.NativeAttempt, error)
+}
+
+type TurnWriter func(context.Context, string, func(context.Context, tenantstore.Writer, *conversations.ConversationRecord, time.Time) error, ...func(context.Context, *conversations.ConversationPublicationPlan) error) error
+
+type ActionHTTPDeps struct {
+	InvalidRequest   func(echo.Context, error) error
+	APIError         func(echo.Context, error, ...any) error
+	ReadConversation func(context.Context, hubscope.NativeScope, string) (conversations.ConversationRecord, error)
+	Authorize        func(context.Context, hubscope.NativeScope, bool) error
+	CatalogWrite     func(string) bool
+	Execute          actionExecutor
+	Publish          func(context.Context, chat.Action) error
 }

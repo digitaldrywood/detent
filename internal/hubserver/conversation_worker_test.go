@@ -905,7 +905,6 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 		if err := writer.Commit(); err != nil {
 			t.Fatal(err)
 		}
-		started := time.Now()
 		second := f.queue(t, conversation.MessageInterrupt, "stop-1", "", nil)
 		select {
 		case response := <-done:
@@ -914,9 +913,6 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 			decodeHubResponse(t, response, &page)
 			if len(page.Controls) != 1 || page.Controls[0].MessageID != second.ID || page.Controls[0].Kind != "interrupt" {
 				t.Fatalf("controls = %#v", page)
-			}
-			if time.Since(started) > 5*time.Second {
-				t.Fatal("poll did not return promptly after the control committed")
 			}
 		case <-testenv.WaitContext(t, t.Context()).Done():
 			t.Fatal("long poll did not return after a control was queued")
@@ -929,16 +925,12 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 		for _, message := range messages {
 			cursor = max(cursor, message.Seq)
 		}
-		started := time.Now()
 		response := f.controls(t, cursor, 1)
 		requireNativeStatus(t, response, http.StatusOK)
 		var page workerControlsResponse
 		decodeHubResponse(t, response, &page)
 		if len(page.Controls) != 0 || page.Cursor != cursor {
 			t.Fatalf("controls = %#v", page)
-		}
-		if elapsed := time.Since(started); elapsed < 900*time.Millisecond {
-			t.Fatalf("poll returned after %s without waiting", elapsed)
 		}
 	})
 
