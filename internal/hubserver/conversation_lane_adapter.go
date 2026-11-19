@@ -464,7 +464,6 @@ var coordinatorWorkflowMutation = coordinator.WorkflowMutation
 var coordinatorWorkflowTools = coordinator.WorkflowTools
 var coordinatorSettingsDiff = coordinator.SettingsDiff
 var coordinatorPolicyEvidence = coordinator.PolicyEvidence
-var coordinatorSubjectPrompt = coordinator.SubjectPrompt
 var errCoordinatorProjectUnreadable = coordinator.ErrProjectUnreadable
 
 func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -1030,14 +1029,8 @@ const coordinatorInstructions = coordinator.Instructions
 
 type coordinatorAttachment = coordinator.TextAttachment
 
-var coordinatorSkillsPrompt = coordinator.SkillsPrompt
 var appendCoordinatorData = coordinator.AppendData
 var coordinatorAttachmentBlock = coordinator.AttachmentBlock
-var coordinatorPrompt = coordinator.Prompt
-
-func (c *conversationTurnCoordinator) coordinatorAttachments(ctx context.Context, pending []conversationMessageRecord) ([]coordinatorAttachment, error) {
-	return coordinator.ReadTextAttachments(ctx, pending, c.attachmentContent)
-}
 
 func (c *conversationTurnCoordinator) turnWriteDeps() coordinator.TurnWriteDeps {
 	return coordinator.TurnWriteDeps{

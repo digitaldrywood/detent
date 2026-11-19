@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,14 +12,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/coordinator"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -395,63 +391,20 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		return true, state.finish(ctx, conversation.DeliveryFailed, refusal, nil)
 	}
 
-	// Files the user attached to the pending messages ride the turn: the
-	// hub-side coordinator reads them straight out of the store, where the
-	// runner-dispatched one downloads them.
-	attachments, runErr := c.coordinatorAttachments(turnCtx, state.users)
-	prompt := coordinatorPrompt(started.Transcript, state.users)
-	if runErr == nil {
-		record, err := c.readConversation(turnCtx, nil, conversationID)
-		if err != nil {
-			runErr = err
-		} else {
-			tools := newCoordinatorToolset(c, state)
-			actorCtx, contextErr := tools.actionContext(turnCtx, record)
-			if contextErr != nil {
-				if record.ReadAudience != "" || c.server.config.Hosted != nil {
-					runErr = contextErr
-				}
-			} else {
-				credential, authErr := currentHubOperator(actorCtx)
-				if authErr != nil {
-					runErr = authErr
-				} else {
-					actorCtx, authErr = operatortool.AuthorizeCurrent(actorCtx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(record.ProjectID)})
-					if authErr != nil {
-						runErr = authErr
-					} else {
-						runErr = c.authorizeRecord(actorCtx, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential}, record, false)
-						if runErr == nil {
-							runErr = tools.restrictReadAudience(actorCtx, record, credential)
-						}
-					}
-				}
-			}
-			if runErr == nil {
-				evidence := tools.workflowEvidence(turnCtx, record)
-				raw, err := json.Marshal(evidence)
-				if err != nil {
-					runErr = err
-				} else if len(raw) > coordinatorToolResultBytes {
-					prompt = "Workflow evidence is too large; read scoped workflow tools before answering.\n\n" + prompt
-				} else {
-					prompt = "<workflow_evidence>\n" + escapeCoordinatorData(string(raw)) + "\n</workflow_evidence>\n\n" + prompt
-				}
-			}
-		}
-		if runErr == nil && record.SubjectWorkItemID != "" {
-			data, err := newCoordinatorToolset(c, state).issueContext(turnCtx, record)
-			if err != nil {
-				runErr = err
-			} else {
-				prompt, runErr = coordinatorSubjectPrompt(prompt, record, data)
-			}
-		}
+	tools := newCoordinatorToolset(c, state)
+	promptDeps := coordinator.TurnPromptDeps{
+		Hosted:            c.server.config.Hosted != nil,
+		AttachmentContent: c.attachmentContent,
+		ReadConversation:  c.service.ReadPublicationConversation,
+		ActionContext:     tools.actionContext,
+		Operator:          currentHubOperator,
+		AuthorizeRecord:   c.authorizeRecord,
+		RestrictAudience:  tools.restrictReadAudience,
+		WorkflowEvidence:  tools.workflowEvidence,
+		IssueContext:      tools.issueContext,
 	}
-	if runErr == nil {
-		prompt, runErr = coordinatorSkillsPrompt(prompt)
-	}
-	request, backend, runErr := coordinator.TurnRequest(c.service.Config, c.server.hasLunaCoordinator(), state.modelChoice, state.preferences, state.threadID, appendCoordinatorData(prompt, attachments), runErr)
+	prompt, runErr := promptDeps.Assemble(turnCtx, conversationID, started.Transcript, state.users)
+	request, backend, runErr := coordinator.TurnRequest(c.service.Config, c.server.hasLunaCoordinator(), state.modelChoice, state.preferences, state.threadID, prompt, runErr)
 	state.model = request.Model
 	_, genkit := backend.(*genkitbackend.Backend)
 	state.normalizeUsage = runner.NewTokenUsageNormalizer(request.Resume.ThreadID != "" && !genkit)
