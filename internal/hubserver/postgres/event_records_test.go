@@ -488,11 +488,6 @@ func TestLatestRunEventsAndAnalyticsPages(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_requests(organization_id,project_id,work_item_id,id,title,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_second','wi_second_1','quality-noise-change-'||n,'Unrelated change',$2,$3,$4,$5 FROM generate_series(1,10000)n`, org, f.Change.PayloadObjectKey, f.Change.PayloadSHA256, f.Change.PayloadBytes, f.Change.PayloadContentBytes); err != nil {
 				t.Fatal(err)
 			}
-			for _, table := range []string{"collaboration_events", "change_evidence", "issues", "change_requests"} {
-				if _, err := admin.ExecContext(t.Context(), "ANALYZE "+table); err != nil {
-					t.Fatal(err)
-				}
-			}
 			workflow := eventstore.AnalyticsWorkflowQuery{ProjectID: "prj_first", Principal: "example", From: base, To: base.Add(time.Hour), Limit: 1000}
 			readWorkflow := func() eventstore.AnalyticsWorkflowPage {
 				t.Helper()
@@ -663,9 +658,6 @@ func TestLatestRunEventsAndAnalyticsPages(t *testing.T) {
 				}
 			}
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_first','wi_first_2','aa-workflow-'||lpad(n::text,5,'0'),n+1,'workflow.transitioned',1,$2,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1 FROM generate_series(0,9999)n`, org, base); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
 				t.Fatal(err)
 			}
 			read := func(query eventstore.AnalyticsSchedulerQuery) eventstore.AnalyticsSchedulerPage {

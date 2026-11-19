@@ -28,6 +28,8 @@ func TestArtifactCatalogTrafficPruneSkipsRevokedProjects(t *testing.T) {
 	t.Parallel()
 	admin, repository, pool, now := artifactCatalogFixture(t)
 	before := now.Truncate(time.Minute)
+	const page = 7
+	const revokedMinutes = 2*page + 1
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			for index := range 10 {
@@ -51,9 +53,15 @@ func TestArtifactCatalogTrafficPruneSkipsRevokedProjects(t *testing.T) {
 	}
 	for _, statement := range []string{
 		`INSERT INTO artifact_catalog_traffic(organization_id,project_id,service_id,minute,upload_bytes,download_bytes,requests)
-SELECT organization_id,project_id,id,$1::timestamptz - interval '60 days' + n * interval '1 minute',1,2,1 FROM artifact_services CROSS JOIN generate_series(1,10) n WHERE project_id='prj_first'`,
+SELECT organization_id,project_id,id,$1::timestamptz - interval '60 days' + n * interval '1 minute',1,2,1 FROM artifact_services CROSS JOIN generate_series(1,$2::int) n WHERE project_id='prj_first'`,
 		`INSERT INTO artifact_catalog_traffic_receipts(organization_id,project_id,service_id,id,minute,upload_bytes,download_bytes,requests)
-SELECT organization_id,project_id,id,'revoked_'||n,$1::timestamptz - interval '60 days' + n * interval '1 minute',1,2,1 FROM artifact_services CROSS JOIN generate_series(1,10) n WHERE project_id='prj_first'`,
+SELECT organization_id,project_id,id,'revoked_'||n,$1::timestamptz - interval '60 days' + n * interval '1 minute',1,2,1 FROM artifact_services CROSS JOIN generate_series(1,$2::int) n WHERE project_id='prj_first'`,
+	} {
+		if _, err := admin.ExecContext(t.Context(), statement, before, revokedMinutes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, statement := range []string{
 		`INSERT INTO artifact_catalog_traffic(organization_id,project_id,service_id,minute,upload_bytes,download_bytes,requests)
 SELECT organization_id,project_id,id,$1::timestamptz - interval '1 minute',1,2,1 FROM artifact_services WHERE project_id IN ('prj_second','prj_z_09') AND id='service_00000000000000000000000000000001'`,
 		`INSERT INTO artifact_catalog_traffic_receipts(organization_id,project_id,service_id,id,minute,upload_bytes,download_bytes,requests)
@@ -67,30 +75,6 @@ SELECT organization_id,'',minute,sum(upload_bytes),sum(download_bytes),sum(reque
 			t.Fatal(err)
 		}
 	}
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE artifact_catalog_traffic,artifact_catalog_traffic_receipts,artifact_catalog_service_traffic,artifact_services,token_grants"); err != nil {
-		t.Fatal(err)
-	}
-	native := pool.Config()
-	if err := repository.Close(); err != nil {
-		t.Fatal(err)
-	}
-	pool.Close()
-	pool, err := pgxpool.NewWithConfig(t.Context(), native)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository, err = postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
-	if err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-		pool.Close()
-	})
-	const page = 7
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, test := range []struct {
 			name, project string
@@ -127,7 +111,7 @@ SELECT organization_id,'',minute,sum(upload_bytes),sum(download_bytes),sum(reque
 					if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE organization_id=$1 AND project_id='prj_first' AND service_id=$2", org, service).Scan(&retained); err != nil {
 						t.Fatal(err)
 					}
-					if retained != 10 {
+					if retained != revokedMinutes {
 						t.Fatalf("%s modified revoked-project history: retained=%d", table, retained)
 					}
 					if test.want > 0 {
