@@ -2047,7 +2047,7 @@
         "tables": []
       }
     },
-    "internal/hubserver/change_version_records.go": {
+    "internal/hubserver/changeapi/change_version_records.go": {
       "atomic_groups": [
         "change-publication"
       ],
@@ -2059,7 +2059,7 @@
       ],
       "inventory": {
         "operations": {
-          "Service.publishChangeVersionRecordCommand:Prepare": 1
+          "VersionPublication.PublishChangeVersionRecordCommand:Prepare": 1
         },
         "tables": []
       }

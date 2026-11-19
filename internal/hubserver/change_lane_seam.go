@@ -2,10 +2,13 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/changeapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/changelanding"
+	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -233,4 +236,179 @@ func (s *Service) settleChangeLease(ctx context.Context, w tenantstore.Writer, s
 		return tracker.ErrLeaseConflict
 	}
 	return s.settleHumanWorkflowLease(ctx, w, scope, lease, request, nil, stopState)
+}
+
+func (s *Service) landChangeRecord(c echo.Context) error {
+	return s.changeLanding().LandChangeRecord(c)
+}
+
+func (s *Service) changeLanding() *changelanding.Landing {
+	return changelanding.NewLanding(changelanding.LandingDeps{
+		Repository:              s.config.TenantRepository,
+		CurrentTime:             s.database.currentTime,
+		BoardRefresh:            s.boardRefresh,
+		SourceVerification:      s.sourceVerification,
+		RunDetailContext:        s.runDetailContext,
+		RunDetailStore:          s.runDetailStore,
+		NativeAPIError:          s.nativeAPIError,
+		InvalidAPIRequest:       s.invalidAPIRequest,
+		AuthorizeAccessScope:    s.authorizeAccessScope,
+		ChangeRecordReceipt:     s.changeRecordReceipt,
+		ReadChangeRecord:        s.readChangeRecord,
+		ReadChangeVersionRecord: s.readChangeVersionRecord,
+		ReadWorkItemRecord:      s.readWorkItemRecord,
+		HydrateWorkItemRecord:   s.hydrateWorkItemRecord,
+		RunnerSessionFence:      s.runnerSessionFence,
+		SelectedChangeDetail:    s.selectedChangeDetail,
+	})
+}
+
+func (s *Service) changeReviewPolicyRecord(ctx context.Context, scope hubscope.NativeScope) (tracker.ChangeReviewPolicy, error) {
+	return s.changeReviewPolicy().ChangeReviewPolicyRecord(ctx, scope)
+}
+
+func (s *Service) currentChangePolicyRows(ctx context.Context, scope hubscope.NativeScope) (hubrecords.CurrentChangePolicyRows, error) {
+	return s.changeReviewPolicy().CurrentChangePolicyRows(ctx, scope)
+}
+
+func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracker.ApproveChangeReviewPolicy) error {
+	return s.changeReviewPolicy().ApproveChangeReviewPolicyRecord(c, request)
+}
+
+func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, scope hubscope.NativeScope, operation string, request tracker.ApproveChangeReviewPolicy) (json.RawMessage, error) {
+	return s.changeReviewPolicy().ApproveChangeReviewPolicyRecordCommand(ctx, scope, operation, request)
+}
+
+func (s *Service) changeReviewPolicy() *changerules.ReviewPolicy {
+	return changerules.NewReviewPolicy(changerules.ReviewPolicyDeps{
+		PrepareStaleLanding:          s.prepareStaleLandingForPolicy,
+		Repository:                   s.config.TenantRepository,
+		CurrentTime:                  s.database.currentTime,
+		BoardRefresh:                 s.boardRefresh,
+		RunDetailStore:               s.runDetailStore,
+		RunDetailContext:             s.runDetailContext,
+		NativeAPIError:               s.nativeAPIError,
+		RecheckProjectRecordMutation: s.recheckProjectRecordMutation,
+		AuthorizeAccessScope:         s.authorizeAccessScope,
+		ChangeRecordReceipt:          s.changeRecordReceipt,
+
+		HydrateChangeSummaryPolicy: hydrateChangeSummaryPolicy,
+		FollowsRepositoryGate:      followsRepositoryGate,
+	})
+}
+
+func (s *Service) prepareStaleLandingForPolicy(ctx context.Context, scope hubscope.NativeScope, approval hubrecords.ChangeVersionApproval, now time.Time) (changerules.ApplyStaleLanding, bool, error) {
+	routes, err := s.prepareStaleLandingRoutes(ctx, scope, approval, now)
+	if err != nil {
+		return nil, false, err
+	}
+	if routes == nil {
+		return nil, false, nil
+	}
+	return func(ctx context.Context, w tenantstore.Writer) error {
+		return s.applyStaleLandingRoutes(ctx, w, scope, routes)
+	}, routes.HasMoves(), nil
+}
+
+func landingCapacityKey(machine tracker.MachineID, project, session string) string {
+	return changelanding.LandingCapacityKey(machine, project, session)
+}
+
+func (s *Service) changeCapacity() *changelanding.Capacity {
+	return changelanding.NewCapacity(changelanding.CapacityDeps{
+		Repository:                 s.config.TenantRepository,
+		Clock:                      s.config.Clock,
+		NoClaimableWork:            ErrNoClaimableWork,
+		HydrateCurrentChangeDetail: s.hydrateCurrentChangeDetail,
+	})
+}
+
+const nativeLandingCapacityUnknown = changelanding.CapacityUnknown
+
+type nativeLandingRenewal struct {
+	lease    leasestore.Lease
+	prepared *changelanding.Renewal
+}
+
+func (s *Service) prepareNativeLandingRenewal(ctx context.Context, scope hubscope.NativeScope, leaseID string, capacity int) (*nativeLandingRenewal, error) {
+	prepared, err := s.changeCapacity().PrepareRenewal(ctx, scope, leaseID, capacity)
+	if prepared == nil || err != nil {
+		return nil, err
+	}
+	return &nativeLandingRenewal{prepared: prepared}, nil
+}
+
+func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, p *nativeLandingRenewal, lease leasestore.Lease, capacity int64) (int64, error) {
+	if p == nil {
+		return capacity, nil
+	}
+	prepared := p.prepared
+	if prepared == nil {
+		prepared = changelanding.ExistingRenewal(p.lease)
+	}
+	return s.changeCapacity().ReserveRenewal(ctx, w, scope, prepared, lease, capacity)
+}
+
+func (s *Service) publishChangeVersionRecord(c echo.Context) error {
+	return s.changeVersionPublication().PublishChangeVersionRecord(c)
+}
+
+func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope hubscope.NativeScope, item, changeID, operation string, request tracker.PublishChangeVersion) (json.RawMessage, error) {
+	return s.changeVersionPublication().PublishChangeVersionRecordCommand(ctx, scope, item, changeID, operation, request)
+}
+
+func (s *Service) changeVersionPublication() *changeapi.VersionPublication {
+	return changeapi.NewVersionPublication(changeapi.VersionPublicationDeps{
+		Repository:   s.config.TenantRepository,
+		CurrentTime:  s.database.currentTime,
+		BoardRefresh: s.boardRefresh,
+		Authority:    s.config.ChangeVersionAuthority,
+		DefaultAuthority: func() changeapi.VersionAuthority {
+			return tenantChangeVersionAuthority{repository: s.config.TenantRepository, content: eventstore.NewContent(s.runDetailStore())}
+		},
+		PrepareVersionSource:            s.prepareVersionSource,
+		ValidateVersionAttachments:      validateVersionAttachments,
+		BindVersionAttachments:          bindVersionAttachments,
+		RunDetailContext:                s.runDetailContext,
+		RunDetailStore:                  s.runDetailStore,
+		NativeAPIError:                  s.nativeAPIError,
+		InvalidAPIRequest:               s.invalidAPIRequest,
+		ChangeOperationRecordReceipt:    s.changeOperationRecordReceipt,
+		ReadChangeRecord:                s.readChangeRecord,
+		VerifyChangeSource:              s.verifyChangeSource,
+		LockChangeRecordOperation:       s.lockChangeRecordOperation,
+		PrepareChangeWorkflowTransition: s.changeWorkflow().PrepareChangeWorkflowTransition,
+		LockChangeWorkflowTransition:    s.changeWorkflow().LockChangeWorkflowTransition,
+		ApplyChangeWorkflowTransition:   s.changeWorkflow().ApplyChangeWorkflowTransition,
+		LockRunnerCredential:            lockRunnerCredential,
+		NativeRejection:                 nativeRejection,
+		ValidateChangeVersion:           validateChangeVersion,
+		ValidateChangeVersionEvidence:   validateChangeVersionEvidence,
+	})
+}
+
+func (s *Service) prepareVersionSource(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) (*changeapi.VersionSource, error) {
+	source, err := s.prepareChangeVersionRun(ctx, scope, change, request)
+	if errors.Is(err, errNoChangeVersionRun) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &changeapi.VersionSource{
+		SessionID: source.sessionID,
+		MachineID: source.machineID,
+		Recheck: func(ctx context.Context, w tenantstore.Writer) error {
+			return s.recheckChangeVersionRun(ctx, w, source)
+		},
+	}, nil
+}
+
+func validateVersionAttachments(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, artifacts []tracker.ChangeArtifact) error {
+	_, err := validateChangeRecordContent(ctx, r, scope, nil, artifacts, "artifacts", false)
+	return err
+}
+
+func bindVersionAttachments(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item string, artifacts []tracker.ChangeArtifact) error {
+	return bindChangeRecordContent(ctx, w, scope, item, nil, artifacts, "artifacts")
 }

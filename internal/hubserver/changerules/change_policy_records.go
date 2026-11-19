@@ -1,4 +1,4 @@
-package hubserver
+package changerules
 
 import (
 	"context"
@@ -22,9 +22,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) changeReviewPolicyRecord(ctx context.Context, scope hubscope.NativeScope) (tracker.ChangeReviewPolicy, error) {
+func (s *ReviewPolicy) ChangeReviewPolicyRecord(ctx context.Context, scope hubscope.NativeScope) (tracker.ChangeReviewPolicy, error) {
 	var rows hubrecords.CurrentChangePolicyRows
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		rows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 		return err
@@ -32,33 +32,33 @@ func (s *Service) changeReviewPolicyRecord(ctx context.Context, scope hubscope.N
 	if err != nil {
 		return tracker.ChangeReviewPolicy{}, hubapi.ProjectRecordError(err)
 	}
-	approved, err := hydrateChangeSummaryPolicy(ctx, eventstore.NewContent(s.runDetailStore()), scope, rows)
+	approved, err := s.deps.HydrateChangeSummaryPolicy(ctx, eventstore.NewContent(s.deps.RunDetailStore()), scope, rows)
 	return approved.ReviewPolicy, hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) currentChangePolicyRows(ctx context.Context, scope hubscope.NativeScope) (hubrecords.CurrentChangePolicyRows, error) {
+func (s *ReviewPolicy) CurrentChangePolicyRows(ctx context.Context, scope hubscope.NativeScope) (hubrecords.CurrentChangePolicyRows, error) {
 	var rows hubrecords.CurrentChangePolicyRows
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		rows, err = readCurrentChangePolicyRows(ctx, r, scope)
+		rows, err = ReadCurrentChangePolicyRows(ctx, r, scope)
 		return err
 	})
 	return rows, err
 }
 
-func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracker.ApproveChangeReviewPolicy) error {
-	response, err := s.approveChangeReviewPolicyRecordCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Request().Method+" "+c.Request().URL.EscapedPath(), request)
+func (s *ReviewPolicy) ApproveChangeReviewPolicyRecord(c echo.Context, request tracker.ApproveChangeReviewPolicy) error {
+	response, err := s.ApproveChangeReviewPolicyRecordCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Request().Method+" "+c.Request().URL.EscapedPath(), request)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, response)
 }
 
-func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, scope hubscope.NativeScope, operation string, request tracker.ApproveChangeReviewPolicy) (json.RawMessage, error) {
+func (s *ReviewPolicy) ApproveChangeReviewPolicyRecordCommand(ctx context.Context, scope hubscope.NativeScope, operation string, request tracker.ApproveChangeReviewPolicy) (json.RawMessage, error) {
 	if request.Policy.PolicyID == "" {
 		return nil, hubapi.NativePublicInvalid("An approved repository policy identity is required")
 	}
-	ctx = hubcontent.IsolateContentContext(s.runDetailContext(ctx))
+	ctx = hubcontent.IsolateContentContext(s.deps.RunDetailContext(ctx))
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -66,26 +66,26 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 	if err != nil {
 		return nil, err
 	}
-	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+	if err := s.deps.RecheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	replay, found, err := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
+	replay, found, err := s.deps.ChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
 	if err != nil {
 		return nil, err
 	}
 	if found {
 		return replay, nil
 	}
-	now, err := s.database.currentTime()
+	now, err := s.deps.CurrentTime()
 	if err != nil {
 		return nil, err
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(s.deps.RunDetailStore())
 	var rows hubrecords.CurrentChangePolicyRows
 	var current eventstore.ReviewPolicy
 	var oldRules tracker.ChangeReviewPolicy
 	currentStored := false
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		rows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 		return err
@@ -93,7 +93,7 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 	if err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
-	approval, err := hydrateChangeSummaryPolicy(ctx, content, scope, rows)
+	approval, err := s.deps.HydrateChangeSummaryPolicy(ctx, content, scope, rows)
 	if err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
@@ -102,7 +102,7 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 	}
 	current, currentStored = rows.Review, rows.HasReview
 	oldRules = approval.ReviewPolicy
-	if oldRules.ID != request.ExpectedID && (request.ExpectedID != "" || !followsRepositoryGate(oldRules)) {
+	if oldRules.ID != request.ExpectedID && (request.ExpectedID != "" || !s.deps.FollowsRepositoryGate(oldRules)) {
 		return nil, hubapi.PolicyMismatch("Review policy changed; supply its current identity")
 	}
 	rules := request.Policy
@@ -129,18 +129,19 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 	if err != nil {
 		return nil, err
 	}
-	var stale *staleLandingRoutes
+	var applyStaleLanding ApplyStaleLanding
+	var hasStaleMoves bool
 	if oldRules.ID != rules.ID {
-		stale, err = s.prepareStaleLandingRoutes(ctx, scope, hubrecords.ChangeVersionApproval{Policy: approval.Policy, ReviewPolicy: rules}, now)
+		applyStaleLanding, hasStaleMoves, err = s.deps.PrepareStaleLanding(ctx, scope, hubrecords.ChangeVersionApproval{Policy: approval.Policy, ReviewPolicy: rules}, now)
 		if err != nil {
 			return nil, hubapi.ProjectRecordError(err)
 		}
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+	err = s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.deps.AuthorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		if stale.HasMoves() {
+		if hasStaleMoves {
 			if err := w.LockRelationshipGraph(ctx); err != nil {
 				return err
 			}
@@ -179,14 +180,16 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 				return err
 			}
 		}
-		if err := s.applyStaleLandingRoutes(ctx, w, scope, stale); err != nil {
-			return err
+		if applyStaleLanding != nil {
+			if err := applyStaleLanding(ctx, w); err != nil {
+				return err
+			}
 		}
 		_, err = w.PutReceipt(ctx, receipt)
 		return err
 	})
 	if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
-		replay, found, readErr := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
+		replay, found, readErr := s.deps.ChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -199,19 +202,19 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 		return nil, hubapi.ProjectRecordError(err)
 	}
 	select {
-	case s.boardRefresh <- struct{}{}:
+	case s.deps.BoardRefresh <- struct{}{}:
 	default:
 	}
 	return response, nil
 }
 
-func (s *Service) validateReviewPolicyPrincipals(ctx context.Context, scope hubscope.NativeScope, rules tracker.ChangeReviewPolicy, now time.Time) error {
-	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+func (s *ReviewPolicy) validateReviewPolicyPrincipals(ctx context.Context, scope hubscope.NativeScope, rules tracker.ChangeReviewPolicy, now time.Time) error {
+	return s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.validateReviewPolicyPrincipalsIn(ctx, r, scope, rules, now)
 	})
 }
 
-func (s *Service) validateReviewPolicyPrincipalsIn(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, rules tracker.ChangeReviewPolicy, now time.Time) error {
+func (s *ReviewPolicy) validateReviewPolicyPrincipalsIn(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, rules tracker.ChangeReviewPolicy, now time.Time) error {
 	for _, check := range rules.RequiredChecks {
 		credential, err := r.AccessCredential(ctx, check.PrincipalID)
 		if err != nil || credential.RevokedAt != nil || credential.CreatedAt.After(now) || credential.ExpiresAt != nil && !now.Before(*credential.ExpiresAt) {
