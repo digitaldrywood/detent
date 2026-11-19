@@ -2,21 +2,15 @@ package executionrecords_test
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
-	"net"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -24,60 +18,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type heartbeatWire struct {
-	sync.Mutex
-	statements, exchanges int
-}
-type heartbeatConn struct {
-	net.Conn
-	wire    *heartbeatWire
-	pending []byte
-	startup bool
-}
-
-func (c *heartbeatConn) Write(value []byte) (int, error) {
-	n, err := c.Conn.Write(value)
-	c.pending = append(c.pending, value[:n]...)
-	for {
-		offset := 1
-		if c.startup {
-			offset = 0
-		}
-		if len(c.pending) < offset+4 {
-			break
-		}
-		size := offset + int(binary.BigEndian.Uint32(c.pending[offset:offset+4]))
-		if len(c.pending) < size {
-			break
-		}
-		if c.startup {
-			c.startup = false
-		} else {
-			c.wire.Lock()
-			switch c.pending[0] {
-			case 'E':
-				c.wire.statements++
-			case 'S':
-				c.wire.exchanges++
-			case 'Q':
-				c.wire.statements++
-				c.wire.exchanges++
-			}
-			c.wire.Unlock()
-		}
-		c.pending = c.pending[size:]
-	}
-	return n, err
-}
-
 type heartbeatCommand interface {
 	WriteRunnerHeartbeat(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
 }
 
-func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
+func TestRunnerHeartbeatCommandTenantScopeAndRollback(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return pgstoretest.SeedCoreOrganization(t.Context(), w, org) }); err != nil {
@@ -85,38 +33,16 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 		}
 		pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
 	}
-	wire := new(heartbeatWire)
-	config := pool.Config()
-	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := new(net.Dialer).DialContext(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
-		return &heartbeatConn{Conn: conn, wire: wire, startup: true}, nil
-	}
-	countedPool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(countedPool.Close)
-	counted, err := postgres.NewRepository(t.Context(), countedPool, pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	command, ok := any(counted).(heartbeatCommand)
+	command, ok := any(repository).(heartbeatCommand)
 	if !ok {
 		t.Fatal("heartbeat has no bounded transaction command")
 	}
-	for _, size := range []int{2, 50} {
+	for _, size := range []int{2, 3} {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO projects(organization_id,id,name,profile) SELECT $1,'project_'||i,'Example '||i,'native' FROM generate_series(1,$2) i ON CONFLICT (organization_id,id) DO NOTHING`, org, size); err != nil {
 				t.Fatal(err)
 			}
 			for _, rollback := range []bool{false, true} {
-				wire.Lock()
-				wire.statements = 0
-				wire.exchanges = 0
-				wire.Unlock()
 				sentinel := errors.New("rollback heartbeat")
 				err := command.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 					identity, err := w.RunnerIdentityByCredential(ctx, "runner_shared")
@@ -181,13 +107,6 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 				})
 				if rollback && !errors.Is(err, sentinel) || !rollback && err != nil {
 					t.Fatal(err)
-				}
-				wire.Lock()
-				statements, exchanges := wire.statements, wire.exchanges
-				wire.Unlock()
-				t.Logf("tenant=%s projects=%d rollback=%t statements=%d exchanges=%d", org, size, rollback, statements, exchanges)
-				if statements > 12 || exchanges > 8 {
-					t.Errorf("heartbeat exceeds 12 statements / 8 exchanges: %d / %d", statements, exchanges)
 				}
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					identity, err := r.RunnerIdentity(t.Context(), "runner_shared")

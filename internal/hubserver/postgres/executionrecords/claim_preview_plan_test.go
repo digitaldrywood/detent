@@ -14,7 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestClaimPreviewPlanDistinguishesProvenanceFromLinkedSources(t *testing.T) {
+func TestClaimPreviewDistinguishesProvenanceFromLinkedSources(t *testing.T) {
 	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_example")

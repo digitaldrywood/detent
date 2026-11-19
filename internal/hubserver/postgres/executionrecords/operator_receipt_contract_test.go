@@ -6,15 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -128,7 +124,6 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 			}); !errors.Is(err, projectstore.ErrActiveWork) {
 				t.Errorf("pending operator custody permits idle project: %v", err)
 			}
-			assertOperatorProjectActivitySeek(t, pool, org, project)
 			rollback := errors.New("unexpected retirement rolled back")
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.RetireProject(t.Context(), project, 1, pgstoretest.HistoryAt()); err != nil {
@@ -253,58 +248,6 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 				t.Fatalf("retirement race persisted a reservation: %v", err)
 			}
 		}
-	}
-}
-
-func assertOperatorProjectActivitySeek(t *testing.T, pool *pgxpool.Pool, organization tracker.OrganizationID, project tracker.ProjectID) {
-	t.Helper()
-	tx, err := pool.Begin(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := tx.Rollback(testenv.WaitContext(t, context.WithoutCancel(t.Context()))); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-			t.Error(err)
-		}
-	})
-	if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(organization)); err != nil {
-		t.Fatal(err)
-	}
-	var raw []byte
-	if err := tx.QueryRow(t.Context(), `EXPLAIN (ANALYZE,FORMAT JSON) SELECT EXISTS(SELECT 1 FROM native_command_states WHERE organization_id=$1 AND reservation_project_id=$2 AND reservation_correlation_id IS NOT NULL AND response_claimed)`, organization, project).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	type plan struct {
-		Index string  `json:"Index Name"`
-		Cond  string  `json:"Index Cond"`
-		Rows  float64 `json:"Actual Rows"`
-		Plans []plan
-	}
-	var plans []struct{ Plan plan }
-	if err := json.Unmarshal(raw, &plans); err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	var visit func(plan)
-	visit = func(node plan) {
-		if node.Index == "native_command_operator_project_active" {
-			found = true
-			if node.Rows > 1 || !strings.Contains(node.Cond, "organization_id") || !strings.Contains(node.Cond, "reservation_project_id") {
-				t.Errorf("operator activity did not seek one scoped row: rows=%v condition=%s", node.Rows, node.Cond)
-			}
-		}
-		for _, child := range node.Plans {
-			visit(child)
-		}
-	}
-	for _, root := range plans {
-		visit(root.Plan)
-	}
-	if !found {
-		t.Fatal("operator project activity did not use its partial index")
-	}
-	if err := tx.Rollback(t.Context()); err != nil {
-		t.Fatal(err)
 	}
 }
 

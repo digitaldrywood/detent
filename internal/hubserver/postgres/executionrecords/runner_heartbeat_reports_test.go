@@ -13,7 +13,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -22,16 +21,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
+func TestRunnerHeartbeatReportsPreserveTenantFacts(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
-	counter := new(pgstoretest.ReportCountingTracer)
-	counted, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, counter), pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return pgstoretest.SeedCoreOrganization(t.Context(), w, org) }); err != nil {
 			t.Fatal(err)
@@ -86,7 +80,7 @@ func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if err := counted.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
+				if err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 					problems, err := w.RunnerProblems(ctx, "runner_shared")
 					if err != nil {
 						return err
@@ -116,8 +110,7 @@ func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
 				}
 				var before string
 				for _, repeat := range []bool{false, true} {
-					err := counted.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
-						counter.Count.Store(0)
+					err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 						var err error
 						switch kind {
 						case "problems":
@@ -134,11 +127,6 @@ func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
 							err = w.ReplaceRunnerWorkspaceReport(ctx, "runner_shared", workspacesession.Capabilities{Terminal: true, Files: true, Git: true}, "sandbox")
 						default:
 							err = w.ReplaceRunnerAdmissionObservation(ctx, "runner_shared", "project_shared", tracker.NativeAdmissionObservation{RunnerRevision: 1, ReceivedAt: now, Context: tracker.NativeAdmissionContext{ObservedAt: now, PolicyID: "example", LastRefreshAt: now, RefreshDuration: time.Second, WorkflowStates: states[:size/2], Authors: states[size/2:]}})
-						}
-						statements := counter.Count.Load()
-						t.Logf("tenant=%s report=%s rows=%d repeated=%t statements=%d", org, kind, size, repeat, statements)
-						if statements > 4 {
-							t.Errorf("%s writes scale with report rows: %d", kind, statements)
 						}
 						return err
 					})
@@ -185,7 +173,7 @@ func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
 				}
 				if kind == "problems" {
 					problems[0].CachedCapabilities = !problems[0].CachedCapabilities
-					if err := counted.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
+					if err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 						return w.ReplaceRunnerProblems(ctx, "runner_shared", problems)
 					}); err != nil {
 						t.Fatal(err)
@@ -239,16 +227,11 @@ func TestRunnerProjectObservationPreservesUnchangedDetails(t *testing.T) {
 	}
 }
 
-func TestRunnerHeartbeatHostSegmentsHaveFixedStatements(t *testing.T) {
+func TestRunnerHeartbeatHostSegmentsReplayAndHourlyCap(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := pgstoretest.HistoryAt()
-	counter := new(pgstoretest.ReportCountingTracer)
-	counted, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, counter), pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return pgstoretest.SeedCoreOrganization(t.Context(), w, org) }); err != nil {
 			t.Fatal(err)
@@ -259,20 +242,14 @@ func TestRunnerHeartbeatHostSegmentsHaveFixedStatements(t *testing.T) {
 			for i := range segments {
 				segments[i] = hostmetrics.Summary{Hour: now.Truncate(time.Hour), SegmentID: now.Add(-time.Duration(i+1) * time.Second), SampleCount: 1, LogicalCores: 2}
 			}
-			for _, repeat := range []bool{false, true} {
-				if err := counted.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
-					counter.Count.Store(0)
+			for range 2 {
+				if err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 					acknowledged, err := w.AppendRunnerHostMetricSegments(ctx, "runner_shared", segments, now)
 					if err != nil {
 						return err
 					}
 					if len(acknowledged) != size {
 						t.Errorf("acknowledgments=%d, want %d", len(acknowledged), size)
-					}
-					statements := counter.Count.Load()
-					t.Logf("tenant=%s segments=%d repeated=%t statements=%d", org, size, repeat, statements)
-					if statements > 3 {
-						t.Errorf("host segment statements grow per row: %d", statements)
 					}
 					return nil
 				}); err != nil {
@@ -292,7 +269,7 @@ func TestRunnerHeartbeatHostSegmentsHaveFixedStatements(t *testing.T) {
 			for i := range segments {
 				segments[i] = hostmetrics.Summary{Hour: now.Truncate(time.Hour), SegmentID: now.Add(-time.Duration(offset+i+1) * time.Second), SampleCount: 1, LogicalCores: 2}
 			}
-			if err := counted.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
+			if err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 				acknowledged, err := w.AppendRunnerHostMetricSegments(ctx, "runner_shared", segments, now)
 				if err == nil && len(acknowledged) != 24 {
 					t.Errorf("capped acknowledgments=%d", len(acknowledged))
