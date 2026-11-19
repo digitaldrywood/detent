@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
@@ -18,15 +19,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerfleet"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func (s *Service) runnerRoutingDeps() runnerfleet.RoutingDeps {
@@ -587,4 +591,195 @@ func mergeRunnerProviderReports(previous, reports []providercapacity.Report, now
 
 func validateTenantProviderAttempt(ctx context.Context, reader tenantstore.Reader, runnerID string, data tracker.NativeRunData, now time.Time) error {
 	return claimapi.ValidateTenantProviderAttempt(ctx, reader, runnerID, data, now)
+}
+
+func (s *Service) runnerClaimDeps() claimapi.Deps {
+	return claimapi.Deps{
+		Repository:                       s.config.TenantRepository,
+		Now:                              s.config.Clock,
+		Details:                          s.runDetailStore,
+		AuthorizeAccess:                  s.authorizeAccessScope,
+		Logger:                           s.config.Logger,
+		RunEventsEnabled:                 func() bool { return s.config.NativeRunEvents != nil },
+		DetailsFor:                       s.runDetailStoreFor,
+		PrepareCancellation:              s.prepareRunnerClaimCancellation,
+		EvaluateContract:                 evaluateRunnerClaimContract,
+		ErrPlacementSnapshotRequired:     errClaimPlacementSnapshotRequired,
+		ValidateRunnerVersion:            func(version string) error { return runnerVersionError(minimumRunnerVersion(s.config.Version), version) },
+		PlansEnabled:                     func() bool { return s.database.plansService().Plans() != nil },
+		Entitlement:                      s.runnerUsageEntitlement,
+		WorkspaceOptions:                 s.runnerWorkspaceClaimOptions,
+		WorkspaceClaimable:               runnerWorkspaceClaimable,
+		AnsweredExclusion:                s.nativeClaimAnsweredExclusion,
+		CurrentChangeDetail:              s.nativeClaimCurrentChangeDetail,
+		ReadCheckpoint:                   s.readNativeAttemptCheckpointTenant,
+		ReadPlacementSnapshot:            s.readPlacementSnapshot,
+		LandingCapacityAvailable:         s.nativeClaimLandingCapacityAvailable,
+		ProjectModel:                     s.projectRecordModel,
+		PlacementAllowed:                 claimPlacementAllowed,
+		CutoverSourceReference:           cutoverSourceReference,
+		HydrateChangePolicy:              hydrateChangeSummaryPolicy,
+		LandingCapacityKey:               landingCapacityKey,
+		MonthlyBudgetRefusal:             monthlyBudgetRefusal,
+		MonthlyCostExposure:              monthlyCostExposure,
+		ChangeLandingClaimable:           nativeChangeLandingClaimable,
+		ReadMonthlyBudget:                readBillingMonthlyBudgetInput,
+		ReadCurrentChangePolicy:          readCurrentChangePolicyRows,
+		ReadReleaseDeliveryFacts:         readNativeClaimReleaseDeliveryFacts,
+		ReadReleaseDeliveryContractFacts: readReleaseDeliveryContractFacts,
+		SpriteAllocationAllowed:          spriteAllocationRunnerAllowedFacts,
+		RefusedAPIError:                  s.refusedAPIError,
+	}
+}
+
+const nativeClaimCandidatePageSize = claimapi.NativeClaimCandidatePageSize
+
+type nativeClaimCandidateScan struct {
+	plans    []hubrecords.NativeClaimPlan
+	replay   *hubrecords.NativeClaimPlan
+	pageNext claimstore.CandidateCursor
+	cursor   claimstore.SelectionCursor
+}
+
+func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, ttl time.Duration) (leasestore.Lease, error) {
+	return s.runnerClaimDeps().ClaimNativeIssueTenant(ctx, scope, request, ttl)
+}
+
+func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimCandidateScan, error) {
+	scan, err := s.runnerClaimDeps().ReadNativeClaimCandidates(ctx, scope, request, now)
+	return nativeClaimCandidateScan{plans: scan.Plans, replay: scan.Replay, pageNext: scan.PageNext, cursor: scan.Cursor}, err
+}
+
+func nativeClaimPlanFromBatch(shared hubrecords.NativeClaimPlan, candidate claimstore.Candidate, row tenantstore.ClaimPreviewPlanRow) hubrecords.NativeClaimPlan {
+	return claimapi.NativeClaimPlanFromBatch(shared, candidate, row)
+}
+
+func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, ttl time.Duration, now time.Time, plan hubrecords.NativeClaimPlan, cursor *claimstore.SelectionCursor) (leasestore.Lease, error) {
+	return s.runnerClaimDeps().ClaimNativeIssueTenantWithPlan(ctx, scope, request, ttl, now, plan, cursor)
+}
+
+func (s *Service) writeNativeClaimCommand(ctx context.Context, scope hubscope.NativeScope, write func(context.Context, tenantstore.Writer) error) error {
+	return s.runnerClaimDeps().WriteNativeClaimCommand(ctx, scope, write)
+}
+
+func (s *Service) persistNativeClaimCursor(ctx context.Context, scope hubscope.NativeScope, cursor claimstore.SelectionCursor) error {
+	return s.runnerClaimDeps().PersistNativeClaimCursor(ctx, scope, cursor)
+}
+
+func claimCandidateCursor(candidate claimstore.Candidate) claimstore.CandidateCursor {
+	return claimapi.ClaimCandidateCursor(candidate)
+}
+
+func selectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, request tracker.NativeClaim, item tracker.NativeWorkItemID, joining string, now time.Time) (providercapacity.Reservation, error) {
+	return claimapi.SelectTenantProviderReservation(ctx, w, identity, request, item, joining, now)
+}
+
+func readTenantProviderReservation(ctx context.Context, r claimstore.Reader, lease tracker.LeaseID) (claimstore.ProviderReservation, bool, error) {
+	return claimapi.ReadTenantProviderReservation(ctx, r, lease)
+}
+
+func (s *Service) readNativeClaimPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (hubrecords.NativeClaimPlan, error) {
+	return s.runnerClaimDeps().ReadNativeClaimPlan(ctx, scope, request, now)
+}
+
+func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, reader tenantstore.Reader, candidate *claimstore.Candidate, shared hubrecords.NativeClaimPlan) (hubrecords.NativeClaimPlan, error) {
+	return s.runnerClaimDeps().ReadNativeClaimPlanRows(ctx, scope, request, now, reader, candidate, shared)
+}
+
+func (s *Service) prepareNativeClaimApprovals(ctx context.Context, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
+	return s.runnerClaimDeps().PrepareNativeClaimApprovals(ctx, scope, plans)
+}
+
+func validateClaimSnapshotPolicy(scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan) error {
+	return claimapi.ValidateClaimSnapshotPolicy(scope, plan)
+}
+
+func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, plan hubrecords.NativeClaimPlan, descriptor *policy.Descriptor) (hubrecords.NativeClaimPlan, error) {
+	return s.runnerClaimDeps().HydrateNativeClaimPlan(ctx, scope, request, now, plan, descriptor)
+}
+
+func nativeClaimLandingCapacityRequired(plan hubrecords.NativeClaimPlan) (bool, error) {
+	return claimapi.NativeClaimLandingCapacityRequired(plan)
+}
+
+func nativeClaimPendingLanding(plan hubrecords.NativeClaimPlan) bool {
+	return claimapi.NativeClaimPendingLanding(plan)
+}
+
+func sameNativeClaimChangeRecord(left, right eventstore.Change) bool {
+	return claimapi.SameNativeClaimChangeRecord(left, right)
+}
+
+func sameNativeClaimReviewPolicy(left eventstore.ReviewPolicy, right eventstore.ReviewPolicy) bool {
+	return claimapi.SameNativeClaimReviewPolicy(left, right)
+}
+
+func sameNativeClaimLinkedSource(left, right eventstore.LinkedSource) bool {
+	return claimapi.SameNativeClaimLinkedSource(left, right)
+}
+
+func (s *Service) nativeWorkspaceClaimAllowed(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID, now time.Time) (bool, error) {
+	return s.runnerClaimDeps().NativeWorkspaceClaimAllowed(ctx, r, scope, item, now)
+}
+
+func nativeTenantCandidateQuery(scope hubscope.NativeScope, request tracker.NativeClaim, item tracker.NativeWorkItemID, now time.Time) claimstore.CandidateQuery {
+	return claimapi.NativeTenantCandidateQuery(scope, request, item, now)
+}
+
+func runnerIdentityClaimRefusal(identity runnerstore.Identity, scope hubscope.NativeScope, machine tracker.MachineID, now time.Time) error {
+	return claimapi.RunnerIdentityClaimRefusal(identity, scope, machine, now)
+}
+
+func runnerIdentityCanClaim(identity runnerstore.Identity, scope hubscope.NativeScope, machine tracker.MachineID, now time.Time) bool {
+	return claimapi.RunnerIdentityCanClaim(identity, scope, machine, now)
+}
+
+func nativeClaimProjectEnabled(project projectstore.Record) bool {
+	return claimapi.NativeClaimProjectEnabled(project)
+}
+
+func nativeCompatibleClaimSource(project projectstore.Record, issue tracker.NativeIssue, candidate claimstore.Candidate) bool {
+	return claimapi.NativeCompatibleClaimSource(cutoverSourceReference, project, issue, candidate)
+}
+
+func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
+	return claimapi.ReadNativeClaimChangeFacts(ctx, r, scope, plans)
+}
+
+func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
+	return s.runnerClaimDeps().PrepareNativeClaimLegacyAuditFacts(ctx, scope, plans)
+}
+
+const claimSourceClassificationLimit = claimapi.ClaimSourceClassificationLimit
+
+var ErrNoClaimableWork = claimapi.ErrNoClaimableWork
+
+func (s *Service) trackerAPIError(c echo.Context, err error) error {
+	return s.runnerClaimDeps().TrackerAPIError(c, err)
+}
+
+func (s *Service) prepareRunnerClaimCancellation(ctx context.Context, scope hubscope.NativeScope, item int64, includeReleased bool) (*leasestore.AttemptCancellation, error) {
+	prepared, err := s.prepareExpiredNativeLeaseCancellation(ctx, scope, item, includeReleased)
+	return prepared.attemptCancellation(), err
+}
+
+func evaluateRunnerClaimContract(plan hubrecords.NativeClaimPlan) (claimapi.ContractEvaluation, error) {
+	evaluation, err := nativeRuntimeIssueContractEvaluation(plan)
+	return claimapi.ContractEvaluation{Allowed: evaluation.Allowed, Reason: evaluation.Reason, ReasonCode: evaluation.ReasonCode}, err
+}
+
+func nativeClaimIssueContractAllowed(plan hubrecords.NativeClaimPlan) bool {
+	evaluation, err := nativeRuntimeIssueContractEvaluation(plan)
+	return err == nil && evaluation.Allowed
+}
+
+func (s *Service) runnerWorkspaceClaimOptions() (time.Duration, string, bool) {
+	if s.workspaces == nil {
+		return 0, "", false
+	}
+	return s.workspaces.config.RetainAfterRun, s.workspaces.config.Terminal.Isolation, true
+}
+
+func runnerWorkspaceClaimable(row postgres.WorkspaceSession, capabilities workspacesession.Capabilities, fresh bool, runnerID, retained, isolation, configuredIsolation string) (bool, string) {
+	return workspaceClaimable(workspaceTenantRecord(row), capabilities, fresh, runnerID, retained, isolation, configuredIsolation)
 }
