@@ -85,7 +85,7 @@ func usagePeriod(at time.Time) string {
 }
 
 func prepareAttemptUsage(scope hubscope.NativeScope, item tracker.NativeWorkItemID, event tracker.NativeRunEvent, prices UsageConfig, now time.Time) reportstore.AttemptUsage {
-	report := reportstore.AttemptUsage{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, AttemptID: event.Data.AttemptID, LeaseID: string(event.Data.LeaseID), FencingToken: int64(event.Data.FencingToken), Sequence: event.Data.Sequence, ReceivedAt: now.UTC(), Currency: strings.ToUpper(strings.TrimSpace(prices.currency()))}
+	report := reportstore.AttemptUsage{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, AttemptID: event.Data.AttemptID, LeaseID: string(event.Data.LeaseID), FencingToken: int64(event.Data.FencingToken), Sequence: event.Data.Sequence, ReceivedAt: now.UTC(), Currency: strings.ToUpper(strings.TrimSpace(prices.CurrencyValue()))}
 	for _, entry := range event.Data.Usage {
 		if entry.UsageKind == "incremental" {
 			continue
@@ -94,7 +94,7 @@ func prepareAttemptUsage(scope hubscope.NativeScope, item tracker.NativeWorkItem
 		currency := strings.ToUpper(strings.TrimSpace(entry.Currency))
 		if entry.CostEstimate > 0 && (currency == "" || currency == report.Currency) {
 			total.ReportedCost = new(entry.CostEstimate)
-		} else if price, found := prices.price(entry.Model); found {
+		} else if price, found := prices.PriceFor(entry.Model); found {
 			total.InputPrice, total.CachedInputPrice, total.OutputPrice = price.Input, price.CachedInput, price.Output
 		}
 		report.Totals = append(report.Totals, total)

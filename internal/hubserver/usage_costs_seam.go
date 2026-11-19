@@ -122,21 +122,10 @@ func (s *Service) importSpriteUsageCommand(ctx context.Context, scope hubscope.N
 }
 
 type UsagePrice = usagecosts.Price
-type UsageConfig usagecosts.Prices
+type UsageConfig = usagecosts.Prices
 
 const defaultUsageCurrency = usagecosts.DefaultCurrency
 
-func (c UsageConfig) normalized() UsageConfig { return UsageConfig(usagecosts.Prices(c).Normalized()) }
-func (c UsageConfig) price(model string) (UsagePrice, bool) {
-	return usagecosts.Prices(c).PriceFor(model)
-}
-func (c UsageConfig) estimate(model string, input, cachedInput, output int64) (float64, string, bool) {
-	return usagecosts.Prices(c).Estimate(model, input, cachedInput, output)
-}
-func (c UsageConfig) cacheSaving(model string, input, cachedInput int64) float64 {
-	return usagecosts.Prices(c).CacheSaving(model, input, cachedInput)
-}
-func (c UsageConfig) currency() string { return usagecosts.Prices(c).CurrencyValue() }
 func (s *Service) usagePrices() UsageConfig {
 	if s.config.Usage == nil {
 		return UsageConfig{Currency: defaultUsageCurrency}
