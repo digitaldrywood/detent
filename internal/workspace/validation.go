@@ -13,10 +13,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
 type reviewOutputRangeKey struct{}
@@ -34,6 +34,7 @@ func (l *LocalGit) ReviewCommandEnvironment(ctx context.Context, info Info, issu
 }
 
 func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue Issue, validation string) *gate.CommandEvidence {
+	ctx = WithAttemptWorkspace(ctx, issue.AttemptWorkspace)
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
@@ -42,32 +43,20 @@ func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue I
 	command.Dir = normalized.Path
 	command.Env = hookEnv(normalized, issue, l.hooks.StripGitHubTokens)
 	l.applyValidationGoBudget(ctx, command)
-	return reviewCommandEvidence(ctx, command, validation)
+	return validationInputs(command).Evidence(ctx, validation)
+}
+
+func validationInputs(cmd *exec.Cmd) validationcmd.Inputs {
+	return validationcmd.Inputs{Dir: cmd.Dir, Path: cmd.Path, Args: cmd.Args, Env: cmd.Env}
 }
 
 func (l *LocalGit) applyValidationGoBudget(ctx context.Context, command *exec.Cmd) {
-	inherited := make(map[string]string)
-	for _, entry := range command.Environ() {
-		key, value, ok := strings.Cut(entry, "=")
-		if ok {
-			inherited[key] = value
-		}
-	}
-	variables, err := gobudget.FromContext(ctx).Environment(inherited["GOFLAGS"])
+	variables, err := validationcmd.GoBudget(ctx, command.Environ())
 	if err != nil {
 		l.logger.Warn("go build budget unavailable; validation Go commands run unqueued", "error", err)
 		return
 	}
-	for _, key := range []string{"GOMAXPROCS", gobudget.TestProcsEnvironment} {
-		if _, explicit := inherited[key]; explicit {
-			delete(variables, key)
-		}
-	}
 	procgroup.SetEnvironment(command, procgroup.Environment{Variables: variables})
-}
-
-func directGoValidation(validation string) bool {
-	return validation == "go version"
 }
 
 func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
@@ -75,6 +64,7 @@ func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue,
 	if strings.TrimSpace(command) == "" || strings.TrimSpace(issue.PullRequestHeadSHA) == "" {
 		return gate.CommandResult{}, errors.New("review command requires a command and immutable head")
 	}
+	ctx = WithAttemptWorkspace(ctx, issue.AttemptWorkspace)
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return gate.CommandResult{}, err

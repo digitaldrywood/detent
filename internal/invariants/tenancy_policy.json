@@ -439,9 +439,6 @@
       "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
       "import:os/exec": 1
     },
-    "internal/workspace/validation_inputs.go": {
-      "import:os/exec": 1
-    },
     "internal/workspace/workspace.go": {
       "import:os/exec": 1
     },
