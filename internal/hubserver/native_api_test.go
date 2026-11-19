@@ -658,6 +658,37 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 			t.Errorf("event = %#v", event)
 		}
 	}
+	t.Run("concurrent issue number allocation", func(t *testing.T) {
+		path := f.base + "/work-items"
+		body := issue.Body
+		requests := []tracker.CreateIssue{
+			{Mutation: tracker.Mutation{IdempotencyKey: "allocate-same"}, Title: "Repeated allocation", Body: body},
+			{Mutation: tracker.Mutation{IdempotencyKey: "allocate-same"}, Title: "Repeated allocation", Body: body},
+			{Mutation: tracker.Mutation{IdempotencyKey: "allocate-next"}, Title: "Separate allocation", Body: body},
+		}
+		replies := make([]*httptest.ResponseRecorder, len(requests))
+		var workers sync.WaitGroup
+		for i, request := range requests {
+			workers.Go(func() {
+				replies[i] = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, request)
+			})
+		}
+		workers.Wait()
+		for _, response := range replies {
+			requireNativeStatus(t, response, http.StatusOK)
+		}
+		if replies[0].Body.String() != replies[1].Body.String() {
+			t.Fatal("concurrent create replay changed the committed receipt")
+		}
+		var repeated, separate tracker.NativeIssue
+		decodeHubResponse(t, replies[0], &repeated)
+		decodeHubResponse(t, replies[2], &separate)
+		numbers := []int{repeated.Number, separate.Number}
+		slices.Sort(numbers)
+		if repeated.WorkItemID == separate.WorkItemID || !slices.Equal(numbers, []int{issue.Number + 1, issue.Number + 2}) {
+			t.Fatalf("concurrent requests allocated issue numbers %v", numbers)
+		}
+	})
 	t.Run("activity", func(t *testing.T) {
 		clock := &leaseTestClock{value: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}
 		f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}))

@@ -106,6 +106,7 @@ func TestPostgresCookieIssueLifecycle(t *testing.T) {
 	if observation.WorkItemID != issue.WorkItemID || observation.Body != "Example lifecycle observation" {
 		t.Fatal("cookie comment lost its issue or body")
 	}
+	var firstTransition tracker.NativeIssue
 	for index, target := range []string{"Todo", "Cancelled", "Todo"} {
 		previous := issue
 		transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("cookie-lifecycle-transition-%d", index)}, ExpectedRevision: previous.Revision, State: target, Reason: "user_requested"}
@@ -114,6 +115,9 @@ func TestPostgresCookieIssueLifecycle(t *testing.T) {
 		decodeHubResponse(t, response, &issue)
 		if issue.State != target || issue.Revision != previous.Revision+1 || issue.Body != create.Body || issue.WorkItemID != previous.WorkItemID {
 			t.Fatalf("transition to %s lost canonical state, revision, body or identity", target)
+		}
+		if index == 0 {
+			firstTransition = issue
 		}
 		replay := f.request(t, owner, http.MethodPost, itemPath+"/workflow", transition)
 		requireNativeStatus(t, replay, http.StatusOK)
@@ -132,6 +136,13 @@ func TestPostgresCookieIssueLifecycle(t *testing.T) {
 	decodeHubResponse(t, patch, &opened)
 	if opened.Title != "Example edited issue" || opened.Revision != issue.Revision+1 || opened.Body != issue.Body {
 		t.Fatal("cookie edit lost canonical content or revision")
+	}
+	historical := f.request(t, owner, http.MethodGet, itemPath+"/versions/"+fmt.Sprint(firstTransition.Revision), nil)
+	requireNativeStatus(t, historical, http.StatusOK)
+	var version tracker.NativeIssue
+	decodeHubResponse(t, historical, &version)
+	if version.WorkItemID != firstTransition.WorkItemID || version.Revision != firstTransition.Revision || version.State != firstTransition.State || version.Body != firstTransition.Body || version.Title != firstTransition.Title {
+		t.Fatal("a later edit changed an immutable workflow revision")
 	}
 }
 
