@@ -10,9 +10,12 @@ import (
 )
 
 const (
+	nativePreviewPageLimit   = 1 << 20
 	nativePreviewPagePrefix  = `{"items":[`
-	nativePreviewItemsBudget = (1 << 20) - len(`],"next":9223372036854775807}`)
+	nativePreviewItemsBudget = nativePreviewPageLimit - len(`],"next":9223372036854775807}`)
 )
+
+var errPreviewInputsTooLarge = errors.New("claim preview scheduling inputs exceed the runner response limit")
 
 type nativeClaimPreviewIssue struct {
 	tracker.NativeIssue
@@ -31,13 +34,15 @@ func encodePreviewIssue(issue nativeClaimPreviewIssue) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-func (p nativeClaimPreviewPage) finish(after tracker.WorkItemID) []byte {
-	p = append(p, ']')
+func (p nativeClaimPreviewPage) finish(after tracker.WorkItemID) ([]byte, error) {
+	footer := `]}`
 	if after != 0 {
-		p = append(p, `,"next":`...)
-		p = strconv.AppendInt(p, int64(after), 10)
+		footer = `],"next":` + strconv.FormatInt(int64(after), 10) + "}"
 	}
-	return append(p, '}')
+	if len(p)+len(footer) > nativePreviewPageLimit {
+		return nil, errPreviewInputsTooLarge
+	}
+	return append(p, footer...), nil
 }
 
 func (p nativeClaimPreviewPage) add(issue nativeClaimPreviewIssue) (nativeClaimPreviewPage, bool, error) {
@@ -57,9 +62,8 @@ func (p nativeClaimPreviewPage) add(issue nativeClaimPreviewIssue) (nativeClaimP
 			return p, false, nil
 		}
 		p = append(p, ',')
-	}
-	if len(p)+len(encoded) > nativePreviewItemsBudget {
-		return nil, false, errors.New("claim preview scheduling inputs exceed the runner response limit")
+	} else if len(p)+len(encoded)+len(`]}`) > nativePreviewPageLimit {
+		return nil, false, errPreviewInputsTooLarge
 	}
 	return append(p, encoded...), true, nil
 }
