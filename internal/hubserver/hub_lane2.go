@@ -584,11 +584,11 @@ func validateProviderCandidates(candidates []tracker.NativeCapacityCandidate) er
 }
 
 func validateProviderReports(reports []providercapacity.Report) error {
-	return claimapi.ValidateProviderReports(reports)
+	return runnerfleet.ValidateProviderReports(reports)
 }
 
 func mergeRunnerProviderReports(previous, reports []providercapacity.Report, now time.Time) []providercapacity.Report {
-	return claimapi.MergeRunnerProviderReports(previous, reports, now)
+	return runnerfleet.MergeRunnerProviderReports(previous, reports, now)
 }
 
 func validateTenantProviderAttempt(ctx context.Context, reader tenantstore.Reader, runnerID string, data tracker.NativeRunData, now time.Time) error {
@@ -1038,4 +1038,110 @@ func (s *Service) hydrateSchedulerDecisionRows(ctx context.Context, scope hubsco
 func (s *Service) readRunnerOperatorEvidence(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, withFailures bool) (tracker.NativeRuntimeEvidence, error) {
 	evidence, _, _, err := s.readOperatorEvidence(ctx, scope, issue, withFailures)
 	return evidence, err
+}
+
+func (s *Service) runnerHeartbeatDeps() runnerfleet.HeartbeatDeps {
+	return runnerfleet.HeartbeatDeps{
+		Repository:                  s.config.TenantRepository,
+		Now:                         s.config.Clock,
+		HTTPError:                   s.nativeAPIError,
+		NotifyDispatch:              s.runnerNotifyDispatch(),
+		CheckAdmission:              s.checkRunnerAdmission,
+		ApplyUsage:                  s.applyRunnerTenantUsage,
+		RequestTimeout:              s.requestTimeout,
+		ReadPage:                    s.readNativePage,
+		ReadGitHubTask:              s.readGitHubBatchTaskRecord,
+		ReleasePublished:            s.runnerReleasePublished,
+		StoreUpdateObservation:      s.storeRunnerUpdateObservationTenant,
+		ValidateConfigurationRunner: validateConfigurationRunner,
+		ValidateCheckoutReport:      validateRunnerCheckoutReport,
+		ValidSpriteSlug:             validSpritesSlug,
+		StoreProjectObservation:     storeRunnerProjectObservationTenant,
+		PrepareAdmissionDecisions:   s.prepareRunnerAdmissionDecisions,
+		ReadAttemptRun:              s.readNativeAttemptRunTenant,
+		AttemptRunMatches:           nativeAttemptRunMatches,
+		Logger:                      s.config.Logger,
+		Version:                     s.config.Version,
+		StartSpriteLifecycle:        s.startSpriteLifecycle,
+		Plans:                       func() *hostedplans.HostedPlansConfig { return s.database.plansService().Plans() },
+		ReadCapabilitiesDigest:      s.runnerHeartbeatCapabilitiesDigest,
+		PrepareConfiguration:        s.prepareRunnerHeartbeatConfiguration,
+		ErrConfigurationUnavailable: errConfigurationPayloadUnavailable,
+		ReadCleanupCursor:           s.readFleetCleanupCursor,
+		AdvanceCleanupCursor:        s.advanceFleetCleanupCursor,
+	}
+}
+
+func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMachineHeartbeatRequest) error {
+	return s.runnerHeartbeatDeps().HeartbeatNativeMachineTenant(c, request)
+}
+
+func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest, projectID tracker.ProjectID) error {
+	return runnerfleet.ValidateTenantHeartbeatProjection(request, projectID)
+}
+
+func (s *Service) readRunnerResponseSnapshot(ctx context.Context, organization tracker.OrganizationID, credential, runner string, project tracker.ProjectID, read func(context.Context, tenantstore.Reader, time.Time) error) error {
+	return s.runnerHeartbeatDeps().ReadRunnerResponseSnapshot(ctx, organization, credential, runner, project, read)
+}
+
+func readRunnerResponseRouting(ctx context.Context, r tenantstore.Reader, identity runnerstore.Identity, snapshot *runnerauth.RoutingSnapshot) error {
+	return runnerfleet.ReadRunnerResponseRouting(ctx, r, identity, snapshot)
+}
+
+func readHeartbeatChangesTenant(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, cursor nativeCursor, key []byte, reset bool, digest, policyID string, now time.Time) (*runnerauth.HeartbeatChanges, error) {
+	return runnerfleet.ReadHeartbeatChangesTenant(ctx, reader, scope, cursor, key, reset, digest, policyID, now)
+}
+
+func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope hubscope.NativeScope, snapshot *runnerauth.RoutingSnapshot) error {
+	return s.runnerHeartbeatDeps().ReadRegistrationClaimStateTenant(ctx, scope, snapshot)
+}
+
+func registrationCleanupRequired(candidate hubrecords.TenantAttemptSnapshot, run tracker.NativeRunData, runner string) (bool, error) {
+	deps := runnerfleet.HeartbeatDeps{AttemptRunMatches: nativeAttemptRunMatches}
+	return deps.RegistrationCleanupRequired(candidate, run, runner)
+}
+
+func nativeRunCleanupRequired(run tracker.NativeRunData) bool {
+	return runnerfleet.NativeRunCleanupRequired(run)
+}
+
+func (s *Service) readRunnerCleanupCandidates(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, candidates []runnerauth.ReleasedExecution) ([]hubrecords.TenantAttemptSnapshot, error) {
+	return s.runnerHeartbeatDeps().ReadRunnerCleanupCandidates(ctx, r, scope, candidates)
+}
+
+func (s *Service) resolveRunnerCleanupCandidates(ctx context.Context, scope hubscope.NativeScope, runner string, candidates []hubrecords.TenantAttemptSnapshot, state *runnerauth.ClaimState) error {
+	return s.runnerHeartbeatDeps().ResolveRunnerCleanupCandidates(ctx, scope, runner, candidates, state)
+}
+
+func (s *Service) runnerHeartbeatCapabilitiesDigest(c echo.Context) (string, bool, error) {
+	capabilities, err := s.readNativeCapabilities(c.Request().Context())
+	if err != nil {
+		return "", false, s.nativeAPIError(c, err)
+	}
+	digest, err := capabilitiesDigest(capabilities)
+	return digest, true, err
+}
+
+func (s *Service) prepareRunnerHeartbeatConfiguration(ctx context.Context, credential hubapi.APICredential, project tracker.ProjectID, view *runnerauth.ProjectConfiguration) (runnerfleet.ApplyHeartbeatConfiguration, error) {
+	prepared, err := s.prepareConfigurationHeartbeat(ctx, credential, project, view)
+	if prepared == nil || err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, snapshot *runnerauth.RoutingSnapshot) error {
+		return s.applyConfigurationHeartbeat(ctx, w, identity, project, prepared, snapshot)
+	}, nil
+}
+
+func (s *Service) readFleetCleanupCursor(key runnerfleet.CleanupCursorKey) (string, error) {
+	return s.runnerCleanupCursor(releasedExecutionCursorKey{organization: key.Organization, project: key.Project, runner: key.Runner})
+}
+
+func (s *Service) advanceFleetCleanupCursor(key runnerfleet.CleanupCursorKey, next string) {
+	s.advanceRunnerCleanupCursor(releasedExecutionCursorKey{organization: key.Organization, project: key.Project, runner: key.Runner}, next)
+}
+
+type machineSpriteFacts = runnerfleet.MachineSpriteFacts
+
+func spriteFactValue(value *string) string {
+	return runnerfleet.SpriteFactValue(value)
 }
