@@ -1,12 +1,17 @@
-package hubserver
+package runnerfleet_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -16,27 +21,39 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestHeartbeatRefusalLeavesRunnerAndMachineUnchanged(t *testing.T) {
+type heartbeatUploadProbe struct {
+	*hubtest.Details
+}
+
+type refusedHeartbeatUploadKey struct{}
+
+func (p *heartbeatUploadProbe) StoreDetail(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	if uploaded, ok := ctx.Value(refusedHeartbeatUploadKey{}).(*atomic.Bool); ok {
+		uploaded.Store(true)
+	}
+	return p.Details.StoreDetail(ctx, organization, data)
+}
+
+func TestRejectedHeartbeatLeavesNoReports(t *testing.T) {
 	t.Parallel()
-	objects := &changeObjectFixture{}
-	f := newDefaultNativeFixture(t, Config{Content: objects.call})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
-	r.enroll(t)
-	path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
-	response := performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Example runner", "capacity": 2, "version": "test"})
-	requireNativeStatus(t, response, http.StatusOK)
-	ctx := t.Context()
+	objects := &heartbeatUploadProbe{Details: hubtest.NewDetails()}
+	f := hubfixture.NewDefaultNative(t, hubfixture.Config{RunDetails: objects})
+	r := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	r.Enroll(t)
+	r.ReportCapacity(t)
+	path := f.Base + "/machines/" + string(r.Binding.MachineID) + "/heartbeat"
+	now := f.Hub.Now()
 	stored := func() (runnerstore.Identity, leasestore.Machine) {
 		t.Helper()
 		var identity runnerstore.Identity
 		var machine leasestore.Machine
-		if err := f.service.config.TenantRepository.ReadTenant(ctx, f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := f.Hub.Repository.ReadTenant(t.Context(), f.Organization(), corestore.Serving, func(reader tenantstore.Reader) error {
 			var err error
-			identity, err = reader.RunnerIdentity(ctx, r.binding.RunnerID)
+			identity, err = reader.RunnerIdentity(t.Context(), r.Binding.RunnerID)
 			if err != nil {
 				return err
 			}
-			machine, err = reader.Machine(ctx, string(r.binding.MachineID))
+			machine, err = reader.Machine(t.Context(), string(r.Binding.MachineID))
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -44,14 +61,13 @@ func TestHeartbeatRefusalLeavesRunnerAndMachineUnchanged(t *testing.T) {
 		return identity, machine
 	}
 	priorIdentity, priorMachine := stored()
-	now := f.service.config.Clock()
-	valid := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now}
+	valid := runnerauth.ProjectConfiguration{ProjectID: string(f.Project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now}
 	valid.Diagnostics = &runnerauth.ProjectDiagnostics{ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners"}
 	for i := range 20 {
-		item := f.create(t, fmt.Sprintf("Admission %d", i))
+		item := f.Create(t, fmt.Sprintf("Admission %d", i))
 		valid.Diagnostics.Admissions = append(valid.Diagnostics.Admissions, runnerauth.DiagnosticAdmission{IssueID: string(item.WorkItemID), WorkItemRevision: int64(item.Revision), ObservedAt: now, Result: "skipped", Predicate: fmt.Sprintf("project_capacity_full_%d", i)})
 	}
-	badPolicy := hubTestPolicy()
+	badPolicy := hubfixture.Policy()
 	badPolicy.ID = "invalid"
 	for _, test := range []struct {
 		name, field string
@@ -77,16 +93,17 @@ func TestHeartbeatRefusalLeavesRunnerAndMachineUnchanged(t *testing.T) {
 		{"invalid problem", "problems", []runnerauth.Problem{{Code: "invalid"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			objects.mu.Lock()
-			writesBefore := objects.writes
-			objects.mu.Unlock()
-			response := performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Refused runner", "capacity": 1, "version": "must-not-persist", "project_configuration": valid, test.field: test.value})
-			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-			objects.mu.Lock()
-			uploads := objects.writes - writesBefore
-			objects.mu.Unlock()
-			if uploads != 0 {
-				t.Errorf("invalid heartbeat uploaded %d objects", uploads)
+			payload := map[string]any{"display_name": "Example runner", "capacity": 1, "version": "must-not-persist", "project_configuration": valid}
+			payload[test.field] = test.value
+			var uploaded atomic.Bool
+			handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				ctx := context.WithValue(req.Context(), refusedHeartbeatUploadKey{}, &uploaded)
+				f.Hub.Handler().ServeHTTP(w, req.WithContext(ctx))
+			})
+			response := hubfixture.Request(t, handler, http.MethodPost, path, r.Redemption.Credential, payload)
+			hubfixture.RequireStatus(t, response, http.StatusUnprocessableEntity)
+			if uploaded.Load() {
+				t.Fatal("refused heartbeat uploaded an object")
 			}
 			identity, machine := stored()
 			if !reflect.DeepEqual(priorIdentity, identity) || !reflect.DeepEqual(priorMachine, machine) {

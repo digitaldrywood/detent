@@ -1,20 +1,17 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
-
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -23,24 +20,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
+func TestTenantMachineRegistrationKeepsCredentialAuthority(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
-	runnerID, machineID := "runner_"+strings.Repeat("a", 32), "machine_"+strings.Repeat("b", 32)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.Default(), Clock: func() time.Time { return now }}}
-	e := echo.New()
-	e.Use(middleware.RecoverWithConfig(middleware.RecoverConfig{DisablePrintStack: true}))
-	service.registerPostgresRoutes(e)
-	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+	h := hubfixture.Open(t, hubfixture.Config{Clock: func() time.Time { return now }})
+	repository := h.Repository
+	runnerID, machineID := "runner_"+strings.Repeat("a", 32), "machine_"+strings.Repeat("b", 32)
+	for _, org := range []tracker.OrganizationID{hubfixture.Primary, hubfixture.Secondary} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
-				return err
-			}
-			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org), AllocationGeneration: 1}); err != nil {
-				return err
-			}
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project", Name: "Example", Slug: "example", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project", Name: "Example", Slug: "example", Profile: "native"}, States: hubfixture.States()}); err != nil {
 				return err
 			}
 			expires := now.Add(time.Hour)
@@ -62,14 +50,14 @@ func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, org := range []string{"org_first", "org_second"} {
+	for _, org := range []string{string(hubfixture.Primary), string(hubfixture.Secondary)} {
 		t.Run(org, func(t *testing.T) {
 			call := func(token, body string) *httptest.ResponseRecorder {
 				req := httptest.NewRequest(http.MethodPost, "/api/v2/organizations/"+org+"/projects/project/machines/register", strings.NewReader(body))
-				req.Header.Set(echo.HeaderAuthorization, "Bearer "+token)
-				req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("Content-Type", "application/json")
 				rec := httptest.NewRecorder()
-				e.ServeHTTP(rec, req)
+				h.Handler().ServeHTTP(rec, req)
 				return rec
 			}
 			body := `{"id":"` + machineID + `","hostname":"ignored","display_name":"ignored","capacity":3,"version":"0.177.4","os":"linux","architecture":"amd64","backend_isolation":{"example":["sandbox"]},"workspace_capabilities":{"terminal":true,"files":true},"workspace_isolation":"sandbox","checkout_repository":"owner/repository","skills":[{"name":"example","scope":"project","invocation":"$example"}],"provider_reports":[{"backend":"example","provider":"example","account_alias":"example","billing":"api_key","availability":"available","models":["example"],"observed_at":"` + now.Format(time.RFC3339Nano) + `"}]}`
@@ -86,9 +74,9 @@ func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 					t.Fatalf("routing=%+v", snapshot)
 				}
 			}
-			otherToken := "org_first_runner"
-			if org == "org_first" {
-				otherToken = "org_second_runner"
+			otherToken := string(hubfixture.Primary) + "_runner"
+			if org == string(hubfixture.Primary) {
+				otherToken = string(hubfixture.Secondary) + "_runner"
 			}
 			for _, tc := range []struct {
 				token, body string
