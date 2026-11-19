@@ -3893,6 +3893,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
 	promptOptions.Evidence = req.Evidence
+	promptOptions.EvidenceContinuation = req.EvidenceContinuation
 	promptOptions.SecurityAudit = req.SecurityAudit
 	promptOptions.implementationReview = req.implementationReview
 	promptOptions.Discussion = req.Discussion
@@ -3918,8 +3919,8 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		if req.NativeVersion.Validation != nil {
 			tree = req.NativeVersion.Validation.TreeSHA
 		}
-		attachments = &validatorAttachments{head: req.NativeVersion.HeadSHA, tree: tree, images: backendConfig.Kind == config.AgentBackendCodex, handle: req.EvidenceHandler}
-		reads := validatorEvidenceTools(req.EvidenceTools)
+		attachments = &validatorAttachments{continuation: req.EvidenceContinuation, item: req.Issue.ID, head: req.NativeVersion.HeadSHA, tree: tree, images: backendConfig.Kind == config.AgentBackendCodex, handle: req.EvidenceHandler}
+		reads := validatorEvidenceTools(req.EvidenceTools, req.EvidenceContinuation != nil)
 		validationTools = append(validationTools, reads...)
 		commandHandler := validationHandler
 		validationHandler = func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {

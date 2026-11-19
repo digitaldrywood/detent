@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -13,6 +14,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -196,6 +199,81 @@ func (c *NativeClient) ReviewChange(ctx context.Context, item tracker.NativeWork
 	request.Mutation = c.FencedMutation(ctx, item, request.Mutation)
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/reviews", request, &result)
 	return result, auditPublicationFailure(err, request)
+}
+
+func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.NativeWorkItemID, id, version string, request tracker.ReviewChange) error {
+	path, err := ChangePath(item, id, version)
+	if err != nil || id == "" || version == "" || request.Validator == nil {
+		return errors.New("validator publication requires a change, version and result")
+	}
+	request.Mutation = c.FencedMutation(ctx, item, request.Mutation)
+	raw, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	if len(raw) <= maxResponseBytes {
+		_, err = c.ReviewChange(ctx, item, id, version, request)
+		var oversized *responseSizeError
+		if errors.As(err, &oversized) && oversized.status >= 200 && oversized.status < 300 {
+			return c.reconcileValidatorReceipt(ctx, item, id, version, request.IdempotencyKey, raw, err)
+		}
+		return err
+	}
+	content, err := json.Marshal(changerequest.ValidatorArchive{OrganizationID: c.organization, ProjectID: c.project, WorkItemID: item, ChangeID: id, VersionID: version, Review: request})
+	if err != nil {
+		return err
+	}
+	if len(content) > attachment.MaxArchiveBytes {
+		return attachment.ErrTooLarge
+	}
+	var stored attachment.ArchiveReference
+	headers := http.Header{"X-Detent-Archive-Schema": {"1"}, "Content-Type": {"application/json"}}
+	if err := c.client.requestWithHeaders(ctx, http.MethodPost, c.AttachmentPath("/work-items/"+url.PathEscape(string(item))+"/archives"), headers, bytes.NewReader(content), &stored); err != nil {
+		return err
+	}
+	if stored.Validate(string(c.organization)) != nil || stored.SchemaVersion != 1 || stored.UncompressedSize != int64(len(content)) {
+		return errors.New("validator archive upload returned a different object")
+	}
+	digest := sha256.Sum256(content)
+	wire := changerequest.ReviewSubmission{ReviewChange: tracker.ReviewChange{Mutation: request.Mutation}, ValidatorArchive: &changerequest.ValidatorArchiveReference{SHA256: stored.SHA256, BindingID: stored.BindingID, ContentSHA256: hex.EncodeToString(digest[:])}}
+	send := func() error {
+		var ack struct {
+			ID        string `json:"review_id"`
+			VersionID string `json:"version_id"`
+		}
+		if err := c.client.request(ctx, http.MethodPost, c.base()+path+"/reviews", wire, &ack); err != nil {
+			return err
+		}
+		if ack.ID == "" || ack.VersionID != version {
+			return fmt.Errorf("%w: validator publication returned an incomplete acknowledgement", ErrUnavailable)
+		}
+		return nil
+	}
+	err = send()
+	if !NativeTransportUnavailable(err) || ctx.Err() != nil {
+		return err
+	}
+	err = send()
+	if !NativeTransportUnavailable(err) || ctx.Err() != nil {
+		return err
+	}
+	return c.reconcileValidatorReceipt(ctx, item, id, version, request.IdempotencyKey, raw, err)
+}
+
+func (c *NativeClient) reconcileValidatorReceipt(ctx context.Context, item tracker.NativeWorkItemID, id, version, key string, raw []byte, publicationErr error) error {
+	changePath, _ := ChangePath(item, id, "")
+	query := url.Values{"view": {"validator_receipt"}, "version_id": {version}, "idempotency_key": {key}}
+	var receipt struct {
+		RequestSHA256 string `json:"request_sha256"`
+	}
+	if readErr := c.client.request(ctx, http.MethodGet, c.base()+changePath+"?"+query.Encode(), nil, &receipt); readErr != nil {
+		return errors.Join(publicationErr, readErr)
+	}
+	commandDigest := sha256.Sum256(raw)
+	if receipt.RequestSHA256 != hex.EncodeToString(commandDigest[:]) {
+		return fmt.Errorf("%w: retained validator receipt differs from submitted command", publicationErr)
+	}
+	return nil
 }
 
 func (c *NativeClient) ChangeViewedFiles(ctx context.Context, item tracker.NativeWorkItemID, id, version string) ([]tracker.ChangeViewedFile, error) {

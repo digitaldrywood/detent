@@ -68,6 +68,7 @@ type PromptOptions struct {
 type ValidatorPromptOptions struct {
 	SecurityAudit        *NativeSecurityAuditEvidence
 	Discussion           NativeReviewDiscussion
+	EvidenceContinuation *tracker.NativeAttemptEvidenceCursor
 	Evidence             []tracker.NativeEvidence
 	ImplementationReview bool
 	Commands             []gate.CommandResult
@@ -464,6 +465,9 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		}
 	}
 
+	if page := opts.EvidenceContinuation; page != nil {
+		fmt.Fprintf(&b, "More current-attempt uploads are available. Call work_attempt_receipt with project_id=%q, reference=%q, native_attempt_id=%q and cursor=%q. Use next_cursor to read another page when needed.\n\n", issue.Metadata["hub_project_id"], issue.ID, page.AttemptID, page.After)
+	}
 	task := ValidationContext(issue, workflow.Config.Gate, workflow.SharedPrompt)
 	if task.Workflow != "" {
 		b.WriteString("Project WORKFLOW.md (governs this review):\n~~~markdown\n")

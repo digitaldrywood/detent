@@ -142,7 +142,7 @@ func WorkReadCatalog() []Definition {
 		{BoardReceipt, "Read a work item's recorded receipt and runtime evidence; efficiency requires its application owner.", "reference"},
 		{BoardSession, "Read the current or latest work-item session.", "reference"},
 		{BoardSessionHistory, "Read a bounded page of the work item's persisted session rollout or native instruction activity, including coverage limits.", "reference attempt_id native_attempt_id offset limit"},
-		{WorkAttemptReceipt, "Read an attempt receipt and bounded local/scheduled check comparisons owned by this work item; select a local attempt_id or a native_attempt_id.", "reference attempt_id native_attempt_id"},
+		{WorkAttemptReceipt, "Read an attempt receipt and bounded local/scheduled check comparisons owned by this work item; select a local attempt_id or a native_attempt_id. For another page of upload descriptors use native_attempt_id and the returned evidence cursor.", "reference attempt_id native_attempt_id cursor"},
 		{GitHubScopeTimings, "Read bounded recorded GitHub HTTP and inclusive token timings for one native runner attempt. Reads make no upstream requests; HTTP sums may exceed wall and token time can contain installation HTTP. Unknown boundaries remain unavailable.", "reference native_attempt_id runner_id"},
 	} {
 		properties := map[string]any{"project_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}}
@@ -333,6 +333,9 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 	}
 	if len(request.NativeAttemptID) > 128 || request.NativeAttemptID != "" && !strings.HasPrefix(request.NativeAttemptID, "attempt_") || request.AttemptID != 0 && request.NativeAttemptID != "" || name == WorkAttemptReceipt && request.AttemptID <= 0 && request.NativeAttemptID == "" {
 		return request, invalidWorkRead("give exactly one of attempt_id or native_attempt_id; native_attempt_id starts with attempt_")
+	}
+	if name == WorkAttemptReceipt && request.Cursor != "" && (request.NativeAttemptID == "" || request.Cursor != "start" && (len(request.Cursor) != 36 || !strings.HasPrefix(request.Cursor, "att_"))) {
+		return request, invalidWorkRead("attempt evidence requires a native attempt and a returned cursor")
 	}
 	return request, nil
 }

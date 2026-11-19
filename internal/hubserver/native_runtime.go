@@ -196,7 +196,7 @@ func (s *Service) getNativeExplanation(c echo.Context) error {
 
 func (s *Service) getNativeRuntime(c echo.Context) error {
 	for key, values := range c.QueryParams() {
-		if key != "native_attempt_id" && key != "attempt_id" && key != "admission" || len(values) != 1 {
+		if key != "native_attempt_id" && key != "attempt_id" && key != "admission" && key != "evidence_after" || len(values) != 1 {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Unsupported runtime selector"))
 		}
 	}
@@ -206,6 +206,18 @@ func (s *Service) getNativeRuntime(c echo.Context) error {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Select one attempt identity"))
 		}
 		selector = c.QueryParam("attempt_id")
+	}
+	if after := c.QueryParam("evidence_after"); after != "" {
+		if after != "start" && !hubapi.ValidID(after, "att") || !hubapi.ValidID(selector, "attempt") || c.QueryParams().Has("admission") {
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attempt evidence cursor"))
+		}
+		ctx, cancel := context.WithTimeout(s.withRequestDetails(s.runDetailContext(c.Request().Context())), hubapi.ReadTimeout)
+		defer cancel()
+		evidence, _, _, err := s.readSelectedNativeRuntimeTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), runtimeAttemptSelector{attemptID: selector, evidenceAfter: after})
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return nativeArchiveJSON(c, http.StatusOK, evidence)
 	}
 	var admission []tracker.NativeAdmissionContext
 	if raw := c.QueryParam("admission"); raw != "" {

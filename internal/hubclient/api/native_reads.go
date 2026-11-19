@@ -228,15 +228,17 @@ func (c *NativeClient) ReadAgentTool(ctx context.Context, call runner.AgentToolC
 			err = c.readItemPage(ctx, id, "attempts", "blockers", request.Cursor, request.Limit, &page)
 			value = page
 		case operatortool.WorkAttemptReceipt:
-			if request.Cursor != "" {
-				return operatortool.Result{}, operatortool.ErrInvalidArguments
-			}
 			selector := request.NativeAttemptID
 			if request.AttemptID > 0 {
 				selector = strconv.FormatInt(request.AttemptID, 10)
 			}
 			var evidence tracker.NativeRuntimeEvidence
-			evidence, err = c.RuntimeEvidence(ctx, id, selector)
+			if request.Cursor != "" {
+				params := url.Values{"native_attempt_id": {selector}, "evidence_after": {request.Cursor}}
+				err = c.client.request(ctx, http.MethodGet, c.base()+"/work-items/"+url.PathEscape(string(id))+"/runtime?"+params.Encode(), nil, &evidence)
+			} else {
+				evidence, err = c.RuntimeEvidence(ctx, id, selector)
+			}
 			if err == nil {
 				if evidence.Issue.OrganizationID != c.organization || evidence.Issue.ProjectID != c.project || evidence.Issue.WorkItemID != id {
 					return operatortool.Result{}, operatortool.ErrAccessDenied

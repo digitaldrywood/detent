@@ -32,6 +32,7 @@ type TenantAttemptSnapshot struct {
 	Attempt           leasestore.Attempt           `json:"-"`
 	Lease             leasestore.Lease             `json:"-"`
 	Event             eventstore.Event             `json:"-"`
+	EvidencePage      bool                         `json:"-"`
 	Evidence          bool                         `json:"-"`
 	EvidenceRows      []attachmentstore.Record     `json:"-"`
 }

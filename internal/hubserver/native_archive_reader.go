@@ -77,6 +77,14 @@ func nativeArchiveJSON(c echo.Context, status int, value any) error {
 	if err != nil {
 		return err
 	}
+	if result, ok := value.(tracker.NativeRuntimeEvidence); ok && len(raw) > 1<<20 && result.Attempt != nil && len(result.Attempt.Evidence) > 0 {
+		result.Attempt.Evidence = nil
+		result.Attempt.NextEvidenceAfter = "start"
+		if !slices.Contains(result.Attempt.Unavailable, "evidence") {
+			result.Attempt.Unavailable = append(result.Attempt.Unavailable, "evidence")
+		}
+		return nativeArchiveJSON(c, status, result)
+	}
 	return c.JSONBlob(status, raw)
 }
 

@@ -136,7 +136,11 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 				}
 			}
 		}
-		return runner.NativeValidation{SecurityAudit: reviewevidence.AcceptedSecurityAudit(detail, version), Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands}, nil
+		var continuation *tracker.NativeAttemptEvidenceCursor
+		if runtime.Attempt.NextEvidenceAfter != "" {
+			continuation = &tracker.NativeAttemptEvidenceCursor{AttemptID: runtime.Attempt.AttemptID, After: runtime.Attempt.NextEvidenceAfter}
+		}
+		return runner.NativeValidation{EvidenceContinuation: continuation, SecurityAudit: reviewevidence.AcceptedSecurityAudit(detail, version), Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands}, nil
 	}
 	return runner.NativeValidation{}, errors.New("native validator version is no longer current")
 }

@@ -15,15 +15,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type validatorAttachments struct {
-	mu     sync.Mutex
-	reads  []gate.AttachmentRead
-	head   string
-	tree   string
-	images bool
-	handle AgentToolHandler
+	mu           sync.Mutex
+	reads        []gate.AttachmentRead
+	head         string
+	tree         string
+	images       bool
+	continuation *tracker.NativeAttemptEvidenceCursor
+	item         string
+	handle       AgentToolHandler
 }
 
 type validatorAttachmentResult struct {
@@ -34,10 +37,14 @@ type validatorAttachmentResult struct {
 	InspectionError string               `json:"inspection_error,omitempty"`
 }
 
-func validatorEvidenceTools(tools []AgentTool) []AgentTool {
+func validatorEvidenceTools(tools []AgentTool, paged bool) []AgentTool {
 	var result []AgentTool
 	for _, tool := range tools {
 		switch tool.Name {
+		case operatortool.WorkAttemptReceipt:
+			if paged {
+				result = append(result, tool)
+			}
 		case operatortool.WorkItem, operatortool.WorkComments, operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment:
 			if tool.Name == operatortool.ReadAttachment {
 				tool.Description += " During native acceptance validation, reading an image or text/plain attachment from offset 0 verifies its complete digest. Only complete content displayed in this review returns a host read_receipt bound to the reviewed head and tree. Unsupported MIME or truncated text returns inspection_error and no read_receipt. Images require a backend that can display them."
@@ -49,6 +56,12 @@ func validatorEvidenceTools(tools []AgentTool) []AgentTool {
 }
 
 func (v *validatorAttachments) call(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+	if call.Name == operatortool.WorkAttemptReceipt {
+		args, err := operatortool.DecodeWorkRead(call.Name, call.Arguments)
+		if err != nil || v.continuation == nil || args.NativeAttemptID != v.continuation.AttemptID || args.Reference != v.item || args.Cursor == "" {
+			return AgentToolResult{}, operatortool.ErrInvalidArguments
+		}
+	}
 	result, err := v.handle(ctx, call)
 	if err != nil || !result.Success || call.Name != operatortool.ReadAttachment {
 		return result, err

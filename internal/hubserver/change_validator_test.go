@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
@@ -241,6 +242,10 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			r.ImplementationReview = r.Validator
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"object-backed referenced validator output", func(r *tracker.ReviewChange) {
+			objectOutput(r)
+			r.Validator.Commands[0].Output = strings.Repeat("command output\n", 90000)
+		}, http.StatusOK, "reviewed", nil},
 		{"object-backed separate session pass", objectOutput, http.StatusOK, "reviewed", nil},
 		{"object-backed separate session pass with retained history", objectOutput, http.StatusOK, "reviewed", nil},
 		{"object-backed another head", func(r *tracker.ReviewChange) { objectOutput(r); r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence", nil},
@@ -755,6 +760,88 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				if kept := validatorReferencedDetailObjects(t, admin, f); kept != referenced || kept == 0 {
 					t.Fatalf("orphan reclamation changed referenced objects: %d -> %d", referenced, kept)
 				}
+			} else if test.name == "object-backed referenced validator output" {
+				inline := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+				requireNativeStatus(t, inline, http.StatusRequestEntityTooLarge)
+				raw, err := json.Marshal(map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "change_id": change.ID, "version_id": version.ID, "review": request})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref, err := objects.StoreDetail(t.Context(), string(f.project.OrganizationID), raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var uploader string
+				if err := admin.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE organization_id=$1 AND token_hash=$2", f.project.OrganizationID, apikey.HashToken(worker)).Scan(&uploader); err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					record := attachmentstore.ArchiveRecord{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: "att_" + ref.SHA256[:32], Uploader: uploader, CreatedAt: f.service.config.Clock(), Reference: ref}
+					if _, err := w.PrepareAttachmentArchive(t.Context(), record); err != nil {
+						return err
+					}
+					return w.PublishAttachmentArchive(t.Context(), record, issue.WorkItemID)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				wire := map[string]any{"validator_archive": map[string]string{"sha256": ref.SHA256, "content_sha256": policy.Digest(raw)}, "idempotency_key": request.IdempotencyKey, "lease_id": request.LeaseID, "fencing_token": fmt.Sprint(request.FencingToken)}
+				wire["decision"] = "approved"
+				mixed := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, wire)
+				requireNativeStatus(t, mixed, http.StatusUnprocessableEntity)
+				delete(wire, "decision")
+				for range 2 {
+					response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, wire)
+					requireNativeStatus(t, response, http.StatusOK)
+					if response.Body.Len() > 4096 {
+						t.Fatalf("review acknowledgement bytes=%d", response.Body.Len())
+					}
+				}
+				checkPath := path + "?" + url.Values{"view": {"validator_receipt"}, "idempotency_key": {request.IdempotencyKey}, "version_id": {version.ID}}.Encode()
+				check := performHubAPIRequest(t, f.service, http.MethodGet, checkPath, worker, nil)
+				requireNativeStatus(t, check, http.StatusOK)
+				var ack struct {
+					Digest string `json:"request_sha256"`
+				}
+				decodeHubResponse(t, check, &ack)
+				hash, err := serverapi.CommandHash(request)
+				if err != nil || ack.Digest != hash {
+					t.Fatal("indexed publication receipt did not match original validator command")
+				}
+				var canonical []byte
+				var cursor string
+				for {
+					page, err := native.RecoveryEvidence(t.Context(), issue.WorkItemID, cursor)
+					if err != nil || page.Section != "reviews" || page.VersionID != version.ID || page.Offset != int64(len(canonical)) {
+						t.Fatalf("read canonical review at %d: section=%s error=%v", len(canonical), page.Section, err)
+					}
+					canonical = append(canonical, page.Data...)
+					if int64(len(canonical)) == page.TotalBytes {
+						if policy.Digest(canonical) != page.SHA256 {
+							t.Fatal("canonical review digest mismatch")
+						}
+						break
+					}
+					if page.NextCursor == "" || page.NextCursor == cursor {
+						t.Fatal("review cursor did not advance")
+					}
+					cursor = page.NextCursor
+				}
+				var stored tracker.ChangeReview
+				if json.Unmarshal(canonical, &stored) != nil || stored.Validator == nil || len(stored.Validator.Commands) != 1 || stored.Validator.Commands[0].Output != request.Validator.Commands[0].Output {
+					t.Fatal("authorized recovery read lost validator output")
+				}
+				var total int
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind='review'", f.project.OrganizationID, change.ID).Scan(&total); err != nil || total != 1 {
+					t.Fatalf("replay stored %d reviews: %v", total, err)
+				}
+				foreign := newNativeFixture(t, f.service, "org_first_second", "foreign-validator")
+				foreignItem := foreign.create(t, "Foreign example item")
+				foreignWorker := foreign.worker(t, "foreign-worker")
+				foreignPath := foreign.base + "/work-items/" + string(foreignItem.WorkItemID) + "/changes/" + change.ID
+				foreignWrite := performHubAPIRequest(t, foreign.service, http.MethodPost, foreignPath+"/versions/"+version.ID+"/reviews", foreignWorker, wire)
+				requireNativeStatus(t, foreignWrite, http.StatusNotFound)
+				foreignRead := performHubAPIRequest(t, foreign.service, http.MethodGet, foreignPath+strings.TrimPrefix(checkPath, path), foreignWorker, nil)
+				requireNativeStatus(t, foreignRead, http.StatusNotFound)
 			} else if objects != nil {
 				measurement := &changeWriterMeasurement{}
 				ctx := context.WithValue(t.Context(), changeWriterMeasurementKey{}, measurement)

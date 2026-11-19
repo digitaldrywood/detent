@@ -187,6 +187,9 @@ func (s *Service) createChange(c echo.Context) error {
 }
 
 func (s *Service) getChange(c echo.Context) error {
+	if c.QueryParam("view") == "validator_receipt" {
+		return s.getValidatorPublicationReceipt(c)
+	}
 	if c.QueryParam("view") != "bounded" {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancel()

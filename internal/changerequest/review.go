@@ -18,6 +18,26 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type ValidatorArchive struct {
+	OrganizationID tracker.OrganizationID   `json:"organization_id"`
+	ProjectID      tracker.ProjectID        `json:"project_id"`
+	WorkItemID     tracker.NativeWorkItemID `json:"work_item_id"`
+	ChangeID       string                   `json:"change_id"`
+	VersionID      string                   `json:"version_id"`
+	Review         tracker.ReviewChange     `json:"review"`
+}
+
+type ValidatorArchiveReference struct {
+	SHA256        string `json:"sha256"`
+	BindingID     string `json:"binding_id,omitempty"`
+	ContentSHA256 string `json:"content_sha256"`
+}
+
+type ReviewSubmission struct {
+	tracker.ReviewChange
+	ValidatorArchive *ValidatorArchiveReference `json:"validator_archive,omitempty"`
+}
+
 func PolicyID(rules tracker.ChangeReviewPolicy) string {
 	rules.ID = ""
 	data, err := json.Marshal(rules)

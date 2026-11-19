@@ -19,6 +19,7 @@ type PromptOptions = prompt.PromptOptions
 type ValidatorPromptOptions struct {
 	SecurityAudit        *NativeSecurityAuditEvidence
 	Discussion           NativeReviewDiscussion
+	EvidenceContinuation *tracker.NativeAttemptEvidenceCursor
 	Evidence             []tracker.NativeEvidence
 	implementationReview bool
 	Commands             []gate.CommandResult
@@ -83,6 +84,7 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		SecurityAudit:        opts.SecurityAudit,
 		Discussion:           prompt.NativeReviewDiscussion(opts.Discussion),
 		Evidence:             opts.Evidence,
+		EvidenceContinuation: opts.EvidenceContinuation,
 		ImplementationReview: opts.implementationReview,
 		Commands:             opts.Commands,
 		VersionID:            opts.VersionID,

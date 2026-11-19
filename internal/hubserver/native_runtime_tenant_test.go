@@ -1,8 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -11,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -22,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -40,6 +47,11 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 		t.Fatal(err)
 	}
 	seedPostgresHubAdmin(t, repository, service, organization)
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization.ID, ID: hubapi.NewID("hub"), CursorKey: bytes.Repeat([]byte{0x5a}, 32)})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
 	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{
 		"idempotency_key": "runtime-project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates(),
@@ -75,11 +87,18 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	decodeHubResponse(t, otherResponse, &other)
 
 	startedAt := clock.Now().UTC()
-	binding := runnerauth.NewBinding()
+	server := httptest.NewServer(service.Handler())
+	t.Cleanup(server.Close)
+	identityFile := filepath.Join(t.TempDir(), "runner", "identity.json")
+	file, err := runnerauth.Initialize(identityFile, server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := file.Identity.Binding
 	runnerID, machineID := binding.RunnerID, string(binding.MachineID)
 	const credentialID = "credential_runtime_example"
 	const enrollmentID = "enrollment_runtime_example"
-	const token = "example_runtime_runner_token"
+	token := file.Credential
 	tokenHash := apikey.HashToken(token)
 	expires := startedAt.Add(time.Hour)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -193,6 +212,104 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	if evidence.CurrentLease == nil || evidence.CurrentLease.ID != tracker.LeaseID(lease.LeaseID) || evidence.CurrentLease.FencingToken != tracker.FencingToken(lease.FencingToken) || evidence.CurrentLease.PolicyID != descriptor.ID {
 		t.Fatalf("runtime current lease differs from the claim: %#v", evidence.CurrentLease)
 	}
+	t.Run("retained evidence pages", func(t *testing.T) {
+		file.Identity = runnerauth.Identity{Binding: binding, Scope: "projects", OrganizationID: organization.ID, ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, ExpiresAt: expires}
+		if err := runnerauth.Save(identityFile, file); err != nil {
+			t.Fatal(err)
+		}
+		client, err := api.New(api.Config{URL: server.URL, IdentityFile: identityFile, HTTPClient: server.Client()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		native, err := client.Native(organization.ID, project.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foreignOrg, err := service.createNativeOrganizationFor(t.Context(), "Other example organization")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedPostgresHubAdmin(t, repository, service, foreignOrg)
+		foreign := newNativeFixture(t, service, foreignOrg.ID, "foreign-runtime")
+		foreignItem := foreign.create(t, "Other example item")
+		foreignWorker := foreign.worker(t, "foreign-reader")
+		selectPostgresHubTestOrganization(service, organization.ID)
+		for _, count := range []int{201, 1000} {
+			t.Run(fmt.Sprint(count), func(t *testing.T) {
+				_, err := adminDB.ExecContext(t.Context(), `INSERT INTO attachments (organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at,work_item_id,evidence_attempt_id,evidence_caption)
+ SELECT $1,$2,'att_'||lpad(to_hex(i),32,'0'),$3,'evidence.txt','text/plain',1,repeat('a',64),$4,$5,$6,CASE WHEN i<=32 AND $7=1000 THEN repeat('<',1024) ELSE 'Example evidence' END FROM generate_series(1,$7::int) i`, organization.ID, project.ID, credentialID, clock.Now(), issue.WorkItemID, started.Data.AttemptID, count)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if _, err := adminDB.ExecContext(context.Background(), "DELETE FROM attachments WHERE organization_id=$1 AND evidence_attempt_id=$2", organization.ID, started.Data.AttemptID); err != nil {
+						t.Error(err)
+					}
+				})
+				first, err := native.RuntimeEvidence(t.Context(), issue.WorkItemID, started.Data.AttemptID)
+				if err != nil || first.Attempt == nil || first.Attempt.NextEvidenceAfter == "" || !slices.Contains(first.Attempt.Unavailable, "evidence") || len(first.Attempt.Evidence) == 0 || len(first.Attempt.Evidence) > 200 {
+					t.Fatalf("validator received unbounded or unmarked input: %v", err)
+				}
+				if count == 1000 {
+					foreignPath := foreign.base + "/work-items/" + string(foreignItem.WorkItemID) + "/runtime?native_attempt_id=" + started.Data.AttemptID + "&evidence_after=" + first.Attempt.NextEvidenceAfter
+					selectPostgresHubTestOrganization(service, foreignOrg.ID)
+					foreignPage := performHubAPIRequest(t, foreign.service, http.MethodGet, foreignPath, foreignWorker, nil)
+					selectPostgresHubTestOrganization(service, organization.ID)
+					requireNativeStatus(t, foreignPage, http.StatusNotFound)
+					request, _ := json.Marshal(operatortool.WorkReadRequest{ProjectID: string(project.ID), Reference: string(issue.WorkItemID), NativeAttemptID: started.Data.AttemptID, Cursor: first.Attempt.NextEvidenceAfter})
+					page, err := native.ReadAgentTool(t.Context(), runner.AgentToolCall{Name: operatortool.WorkAttemptReceipt, Arguments: request}, clock.Now())
+					if err != nil || len(page.Content) > operatortool.MaxResultBytes || !strings.Contains(string(page.Content), "attachment_id") || !strings.Contains(string(page.Content), "next_cursor") {
+						t.Fatalf("validator evidence tool page: %v", err)
+					}
+				}
+				after := ""
+				seen := make(map[string]bool)
+				for {
+					path := runtimePath
+					if after != "" {
+						path += "&evidence_after=" + after
+					}
+					page := performHubAPIRequest(t, service, http.MethodGet, path, token, nil)
+					requireNativeStatus(t, page, http.StatusOK)
+					if page.Body.Len() >= 1<<20 {
+						t.Fatalf("runtime page exceeds runner transport: %d", page.Body.Len())
+					}
+					var got tracker.NativeRuntimeEvidence
+					if err := json.Unmarshal(page.Body.Bytes(), &got); err != nil {
+						t.Fatal(err)
+					}
+					if got.Attempt == nil || got.Attempt.AttemptID != started.Data.AttemptID || got.Attempt.PolicyID != descriptor.ID || got.Attempt.LeaseID != tracker.LeaseID(lease.LeaseID) || got.Attempt.FencingToken != tracker.FencingToken(lease.FencingToken) {
+						t.Fatal("lost fenced validator identity")
+					}
+					for _, attachment := range got.Attempt.Evidence {
+						if seen[attachment.AttachmentID] {
+							t.Fatal("duplicate evidence across pages")
+						}
+						seen[attachment.AttachmentID] = true
+					}
+					var continuation struct {
+						Attempt struct {
+							Next string `json:"next_evidence_after"`
+						} `json:"attempt"`
+					}
+					if err := json.Unmarshal(page.Body.Bytes(), &continuation); err != nil {
+						t.Fatal(err)
+					}
+					after = continuation.Attempt.Next
+					if after == "" {
+						break
+					}
+					if len(got.Attempt.Evidence) == 0 || after != got.Attempt.Evidence[len(got.Attempt.Evidence)-1].AttachmentID {
+						t.Fatal("evidence cursor did not advance")
+					}
+				}
+				if len(seen) != count || !seen[fmt.Sprintf("att_%032x", count)] {
+					t.Fatalf("read %d of %d attachments", len(seen), count)
+				}
+			})
+		}
+	})
+
 	for _, test := range []struct {
 		name, item, selector string
 		status               int

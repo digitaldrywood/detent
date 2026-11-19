@@ -73,9 +73,10 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 }
 
 type runtimeAttemptSelector struct {
-	attemptID string
-	latest    bool
-	failures  *runtimeFailureRows
+	evidenceAfter string
+	attemptID     string
+	latest        bool
+	failures      *runtimeFailureRows
 }
 
 type runtimeFailureRows struct {
@@ -212,6 +213,30 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 		if leasePolicy.OrganizationID != scope.Organization || leasePolicy.ProjectID != scope.Project || leasePolicy.LeaseID != tracker.LeaseID(lease.LeaseID) || leasePolicy.PolicyID == "" {
 			return hubapi.PolicyMismatch("Lease policy is missing or outside the authorized project")
 		}
+		snapshot.attempt = hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+		snapshot.leasePolicy = leasePolicy
+		snapshot.attempt.Evidence, snapshot.attempt.EvidencePage = true, true
+		if selector.evidenceAfter == "" || selector.evidenceAfter == "start" {
+			snapshot.attempt.EvidenceRows, err = r.AttachmentEvidence(ctx, scope.Project, row.NativeID, attempt.ID, 201)
+		} else {
+			anchor, readErr := r.Attachment(ctx, scope.Project, selector.evidenceAfter)
+			if readErr != nil {
+				return readErr
+			}
+			if anchor.Metadata.WorkItemID != string(row.NativeID) || anchor.EvidenceAttemptID != attempt.ID {
+				return corestore.ErrNotFound
+			}
+			snapshot.attempt.EvidenceRows, err = r.AttachmentEvidenceAfter(ctx, scope.Project, row.NativeID, attempt.ID, anchor.Metadata.CreatedAt, anchor.Metadata.ID, 201)
+		}
+		if err != nil {
+			return err
+		}
+		if selector.evidenceAfter != "" {
+			return nil
+		}
+		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
+			return err
+		}
 		attemptPolicy, err := r.ProjectPolicyRevision(ctx, scope.Project, leasePolicy.PolicyID)
 		if err != nil {
 			return err
@@ -255,13 +280,6 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 				snapshot.decision = decision
 			}
 		}
-		snapshot.attempt = hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
-		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
-			return err
-		}
-		if err := readTenantAttemptEvidence(ctx, r, &snapshot.attempt); err != nil {
-			return err
-		}
 		snapshot.attemptPolicy, snapshot.currentPolicy, snapshot.policyFound = attemptPolicy, currentPolicy, policyFound
 		snapshot.leasePolicy = leasePolicy
 		activeLease, activeErr := r.ActiveLeaseForIssue(ctx, row.ID)
@@ -294,6 +312,14 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 	}
 	if snapshot.attempt.Attempt.ID == "" {
 		return tracker.NativeRuntimeEvidence{}, snapshot.boardSequence, false, nil
+	}
+	if selector.evidenceAfter != "" {
+		selected := snapshot.attempt
+		attempt := tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: selected.Attempt.ID, LeaseID: tracker.LeaseID(selected.Lease.LeaseID), FencingToken: tracker.FencingToken(selected.Attempt.FencingToken), PolicyID: snapshot.leasePolicy.PolicyID}, Unavailable: []string{"evidence"}}
+		if err := projectAttemptEvidence(&attempt, selected); err != nil {
+			return tracker.NativeRuntimeEvidence{}, 0, false, err
+		}
+		return tracker.NativeRuntimeEvidence{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: snapshot.item.NativeID}}, Attempt: &attempt, ObservedAt: s.config.Clock().UTC()}, snapshot.boardSequence, true, nil
 	}
 	issue, err := s.hydrateWorkItemRecord(ctx, snapshot.item, snapshot.version)
 	if err != nil {
