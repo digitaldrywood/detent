@@ -715,12 +715,14 @@ func TestHostedProjectMutationsChargeTheRequestOrganization(t *testing.T) {
 	fixtures := map[tracker.OrganizationID]nativeFixture{}
 	subjects := map[tracker.OrganizationID]tracker.NativeIssue{}
 	limits := map[tracker.OrganizationID]int64{}
+	collaborationLimits := map[tracker.OrganizationID]int64{}
 	for _, organization := range organizations {
 		fixtures[organization] = newNativeFixture(t, service, organization, "Example project")
 		subjects[organization] = fixtures[organization].create(t, "Workspace subject "+string(organization))
 		if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 			entitlement, err := hubapi.FeatureResult(service.database.plansService().EntitlementRecord(t.Context(), r, now))
 			limits[organization] = entitlement.Allowances["api_mutations"]
+			collaborationLimits[organization] = entitlement.Allowances["collaboration_bytes"]
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -753,6 +755,8 @@ func TestHostedProjectMutationsChargeTheRequestOrganization(t *testing.T) {
 		}
 		return effects, receipts
 	}
+	const readCollaborationBytes = "SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'"
+	const setCollaborationBytes = "UPDATE hosted_usage_counters SET value=$2 WHERE organization_id=$1 AND name='collaboration_bytes'"
 	for _, test := range []struct {
 		name, suffix, table string
 		body                func(tracker.OrganizationID, string) map[string]any
@@ -783,11 +787,39 @@ func TestHostedProjectMutationsChargeTheRequestOrganization(t *testing.T) {
 			if got := used(t, exhausted); got != limits[exhausted] {
 				t.Fatalf("refused mutation usage=%d want %d", got, limits[exhausted])
 			}
+			checkStorageOverage := test.table == "project_actions"
+			storageOverage := collaborationLimits[available] + 1
+			if checkStorageOverage {
+				if collaborationLimits[available] <= 0 {
+					t.Fatal("project action fixture requires a positive collaboration storage allowance")
+				}
+				var previousBytes int64
+				if err := admin.QueryRowContext(t.Context(), readCollaborationBytes, available).Scan(&previousBytes); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), setCollaborationBytes, available, storageOverage); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if _, err := admin.ExecContext(t.Context(), setCollaborationBytes, available, previousBytes); err != nil {
+						t.Errorf("restore collaboration bytes: %v", err)
+					}
+				}()
+			}
 			acceptedKey := "accepted-" + test.table
 			accepted := post(available, acceptedKey)
 			requireNativeStatus(t, accepted, http.StatusCreated)
 			if got := used(t, available); got != 1 {
 				t.Fatalf("request organization usage=%d want 1", got)
+			}
+			if checkStorageOverage {
+				var got int64
+				if err := admin.QueryRowContext(t.Context(), readCollaborationBytes, available).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+				if got != storageOverage {
+					t.Fatalf("project action collaboration bytes=%d want %d", got, storageOverage)
+				}
 			}
 			if got := used(t, exhausted); got != limits[exhausted] {
 				t.Fatalf("other organization usage=%d want %d", got, limits[exhausted])
@@ -2205,13 +2237,10 @@ func exerciseHostedPlanUnrestrictedWork(t *testing.T, service *Service) {
 	if _, err := claimHostedPlanWork(t, f, token, request); err != nil {
 		t.Fatalf("unlimited claim = %v", err)
 	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, f.project.OrganizationID, "unrestricted-growth", 0, 1, service.config.Clock(), false); err != nil {
-			return err
-		}
-		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), w, "hosted_artifacts", service.config.Clock()))
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), r, "hosted_artifacts", service.config.Clock()))
 	}); err != nil {
-		t.Fatalf("unlimited growth or feature = %v", err)
+		t.Fatalf("unrestricted feature = %v", err)
 	}
 }
 
@@ -2233,13 +2262,19 @@ func exerciseHostedPlanFreeDefault(t *testing.T, service *Service) {
 			t.Fatalf("claim over the free concurrency allowance = %v", err)
 		}
 	}
-	err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, f.project.OrganizationID, "free-default-growth", 1<<30, 1<<30+1, service.config.Clock(), false)
-	})
-	var limit *hostedplans.LimitError
-	if !errors.As(err, &limit) || limit.Resource != "collaboration_bytes" || limit.Allowance != 1<<30 {
-		t.Fatalf("growth over the free storage allowance = %v", err)
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		entitlement, err := hubapi.FeatureResult(service.database.plansService().EntitlementRecord(t.Context(), r, service.config.Clock()))
+		if err != nil {
+			return err
+		}
+		if allowance := entitlement.Allowances["collaboration_bytes"]; allowance != 1<<30 {
+			return fmt.Errorf("free storage allowance = %d, want %d", allowance, 1<<30)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
+	var limit *hostedplans.LimitError
 	if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), r, "hosted_artifacts", service.config.Clock()))
 	}); !errors.As(err, &limit) || limit.Resource != "hosted_artifacts" {

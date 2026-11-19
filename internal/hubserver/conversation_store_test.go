@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
@@ -61,6 +62,45 @@ func (f conversationFixture) create(t *testing.T, record conversationRecord) con
 		t.Fatal(err)
 	}
 	return record
+}
+
+func TestConversationStoreCommandsAndReceipts(t *testing.T) {
+	t.Parallel()
+	f := newConversationFixture(t)
+	now := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
+	record := f.create(t, f.record(f.owner, "commands", now))
+	second := f.create(t, f.record(f.owner, "second", now))
+	command := conversation.Command{Key: "cmd-1", Kind: conversation.CommandMessage, Text: "hello"}
+	hash := conversation.RequestHash(command)
+
+	existing, conflict, err := f.reserveCommand(t, t.Context(), record.ID, command.Key, command.Kind, hash, now)
+	if err != nil || existing != nil || conflict {
+		t.Fatalf("reserveCommand(first) = %#v, %v, %v", existing, conflict, err)
+	}
+	receipt := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliveryQueued, MessageID: "msg_x", UpdatedAt: now.Add(time.Second)}
+	if err := f.updateReceipt(t, t.Context(), record.ID, command.Key, receipt); err != nil {
+		t.Fatalf("updateReceipt() error = %v", err)
+	}
+	existing, conflict, err = f.reserveCommand(t, t.Context(), record.ID, command.Key, command.Kind, hash, now.Add(time.Minute))
+	if err != nil || conflict || existing == nil {
+		t.Fatalf("reserveCommand(replay) = %#v, %v, %v", existing, conflict, err)
+	}
+	if existing.Status != conversation.DeliveryQueued || existing.MessageID != "msg_x" || !existing.UpdatedAt.Equal(now.Add(time.Second)) {
+		t.Fatalf("replayed receipt = %#v", existing)
+	}
+	other := command
+	other.Text = "different"
+	existing, conflict, err = f.reserveCommand(t, t.Context(), record.ID, command.Key, command.Kind, conversation.RequestHash(other), now)
+	if err != nil || !conflict || existing == nil || existing.Key != command.Key {
+		t.Fatalf("reserveCommand(conflict) = %#v, %v, %v", existing, conflict, err)
+	}
+	if err := f.updateReceipt(t, t.Context(), record.ID, "missing", receipt); err == nil {
+		t.Fatal("updateReceipt(missing) must fail")
+	}
+	existing, conflict, err = f.reserveCommand(t, t.Context(), second.ID, command.Key, command.Kind, hash, now)
+	if err != nil || existing != nil || conflict {
+		t.Fatalf("reserveCommand(other conversation) = %#v, %v, %v", existing, conflict, err)
+	}
 }
 
 func prepareRecordTestPayload(t *testing.T, f conversationFixture, record conversationRecord, values ...[]byte) context.Context {
@@ -886,4 +926,77 @@ func (f conversationFixture) pendingQuestions(ctx context.Context, id string) (q
 		questions = append(questions, question)
 	}
 	return
+}
+
+func (f conversationFixture) reserveCommand(t *testing.T, ctx context.Context, id, key string, kind conversation.CommandKind, hash string, now time.Time) (existing *conversation.Receipt, conflict bool, err error) {
+	t.Helper()
+	receipt := conversation.Receipt{Key: key, Kind: kind, Status: conversation.DeliverySaved, UpdatedAt: now.UTC()}
+	plan, err := f.publication(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := plan.PrepareValue(ctx, raw); err != nil {
+		return nil, false, err
+	}
+	content, err := messageContent(conversationMessageRecord{Data: raw})
+	if err != nil {
+		return nil, false, err
+	}
+	ref := plan.Prepared[string(f.organization)+"/"+artifact.Digest(content)]
+	err = f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, now); err != nil {
+			return err
+		}
+		row, inserted, err := w.ReserveCommand(ctx, conversationstore.Command{OrganizationID: f.organization, ConversationID: id, Key: key, Kind: kind, RequestHash: hash, Receipt: receipt, CreatedAt: now, UpdatedAt: now, ContentReference: contentArchiveID(string(f.organization), ref)})
+		if errors.Is(err, corestore.ErrUniqueViolation) {
+			existing, conflict = &row.Receipt, true
+			return nil
+		}
+		if err == nil && !inserted {
+			existing = &row.Receipt
+		}
+		return err
+	})
+	return
+}
+
+func (f conversationFixture) updateReceipt(t *testing.T, ctx context.Context, id, key string, receipt conversation.Receipt) error {
+	t.Helper()
+	if receipt.Key == "" {
+		receipt.Key = key
+	}
+	plan, err := f.publication(ctx, id)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	if err := plan.PrepareValue(ctx, raw); err != nil {
+		return err
+	}
+	content, err := messageContent(conversationMessageRecord{Data: raw})
+	if err != nil {
+		return err
+	}
+	ref := plan.Prepared[string(f.organization)+"/"+artifact.Digest(content)]
+	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		row, found, err := w.Command(ctx, id, key)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return corestore.ErrNotFound
+		}
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, receipt.UpdatedAt); err != nil {
+			return err
+		}
+		row.Receipt, row.UpdatedAt, row.ContentReference = receipt, receipt.UpdatedAt, contentArchiveID(string(f.organization), ref)
+		return w.UpdateCommand(ctx, row)
+	})
 }
