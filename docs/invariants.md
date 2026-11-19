@@ -395,7 +395,7 @@ current facts, and admission reads never change eligibility.
 `internal/scheduler` and `TestProviderEmptyPreviewReachesClaim` in
 `internal/hubclient/dispatch`; `TestRepositorySources` in `internal/invariants`.
 `TestNativeAdmissionExplanation`, `TestNativeDependencyReadPermissions`,
-`TestNativeRuntimeReadHistoryCost`, `TestNativeRuntimeReadSharedCapacityCost`,
+`TestNativeRuntimeReadPreservesCurrentEvidence`, `TestNativeRuntimeReadPreservesSharedCapacity`,
 `TestHostedAnalyticsReads` and `TestNativeAnalyticsRuntimePopulation` in
 `internal/hubserver` enforce scoped current evidence and recorded-read boundaries.
 `TestWorkerArtifactsRoutineUpdatePaths` and `TestSchedulerDrainPolicy` in

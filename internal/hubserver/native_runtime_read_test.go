@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,11 +11,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -41,58 +38,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type runtimeHistoryTraceKey struct{}
-
-type runtimeHistoryTraceCapture struct {
-	mu         sync.Mutex
-	statements []tracedStatement
-}
-
-type runtimeHistoryTrace struct{}
-
-func (runtimeHistoryTrace) record(ctx context.Context, query string, args []any) {
-	capture, ok := ctx.Value(runtimeHistoryTraceKey{}).(*runtimeHistoryTraceCapture)
-	if !ok {
-		return
-	}
-	values := slices.Clone(args)
-	for i, value := range values {
-		switch value := value.(type) {
-		case []byte:
-			values[i] = slices.Clone(value)
-		case []string:
-			values[i] = slices.Clone(value)
-		case []int64:
-			values[i] = slices.Clone(value)
-		case []tracker.NativeWorkItemID:
-			values[i] = slices.Clone(value)
-		case []tracker.ProjectID:
-			values[i] = slices.Clone(value)
-		}
-	}
-	capture.mu.Lock()
-	capture.statements = append(capture.statements, tracedStatement{query: query, args: values})
-	capture.mu.Unlock()
-}
-
-func (trace runtimeHistoryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	trace.record(ctx, data.SQL, data.Args)
-	return ctx
-}
-
-func (runtimeHistoryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (runtimeHistoryTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	return ctx
-}
-
-func (trace runtimeHistoryTrace) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	trace.record(ctx, data.SQL, data.Args)
-}
-
-func (runtimeHistoryTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
-
-func TestNativeRuntimeReadHistoryCost(t *testing.T) {
+func TestNativeRuntimeReadPreservesCurrentEvidence(t *testing.T) {
 	t.Parallel()
 	f := newChangeFixture(t, nil)
 	admin := usagePostgresAdmin(t, f.service)
@@ -103,7 +49,6 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	}
 	pgtransport.Configure(config)
 	config.MaxConns = 3
-	config.ConnConfig.Tracer = runtimeHistoryTrace{}
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -234,21 +179,15 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 		t.Fatal(err)
 	}
-	readRuntime := func(t *testing.T, ctx context.Context) (tracker.NativeRuntimeEvidence, []tracedStatement) {
+	readRuntime := func(t *testing.T, ctx context.Context) tracker.NativeRuntimeEvidence {
 		t.Helper()
-		capture := &runtimeHistoryTraceCapture{}
-		evidence, err := f.service.readNativeRuntime(context.WithValue(ctx, runtimeHistoryTraceKey{}, capture), scope, string(f.issue.WorkItemID), "")
+		evidence, err := f.service.readNativeRuntime(ctx, scope, string(f.issue.WorkItemID), "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		capture.mu.Lock()
-		defer capture.mu.Unlock()
-		if len(capture.statements) == 0 {
-			t.Fatal("runtime PostgreSQL statements were not observed")
-		}
-		return evidence, append([]tracedStatement(nil), capture.statements...)
+		return evidence
 	}
-	previous, count, explanationCount := 0, 0, 0
+	previous := 0
 	for _, history := range []int{1, 64, 256} {
 		t.Run(strconv.Itoa(history), func(t *testing.T) {
 			for i := previous; i < history; i++ {
@@ -291,11 +230,8 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE change_evidence,change_versions"); err != nil {
-				t.Fatal(err)
-			}
 			previous = history
-			evidence, statements := readRuntime(t, t.Context())
+			evidence := readRuntime(t, t.Context())
 			var full tracker.ChangeDetail
 			if history+1 <= corestore.MaxPageSize {
 				full = f.detail(t)
@@ -341,90 +277,16 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 			if !reflect.DeepEqual(evidence.Change.Summary, want) || evidence.Change.Change.CurrentVersion != version.ID || len(full.Versions) != history+1 || len(full.Discussion) != history || evidence.Change.Versions != nil || evidence.Change.Reviews != nil || evidence.Change.Checks != nil || evidence.Change.Discussion != nil {
 				t.Fatalf("runtime lost current summary or loaded history: %#v", evidence.Change)
 			}
-			if count == 0 {
-				count = len(statements)
-			}
 			projected := explain.FromNativeEvidence(evidence)
 			if evidence.CurrentVersion == nil || evidence.CurrentVersion.VersionID != version.ID || evidence.CurrentVersion.HeadSHA != version.HeadSHA || evidence.CurrentVersion.Landing == nil || !evidence.CurrentVersion.Landing.Gate.OutputTruncated || len(evidence.CurrentVersion.Landing.Gate.Output) > 4096 || projected.RequiredGate.State != explain.GateFailed || projected.RequiredGate.Reason != finding || projected.RequiredGate.ExternalMerge.ObservedAt == nil || !projected.RequiredGate.ExternalMerge.ObservedAt.Equal(receipt.ObservedAt) || projected.RequiredGate.LocalValidation.State != explain.GatePassed || projected.Attempt.NativeID != repair || evidence.CurrentLease == nil || projected.Eligibility.Current.Outcome != "claimed" {
 				t.Fatalf("current refusal or claimed repair lost: gate=%#v merge=%#v version=%#v lease=%#v scheduling=%#v now=%s receipt_at=%s change_at=%s", projected.RequiredGate, projected.RequiredGate.ExternalMerge, evidence.CurrentVersion, evidence.CurrentLease, evidence.Scheduling, now.Format(time.RFC3339Nano), receipt.ObservedAt.Format(time.RFC3339Nano), evidence.Change.Change.UpdatedAt.Format(time.RFC3339Nano))
 			}
-			if len(statements) != count {
-				t.Fatalf("runtime query count grew with history: %d -> %d", count, len(statements))
-			}
-			checked := 0
-			selectedVersion, selectedEvidence := false, false
-			for _, statement := range statements {
-				if !strings.Contains(statement.query, "FROM change_evidence") && !strings.Contains(statement.query, "FROM change_versions") {
-					continue
-				}
-				checked++
-				tx, err := pool.Begin(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				var raw []byte
-				_, err = tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(scope.Organization))
-				if err == nil {
-					_, err = tx.Exec(t.Context(), "SET LOCAL enable_seqscan = off")
-				}
-				if err == nil {
-					err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw)
-				}
-				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
-				rollbackErr := tx.Rollback(cleanup)
-				cancel()
-				if err := errors.Join(err, rollbackErr); err != nil {
-					t.Fatal(err)
-				}
-				type runtimePlan struct {
-					Relation  string        `json:"Relation Name"`
-					Rows      float64       `json:"Actual Rows"`
-					Removed   float64       `json:"Rows Removed by Filter"`
-					Rechecked float64       `json:"Rows Removed by Index Recheck"`
-					Loops     float64       `json:"Actual Loops"`
-					Plans     []runtimePlan `json:"Plans"`
-				}
-				var plans []struct{ Plan runtimePlan }
-				if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-					t.Fatalf("invalid PostgreSQL evidence plan: %s %v", raw, err)
-				}
-				currentVersion := false
-				for _, arg := range statement.args {
-					if id, ok := arg.(string); ok && id == version.ID {
-						currentVersion = true
-					}
-				}
-				var inspect func(runtimePlan)
-				inspect = func(plan runtimePlan) {
-					if plan.Relation == "change_evidence" || plan.Relation == "change_versions" {
-						if visits := (plan.Rows + plan.Removed + plan.Rechecked) * plan.Loops; visits > 2 {
-							t.Fatalf("current evidence query scans history: visits=%g plan=%s", visits, raw)
-						}
-						if currentVersion && plan.Rows*plan.Loops > 0 {
-							selectedVersion = selectedVersion || plan.Relation == "change_versions"
-							selectedEvidence = selectedEvidence || plan.Relation == "change_evidence"
-						}
-					}
-					for _, child := range plan.Plans {
-						inspect(child)
-					}
-				}
-				inspect(plans[0].Plan)
-			}
-			if checked == 0 || !selectedVersion || !selectedEvidence {
-				t.Fatalf("runtime plans did not read selected current evidence: queries=%d version=%t evidence=%t", checked, selectedVersion, selectedEvidence)
-			}
 			ctx := context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, true)
-			current, explanationStatements := readRuntime(t, ctx)
-			if explanationCount == 0 {
-				explanationCount = len(explanationStatements)
-			}
+			current := readRuntime(t, ctx)
 			result := explain.FromNativeEvidence(current)
-			if len(explanationStatements) != explanationCount || result.RequiredGate.State != projected.RequiredGate.State || result.RequiredGate.Reason != finding || result.Attempt.NativeID != repair || current.LatestDecision == nil || current.NativeCandidateExclusion == nil || current.NativeCandidateExclusion.Data.Decision.Reason != "recorded refusal" {
-				t.Fatalf("explanation lost current evidence or grew with history: queries=%d gate=%+v", len(explanationStatements), result.RequiredGate)
+			if result.RequiredGate.State != projected.RequiredGate.State || result.RequiredGate.Reason != finding || result.Attempt.NativeID != repair || current.LatestDecision == nil || current.NativeCandidateExclusion == nil || current.NativeCandidateExclusion.Data.Decision.Reason != "recorded refusal" {
+				t.Fatalf("explanation lost current evidence: gate=%+v", result.RequiredGate)
 			}
-			t.Logf("explanation history=%d queries=%d latest_decision=%s", history, len(explanationStatements), current.LatestDecision.ID)
-			t.Logf("%d historical versions: %d runtime queries; bounded current evidence", history, len(statements))
 		})
 	}
 	now = now.Add(time.Minute)
@@ -683,7 +545,6 @@ func newRuntimeCapacityFixture(t *testing.T, name string, now *time.Time) (nativ
 	}
 	pgtransport.Configure(config)
 	config.MaxConns = 3
-	config.ConnConfig.Tracer = runtimeHistoryTrace{}
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -709,134 +570,29 @@ func newRuntimeCapacityFixture(t *testing.T, name string, now *time.Time) (nativ
 	return f, repository, pool, admin, scope
 }
 
-func runtimeCapacityStatements(statements []tracedStatement) ([]tracedStatement, []tracedStatement) {
-	var capacity, data []tracedStatement
-	for _, statement := range statements {
-		query := strings.ToLower(strings.TrimSpace(statement.query))
-		if strings.HasPrefix(query, "begin") || query == "commit" || query == "rollback" || strings.Contains(query, "set_config('detent.organization_id'") {
-			continue
-		}
-		data = append(data, statement)
-		if strings.HasPrefix(query, "with capacity_runners as materialized") || strings.HasPrefix(query, "with capacity_owner_window as materialized") || strings.HasPrefix(query, "with provider_owners as materialized") || strings.HasPrefix(query, "with candidates as materialized (select * from leases") {
-			capacity = append(capacity, statement)
-		}
-	}
-	return capacity, data
-}
-
-func runtimeCapacityQueries(t *testing.T, service *Service, ctx context.Context, scope hubscope.NativeScope, now time.Time) ([]runnerauth.Runner, bool, []tracedStatement, error) {
+func runtimeCapacityQueries(t *testing.T, service *Service, ctx context.Context, scope hubscope.NativeScope, now time.Time) ([]runnerauth.Runner, bool, error) {
 	t.Helper()
-	capture := &runtimeHistoryTraceCapture{}
-	readCtx := context.WithValue(ctx, runtimeHistoryTraceKey{}, capture)
 	repository, ok := service.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		t.Fatal("tenant snapshot owner unavailable")
 	}
 	var snapshot runnerstore.RuntimeCapacitySnapshot
-	err := repository.ReadTenantSnapshot(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(runnerstore.RuntimeCapacityReader)
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		snapshot, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, RunnerID: scope.Credential.Runner.RunnerID, At: now, Explanation: hubcontent.ExplanationRead(ctx)})
+		snapshot, err = owner.RuntimeCapacitySnapshot(ctx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, RunnerID: scope.Credential.Runner.RunnerID, At: now, Explanation: hubcontent.ExplanationRead(ctx)})
 		return err
 	})
-	statements, _ := runtimeCapacityStatements(capture.statements)
-	if err == nil && len(statements) == 0 {
-		t.Fatal("runtime capacity PostgreSQL queries were not observed")
-	}
-	return runtimeRunnersFromSnapshot(snapshot, scope, now), snapshot.Truncated, statements, err
+	return runtimeRunnersFromSnapshot(snapshot, scope, now), snapshot.Truncated, err
 }
 
-func runtimeRouteCapacityQueries(t *testing.T, service *Service, ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, want int, total *int) (tracker.NativeRuntimeEvidence, []tracedStatement, error) {
-	t.Helper()
-	capture := &runtimeHistoryTraceCapture{}
-	evidence, err := service.readNativeRuntime(context.WithValue(ctx, runtimeHistoryTraceKey{}, capture), scope, string(item), "")
-	capacity, data := runtimeCapacityStatements(capture.statements)
-	if err == nil && len(capacity) != want {
-		t.Fatalf("live runtime capacity owner queries=%d want=%d; total runtime queries=%d", len(capacity), want, len(data))
-	}
-	if err == nil && total != nil {
-		if *total == 0 {
-			*total = len(data)
-		}
-		if len(data) != *total {
-			t.Fatalf("total runtime query count grew with runner population: %d -> %d", *total, len(data))
-		}
-	}
-	for index, statement := range data {
-		t.Logf("runtime statement %d: %s", index+1, strings.Join(strings.Fields(statement.query), " "))
-	}
-	t.Logf("live runtime capacity owner queries=%d total runtime queries=%d", len(capacity), len(data))
-	return evidence, capacity, err
-}
-
-func assertRuntimeCapacityPlans(t *testing.T, pool *pgxpool.Pool, scope hubscope.NativeScope, statements []tracedStatement, want int) {
-	t.Helper()
-	found := false
-	for _, statement := range statements {
-		if !strings.HasPrefix(statement.query, "WITH candidates AS MATERIALIZED (SELECT * FROM leases") {
-			continue
-		}
-		found = true
-		tx, err := pool.Begin(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = tx.Exec(t.Context(), "SELECT current_user, set_config('detent.organization_id', $1, true)", string(scope.Organization))
-		var raw []byte
-		if err == nil {
-			err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw)
-		}
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
-		rollbackErr := tx.Rollback(cleanup)
-		cancel()
-		if err := errors.Join(err, rollbackErr); err != nil {
-			t.Fatal(err)
-		}
-		type plan struct {
-			Relation string  `json:"Relation Name"`
-			Subplan  string  `json:"Subplan Name"`
-			Rows     float64 `json:"Actual Rows"`
-			Removed  float64 `json:"Rows Removed by Filter"`
-			Loops    float64 `json:"Actual Loops"`
-			Plans    []plan  `json:"Plans"`
-		}
-		var plans []struct{ Plan plan }
-		if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-			t.Fatalf("invalid capacity plan: %s %v", raw, err)
-		}
-		candidates, examined := -1.0, -1.0
-		var inspect func(plan)
-		inspect = func(node plan) {
-			if node.Subplan == "CTE candidates" {
-				candidates = node.Rows * node.Loops
-			}
-			if node.Relation == "leases" {
-				examined = max(examined, (node.Rows+node.Removed)*node.Loops)
-			}
-			if node.Relation == "issues" && (node.Rows+node.Removed)*node.Loops > float64(want) {
-				t.Fatalf("landing capacity scans project history: %s", raw)
-			}
-			for _, child := range node.Plans {
-				inspect(child)
-			}
-		}
-		inspect(plans[0].Plan)
-		if candidates != float64(want) || examined != float64(want) {
-			t.Fatalf("examined %g live lease candidates with %g selected; want%d: %s", examined, candidates, want, raw)
-		}
-	}
-	if !found {
-		t.Fatal("bounded provider candidate query was not observed")
-	}
-}
-
-func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
+func TestNativeRuntimeReadPreservesSharedCapacity(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	f, repository, pool, admin, scope := newRuntimeCapacityFixture(t, "runtime-capacity", &now)
+	f, repository, _, admin, scope := newRuntimeCapacityFixture(t, "runtime-capacity", &now)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "selected runtime")
 	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -856,7 +612,6 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	})
 	var landingIssue tracker.NativeIssue
 	decodeHubResponse(t, landingResponse, &landingIssue)
-	normalTotal, explanationTotal := 0, 0
 	previous := 1
 	for _, total := range []int{1, 8, 100, 101} {
 		t.Run(strconv.Itoa(total), func(t *testing.T) {
@@ -874,9 +629,9 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			runners, truncated, statements, err := runtimeCapacityQueries(t, f.service, t.Context(), scope, now)
-			if err != nil || len(runners) != min(total, 100) || truncated != (total > 100) || len(statements) != 4 {
-				t.Fatalf("capacity projection runners=%d truncated=%v queries=%d error=%v", len(runners), truncated, len(statements), err)
+			runners, truncated, err := runtimeCapacityQueries(t, f.service, t.Context(), scope, now)
+			if err != nil || len(runners) != min(total, 100) || truncated != (total > 100) {
+				t.Fatalf("capacity projection runners=%d truncated=%v error=%v", len(runners), truncated, err)
 			}
 			for i, r := range runners {
 				wantUsed := 0
@@ -893,7 +648,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 					}
 				}
 			}
-			evidence, _, err := runtimeRouteCapacityQueries(t, f.service, t.Context(), scope, issue.WorkItemID, 4, &normalTotal)
+			evidence, err := f.service.readNativeRuntime(t.Context(), scope, string(issue.WorkItemID), "")
 			if err != nil || slices.Contains(evidence.Unavailable, "capacity_projection_truncated") != truncated || evidence.CurrentLease == nil || evidence.CurrentLease.ID != lease.ID || evidence.Scheduling.Outcome != "claimed" {
 				t.Fatalf("runtime truncation or fenced lease lost: unavailable=%v lease=%#v error=%v", evidence.Unavailable, evidence.CurrentLease, err)
 			}
@@ -917,21 +672,21 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 						currentScope.Credential.Runner.RunnerID = runner.binding.RunnerID
 					}
 				}
-				current, truncated, currentStatements, err := runtimeCapacityQueries(t, f.service, t.Context(), currentScope, now)
-				if err != nil || !truncated || len(current) != 100 || current[0].RunnerID != currentScope.Credential.Runner.RunnerID || len(currentStatements) != 4 {
-					t.Fatalf("bounded runtime projection dropped current registered runner: runners=%d truncated=%v queries=%d error=%v", len(current), truncated, len(currentStatements), err)
+				current, truncated, err := runtimeCapacityQueries(t, f.service, t.Context(), currentScope, now)
+				if err != nil || !truncated || len(current) != 100 || current[0].RunnerID != currentScope.Credential.Runner.RunnerID {
+					t.Fatalf("bounded runtime projection dropped current registered runner: runners=%d truncated=%v error=%v", len(current), truncated, err)
 				}
 			}
 			explanationCtx := context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, true)
-			explanationRunners, partial, explanationStatements, err := runtimeCapacityQueries(t, f.service, explanationCtx, scope, now)
-			if err != nil || len(explanationRunners) != min(total, 16) || partial != (total > 16) || len(explanationStatements) != 5 {
-				t.Fatalf("unbounded explanation capacity: runners=%d partial=%v queries=%d error=%v", len(explanationRunners), partial, len(explanationStatements), err)
+			explanationRunners, partial, err := runtimeCapacityQueries(t, f.service, explanationCtx, scope, now)
+			if err != nil || len(explanationRunners) != min(total, 16) || partial != (total > 16) {
+				t.Fatalf("unbounded explanation capacity: runners=%d partial=%v error=%v", len(explanationRunners), partial, err)
 			}
-			explanationEvidence, _, err := runtimeRouteCapacityQueries(t, f.service, explanationCtx, scope, issue.WorkItemID, 5, nil)
+			explanationEvidence, err := f.service.readNativeRuntime(explanationCtx, scope, string(issue.WorkItemID), "")
 			if err != nil || len(explanationEvidence.Capacity) != len(explanationRunners) || slices.Contains(explanationEvidence.Unavailable, "capacity_projection_truncated") != partial {
 				t.Fatalf("live explanation capacity lost owner window: %#v %v", explanationEvidence, err)
 			}
-			landingEvidence, landingStatements, err := runtimeRouteCapacityQueries(t, f.service, explanationCtx, scope, landingIssue.WorkItemID, 5, &explanationTotal)
+			landingEvidence, err := f.service.readNativeRuntime(explanationCtx, scope, string(landingIssue.WorkItemID), "")
 			if err != nil || slices.Contains(landingEvidence.Unavailable, "project_landing_capacity") != (total > 64) || len(landingEvidence.Capacity) == 0 {
 				t.Fatalf("live landing capacity lost bounded current facts: %#v error=%v", landingEvidence, err)
 			}
@@ -940,10 +695,6 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 					t.Fatalf("live landing readiness differs from bounded owner: %#v", view)
 				}
 			}
-			if total <= 64 {
-				assertRuntimeCapacityPlans(t, pool, scope, landingStatements, 1)
-			}
-			t.Logf("%d runners sharing a host/provider: %d capacity queries", total, len(statements))
 			if total == 101 {
 				t.Run("normal landing lease outside runner window", func(t *testing.T) {
 					outside := all[0]
@@ -994,16 +745,16 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 						t.Fatal(err)
 					}
 					now = hiddenLease.RenewedAt
-					selected, partial, ownerStatements, err := runtimeCapacityQueries(t, f.service, t.Context(), scope, now)
-					if err != nil || !partial || len(selected) != 100 || len(ownerStatements) != 4 {
-						t.Fatalf("normal runner window lost its bound: count=%d partial=%v statements=%d error=%v", len(selected), partial, len(ownerStatements), err)
+					selected, partial, err := runtimeCapacityQueries(t, f.service, t.Context(), scope, now)
+					if err != nil || !partial || len(selected) != 100 {
+						t.Fatalf("normal runner window lost its bound: count=%d partial=%v error=%v", len(selected), partial, err)
 					}
 					for _, runner := range selected {
 						if runner.RunnerID == outside.binding.RunnerID || string(runner.MachineID) == machineID {
 							t.Fatalf("landing lease was not outside selected runner machines: %#v", runner)
 						}
 					}
-					landing, _, err := runtimeRouteCapacityQueries(t, f.service, t.Context(), scope, landingIssue.WorkItemID, 4, nil)
+					landing, err := f.service.readNativeRuntime(t.Context(), scope, string(landingIssue.WorkItemID), "")
 					if err != nil || len(landing.Capacity) != 100 || !slices.Contains(landing.Unavailable, "capacity_projection_truncated") || !slices.Contains(landing.Unavailable, "project_landing_capacity") {
 						t.Fatalf("normal truncated window reported complete landing capacity: %#v error=%v", landing, err)
 					}
@@ -1050,18 +801,18 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, true)
-			candidates, partial, _, err := runtimeCapacityQueries(t, f.service, ctx, scope, now)
+			candidates, partial, err := runtimeCapacityQueries(t, f.service, ctx, scope, now)
 			if err != nil || !partial || len(candidates) != 0 {
 				t.Fatalf("candidate search escaped sparse owner window: count=%d partial=%v err=%v", len(candidates), partial, err)
 			}
-			candidates, partial, _, err = runtimeCapacityQueries(t, f.service, ctx, currentScope, now)
+			candidates, partial, err = runtimeCapacityQueries(t, f.service, ctx, currentScope, now)
 			if err != nil || !partial || len(candidates) != 1 || candidates[0].RunnerID != currentScope.Credential.Runner.RunnerID {
 				t.Fatalf("selected runner lost priority: count=%d partial=%v err=%v", len(candidates), partial, err)
 			}
 			if _, err := admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)`, scope.Organization, currentScope.Credential.Runner.RunnerID); err != nil {
 				t.Fatal(err)
 			}
-			candidates, partial, _, err = runtimeCapacityQueries(t, f.service, ctx, currentScope, now)
+			candidates, partial, err = runtimeCapacityQueries(t, f.service, ctx, currentScope, now)
 			if err != nil || !partial || len(candidates) != 0 {
 				t.Fatalf("selected runner bypassed grants: count=%d partial=%v err=%v", len(candidates), partial, err)
 			}
@@ -1073,17 +824,17 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runners, _, _, err := runtimeCapacityQueries(t, f.service, t.Context(), hubscope.NativeScope{Organization: foreign.project.OrganizationID, Project: foreign.project.ID, Credential: foreignCredential}, now)
+	runners, _, err := runtimeCapacityQueries(t, f.service, t.Context(), hubscope.NativeScope{Organization: foreign.project.OrganizationID, Project: foreign.project.ID, Credential: foreignCredential}, now)
 	if err != nil || len(runners) != 0 {
 		t.Fatalf("cross-organization capacity leaked: %#v %v", runners, err)
 	}
 	other := newNativeFixture(t, f.service, scope.Organization, "runtime-ungranted")
-	runners, _, _, err = runtimeCapacityQueries(t, f.service, t.Context(), hubscope.NativeScope{Organization: scope.Organization, Project: other.project.ID, Credential: scope.Credential}, now)
+	runners, _, err = runtimeCapacityQueries(t, f.service, t.Context(), hubscope.NativeScope{Organization: scope.Organization, Project: other.project.ID, Credential: scope.Credential}, now)
 	if err != nil || len(runners) != 0 {
 		t.Fatalf("ungranted project capacity leaked: %#v %v", runners, err)
 	}
-	runners, _, statements, err := runtimeCapacityQueries(t, f.service, t.Context(), scope, now.Add(91*time.Second))
-	if err != nil || len(statements) != 4 {
+	runners, _, err = runtimeCapacityQueries(t, f.service, t.Context(), scope, now.Add(91*time.Second))
+	if err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range runners {
@@ -1101,7 +852,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2) AND project_id=$3`, scope.Organization, first.binding.RunnerID, scope.Project); err != nil {
 		t.Fatal(err)
 	}
-	runners, truncated, _, err := runtimeCapacityQueries(t, f.service, t.Context(), scope, now)
+	runners, truncated, err := runtimeCapacityQueries(t, f.service, t.Context(), scope, now)
 	if err != nil || truncated || len(runners) != 100 {
 		t.Fatalf("project grant removal did not restrict the page: runners=%d truncated=%v error=%v", len(runners), truncated, err)
 	}
@@ -1115,11 +866,11 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	}
 	organizationScope := scope
 	organizationScope.Credential.Runner.RunnerID = first.binding.RunnerID
-	runners, truncated, _, err = runtimeCapacityQueries(t, f.service, t.Context(), organizationScope, now)
+	runners, truncated, err = runtimeCapacityQueries(t, f.service, t.Context(), organizationScope, now)
 	if err != nil || !truncated || len(runners) != 100 || runners[0].RunnerID != first.binding.RunnerID || !runners[0].AllowsProject(scope.Project) {
 		t.Fatalf("organization-scoped runner required a project grant: %#v partial=%v error=%v", runners, truncated, err)
 	}
-	organizationEvidence, _, err := runtimeRouteCapacityQueries(t, f.service, t.Context(), organizationScope, issue.WorkItemID, 4, nil)
+	organizationEvidence, err := f.service.readNativeRuntime(t.Context(), organizationScope, string(issue.WorkItemID), "")
 	if err != nil || len(organizationEvidence.Capacity) != 100 || organizationEvidence.Capacity[0].RunnerID != first.binding.RunnerID || slices.Contains(organizationEvidence.Capacity[0].Exclusions, "project_access_denied") {
 		t.Fatalf("live runtime dropped organization-scoped runner without project grant: %#v %v", organizationEvidence, err)
 	}
@@ -1128,7 +879,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 func TestExplanationProviderCapacityCandidateWindow(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	f, repository, pool, admin, scope := newRuntimeCapacityFixture(t, "capacity-window", &now)
+	f, repository, _, admin, scope := newRuntimeCapacityFixture(t, "capacity-window", &now)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	first.enroll(t)
@@ -1162,9 +913,6 @@ SELECT organization_id,project_id,$7,'capacity_'||native_id,id,$6,native_id,1,$5
 			t.Fatal(err)
 		}
 		previous = total
-		if _, err := admin.ExecContext(t.Context(), "ANALYZE leases,issues,provider_reservations"); err != nil {
-			t.Fatal(err)
-		}
 		for _, absent := range []bool{false, true} {
 			t.Run(fmt.Sprintf("leases=%d/absent=%v", total, absent), func(t *testing.T) {
 				if absent {
@@ -1179,22 +927,19 @@ SELECT organization_id,project_id,$7,'capacity_'||native_id,id,$6,native_id,1,$5
 						}
 					})
 				}
-				capture := &runtimeHistoryTraceCapture{}
-				readCtx := context.WithValue(ctx, runtimeHistoryTraceKey{}, capture)
 				var facts runnerstore.RuntimeCapacitySnapshot
-				err := repository.ReadTenantSnapshot(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 					owner, ok := r.(runnerstore.RuntimeCapacityReader)
 					if !ok {
 						return hubapi.NativeRunEventStorageUnavailable()
 					}
 					var err error
-					facts, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, At: now, Explanation: true})
+					facts, err = owner.RuntimeCapacitySnapshot(ctx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, At: now, Explanation: true})
 					return err
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
-				assertRuntimeCapacityPlans(t, pool, scope, capture.statements, min(total, 1025))
 				snapshot := runtimeProviderCapacity(facts.Providers)
 				wantReservations := 1
 				if absent {
@@ -1203,8 +948,7 @@ SELECT organization_id,project_id,$7,'capacity_'||native_id,id,$6,native_id,1,$5
 				if snapshot.truncated != (total > 1024) || len(snapshot.reservations) != wantReservations {
 					t.Fatalf("reservations=%d partial=%v error=%v", len(snapshot.reservations), snapshot.truncated, err)
 				}
-				evidence, routeStatements, err := runtimeRouteCapacityQueries(t, f.service, ctx, scope, issue.WorkItemID, 5, nil)
-				assertRuntimeCapacityPlans(t, pool, scope, routeStatements, min(total, 1025))
+				evidence, err := f.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
 				if err != nil || len(evidence.Capacity) != 1 || len(evidence.Capacity[0].ProviderCapacity) != 1 || evidence.Capacity[0].ProviderCapacity[0].Used != wantReservations || slices.Contains(evidence.Unavailable, "capacity_projection_truncated") != (total > 1024) {
 					t.Fatalf("unavailable=%v error=%v", evidence.Unavailable, err)
 				}

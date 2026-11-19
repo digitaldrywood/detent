@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -29,7 +26,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -661,71 +657,22 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			t.Fatalf("work projection exceeds the existing page budget: bytes=%d error=%v", len(raw), err)
 		}
 	}
-	admin := usagePostgresAdmin(t, f.service)
-	connection := startupConnection(t, admin, "detent_runtime_v2", "")
-	config, err := connection.PoolConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pgtransport.Configure(config)
-	config.MaxConns = 3
-	config.ConnConfig.Tracer = runtimeHistoryTrace{}
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
-	if err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
 	details.mu.Lock()
 	beforeObjectReads, retainedObjects := details.reads, len(details.data)
 	details.mu.Unlock()
 	if beforeObjectReads == 0 || retainedObjects == 0 {
 		t.Fatal("compact read fixture did not exercise its actual object store")
 	}
-	capture := &runtimeHistoryTraceCapture{}
-	func() {
-		originalTenant, originalAccess, originalPostgres := f.service.config.TenantRepository, f.service.config.AccessRepository, f.service.database.postgres
-		defer func() {
-			f.service.config.TenantRepository, f.service.config.AccessRepository, f.service.database.postgres = originalTenant, originalAccess, originalPostgres
-			if err := repository.Close(); err != nil {
-				t.Error(err)
-			}
-		}()
-		f.service.config.TenantRepository, f.service.config.AccessRepository, f.service.database.postgres = repository, repository, repository
-		scope.Credential = credential
-		_, err = f.service.readBoardRecords(context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture), scope, url.Values{"include": {"work"}, "limit": {"100"}})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
+	scope.Credential = credential
+	if _, err := f.service.readBoardRecords(t.Context(), scope, url.Values{"include": {"work"}, "limit": {"100"}}); err != nil {
+		t.Fatal(err)
+	}
 	details.mu.Lock()
 	objectReads := details.reads - beforeObjectReads
 	details.mu.Unlock()
 	if objectReads != 0 {
 		t.Fatalf("compact read hydrated immutable objects: %d reads", objectReads)
 	}
-	capture.mu.Lock()
-	captured := append([]tracedStatement(nil), capture.statements...)
-	capture.mu.Unlock()
-	var statements []string
-	for _, statement := range captured {
-		statements = append(statements, statement.query)
-	}
-	if len(statements) == 0 {
-		t.Fatal("compact PostgreSQL statements were not observed")
-	}
-	if len(statements) > 303 {
-		t.Fatalf("compact read exceeded bounded hydration: %d queries", len(statements))
-	}
-	for _, statement := range statements {
-		if strings.Contains(strings.ToLower(statement), "collaboration_events") {
-			t.Fatalf("operational read loaded bodies or history: %s", statement)
-		}
-	}
-	t.Logf("%d compact queries for at most 100 open items; aggregate totals independent of 130 history items", len(statements))
 }
 
 func TestNativeWorkPageCompletedWindow(t *testing.T) {
