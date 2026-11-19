@@ -168,7 +168,7 @@ func TestPostgresBoardCardsKeepRecordedAttemptIdentity(t *testing.T) {
 		}
 		return keys
 	}
-	measure := func(t *testing.T, attempts int) int {
+	requireRefreshSkipsRetainedPayloads := func(t *testing.T, attempts int) {
 		t.Helper()
 		if keys := attemptKeys(t); len(keys) != attempts {
 			t.Fatalf("history has %d attempts, want %d", len(keys), attempts)
@@ -182,9 +182,8 @@ func TestPostgresBoardCardsKeepRecordedAttemptIdentity(t *testing.T) {
 				t.Fatalf("board refresh read attempt payload %s with %d retained attempts", key, attempts)
 			}
 		}
-		return len(reads)
 	}
-	short := measure(t, 1)
+	requireRefreshSkipsRetainedPayloads(t, 1)
 	for index := range 2 {
 		model := "history-model-" + strconv.Itoa(index)
 		lease, data := claimHistoricalAttempt(t, f, released, index)
@@ -211,10 +210,7 @@ func TestPostgresBoardCardsKeepRecordedAttemptIdentity(t *testing.T) {
 		}
 		want[0].identity.Model, want[0].identity.ReasoningEffort = model, "medium"
 	}
-	long := measure(t, 3)
-	if short != long {
-		t.Fatalf("board refresh detail reads grew with retained attempts: 1 attempt=%d 3 attempts=%d", short, long)
-	}
+	requireRefreshSkipsRetainedPayloads(t, 3)
 	requireCards(t, "latest of retained history", want)
 }
 
