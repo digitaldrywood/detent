@@ -348,3 +348,16 @@ AND a.organization_id=n.organization_id AND a.lease_id=n.lease_id AND a.runner_i
 AND i.organization_id=n.organization_id AND i.id=n.issue_id AND i.project_id=n.project_id AND i.native_id=sqlc.arg(work_item_id)
 AND (n.worker_pid,n.worker_pgid,n.worker_started_at,n.worker_start_key)=(sqlc.arg(pid)::integer,sqlc.arg(pgid)::integer,sqlc.arg(started_at)::timestamptz,sqlc.arg(start_key)::text)
 RETURNING n.id;
+
+-- name: RecordTerminalProgressVerdict :execrows
+UPDATE native_attempts SET
+    verdict_evidence_revision = sqlc.arg(evidence_revision),
+    verdict_attempted_step = sqlc.arg(attempted_step),
+    verdict_success = sqlc.arg(success),
+    verdict_outcome = sqlc.arg(outcome),
+    verdict_reason = sqlc.arg(reason),
+    verdict_next_step = sqlc.narg(next_step),
+    verdict_disposition = sqlc.narg(disposition)
+WHERE organization_id = sqlc.arg(organization_id) AND project_id = sqlc.arg(project_id)
+    AND id = sqlc.arg(attempt_id) AND sequence = sqlc.arg(terminal_sequence)
+    AND status <> 'running' AND verdict_evidence_revision IS NULL;

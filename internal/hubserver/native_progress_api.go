@@ -170,6 +170,15 @@ func readNativeProgressDependencies(ctx context.Context, reader corestore.Reader
 
 func (s *Service) getNativeProgress(c echo.Context) error {
 	scope := hubscope.NativeRequestScope(c)
+	if attempt := c.QueryParam("attempt"); attempt != "" {
+		ctx := s.runDetailContext(s.contentContext(c.Request().Context()))
+		owner := terminalProgressOwner{service: s, scope: scope, item: tracker.NativeWorkItemID(c.Param("item")), attempt: attempt}
+		view, err := owner.view(ctx)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, view)
+	}
 	request, _, err := s.nativeProgressRequest(c.Request().Context(), scope, c.Param("item"), c.QueryParam("policy"), c.QueryParam("instance"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -197,6 +206,15 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := hubscope.NativeRequestScope(c)
+	if input.AttemptID != "" {
+		ctx := s.runDetailContext(s.contentContext(c.Request().Context()))
+		owner := terminalProgressOwner{service: s, scope: scope, item: tracker.NativeWorkItemID(c.Param("item")), attempt: input.AttemptID}
+		record, err := owner.publish(ctx, input)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, record)
+	}
 	request, sequence, err := s.nativeProgressRequest(c.Request().Context(), scope, c.Param("item"), input.PolicyID, input.Instance)
 	if err != nil {
 		return s.nativeAPIError(c, err)

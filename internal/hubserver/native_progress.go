@@ -710,3 +710,342 @@ func nativeProgressCommentBody(record progresscheck.Record) string {
 	}
 	return body + "\n\nEvidence: " + strings.Join(record.Decision.Evidence, ", ")
 }
+
+type terminalProgressOwner struct {
+	service *Service
+	scope   hubscope.NativeScope
+	item    tracker.NativeWorkItemID
+	attempt string
+}
+
+type terminalProgressDetail struct {
+	Request progresscheck.Request
+	Record  progresscheck.Record
+}
+
+type terminalProgressFacts struct {
+	attempt      leasestore.Attempt
+	receipt      eventstore.Receipt
+	sequence     int64
+	evidence     int64
+	reviewPolicy string
+	policy       string
+	latest       bool
+	landing      bool
+}
+
+func (o terminalProgressOwner) facts(ctx context.Context, r tenantstore.Reader, input *progresscheck.Publication) (terminalProgressFacts, error) {
+	var facts terminalProgressFacts
+	if err := o.service.authorizeAccessScope(ctx, r, o.scope, input != nil); err != nil {
+		return facts, err
+	}
+	project, err := r.Project(ctx, o.scope.Project)
+	if err != nil {
+		return facts, err
+	}
+	if project.DeletedAt != nil {
+		return facts, corestore.ErrNotFound
+	}
+	item, err := r.WorkItem(ctx, o.scope.Project, o.item)
+	if err != nil {
+		return facts, err
+	}
+	if !o.scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		return facts, corestore.ErrNotFound
+	}
+	facts.attempt, err = r.Attempt(ctx, o.attempt)
+	if err != nil {
+		return facts, err
+	}
+	if facts.attempt.IssueID != item.ID {
+		return facts, corestore.ErrNotFound
+	}
+	if err := o.authorizeRunner(ctx, r, facts.attempt, input); err != nil {
+		return facts, err
+	}
+	if facts.attempt.Status == "running" {
+		return facts, hubapi.NativePublicInvalid("Progress verdict requires a recorded terminal attempt")
+	}
+	facts.receipt, err = r.Receipt(ctx, nativeProgressReceiptActor, o.operation(), o.attempt)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return facts, err
+	}
+	evidence, ok := r.(eventstore.ProgressEvidenceReader)
+	if !ok {
+		return facts, hubapi.NativeWorkItemStorageUnavailable()
+	}
+	facts.evidence, err = evidence.ProgressEvidenceSequence(ctx, o.scope.Project, item.NativeID)
+	if err != nil {
+		return facts, err
+	}
+	facts.sequence = item.EventSequence
+	latest, err := r.LatestAttempt(ctx, item.ID)
+	if err != nil {
+		return facts, err
+	}
+	facts.latest = latest.ID == o.attempt
+	policy, err := r.ProjectPolicy(ctx, o.scope.Project)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return facts, err
+	}
+	facts.policy = policy.PolicyID
+	reviewPolicy, err := r.ReviewPolicy(ctx, o.scope.Project)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return facts, err
+	}
+	facts.reviewPolicy = reviewPolicy.ReviewPolicyID
+	landing, err := r.LandingReceipt(ctx, o.attempt)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return facts, err
+	}
+	facts.landing = err == nil && landing.AttemptID == o.attempt && landing.MergeSHA != ""
+	return facts, nil
+}
+
+func (o terminalProgressOwner) authorizeRunner(ctx context.Context, r tenantstore.Reader, attempt leasestore.Attempt, input *progresscheck.Publication) error {
+	if o.scope.Credential.Scope != hubapi.APIScopeWorker {
+		if input != nil {
+			return hubscope.RunnerUnauthorized()
+		}
+		return nil
+	}
+	now := o.service.config.Clock().UTC()
+	identity, err := r.RunnerIdentityByCredential(ctx, o.scope.Credential.ID)
+	if err != nil {
+		return err
+	}
+	runner := o.scope.Credential.Runner
+	if !runnerIdentityMatchesHeldLease(identity, o.scope.Organization, runner.RunnerID, o.scope.Credential.ID, runner.MachineID, now) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Read) {
+		return hubscope.RunnerUnauthorized()
+	}
+	allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, o.scope.Project, now)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return corestore.ErrNotFound
+	}
+	if input == nil {
+		return nil
+	}
+	if string(input.LeaseID) != attempt.LeaseID || int64(input.FencingToken) != attempt.FencingToken {
+		return tracker.ErrStaleFencingToken
+	}
+	assigned, err := r.RunnerForLease(ctx, attempt.LeaseID)
+	if err != nil {
+		return err
+	}
+	if assigned.RunnerID != identity.RunnerID || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
+		return hubscope.RunnerUnauthorized()
+	}
+	return nil
+}
+
+func (o terminalProgressOwner) operation() string {
+	return nativeProgressReceiptOperation(o.scope, string(o.item)) + "/terminal"
+}
+
+func (o terminalProgressOwner) readFacts(ctx context.Context, input *progresscheck.Publication) (terminalProgressFacts, error) {
+	var facts terminalProgressFacts
+	repository, ok := o.service.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return facts, hubapi.NativeWorkItemStorageUnavailable()
+	}
+	err := repository.ReadTenantSnapshot(ctx, o.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		facts, err = o.facts(ctx, r, input)
+		return err
+	})
+	return facts, hubapi.ProjectRecordError(err)
+}
+
+func (o terminalProgressOwner) request(ctx context.Context, facts terminalProgressFacts) (progresscheck.Request, error) {
+	attempt, err := o.service.readNativeAttemptTenant(ctx, o.scope, string(o.item), o.attempt)
+	if err != nil {
+		return progresscheck.Request{}, err
+	}
+	recovery, err := o.service.readNativeRecoveryFactsTenant(ctx, o.scope, string(o.item), true)
+	if err != nil {
+		return progresscheck.Request{}, err
+	}
+	step, disposition := progresscheck.NativeTerminalRoute(recovery, attempt, facts.policy, facts.landing)
+	policyID := attempt.PolicyID
+	if policyID == "" {
+		policyID = facts.policy
+	}
+	basis, err := hubapi.CommandHash(struct {
+		Evidence     int64
+		Policy       string
+		ReviewPolicy string
+		ReviewState  string
+		ReviewEpoch  tracker.FencingToken
+	}{facts.evidence, facts.policy, facts.reviewPolicy, tracker.NativeStepReviewState(recovery), tracker.NativeStepReviewEpoch(recovery)})
+	if err != nil {
+		return progresscheck.Request{}, err
+	}
+	after, err := o.readFacts(ctx, nil)
+	if err != nil {
+		return progresscheck.Request{}, err
+	}
+	if !facts.sameEvidence(after) {
+		return progresscheck.Request{}, terminalProgressConflict()
+	}
+	terminal := progresscheck.TerminalEvidence{
+		OrganizationID: string(o.scope.Organization), Basis: basis, NextStep: step, Disposition: disposition,
+	}
+	return progresscheck.NativeTerminalRequest(recovery, attempt, policyID, terminal), nil
+}
+
+func (f terminalProgressFacts) sameEvidence(other terminalProgressFacts) bool {
+	return f.attempt.Sequence == other.attempt.Sequence && f.attempt.Status == other.attempt.Status &&
+		f.sequence == other.sequence && f.evidence == other.evidence && f.policy == other.policy &&
+		f.reviewPolicy == other.reviewPolicy && f.latest == other.latest && f.landing == other.landing
+}
+
+func terminalProgressConflict() error {
+	return &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+}
+
+func (o terminalProgressOwner) load(ctx context.Context, receipt eventstore.Receipt) (terminalProgressDetail, error) {
+	raw, err := eventstore.NewContent(o.service.runDetailStoreFor(ctx)).Receipt(ctx, receipt)
+	if err != nil {
+		return terminalProgressDetail{}, err
+	}
+	var detail terminalProgressDetail
+	if err := json.Unmarshal(raw, &detail); err != nil || detail.Record.AttemptID != o.attempt ||
+		detail.Record.ProjectID != string(o.scope.Project) || detail.Record.IssueID != string(o.item) ||
+		detail.Request.Terminal == nil || detail.Request.Terminal.AttemptID != o.attempt || detail.Request.Terminal.OrganizationID != string(o.scope.Organization) {
+		return terminalProgressDetail{}, eventstore.ErrInvalidRecord
+	}
+	return detail, nil
+}
+
+func (o terminalProgressOwner) view(ctx context.Context) (progresscheck.TerminalView, error) {
+	facts, err := o.readFacts(ctx, nil)
+	if err != nil {
+		return progresscheck.TerminalView{}, err
+	}
+	request, err := o.request(ctx, facts)
+	if err != nil {
+		return progresscheck.TerminalView{}, err
+	}
+	id, err := request.ID()
+	if err != nil {
+		return progresscheck.TerminalView{}, err
+	}
+	view := progresscheck.TerminalView{Request: request, RequestID: id}
+	if facts.receipt.CommandKey != "" {
+		detail, err := o.load(ctx, facts.receipt)
+		if err != nil {
+			return progresscheck.TerminalView{}, err
+		}
+		view.Record = &detail.Record
+		view.Current = facts.latest && detail.Record.RequestID == id
+		if !view.Current {
+			view.RecordedRequest = &detail.Request
+		}
+	}
+	return view, nil
+}
+
+func (o terminalProgressOwner) publish(ctx context.Context, input progresscheck.Publication) (progresscheck.Record, error) {
+	facts, err := o.readFacts(ctx, &input)
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	hash, err := hubapi.CommandHash(struct {
+		RequestID string
+		Revision  string
+		Decision  progresscheck.Decision
+	}{input.RequestID, input.EvidenceRevision, input.Decision})
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	if facts.receipt.CommandKey != "" {
+		return o.replay(ctx, facts.receipt, hash)
+	}
+	request, err := o.request(ctx, facts)
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	id, err := request.ID()
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	if id != input.RequestID || request.EvidenceRevision != input.EvidenceRevision {
+		return progresscheck.Record{}, terminalProgressConflict()
+	}
+	if err := input.Decision.ValidateTerminal(request); err != nil {
+		return progresscheck.Record{}, hubapi.NativePublicInvalid(err.Error())
+	}
+	record := progresscheck.Record{
+		AttemptID: o.attempt, RequestID: id, ProjectID: string(o.scope.Project), IssueID: string(o.item),
+		EvidenceRevision: request.EvidenceRevision, Decision: input.Decision, NextStep: request.Terminal.NextStep, Disposition: request.Terminal.Disposition,
+	}
+	raw, err := json.Marshal(terminalProgressDetail{Request: request, Record: record})
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	receipt, err := eventstore.NewContent(o.service.runDetailStoreFor(ctx)).PrepareReceipt(ctx, eventstore.Receipt{
+		OrganizationID: o.scope.Organization, ActorID: nativeProgressReceiptActor, Operation: o.operation(), CommandKey: o.attempt,
+		RequestHash: hash, CreatedAt: o.service.config.Clock().UTC(),
+	}, raw)
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	var replay eventstore.Receipt
+	err = o.service.config.TenantRepository.WriteTenant(ctx, o.scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := o.service.authorizeAccessScope(ctx, w, o.scope, true); err != nil {
+			return err
+		}
+		if _, err := w.LockWorkItem(ctx, o.scope.Project, o.item); err != nil {
+			return err
+		}
+		current, err := o.facts(ctx, w, &input)
+		if err != nil {
+			return err
+		}
+		if current.receipt.CommandKey != "" {
+			replay = current.receipt
+			return nil
+		}
+		if !facts.sameEvidence(current) {
+			return terminalProgressConflict()
+		}
+		owner, ok := w.(leasestore.TerminalProgressWriter)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		verdict := leasestore.TerminalProgressVerdict{
+			OrganizationID: o.scope.Organization, ProjectID: o.scope.Project, AttemptID: o.attempt, TerminalSequence: facts.attempt.Sequence,
+			EvidenceRevision: request.EvidenceRevision, AttemptedStep: request.Terminal.Step, Success: *input.Decision.Succeeded,
+			Outcome: string(input.Decision.Outcome), Reason: input.Decision.Reason,
+		}
+		if record.NextStep != "" {
+			verdict.NextStep = &record.NextStep
+		}
+		if record.Disposition != "" {
+			verdict.Disposition = &record.Disposition
+		}
+		if err := owner.RecordTerminalProgressVerdict(ctx, verdict); err != nil {
+			return err
+		}
+		_, err = w.PutReceipt(ctx, receipt)
+		return err
+	})
+	if err != nil {
+		return progresscheck.Record{}, hubapi.ProjectRecordError(err)
+	}
+	if replay.CommandKey != "" {
+		return o.replay(ctx, replay, hash)
+	}
+	return record, nil
+}
+
+func (o terminalProgressOwner) replay(ctx context.Context, receipt eventstore.Receipt, hash string) (progresscheck.Record, error) {
+	if receipt.RequestHash != hash {
+		return progresscheck.Record{}, terminalProgressConflict()
+	}
+	detail, err := o.load(ctx, receipt)
+	return detail.Record, err
+}

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -65,6 +66,22 @@ func diagnosticExcerpt(value string, limit int) string {
 }
 
 func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Request {
+	return nativeRequest(recovery, policy, instance, nil)
+}
+
+func NativeTerminalRequest(recovery tracker.NativeRecovery, attempt tracker.NativeAttempt, policy string, terminal TerminalEvidence) Request {
+	history := make([]tracker.NativeAttempt, 0, MaxAttempts)
+	for _, prior := range recovery.Attempts {
+		if prior.FencingToken < attempt.FencingToken && prior.Status != "running" {
+			history = append(history, prior)
+		}
+	}
+	recovery.Attempts = append(history, attempt)
+	terminal.AttemptID = attempt.AttemptID
+	return nativeRequest(recovery, policy, string(attempt.MachineID), &terminal)
+}
+
+func nativeRequest(recovery tracker.NativeRecovery, policy, instance string, terminal *TerminalEvidence) Request {
 	r := Request{ProjectID: string(recovery.Issue.ProjectID), IssueID: string(recovery.Issue.WorkItemID), PolicyID: policy,
 		EvidenceRevision: strconv.FormatInt(int64(recovery.Issue.Revision), 10), Instance: instance,
 		AvailableSteps: []string{"implement"}, Context: bound(recovery.Issue.Title+"\n"+recovery.Issue.Body, 2048)}
@@ -127,7 +144,7 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 		}
 		if a.Runtime != nil && a.Runtime.Landing != nil {
 			entry.LandingRefusal = a.Runtime.Landing.RefusalKind
-			if entry.LandingRefusal == "nothing_to_land" {
+			if entry.LandingRefusal == "nothing_to_land" && (terminal == nil || a.TerminalFailure == nil) {
 				entry.Error = bound(a.Runtime.Landing.Refusal, 768)
 			}
 		}
@@ -144,6 +161,10 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 			}
 			r.Receipts = append(r.Receipts, receipt)
 		}
+		if terminal != nil && a.AttemptID == terminal.AttemptID && a.Runtime != nil && a.Runtime.Validation != nil {
+			validation := a.Runtime.Validation
+			r.Receipts = append(r.Receipts, Receipt{ID: a.AttemptID + ":validation", Step: validation.Stage, Outcome: strconv.Itoa(validation.ExitCode), HeadSHA: validation.HeadSHA, Detail: bound(validation.Command, 256)})
+		}
 		if a.Runtime != nil && a.Runtime.Landing != nil {
 			landing := a.Runtime.Landing
 			r.Receipts = append(r.Receipts, Receipt{ID: a.AttemptID + ":landing", Step: "landing", Outcome: landing.RefusalKind, BaseSHA: landing.BaseSHA, HeadSHA: landing.HeadSHA, Detail: bound(landing.Refusal, 256)})
@@ -156,7 +177,14 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 		if len(detail.Versions) > 0 {
 			v := detail.Versions[len(detail.Versions)-1]
 			r.SourceSHA, r.BaseSHA = v.HeadSHA, v.BaseSHA
+			if terminal != nil && terminalSourceChanged(recovery.Attempts[len(recovery.Attempts)-1], v) {
+				r.BaseSHA, r.SourceSHA = terminalSource(recovery.Attempts[len(recovery.Attempts)-1])
+			}
 			r.Receipts = append(r.Receipts, Receipt{ID: v.ID, Step: "source", BaseSHA: v.BaseSHA, HeadSHA: v.HeadSHA})
+			if terminal != nil && v.Validation != nil {
+				validation := v.Validation
+				r.Receipts = append(r.Receipts, Receipt{ID: v.ID + ":validation", Step: validation.Stage, Outcome: strconv.Itoa(validation.ExitCode), BaseSHA: v.BaseSHA, HeadSHA: validation.HeadSHA, Detail: bound(validation.Command, 256)})
+			}
 			if v.ID == detail.Change.CurrentVersion && v.Source != nil && v.Source.DiffSHA256 == tracker.ChangeSourceDigest(nil) {
 				r.EmptyDelta = true
 				if detail.Summary.Status == "reviewed" {
@@ -193,6 +221,22 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 		if !comment.Deleted {
 			r.Comments = append(r.Comments, nativeComment(comment))
 		}
+	}
+	if terminal != nil && len(r.Attempts) != 0 && r.Attempts[len(r.Attempts)-1].ID == terminal.AttemptID {
+		attempt := r.Attempts[len(r.Attempts)-1]
+		terminal.Step, terminal.Outcome = attempt.Step, attempt.Outcome
+		if terminal.Step == "" {
+			terminal.Step = "unknown"
+		}
+		if terminal.Disposition == LandedDisposition || terminal.Disposition == NoChangeDisposition {
+			r.Receipts = append(r.Receipts, Receipt{ID: attempt.ID + ":disposition", Step: "completion", Outcome: terminal.Disposition, BaseSHA: attempt.BaseSHA, HeadSHA: attempt.SourceSHA})
+		}
+		r.EvidenceRevision = terminalAttemptRevision(attempt, r.Receipts)
+		r.AvailableSteps = []string{terminal.NextStep}
+		if terminal.Disposition != "" {
+			r.AvailableSteps[0] = terminal.Disposition
+		}
+		r.Terminal = terminal
 	}
 	if len(r.Receipts) > MaxReceipts {
 		r.Receipts = slices.Clone(r.Receipts[len(r.Receipts)-MaxReceipts:])
@@ -261,4 +305,184 @@ func AttemptEvidence(attempt tracker.NativeAttempt) []EvidenceReference {
 		references = append(references, EvidenceReference{ID: evidence.AttachmentID})
 	}
 	return references
+}
+
+func terminalAttemptRevision(attempt Attempt, receipts []Receipt) string {
+	supplied := make([]Receipt, 0, len(receipts))
+	for _, receipt := range receipts {
+		if strings.HasPrefix(receipt.ID, attempt.ID+":") {
+			supplied = append(supplied, receipt)
+		}
+	}
+	raw, err := json.Marshal(struct {
+		Attempt  Attempt
+		Receipts []Receipt
+	}{attempt, supplied})
+	if err != nil {
+		return ""
+	}
+	return artifact.Digest(raw)
+}
+
+func NativeTerminalRoute(recovery tracker.NativeRecovery, attempt tracker.NativeAttempt, policyID string, landed bool) (step, disposition string) {
+	if landed {
+		return "", LandedDisposition
+	}
+	if acceptedNoChange(recovery.Issue, attempt) {
+		return "", NoChangeDisposition
+	}
+	if recovery.Issue.Archived || recovery.Issue.Terminal {
+		return "", StoppedDisposition
+	}
+	detail := recovery.ChangeDetail
+	if detail == nil || detail.Change.CurrentVersion == "" || policyID == "" {
+		return "implement", ""
+	}
+	for _, version := range detail.Versions {
+		if version.ID == detail.Change.CurrentVersion {
+			if terminalSourceChanged(attempt, version) {
+				return "project_gate", ""
+			}
+			return nativeVersionNextStep(recovery, version, policyID), ""
+		}
+	}
+	return "implement", ""
+}
+
+func terminalSourceChanged(attempt tracker.NativeAttempt, version tracker.ChangeVersion) bool {
+	base, head := terminalSource(attempt)
+	return !version.CreatedAt.After(attempt.UpdatedAt) && (base != "" && base != version.BaseSHA || head != "" && head != version.HeadSHA)
+}
+
+func terminalSource(attempt tracker.NativeAttempt) (base, head string) {
+	if attempt.Checkpoint != nil {
+		base, head = attempt.Checkpoint.BaseSHA, attempt.Checkpoint.HeadSHA
+	}
+	if f := attempt.Finalization; f != nil {
+		if f.BaseSHA != "" {
+			base = f.BaseSHA
+		}
+		if f.HeadSHA != "" {
+			head = f.HeadSHA
+		}
+	}
+	return base, head
+}
+
+func acceptedNoChange(issue tracker.NativeIssue, attempt tracker.NativeAttempt) bool {
+	f := attempt.Finalization
+	if !issue.Terminal || attempt.Status != "succeeded" || f == nil || !f.Settled || f.Changed ||
+		f.ChangeID != "" || f.VersionID != "" || f.Files != 0 || f.Error != "" || f.VersionError != "" ||
+		attempt.Runtime == nil || attempt.Runtime.Completion == nil || !attempt.Runtime.Completion.AcceptanceRecorded {
+		return false
+	}
+	n := f.NoChange
+	return n != nil && n.VerifiedSHA != "" && n.ReportedSHA != "" && n.Repository != "" && strings.TrimSpace(n.Evidence) != "" &&
+		n.PolicyID != "" && n.PolicyID == attempt.PolicyID && n.VerifiedSHA == f.HeadSHA && n.VerifiedSHA == f.BaseSHA
+}
+
+func nativeVersionNextStep(recovery tracker.NativeRecovery, version tracker.ChangeVersion, policyID string) string {
+	detail := recovery.ChangeDetail
+	if version.PolicyID != policyID || version.BaseSHA == "" || version.HeadSHA == "" || detail.Summary.Status == "stale_policy" ||
+		detail.Summary.NativeReview == "changes_requested" || detail.Summary.Checks == "failure" || humanFeedbackAfterVersion(recovery, version) {
+		return "implement"
+	}
+	implementationReviewed, rejected := terminalReviewState(detail, version)
+	if rejected {
+		return "implement"
+	}
+	if len(recovery.Attempts) > 0 {
+		latest := recovery.Attempts[len(recovery.Attempts)-1]
+		if latest.Runtime != nil && latest.Runtime.Validation != nil && latest.Runtime.Validation.HeadSHA == version.HeadSHA && latest.Runtime.Validation.ExitCode != 0 {
+			return "implement"
+		}
+	}
+	if version.Validation != nil && version.Validation.HeadSHA == version.HeadSHA && version.Validation.ExitCode != 0 {
+		return "implement"
+	}
+	if !currentSourceGate(recovery, version) {
+		return "project_gate"
+	}
+	if detail.Summary.SecurityAudit != "passed" && version.Policy.Gates.SecurityAudit {
+		return "security_audit"
+	}
+	if !implementationReviewed {
+		return "implementation_review"
+	}
+	if detail.Summary.Status != "reviewed" {
+		return "acceptance"
+	}
+	if recovery.Issue.ListChange != nil && recovery.Issue.ListChange.LandingPending {
+		return "publication"
+	}
+	if version.Source != nil && version.Source.DiffSHA256 == tracker.ChangeSourceDigest(nil) {
+		return CompleteStep
+	}
+	return "merge"
+}
+
+func humanFeedbackAfterVersion(recovery tracker.NativeRecovery, version tracker.ChangeVersion) bool {
+	for _, comment := range recovery.Discussion {
+		if !comment.Deleted && (comment.Actor.Kind == "human" || comment.EditedBy != nil && comment.EditedBy.Kind == "human") &&
+			(comment.CreatedAt.After(version.CreatedAt) || comment.UpdatedAt.After(version.CreatedAt)) {
+			return true
+		}
+	}
+	for _, comment := range recovery.ChangeDetail.Discussion {
+		if comment.Actor.Kind == "human" && comment.CreatedAt.After(version.CreatedAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func currentSourceGate(recovery tracker.NativeRecovery, version tracker.ChangeVersion) bool {
+	reviewState := tracker.NativeStepReviewState(recovery)
+	reviewEpoch := tracker.NativeStepReviewEpoch(recovery)
+	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
+		for _, receipt := range recovery.Attempts[i].Steps {
+			if receipt.Step == "validation" && receipt.Source.BaseSHA == version.BaseSHA && receipt.Source.HeadSHA == version.HeadSHA &&
+				receipt.PolicyID == version.PolicyID && receipt.Validation != nil {
+				if receipt.ReviewState != reviewState || receipt.ReviewEpoch != reviewEpoch {
+					return false
+				}
+				return sourceGatePassed(receipt.Validation, version.HeadSHA)
+			}
+		}
+	}
+	return sourceGatePassed(version.Validation, version.HeadSHA)
+}
+
+func sourceGatePassed(receipt *gate.CommandResult, head string) bool {
+	return receipt != nil && receipt.Stage == gate.StageSourceFinalization && receipt.HeadSHA == head &&
+		receipt.TreeSHA != "" && receipt.Command != "" && receipt.ExitCode == 0
+}
+
+func terminalReviewState(detail *tracker.ChangeDetail, version tracker.ChangeVersion) (implementationReviewed, rejected bool) {
+	var implementation, acceptance *tracker.ChangeReview
+	for i := range detail.Reviews {
+		review := &detail.Reviews[i]
+		if review.VersionID != version.ID {
+			continue
+		}
+		switch {
+		case review.ImplementationReview != nil:
+			implementation = review
+			if version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired {
+				acceptance = nil
+			}
+		case review.Validator != nil:
+			acceptance = review
+		case review.SecurityAudit != nil && review.Decision == "changes_requested" && detail.Summary.SecurityAudit != "passed":
+			rejected = rejected || terminalReviewRejected(review)
+		}
+	}
+	implementationReviewed = version.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired ||
+		implementation != nil && implementation.Decision == "approved" && implementation.ImplementationReview.Verdict == gate.ValidatorVerdictPass
+	return implementationReviewed, rejected || terminalReviewRejected(implementation) || terminalReviewRejected(acceptance)
+}
+
+func terminalReviewRejected(review *tracker.ChangeReview) bool {
+	return review != nil && review.Decision == "changes_requested" &&
+		(len(review.RepairDependencies) == 0 || len(review.IndependentFailures()) == 0)
 }
