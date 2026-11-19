@@ -262,7 +262,7 @@ func TestBuildRunnerSupportsClaudeCodeBackendRoutes(t *testing.T) {
 	t.Parallel()
 
 	source := initRunnerSourceRepo(t)
-	claudeCommand, argsPath, stdinPath := writeRunnerClaudeStub(t)
+	claudeCommand, argsPath, stdinPath, scratchRecordPath := writeRunnerClaudeStub(t)
 	sessionStore := &runnerSessionStore{sessionID: 833}
 	startedAt := time.Date(2026, 7, 2, 13, 30, 0, 0, time.UTC)
 
@@ -322,6 +322,13 @@ Prompt {{ issue.identifier }}
 	// reaper dependency rather than spawning a PATH stub under a real deadline.
 	var reapedPaths []string
 	deps.ReapWorkspaceProcesses = func(_ context.Context, path string, _ time.Duration) (int, error) {
+		info, err := os.Stat(path)
+		if err != nil {
+			return 0, fmt.Errorf("inspect reaper target: %w", err)
+		}
+		if !info.IsDir() {
+			return 0, fmt.Errorf("reaper target %q is not a directory", path)
+		}
 		reapedPaths = append(reapedPaths, path)
 		return 0, nil
 	}
@@ -348,18 +355,17 @@ Prompt {{ issue.identifier }}
 	if len(reapedPaths) == 0 {
 		t.Fatal("workspace reaper was not called")
 	}
-	workspaceRoot, err := filepath.EvalSymlinks(workflow.Config.Workspace.Root)
-	if err != nil {
-		t.Fatalf("EvalSymlinks(%q) error = %v", workflow.Config.Workspace.Root, err)
+	scratchPath := readRunnerFile(t, scratchRecordPath)
+	if !filepath.IsAbs(scratchPath) {
+		t.Fatalf("Claude scratch path = %q, want an absolute path", scratchPath)
 	}
 	for _, path := range reapedPaths {
-		resolvedPath, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			t.Fatalf("EvalSymlinks(%q) error = %v", path, err)
+		if path != scratchPath {
+			t.Errorf("reaped path = %q, want Claude scratch %q", path, scratchPath)
 		}
-		if !filepath.IsAbs(resolvedPath) || !strings.HasPrefix(resolvedPath, workspaceRoot+string(os.PathSeparator)) {
-			t.Errorf("reaped path = %q, want a workspace beneath %q", path, workflow.Config.Workspace.Root)
-		}
+	}
+	if _, err := os.Lstat(scratchPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Claude scratch cleanup: %v", err)
 	}
 
 	if result.FinalState != runnerpkg.FinalStateCompleted || result.Output != "claude streamed" {
@@ -2478,16 +2484,18 @@ func runnerStringPrefix(values []string, prefix []string) bool {
 	return true
 }
 
-func writeRunnerClaudeStub(t *testing.T) (string, string, string) {
+func writeRunnerClaudeStub(t *testing.T) (string, string, string, string) {
 	t.Helper()
 
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "claude-stub")
 	argsPath := filepath.Join(dir, "claude-args.txt")
 	stdinPath := filepath.Join(dir, "claude-stdin.txt")
+	scratchRecordPath := filepath.Join(dir, "claude-scratch.txt")
 	lines := []string{
 		"#!/bin/sh",
 		"printf '%s\\n' \"$@\" > " + runnerShellQuote(argsPath),
+		"printf '%s' \"$DETENT_WORKER_SCRATCH\" > " + runnerShellQuote(scratchRecordPath),
 		"cat > " + runnerShellQuote(stdinPath),
 		"printf '%s\\n' " + runnerShellQuote(`{"type":"system","subtype":"init","session_id":"session-cli","model":"fable"}`),
 		"printf '%s\\n' " + runnerShellQuote(`{"type":"stream_event","session_id":"session-cli","event":{"type":"message_start","message":{"id":"msg-cli","type":"message","role":"assistant","model":"fable","content":[]}}}`),
@@ -2499,7 +2507,7 @@ func writeRunnerClaudeStub(t *testing.T) (string, string, string) {
 	if err := os.WriteFile(scriptPath, []byte(strings.Join(lines, "\n")+"\n"), 0o700); err != nil {
 		t.Fatalf("write claude stub: %v", err)
 	}
-	return scriptPath, argsPath, stdinPath
+	return scriptPath, argsPath, stdinPath, scratchRecordPath
 }
 
 func runnerShellQuote(value string) string {
