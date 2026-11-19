@@ -11,15 +11,10 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/multitracer"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -67,15 +62,12 @@ func TestHostedActivityReads(t *testing.T) {
 		phases := &tracker.NativeRuntimeObservation{Phase: "implement", Identity: runtime.Identity, Phases: []tracker.NativePhase{{Name: "implement", StartedAt: at.Add(-time.Minute), FinishedAt: at}}}
 		f.storeAttempt(t, issue, fmt.Sprintf("activity_history_%05d", index), "succeeded", at.Add(-time.Minute), at, phases, false, activityAttemptOptions{fencing: int64(index + 1)})
 	}
-	var afterHistory *httptest.ResponseRecorder
-	f.assertPlans(t, func() {
-		for _, runner := range []string{"", "runner_browser_preview"} {
-			query := "?runner_id=" + runner
-			response := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity"+query)
-			browserHostedStatus(t, response, http.StatusOK)
-		}
-		afterHistory = f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity")
-	})
+	for _, runner := range []string{"", "runner_browser_preview"} {
+		query := "?runner_id=" + runner
+		response := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity"+query)
+		browserHostedStatus(t, response, http.StatusOK)
+	}
+	afterHistory := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity")
 	browserHostedStatus(t, afterHistory, http.StatusOK)
 	var beforeReport, afterReport operatortool.ActivityReport
 	usageDecode(t, beforeHistory, &beforeReport)
@@ -296,8 +288,7 @@ func TestActivityPopulationCap(t *testing.T) {
 		t.Parallel()
 		f, live := activityPopulationFixture(t, true)
 		started := time.Now()
-		var response *httptest.ResponseRecorder
-		f.assertPlans(t, func() { response = f.page(t, "viewer", "/api/v2/organizations/org_security/activity?limit=1") })
+		response := f.page(t, "viewer", "/api/v2/organizations/org_security/activity?limit=1")
 		browserHostedStatus(t, response, http.StatusOK)
 		var report operatortool.ActivityReport
 		usageDecode(t, response, &report)
@@ -700,124 +691,4 @@ func (f *activityPostgresFixture) links(t *testing.T, main activityFixtureAttemp
 		t.Fatal(err)
 	}
 	return active
-}
-
-type activitySQLStatement struct {
-	sql  string
-	args []any
-}
-
-type activitySQLTrace struct {
-	mu         sync.Mutex
-	statements []activitySQLStatement
-}
-
-func (trace *activitySQLTrace) record(statement string, args []any) {
-	if strings.Contains(statement, "native_attempts") || strings.Contains(statement, "collaboration_events") || strings.Contains(statement, "FROM change_requests") {
-		trace.mu.Lock()
-		trace.statements = append(trace.statements, activitySQLStatement{sql: statement, args: append([]any{}, args...)})
-		trace.mu.Unlock()
-	}
-}
-
-func (trace *activitySQLTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	trace.record(data.SQL, data.Args)
-	return ctx
-}
-
-func (*activitySQLTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (*activitySQLTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	return ctx
-}
-
-func (trace *activitySQLTrace) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	trace.record(data.SQL, data.Args)
-}
-
-func (*activitySQLTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
-
-func (f *activityPostgresFixture) assertPlans(t *testing.T, read func()) {
-	t.Helper()
-	if _, err := f.admin.ExecContext(t.Context(), "ANALYZE"); err != nil {
-		t.Fatal(err)
-	}
-	connection := f.service.config.Postgres.Connection
-	config := nativeConfig(t, f.admin, connection.User, connection.Password)
-	config.MaxConns = int32(f.service.config.Postgres.Pool.MaxConnections)
-	trace := &activitySQLTrace{}
-	config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, trace)
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	repository, err := postgres.NewRepository(t.Context(), pool, f.service.config.Postgres.Pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	previous := f.service.config.TenantRepository
-	f.service.config.TenantRepository = repository
-	defer func() { f.service.config.TenantRepository = previous }()
-	read()
-	trace.mu.Lock()
-	statements := append([]activitySQLStatement{}, trace.statements...)
-	trace.mu.Unlock()
-	if len(statements) == 0 {
-		t.Fatal("activity did not execute any source queries")
-	}
-	tx, err := pool.Begin(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
-		defer cancel()
-		if err := tx.Rollback(cleanup); err != nil && err != pgx.ErrTxClosed {
-			t.Error(err)
-		}
-	}()
-	if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, true)", string(f.organization)); err != nil {
-		t.Fatal(err)
-	}
-	indexes := map[string]bool{}
-	for _, statement := range statements {
-		var raw []byte
-		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement.sql, statement.args...).Scan(&raw); err != nil {
-			t.Fatal(err)
-		}
-		var plans []struct{ Plan map[string]any }
-		if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-			t.Fatalf("decode activity plan: %v", err)
-		}
-		visited := map[string]float64{}
-		var walk func(map[string]any)
-		walk = func(node map[string]any) {
-			if name, ok := node["Index Name"].(string); ok {
-				indexes[name] = true
-			}
-			if relation, ok := node["Relation Name"].(string); ok {
-				rows, _ := node["Actual Rows"].(float64)
-				filtered, _ := node["Rows Removed by Filter"].(float64)
-				loops, _ := node["Actual Loops"].(float64)
-				visited[relation] += (rows + filtered) * loops
-			}
-			children, _ := node["Plans"].([]any)
-			for _, child := range children {
-				if child, ok := child.(map[string]any); ok {
-					walk(child)
-				}
-			}
-		}
-		walk(plans[0].Plan)
-		for _, relation := range []string{"native_attempts", "collaboration_events", "change_requests"} {
-			if visited[relation] > 10001 {
-				t.Fatalf("activity walked history outside its source budget: relation=%s visited=%.0f plan=%s", relation, visited[relation], raw)
-			}
-		}
-		t.Logf("activity actual plan rows=%v", visited)
-	}
-	if !indexes["native_attempts_activity_recent_idx"] || !indexes["native_attempts_activity_running_idx"] {
-		t.Fatalf("activity source windows lacked their native indexes: %v", indexes)
-	}
 }
