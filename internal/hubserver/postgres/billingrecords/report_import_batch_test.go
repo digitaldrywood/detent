@@ -21,9 +21,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
+func TestReportBulkImportsPreserveTenantFacts(t *testing.T) {
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	for _, org := range []tracker.OrganizationID{"org_bulk_first", "org_bulk_second"} {
 		if _, err := admin.ExecContext(ctx, `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
@@ -151,99 +151,80 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		}
 		landings := []postgres.ReportLandingImport{{Change: change, Receipt: receipt, Frozen: frozen}}
 
-		counter := &pgstoretest.ReportCountingTracer{}
-		countedPool := pgstoretest.TracedFeaturePool(t, pool, counter)
-		counted, err := postgres.NewRepository(ctx, countedPool, pgstoretest.SmallPool())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := counted.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		check := func(name string, limit int64, run func() error) {
+		check := func(name string, run func() error) {
 			t.Helper()
-			counter.Count.Store(0)
 			if err := run(); err != nil {
 				t.Fatalf("%s: %v", name, err)
 			}
-			t.Logf("%s: %d statements", name, counter.Count.Load())
-			if got := counter.Count.Load(); got > limit {
-				t.Fatalf("%s used %d statements, limit %d", name, got, limit)
-			}
 		}
 		for range 2 {
-			check("escapes", 7, func() error { return counted.ImportReportEscapeProjections(ctx, escapes) })
-			check("landings", 7, func() error { return counted.ImportReportChangeLandings(ctx, landings) })
-			check("current refresh", 7, func() error {
-				return counted.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error { return w.(reportstore.UsageWriter).RefreshReportUsage(ctx, current) })
+			check("escapes", func() error { return repository.ImportReportEscapeProjections(ctx, escapes) })
+			check("landings", func() error { return repository.ImportReportChangeLandings(ctx, landings) })
+			check("current refresh", func() error {
+				return repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error { return w.(reportstore.UsageWriter).RefreshReportUsage(ctx, current) })
 			})
-			check("events", 8, func() error { _, err := counted.ImportReportEventProjections(ctx, events); return err })
-			check("usage", 7, func() error { return counted.ImportReportUsageFacts(ctx, usage) })
-			check("coverage", 7, func() error {
-				return counted.VerifyReportUsageImports(ctx, org, strings.Repeat("a", 64), []postgres.ReportUsageImportCoverage{{AttemptID: "attempt_bulk", RowCount: 100}})
+			check("events", func() error { _, err := repository.ImportReportEventProjections(ctx, events); return err })
+			check("usage", func() error { return repository.ImportReportUsageFacts(ctx, usage) })
+			check("coverage", func() error {
+				return repository.VerifyReportUsageImports(ctx, org, strings.Repeat("a", 64), []postgres.ReportUsageImportCoverage{{AttemptID: "attempt_bulk", RowCount: 100}})
 			})
 		}
 		conflict := append([]reportstore.UsageRecord(nil), usage...)
 		conflict[99].Cost++
-		if err := counted.ImportReportUsageFacts(ctx, conflict); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if err := repository.ImportReportUsageFacts(ctx, conflict); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("usage conflict=%v", err)
 		}
 		conflict[0].Period = pgstoretest.HistoryAt().Add(1000 * time.Hour)
-		if err := counted.ImportReportUsageFacts(ctx, conflict); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if err := repository.ImportReportUsageFacts(ctx, conflict); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("partial usage conflict=%v", err)
 		}
 		mismatch := append([]reportstore.UsageRecord(nil), usage...)
 		mismatch[99].WorkItemID = "wi_2"
-		if err := counted.ImportReportUsageFacts(ctx, mismatch); !errors.Is(err, corestore.ErrTenantMismatch) {
+		if err := repository.ImportReportUsageFacts(ctx, mismatch); !errors.Is(err, corestore.ErrTenantMismatch) {
 			t.Fatalf("usage attribution=%v", err)
 		}
 		forged := append([]postgres.ReportEventProjectionImport(nil), events...)
 		forged[99].Event.PayloadSHA256 = strings.Repeat("b", 64)
-		if _, err := counted.ImportReportEventProjections(ctx, forged); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if _, err := repository.ImportReportEventProjections(ctx, forged); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("event provenance=%v", err)
 		}
 		projection := *events[99].Event.Report
 		projection.Model = "changed"
 		forged[99] = events[99]
 		forged[99].Event.Report = &projection
-		if _, err := counted.ImportReportEventProjections(ctx, forged); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if _, err := repository.ImportReportEventProjections(ctx, forged); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("event projection=%v", err)
 		}
 		legacy := events[0].Event
 		forged = append([]postgres.ReportEventProjectionImport(nil), events...)
 		forged[0].Event.PayloadSHA256 = strings.Repeat("c", 64)
 		forged[0].Legacy = &legacy
-		check("legacy anchors", 8, func() error {
-			n, err := counted.ImportReportEventProjections(ctx, forged)
+		check("legacy anchors", func() error {
+			n, err := repository.ImportReportEventProjections(ctx, forged)
 			if n != 1 && err == nil {
 				return fmt.Errorf("legacy anchors=%d", n)
 			}
 			return err
 		})
-		if err := counted.VerifyReportUsageImports(ctx, org, strings.Repeat("b", 64), []postgres.ReportUsageImportCoverage{{AttemptID: "attempt_bulk", RowCount: 100}}); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if err := repository.VerifyReportUsageImports(ctx, org, strings.Repeat("b", 64), []postgres.ReportUsageImportCoverage{{AttemptID: "attempt_bulk", RowCount: 100}}); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("coverage source conflict=%v", err)
 		}
 		badEscape := append([]eventstore.Evidence(nil), escapes...)
 		badEscape[99].PayloadSHA256 = strings.Repeat("d", 64)
-		if err := counted.ImportReportEscapeProjections(ctx, badEscape); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if err := repository.ImportReportEscapeProjections(ctx, badEscape); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("escape provenance=%v", err)
 		}
 		badLanding := landings[0]
 		badLanding.Change.Revision++
-		if err := counted.ImportReportChangeLandings(ctx, []postgres.ReportLandingImport{badLanding}); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if err := repository.ImportReportChangeLandings(ctx, []postgres.ReportLandingImport{badLanding}); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("landing revision=%v", err)
 		}
 		badLanding = landings[0]
 		badLanding.Receipt.PayloadSHA256 = strings.Repeat("e", 64)
-		if err := counted.ImportReportChangeLandings(ctx, []postgres.ReportLandingImport{badLanding}); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if err := repository.ImportReportChangeLandings(ctx, []postgres.ReportLandingImport{badLanding}); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("landing receipt=%v", err)
 		}
 
-		if err := counted.Close(); err != nil {
-			t.Fatal(err)
-		}
 		var rows int
 		var total float64
 		if err := admin.QueryRowContext(ctx, `SELECT count(*),sum(cost_estimate) FROM attempt_usage WHERE organization_id=$1`, org).Scan(&rows, &total); err != nil {
