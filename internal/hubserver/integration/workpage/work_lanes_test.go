@@ -51,7 +51,20 @@ func TestWorkListLaneSummariesCountTheFilteredPopulation(t *testing.T) {
 		response := f.Hub.Request(t, http.MethodPost, f.Base+"/claims", r.Redemption.Credential, hubfixture.ProviderClaim(r, items[i], fmt.Sprintf("session-%d", i)))
 		hubfixture.RequireStatus(t, response, http.StatusOK)
 		hubfixture.Decode(t, response, &leases[i])
-		hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/work-items/"+string(items[i].WorkItemID)+"/events", r.Redemption.Credential, hubfixture.StartedEvent(leases[i])), http.StatusOK)
+		event := hubfixture.StartedEvent(leases[i])
+		event.IdempotencyKey = "start-" + string(leases[i].ID)
+		path := f.Base + "/work-items/" + string(items[i].WorkItemID) + "/events"
+		accepted := f.Hub.Request(t, http.MethodPost, path, r.Redemption.Credential, event)
+		hubfixture.RequireStatus(t, accepted, http.StatusOK)
+
+		replay := f.Hub.Request(t, http.MethodPost, path, r.Redemption.Credential, event)
+		hubfixture.RequireStatus(t, replay, http.StatusOK)
+		if replay.Body.String() != accepted.Body.String() {
+			t.Fatalf("run.started replay changed the response: got %s, want %s", replay.Body, accepted.Body)
+		}
+		changed := event
+		changed.OccurredAt = time.Now().UTC()
+		hubfixture.RequireCode(t, f.Hub.Request(t, http.MethodPost, path, r.Redemption.Credential, changed), http.StatusConflict, "idempotency_conflict")
 	}
 	if err := f.Hub.Repository.WriteTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(leases[1].ID), FencingToken: int64(leases[1].FencingToken)}, "cancelled")
