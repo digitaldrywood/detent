@@ -18,10 +18,10 @@
       "loc": 17800
     },
     "github.com/digitaldrywood/detent/internal/hubserver": {
-      "files": 412,
-      "loc": 86770,
+      "files": 407,
+      "loc": 86613,
       "test-files": 487,
-      "test-funcs": 1416
+      "test-funcs": 1414
     },
     "github.com/digitaldrywood/detent/internal/hubserver/postgres": {
       "files": 263,
