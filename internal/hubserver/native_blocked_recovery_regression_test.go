@@ -188,3 +188,24 @@ func TestHubOwnedBlockedRecoveryR2SkipsOperatorPage(t *testing.T) {
 		t.Fatalf("expected the cursor to advance past the operator hold, got %+v", page)
 	}
 }
+
+func TestHubOwnedBlockedRecoveryR2PreservesInterruptedStop(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	configureHubOwnedBlockedRecovery(t, f)
+	current := f.reload(t)
+	path := f.base + "/work-items/" + string(current.WorkItemID)
+	stop := tracker.Transition{ExpectedRevision: current.Revision, State: "Blocked", Reason: "worker_progress", ReasonDetail: "operator stopped",
+		Mutation: tracker.Mutation{IdempotencyKey: "legacy-stop", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, stop), http.StatusOK)
+	finished := tracker.NativeRunEvent{Type: "run.finished", SchemaVersion: 1, Mutation: tracker.Mutation{IdempotencyKey: "legacy-stop-completion"},
+		Data: tracker.NativeRunData{Sequence: 2, Identity: &f.started, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "interrupted",
+			TerminalFailure: &tracker.NativeTerminalFailure{Decision: &tracker.FailureAttribution{Outcome: "instance", Reason: "runner cancelled the execution"}, Source: "runner", Coverage: "complete", ObservedAt: f.now, Summary: "Execution interrupted"}}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, finished), http.StatusOK)
+	f.release(t)
+	claim := hubOwnedRecoveryClaim(f, "claim-after-legacy-stop")
+	claim.WorkItemID = current.WorkItemID
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+	if after := f.reload(t); response.Code == http.StatusOK || after.State != "Blocked" || after.Revision != current.Revision+1 {
+		t.Fatalf("interrupted stop returned HTTP %d and left %s at revision %d", response.Code, after.State, after.Revision)
+	}
+}

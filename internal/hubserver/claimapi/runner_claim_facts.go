@@ -21,9 +21,9 @@ func NativeAttemptClaimDisposition(data tracker.NativeRunData, checkpoint *track
 			data.Disposition = &tracker.NativeDisposition{Status: signal.Status, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode}
 		}
 	}
-	if data.Disposition != nil && !RecordedHumanHold(data.TerminalFailure, data.Disposition, data.CompletionBody) {
+	if data.Disposition != nil && !RecordedHumanHold(data.Outcome, data.TerminalFailure, data.Disposition, data.CompletionBody) {
 		dependencies, valid := RecordedRecoveryDependencies(data.Disposition, string(project))
-		if RecordedMachineFailure(data.TerminalFailure, data.Disposition) || valid && len(dependencies) > 0 || data.Disposition.ReasonCode == "stale_base" {
+		if RecordedMachineFailure(data.Outcome, data.TerminalFailure, data.Disposition) || valid && len(dependencies) > 0 || data.Disposition.ReasonCode == "stale_base" {
 			return "progress"
 		}
 	}
@@ -65,7 +65,7 @@ func (d AttemptFactsDeps) PrepareAttemptClaimFacts(ctx context.Context, snapshot
 	return AttemptClaimFacts(snapshot.Attempt, NativeAttemptClaimDisposition(run, checkpoint, snapshot.Event.ProjectID), true), nil
 }
 
-func RecordedHumanHold(failure *tracker.NativeTerminalFailure, disposition *tracker.NativeDisposition, texts ...string) bool {
+func RecordedHumanHold(outcome string, failure *tracker.NativeTerminalFailure, disposition *tracker.NativeDisposition, texts ...string) bool {
 	if disposition != nil && (disposition.ReasonCode == "permission_wait" || slices.ContainsFunc(disposition.BlockerEvidence, func(blocker workpad.Blocker) bool {
 		return blocker.Owner == workpad.BlockerOwnerHuman
 	})) {
@@ -77,7 +77,7 @@ func RecordedHumanHold(failure *tracker.NativeTerminalFailure, disposition *trac
 			continue
 		}
 		if explicitRecordedHumanHold(signal) ||
-			slices.ContainsFunc(signal.Blockers, func(blocker workpad.Blocker) bool { return !recordedInstanceBlocker(blocker) }) && !RecordedMachineFailure(failure, nil) {
+			slices.ContainsFunc(signal.Blockers, func(blocker workpad.Blocker) bool { return !recordedInstanceBlocker(blocker) }) && !RecordedMachineFailure(outcome, failure, nil) {
 			return true
 		}
 	}
@@ -100,9 +100,14 @@ func explicitRecordedHumanHold(signal *workpad.Signal) bool {
 	return signal.ExplicitHumanBlocker || signal.ReasonCode == "permission_wait" || signal.Fields["human_action_source"] == "issue_contract"
 }
 
-func RecordedMachineFailure(failure *tracker.NativeTerminalFailure, disposition *tracker.NativeDisposition) bool {
-	if failure != nil && (failure.InfrastructureDecision() != nil || failure.Decision != nil && failure.Decision.Valid() && slices.Contains([]string{"instance", "issue"}, failure.Decision.Outcome)) {
-		return true
+func RecordedMachineFailure(outcome string, failure *tracker.NativeTerminalFailure, disposition *tracker.NativeDisposition) bool {
+	if failure != nil {
+		if failure.InfrastructureDecision() != nil {
+			return true
+		}
+		if outcome != "interrupted" && outcome != "cancelled" && failure.Decision != nil && failure.Decision.Valid() && failure.Decision.Outcome != "unknown" {
+			return true
+		}
 	}
 	if disposition == nil || disposition.Status != workpad.StatusBlocked {
 		return false
