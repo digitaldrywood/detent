@@ -414,7 +414,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		return result, fmt.Errorf("hydrate recovery work item relationships: %w", err)
 	}
 	if continuationEligible != nil && *continuationEligible && !ownsLiveLease && strings.EqualFold(result.Issue.State, "Blocked") {
-		recovery, err := s.readRecordedRecoveryIntent(ctx, scope, row, result.Issue)
+		recovery, err := s.readRecordedRecoveryIntent(ctx, scope, row, result.Issue, false)
 		if err != nil {
 			return result, fmt.Errorf("read recorded recovery intent: %w", err)
 		}
