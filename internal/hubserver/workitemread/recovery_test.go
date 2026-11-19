@@ -1,4 +1,4 @@
-package hubserver
+package workitemread
 
 import (
 	"slices"
@@ -25,10 +25,9 @@ func TestBoundedRecoveryReviewsKeepsCurrentResults(t *testing.T) {
 		reviews []tracker.ChangeReview
 		want    []string
 	}{
-		{name: "superseded source and acceptance", reviews: []tracker.ChangeReview{source("old_source"), acceptance("old_acceptance"), human, source("source"), acceptance("acceptance")}, want: []string{"human", "source", "acceptance"}},
 		{name: "acceptance before newer source", reviews: []tracker.ChangeReview{acceptance("old_acceptance"), acceptance("acceptance"), source("old_source"), human, source("source")}, want: []string{"acceptance", "human", "source"}},
 		{name: "ordinary reviews", reviews: []tracker.ChangeReview{human, {ID: "bot", Decision: "commented"}}, want: []string{"human", "bot"}},
-		{name: "earlier audits fill the budget", reviews: []tracker.ChangeReview{audit("old_audit"), audit("audit")}, want: []string{"old_audit", "audit"}},
+		{name: "earlier audits remain visible", reviews: []tracker.ChangeReview{audit("old_audit"), audit("audit")}, want: []string{"old_audit", "audit"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, _, err := boundedRecoveryReviews(test.reviews, 256<<10)

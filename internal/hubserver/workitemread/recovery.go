@@ -1,41 +1,39 @@
-package hubserver
+package workitemread
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"net/url"
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/workpage"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readNativeRecovery(ctx context.Context, scope hubscope.NativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
-	ctx = s.contentContext(s.runDetailContext(ctx))
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
-	return s.readNativeRecoveryTenant(ctx, scope, item)
+type RecoveryFitDeps struct {
+	BoundVersion   func(tracker.ChangeVersion) tracker.ChangeVersion
+	ReadBodyCursor func() (workpage.Cursor, []byte, error)
 }
 
-type recoveryEvidenceCursor struct {
-	Section       int                     `json:"section"`
-	After         int64                   `json:"after"`
-	Offset        int64                   `json:"offset"`
-	Digest        string                  `json:"digest,omitempty"`
-	Change        string                  `json:"change,omitempty"`
-	Version       string                  `json:"version,omitempty"`
-	IssueRevision tracker.Revision        `json:"issue_revision,omitempty"`
-	Attempt       *retainedAttemptReadPin `json:"attempt,omitempty"`
+type RecoveryEvidenceCursor struct {
+	Section       int                                  `json:"section"`
+	After         int64                                `json:"after"`
+	Offset        int64                                `json:"offset"`
+	Digest        string                               `json:"digest,omitempty"`
+	Change        string                               `json:"change,omitempty"`
+	Version       string                               `json:"version,omitempty"`
+	IssueRevision tracker.Revision                     `json:"issue_revision,omitempty"`
+	Attempt       *executionapi.RetainedAttemptReadPin `json:"attempt,omitempty"`
 }
 
-func recoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, offset int64, expectedDigest string) error {
+func RecoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, offset int64, expectedDigest string) error {
 	digest := sha256.Sum256(content)
 	sha := hex.EncodeToString(digest[:])
 	if offset < 0 || offset >= int64(len(content)) || expectedDigest != "" && expectedDigest != sha {
@@ -46,7 +44,7 @@ func recoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, of
 	return nil
 }
 
-func (s *Service) fitNativeRecovery(ctx context.Context, scope hubscope.NativeScope, path string, result *tracker.NativeRecovery, bodyFragments bool) error {
+func FitRecovery(path string, result *tracker.NativeRecovery, bodyFragments bool, deps RecoveryFitDeps) error {
 	encoded, err := json.Marshal(result)
 	if err != nil || len(encoded)+1 <= 1<<20 {
 		return err
@@ -62,7 +60,7 @@ func (s *Service) fitNativeRecovery(ctx context.Context, scope hubscope.NativeSc
 	}
 	if detail := result.ChangeDetail; detail != nil {
 		for i := range detail.Versions {
-			detail.Versions[i] = boundedChangeVersion(detail.Versions[i])
+			detail.Versions[i] = deps.BoundVersion(detail.Versions[i])
 		}
 		result.Read.Omitted = append(result.Read.Omitted, "change_detail.versions.policy")
 	}
@@ -70,7 +68,7 @@ func (s *Service) fitNativeRecovery(ctx context.Context, scope hubscope.NativeSc
 		return err
 	}
 	if bodyFragments && result.Issue.Body != "" {
-		_, cursor, key, err := s.readNativePageLimit(ctx, scope, path, url.Values{"view": {"recovery"}}, 1, 1)
+		cursor, key, err := deps.ReadBodyCursor()
 		if err != nil {
 			return err
 		}
@@ -80,7 +78,7 @@ func (s *Service) fitNativeRecovery(ctx context.Context, scope hubscope.NativeSc
 		}
 		digest := sha256.Sum256(body)
 		sha := hex.EncodeToString(digest[:])
-		selection := recoveryEvidenceCursor{Section: 7, IssueRevision: result.Issue.Revision, Digest: sha}
+		selection := RecoveryEvidenceCursor{Section: 7, IssueRevision: result.Issue.Revision, Digest: sha}
 		if result.ChangeDetail != nil {
 			selection.Change, selection.Version = result.ChangeDetail.Change.ID, result.ChangeDetail.Change.CurrentVersion
 		}
@@ -92,7 +90,7 @@ func (s *Service) fitNativeRecovery(ctx context.Context, scope hubscope.NativeSc
 			return err
 		}
 		cursor.After = string(position)
-		encoded, err := encodeNativeCursor(cursor, key)
+		encoded, err := workpage.Encode(cursor, key)
 		if err != nil {
 			return err
 		}
@@ -122,7 +120,7 @@ func (s *Service) fitNativeRecovery(ctx context.Context, scope hubscope.NativeSc
 	return hubapi.NativePublicInvalid("Required recovery metadata exceeds the bounded response")
 }
 
-func projectNativeRecovery(result *tracker.NativeRecovery) error {
+func ProjectRecovery(result *tracker.NativeRecovery, boundReview func(*gate.ValidatorResult) *gate.ValidatorResult) error {
 	landingBudget := 64 << 10
 	var landings []*tracker.NativeLandingReceipt
 	if result.ChangeDetail != nil {
@@ -158,8 +156,8 @@ func projectNativeRecovery(result *tracker.NativeRecovery) error {
 		}
 		for i := range detail.Reviews {
 			detail.Reviews[i].SecurityAudit = boundedRecoveryAudit(detail.Reviews[i].SecurityAudit)
-			detail.Reviews[i].Validator = boundedChangeReviewResult(detail.Reviews[i].Validator)
-			detail.Reviews[i].ImplementationReview = boundedChangeReviewResult(detail.Reviews[i].ImplementationReview)
+			detail.Reviews[i].Validator = boundReview(detail.Reviews[i].Validator)
+			detail.Reviews[i].ImplementationReview = boundReview(detail.Reviews[i].ImplementationReview)
 		}
 		var omitted bool
 		var err error

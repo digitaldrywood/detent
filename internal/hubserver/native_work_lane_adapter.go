@@ -1,11 +1,17 @@
 package hubserver
 
 import (
+	"context"
+	"net/url"
+
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/boardview"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
+	"github.com/digitaldrywood/detent/internal/hubserver/workpage"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -37,4 +43,31 @@ func boardModelCard(scope hubscope.NativeScope, row viewstore.BoardRecord) (trac
 
 func nativeBoardStatusLine(card tracker.NativeBoardCard) string {
 	return boardview.StatusLine(card)
+}
+
+func (s *Service) readNativeRecovery(ctx context.Context, scope hubscope.NativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
+	ctx = s.contentContext(s.runDetailContext(ctx))
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancel()
+	return s.readNativeRecoveryTenant(ctx, scope, item)
+}
+
+type recoveryEvidenceCursor = workitemread.RecoveryEvidenceCursor
+
+func recoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, offset int64, expectedDigest string) error {
+	return workitemread.RecoveryRecordFragment(page, content, offset, expectedDigest)
+}
+
+func (s *Service) fitNativeRecovery(ctx context.Context, scope hubscope.NativeScope, path string, result *tracker.NativeRecovery, bodyFragments bool) error {
+	return workitemread.FitRecovery(path, result, bodyFragments, workitemread.RecoveryFitDeps{
+		BoundVersion: boundedChangeVersion,
+		ReadBodyCursor: func() (workpage.Cursor, []byte, error) {
+			_, cursor, key, err := s.readNativePageLimit(ctx, scope, path, url.Values{"view": {"recovery"}}, 1, 1)
+			return cursor, key, err
+		},
+	})
+}
+
+func projectNativeRecovery(result *tracker.NativeRecovery) error {
+	return workitemread.ProjectRecovery(result, boundedChangeReviewResult)
 }
