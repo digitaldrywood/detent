@@ -231,6 +231,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	if err != nil {
 		return page, nil, err
 	}
+	selection.WindowAsOf = new(s.config.Clock())
 	selection.SearchText = strings.TrimSpace(params.Get("q"))
 	selection.SearchRanked = !includeBoard && (selection.SearchText != "" || selection.Fingerprint != "")
 	if len(selection.SearchText) > searchstore.MaxQueryTextBytes {

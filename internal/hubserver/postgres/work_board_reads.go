@@ -41,7 +41,7 @@ func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.Boa
 	targets = append(targets, page...)
 	targets = append(targets, list...)
 	targets = append(targets, &b.ListBytes)
-	targets = append(targets, &b.WindowMask, &b.RefreshAfter, b.ActorDisplayName)
+	targets = append(targets, &b.LegacyWindowMask, &b.RefreshAfter, b.ActorDisplayName)
 	targets = append(targets, extra...)
 	err := row.Scan(targets...)
 	finish()
@@ -615,7 +615,7 @@ func (s *session) BoardView(ctx context.Context, selection viewstore.BoardViewSe
 	}
 	rows, err := s.db.Query(ctx, boardviewsql.Statement(selection.Reporter != ""), s.organization, selection.ProjectStrings(), selection.AllowedStrings(), selection.Reporter, selection.Archived,
 		selection.CredentialID, selection.PrincipalID, selection.UserID, selection.ClosedPage+1, selection.ItemStrings(), len(selection.Items) > 0,
-		selection.LanePreset, after, identifier, selection.ClosedAfter != nil, append([]string{}, selection.IncludeLanes...), append([]string{}, selection.ExcludeLanes...))
+		selection.LanePreset, after, identifier, selection.ClosedAfter != nil, append([]string{}, selection.IncludeLanes...), append([]string{}, selection.ExcludeLanes...), selection.WindowAsOf)
 	if err != nil {
 		return result, mapError(ctx, err)
 	}

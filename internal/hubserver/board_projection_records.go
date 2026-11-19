@@ -525,18 +525,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		issue.WebURL = hubrecords.IssueBrowserPath(snapshot.organizationSlug, snapshot.project.Core.Slug, issue.Number)
 		s.prepareNativeIssueChangeRecord(snapshot, &issue)
 		projected, reporter := s.boardProjectedRelationshipIssues(organization, candidate.ProjectID, issue, snapshot)
-		if record.Terminal && record.ClosedAt != nil {
-			for index, span := range nativeShippedWindowSpans {
-				expires := record.ClosedAt.Add(span.span).Add(time.Microsecond)
-				if now.Before(expires) && !record.ClosedAt.After(now) {
-					record.WindowMask |= 1 << index
-					if record.RefreshAfter == nil || expires.Before(*record.RefreshAfter) {
-						record.RefreshAfter = &expires
-					}
-				}
-			}
-		}
-		if record.ExpiresAt != nil && now.Before(*record.ExpiresAt) && (record.RefreshAfter == nil || record.ExpiresAt.Before(*record.RefreshAfter)) {
+		if record.ExpiresAt != nil && now.Before(*record.ExpiresAt) {
 			record.RefreshAfter = record.ExpiresAt
 		}
 		projected = s.nativeIssueResponse(projected)

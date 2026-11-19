@@ -142,6 +142,26 @@ func boardViewStateRows() string {
 		map[string]string{"ta1": "project", "ta2": "name", "ta3": "target", "ia1": "rank", "ia2": "transition", "ba1": "terminal", "ba2": "dispatchable", "ba3": "operator_only"})
 }
 
+func CompletionCountsSQL(project, audience, excludeWorkspace, at string) string {
+	clock := "coalesce(" + at + "::timestamptz,statement_timestamp())"
+	return `SELECT CASE WHEN GROUPING(b.state)=1 THEN 'total' ELSE 'lane' END AS kind,coalesce(b.state,'') AS state,
+ CASE WHEN GROUPING(b.archived)=1 THEN 'all' ELSE b.archived::text END AS archive_scope,
+ count(*) FILTER (WHERE b.state='Done' AND b.closed_at >= ` + clock + `-interval '1 hour') AS shipped_1h,
+ count(*) FILTER (WHERE b.state='Done' AND b.closed_at >= ` + clock + `-interval '24 hours') AS shipped_24h,
+ count(*) FILTER (WHERE b.state='Done') AS shipped_7d,
+ count(*) FILTER (WHERE b.state='Cancelled' AND b.closed_at >= ` + clock + `-interval '1 hour') AS cancelled_1h,
+ count(*) FILTER (WHERE b.state='Cancelled' AND b.closed_at >= ` + clock + `-interval '24 hours') AS cancelled_24h,
+ count(*) FILTER (WHERE b.state='Cancelled') AS cancelled_7d
+ FROM native_board_items b
+ WHERE b.organization_id=$1 AND b.project_id=` + project + ` AND b.page_ready AND b.terminal AND b.state IN ('Done','Cancelled')
+ AND coalesce(b.closed_at,'-infinity'::timestamptz)>=` + clock + `-interval '168 hours'
+ AND coalesce(b.closed_at,'-infinity'::timestamptz)<=` + clock + `
+ AND (NOT ` + excludeWorkspace + `::boolean OR NOT 'detent:workspace'=ANY(coalesce(b.page_labels,'{}')))
+ AND (` + audience + `::text='' OR b.actor_principal_id=` + audience + ` AND EXISTS(SELECT 1 FROM issues i
+  WHERE i.organization_id=$1 AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND i.actor_principal_id=` + audience + ` OFFSET 0))
+ GROUP BY GROUPING SETS ((),(b.state),(b.archived),(b.archived,b.state))`
+}
+
 func boardViewSQL(reporter bool) string {
 	revision := func(subject, id string) string {
 		return "coalesce((SELECT r.revision FROM native_board_access_revisions r WHERE r.organization_id=$1 AND r.subject_kind='" + subject + "' AND r.subject_id=" + id + "),0)"
@@ -166,6 +186,7 @@ func boardViewSQL(reporter bool) string {
 			live = append(live, "c."+column.name)
 		}
 	}
+	affected := " WHERE NOT $11::boolean OR v.id IN (SELECT project_id FROM cards)"
 	ctes := `WITH visible AS MATERIALIZED (SELECT p.id FROM projects p WHERE p.organization_id=$1 AND p.id=ANY($2::text[]) AND p.deleted_at IS NULL AND p.profile='native'),
 lanes AS MATERIALIZED (SELECT w.project_id,w.name,w.terminal FROM project_workflow_states w JOIN visible v ON w.organization_id=$1 AND w.project_id=v.id
  WHERE NOT $11::boolean AND ($12::text='all' OR NOT w.terminal AND ($12::text='open' OR w.dispatchable)) AND (cardinality($16::text[])=0 OR w.name=ANY($16::text[])) AND w.name<>ALL($17::text[])),
@@ -182,6 +203,8 @@ closed AS MATERIALIZED (SELECT x.* FROM (SELECT project_id,name FROM lanes WHERE
   AND NOT EXISTS(SELECT 1 FROM dirty d WHERE d.project_id=c.project_id AND d.work_item_id=c.work_item_id AND (coalesce(d.state,c.state)<>c.state OR coalesce(d.archived,c.archived)<>c.archived))
   AND (NOT $15::boolean OR ` + after + `)
   ORDER BY coalesce(c.closed_at,'-infinity'::timestamptz) DESC,c.identifier DESC LIMIT $9) x),
+completion AS MATERIALIZED (SELECT v.id AS project_id,w.* FROM visible v
+ CROSS JOIN LATERAL (` + CompletionCountsSQL("v.id", "$4", "true", "$18") + `) w` + affected + `),
 linked AS MATERIALIZED (SELECT project_id,work_item_id FROM cards WHERE has_links UNION SELECT project_id,work_item_id FROM closed WHERE has_links),
 evaluated AS MATERIALIZED (SELECT project_id,change_policy_id,change_review_policy_id FROM cards WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed'
  UNION SELECT project_id,change_policy_id,change_review_policy_id FROM closed WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed')
@@ -192,19 +215,20 @@ evaluated AS MATERIALIZED (SELECT project_id,change_policy_id,change_review_poli
     WHERE b.organization_id=$1 AND b.project_id=v.id AND b.work_item_id=d.work_item_id AND b.actor_principal_id=coalesce(i.actor_principal_id,'') OFFSET 0))
   OR EXISTS(SELECT 1 FROM native_board_items b WHERE b.organization_id=$1 AND b.project_id=v.id AND NOT b.page_ready)
   OR EXISTS(SELECT 1 FROM native_board_items b WHERE b.organization_id=$1 AND b.project_id=v.id AND NOT b.list_ready))`
-	affected := " WHERE NOT $11::boolean OR v.id IN (SELECT project_id FROM cards)"
 	rows := []string{
 		boardViewRow("access", "NULL", "NULL", map[string]string{"i1": revision("organization", "$1"), "i2": revision("token", "$6"), "i3": revision("token", "$7"), "i4": revision("member", "$8")}),
 		boardViewRow("project", "p.id", "p.id", map[string]string{"t1": "p.name", "t2": "p.slug", "t3": "p.profile", "b1": "p.require_dependencies"}) + ` FROM visible v JOIN projects p ON p.organization_id=$1 AND p.id=v.id`,
 		boardViewStateRows(),
 		boardViewRow("sequence", "v.id", "NULL", map[string]string{"i1": "coalesce((SELECT s.sequence FROM native_board_sequences s WHERE s.organization_id=$1 AND s.project_id=v.id),0)", "b1": readiness,
 			"d1": "(SELECT d.queued_at FROM native_board_dirty d WHERE d.organization_id=$1 AND d.project_id=v.id ORDER BY d.queued_at LIMIT 1)"}) + ` FROM visible v` + affected,
-		boardViewRow("count", "o.project_id", "o.state", map[string]string{"t1": "o.kind", "t2": "'scope'", "i1": "o.total", "i2": "o.running", "i3": "o.shipped_1h", "i4": "o.shipped_24h",
-			"i5": "o.shipped_7d", "i6": "o.cancelled_1h", "i7": "o.cancelled_24h", "i8": "o.cancelled_7d", "d1": "o.projected_at"}) +
-			` FROM visible v JOIN native_board_page_summaries o ON o.organization_id=$1 AND o.project_id=v.id AND o.audience=$4 AND o.archive_scope=$5::text AND o.exclude_workspace` + affected,
-		boardViewRow("count", "o.project_id", "o.state", map[string]string{"t1": "o.kind", "t2": "'all'", "i1": "o.total", "i2": "o.running", "i3": "o.shipped_1h", "i4": "o.shipped_24h",
-			"i5": "o.shipped_7d", "i6": "o.cancelled_1h", "i7": "o.cancelled_24h", "i8": "o.cancelled_7d", "d1": "o.projected_at"}) +
-			` FROM visible v JOIN native_board_page_summaries o ON o.organization_id=$1 AND o.project_id=v.id AND o.audience=$4 AND o.archive_scope='all' AND o.exclude_workspace AND o.kind IN ('total','lane') AND $5::text<>'all'` + affected,
+		boardViewRow("count", "o.project_id", "o.state", map[string]string{"t1": "o.kind", "t2": "'scope'", "i1": "o.total", "i2": "o.running", "i3": "coalesce(w.shipped_1h,0)", "i4": "coalesce(w.shipped_24h,0)",
+			"i5": "coalesce(w.shipped_7d,0)", "i6": "coalesce(w.cancelled_1h,0)", "i7": "coalesce(w.cancelled_24h,0)", "i8": "coalesce(w.cancelled_7d,0)", "d1": "o.projected_at"}) +
+			` FROM visible v JOIN native_board_page_summaries o ON o.organization_id=$1 AND o.project_id=v.id AND o.audience=$4 AND o.archive_scope=$5::text AND o.exclude_workspace
+ LEFT JOIN completion w ON w.project_id=o.project_id AND w.kind=CASE WHEN o.kind='closed' THEN 'total' ELSE o.kind END AND w.state=o.state AND w.archive_scope=o.archive_scope` + affected,
+		boardViewRow("count", "o.project_id", "o.state", map[string]string{"t1": "o.kind", "t2": "'all'", "i1": "o.total", "i2": "o.running", "i3": "coalesce(w.shipped_1h,0)", "i4": "coalesce(w.shipped_24h,0)",
+			"i5": "coalesce(w.shipped_7d,0)", "i6": "coalesce(w.cancelled_1h,0)", "i7": "coalesce(w.cancelled_24h,0)", "i8": "coalesce(w.cancelled_7d,0)", "d1": "o.projected_at"}) +
+			` FROM visible v JOIN native_board_page_summaries o ON o.organization_id=$1 AND o.project_id=v.id AND o.audience=$4 AND o.archive_scope='all' AND o.exclude_workspace AND o.kind IN ('total','lane') AND $5::text<>'all'
+ LEFT JOIN completion w ON w.project_id=o.project_id AND w.kind=CASE WHEN o.kind='closed' THEN 'total' ELSE o.kind END AND w.state=o.state AND w.archive_scope=o.archive_scope` + affected,
 		boardViewCardRow("card", "c") + ` FROM cards c`,
 		boardViewCardRow("closed", "c") + ` FROM closed c`,
 		boardViewLinkRows(reporter), boardViewDependencyRows(reporter), boardViewReasonRows(reporter),

@@ -196,7 +196,8 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 	if err != nil {
 		return workBoardView{}, err
 	}
-	selection := viewstore.BoardViewSelection{Items: request.items, Archived: request.state.Archived, CredentialID: scope.Credential.ID, PrincipalID: scope.Credential.HostedPrincipal,
+	now := s.config.Clock()
+	selection := viewstore.BoardViewSelection{WindowAsOf: &now, Items: request.items, Archived: request.state.Archived, CredentialID: scope.Credential.ID, PrincipalID: scope.Credential.HostedPrincipal,
 		ClosedPage: workBoardClosedPage, LanePreset: request.lanes.Preset, IncludeLanes: request.lanes.Include, ExcludeLanes: request.lanes.Exclude}
 	if scope.Credential.Hosted != nil {
 		selection.UserID = scope.Credential.Hosted.Subject
@@ -279,7 +280,7 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 			return workBoardView{}, hubapi.NativeWorkItemStorageUnavailable()
 		}
 	}
-	assembled, positions, err := boardview.Assemble(scope, len(request.items) > 0, rows, window, s.config.Clock(), workBoardClosedPage)
+	assembled, positions, err := boardview.Assemble(scope, len(request.items) > 0, rows, window, now, workBoardClosedPage)
 	if err != nil {
 		return workBoardView{}, err
 	}
@@ -315,7 +316,7 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 		return view, err
 	}
 	for budget := request.budget; ; {
-		compact, cut, err := boardview.Compact(scope.Organization, s.config.Clock(), assembled, positions, request.lanes, unavailable, budget)
+		compact, cut, err := boardview.Compact(scope.Organization, now, assembled, positions, request.lanes, unavailable, budget)
 		if errors.Is(err, boardview.ErrTooLarge) {
 			return workBoardView{}, hubapi.NativePublicInvalid("This board exceeds the result limit; name fewer projects or lanes")
 		}

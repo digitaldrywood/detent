@@ -187,10 +187,11 @@ func testBoardReadinessDirtyQueue(t *testing.T, service *Service) {
 			args := []any{org, project}
 			if mode == "work+summary" {
 				selection.Compact, selection.Summary = true, true
+				selection.WindowAsOf = &epoch
 				w := selection
 				w.WorkOrder, w.Terminal = true, new(false)
 				work = &w
-				args = append(args, "", "all", false)
+				args = append(args, "", "all", false, epoch)
 			}
 			readCtx := postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, query string) {
 				if strings.Contains(query, "native_board_dirty") {
