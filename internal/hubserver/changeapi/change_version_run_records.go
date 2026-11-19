@@ -1,4 +1,4 @@
-package hubserver
+package changeapi
 
 import (
 	"context"
@@ -17,8 +17,8 @@ import (
 
 var errNoChangeVersionRun = errors.New("change version has no source run")
 
-type preparedChangeVersionRun struct {
-	authority NativeRunEventAuthority
+type PreparedVersionRun struct {
+	authority VersionRunAuthority
 	attempt   leasestore.Attempt
 	event     eventstore.Event
 	lease     leasestore.Lease
@@ -28,19 +28,19 @@ type preparedChangeVersionRun struct {
 	machineID string
 }
 
-func (s *Service) prepareChangeVersionRun(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) (*preparedChangeVersionRun, error) {
+func (s *VersionPublication) PrepareChangeVersionRun(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) (*PreparedVersionRun, error) {
 	if request.AttemptID == "" {
 		if scope.Credential.Scope == hubapi.APIScopeWorker {
 			return nil, hubapi.NativePublicInvalid("Worker versions must identify their fenced run and attempt")
 		}
 		return nil, errNoChangeVersionRun
 	}
-	if s.config.TenantRepository == nil || s.config.NativeRunEvents == nil {
+	if s.deps.Repository == nil || !s.deps.RunEventsAvailable() {
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
-	prepared := &preparedChangeVersionRun{sessionID: -1}
+	prepared := &PreparedVersionRun{sessionID: -1}
 	var event eventstore.Event
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		prepared.workItem, err = r.WorkItem(ctx, scope.Project, change.WorkItemID)
 		if err != nil {
@@ -55,24 +55,24 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope hubscope.Na
 			return corestore.ErrNotFound
 		}
 		if prepared.attempt.Status != "succeeded" && !publishing || prepared.attempt.DispatchGeneration < 0 {
-			return nativeExecutionConflict("Version source must identify the current publishing or successful attempt for this work item")
+			return s.deps.ExecutionConflict("Version source must identify the current publishing or successful attempt for this work item")
 		}
 		prepared.lease, err = r.Lease(ctx, prepared.attempt.LeaseID)
 		if err != nil {
 			return err
 		}
 		if prepared.lease.IssueID != prepared.workItem.ID || prepared.lease.FencingToken != prepared.attempt.FencingToken || prepared.lease.MachineID == "" || prepared.lease.SessionID == "" {
-			return nativeExecutionConflict("Version source attempt does not match its fenced lease")
+			return s.deps.ExecutionConflict("Version source attempt does not match its fenced lease")
 		}
 		if scope.Credential.Scope == hubapi.APIScopeWorker && (string(request.LeaseID) != prepared.lease.LeaseID || int64(request.FencingToken) != prepared.lease.FencingToken) {
-			return nativeExecutionConflict("Version publication must use the source attempt's fenced lease")
+			return s.deps.ExecutionConflict("Version publication must use the source attempt's fenced lease")
 		}
 		event, err = r.LatestRunEvent(ctx, scope.Project, request.AttemptID)
 		if err != nil {
 			return err
 		}
 		if event.Type != "run.finished" && !publishing || event.AttemptID != request.AttemptID || event.RunID != request.RunID || event.ProjectID != scope.Project || event.WorkItemID != change.WorkItemID {
-			return nativeExecutionConflict("Version source must bind to its persisted run event")
+			return s.deps.ExecutionConflict("Version source must bind to its persisted run event")
 		}
 		if publishing {
 			diff, err := r.LatestAttemptDiff(ctx, scope.Project, request.AttemptID, tracker.DiffSourceAttempt)
@@ -80,7 +80,7 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope hubscope.Na
 				return err
 			}
 			if diff.OrganizationID != scope.Organization || diff.AttemptID != request.AttemptID || diff.WorkItemID != change.WorkItemID || diff.IssueID != prepared.workItem.ID || diff.BaseSHA != request.BaseSHA || diff.HeadSHA != request.HeadSHA || diff.Producer.ID != request.AttemptID || diff.Producer.RunnerID != scope.Credential.Runner.RunnerID || diff.Producer.LeaseID != request.LeaseID || diff.Producer.FencingToken != request.FencingToken {
-				return nativeExecutionConflict("Version source must match the publishing attempt's persisted final diff")
+				return s.deps.ExecutionConflict("Version source must match the publishing attempt's persisted final diff")
 			}
 			prepared.diff = &diff
 		}
@@ -89,15 +89,15 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope hubscope.Na
 	if err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
-	payload, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, event)
+	payload, err := eventstore.NewContent(s.deps.RunDetailStore()).Event(ctx, event)
 	if err != nil {
 		return nil, err
 	}
 	if payload.Data.Run == nil || payload.Type != event.Type || payload.ProjectID != scope.Project || payload.AggregateID != change.WorkItemID || payload.Data.Run.AttemptID != request.AttemptID || payload.Data.Run.RunID != request.RunID || string(payload.Data.Run.LeaseID) != prepared.lease.LeaseID || int64(payload.Data.Run.FencingToken) != prepared.lease.FencingToken || payload.Data.Run.PolicyID != request.PolicyID || prepared.diff == nil && payload.Data.Run.Outcome != "succeeded" || prepared.diff != nil && payload.Data.Run.Outcome != "" {
-		return nil, nativeExecutionConflict("Persisted event does not match the requested version source")
+		return nil, s.deps.ExecutionConflict("Persisted event does not match the requested version source")
 	}
 	prepared.event = event
-	prepared.authority = NativeRunEventAuthority{
+	prepared.authority = VersionRunAuthority{
 		UsageCorrection: prepared.attempt.Status == "succeeded",
 		Scope:           scope, OrganizationID: scope.Organization, ProjectID: scope.Project,
 		WorkItem: prepared.workItem, Lease: prepared.lease, DispatchGeneration: prepared.attempt.DispatchGeneration,
@@ -106,16 +106,16 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope hubscope.Na
 	prepared.sessionID = nativeImplementingSession(*payload.Data.Run)
 	prepared.machineID = string(payload.Data.Run.MachineID)
 	if payload.Data.Run.Identity == nil || payload.Data.Run.Identity.Role != "code" && payload.Data.Run.Identity.Role != "rework" && payload.Data.Run.Identity.Role != "merge" || prepared.machineID != prepared.lease.MachineID {
-		return nil, nativeExecutionConflict("Version source must retain its coding session and machine attribution")
+		return nil, s.deps.ExecutionConflict("Version source must retain its coding session and machine attribution")
 	}
 	return prepared, nil
 }
 
-func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Writer, prepared *preparedChangeVersionRun) error {
+func (s *VersionPublication) recheckChangeVersionRun(ctx context.Context, w tenantstore.Writer, prepared *PreparedVersionRun) error {
 	if prepared == nil {
 		return nil
 	}
-	if s.config.NativeRunEvents == nil {
+	if !s.deps.RunEventsAvailable() {
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	workItem, err := w.WorkItem(ctx, prepared.authority.ProjectID, prepared.authority.WorkItem.NativeID)
@@ -165,5 +165,5 @@ func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Wri
 	if authority.Scope.Credential.Scope != hubapi.APIScopeWorker {
 		authority.Scope.Credential = hubapi.APICredential{ID: identity.TokenID, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID}}}
 	}
-	return (tenantNativeRunEventParticipant{service: s}).validateNativeRunEventOwner(ctx, w, &authority)
+	return s.deps.ValidateRunOwner(ctx, w, authority)
 }

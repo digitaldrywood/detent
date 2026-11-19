@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/changefiles/sourcetest"
@@ -20,4 +21,8 @@ func changeTestSourceCheckout(t *testing.T, input *tracker.ChangeVersionInput, c
 func changeTestPack(t *testing.T, kind byte, size uint64, content []byte, count uint32) []byte {
 	t.Helper()
 	return sourcetest.Pack(t, kind, size, content, count)
+}
+
+func validationRepository(repository string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(repository, "https://github.com/"), "git@github.com:"), ".git")
 }

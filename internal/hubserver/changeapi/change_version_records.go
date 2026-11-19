@@ -77,7 +77,10 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 	if change.CurrentVersion != request.ExpectedVersionID {
 		return nil, hubapi.NativeConflict(change.Revision)
 	}
-	sourceRun, err := s.deps.PrepareVersionSource(ctx, scope, change, request)
+	sourceRun, err := s.PrepareChangeVersionRun(ctx, scope, change, request)
+	if errors.Is(err, errNoChangeVersionRun) {
+		sourceRun, err = nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +129,8 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 	}
 	versionRecord.ImplementingSessionID = -1
 	if sourceRun != nil {
-		versionRecord.ImplementingSessionID = sourceRun.SessionID
-		versionRecord.ImplementingMachineID = sourceRun.MachineID
+		versionRecord.ImplementingSessionID = sourceRun.sessionID
+		versionRecord.ImplementingMachineID = sourceRun.machineID
 	}
 	if request.Source != nil {
 		sourceRef, err := content.PrepareSourceBundle(ctx, scope.Organization, request.SourceBundle)
@@ -211,10 +214,8 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 			if err := authority.Authorize(ctx, w, scope, change, request, approval, now); err != nil {
 				return err
 			}
-			if sourceRun != nil {
-				if err := sourceRun.Recheck(ctx, w); err != nil {
-					return err
-				}
+			if err := s.recheckChangeVersionRun(ctx, w, sourceRun); err != nil {
+				return err
 			}
 			for _, item := range change.LinkedIssues {
 				if _, err := w.WorkItem(ctx, scope.Project, item); err != nil {

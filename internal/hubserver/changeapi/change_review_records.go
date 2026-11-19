@@ -1,4 +1,4 @@
-package hubserver
+package changeapi
 
 import (
 	"bytes"
@@ -17,36 +17,40 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/changefiles"
+	"github.com/digitaldrywood/detent/internal/hubserver/changelanding"
+	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) changeReviewRecordMutation(c echo.Context, request tracker.ReviewChange) error {
-	ctx := hubcontent.IsolateContentContext(s.runDetailContext(c.Request().Context()))
+func (s *Review) ChangeReviewRecordMutation(c echo.Context, request tracker.ReviewChange) error {
+	ctx := hubcontent.IsolateContentContext(s.deps.RunDetailContext(c.Request().Context()))
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	raw, err := s.reviewChangeRecordCommand(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"), operation, request)
+	raw, err := s.ReviewChangeRecordCommand(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"), operation, request)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.NativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, raw)
 }
 
-func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope hubscope.NativeScope, item, changeID, versionID, operation string, request tracker.ReviewChange) (json.RawMessage, error) {
+func (s *Review) ReviewChangeRecordCommand(ctx context.Context, scope hubscope.NativeScope, item, changeID, versionID, operation string, request tracker.ReviewChange) (json.RawMessage, error) {
 	if request.Decision != "approved" && request.Decision != "changes_requested" && request.Decision != "commented" {
 		return nil, hubapi.NativePublicInvalid("review decision is invalid")
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || len(request.Body) > 64<<10 {
 		refusal := hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes and a review body up to 64 KiB are required")
 		if len(request.Body) > 64<<10 && scope.Credential.Scope == hubapi.APIScopeWorker && request.Validator != nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
-			return nil, nativeRejection(refusal, "acceptance_validation", "body")
+			return nil, s.deps.NativeRejection(refusal, "acceptance_validation", "body")
 		}
 		return nil, refusal
 	}
@@ -54,7 +58,7 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope hubscope.
 	if err != nil {
 		return nil, err
 	}
-	submittedContent := changeReviewContentFields(request)
+	submittedContent := s.deps.ChangeReviewContentFields(request)
 	for _, result := range []**gate.ValidatorResult{&request.Validator, &request.ImplementationReview} {
 		if *result != nil {
 			normalized := **result
@@ -74,14 +78,14 @@ prepareReview:
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	replay, found, err := s.changeOperationRecordReceipt(ctx, scope, item, changeID, versionID, operation, request.IdempotencyKey, hash)
+	replay, found, err := s.deps.ChangeOperationRecordReceipt(ctx, scope, item, changeID, versionID, operation, request.IdempotencyKey, hash)
 	if err != nil {
 		return nil, err
 	}
 	if found {
 		return replay, nil
 	}
-	change, err := s.readChangeRecord(ctx, scope, item, changeID)
+	change, err := s.deps.ReadChangeRecord(ctx, scope, item, changeID)
 	if err != nil {
 		return nil, err
 	}
@@ -91,37 +95,37 @@ prepareReview:
 	if request.ExpectedRevision != 0 && request.ExpectedRevision != change.Revision || request.ExpectedVersionID != "" && request.ExpectedVersionID != versionID || request.Decision == "approved" && change.CurrentVersion != versionID || change.CurrentLanding() != nil {
 		return nil, hubapi.NativeConflict(change.Revision)
 	}
-	versionRow, err := s.readChangeVersionRecord(ctx, scope.Organization, change.ID, versionID)
+	versionRow, err := s.deps.ReadChangeVersionRecord(ctx, scope.Organization, change.ID, versionID)
 	if err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
-	version, err := eventstore.NewContent(s.runDetailStore()).Version(ctx, versionRow)
+	version, err := eventstore.NewContent(s.deps.RunDetailStore()).Version(ctx, versionRow)
 	if err != nil {
 		return nil, err
 	}
-	prepared, sessionMachine, err := s.prepareValidatorReviewRecord(ctx, scope, change, version, versionRow, request)
+	prepared, sessionMachine, err := s.validator.prepareValidatorReviewRecord(ctx, scope, change, version, versionRow, request)
 	if err != nil {
 		return nil, fmt.Errorf("prepare validator review: %w", err)
 	}
 
-	now, err := s.database.currentTime()
+	now, err := s.deps.CurrentTime()
 	if err != nil {
 		return nil, err
 	}
 	if request.Bundle != nil {
-		if err := s.validateReviewBundleRecord(ctx, scope, change, version, *request.Bundle, now); err != nil {
+		if err := s.deps.ValidateReviewBundleRecord(ctx, scope, change, version, *request.Bundle, now); err != nil {
 			return nil, err
 		}
 	}
 	review := tracker.ChangeReview{SessionMachineID: sessionMachine, ImplementationReview: request.ImplementationReview, Validator: request.Validator, SecurityAudit: request.SecurityAudit, ID: hubcontent.PayloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.Actor(), CreatedAt: hubcontent.PayloadTimestamp(ctx, now)}
-	var independent *preparedIndependentRepairs
+	var independent *PreparedRepairs
 	if request.Decision == "changes_requested" && review.VersionID == change.CurrentVersion {
-		independent, err = s.prepareIndependentRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, now)
+		independent, err = s.deps.PrepareRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, now)
 		if err != nil {
 			return nil, err
 		}
 		if independent != nil {
-			review.RepairDependencies, review.RepairRefusal = independent.dependencies, independent.refusal
+			review.RepairDependencies, review.RepairRefusal = independent.Dependencies, independent.Refusal
 		}
 	}
 	raw, err := json.Marshal(review)
@@ -130,22 +134,22 @@ prepareReview:
 	}
 	var preparedContent *reviewDetailStore
 	var detailStore attachment.DetailStore
-	if owner := s.runDetailStore(); owner != nil {
-		preparedContent = &reviewDetailStore{DetailStore: owner, service: s, prepared: make(map[string]attachment.ArchiveReference)}
+	if owner := s.deps.RunDetailStore(); owner != nil {
+		preparedContent = &reviewDetailStore{DetailStore: owner, checkAllowance: s.deps.CheckChangeContentAllowance, prepared: make(map[string]attachment.ArchiveReference)}
 		detailStore = preparedContent
 	}
 	content := eventstore.NewContent(detailStore)
 	var approvedPolicyRows hubrecords.CurrentChangePolicyRows
 	var approval hubrecords.ChangeVersionApproval
 	if request.Decision == "approved" || prepared != nil || request.Decision == "changes_requested" && versionID == change.CurrentVersion {
-		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			approvedPolicyRows, err = readCurrentChangePolicyRows(ctx, r, scope)
+			approvedPolicyRows, err = changerules.ReadCurrentChangePolicyRows(ctx, r, scope)
 			return err
 		}); err != nil {
 			return nil, hubapi.ProjectRecordError(err)
 		}
-		approval, err = hydrateCurrentChangeVersionApproval(ctx, content, scope, approvedPolicyRows, "")
+		approval, err = s.deps.HydrateCurrentChangeVersionApproval(ctx, content, scope, approvedPolicyRows, "")
 		if err != nil {
 			return nil, hubapi.ProjectRecordError(err)
 		}
@@ -154,13 +158,13 @@ prepareReview:
 			return nil, hubapi.PolicyMismatch("Current policy changed; the reviewed version must be republished")
 		}
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		_, err := validateChangeRecordContent(ctx, r, scope, submittedContent, nil, "", false)
+	if err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := changefiles.ValidateRecordContent(ctx, r, scope, submittedContent, nil, "", false, s.deps.AttachmentReferences)
 		return err
 	}); err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
-	workflowPlan, err := s.prepareChangeReviewWorkflow(ctx, scope, change, version, review, approval, now)
+	workflowPlan, err := s.deps.PrepareChangeReviewWorkflow(ctx, scope, change, version, review, approval, now)
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		return nil, hubapi.NativeConflict(change.Revision)
 	}
@@ -187,16 +191,16 @@ prepareReview:
 	}
 	var instructions *preparedInstructions
 	if request.Decision == "changes_requested" && versionID == change.CurrentVersion {
-		itemRow, itemVersion, err := s.readWorkItemRecord(ctx, scope, item)
+		itemRow, itemVersion, err := s.deps.ReadWorkItemRecord(ctx, scope, item)
 		if err != nil {
 			return nil, err
 		}
-		issue, err := s.hydrateWorkItemRecord(ctx, itemRow, itemVersion)
+		issue, err := s.deps.HydrateWorkItemRecord(ctx, itemRow, itemVersion)
 		if err != nil {
 			return nil, err
 		}
 		if !issue.Terminal && !issue.Archived {
-			body := reviewInstructions(change, review)
+			body := changerules.ReviewInstructions(change, review)
 			bodyRaw, err := json.Marshal(body)
 			if err != nil {
 				return nil, err
@@ -231,7 +235,7 @@ prepareReview:
 		return nil, err
 	}
 	var current eventstore.Change
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		current, err = r.Change(ctx, change.ID)
 		return err
@@ -239,33 +243,33 @@ prepareReview:
 		return nil, hubapi.ProjectRecordError(err)
 	}
 	for {
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-			var held heldRunnerSessionAuthority
+		err = s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			var owner runnerstore.Identity
 			if prepared != nil {
-				owner, err := w.RunnerForLease(ctx, string(request.LeaseID))
+				var err error
+				owner, err = w.RunnerForLease(ctx, string(request.LeaseID))
 				if err != nil {
 					return fmt.Errorf("lock review runner: %w", err)
 				}
-				held.owner = owner
 			}
-			var transition *changeWorkflowTransition
+			var transition *changelanding.WorkflowTransition
 			if workflowPlan != nil {
-				transition = rootChangeWorkflowTransition(workflowPlan.Transition)
+				transition = workflowPlan.Transition
 			}
 			if independent != nil {
-				refusal, err := s.checkIndependentRepairs(ctx, w, scope, independent)
+				refusal, err := independent.Check(ctx, w, scope)
 				if err != nil {
 					return err
 				}
-				if refusal != independent.refusal {
+				if refusal != independent.Refusal {
 					return corestore.ErrSerializationFailure
 				}
 			}
-			transitionReady, err := s.lockChangeWorkflowTransition(ctx, w, scope, transition)
+			transitionReady, err := s.deps.LockChangeWorkflowTransition(ctx, w, scope, transition)
 			if err != nil {
 				return err
 			}
-			if _, err := s.lockChangeRecordOperation(ctx, w, scope, item, changeID, ""); err != nil {
+			if _, err := s.deps.LockChangeRecordOperation(ctx, w, scope, item, changeID, ""); err != nil {
 				return err
 			}
 			var lockedItem corestore.WorkItem
@@ -278,7 +282,7 @@ prepareReview:
 					return corestore.ErrRevisionConflict
 				}
 			}
-			if err := bindChangeRecordContent(ctx, w, scope, item, changeReviewContentFields(request), nil, ""); err != nil {
+			if err := changefiles.BindRecordContent(ctx, w, scope, item, s.deps.ChangeReviewContentFields(request), nil, "", s.deps.AttachmentReferences); err != nil {
 				return err
 			}
 			if prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {
@@ -304,7 +308,7 @@ prepareReview:
 				return corestore.ErrRevisionConflict
 			}
 			if request.Decision == "approved" || prepared != nil || request.Decision == "changes_requested" && versionID == change.CurrentVersion {
-				rows, err := readCurrentChangePolicyRows(ctx, w, scope)
+				rows, err := changerules.ReadCurrentChangePolicyRows(ctx, w, scope)
 				if err != nil {
 					return err
 				}
@@ -312,7 +316,7 @@ prepareReview:
 					return hubapi.PolicyMismatch("Current policy changed; the reviewed version must be republished")
 				}
 			}
-			if err := s.lockValidatorReviewRecord(ctx, w, scope, change, request, prepared, held, currentChange); err != nil {
+			if err := s.validator.lockValidatorReviewRecord(ctx, w, scope, change, request, prepared, owner, currentChange); err != nil {
 				return fmt.Errorf("lock validator review: %w", err)
 			}
 			if request.Bundle != nil {
@@ -332,7 +336,7 @@ prepareReview:
 					return hubapi.NativePublicInvalid("review bundle is unavailable")
 				}
 			}
-			workflowCurrent, err := s.recheckChangeReviewWorkflow(ctx, w, scope, workflowPlan, currentChange)
+			workflowCurrent, err := s.deps.RecheckChangeReviewWorkflow(ctx, w, scope, workflowPlan, currentChange)
 			if err != nil {
 				return fmt.Errorf("recheck review workflow: %w", err)
 			}
@@ -343,7 +347,7 @@ prepareReview:
 				}
 				slices.Sort(keys)
 				for _, key := range keys {
-					if err := s.registerChangeContentRecord(ctx, w, string(scope.Organization), preparedContent.prepared[key], true, true); err != nil {
+					if err := s.deps.RegisterChangeContentRecord(ctx, w, string(scope.Organization), preparedContent.prepared[key], true, true); err != nil {
 						return err
 					}
 				}
@@ -365,11 +369,13 @@ prepareReview:
 					return err
 				}
 			}
-			if err := s.applyIndependentRepairs(ctx, w, scope, independent); err != nil {
-				return err
+			if independent != nil {
+				if err := independent.Apply(ctx, w, scope); err != nil {
+					return err
+				}
 			}
 			if transitionReady && workflowCurrent {
-				if err := s.applyChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
+				if err := s.deps.ApplyChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
 					return fmt.Errorf("apply review workflow: %w", err)
 				}
 			}
@@ -377,7 +383,7 @@ prepareReview:
 			return err
 		})
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
-			replay, found, readErr := s.changeOperationRecordReceipt(ctx, scope, item, changeID, versionID, operation, request.IdempotencyKey, hash)
+			replay, found, readErr := s.deps.ChangeOperationRecordReceipt(ctx, scope, item, changeID, versionID, operation, request.IdempotencyKey, hash)
 			if readErr != nil {
 				return nil, readErr
 			}
@@ -398,7 +404,7 @@ prepareReview:
 		break
 	}
 	select {
-	case s.boardRefresh <- struct{}{}:
+	case s.deps.BoardRefresh <- struct{}{}:
 	default:
 	}
 	return raw, nil
@@ -406,8 +412,8 @@ prepareReview:
 
 type reviewDetailStore struct {
 	attachment.DetailStore
-	service  *Service
-	prepared map[string]attachment.ArchiveReference
+	checkAllowance func(context.Context, string, map[string]attachment.ArchiveReference, attachment.ArchiveReference) error
+	prepared       map[string]attachment.ArchiveReference
 }
 
 func (store *reviewDetailStore) StoreDetail(ctx context.Context, organization string, raw []byte) (attachment.ArchiveReference, error) {
@@ -424,7 +430,7 @@ func (store *reviewDetailStore) StoreDetail(ctx context.Context, organization st
 		}
 		return previous, nil
 	}
-	if err := store.service.checkChangeContentAllowance(ctx, organization, store.prepared, expected); err != nil {
+	if err := store.checkAllowance(ctx, organization, store.prepared, expected); err != nil {
 		return attachment.ArchiveReference{}, err
 	}
 	actual, err := (hubrecords.RunEventDetailStore{DetailStore: store.DetailStore}).StoreDetail(ctx, organization, raw)

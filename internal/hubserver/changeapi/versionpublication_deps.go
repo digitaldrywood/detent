@@ -9,20 +9,25 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/changelanding"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type VersionPublicationDeps struct {
-	Repository                      tenantstore.Repository
-	CurrentTime                     func() (time.Time, error)
-	BoardRefresh                    chan<- struct{}
-	Authority                       VersionAuthority
-	DefaultAuthority                func() VersionAuthority
-	PrepareVersionSource            func(context.Context, hubscope.NativeScope, tracker.ChangeRequest, tracker.PublishChangeVersion) (*VersionSource, error)
+	RunEventsAvailable func() bool
+	ValidateRunOwner   func(context.Context, tenantstore.Reader, VersionRunAuthority) error
+	ExecutionConflict  func(string) error
+	Repository         tenantstore.Repository
+	CurrentTime        func() (time.Time, error)
+	BoardRefresh       chan<- struct{}
+	Authority          VersionAuthority
+	DefaultAuthority   func() VersionAuthority
+
 	ValidateVersionAttachments      func(context.Context, tenantstore.Reader, hubscope.NativeScope, []tracker.ChangeArtifact) error
 	BindVersionAttachments          func(context.Context, tenantstore.Writer, hubscope.NativeScope, string, []tracker.ChangeArtifact) error
 	RunDetailContext                func(ctx context.Context) context.Context
@@ -55,8 +60,13 @@ type VersionAuthority interface {
 	Authorize(context.Context, tenantstore.Writer, hubscope.NativeScope, tracker.ChangeRequest, tracker.PublishChangeVersion, hubrecords.ChangeVersionApproval, time.Time) error
 }
 
-type VersionSource struct {
-	SessionID int64
-	MachineID string
-	Recheck   func(context.Context, tenantstore.Writer) error
+type VersionRunAuthority struct {
+	Scope              hubscope.NativeScope
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	WorkItem           corestore.WorkItem
+	Lease              leasestore.Lease
+	DispatchGeneration int64
+	UsageCorrection    bool
+	Event              tracker.NativeRunEvent
 }
