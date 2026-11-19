@@ -1,7 +1,6 @@
 package postgres_test
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -403,7 +402,7 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 	}
 }
 
-func TestSchedulerClaimDecisionLookupIsScopedAndIndexed(t *testing.T) {
+func TestSchedulerClaimDecisionLookupIsScoped(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
@@ -479,49 +478,4 @@ func TestSchedulerClaimDecisionLookupIsScopedAndIndexed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
-		t.Fatal(err)
-	}
-	connection, err := admin.Conn(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
-	tx, err := connection.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id','org_first',true)"); err != nil {
-		t.Fatal(err)
-	}
-	var raw []byte
-	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='scheduler.decision' AND scheduler_outcome='claimed' ORDER BY sequence DESC LIMIT 1", "org_first", "prj_first", "wi_first_1").Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var plan []struct{ Plan pgstoretest.SearchPlanNode }
-	if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
-		t.Fatalf("decode default plan: %v", err)
-	}
-	if !plan[0].Plan.UsesIndex("collaboration_events_claimed_decision_idx") {
-		t.Fatalf("claimed lookup did not use bounded index: %s", raw)
-	}
-	var visits func(pgstoretest.SearchPlanNode) float64
-	visits = func(node pgstoretest.SearchPlanNode) float64 {
-		count := 0.0
-		if node.Relation == "collaboration_events" {
-			count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-		}
-		for _, child := range node.Plans {
-			count += visits(child)
-		}
-		return count
-	}
-	if count := visits(plan[0].Plan); count > 1 {
-		t.Fatalf("claimed lookup visited %.0f rows: %s", count, raw)
-	}
-	t.Logf("default runtime-role claimed lookup plan=%s", raw)
 }

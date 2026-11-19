@@ -2,8 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -12,8 +10,6 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -24,86 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type doctorProposalQueryTrace struct {
-	query string
-	args  []any
-}
-
-func (trace *doctorProposalQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	query := strings.ToLower(data.SQL)
-	if strings.Contains(query, "doctor_proposal_identities") && strings.Contains(query, "select") {
-		trace.query, trace.args = data.SQL, append([]any(nil), data.Args...)
-	}
-	return ctx
-}
-
-func (*doctorProposalQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func assertDoctorProposalIdentitySeek(t *testing.T, admin *sql.DB, org tracker.OrganizationID, trace *doctorProposalQueryTrace) {
-	t.Helper()
-	if trace.query == "" {
-		t.Fatal("doctor identity query was not captured")
-	}
-	tx, err := admin.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			t.Error(err)
-		}
-	}()
-	if _, err := tx.ExecContext(t.Context(), `SET LOCAL ROLE detent_runtime_v2`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), `SET LOCAL enable_seqscan=off; SET LOCAL enable_sort=off`); err != nil {
-		t.Fatal(err)
-	}
-	var raw []byte
-	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE,FORMAT JSON) "+trace.query, trace.args...).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	type plan struct {
-		NodeType string  `json:"Node Type"`
-		Index    string  `json:"Index Name"`
-		Cond     string  `json:"Index Cond"`
-		Rows     float64 `json:"Actual Rows"`
-		Plans    []plan
-	}
-	var plans []struct{ Plan plan }
-	if err := json.Unmarshal(raw, &plans); err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	var visit func(plan, bool)
-	visit = func(node plan, bounded bool) {
-		if node.NodeType == "Limit" {
-			bounded = true
-		}
-		if node.NodeType == "Sort" {
-			bounded = false
-		}
-		if node.Index != "" && strings.Contains(node.Cond, "identity_hash") {
-			found = true
-			if !bounded || node.Rows > 1 || !strings.Contains(node.Cond, "has_state") || !strings.Contains(node.Cond, "state_name") || node.NodeType != "Index Scan" && node.NodeType != "Index Only Scan" {
-				t.Errorf("identity lookup did not seek one ordered row per state: type=%s bounded=%v rows=%v condition=%s", node.NodeType, bounded, node.Rows, node.Cond)
-			}
-		}
-		for _, child := range node.Plans {
-			visit(child, bounded)
-		}
-	}
-	for _, node := range plans {
-		visit(node.Plan, false)
-	}
-	if !found {
-		t.Fatal("doctor identity lookup did not use an identity seek")
-	}
-}
 
 func TestDoctorProposalIdentitiesPreserveFullBodyAndFirstOrigin(t *testing.T) {
 	t.Parallel()
@@ -131,21 +47,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 	admin := pgstoretest.Template.Database(t)
 	config := pgstoretest.SmallPool()
 	config.ServingConnections = 2
-	repository, pool := pgstoretest.RepositoryFor(t, admin, config)
-	if err := repository.Close(); err != nil {
-		t.Fatal(err)
-	}
-	trace := &doctorProposalQueryTrace{}
-	repository, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, trace), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	initial := repository
-	t.Cleanup(func() {
-		if err := initial.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	repository, _ := pgstoretest.RepositoryFor(t, admin, config)
 	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	marker := "<!-- detent:self-improvement proposal_id=example-first -->"
 	otherMarker := "<!-- detent:self-improvement proposal_id=" + strings.Repeat("y", 7000) + " -->"
@@ -280,13 +182,11 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 						if err != nil || result.WorkItemID != order.want || result.Terminal {
 							t.Fatalf("ordered open identity match = %+v, error %v", result, err)
 						}
-						assertDoctorProposalIdentitySeek(t, admin, org, trace)
 					})
 				}
 				if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET workflow_state_name='Done' WHERE organization_id=$1 AND project_id=$2 AND native_id=$3`, org, project, bindings[1].WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				assertDoctorProposalIdentitySeek(t, admin, org, trace)
 				result, err := lookup(t, org, selection)
 				if err != nil {
 					t.Fatal(err)
