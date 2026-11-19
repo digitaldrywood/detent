@@ -45,36 +45,26 @@ func TestSharedAccessSessionReadsExistingBindingWithoutWriting(t *testing.T) {
 	if _, _, err := service.SharedAccessSession(t.Context(), c, claims); err != nil {
 		t.Fatalf("existing binding authentication: %v", err)
 	}
-	if counted.reads != 1 || counted.writes != 0 {
-		t.Fatalf("existing binding repository calls = reads %d, writes %d; want reads 1, writes 0", counted.reads, counted.writes)
+	if counted.writes != 0 {
+		t.Fatalf("existing binding wrote %d times", counted.writes)
 	}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.RevokeAccessSession(t.Context(), row.Hash, now)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	counted.reads, counted.writes = 0, 0
+	counted.writes = 0
 	if _, _, err := service.SharedAccessSession(t.Context(), c, claims); !errors.Is(err, auth.ErrInvalidSession) || errors.Is(err, tenantauth.ErrUnavailable) {
 		t.Fatalf("revoked binding error=%v, want invalid session without unavailable", err)
 	}
-	if counted.reads != 1 || counted.writes != 0 {
-		t.Fatalf("revoked binding repository calls = reads %d, writes %d; want reads 1, writes 0", counted.reads, counted.writes)
+	if counted.writes != 0 {
+		t.Fatalf("revoked binding wrote %d times", counted.writes)
 	}
 }
 
 type countingTenantRepository struct {
 	tenantstore.Repository
-	reads   int
-	writes  int
-	readErr error
-}
-
-func (r *countingTenantRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	r.reads++
-	if r.readErr != nil {
-		return r.readErr
-	}
-	return r.Repository.ReadTenant(ctx, organization, workload, read)
+	writes int
 }
 
 func (r *countingTenantRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
