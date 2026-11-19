@@ -979,16 +979,8 @@ func (c *conversationTurnCoordinator) saveConversation(ctx context.Context, w te
 	return coordinator.SaveConversation(ctx, w, record, now)
 }
 
-func (c *conversationTurnCoordinator) updateExecution(ctx context.Context, w tenantstore.Writer, record *conversationRecord, execution conversation.Execution, now time.Time) error {
-	return coordinator.UpdateExecution(ctx, w, record, execution, now)
-}
-
 func (c *conversationTurnCoordinator) appendDelta(ctx context.Context, w tenantstore.Writer, message *conversationMessageRecord, text string, now time.Time) error {
 	return coordinator.AppendDelta(ctx, w, message, text, now)
-}
-
-func (c *conversationTurnCoordinator) setControlDelivery(ctx context.Context, w tenantstore.Writer, message *conversationMessageRecord, delivery conversation.Delivery, failure *conversation.ReceiptError, now time.Time) error {
-	return coordinator.SetControlDelivery(ctx, w, message, delivery, failure, now)
 }
 
 func (c *conversationTurnCoordinator) coordinatorMessages(ctx context.Context, filter conversationstore.MessageFilter) ([]conversationMessageRecord, error) {

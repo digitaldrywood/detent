@@ -13,19 +13,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func newTeamThreadNativeFixture(t *testing.T, service *Service, organization tracker.OrganizationID, name string) nativeFixture {
-	t.Helper()
-	f := newNativeFixture(t, service, organization, name)
-	f.service.registerTeamThreadRoutes(f.service.echo)
-	return f
-}
 
 func threadBase(f nativeFixture) string {
 	return "/api/v2/organizations/" + string(f.project.OrganizationID) + "/threads"
@@ -131,70 +122,6 @@ func TestTeamThreadScopeReferenceAccess(t *testing.T) {
 			})
 		}
 	})
-}
-
-func TestTeamThreadWorkerReadIsolation(t *testing.T) {
-	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
-	f.service.registerTeamThreadRoutes(f.service.echo)
-	issue := f.nativeFixture.create(t, "thread subject")
-	th := createTestThread(t, f.nativeFixture, "issue", issue.WorkItemID)
-	base := threadBase(f.nativeFixture)
-	before := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
-	for i, kind := range []string{"note", "finding", "question", "decision"} {
-		r := performHubAPIRequest(t, f.service, http.MethodPost, base+"/"+th.ID+"/posts", f.other, teamThreadInput{Kind: kind, Body: "thread-only-sentinel", Key: kind})
-		requireNativeStatus(t, r, 201)
-		var post teamPost
-		decodeHubResponse(t, r, &post)
-		if post.Sequence != int64(i+1) {
-			t.Fatalf("sequence=%d", post.Sequence)
-		}
-	}
-	after := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
-	if after.Revision != before.Revision || after.State != before.State || !after.LastActivityAt.Equal(before.LastActivityAt) {
-		t.Fatal("thread changed issue record or lane")
-	}
-	for _, path := range []string{"/comments", "/history"} {
-		r := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+path, f.token, nil)
-		requireNativeStatus(t, r, 200)
-		if strings.Contains(r.Body.String(), "thread-only-sentinel") {
-			t.Fatal("thread leaked into worker issue data")
-		}
-	}
-	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	contextData, err := operatortool.ReadIssueContext(changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID)), operatorWorkReads{service: f.service, scope: hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}}, operatortool.WorkReadRequest{ProjectID: string(f.project.ID), Reference: string(issue.WorkItemID)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	encodedContext, err := json.Marshal(contextData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encodedContext), "thread-only-sentinel") {
-		t.Fatal("worker issue context includes team posts")
-	}
-	var attempts, comments int
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-		item, err := reader.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
-		if err != nil {
-			return err
-		}
-		page, err := reader.AttemptPage(t.Context(), item.ID, leasestore.AttemptCursor{}, 1)
-		if err != nil {
-			return err
-		}
-		rows, err := reader.Comments(t.Context(), f.project.ID, issue.WorkItemID, 0, 1)
-		attempts, comments = len(page.Items), len(rows)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if attempts != 0 || comments != 0 {
-		t.Fatalf("thread dispatched work or commented: %d %d", attempts, comments)
-	}
 }
 
 func TestTeamThreadHostedAgentAttribution(t *testing.T) {

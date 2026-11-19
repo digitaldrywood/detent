@@ -54,7 +54,7 @@ func TestConversationReferenceBounds(t *testing.T) {
 		return id
 	}
 	t.Run("references per message", func(t *testing.T) {
-		p := hubfixture.NewNativeInOrganization(t, h)
+		p := hubfixture.NewNative(t, h, h.Primary, "Reference bounds")
 		var text strings.Builder
 		text.WriteString("Everything:")
 		for index := range conversation.MaxReferences + 5 {
@@ -71,7 +71,7 @@ func TestConversationReferenceBounds(t *testing.T) {
 		}
 	})
 	t.Run("excerpt runes", func(t *testing.T) {
-		p := hubfixture.NewNativeInOrganization(t, h)
+		p := hubfixture.NewNative(t, h, hubfixture.Secondary, "Reference excerpt")
 		issue := p.Create(t, "Long reference")
 		id := post(t, p, "#"+strconv.Itoa(issue.Number)+" "+strings.Repeat("é", 500))
 		response := p.Request(t, http.MethodGet, p.Base+"/work-items/"+string(issue.WorkItemID)+"/references", nil)
