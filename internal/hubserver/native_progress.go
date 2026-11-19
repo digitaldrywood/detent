@@ -132,8 +132,11 @@ func (o nativeProgressOwner) authorizePublication(ctx context.Context, expectedS
 		if err != nil {
 			return err
 		}
-		if item.EventSequence != *expectedSequence || o.expectedRevision > 0 && item.Revision != int64(o.expectedRevision) {
+		if o.expectedRevision > 0 && item.Revision != int64(o.expectedRevision) {
 			return &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+		}
+		if item.EventSequence != *expectedSequence {
+			return corestore.ErrSerializationFailure
 		}
 		return nil
 	})
@@ -169,8 +172,12 @@ func (o nativeProgressOwner) retainedPublication(ctx context.Context, originalID
 	if err != nil || !found {
 		return progresscheck.Record{}, false, err
 	}
-	if receipt.Replay == nil || receipt.Replay.PublicationHash != o.publicationHash {
-		return progresscheck.Record{}, false, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+	expectedID := originalID
+	if receipt.Replay != nil {
+		if receipt.Replay.PublicationHash != o.publicationHash {
+			return progresscheck.Record{}, false, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+		}
+		expectedID = receipt.Replay.RequestAfterCleanupID
 	}
 	current, sequence, err := o.service.nativeProgressRequestTenant(ctx, o.scope, o.request.IssueID, o.request.PolicyID, o.request.Instance)
 	if err != nil {
@@ -180,7 +187,7 @@ func (o nativeProgressOwner) retainedPublication(ctx context.Context, originalID
 	if err != nil {
 		return progresscheck.Record{}, false, err
 	}
-	if receipt.Replay.RequestAfterCleanupID != currentID {
+	if expectedID != currentID {
 		return progresscheck.Record{}, false, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 	}
 	if originalID == currentID {
@@ -259,7 +266,7 @@ func (o nativeProgressOwner) loadReceipt(ctx context.Context, project, issue, id
 }
 
 func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.Record) (progresscheck.Record, error) {
-	return o.publishTenant(ctx, record)
+	return o.publishTenant(ctx, record, record.RequestID)
 }
 
 func (o nativeProgressOwner) lockProgressRelationships(ctx context.Context, writer tenantstore.Writer, record progresscheck.Record, survivor corestore.WorkItemReference) ([]corestore.Relationship, error) {
@@ -324,12 +331,12 @@ func (o nativeProgressOwner) lockProgressRelationships(ctx context.Context, writ
 	return removals, nil
 }
 
-func (o nativeProgressOwner) publishTenant(ctx context.Context, record progresscheck.Record) (progresscheck.Record, error) {
+func (o nativeProgressOwner) publishTenant(ctx context.Context, record progresscheck.Record, currentID string) (progresscheck.Record, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return progresscheck.Record{}, err
 		}
-		published, err := o.publishTenantOnce(ctx, record)
+		published, err := o.publishTenantOnce(ctx, record, currentID)
 		if !errors.Is(err, corestore.ErrSerializationFailure) {
 			return published, err
 		}
@@ -340,22 +347,23 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		if err != nil {
 			return progresscheck.Record{}, err
 		}
-		id, err := current.ID()
+		currentID, err = current.ID()
 		if err != nil {
 			return progresscheck.Record{}, err
 		}
-		if id != record.RequestID {
-			return o.replayAfterCleanup(ctx, record.RequestID, id)
-		}
+		o.request = current
 		if o.guardRevision != nil {
 			o.guardRevision = &sequence
 		}
 	}
 }
 
-func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progresscheck.Record) (progresscheck.Record, error) {
+func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progresscheck.Record, currentID string) (progresscheck.Record, error) {
 	if record.ProjectID != string(o.scope.Project) || record.IssueID != o.request.IssueID {
 		return progresscheck.Record{}, errors.New("progress decision scope differs")
+	}
+	if currentID != record.RequestID {
+		return o.replayAfterCleanup(ctx, record.RequestID, currentID)
 	}
 	candidate := record
 	candidate.CommentID = "pending"
