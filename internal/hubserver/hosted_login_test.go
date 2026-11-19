@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -41,7 +42,10 @@ func TestHostedLoginCallbackProtection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
-			s := openHostedPostgresService(t, hostedLoginConfig(t, p, true))
+			var logs hostedLogBuffer
+			cfg := hostedLoginConfig(t, p, true)
+			cfg.Logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			s := openHostedPostgresService(t, cfg)
 			transaction, state := hostedLoginStart(t, s, false)
 			query := url.Values{"code": {"callback_code"}, "state": {state}}
 			cookies := []*http.Cookie{transaction}
@@ -94,6 +98,11 @@ func TestHostedLoginCallbackProtection(t *testing.T) {
 			}
 			if strings.Contains(recorder.Body.String(), "private provider error") || strings.Contains(recorder.Body.String(), "callback_code") {
 				t.Fatal("callback error exposed provider details")
+			}
+			for _, private := range []string{"callback_code", state, transaction.Value, "customer@example.test", "support@example.test"} {
+				if strings.Contains(logs.String(), private) {
+					t.Fatal("callback logs exposed a credential or private identity")
+				}
 			}
 		})
 	}

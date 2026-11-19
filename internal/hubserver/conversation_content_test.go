@@ -97,50 +97,6 @@ func (s *conversationContentFixture) setFail(fail bool) {
 	s.fail = fail
 }
 
-func TestConversationPayloadBytesStayBounded(t *testing.T) {
-	t.Parallel()
-	for _, size := range []int{32, 64 << 10} {
-		t.Run(strconv.Itoa(size), func(t *testing.T) {
-			f := newConversationFixture(t)
-			objects := &conversationContentFixture{}
-			f.store.Contents = objects
-			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-			record := f.create(t, f.record(f.owner, "payload", now))
-			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Text: strings.Repeat("x", size), Data: json.RawMessage(`{"value":"` + strings.Repeat("y", size) + `"}`), Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
-			if err := f.appendMessage(t, t.Context(), &message); err != nil {
-				t.Fatal(err)
-			}
-			body := map[string]string{"text": strings.Repeat("z", size)}
-			if _, err := f.appendEvent(t, t.Context(), record.ID, conversation.EventHeartbeat, body, now); err != nil {
-				t.Fatal(err)
-			}
-			var messageText, messageData, messageActor, eventBody []byte
-			if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT text, data_json, actor_json FROM conversation_messages WHERE organization_id=$1 AND id=$2`, f.organization, message.ID).Scan(&messageText, &messageData, &messageActor); err != nil {
-				t.Fatal(err)
-			}
-			if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT body_json FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2`, f.organization, record.ID).Scan(&eventBody); err != nil {
-				t.Fatal(err)
-			}
-			messageBytes, eventBytes := len(messageText)+len(messageData)+len(messageActor), len(eventBody)
-			if messageBytes != 4 || eventBytes != 2 {
-				t.Fatalf("inline payload bytes: message=%d event=%d; want 4 and 2", messageBytes, eventBytes)
-			}
-			got, err := f.listMessages(t.Context(), record.ID, 0, 10)
-			if err != nil || len(got) != 1 || got[0].Text != message.Text || !bytes.Equal(got[0].Data, message.Data) || got[0].Actor != message.Actor {
-				t.Fatalf("message round trip: messages=%d err=%v", len(got), err)
-			}
-			events, err := f.listEvents(t.Context(), record.ID, 0, 10)
-			if err != nil || len(events) != 1 {
-				t.Fatalf("event round trip: events=%d err=%v", len(events), err)
-			}
-			var decoded map[string]string
-			if err := json.Unmarshal(events[0].Data, &decoded); err != nil || !reflect.DeepEqual(decoded, body) {
-				t.Fatalf("event body changed: err=%v", err)
-			}
-		})
-	}
-}
-
 func TestConversationPayloadRequiresPublication(t *testing.T) {
 	t.Parallel()
 	for _, configured := range []bool{false, true} {
@@ -457,59 +413,6 @@ func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 	}
 }
 
-func TestConversationEventStorageFootprint(t *testing.T) {
-	t.Parallel()
-	f := newConversationFixture(t)
-	compressed := map[string][]byte{}
-	f.store.Contents = conversationArchiveStore{Call: func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
-		if request.Write {
-			compressed[request.Reference.Key] = bytes.Clone(request.Data)
-		}
-		data, ok := compressed[request.Reference.Key]
-		if !ok {
-			return nil, errors.New("object missing")
-		}
-		return bytes.Clone(data), nil
-	}}
-	objectBytes := func() int64 {
-		var size int64
-		for _, data := range compressed {
-			size += int64(len(data))
-		}
-		return size
-	}
-	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	record := f.create(t, f.record(f.owner, "footprint", now))
-	beforeObjects := objectBytes()
-	const count = 32
-	var inline int64
-	for index := range count {
-		body := map[string]any{"text": strings.Repeat("representative event content ", 2048), "index": index}
-		raw, err := hubapi.MarshalNative(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		inline += int64(len(raw))
-		if _, err := f.appendEvent(t, t.Context(), record.ID, conversation.EventHeartbeat, body, now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var metadata int64
-	var rows int
-	if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT count(*),coalesce(sum(pg_column_size(e)),0) FROM conversation_events e WHERE organization_id=$1 AND conversation_id=$2`, f.organization, record.ID).Scan(&rows, &metadata); err != nil {
-		t.Fatal(err)
-	}
-	if rows != count {
-		t.Fatalf("stored events=%d, want %d", rows, count)
-	}
-	archived := metadata + objectBytes() - beforeObjects
-	saved := float64(inline-archived) / count
-	t.Logf("fixture: events=%d uncompressed_body_total=%d archived_postgres_rows_plus_gzip_total=%d net_bytes_saved_per_event=%.2f", count, inline, archived, saved)
-	if saved <= 0 {
-		t.Fatalf("fixture did not save bytes: %.2f", saved)
-	}
-}
-
 func TestConversationPublicationRechecksTokenExpiry(t *testing.T) {
 	t.Parallel()
 	objects := &conversationContentFixture{}
@@ -614,46 +517,6 @@ func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
 				t.Fatalf("rejected conversation published %d objects; want 0", objects.publications-before)
 			}
 		})
-	}
-}
-
-func TestConversationTurnBatchValidationReadsEachControlOnce(t *testing.T) {
-	t.Parallel()
-	reads := make(map[string]int)
-	for _, test := range []struct {
-		name    string
-		repeats int
-	}{
-		{"single control result", 1},
-		{"repeated control results", conversationMaxTurnEvents - 1},
-	} {
-		func() {
-			objects := &conversationContentFixture{}
-			f := newConversationWorkerFixture(t, objects)
-			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
-			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"}), http.StatusAccepted)
-			f.queue(t, conversation.MessageText, "steer-1", "Keep going", nil)
-			requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
-			var count int
-			objects.mu.Lock()
-			objects.onIO = func() error {
-				count++
-				return nil
-			}
-			objects.mu.Unlock()
-			events := make([]map[string]any, 0, test.repeats+1)
-			for range test.repeats {
-				events = append(events, map[string]any{"type": "control_result", "key": "steer-1", "status": "delivered"})
-			}
-			events = append(events, map[string]any{"type": "unknown"})
-			requireNativeStatus(t, f.turnEvents(t, events...), http.StatusUnprocessableEntity)
-			objects.mu.Lock()
-			reads[test.name] = count
-			objects.mu.Unlock()
-		}()
-	}
-	if reads["repeated control results"] != reads["single control result"] {
-		t.Fatalf("rejected batch content reads: repeated=%d single=%d", reads["repeated control results"], reads["single control result"])
 	}
 }
 

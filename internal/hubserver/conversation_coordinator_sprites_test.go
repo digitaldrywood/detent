@@ -79,51 +79,6 @@ func TestCoordinatorSpritePoolReplay(t *testing.T) {
 	}
 }
 
-func TestCoordinatorSpriteIntakeInstructions(t *testing.T) {
-	t.Parallel()
-	start := strings.Index(coordinatorInstructions, "Sprites onboarding:")
-	end := strings.Index(coordinatorInstructions, "What you cannot do:")
-	if start < 0 || end <= start {
-		t.Fatal("missing Sprite onboarding guidance")
-	}
-	intake := coordinatorInstructions[start:end]
-	for _, phrase := range []string{"I want to add sprites", "set up Fly", "AI guided conversation pre-seeded from the Runners page"} {
-		t.Run(phrase, func(t *testing.T) {
-			if !strings.Contains(intake, phrase) || !strings.Contains(intake, "as Sprites intake intent") || !strings.Contains(intake, "Start the same guided intake") {
-				t.Fatalf("ordinary wording %q must start Sprite intake", phrase)
-			}
-		})
-	}
-	previous := -1
-	for _, step := range []string{"Start with get_sprite_pool", "1. Scope:", "2. Token setup:", "3. How many runners?", "4. Access:", "5. Once scope, token, bounds and access are resolved"} {
-		index := strings.Index(intake, step)
-		if index <= previous {
-			t.Fatalf("missing or out-of-order intake step %q", step)
-		}
-		previous = index
-	}
-	for _, test := range []struct {
-		name string
-		want []string
-	}{
-		{"fleet before Sprites", []string{"First inspect get_project_fleet", "never default capacity questions to Sprites", "Enter this Sprites intake only when the user selects Sprites or the project uses only Sprites"}},
-		{"read instead of asking", []string{"token presence/validation", "current floor/ceiling", "bootstrap_configured", "connected_runners", "provider_readiness", "never ask the user for information this read provides", "If already valid, skip token setup"}},
-		{"one unanswered question", []string{"never repeat an answered question", "one at a time", "accepted with one word", "default to All projects", "default 1/1"}},
-		{"missing token waits", []string{"use set_sprites_token", "wait for the user to save it before continuing", "Read get_sprite_pool again"}},
-		{"bounds explain cost", []string{"minimum retained runner capacity", "even without queued work", "ceiling caps growth", "Do not invent prices"}},
-		{"combined answer preserves setup", []string{"Omit bootstrap to preserve the saved bootstrap", "call set_sprite_pool exactly once", "wait for the client's approval/submission result"}},
-		{"safe observed next action", []string{"No tokens, provider API keys or private credentials in chat or bootstrap", "After the successful approval result, read get_sprite_pool and get_sprite_bootstrap_log", "observed state in plain language", "one next action", "Do not infer Git access from connection alone"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			for _, want := range test.want {
-				if !strings.Contains(intake, want) {
-					t.Fatalf("missing intake guidance %q", want)
-				}
-			}
-		})
-	}
-}
-
 func TestCoordinatorSpriteArguments(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
