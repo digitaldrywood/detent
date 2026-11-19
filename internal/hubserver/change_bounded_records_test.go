@@ -35,6 +35,27 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type changeReadInterceptionStore struct {
+	attachment.DetailStore
+	key       string
+	afterRead func(context.Context) error
+}
+
+func (s *changeReadInterceptionStore) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	raw, err := s.DetailStore.ReadDetail(ctx, organization, ref)
+	if err != nil {
+		return nil, err
+	}
+	if ref.Key == s.key && s.afterRead != nil {
+		callback := s.afterRead
+		s.afterRead = nil
+		if err := callback(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return raw, nil
+}
+
 func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 	t.Parallel()
 	details := &memoryRunDetails{}

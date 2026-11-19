@@ -910,6 +910,12 @@ func nativeRuntimeSession(runtime *tracker.NativeRuntimeObservation) int64 {
 	return changeapi.NativeRuntimeSession(runtime)
 }
 
+type preparedChangeVersionRun = changeapi.PreparedVersionRun
+
+func (s *Service) prepareChangeVersionRun(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) (*preparedChangeVersionRun, error) {
+	return s.changeVersionPublication().PrepareChangeVersionRun(ctx, scope, change, request)
+}
+
 func (s *Service) validateChangeVersionRunOwner(ctx context.Context, r tenantstore.Reader, run changeapi.VersionRunAuthority) error {
 	authority := NativeRunEventAuthority{
 		Scope:              run.Scope,

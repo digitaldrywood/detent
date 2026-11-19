@@ -77,7 +77,7 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 	if change.CurrentVersion != request.ExpectedVersionID {
 		return nil, hubapi.NativeConflict(change.Revision)
 	}
-	sourceRun, err := s.prepareChangeVersionRun(ctx, scope, change, request)
+	sourceRun, err := s.PrepareChangeVersionRun(ctx, scope, change, request)
 	if errors.Is(err, errNoChangeVersionRun) {
 		sourceRun, err = nil, nil
 	}

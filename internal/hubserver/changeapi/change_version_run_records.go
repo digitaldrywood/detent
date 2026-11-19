@@ -17,7 +17,7 @@ import (
 
 var errNoChangeVersionRun = errors.New("change version has no source run")
 
-type preparedChangeVersionRun struct {
+type PreparedVersionRun struct {
 	authority VersionRunAuthority
 	attempt   leasestore.Attempt
 	event     eventstore.Event
@@ -28,7 +28,7 @@ type preparedChangeVersionRun struct {
 	machineID string
 }
 
-func (s *VersionPublication) prepareChangeVersionRun(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) (*preparedChangeVersionRun, error) {
+func (s *VersionPublication) PrepareChangeVersionRun(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) (*PreparedVersionRun, error) {
 	if request.AttemptID == "" {
 		if scope.Credential.Scope == hubapi.APIScopeWorker {
 			return nil, hubapi.NativePublicInvalid("Worker versions must identify their fenced run and attempt")
@@ -38,7 +38,7 @@ func (s *VersionPublication) prepareChangeVersionRun(ctx context.Context, scope 
 	if s.deps.Repository == nil || !s.deps.RunEventsAvailable() {
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
-	prepared := &preparedChangeVersionRun{sessionID: -1}
+	prepared := &PreparedVersionRun{sessionID: -1}
 	var event eventstore.Event
 	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -111,7 +111,7 @@ func (s *VersionPublication) prepareChangeVersionRun(ctx context.Context, scope 
 	return prepared, nil
 }
 
-func (s *VersionPublication) recheckChangeVersionRun(ctx context.Context, w tenantstore.Writer, prepared *preparedChangeVersionRun) error {
+func (s *VersionPublication) recheckChangeVersionRun(ctx context.Context, w tenantstore.Writer, prepared *PreparedVersionRun) error {
 	if prepared == nil {
 		return nil
 	}
