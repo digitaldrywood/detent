@@ -1,11 +1,14 @@
 package nativechange
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -320,81 +323,234 @@ func TestStoppedReceiptAfterUnacknowledgedObservation(t *testing.T) {
 }
 
 func TestStoppedReceiptAfterBufferedObservation(t *testing.T) {
-	for _, test := range []struct {
-		name         string
-		committed    bool
-		wantSequence int64
-	}{
-		{"Hub committed", true, 3},
-		{"never arrived", false, 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var attempt tracker.NativeAttempt
-			var observations, checkpoints int
-			var checkpoint tracker.NativeRunEvent
-			e := replayExecution(t, func(r *http.Request) (int, string, error) {
-				switch {
-				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/attempts/"):
-					body, err := json.Marshal(attempt)
-					return 200, string(body), err
-				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/events"):
-					var event tracker.NativeRunEvent
-					if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-						t.Fatal(err)
-					}
-					switch event.Type {
-					case "run.observed":
-						observations++
-						if event.Data.Sequence != 2 || len(event.PriorEvents) != 1 || event.PriorEvents[0].Data.Sequence != 1 {
-							t.Fatalf("unexpected observation batch: %+v", event)
-						}
-						if test.committed {
-							attempt.NativeRunData = event.Data
-						}
-						return 0, "", ErrUnavailable
-					case "run.checkpointed":
-						checkpoints++
-						checkpoint = event
-					default:
-						t.Fatalf("unexpected event %q", event.Type)
-					}
-				}
-				return 200, "{}", nil
+	for _, batch := range []string{"unsent", "acknowledged", "stop during batch reply", "before stop", "before read", "before checkpoint", "after checkpoint", "never arrived"} {
+		replies := []string{"received", "lost", "checkpoint never arrived"}
+		if batch == "before checkpoint" {
+			replies = append(replies, "conflict reply lost", "source changes before rebuilt diff", "source changes before rebuilt checkpoint")
+		}
+		if batch == "acknowledged" {
+			replies = append(replies, "stop during checkpoint reply")
+		}
+		if batch == "after checkpoint" {
+			replies = append(replies, "batch arrives after second cleanup")
+		}
+		for _, reply := range replies {
+			t.Run(batch+"/"+reply, func(t *testing.T) {
+				testStoppedBatchDelivery(t, batch, reply)
 			})
-			attempt.NativeRunData = e.data
-			e.claim.lease.RunDetailBatching = true
-			worker, cancel := context.WithCancelCause(t.Context())
-			defer cancel(nil)
-			ctx := api.WithMutationAuthority(worker, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(worker) })
-			for range 2 {
-				if err := e.append(ctx, "run.observed", "", nil); err != nil {
-					t.Fatal(err)
+		}
+	}
+}
+
+func testStoppedBatchDelivery(t *testing.T, batch, reply string) {
+	t.Helper()
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Retain completed gate")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if !e.claim.lease.RunDetailBatching {
+		t.Fatal("claim did not enable run detail batching")
+	}
+	head, digest := nativeChangeFixtureHead("b"), strings.Repeat("d", 64)
+	baseHead := nativeChangeFixtureHead("a")
+	e.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+		diff, ok := nativeChangeDiff(head, "changed.go")(ctx)
+		diff.BaseSHA, diff.WorkspaceDigest = baseHead, digest
+		return diff, ok
+	})
+	source := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: head, WorkspaceDigest: digest, ExternalEffect: "none", EffectState: "none"}
+	if err := e.Checkpoint(t.Context(), source); err != nil {
+		t.Fatal(err)
+	}
+	base := e.data.Sequence
+	worker, stop := context.WithCancelCause(t.Context())
+	defer stop(nil)
+	ctx := api.WithMutationAuthority(worker, h.native.Scope(), e.claim.lease, func() error { return context.Cause(worker) })
+	cleanup := context.WithoutCancel(ctx)
+	for range 2 {
+		if err := e.append(ctx, "run.observed", "", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	client := fixtureClient(h.native.Transport())
+	next := client.requests.Load()
+	var inflight *http.Request
+	var batches, diffPosts int
+	var sequences []int64
+	var payload []byte
+	deliverBatch := func(wantStatus int) {
+		t.Helper()
+		if inflight == nil {
+			t.Fatal("no batch in flight")
+		}
+		resp, err := next.RoundTrip(inflight)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != wantStatus {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("batch returned %d, want %d: %s", resp.StatusCode, wantStatus, body)
+		}
+		inflight = nil
+	}
+	miss := reply == "checkpoint never arrived"
+	lose := reply == "lost"
+	loseConflict := reply == "conflict reply lost"
+	client.requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/diff") {
+			diffPosts++
+			resp, err := next.RoundTrip(r)
+			if diffPosts == 2 && reply == "source changes before rebuilt checkpoint" {
+				baseHead = nativeChangeFixtureHead("c")
+			}
+			return resp, err
+		}
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/events") {
+			return next.RoundTrip(r)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var event tracker.NativeRunEvent
+		if err := json.Unmarshal(body, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == "run.observed" {
+			batches++
+			if worker.Err() != nil || batches != 1 || len(event.PriorEvents) != 1 || event.PriorEvents[0].Data.Sequence != base+1 || event.Data.Sequence != base+2 {
+				t.Fatalf("unexpected batch at %d, send %d, stop %v", event.Data.Sequence, batches, context.Cause(worker))
+			}
+			if batch == "acknowledged" || batch == "stop during batch reply" {
+				resp, err := next.RoundTrip(r)
+				if batch == "stop during batch reply" {
+					stop(runner.ErrOperatorStopped)
 				}
+				return resp, err
 			}
-			if observations != 0 {
-				t.Fatalf("observation POSTs before RecordStep = %d", observations)
+			inflight = r.Clone(t.Context())
+			if batch == "before stop" {
+				deliverBatch(http.StatusOK)
 			}
-			head := nativeChangeFixtureHead("a")
-			gateResult := gate.CommandResult{Command: "make check", HeadSHA: head, ExitCode: 1}
-			err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head, WorkspaceDigest: strings.Repeat("d", 64)}, Validation: &gateResult})
-			if !nativeTransportUnavailable(err) || observations != 1 || checkpoints != 0 {
-				t.Fatalf("RecordStep: observation POSTs=%d checkpoint POSTs=%d error=%v", observations, checkpoints, err)
+			return nil, ErrUnavailable
+		}
+		seq := event.Data.Sequence
+		if event.Type != "run.checkpointed" || len(event.PriorEvents) != 0 {
+			t.Fatalf("unexpected %s with %d prior events", event.Type, len(event.PriorEvents))
+		}
+		if batch != "unsent" && event.IdempotencyKey != e.data.AttemptID+":"+strconv.FormatInt(seq, 10)+":receipt" {
+			t.Fatalf("checkpoint %d key = %q", seq, event.IdempotencyKey)
+		}
+		if len(sequences) > 0 && sequences[len(sequences)-1] == seq && !bytes.Equal(payload, body) {
+			t.Fatalf("retry changed checkpoint %d", seq)
+		}
+		sequences, payload = append(sequences, seq), body
+		if miss {
+			miss = false
+			return nil, ErrUnavailable
+		}
+		if batch == "before checkpoint" && inflight != nil {
+			deliverBatch(http.StatusOK)
+		}
+		resp, err := next.RoundTrip(r)
+		if err == nil && resp.StatusCode == http.StatusConflict && reply == "source changes before rebuilt diff" {
+			baseHead = nativeChangeFixtureHead("c")
+		}
+		if err == nil && resp.StatusCode == http.StatusConflict && loseConflict {
+			loseConflict = false
+			resp.Body.Close()
+			return nil, ErrUnavailable
+		}
+		if err == nil && resp.StatusCode == http.StatusOK {
+			if reply == "stop during checkpoint reply" {
+				stop(runner.ErrOperatorStopped)
 			}
-			cancel(runner.ErrOperatorStopped)
-			cleanup := context.WithoutCancel(ctx)
-			for range 2 {
-				if err := e.flush(cleanup); err != nil {
-					t.Fatalf("stopped flush: checkpoint POSTs=%d error=%v", checkpoints, err)
-				}
+			if batch == "after checkpoint" && reply != "batch arrives after second cleanup" && inflight != nil {
+				deliverBatch(http.StatusConflict)
 			}
-			if observations != 1 || checkpoints != 1 || checkpoint.Data.Sequence != test.wantSequence || len(checkpoint.PriorEvents) != 0 {
-				t.Fatalf("observation POSTs=%d checkpoint POSTs=%d sequence=%d prior=%d", observations, checkpoints, checkpoint.Data.Sequence, len(checkpoint.PriorEvents))
+			if lose {
+				lose = false
+				resp.Body.Close()
+				return nil, ErrUnavailable
 			}
-			steps := checkpoint.Data.Steps
-			if len(steps) != 1 || steps[0].Step != "validation" || steps[0].Validation == nil || steps[0].Validation.HeadSHA != head || steps[0].Validation.ExitCode != 1 || steps[0].Validation.Command != gateResult.Command {
-				t.Fatalf("checkpoint lost gate result: %+v", steps)
+		}
+		return resp, err
+	}))
+	recordCtx := ctx
+	if batch == "unsent" {
+		stop(runner.ErrOperatorStopped)
+		recordCtx = cleanup
+	}
+	result := gate.CommandResult{Command: "make check", HeadSHA: head, ExitCode: 1}
+	err := e.RecordStep(recordCtx, tracker.NativeStepReceipt{Step: "validation", Source: source, CompletedAt: time.Now().UTC(), Validation: &result})
+	if err != nil && !nativeTransportUnavailable(err) && !((batch == "stop during batch reply" || reply == "stop during checkpoint reply") && errors.Is(err, runner.ErrOperatorStopped)) {
+		t.Fatal(err)
+	}
+	stop(runner.ErrOperatorStopped)
+	if batch == "before read" {
+		deliverBatch(http.StatusOK)
+	}
+	if strings.HasPrefix(reply, "source changes") {
+		wantDiffs := 1
+		if reply == "source changes before rebuilt checkpoint" {
+			wantDiffs = 2
+		}
+		for range 2 {
+			if err := e.flush(cleanup); !errors.Is(err, runner.ErrOperatorStopped) || diffPosts != wantDiffs || !slices.Equal(sequences, []int64{base + 1}) {
+				t.Fatalf("changed source: diff POSTs %d, checkpoint sequences %v, error %v", diffPosts, sequences, err)
 			}
-		})
+		}
+		return
+	}
+	for range 2 {
+		if err = e.flush(cleanup); err != nil && !nativeTransportUnavailable(err) {
+			t.Fatalf("cleanup after checkpoint sequences %v: %v", sequences, err)
+		}
+	}
+	if reply == "batch arrives after second cleanup" {
+		deliverBatch(http.StatusConflict)
+	}
+	want := base + 1
+	if batch == "acknowledged" || batch == "stop during batch reply" || batch == "before stop" || batch == "before read" || batch == "before checkpoint" {
+		want = base + 3
+	}
+	wantSeqs := []int64{want}
+	if batch == "before checkpoint" {
+		wantSeqs = []int64{base + 1, want}
+	}
+	switch reply {
+	case "lost":
+		wantSeqs = append(wantSeqs, want)
+	case "checkpoint never arrived", "conflict reply lost":
+		wantSeqs = append([]int64{wantSeqs[0]}, wantSeqs...)
+	}
+	if err != nil || !slices.Equal(sequences, wantSeqs) || (batches == 0) != (batch == "unsent") {
+		t.Fatalf("batches %d, checkpoint sequences %v, want %v, error %v", batches, sequences, wantSeqs, err)
+	}
+	if err := e.flush(cleanup); err != nil || !slices.Equal(sequences, wantSeqs) {
+		t.Fatalf("acknowledged cleanup sent another event: %v, %v", sequences, err)
+	}
+	attempt, err := h.admin.NativeAttempt(t.Context(), e.claim.lease.WorkItemID, e.data.AttemptID)
+	if err != nil || attempt.Sequence != want || len(attempt.Steps) != 1 {
+		t.Fatalf("stored sequence %d, steps %d, error %v", attempt.Sequence, len(attempt.Steps), err)
+	}
+	step := attempt.Steps[0]
+	if step.Step != "validation" || step.Validation == nil || step.Validation.ExitCode != 1 || step.Validation.Command != result.Command || step.Validation.HeadSHA != head {
+		t.Fatalf("stored validation = %+v", step)
+	}
+	path, err := api.NativeAttemptDiffPath(e.data.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff tracker.AttemptDiff
+	if err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+path, nil, &diff); err != nil || diff.Generation.Seq != want || diff.HeadSHA != head {
+		t.Fatalf("stored diff generation %d, head %s, error %v", diff.Generation.Seq, diff.HeadSHA, err)
 	}
 }
 

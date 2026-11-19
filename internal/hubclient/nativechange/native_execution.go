@@ -339,6 +339,7 @@ func (e *nativeExecution) authorizeEvent(ctx context.Context, receipt bool) erro
 type checkpointReceipt struct {
 	postedDiff        *tracker.AttemptDiffRequest
 	observation       *tracker.NativeRunEvent
+	sequenceReady     bool
 	head              string
 	workspaceDigest   string
 	verifyPublication func(context.Context) error
@@ -1169,11 +1170,11 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if err := e.authorizeEvent(ctx, receipt != nil); err != nil {
 		return err
 	}
-	if receipt != nil && receipt.observation != nil {
+	if receipt != nil && receipt.observation != nil && !receipt.sequenceReady {
 		if err := e.reconcileObservation(ctx, receipt.observation); err != nil {
 			return err
 		}
-		receipt.observation = nil
+		receipt.sequenceReady = true
 	}
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {
@@ -1233,6 +1234,9 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	if err := e.claim.source.NativeClient().AppendExecutionEvent(ctx, e.claim.lease.WorkItemID, *e.pending, authorize); err != nil {
 		var refusal *APIError
+		if receipt != nil && receipt.observation != nil && errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == "run_sequence_conflict" && errors.Is(e.mutationError(ctx), runner.ErrOperatorStopped) {
+			return e.retryStoppedReceipt(ctx, receipt.observation, err)
+		}
 		if e.preparedOutcome != "" && errors.As(err, &refusal) && refusal.Status == http.StatusConflict && (refusal.Code == "run_sequence_conflict" || refusal.Code == "idempotency_conflict") {
 			path, pathErr := nativeItemPath(e.claim.lease.WorkItemID)
 			if pathErr != nil {

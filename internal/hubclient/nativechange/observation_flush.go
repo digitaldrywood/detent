@@ -56,20 +56,54 @@ func (e *nativeExecution) reconcileObservation(ctx context.Context, observation 
 			return err
 		}
 	} else {
-		attempt, err := e.receiptAttempt(ctx)
+		var err error
+		sequence, err = e.stoppedObservationSequence(ctx, observation)
 		if err != nil {
 			return err
 		}
-		first := observation.Data.Sequence
-		if len(observation.PriorEvents) != 0 {
-			first = observation.PriorEvents[0].Data.Sequence
-		}
-		if attempt.Sequence != first-1 && attempt.Sequence != observation.Data.Sequence {
-			return runner.ErrExecutionAuthorityUnavailable
-		}
-		sequence = attempt.Sequence
 	}
-	e.pending.Data.Sequence = sequence + 1
-	e.pending.IdempotencyKey = e.data.AttemptID + ":" + strconv.FormatInt(e.pending.Data.Sequence, 10) + ":receipt"
+	e.setReceiptSequence(sequence + 1)
 	return nil
+}
+
+func (e *nativeExecution) stoppedObservationSequence(ctx context.Context, observation *tracker.NativeRunEvent) (int64, error) {
+	attempt, err := e.receiptAttempt(ctx)
+	if err != nil {
+		return 0, err
+	}
+	first := observation.Data.Sequence
+	if len(observation.PriorEvents) != 0 {
+		first = observation.PriorEvents[0].Data.Sequence
+	}
+	if attempt.Sequence != first-1 && attempt.Sequence != observation.Data.Sequence {
+		return 0, runner.ErrExecutionAuthorityUnavailable
+	}
+	return attempt.Sequence, nil
+}
+
+func (e *nativeExecution) setReceiptSequence(sequence int64) {
+	e.pending.Data.Sequence = sequence
+	e.pending.IdempotencyKey = e.data.AttemptID + ":" + strconv.FormatInt(sequence, 10) + ":receipt"
+}
+
+func (e *nativeExecution) retryStoppedReceipt(ctx context.Context, observation *tracker.NativeRunEvent, conflict error) error {
+	if e.pending.Data.Sequence > observation.Data.Sequence {
+		return conflict
+	}
+	sequence, err := e.stoppedObservationSequence(ctx, observation)
+	if err != nil {
+		return err
+	}
+	if sequence != observation.Data.Sequence {
+		return conflict
+	}
+	diff := e.diffForSequence(e.pending.Data.Sequence)
+	if diff == nil {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
+	next := *diff
+	next.Generation.Seq = sequence + 1
+	e.generationDiff, e.lastDiff = &next, &next
+	e.setReceiptSequence(sequence + 1)
+	return e.flush(ctx)
 }
