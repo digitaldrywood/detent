@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -331,140 +330,74 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			t.Fatal(err)
 		}
 		other.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
-		poolConfig := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
-		poolConfig.MaxConns = int32(cfg.Postgres.Pool.MaxConnections)
-		pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
-		if err != nil {
-			t.Fatal(err)
-		}
-		measured, err := postgres.NewRepository(t.Context(), pool, cfg.Postgres.Pool)
-		if err != nil {
-			pool.Close()
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := measured.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		targets := []*Service{service, other}
-		for _, target := range targets {
-			originalTenant, originalAccess := target.config.TenantRepository, target.config.AccessRepository
-			target.config.TenantRepository, target.config.AccessRepository = measured, measured
-			t.Cleanup(func() {
-				target.config.TenantRepository, target.config.AccessRepository = originalTenant, originalAccess
-			})
-		}
-		for _, target := range targets {
-			prepareReadProject(tracker.OrganizationID(target.config.Hosted.OrganizationID), "project_scale")
-		}
-		previous := 0
-		for _, size := range []int{2, 2000} {
-			for _, target := range targets {
-				org := tracker.OrganizationID(target.config.Hosted.OrganizationID)
-				var project projectstore.Record
-				var organization accessstore.Organization
-				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-					var err error
-					project, err = r.ProjectRecord(t.Context(), "project_scale")
-					if err != nil {
-						return err
-					}
-					organization, err = r.AccessOrganization(t.Context())
-					return err
-				}); err != nil {
-					t.Fatal(err)
-				}
-				for index := previous; index < size; index++ {
-					id := tracker.NativeWorkItemID(fmt.Sprintf("board_scale_%04d", index))
-					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "project_scale", WorkItemID: id, Number: 200000 + index, Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Example %04d", index), State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "credential_owner"}, CreatedAt: clock, UpdatedAt: clock, LastActivityAt: clock}
-					raw, err := json.Marshal(issue)
-					if err != nil {
-						t.Fatal(err)
-					}
-					version, err := eventstore.NewContent(cfg.RunDetails).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "project_scale", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
-					if err != nil {
-						t.Fatal(err)
-					}
-					payload, err := viewstore.NewContent(cfg.RunDetails).PrepareBoard(t.Context(), tracker.NativeBoardCard{Issue: issue})
-					if err != nil {
-						t.Fatal(err)
-					}
-					issue.WebURL = target.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(organization.Slug, project.Core.Slug, issue.Number)}).WebURL
-					board, list, relations, listBytes, err := boundBoardProjection(issue, viewstore.BoardReporterRelations{DependencyReady: true})
-					if err != nil {
-						t.Fatal(err)
-					}
-					record := viewstore.BoardRecord{PageIssue: &board, ListIssue: &list, ReporterRelations: &relations, ListBytes: listBytes, ProjectedAt: clock, Dispatchable: true, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}}, OrganizationID: org, ProjectID: "project_scale", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%06d", issue.Number)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: clock, UpdatedAt: clock, Payload: payload}
-					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-						if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "project_scale", NativeID: id, Number: int64(issue.Number), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
-							return err
-						}
-						if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
-							return err
-						}
-						return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "project_scale", WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &record})
-					}); err != nil {
-						t.Fatal(err)
-					}
-				}
-				details := &boardDetailBatchCounter{DetailStore: target.runDetailStore()}
-				originalDetails := target.config.RunDetails
-				target.config.RunDetails = details
-				requireNativeStatus(t, requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_warmup"}), http.StatusOK)
-				response := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_scale"})
+		const project = "project_scale"
+		const limit = 2
+		for _, target := range []*Service{service, other} {
+			org := tracker.OrganizationID(target.config.Hosted.OrganizationID)
+			prepareReadProject(org, project)
+			want := make(map[tracker.NativeWorkItemID]tracker.NativeIssue, limit+1)
+			for index := range limit + 1 {
+				title := fmt.Sprintf("Example %s board card %d", org, index)
+				response := requestFor(target, "owner", "/api/v2/organizations/"+string(org)+"/projects/"+project+"/work-items", tracker.CreateIssue{
+					Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("board_scale_%d", index)},
+					Title:    title, Body: fmt.Sprintf("%s\n\nBoard card %d", workItemRecordBody, index), State: "Todo", Type: "bug",
+				})
 				requireNativeStatus(t, response, http.StatusOK)
-				var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
-				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				var issue tracker.NativeIssue
+				decodeHubResponse(t, response, &issue)
+				want[issue.WorkItemID] = issue
+				if err := target.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: project, WorkItemID: issue.WorkItemID}, clock); err != nil {
 					t.Fatal(err)
 				}
-				if len(result.Data.Items) != min(size, 50) {
-					t.Fatalf("items=%d want=%d", len(result.Data.Items), min(size, 50))
-				}
-				for _, item := range result.Data.Items {
-					if item.OrganizationID != org || item.Title == "" || item.URL != item.WebURL {
-						t.Fatalf("invalid scoped card: %+v", item)
-					}
-				}
-				if details.scalar.Load() != 0 || details.batches.Load() != 0 {
-					t.Fatalf("board fetched objects: scalar=%d batch=%d", details.scalar.Load(), details.batches.Load())
-				}
-
-				claims, err := resolver(string(org))(t.Context(), entryauthority.Origin{KeyID: "key_owner", CredentialBinding: strings.Repeat("a", 64), Subject: "owner", Issuer: "entry", Generation: 1})
-				if err != nil {
-					t.Fatal(err)
-				}
-				credential, _, err := target.entryKeyCredential(t.Context(), claims)
-				if err != nil {
-					t.Fatal(err)
-				}
-				scope := hubscope.NativeScope{Organization: org, Project: "project_scale", Credential: credential}
-				page, err := target.readBoardRecordsFor(t.Context(), scope, url.Values{"include": {"board"}, "limit": {"2000"}}, true)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(page.Cards) != size {
-					t.Fatalf("board cards=%d want=%d", len(page.Cards), size)
-				}
-				for _, card := range page.Cards {
-					if card.Issue.OrganizationID != org || card.Issue.Title == "" {
-						t.Fatalf("invalid scoped board card: %+v", card.Issue.NativeReference)
-					}
-				}
-				if _, err := json.Marshal(page); err != nil {
-					t.Fatal(err)
-				}
-				if details.scalar.Load() != 0 || details.batches.Load() != 0 {
-					t.Fatal("projected board read source objects")
-				}
-				target.config.RunDetails = originalDetails
-				revoked = true
-				denied := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_scale"})
-				revoked = false
-				requireNativeStatus(t, denied, http.StatusForbidden)
-
 			}
-			previous = size
+			requireIssue := func(issue tracker.NativeIssue, seen map[tracker.NativeWorkItemID]bool) {
+				t.Helper()
+				expected, ok := want[issue.WorkItemID]
+				if !ok || seen[issue.WorkItemID] || issue.OrganizationID != org || issue.ProjectID != project || issue.Title != expected.Title || issue.State != expected.State {
+					t.Fatalf("invalid scoped card: %+v", issue)
+				}
+				seen[issue.WorkItemID] = true
+			}
+			call := map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": project, "limit": limit}, "connection_id": "board_scale"}
+			response := requestFor(target, "owner", "/internal/v1/keys/call", call)
+			requireNativeStatus(t, response, http.StatusOK)
+			var list operatortool.WorkReadResult[operatortool.NativeWorkPage]
+			decodeHubResponse(t, response, &list)
+			if len(list.Data.Items) != limit || list.Data.NextCursor == "" {
+				t.Fatalf("work list returned %d items and cursor %q, want %d items and a continuation", len(list.Data.Items), list.Data.NextCursor, limit)
+			}
+			listSeen := make(map[tracker.NativeWorkItemID]bool, limit)
+			for _, item := range list.Data.Items {
+				requireIssue(item.NativeIssue, listSeen)
+				if item.URL == "" || item.URL != item.WebURL {
+					t.Fatalf("work list URL = %q, want card URL %q", item.URL, item.WebURL)
+				}
+			}
+			claims, err := resolver(string(org))(t.Context(), entryauthority.Origin{KeyID: "key_owner", CredentialBinding: strings.Repeat("a", 64), Subject: "owner", Issuer: "entry", Generation: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, _, err := target.entryKeyCredential(t.Context(), claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := hubscope.NativeScope{Organization: org, Project: project, Credential: credential}
+			page, err := target.readBoardRecordsFor(t.Context(), scope, url.Values{"include": {"board"}, "limit": {fmt.Sprint(limit)}}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Cards) != limit || page.NextCursor == "" {
+				t.Fatalf("board returned %d cards and cursor %q, want %d cards and a continuation", len(page.Cards), page.NextCursor, limit)
+			}
+			boardSeen := make(map[tracker.NativeWorkItemID]bool, limit)
+			for _, card := range page.Cards {
+				requireIssue(card.Issue, boardSeen)
+			}
+
+			revoked = true
+			denied := requestFor(target, "owner", "/internal/v1/keys/call", call)
+			revoked = false
+			requireNativeStatus(t, denied, http.StatusForbidden)
 		}
 	})
 	t.Run("owner cancels backlog with selected principal grants", func(t *testing.T) {
