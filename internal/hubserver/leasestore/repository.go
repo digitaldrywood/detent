@@ -221,18 +221,19 @@ type AttemptDiff struct {
 }
 
 type AttemptEvent struct {
-	HumanActionStatus         *string                     `json:"-"`
-	LocalAttemptID            int64                       `json:"-"`
-	RuntimeHeartbeatAt        *time.Time                  `json:"-"`
-	WorkerCleanupRequired     *bool                       `json:"-"`
-	RuntimeOrdered            bool                        `json:"-"`
-	CheckpointPreservesSource *bool                       `json:"-"`
-	CheckpointReference       attachment.ArchiveReference `json:"-"`
-	Termination               bool                        `json:"termination,omitempty"`
-	PayloadReference          attachment.ArchiveReference `json:"-"`
-	Usage                     []tracker.NativeUsage       `json:"-"`
-	Failure                   *AttemptFailure             `json:"-"`
-	Identity                  AttemptIdentity             `json:"-"`
+	Worker                    *tracker.NativeAttemptWorker `json:"worker,omitempty"`
+	HumanActionStatus         *string                      `json:"-"`
+	LocalAttemptID            int64                        `json:"-"`
+	RuntimeHeartbeatAt        *time.Time                   `json:"-"`
+	WorkerCleanupRequired     *bool                        `json:"-"`
+	RuntimeOrdered            bool                         `json:"-"`
+	CheckpointPreservesSource *bool                        `json:"-"`
+	CheckpointReference       attachment.ArchiveReference  `json:"-"`
+	Termination               bool                         `json:"termination,omitempty"`
+	PayloadReference          attachment.ArchiveReference  `json:"-"`
+	Usage                     []tracker.NativeUsage        `json:"-"`
+	Failure                   *AttemptFailure              `json:"-"`
+	Identity                  AttemptIdentity              `json:"-"`
 	ID                        string
 	Fence                     Fence
 	RunID                     string
@@ -244,6 +245,20 @@ type AttemptEvent struct {
 	CheckpointObjectKey       *string
 	ArtifactsObjectKey        *string
 	UsageCorrection           bool
+}
+
+type AttemptWorkerCleanup struct {
+	ProjectID  tracker.ProjectID
+	WorkItemID tracker.NativeWorkItemID
+	AttemptID  string
+	RunnerID   string
+	MachineID  tracker.MachineID
+	Fence      Fence
+	Worker     tracker.NativeAttemptWorker
+}
+
+type AttemptWorkerCleanupWriter interface {
+	AcknowledgeAttemptWorker(context.Context, AttemptWorkerCleanup) error
 }
 
 type CheckpointSourceCandidate struct {

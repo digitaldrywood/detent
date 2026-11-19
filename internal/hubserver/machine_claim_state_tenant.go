@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/attemptworkers"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -27,23 +28,9 @@ func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope hu
 	var page runnerstore.ClaimStatePage
 	var candidates []hubrecords.TenantAttemptSnapshot
 	err = s.readRunnerResponseSnapshot(ctx, scope.Organization, scope.Credential.ID, snapshot.RunnerID, scope.Project, func(ctx context.Context, r tenantstore.Reader, now time.Time) error {
-		identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
+		identity, err := attemptworkers.AuthorizeRunnerProjectOperation(ctx, r, scope, snapshot.RunnerID, runnerauth.Heartbeat, now)
 		if err != nil {
 			return err
-		}
-		credential, err := r.AccessCredential(ctx, scope.Credential.ID)
-		if err != nil {
-			return err
-		}
-		if credential.OrganizationID != scope.Organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.Credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, scope.Organization, snapshot.RunnerID, scope.Credential.ID, scope.Credential.Runner.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
-			return hubscope.RunnerUnauthorized()
-		}
-		allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return hubapi.NativeNotFound()
 		}
 		if err := readRunnerResponseRouting(ctx, r, identity, snapshot); err != nil {
 			return err

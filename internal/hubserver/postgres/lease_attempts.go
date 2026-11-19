@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/attemptworkersql"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -75,7 +76,7 @@ func (s *session) settleLostAttempt(ctx context.Context, lease leasestore.Lease,
 }
 
 func (s *session) recordAttemptEvent(ctx context.Context, event leasestore.AttemptEvent, leaseLost bool) (leasestore.Attempt, bool, error) {
-	if (event.CheckpointObjectKey == nil) != (event.CheckpointPreservesSource == nil) {
+	if (event.CheckpointObjectKey == nil) != (event.CheckpointPreservesSource == nil) || event.Worker != nil && !event.Worker.Valid() {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	if event.PayloadReference != (attachment.ArchiveReference{}) && (event.PayloadReference.Validate(string(s.organization)) != nil || event.PayloadReference.Key != event.PayloadObjectKey || event.PayloadReference.SchemaVersion != 1 || event.PayloadReference.BindingID != "" || event.PayloadReference.CustomerOwned) {
@@ -190,6 +191,7 @@ func (s *session) recordAttemptEvent(ctx context.Context, event leasestore.Attem
 			StartedAt: startedAt, StartedAtSubmicroNs: int16(startedAtSubmicro), Now: now,
 			FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt,
 		}
+		params.WorkerPid, params.WorkerPgid, params.WorkerStartedAt, params.WorkerStartKey = attemptworkersql.Columns(event.Worker)
 		newAttemptIdentityColumns(event.Identity).insert(&params)
 		row, err = s.queries.InsertLeaseAttempt(ctx, params)
 	} else {
@@ -200,6 +202,7 @@ func (s *session) recordAttemptEvent(ctx context.Context, event leasestore.Attem
 			UsageCorrection: event.UsageCorrection, Termination: event.Termination, RuntimeOrdered: event.RuntimeOrdered, Now: &now,
 			FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt,
 		}
+		params.WorkerPid, params.WorkerPgid, params.WorkerStartedAt, params.WorkerStartKey = attemptworkersql.Columns(event.Worker)
 		newAttemptIdentityColumns(event.Identity).advance(&params)
 		row, err = s.queries.AdvanceLeaseAttempt(ctx, params)
 	}
@@ -233,6 +236,10 @@ func (s *session) recordAttemptEvent(ctx context.Context, event leasestore.Attem
 	}
 
 	return attemptFromPG(row), false, nil
+}
+
+func (s *session) AcknowledgeAttemptWorker(ctx context.Context, cleanup leasestore.AttemptWorkerCleanup) error {
+	return mapError(ctx, attemptworkersql.Acknowledge(ctx, s.queries, s.organization, cleanup, s.leaseTime))
 }
 
 func (s *session) registerAttemptPayload(ctx context.Context, event leasestore.AttemptEvent) error {

@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/attemptworkers"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -236,6 +237,16 @@ type nativeMachineHeartbeatRequest struct {
 }
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
+	if after, requested := c.QueryParams()["attempt_worker_after"]; requested {
+		credential, _ := c.Get("hub_api_credential").(hubapi.APICredential)
+		scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Project: tracker.ProjectID(c.Param("project")), Credential: credential}
+		inventory, err := attemptworkers.Read(c.Request().Context(), s.config.TenantRepository, scope, tracker.MachineID(c.Param("machine")), after, s.config.Clock)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return c.JSON(http.StatusOK, inventory)
+	}
 	var request nativeMachineHeartbeatRequest
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)

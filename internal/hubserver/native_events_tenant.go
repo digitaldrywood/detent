@@ -448,7 +448,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		return nil, err
 	}
 	if termination {
-		if previousAttempt.CleanupAcknowledgedAt != nil || cleanupData == nil || !nativeCleanupOwnerMatches(request.Data, *cleanupData) {
+		if request.Worker != nil || previousAttempt.CleanupAcknowledgedAt != nil || cleanupData == nil || !nativeCleanupOwnerMatches(request.Data, *cleanupData) {
 			return nil, leasestore.ErrAttemptConflict
 		}
 		next := request.Data.Sequence
@@ -570,7 +570,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				return nil, err
 			}
 		}
-		if event.Data.AttemptID != request.Data.AttemptID || event.Data.RunID != request.Data.RunID || event.Data.LeaseID != request.Data.LeaseID || event.Data.FencingToken != request.Data.FencingToken || len(event.PriorEvents) != 0 {
+		if event.Data.AttemptID != request.Data.AttemptID || event.Data.RunID != request.Data.RunID || event.Data.LeaseID != request.Data.LeaseID || event.Data.FencingToken != request.Data.FencingToken || len(event.PriorEvents) != 0 || event.WorkerCleanup != nil {
 			return nil, hubapi.NativePublicInvalid("Run detail batch must contain ordered observations for one execution")
 		}
 		prefixAllowed := event.Type == "run.observed"
@@ -579,6 +579,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		}
 		if i < len(events)-1 && !prefixAllowed {
 			return nil, hubapi.NativePublicInvalid("Run detail batch must contain ordered observations for one execution")
+		}
+		if event.Worker != nil && scope.Credential.Runner.RunnerID == "" {
+			return nil, hubscope.RunnerUnauthorized()
 		}
 		if event.Data.MachineID != "" && string(event.Data.MachineID) != lease.MachineID || event.Data.SessionID != "" && event.Data.SessionID != lease.SessionID || event.Data.RunnerID != "" && event.Data.RunnerID != scope.Credential.Runner.RunnerID {
 			return nil, nativeRejection(hubapi.NativePublicInvalid("Execution identity must match the authenticated lease owner"), "owner_validation", "data")
@@ -661,6 +664,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 			return nil, err
 		}
 		attemptEvent := leasestore.AttemptEvent{
+			Worker:                event.Worker,
 			Usage:                 event.Data.Usage,
 			WorkerCleanupRequired: new(nativeRunCleanupRequired(event.Data)),
 			ID:                    event.Data.AttemptID,

@@ -3570,6 +3570,20 @@
         ]
       }
     },
+    "internal/hubserver/postgres/attemptworkersql/inventory.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "claim",
+        "lease",
+        "lifecycle"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/audit_dispositions.go": {
       "disposition": "target-adapter",
       "families": [
@@ -5865,6 +5879,7 @@
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.AcknowledgeAttemptWorker:query-receiver": 1,
           "session.AttemptFailures:generated:PageIssueAttemptFailures": 1,
           "session.AttemptFailures:query-receiver": 1,
           "session.AttemptReceiptSequences:Query": 1,
@@ -12190,6 +12205,20 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261119025159_attempt_worker_identity.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_attempts"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -14010,6 +14039,7 @@
       ],
       "inventory": {
         "operations": {
+          "Queries.AcknowledgeAttemptWorker:QueryRow": 1,
           "Queries.AdvanceLeaseAttempt:QueryRow": 1,
           "Queries.BindAttemptRun:Exec": 1,
           "Queries.ExpireLease:QueryRow": 1,
@@ -14049,6 +14079,7 @@
           "Queries.SetAttemptRuntimeHeartbeat:Exec": 1,
           "Queries.UpdateLeaseLandingCapacity:QueryRow": 1,
           "Queries.UpdateRunnerHostRouting:QueryRow": 1,
+          "acknowledgeAttemptWorker:SQL": 1,
           "advanceLeaseAttempt:SQL": 1,
           "bindAttemptRun:SQL": 1,
           "expireLease:SQL": 1,
@@ -14781,9 +14812,11 @@
       "inventory": {
         "operations": {
           "Queries.RemoveRunnerIdentity:Exec": 1,
+          "Queries.RunnerAttemptWorkers:Query": 1,
           "Queries.RunnerClaimSlots:Query": 1,
           "Queries.RunnerReleasedAttemptCandidates:Query": 1,
           "removeRunnerIdentity:SQL": 1,
+          "runnerAttemptWorkers:SQL": 1,
           "runnerClaimSlots:SQL": 1,
           "runnerReleasedAttemptCandidates:SQL": 1
         },
@@ -16814,6 +16847,7 @@
       "inventory": {
         "operations": {
           "SQL": 1,
+          "query:AcknowledgeAttemptWorker:one": 1,
           "query:AdvanceLeaseAttempt:one": 1,
           "query:BindAttemptRun:exec": 1,
           "query:ExpireLease:one": 1,
@@ -17404,6 +17438,7 @@
         "operations": {
           "SQL": 1,
           "query:RemoveRunnerIdentity:execrows": 1,
+          "query:RunnerAttemptWorkers:many": 1,
           "query:RunnerClaimSlots:many": 1,
           "query:RunnerReleasedAttemptCandidates:many": 1
         },
@@ -18590,6 +18625,7 @@
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.RunnerAttemptWorkers:query-receiver": 1,
           "session.RunnerClaimState:generated:RunnerClaimSlots": 1,
           "session.RunnerClaimState:generated:RunnerReleasedAttemptCandidates": 1,
           "session.RunnerClaimState:query-receiver": 2
