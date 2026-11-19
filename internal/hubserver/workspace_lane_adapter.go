@@ -111,7 +111,9 @@ func (s *Service) relayHTTP(w *workspaceService) *workspacerelay.HTTP {
 	deps.AccessWrite = s.accessWrite
 	deps.AuthInput = s.authInput
 	deps.AuthorizeAccessScope = s.authorizeAccessScope
-	deps.AuthorizeSubject = workspaceReadableSubject
+	deps.ReadOperatorWorkspace = func(ctx context.Context, scope hubscope.NativeScope, id string) (workspacehub.Record, error) {
+		return s.workspaceOperations(nil).ReadOperatorWorkspace(ctx, scope, id)
+	}
 	deps.RequireWorkspaces = func() error {
 		_, err := s.requireWorkspaces()
 		return err
@@ -377,15 +379,12 @@ func (s *Service) workspaceOperations(w *workspaceService) *workspacehub.Operati
 		FirstDispatchableState:              firstDispatchableState,
 		ReadRunnerAuthority:                 readRelayRunnerAuthority,
 		UpdateWorkspaceState:                updateWorkspaceState,
-		WorkerIdentityFromHeaders: func(c echo.Context) (workspacehub.WorkerIdentity, error) {
-			identity, err := workspacerelay.WorkerIdentityFromHeaders(c)
-			return workspacehub.WorkerIdentity(identity), err
-		},
-		ValidActionRunReason:  validActionRunReason,
-		ForwardRunStatus:      forwardRunStatus,
-		ActionRunExitCode:     actionRunExitCode,
-		RelayArchiveReference: s.relayArchiveReference,
-		RetainRelayArchive:    s.retainRelayArchive,
+		WorkerIdentityFromHeaders:           workspacerelay.WorkerIdentityFromHeaders,
+		ValidActionRunReason:                validActionRunReason,
+		ForwardRunStatus:                    forwardRunStatus,
+		ActionRunExitCode:                   actionRunExitCode,
+		RelayArchiveReference:               s.relayArchiveReference,
+		RetainRelayArchive:                  s.retainRelayArchive,
 		ActionRunResource: func(ctx context.Context, action postgres.ActionRun, output bool) (workspacesession.Run, error) {
 			run, err := s.actionRunRecord(ctx, action, output)
 			return run.resource(), err
@@ -404,7 +403,7 @@ func (s *Service) workspaceOperations(w *workspaceService) *workspacehub.Operati
 		deps.Config = func() workspacehub.Config { return w.config }
 		deps.Committed = func(ctx context.Context, record workspacehub.Record) { w.committed(ctx, workspaceRecord(record)) }
 		deps.ReadRelayWorker = func(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, id string, identity workspacehub.WorkerIdentity) (workspacehub.Record, error) {
-			return w.relayHTTP().ReadRelayWorker(ctx, reader, scope, id, workspacerelay.WorkerIdentity(identity))
+			return w.relayHTTP().ReadRelayWorker(ctx, reader, scope, id, identity)
 		}
 		deps.PrepareRelayOutput = w.prepareRelayOutput
 	}

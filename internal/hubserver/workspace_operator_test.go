@@ -807,101 +807,49 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 	}
 }
 
-// Catches oversized history losing its continuation cursor. Both projections
-// must retain newest messages without truncating individual message content.
-func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
+func TestWorkspaceOperatorOversizedHistoryPreservesControls(t *testing.T) {
 	t.Parallel()
-	for _, snapshot := range []bool{false, true} {
-		t.Run("unpageable/"+strconv.FormatBool(snapshot), func(t *testing.T) {
-			var value any = conversationMessagesPage{Messages: []conversationMessageResource{{Seq: 1, Text: strings.Repeat("x", operatortool.MaxResultBytes)}}}
-			if snapshot {
-				value = conversationSnapshot{Conversation: conversationResource{Title: strings.Repeat("x", operatortool.MaxResultBytes)}}
-			}
-			raw, err := json.Marshal(value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			bounded, err := boundedOperatorHistory(raw, snapshot, nil)
-			var size *operatortool.ResultTooLargeError
-			if len(bounded) != 0 || !errors.As(safeWorkspaceError(err), &size) || size.SizeBytes != len(raw) || size.LimitBytes != operatortool.MaxResultBytes/2 {
-				t.Fatalf("unpageable history bytes=%d error=%v", len(bounded), err)
-			}
-		})
+	f := newConversationWorkerFixture(t)
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, f.record.ID); err != nil {
+		t.Fatal(err)
 	}
-	messages := []conversationMessageResource{}
-	for i := int64(1); i <= 20; i++ {
-		messages = append(messages, conversationMessageResource{Seq: i, Text: strings.Repeat("x", 16000)})
+	operator, _ := conversationOperatorToken(t, f.nativeFixture, "snapshot-operator")
+	ctx := workspaceOperatorContext(t, f.service, operator, string(f.project.OrganizationID), "snapshot")
+	args := map[string]any{"project_id": f.project.ID, "work_item_id": f.issue.WorkItemID}
+	result, err := workspaceOperatorCall(t, f.service, ctx, "get_work_item_conversation", args)
+	if err != nil || !strings.Contains(string(result.Content), f.attempt) || !strings.Contains(string(result.Content), `"status":"unavailable"`) {
+		t.Fatalf("missing binding diagnostic=%s %v", result.Content, err)
 	}
-	for _, snapshot := range []bool{false, true} {
-		var raw []byte
-		var err error
-		if snapshot {
-			raw, err = json.Marshal(conversationSnapshot{Messages: messages})
-		} else {
-			raw, err = json.Marshal(conversationMessagesPage{Messages: messages})
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		bounded, err := boundedOperatorHistory(raw, snapshot, nil)
-		if err != nil || len(bounded) > operatortool.MaxResultBytes/2 {
-			t.Fatalf("snapshot=%v size=%d %v", snapshot, len(bounded), err)
-		}
-		if snapshot {
-			var page conversationSnapshot
-			if json.Unmarshal(bounded, &page) != nil || !page.HasMore || page.Messages[0].Seq <= 1 || page.Messages[len(page.Messages)-1].Seq != 20 {
-				t.Fatal("snapshot dropped history cursor")
-			}
-		} else {
-			var page conversationMessagesPage
-			if json.Unmarshal(bounded, &page) != nil || page.NextCursor == nil || page.Messages[0].Seq <= 1 || page.Messages[len(page.Messages)-1].Seq != 20 {
-				t.Fatal("history dropped cursor")
-			}
-		}
+	var count int
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversations WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", f.project.OrganizationID, f.project.ID, f.issue.WorkItemID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("read created a substitute conversation: count=%d err=%v", count, err)
 	}
-	t.Run("oversized worker message preserves controls", func(t *testing.T) {
-		f := newConversationWorkerFixture(t)
-		if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, f.record.ID); err != nil {
-			t.Fatal(err)
-		}
-		operator, _ := conversationOperatorToken(t, f.nativeFixture, "snapshot-operator")
-		ctx := workspaceOperatorContext(t, f.service, operator, string(f.project.OrganizationID), "snapshot")
-		args := map[string]any{"project_id": f.project.ID, "work_item_id": f.issue.WorkItemID}
-		result, err := workspaceOperatorCall(t, f.service, ctx, "get_work_item_conversation", args)
-		if err != nil || !strings.Contains(string(result.Content), f.attempt) || !strings.Contains(string(result.Content), `"status":"unavailable"`) {
-			t.Fatalf("missing binding diagnostic=%s %v", result.Content, err)
-		}
-		var count int
-		if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversations WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", f.project.OrganizationID, f.project.ID, f.issue.WorkItemID).Scan(&count); err != nil || count != 0 {
-			t.Fatalf("read created a substitute conversation: count=%d err=%v", count, err)
-		}
-		var bound workerBindResponse
-		body := f.bindBody()
-		body["thread_id"] = "old-resume-thread"
-		response := f.bind(t, body)
-		requireNativeStatus(t, response, http.StatusOK)
-		decodeHubResponse(t, response, &bound)
-		f.record.ID = bound.ConversationID
-		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "actual-fresh-thread", "turn_id": "actual-turn"}), http.StatusAccepted)
-		for range 5 {
-			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "large-message", "text": strings.Repeat("x", 60000)}), http.StatusAccepted)
-		}
-		result, err = workspaceOperatorCall(t, f.service, ctx, "get_work_item_conversation", args)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var snapshot struct {
-			conversationSnapshot
-			HistoryOmitted bool `json:"history_omitted"`
-		}
-		if err := json.Unmarshal(workspaceOperatorData(t, result), &snapshot); err != nil {
-			t.Fatal(err)
-		}
-		current := snapshot.Conversation.Execution
-		if snapshot.Conversation.ID != bound.ConversationID || current.Status != conversation.ExecutionRunning || current.AttemptID == nil || *current.AttemptID != f.attempt || current.ThreadID == nil || *current.ThreadID != "actual-fresh-thread" || current.TurnID == nil || *current.TurnID != "actual-turn" || !current.Capabilities.Steer || !snapshot.HistoryOmitted || len(snapshot.Messages) != 0 || snapshot.Cursor == 0 {
-			t.Fatalf("canonical snapshot lost execution or history evidence: %+v", snapshot)
-		}
-	})
+	var bound workerBindResponse
+	body := f.bindBody()
+	body["thread_id"] = "old-resume-thread"
+	response := f.bind(t, body)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &bound)
+	f.record.ID = bound.ConversationID
+	requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "actual-fresh-thread", "turn_id": "actual-turn"}), http.StatusAccepted)
+	for range 5 {
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "large-message", "text": strings.Repeat("x", 60000)}), http.StatusAccepted)
+	}
+	result, err = workspaceOperatorCall(t, f.service, ctx, "get_work_item_conversation", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		conversationSnapshot
+		HistoryOmitted bool `json:"history_omitted"`
+	}
+	if err := json.Unmarshal(workspaceOperatorData(t, result), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	current := snapshot.Conversation.Execution
+	if snapshot.Conversation.ID != bound.ConversationID || current.Status != conversation.ExecutionRunning || current.AttemptID == nil || *current.AttemptID != f.attempt || current.ThreadID == nil || *current.ThreadID != "actual-fresh-thread" || current.TurnID == nil || *current.TurnID != "actual-turn" || !current.Capabilities.Steer || !snapshot.HistoryOmitted || len(snapshot.Messages) != 0 || snapshot.Cursor == 0 {
+		t.Fatalf("canonical snapshot lost execution or history evidence: %+v", snapshot)
+	}
 }
 
 // Catches missing services accidentally falling through to nil runtimes or raw

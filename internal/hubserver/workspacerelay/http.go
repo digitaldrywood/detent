@@ -319,7 +319,7 @@ func (w *HTTP) RevalidatePerson(ctx context.Context, c echo.Context, scope hubsc
 		if workspacesession.Terminal(live.State) {
 			return errors.New("the workspace has ended")
 		}
-		return w.AuthorizeSubject(ctx, r, current, live.SubjectWorkItemID)
+		return workspacehub.ReadableSubject(ctx, r, current, live.SubjectWorkItemID)
 	})
 }
 
@@ -1517,7 +1517,7 @@ func (w *HTTP) ReadRelayWorkspaceForActor(ctx context.Context, reader tenantstor
 	if err != nil {
 		return workspacehub.Record{}, hubapi.ProjectRecordError(err)
 	}
-	if err := w.AuthorizeSubject(ctx, reader, scope, row.SubjectWorkItemID); err != nil {
+	if err := workspacehub.ReadableSubject(ctx, reader, scope, row.SubjectWorkItemID); err != nil {
 		return workspacehub.Record{}, hubapi.ProjectRecordError(err)
 	}
 	return WorkspaceRecord(row), nil
