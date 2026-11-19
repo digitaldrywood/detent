@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -102,14 +104,6 @@ func TestProgressLeaseValidationDoesNotDeadlockClaim(t *testing.T) {
 	})
 }
 
-type sharedOutageProgressBackend struct {
-	decision progresscheck.Decision
-}
-
-func (b sharedOutageProgressBackend) Decide(context.Context, progresscheck.Request) (progresscheck.Decision, error) {
-	return b.decision, nil
-}
-
 func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 	t.Parallel()
 	var offset atomic.Int64
@@ -139,9 +133,12 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 	runner.enroll(t)
+	reporter := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate)
+	reporter.enroll(t)
+	reporter.reportCapacity(t)
 	readRequest := func(t *testing.T, issue tracker.NativeIssue) (progresscheck.Request, int64) {
 		t.Helper()
-		request, revision, err := f.service.nativeProgressRequestTenant(t.Context(), scope, string(issue.WorkItemID), hubTestPolicy().ID, string(runner.binding.MachineID))
+		request, revision, err := f.service.nativeProgressRequestTenant(t.Context(), scope, string(issue.WorkItemID), hubTestPolicy().ID, string(reporter.binding.MachineID))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,10 +147,10 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 		}
 		return request, revision
 	}
-	seedAttempts := func(t *testing.T, issue tracker.NativeIssue, key string) progresscheck.Request {
+	seedAttempts := func(t *testing.T, issue tracker.NativeIssue, key string, count int) progresscheck.Request {
 		t.Helper()
 		path := f.base + "/work-items/" + string(issue.WorkItemID)
-		for index := range 2 {
+		for index := range count {
 			lease := nativeAttemptFixtureLease(t, runner, issue, fmt.Sprintf("%s-%d", key, index))
 			start := nativeStartedEvent(lease)
 			start.IdempotencyKey = fmt.Sprintf("%s-start-%d", key, index)
@@ -185,7 +182,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 	for _, outcome := range []progresscheck.Outcome{progresscheck.Progressing, progresscheck.Reroute, progresscheck.SystemDefect} {
 		t.Run(string(outcome), func(t *testing.T) {
 			issue := f.createIndependent(t, "Example "+string(outcome))
-			request := seedAttempts(t, issue, string(outcome))
+			request := seedAttempts(t, issue, string(outcome), 2)
 			id, err := request.ID()
 			if err != nil {
 				t.Fatal(err)
@@ -305,10 +302,6 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if published.DefectIssueID == "" {
 				t.Fatal("missing defect receipt")
 			}
-			dependent := readRelationships(t, issue.WorkItemID)
-			if len(dependent.Dependencies) != 1 || string(dependent.Dependencies[0]) != published.DefectIssueID || dependent.DependencyReady {
-				t.Fatalf("progress defect has no dispatch dependency: %+v", dependent)
-			}
 			page, err := f.service.readCommentRecords(t.Context(), scope, request.IssueID, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -343,38 +336,79 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if err != nil || second.DefectIssueID != published.DefectIssueID {
 				t.Fatalf("defect deduplication = %+v, %v", second, err)
 			}
-			t.Run("shared outage across distinct issues creates one defect", func(t *testing.T) {
-				for index := range 6 {
-					other := f.createIndependent(t, fmt.Sprintf("Outage issue %d", index))
-					outage := seedAttempts(t, other, fmt.Sprintf("outage-%d", index))
-					outageDecision := decision
-					outageDecision.Evidence = []string{outage.Attempts[len(outage.Attempts)-1].ID}
-					outageDecision.Diagnosis = outageDecision.Evidence[0] + ": The retained protocol failure identifies an instance defect requiring the shared repair"
-					backend := sharedOutageProgressBackend{decision: outageDecision}
-					otherOwner := nativeProgressOwner{service: f.service, scope: scope, request: outage}
-					result, checked, err := progresscheck.Check(t.Context(), outage, backend, otherOwner)
-					if err != nil || !checked || result.DefectIssueID != published.DefectIssueID || result.CommentID == published.CommentID {
-						t.Fatalf("issue %s did not reuse the shared defect: result=%+v checked=%t error=%v", other.WorkItemID, result, checked, err)
-					}
-					linked := readRelationships(t, other.WorkItemID)
-					if len(linked.Dependencies) != 1 || string(linked.Dependencies[0]) != published.DefectIssueID || linked.DependencyReady {
-						t.Fatalf("issue %s lost its shared repair dependency: %+v", other.WorkItemID, linked)
-					}
+			t.Run("shared outage keeps both items claimable", func(t *testing.T) {
+				other := f.createIndependent(t, "Second outage issue")
+				seedAttempts(t, other, "shared-outage", 2)
+				lease := nativeAttemptFixtureLease(t, reporter, other, "report-shared-outage")
+				outage, _ := readRequest(t, other)
+				requestID, err := outage.ID()
+				if err != nil {
+					t.Fatal(err)
+				}
+				outageDecision := decision
+				outageDecision.Evidence = []string{outage.Attempts[len(outage.Attempts)-1].ID}
+				outageDecision.Diagnosis = outageDecision.Evidence[0] + ": The retained protocol failure identifies an instance defect requiring the shared repair"
+				publication := progresscheck.Publication{
+					Mutation:  tracker.Mutation{IdempotencyKey: requestID, LeaseID: lease.ID, FencingToken: lease.FencingToken},
+					RequestID: requestID, PolicyID: outage.PolicyID, Instance: outage.Instance, Decision: outageDecision,
+					ExpectedRevision: readWorkItem(t, f, other.WorkItemID, "").Revision,
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+outage.IssueID+"/progress", reporter.redemption.Credential, publication)
+				requireNativeStatus(t, response, http.StatusOK)
+				var result progresscheck.Record
+				decodeHubResponse(t, response, &result)
+				if result.DefectIssueID != published.DefectIssueID || result.CommentID == published.CommentID {
+					t.Fatalf("second issue did not reuse the shared incident: result=%+v", result)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", reporter.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				page, err := f.service.readCommentRecords(t.Context(), scope, outage.IssueID, nil)
+				if err != nil || len(page.Items) != 1 || !strings.Contains(page.Items[0].Body, "]("+defectPath+")") {
+					t.Fatalf("second issue lacks a linked incident comment: page=%+v error=%v", page, err)
 				}
 				var defects int
 				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2 AND title=$3`, scope.Organization, scope.Project, decision.DefectTitle).Scan(&defects); err != nil {
 					t.Fatal(err)
 				}
 				if defects != 1 {
-					t.Fatalf("shared outage created %d defect records, want 1", defects)
+					t.Fatalf("shared outage created %d incident records, want 1", defects)
+				}
+
+				preview := tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{
+					PolicyID: hubTestPolicy().ID, MachineID: reporter.binding.MachineID, TTLSeconds: 90,
+					ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"},
+				}}
+				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", reporter.redemption.Credential, preview)
+				requireNativeStatus(t, response, http.StatusOK)
+				var claimable tracker.NativeCapacityPage
+				decodeHubResponse(t, response, &claimable)
+				for _, id := range []tracker.NativeWorkItemID{issue.WorkItemID, other.WorkItemID} {
+					item := readRelationships(t, id)
+					if !item.DependencyReady || len(item.Dependencies) != 0 || len(item.Blockers) != 0 {
+						t.Errorf("issue %s has an incident blocker: dependencies=%v blockers=%v", id, item.Dependencies, item.Blockers)
+					}
+					if !slices.ContainsFunc(claimable.Items, func(candidate tracker.NativeIssue) bool { return candidate.WorkItemID == id }) {
+						t.Errorf("next claim preview omitted %s", id)
+					}
+				}
+				incident := readWorkItem(t, f, tracker.NativeWorkItemID(result.DefectIssueID), "")
+				origin, ok := issueorigin.Parse(incident.Body)
+				want := issueorigin.Origin{Kind: "worker", Instance: string(runner.binding.MachineID), Source: published.RequestID, Fingerprint: issueorigin.Fingerprint("progress-check:" + decision.DefectKey)}
+				if !ok || origin != want || incident.State != "Backlog" {
+					t.Errorf("incident origin=%+v state=%s, want origin=%+v and Backlog", origin, incident.State, want)
 				}
 			})
 			offset.Store(int64(100 * time.Millisecond))
+			seedAttempts(t, issue, "new-history", progresscheck.MaxAttempts)
 			edited := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+request.IssueID+"/comments/"+humanComment.ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "different-defect"}, ExpectedRevision: humanComment.Revision, Body: "Different defect evidence"})
 			requireNativeStatus(t, edited, http.StatusOK)
 			decodeHubResponse(t, edited, &humanComment)
 			refresh()
 			record.Decision.DefectKey = "different-protocol"
+			oldFailure := record.Decision.Evidence[0]
+			if slices.ContainsFunc(request.Attempts, func(attempt progresscheck.Attempt) bool { return attempt.ID == oldFailure }) {
+				t.Fatal("older failure is still in the bounded progress request")
+			}
+			record.Decision.RetrievedEvidence = []progresscheck.EvidenceReference{{ID: oldFailure}}
 			latest, err := owner.Publish(t.Context(), record)
 			if err != nil {
 				t.Fatal(err)
@@ -382,6 +416,22 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			latestIssue := readWorkItem(t, f, tracker.NativeWorkItemID(latest.DefectIssueID), "")
 			if latest.DefectIssueID == published.DefectIssueID || latestIssue.State != "Backlog" {
 				t.Fatalf("latest defect=%s state=%s", latest.DefectIssueID, latestIssue.State)
+			}
+			if origin, ok := issueorigin.Parse(latestIssue.Body); !ok || origin.Instance != string(runner.binding.MachineID) {
+				t.Fatalf("incident from retrieved failure attributed to %+v", origin)
+			}
+			addLegacyProgressDependency := func(target tracker.NativeWorkItemID) {
+				t.Helper()
+				err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.SetRelationship(t.Context(), corestore.Relationship{
+						OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID,
+						RelatedProjectID: scope.Project, RelatedWorkItemID: target,
+						Type: "dependency", Provenance: "progress_check",
+					}, "add", f.service.config.Clock())
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			for _, eventType := range []string{"comment.created", "comment.edited", "change.version_published", "run.checkpointed", "issue.edited"} {
 				edited := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+request.IssueID+"/comments/"+humanComment.ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "input-before-" + eventType}, ExpectedRevision: humanComment.Revision, Body: "New source before " + eventType})
@@ -391,9 +441,10 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				if _, err := owner.Publish(t.Context(), record); err != nil {
 					t.Fatal(err)
 				}
+				addLegacyProgressDependency(latestIssue.WorkItemID)
 				linked := readRelationships(t, issue.WorkItemID)
-				if linked.DependencyReady || len(linked.Dependencies) != 1 {
-					t.Fatalf("missing dependency before %s", eventType)
+				if linked.DependencyReady || !slices.Equal(linked.Dependencies, []tracker.NativeWorkItemID{latestIssue.WorkItemID}) {
+					t.Fatalf("missing legacy progress dependency before %s", eventType)
 				}
 				switch eventType {
 				case "comment.created":
@@ -420,7 +471,8 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if _, err := owner.Publish(t.Context(), record); err != nil {
 				t.Fatal(err)
 			}
-			defect := readWorkItem(t, f, tracker.NativeWorkItemID(latest.DefectIssueID), "")
+			addLegacyProgressDependency(latestIssue.WorkItemID)
+			defect := readWorkItem(t, f, latestIssue.WorkItemID, "")
 			for _, state := range []string{"Todo", "Done"} {
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+latest.DefectIssueID+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "defect-" + state}, ExpectedRevision: defect.Revision, State: state, Reason: "user_requested"})
 				requireNativeStatus(t, response, http.StatusOK)
@@ -434,9 +486,23 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+request.IssueID+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "ordinary-dependency"}, ExpectedRevision: reopened.Revision, Operation: "add", RelatedWorkItemID: ordinary.WorkItemID})
 			requireNativeStatus(t, response, http.StatusOK)
 			appendHistory(t, issue, "issue.edited")
+			addLegacyProgressDependency(tracker.NativeWorkItemID(published.DefectIssueID))
+			refresh()
+			record.Decision.DefectKey = "ambiguous-protocol"
+			record.Decision.Evidence = []string{humanComment.ID}
+			record.Decision.RetrievedEvidence = nil
+			record.Decision.Diagnosis = humanComment.ID + ": The comment suggests a shared repair"
+			diagnostic, err := owner.Publish(t.Context(), record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			incident := readWorkItem(t, f, tracker.NativeWorkItemID(diagnostic.DefectIssueID), "")
+			if origin, ok := issueorigin.Parse(incident.Body); !ok || origin.Instance != "progress-check" {
+				t.Fatalf("incident from ambiguous evidence attributed to %+v", origin)
+			}
 			retained := readRelationships(t, issue.WorkItemID)
-			if retained.DependencyReady || len(retained.Dependencies) != 1 || retained.Dependencies[0] != ordinary.WorkItemID {
-				t.Fatal("new evidence changed ordinary dependency")
+			if retained.DependencyReady || !slices.Equal(retained.Dependencies, []tracker.NativeWorkItemID{ordinary.WorkItemID}) {
+				t.Fatal("progress publication changed the human-authored prerequisite")
 			}
 		})
 	}

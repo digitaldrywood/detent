@@ -333,11 +333,13 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 	} else if found {
 		return retained, nil
 	}
+	attempts := slices.Clip(o.request.Attempts)
 	for _, reference := range record.Decision.RetrievedEvidence {
 		if reference.SourceSHA != "" && reference.SourceReceipt == nil {
 			return progresscheck.Record{}, hubapi.NativeInvalid("Retrieved source receipt is unavailable")
 		}
 		if reference.SourceSHA == "" && reference.AttemptID == "" {
+			var scopedAttempt bool
 			err := o.service.config.TenantRepository.ReadTenant(ctx, o.scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				comment, err := reader.Comment(ctx, o.scope.Project, tracker.NativeWorkItemID(record.IssueID), reference.ID)
 				if err == nil && !comment.Deleted {
@@ -353,6 +355,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 						return err
 					}
 					if attempt.IssueID == item.ID {
+						scopedAttempt = true
 						return nil
 					}
 				} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -369,6 +372,23 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 			})
 			if err != nil {
 				return progresscheck.Record{}, fmt.Errorf("read retrieved progress evidence: %w", err)
+			}
+			if scopedAttempt && record.Decision.Outcome == progresscheck.SystemDefect && !slices.ContainsFunc(attempts, func(a progresscheck.Attempt) bool { return a.ID == reference.ID }) {
+				attempt, err := o.service.readNativeAttemptTenant(ctx, o.scope, record.IssueID, reference.ID)
+				if err != nil {
+					return progresscheck.Record{}, err
+				}
+				failure := progresscheck.Attempt{ID: attempt.AttemptID, Outcome: attempt.Outcome, Instance: string(attempt.MachineID)}
+				if failure.Outcome == "" {
+					failure.Outcome = attempt.Status
+				}
+				if failure.Outcome == "interrupted" {
+					failure.Outcome = "abandoned"
+				}
+				if attempt.TerminalFailure != nil {
+					failure.Attribution = attempt.TerminalFailure.Attribution
+				}
+				attempts = append(attempts, failure)
 			}
 		}
 		if reference.AttemptID != "" {
@@ -394,7 +414,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 	var defectMutation preparedWorkItemRecordMutation
 	body := nativeProgressCommentBody(record)
 	if record.Decision.Outcome == progresscheck.SystemDefect {
-		defectBody := issueorigin.Stamp(record.Decision.DefectBody, issueorigin.Origin{Kind: "worker", Instance: "progress-check", Source: record.RequestID, Fingerprint: issueorigin.Fingerprint("progress-check:" + record.Decision.DefectKey)})
+		defectBody := issueorigin.Stamp(record.Decision.DefectBody, issueorigin.Origin{Kind: "worker", Instance: nativeProgressIncidentInstance(attempts, record.Decision.Evidence), Source: record.RequestID, Fingerprint: issueorigin.Fingerprint("progress-check:" + record.Decision.DefectKey)})
 		defectScope := commentScope
 		defectScope.ProgressOrigin = &o
 		defectScope.Action, defectScope.ActionItem = operatortool.FileIssue, ""
@@ -521,11 +541,6 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 				return err
 			}
 		}
-		if record.DefectIssueID != "" {
-			if err := writer.SetRelationship(ctx, corestore.Relationship{OrganizationID: o.scope.Organization, ProjectID: o.scope.Project, WorkItemID: tracker.NativeWorkItemID(record.IssueID), RelatedProjectID: o.scope.Project, RelatedWorkItemID: tracker.NativeWorkItemID(record.DefectIssueID), Type: "dependency", Provenance: "progress_check"}, "add", o.service.config.Clock().UTC()); err != nil {
-				return err
-			}
-		}
 		_, err = writer.PutReceipt(ctx, receipt)
 		receiptWritten = err == nil
 		return err
@@ -546,6 +561,23 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 	}
 	o.service.signalNativeDispatch(o.scope)
 	return record, nil
+}
+
+func nativeProgressIncidentInstance(attempts []progresscheck.Attempt, evidence []string) string {
+	var instance string
+	for _, attempt := range attempts {
+		if !progresscheck.Failed(attempt.Outcome) || !slices.Contains(evidence, attempt.ID) {
+			continue
+		}
+		if attempt.Attribution != "instance" || attempt.Instance == "" || (instance != "" && instance != attempt.Instance) {
+			return "progress-check"
+		}
+		instance = attempt.Instance
+	}
+	if instance == "" {
+		return "progress-check"
+	}
+	return instance
 }
 
 func nativeProgressCommentBody(record progresscheck.Record) string {
