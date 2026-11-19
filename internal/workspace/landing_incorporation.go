@@ -97,7 +97,7 @@ func VerifyLandingIncorporation(ctx context.Context, proof tracker.LandingIncorp
 		command.Stdin = bytes.NewReader(input)
 		command.WaitDelay = workspaceCommandWaitDelay
 		procgroup.Configure(ctx, command)
-		output, err := command.Output()
+		output, err := procgroup.CommandOutput(ctx, command, false)
 		return string(output), err
 	}
 	if _, err := git(nil, "init", "--bare", "--template="); err != nil {

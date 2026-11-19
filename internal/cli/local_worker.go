@@ -32,7 +32,7 @@ func workerProtocolPreflight(ctx context.Context, path string) error {
 	cmd := detentupdate.ReleaseCommand(probeCtx, path, SSHProbeArgument)
 	procgroup.Configure(probeCtx, cmd)
 	cmd.WaitDelay = time.Second
-	output, err := cmd.Output()
+	output, err := procgroup.CommandOutput(probeCtx, cmd, false)
 	if err != nil {
 		return fmt.Errorf("probe worker protocol: %w", err)
 	}
@@ -146,7 +146,11 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		workflow, checker, estimator, selectedAt = captured.workflow, captured.checker, captured.estimator, captured.selectedAt
 		artifact, err = captured.artifact.Retain()
 	} else {
-		artifact, err = r.artifacts.AcquireLaunch(ctx, workerProtocolPreflight, func(status detentupdate.Status) error {
+		preflight := detentupdate.BinaryPreflight(workerProtocolPreflight)
+		if fenced {
+			preflight = nil
+		}
+		artifact, err = r.artifacts.AcquireLaunch(ctx, preflight, func(status detentupdate.Status) error {
 			if status.Critical {
 				comparison, err := detentupdate.CompareVersions(status.LatestVersion, status.CurrentVersion)
 				if err != nil {

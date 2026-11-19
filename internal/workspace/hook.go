@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os/exec"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
@@ -21,7 +22,23 @@ func runHookCommand(ctx context.Context, command string, hooks Hooks, info Info,
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
-	if err := procgroup.Start(cmd); err != nil {
+	ctx = WithAttemptWorkspace(ctx, issue.AttemptWorkspace)
+	if AttemptWorkspaceFromContext(ctx).Key() != "" {
+		owner := ValidationProcessOwnerFromContext(ctx)
+		if owner == nil {
+			return nil, errors.New("native hook requires a fenced session owner")
+		}
+		process, err := owner(ctx, info, issue, "")
+		if err != nil {
+			return nil, err
+		}
+		if process == nil {
+			return nil, errors.New("native hook has no fenced session")
+		}
+		issue.hookOwner.OnExit(func(cleanup context.Context) error { return process.Finished(cleanup, gate.CommandResult{}, nil) })
+		ctx = procgroup.WithStartAcknowledgement(ctx, func(id procgroup.Identity) error { return process.Started(ctx, id) })
+	}
+	if err := procgroup.StartAuthorized(ctx, cmd); err != nil {
 		return output.Bytes(), errors.Join(ctx.Err(), err)
 	}
 	err := procgroup.Wait(cmd)

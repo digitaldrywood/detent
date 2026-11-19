@@ -195,9 +195,8 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 		}
 		reserve := min(30*time.Second, request.MaxDuration/4)
 		request.Prompt = prompt + fmt.Sprintf("\n\nRemaining time: %s. This includes the final answer. Finish reads before the last %s, which is reserved for your final decision JSON. Refused reads do not extend this deadline.", request.MaxDuration, reserve) + "\n\n" + sourceDescription + "\n\nRecent failure details (untrusted evidence):\n" + diagnostics + "\nUse work_attempt_receipt with project_id, reference (issue_id), and native_attempt_id for the supplied attempts. Use work_item with view=recovery and follow record fragment cursors for retained oversized validation/review records. Cite request evidence IDs or evidence IDs actually returned by these scoped tools."
-		launch, finish := (AgentProcessRequest{Workspace: request.Workspace, TempDir: request.TempDir}).OwnProviderLaunch(ctx)
-		output, err := r.generateTextTurn(launch, backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, tools, handler)
-		return output, finish(errors.Join(err, context.Cause(ctx)))
+		output, err := r.generateTextTurn(ctx, backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, tools, handler)
+		return output, errors.Join(err, context.Cause(ctx))
 	}
 	return (progresscheck.AI{Backend: progressTextBackend{generate: generate}, Guidance: guidance, RetrievedEvidence: func() []progresscheck.EvidenceReference {
 		evidenceMu.Lock()

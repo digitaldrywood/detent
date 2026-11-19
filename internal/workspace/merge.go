@@ -440,11 +440,39 @@ func ValidationProcessOwnerFromContext(ctx context.Context) ValidationProcessOwn
 	return owner
 }
 
+func ownAttemptCommand(ctx context.Context, cmd *exec.Cmd, id procgroup.Identity) (func(error) error, error) {
+	if attempt := AttemptWorkspaceFromContext(ctx); attempt != (AttemptWorkspace{}) && attempt.Key() == "" {
+		return nil, errors.New("native command requires an exact attempt")
+	}
+	owner := ValidationProcessOwnerFromContext(ctx)
+	if owner == nil {
+		return nil, errors.New("native command requires a fenced session owner")
+	}
+	process, err := owner(ctx, Info{Path: cmd.Dir}, Issue{}, "")
+	if err != nil {
+		return nil, err
+	}
+	if process == nil {
+		return nil, errors.New("native command has no fenced session")
+	}
+	finish := func(err error) error {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedWorkspacePreservationTimeout)
+		defer cancel()
+		code := 0
+		if err != nil {
+			code = -1
+		}
+		return errors.Join(err, process.Finished(cleanup, gate.CommandResult{ExitCode: code}, nil))
+	}
+	return finish, process.Started(ctx, id)
+}
+
 func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
 	result.Command = command
 	result.ExitCode = -1
 	owner := ValidationProcessOwnerFromContext(ctx)
-	if owner == nil && (issue.AttemptWorkspace.Key() != "" || AttemptWorkspaceFromContext(ctx).Key() != "") {
+	native := issue.AttemptWorkspace.Key() != "" || AttemptWorkspaceFromContext(ctx).Key() != ""
+	if owner == nil && native {
 		return result, errors.New("native host validation requires a fenced session owner")
 	}
 	ctx, release, err := toolcache.UseFromContext(ctx)
@@ -496,6 +524,9 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 			return result, fmt.Errorf("reserve host validation process: %w", err)
 		}
 	}
+	if process == nil && native {
+		return result, errors.New("native validation has no fenced session")
+	}
 	cmd := commandshell.Command(ctx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
 	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
@@ -511,9 +542,13 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		}
 	}
 	procgroup.Configure(ctx, cmd)
-	result.Evidence = reviewCommandEvidence(ctx, cmd, command)
+	evidenceCtx := ctx
+	if native {
+		evidenceCtx = procgroup.WithCommandOwner(ctx, ownAttemptCommand)
+	}
+	result.Evidence = reviewCommandEvidence(evidenceCtx, cmd, command)
 	if !result.Evidence.Environment.Known() {
-		result.Evidence = validationEnvironment(ctx, cmd)
+		result.Evidence = validationEnvironment(evidenceCtx, cmd)
 	}
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
 	started := time.Now()
@@ -526,14 +561,13 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
 	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
+	launchCtx := ctx
 	if process != nil {
-		launchCtx := procgroup.WithStartAcknowledgement(ctx, func(identity procgroup.Identity) error {
+		launchCtx = procgroup.WithStartAcknowledgement(ctx, func(identity procgroup.Identity) error {
 			return process.Started(ctx, identity)
 		})
-		if err := procgroup.StartAuthorized(launchCtx, cmd); err != nil {
-			return result, fmt.Errorf("register host validation process: %w", err)
-		}
-	} else if err := procgroup.Start(cmd); err != nil {
+	}
+	if err := procgroup.StartAuthorized(launchCtx, cmd); err != nil {
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
 	startedCommand = true
@@ -584,7 +618,7 @@ func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.Command
 		Architecture string `json:"GOHOSTARCH"`
 		Version      string `json:"GOVERSION"`
 	}
-	output, err := probe.Output()
+	output, err := procgroup.CommandOutput(ctx, probe, false)
 	if err == nil && json.Unmarshal(output, &observed) == nil {
 		environment := gate.CheckEnvironment{OS: observed.OS, Architecture: observed.Architecture, GoVersion: observed.Version}
 		if environment.Valid() {

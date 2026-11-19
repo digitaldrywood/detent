@@ -882,6 +882,7 @@ func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, 
 		return gate.CommandResult{}, nil
 	}
 	validationIssue := issue
+	validationIssue.preparedValidationPath = info.Path
 	validationIssue.PullRequestHeadSHA = head
 	result, err := l.RunReviewCommand(ctx, info, validationIssue, command)
 	if err != nil {

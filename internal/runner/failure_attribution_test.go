@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -158,5 +162,49 @@ func TestFailureEvidenceRejectsUnrelatedInstanceSuccess(t *testing.T) {
 				t.Fatalf("unrelated success accepted: %+v", evidence)
 			}
 		})
+	}
+}
+
+type independentAttributionProvider struct {
+	*fakeCodexClient
+	marker string
+}
+
+func (b *independentAttributionProvider) RunTurn(ctx context.Context, request AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	cmd := exec.CommandContext(ctx, "git", "config", "--file", b.marker, "test.executed", "true")
+	procgroup.Configure(ctx, cmd)
+	if err := procgroup.StartAuthorized(ctx, cmd); err != nil {
+		return AgentTurnResult{}, err
+	}
+	if err := procgroup.Wait(cmd); err != nil {
+		return AgentTurnResult{}, err
+	}
+	return b.fakeCodexClient.RunTurn(ctx, request, onUpdate)
+}
+
+type independentAttributionWorkspace struct {
+	*attributionWorkspace
+	scope workspace.AttemptWorkspace
+}
+
+func (w *independentAttributionWorkspace) Existing(issue workspace.Issue) (workspace.Info, error) {
+	w.scope = issue.AttemptWorkspace
+	return workspace.Info{}, nil
+}
+func TestIndependentAttributionLaunchAndSource(t *testing.T) {
+	a := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+	w := &independentAttributionWorkspace{attributionWorkspace: &attributionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{}, diff: workspace.Diff{Patch: "legacy-review-source"}}}
+	b := &independentAttributionProvider{fakeCodexClient: &fakeCodexClient{failureOutcome: "issue"}, marker: filepath.Join(t.TempDir(), "provider-ran")}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Default: true}}}}}, Workspace: w, AgentBackend: b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := workspace.WithAttemptWorkspace(t.Context(), a)
+	r.attributeFailure(ctx, RunRequest{Mode: RunModeImplement, Execution: &testExecution{}, AttemptWorkspace: a}, failedStep("validation", &workspace.CommandError{Command: "go", ExitCode: 1, Output: "assertion failed"}))
+	if _, err := os.Stat(b.marker); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("failure decision launched an independent provider without acknowledgement: marker=%v", err)
+	}
+	if w.scope != a && strings.Contains(b.failureRequest.Prompt, "legacy-review-source") {
+		t.Errorf("failure decision sent diff from unscoped checkout, scope=%+v", w.scope)
 	}
 }

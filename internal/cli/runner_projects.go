@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -656,7 +657,7 @@ func runnerProjectCheckout(ctx context.Context, root, name, repository string, r
 		}
 		cmd := exec.CommandContext(ctx, "git", "config", "--get", "remote.origin.url")
 		cmd.Dir = candidate
-		remote, err := cmd.Output()
+		remote, err := procgroup.CommandOutput(ctx, cmd, false)
 		if err != nil {
 			continue
 		}

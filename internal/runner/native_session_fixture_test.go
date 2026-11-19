@@ -54,7 +54,9 @@ func (s *nativeSessionClient) StartSession(ctx context.Context, start store.Sess
 		return 0, err
 	}
 	s.owner.snapshots[id] = &runnersession.Snapshot{ID: id, Start: start, Identity: start.RuntimeIdentity, Provider: store.SessionProviderIdentity{ThreadID: start.ProviderThreadID, SessionID: start.ProviderSessionID}, Policy: s.owner.policy}
-	s.owner.attempts[s.attempt] = id
+	if start.AgentRole != store.WorkerProcessRoleHostValidation {
+		s.owner.attempts[s.attempt] = id
+	}
 	return id, nil
 }
 

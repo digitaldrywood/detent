@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -27,7 +28,8 @@ type GitWorktree struct {
 	// Backend is the runner's worktree backend.
 	Backend workspace.Backend
 	// ProjectID scopes the worktree key, as it does for a run.
-	ProjectID string
+	ProjectID   string
+	NativeScope workspace.AttemptWorkspace
 	// Resolve maps a work item onto the identifier the runner's own runs key
 	// their worktrees on. A retained workspace cannot be served without it.
 	Resolve func(ctx context.Context, workItemID string) (string, error)
@@ -195,7 +197,7 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 		args = append([]string{"-C", dir}, args...)
 	}
 	command := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- arguments are fixed subcommands and validated commit ids or ref names; git runs without a shell.
-	output, err := command.CombinedOutput()
+	output, err := procgroup.CommandOutput(ctx, command, true)
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", args[len(args)-1], err, strings.TrimSpace(string(output)))
 	}
@@ -213,7 +215,12 @@ func (g *GitWorktree) retained(ctx context.Context, checkout hubclient.Workspace
 	if err != nil {
 		return "", fmt.Errorf("resolve retained worktree for %s: %w", checkout.WorkItemID, err)
 	}
-	info, err := existing.Existing(workspace.Issue{ProjectID: g.ProjectID, ID: checkout.WorkItemID, Identifier: identifier})
+	attempt := g.NativeScope
+	attempt.Attempt = checkout.AttemptID
+	if attempt.Key() == "" {
+		return "", errors.New("retained worktree requires the bound organization, project and attempt")
+	}
+	info, err := existing.Existing(workspace.Issue{ProjectID: g.ProjectID, ID: checkout.WorkItemID, Identifier: identifier, AttemptWorkspace: attempt})
 	if err != nil {
 		return "", fmt.Errorf("find retained worktree for %s: %w", identifier, err)
 	}

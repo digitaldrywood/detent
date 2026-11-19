@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 type OverrideSignature struct {
@@ -85,7 +87,7 @@ func VerifyOverrideApproval(ctx context.Context, directory, version, commit stri
 		command.Dir = directory
 		command.Env = environment
 		command.Stdin = bytes.NewReader(input)
-		output, err := command.Output()
+		output, err := procgroup.CommandOutput(ctx, command, false)
 		if err != nil {
 			return nil, fmt.Errorf("read override approval git object: %w", err)
 		}
@@ -194,7 +196,7 @@ func VerifyOverrideApproval(ctx context.Context, directory, version, commit stri
 		command.Args = append(command.Args, args...)
 		command.Env = append(os.Environ(), "GNUPGHOME="+home)
 		command.Stdin = bytes.NewReader(input)
-		output, err := command.Output()
+		output, err := procgroup.CommandOutput(ctx, command, false)
 		if err != nil {
 			return nil, fmt.Errorf("verify override approval OpenPGP signature: %w", err)
 		}

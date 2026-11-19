@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 // Paths are resolved by Go, including operator environment and GOENV settings.
@@ -50,7 +52,7 @@ func resolve(ctx context.Context) (Paths, error) {
 	cmd := exec.CommandContext(ctx, "go", "env", "-json", "GOCACHE", "GOMODCACHE")
 	cmd.Dir = os.TempDir()
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
-	if output, err := cmd.Output(); err == nil {
+	if output, err := procgroup.CommandOutput(ctx, cmd, false); err == nil {
 		var discovered Paths
 		if json.Unmarshal(output, &discovered) == nil {
 			if paths.Build == "" {

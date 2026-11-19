@@ -188,7 +188,7 @@ func Verify(ctx context.Context, source tracker.ChangeSource, bundle []byte) (er
 		command.Stdin = bytes.NewReader(input)
 		command.WaitDelay = gitexec.WaitDelay
 		procgroup.Configure(ctx, command)
-		return command.Run()
+		return procgroup.RunCommand(ctx, command)
 	}
 	if err := git(nil, "init", "--bare", "--object-format=sha1", "--template="); err != nil {
 		return err

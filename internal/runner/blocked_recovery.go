@@ -32,7 +32,12 @@ func (r *Runner) BlockedRecoverySnapshot(ctx context.Context, req RunRequest) Bl
 		snapshot.WorkspaceStatus = "unavailable"
 		return snapshot
 	}
-	recovery, err := reader.IssueRecoveryState(ctx, workspaceIssue(r.projectID, req.Issue))
+	issue, known := req.workspaceTarget(ctx, r.projectID)
+	if !known {
+		snapshot.WorkspaceStatus = "unavailable"
+		return snapshot
+	}
+	recovery, err := reader.IssueRecoveryState(ctx, issue)
 	if errors.Is(err, workspace.ErrMissingWorkspace) {
 		snapshot.WorkspaceStatus = "missing"
 		return snapshot

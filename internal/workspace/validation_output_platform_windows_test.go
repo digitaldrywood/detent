@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -24,29 +25,37 @@ func TestReview1973WindowsHostValidationWaitsForAcknowledgement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			issue := Issue{Identifier: "example-issue"}
+			issue := Issue{Identifier: "example-issue", AttemptWorkspace: AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}}
 			info, err := backend.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
 			}
-			marker := filepath.Join(info.Path, "provider-effect")
+			issue.PullRequestHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			marker := filepath.Join(t.TempDir(), "provider-effect")
 			rejected := errors.New("registration rejected")
-			owner := &review1973ValidationProcess{acknowledge: func(identity procgroup.Identity) error {
-				if identity.PID == 0 || identity.GroupID == 0 || identity.StartedAt.IsZero() {
-					return errors.New("validation process has no suspended job identity")
-				}
-				if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-					return errors.New("validation ran before acknowledgement")
-				}
-				if denied {
-					return rejected
-				}
-				return nil
-			}}
-			ctx := WithValidationProcessOwner(t.Context(), func(context.Context, Info, Issue, string) (ValidationProcess, error) {
-				return owner, nil
+			registrations := 0
+			ctx := WithValidationProcessOwner(WithAttemptWorkspace(t.Context(), issue.AttemptWorkspace), func(_ context.Context, _ Info, _ Issue, scratch string) (ValidationProcess, error) {
+				return &review1973ValidationProcess{acknowledge: func(identity procgroup.Identity) error {
+					if identity.PID == 0 || identity.GroupID == 0 || identity.StartedAt.IsZero() {
+						return errors.New("process has no suspended job identity")
+					}
+					if scratch == "" {
+						return nil
+					}
+					registrations++
+					if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+						return errors.New("validation ran before acknowledgement")
+					}
+					if denied {
+						return rejected
+					}
+					return nil
+				}}, nil
 			})
-			result, err := backend.RunReviewCommand(ctx, info, issue, "echo executed>provider-effect")
+			result, err := backend.RunReviewCommand(ctx, info, issue, `echo executed>"`+marker+`"`)
+			if registrations == 0 {
+				t.Fatalf("validation never reached registration: %v", err)
+			}
 			if denied {
 				if !errors.Is(err, rejected) {
 					t.Fatalf("validation registration error = %v", err)

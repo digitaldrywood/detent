@@ -142,6 +142,9 @@ func (f *Filesystem) Cleanup(ctx context.Context, identifier string) error {
 }
 
 func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult, error) {
+	if nativeProjectID(issue) != "" && issue.AttemptWorkspace.Key() == "" && !issue.WorkspaceSession {
+		return CleanupResult{}, nil
+	}
 	info, err := f.infoForIssue(issue)
 	if err != nil {
 		return CleanupResult{}, err
@@ -275,6 +278,9 @@ func (f *Filesystem) DiffStat(ctx context.Context, info Info, issue Issue) (Diff
 }
 
 func (f *Filesystem) infoForIssue(issue Issue) (Info, error) {
+	if issue.AttemptWorkspace != (AttemptWorkspace{}) && issue.AttemptWorkspace.Key() == "" {
+		return Info{}, errors.New("workspace requires an exact attempt")
+	}
 	key := workspaceIssueKey(issue)
 	path, err := validateWorkspacePath(f.root, filepath.Join(f.root, key))
 	if err != nil {
@@ -371,9 +377,12 @@ func (f *Filesystem) ArtifactEvidence(ctx context.Context, info Info, issue Issu
 }
 
 func (f *Filesystem) normalizeInfo(info Info, issue Issue) (Info, error) {
+	if issue.AttemptWorkspace != (AttemptWorkspace{}) && issue.AttemptWorkspace.Key() == "" {
+		return Info{}, ErrMissingWorkspace
+	}
 	key := info.Key
 	if key == "" {
-		key = issueKey(issue)
+		key = workspaceIssueKey(issue)
 	}
 	path := info.Path
 	if path == "" {
@@ -388,6 +397,9 @@ func (f *Filesystem) normalizeInfo(info Info, issue Issue) (Info, error) {
 		if err != nil {
 			return Info{}, err
 		}
+	}
+	if issue.AttemptWorkspace.Key() != "" && (key != workspaceIssueKey(issue) || path != filepath.Join(f.root, key)) {
+		return Info{}, ErrMissingWorkspace
 	}
 	info.Path = path
 	info.Key = key

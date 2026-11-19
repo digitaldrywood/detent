@@ -239,6 +239,7 @@ type Issue struct {
 	RecoveryAttemptWorkspace   AttemptWorkspace
 	LocalCheckpoint            *tracker.NativeCheckpoint
 	cleanupScope               string
+	preparedValidationPath     string
 	hookOwner                  *hookproc.Owner
 	CleanupInUse               bool
 	cleanupPublishedReviewHead string
@@ -689,6 +690,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	}
 	if ref := cmp.Or(issue.Checkpoint, issue.RetainedCheckpoint); ref != nil {
 		checkpoint := *ref
+		if issue.AttemptWorkspace.Key() != "" && !ownsCheckpointRef(issue, checkpoint.Ref) {
+			return Info{}, fmt.Errorf("%w: checkpoint belongs to another attempt", ErrCheckpointUnsafe)
+		}
 		release, err := l.acquireSourceOperation(ctx)
 		if err != nil {
 			return Info{}, err
@@ -699,7 +703,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, err
 		}
 		retainProgress := issue.Checkpoint == nil && checkpoint.Transaction == nil
-		if checkpoint.Transaction != nil && !issue.NativeRework && !issue.RequireCheckpoint && checkpoint.Ref == CheckpointRefName(issue) {
+		if checkpoint.Transaction != nil && !issue.NativeRework && !issue.RequireCheckpoint && ownsCheckpointRef(issue, checkpoint.Ref) {
 			issue.Checkpoint, issue.FreshCheckout = nil, true
 		} else if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
 			return Info{}, err
@@ -860,9 +864,12 @@ func (l *LocalGit) Cleanup(ctx context.Context, identifier string) error {
 }
 
 func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult, error) {
-	scope := issue.AttemptWorkspace.scope()
-	if scope != "" && issue.AttemptWorkspace.Key() == "" {
+	scope := issue.AttemptWorkspace.Key()
+	if issue.AttemptWorkspace != (AttemptWorkspace{}) && scope == "" {
 		return CleanupResult{}, fmt.Errorf("%w: cleanup requires an exact attempt", ErrWorkspacePreserved)
+	}
+	if nativeProjectID(issue) != "" && scope == "" && !issue.WorkspaceSession {
+		return CleanupResult{}, nil
 	}
 	info, err := l.infoForIssue(issue)
 	if err != nil {
@@ -879,9 +886,16 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 	}
 	for _, record := range inventory.records {
 		review := record.issue()
-		if scope != review.cleanupScope || review.ReviewVersionID == "" || review.Identifier != issue.Identifier ||
-			(scope != "" && (issue.ID == "" || review.ID == "")) || (review.ID != "" && review.ID != issue.ID) ||
-			(nativeProjectID(issue) == "" && review.ProjectID != issue.ProjectID) {
+		if record.requiresAttemptOwner() {
+			var matched bool
+			review, matched = record.attemptIssue(issue)
+			if !matched {
+				continue
+			}
+		} else if scope != "" || review.ProjectID != issue.ProjectID || review.ID != "" && review.ID != issue.ID {
+			continue
+		}
+		if review.ReviewVersionID == "" || review.Identifier != issue.Identifier {
 			continue
 		}
 		review.Terminal = issue.Terminal
@@ -1001,6 +1015,9 @@ func (l *LocalGit) AfterRun(ctx context.Context, info Info, issue Issue) {
 }
 
 func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
+	if issue.AttemptWorkspace != (AttemptWorkspace{}) && issue.AttemptWorkspace.Key() == "" {
+		return Info{}, errors.New("workspace requires an exact attempt")
+	}
 	key := workspaceIssueKey(issue)
 	path, err := l.workspacePathForIssue(issue, key)
 	if err != nil {
@@ -1019,10 +1036,6 @@ func (l *LocalGit) Existing(issue Issue) (Info, error) {
 	exists, isDir, err := pathExists(info.Path)
 	if err != nil {
 		return Info{}, err
-	}
-	if !exists && issue.AttemptWorkspace.Key() != "" {
-		issue.AttemptWorkspace = AttemptWorkspace{}
-		return l.Existing(issue)
 	}
 	if !exists || !isDir {
 		return Info{}, ErrMissingWorkspace
@@ -1059,6 +1072,18 @@ func (l *LocalGit) BranchHold(ctx context.Context, issue Issue) (BranchHold, boo
 }
 
 func (l *LocalGit) normalizeInfo(info Info, issue Issue) (Info, error) {
+	if issue.AttemptWorkspace != (AttemptWorkspace{}) {
+		expected, err := l.infoForIssue(issue)
+		if err != nil {
+			return Info{}, err
+		}
+		if info.Key != "" && info.Key != expected.Key || info.Path != "" && info.Path != expected.Path && info.Path != issue.preparedValidationPath {
+			return Info{}, ErrMissingWorkspace
+		}
+		if info.Branch != "" && info.Branch != expected.Branch || info.PublicationBranch != "" && info.PublicationBranch != expected.PublicationBranch {
+			return Info{}, ErrMissingWorkspace
+		}
+	}
 	key := info.Key
 	if key == "" {
 		defaultInfo, err := l.infoForIssue(issue)
@@ -1089,6 +1114,9 @@ func (l *LocalGit) normalizeInfo(info Info, issue Issue) (Info, error) {
 	info.Path = path
 	info.Key = key
 	info.Branch = branch
+	if info.PublicationBranch == "" {
+		info.PublicationBranch = l.publicationBranch(issue, key)
+	}
 	return info, nil
 }
 
@@ -1131,7 +1159,7 @@ func (l *LocalGit) publicationBranch(issue Issue, key string) string {
 	if scope == "" || !l.autoBranch || issue.Landing != nil || issue.WorkspaceSession || issue.ReviewVersionID != "" {
 		return ""
 	}
-	return strings.TrimSpace(issue.BranchName)
+	return l.branchName(issue, issueKey(issue))
 }
 
 func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string, baseRef string) (bool, error) {

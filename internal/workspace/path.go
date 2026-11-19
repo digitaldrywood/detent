@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
 
@@ -79,13 +80,17 @@ func (a AttemptWorkspace) PrepareScratch(root string) (string, error) {
 type attemptWorkspaceContextKey struct{}
 
 func WithAttemptWorkspace(ctx context.Context, attempt AttemptWorkspace) context.Context {
-	if attempt.Key() == "" {
+	if attempt == (AttemptWorkspace{}) {
 		return ctx
 	}
-	return context.WithValue(ctx, attemptWorkspaceContextKey{}, attempt)
+	ctx = context.WithValue(ctx, attemptWorkspaceContextKey{}, attempt)
+	return procgroup.WithCommandOwner(ctx, ownAttemptCommand)
 }
 
 func AttemptWorkspaceFromContext(ctx context.Context) AttemptWorkspace {
+	if ctx == nil {
+		return AttemptWorkspace{}
+	}
 	attempt, _ := ctx.Value(attemptWorkspaceContextKey{}).(AttemptWorkspace)
 	return attempt
 }
@@ -106,5 +111,5 @@ func splitCheckoutIssueKey(key string) (scope, issueKey string) {
 	if _, err := hex.DecodeString(scope + attempt); err != nil {
 		return "", key
 	}
-	return scope, issue
+	return "attempt-" + owner, issue
 }

@@ -56,7 +56,7 @@ func (l *LocalGit) pushReworkCheckpoint(ctx context.Context, info Info, issue Is
 		return previous, false, err
 	}
 	digest := strings.TrimSpace(output)
-	if previous.TreeSHA == digest && previous.HeadSHA == t.Head {
+	if previous.Ref == CheckpointRefName(issue) && previous.TreeSHA == digest && previous.HeadSHA == t.Head {
 		return previous, false, nil
 	}
 	index := checkpointRefGit(info.Path, "GIT_INDEX_FILE="+filepath.Join(scratch, "transaction-index"))

@@ -62,7 +62,7 @@ func (l *LocalGit) PreserveIssue(ctx context.Context, issue Issue) (Preservation
 	result.TrackedPaths = recovery.TrackedPaths
 	result.UntrackedPaths = recovery.UntrackedPaths
 	result.LocalChangesVerified = true
-	delivery, err := gitDeliveryState(ctx, info.Path, info.Branch, issue.BaseRef)
+	delivery, err := gitDeliveryState(ctx, info.Path, info.PublishBranch(), issue.BaseRef)
 	if err != nil {
 		result.DeliveryError = err.Error()
 	} else {

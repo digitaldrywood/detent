@@ -505,6 +505,7 @@ func (b existingWorkspaceBackend) Existing(workspace.Issue) (workspace.Info, err
 
 func TestSameMachineWorkspaceRetained(t *testing.T) {
 	t.Parallel()
+	scope := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
 	for _, test := range []struct {
 		name     string
 		previous string
@@ -519,9 +520,12 @@ func TestSameMachineWorkspaceRetained(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			recovery := tracker.NativeRecovery{SourceAttemptID: "attempt", Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "attempt", MachineID: tracker.MachineID(test.previous)}}}}
+			recovery := tracker.NativeRecovery{SourceAttemptID: scope.Attempt, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: scope.Attempt, MachineID: tracker.MachineID(test.previous)}}}}
 			recovery.Lease.MachineID = tracker.MachineID(test.lease)
-			if got := sameMachineWorkspaceRetained(test.backend, recovery, workspace.Issue{ID: "issue"}); got != test.want {
+			if sameMachineWorkspaceRetained(test.backend, recovery, workspace.Issue{ID: "issue"}) {
+				t.Fatal("runner locality authorized an unscoped checkout")
+			}
+			if got := sameMachineWorkspaceRetained(test.backend, recovery, workspace.Issue{ID: "issue", AttemptWorkspace: scope}); got != test.want {
 				t.Fatalf("sameMachineWorkspaceRetained() = %t, want %t", got, test.want)
 			}
 		})

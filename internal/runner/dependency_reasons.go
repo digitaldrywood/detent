@@ -69,6 +69,7 @@ func (r *Runner) textGenerator(backend AgentBackend, template AgentTurnRequest, 
 }
 
 func (r *Runner) generateTextTurn(ctx context.Context, backend AgentBackend, request AgentTurnRequest, execution Execution, backendKind string, maxBytes int, tools []AgentTool, handler AgentToolHandler) (string, error) {
+	ctx, finish := (AgentProcessRequest{Workspace: request.Workspace, TempDir: request.TempDir}).OwnProviderLaunch(ctx)
 	var text strings.Builder
 	lastItem := ""
 	usage := RunResult{Model: request.Model}
@@ -102,7 +103,7 @@ func (r *Runner) generateTextTurn(ctx context.Context, backend AgentBackend, req
 	usageCtx, cancelUsage := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	usageErr := reportTurnUsage(usageCtx, execution, usage, request.Model, backendKind, r.usageCostUSD, r.logger)
 	cancelUsage()
-	if err := errors.Join(err, cleanupErr, usageErr); err != nil {
+	if err := errors.Join(finish(errors.Join(err, cleanupErr)), usageErr); err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(text.String()), nil
@@ -126,9 +127,7 @@ func (r *Runner) installDependencyReasonGenerator(ctx context.Context, req RunRe
 		}
 		modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 		request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort, MaxDuration: durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS), MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval, processRSS: r.processRSS}
-		launch, finish := (AgentProcessRequest{}).OwnProviderLaunch(ctx)
-		result, err := r.dependencyReasonGenerator(backend, request, req.Execution, backendConfig.Kind)(launch, prompt)
-		return result, finish(err)
+		return r.dependencyReasonGenerator(backend, request, req.Execution, backendConfig.Kind)(ctx, prompt)
 	}
 	source.SetDependencyReasonGenerator(generate)
 	return WithDependencyReasonGenerator(ctx, generate)

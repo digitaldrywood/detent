@@ -156,7 +156,7 @@ func (s *Session) goRoot(ctx context.Context) string {
 		procgroup.Configure(ctx, cmd)
 		cmd.Dir = s.root
 		cmd.WaitDelay = testWaitDelay
-		output, err := cmd.Output()
+		output, err := procgroup.CommandOutput(ctx, cmd, false)
 		if err != nil {
 			s.logger.Warn("resolve GOROOT for go test receipts; GOROOT reads are not reusable", "error", err)
 			return

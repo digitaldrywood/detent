@@ -1652,13 +1652,13 @@ func recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace wo
 	if !ok || !workspaceIssue.NativeRework && !nativeLanding && !sourceRecovery && req.Execution.Recovery().SourceVersionID == "" && req.Execution.Recovery().Change == nil {
 		return nil
 	}
+	sourceIssue := *workspaceIssue
+	if sourceIssue.RecoveryAttemptWorkspace.Key() != "" {
+		sourceIssue.AttemptWorkspace = sourceIssue.RecoveryAttemptWorkspace
+	}
 	if local, ok := runWorkspace.(interface {
 		Existing(workspace.Issue) (workspace.Info, error)
-	}); ok {
-		sourceIssue := *workspaceIssue
-		if sourceIssue.RecoveryAttemptWorkspace.Key() != "" {
-			sourceIssue.AttemptWorkspace = sourceIssue.RecoveryAttemptWorkspace
-		}
+	}); ok && sourceIssue.AttemptWorkspace.Key() != "" {
 		if existing, existingErr := local.Existing(sourceIssue); existingErr == nil {
 			source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 				return workspace.CaptureChangeSource(ctx, existing.Path, base, head)
@@ -4471,6 +4471,7 @@ func (r *Runner) reapWorkspace(ctx context.Context, issue connector.Issue) (Work
 	}
 
 	workspaceIssue := workspaceIssue(r.projectID, issue)
+	workspaceIssue.AttemptWorkspace = workspace.AttemptWorkspaceFromContext(ctx)
 	backend := r.workspaceSnapshot()
 	if cleaner, ok := backend.(workspace.IssueCleaner); ok {
 		result, err := cleaner.CleanupIssue(ctx, workspaceIssue)

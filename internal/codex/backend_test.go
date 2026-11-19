@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -1032,4 +1035,40 @@ func (e *progressProtocolExecution) AgentTools() ([]runner.AgentTool, runner.Age
 
 func (p progressDecisionText) Generate(context.Context, string, string) (string, error) {
 	return string(p), nil
+}
+
+func TestIndependentModelProbeOwnership(t *testing.T) {
+	for _, name := range []string{"catalog", "default"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			marker := filepath.Join(root, "started")
+			ctx := workspace.WithAttemptWorkspace(t.Context(), workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"})
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				return exec.CommandContext(ctx, "git", "config", "--file", marker, "test.executed", "true")
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server, err := NewAppServer(factory, WithReadTimeout(time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend, err := NewAgentBackend(server, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proc := runner.AgentProcessRequest{Workspace: root, TempDir: root}
+			if name == "catalog" {
+				_, err = backend.ListModels(ctx, proc)
+			} else {
+				_, err = backend.DefaultModel(ctx, proc)
+			}
+			if err == nil {
+				t.Fatal("unowned provider returned success")
+			}
+			if _, probe := os.Stat(marker); !errors.Is(probe, os.ErrNotExist) {
+				t.Errorf("provider command executed without session acknowledgement, error=%v marker=%v", err, probe)
+			}
+		})
+	}
 }
