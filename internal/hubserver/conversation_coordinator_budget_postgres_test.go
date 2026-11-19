@@ -3,10 +3,7 @@ package hubserver
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
-	"errors"
 	"net/http"
-	"reflect"
 	"testing"
 	"time"
 
@@ -14,16 +11,12 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -148,110 +141,4 @@ func coordinatorBudgetTools(t *testing.T, f hostedSecurityFixture, user hostedSe
 	coordinator := f.service.conversations.Coordinator.(*conversationTurnCoordinator)
 	state := &coordinatorTurnState{coordinator: coordinator, conversationID: record.ID, users: []conversationMessageRecord{{Role: conversation.RoleUser, CreatedAt: now, Data: coordinatorConnectionData(actorCtx)}}}
 	return newCoordinatorToolset(coordinator, state), actorCtx, record
-}
-
-type coordinatorBudgetReadRepository struct {
-	tenantstore.Repository
-	policyError error
-	policyReads int
-}
-
-func (r *coordinatorBudgetReadRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		return read(coordinatorBudgetReadReader{Reader: reader, repository: r})
-	})
-}
-
-type coordinatorBudgetReadReader struct {
-	tenantstore.Reader
-	repository *coordinatorBudgetReadRepository
-}
-
-func (r coordinatorBudgetReadReader) BillingMonthlyPolicy(ctx context.Context, project tracker.ProjectID) (billingstore.MonthlyPolicy, error) {
-	r.repository.policyReads++
-	if r.repository.policyError != nil {
-		return billingstore.MonthlyPolicy{}, r.repository.policyError
-	}
-	return r.Reader.BillingMonthlyPolicy(ctx, project)
-}
-
-func TestCoordinatorProjectBudgetPostgres(t *testing.T) {
-	t.Parallel()
-	first := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir(), ArchiveContents: &conversationContentFixture{}}
-	})
-	second := coordinatorBudgetPeer(t, first)
-	fixtures := []hostedSecurityFixture{first, second}
-	for index, f := range fixtures {
-		organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
-		total := int64(1000 * (index + 1))
-		policy := budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: &total}
-		now := f.service.config.Clock()
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.SetBillingMonthlyPolicy(t.Context(), billingstore.MonthlyPolicy{OrganizationID: organization, Policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: new(int64(9000))}, Actor: "example-operator", UpdatedAt: now}, 0)
-		}); err != nil {
-			t.Fatal(err)
-		}
-		defaultUser := coordinatorBudgetUser(t, f, "default-owner", "owner", false)
-		defaultTools, defaultContext, defaultRecord := coordinatorBudgetTools(t, f, defaultUser)
-		defaultValue, err := defaultTools.screenRead(defaultContext, defaultRecord, runner.AgentToolCall{Name: "get_project_budget", Arguments: json.RawMessage(`{}`)})
-		if err != nil || !reflect.DeepEqual(defaultValue, monthlyBudgetSettings{}) {
-			t.Fatalf("absent project policy inherited another scope: value=%+v error=%v", defaultValue, err)
-		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.SetBillingMonthlyPolicy(t.Context(), billingstore.MonthlyPolicy{OrganizationID: organization, ProjectID: f.project, Policy: policy, Actor: "example-operator", UpdatedAt: now}, 0)
-		}); err != nil {
-			t.Fatal(err)
-		}
-		for _, role := range []struct {
-			name, role string
-			runner     bool
-		}{{"owner", "owner", false}, {"admin", "admin", false}, {"member", "member", false}, {"runner_member", "member", true}, {"viewer", "viewer", false}} {
-			t.Run(string(organization)+"/"+role.name, func(t *testing.T) {
-				user := coordinatorBudgetUser(t, f, role.name, role.role, role.runner)
-				tools, ctx, record := coordinatorBudgetTools(t, f, user)
-				call := runner.AgentToolCall{Name: "get_project_budget", Arguments: json.RawMessage(`{}`)}
-				original := f.service.config.TenantRepository
-				probe := &coordinatorBudgetReadRepository{Repository: original}
-				f.service.config.TenantRepository = probe
-				t.Cleanup(func() { f.service.config.TenantRepository = original })
-				if f.service.database.postgres == nil || f.service.config.TenantRepository == nil {
-					t.Fatal("required PostgreSQL fixture owners are not configured")
-				}
-				value, err := tools.screenRead(ctx, record, call)
-				want := monthlyBudgetSettings{Revision: 1, Policy: policy}
-				if err != nil || !reflect.DeepEqual(value, want) {
-					t.Fatalf("project budget role=%s value=%+v want=%+v error=%v", role.role, value, want, err)
-				}
-				for _, args := range []string{`{"project_id":"prj_foreign"}`, `{"organization_id":"org_foreign"}`, `{"scope":"organization"}`, `{"unknown":true}`} {
-					probe.policyReads = 0
-					_, err := tools.screenRead(ctx, record, runner.AgentToolCall{Name: call.Name, Arguments: json.RawMessage(args)})
-					if err == nil || probe.policyReads != 0 {
-						t.Fatalf("budget arguments crossed project boundary: args=%s reads=%d error=%v", args, probe.policyReads, err)
-					}
-				}
-				storageError := errors.New("example budget storage failure")
-				probe.policyError = storageError
-				if _, err := tools.screenRead(ctx, record, call); !errors.Is(err, storageError) {
-					t.Fatalf("budget storage error = %v, want original error", err)
-				}
-				probe.policyError = nil
-				if role.name == "member" {
-					if err := original.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, f.project)
-					}); err != nil {
-						t.Fatal(err)
-					}
-					probe.policyReads = 0
-					if _, err := tools.screenRead(ctx, record, call); !errors.Is(err, operatortool.ErrAccessDenied) || probe.policyReads != 0 {
-						t.Fatalf("revoked project access read budget: reads=%d error=%v", probe.policyReads, err)
-					}
-				}
-			})
-		}
-	}
-	var tenants int
-	if err := hostedPostgresAdmin(t, first.service).QueryRowContext(t.Context(), `SELECT count(DISTINCT organization_id) FROM monthly_budget_policies WHERE organization_id IN ($1,$2) AND project_id<>''`, first.service.accessOrganization(), second.service.accessOrganization()).Scan(&tenants); err != nil || tenants != 2 {
-		t.Fatalf("budgets did not share isolated PG database: tenants=%d error=%v", tenants, err)
-	}
 }

@@ -30,8 +30,9 @@ type scriptedToolResult struct {
 }
 
 type scriptedToolCall struct {
-	call   runner.AgentToolCall
-	result chan scriptedToolResult
+	call    runner.AgentToolCall
+	result  chan scriptedToolResult
+	proceed chan struct{}
 }
 
 type scriptedToolBackend struct {
@@ -45,6 +46,12 @@ func (b scriptedToolBackend) RunTurn(context.Context, runner.AgentTurnRequest, r
 func (b scriptedToolBackend) RunTurnWithTools(ctx context.Context, _ runner.AgentTurnRequest, _ []runner.AgentTool, handle runner.AgentToolHandler, _ runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	select {
 	case call := <-b.calls:
+		select {
+		case <-call.proceed:
+		case <-ctx.Done():
+			call.result <- scriptedToolResult{err: ctx.Err()}
+			return runner.AgentTurnResult{}, ctx.Err()
+		}
 		value, err := handle(ctx, call.call)
 		call.result <- scriptedToolResult{value: value, err: err}
 		return runner.AgentTurnResult{}, nil
@@ -53,13 +60,13 @@ func (b scriptedToolBackend) RunTurnWithTools(ctx context.Context, _ runner.Agen
 	}
 }
 
-func (b scriptedToolBackend) run(t *testing.T, name string, args map[string]any) scriptedToolResult {
+func (b scriptedToolBackend) run(t *testing.T, name string, args map[string]any, before func()) scriptedToolResult {
 	t.Helper()
 	arguments, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := scriptedToolCall{call: runner.AgentToolCall{Name: name, Arguments: arguments}, result: make(chan scriptedToolResult, 1)}
+	call := scriptedToolCall{call: runner.AgentToolCall{Name: name, Arguments: arguments}, result: make(chan scriptedToolResult, 1), proceed: make(chan struct{})}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	select {
@@ -67,6 +74,12 @@ func (b scriptedToolBackend) run(t *testing.T, name string, args map[string]any)
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	func() {
+		defer close(call.proceed)
+		if before != nil {
+			before()
+		}
+	}()
 	select {
 	case result := <-call.result:
 		return result
@@ -153,7 +166,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 			if strings.HasPrefix(test.name, "foreign ") {
 				args["runner_id"] = "runner_foreign"
 			}
-			x := backend.run(t, test.tool, args)
+			x := backend.run(t, test.tool, args, nil)
 			if x.err != nil || x.value.Success != test.preview {
 				t.Fatalf("tool %s: %s (success=%t, error=%v)", test.tool, x.value.Content, x.value.Success, x.err)
 			}
