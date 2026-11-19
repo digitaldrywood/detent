@@ -11,6 +11,7 @@ import (
 type RecordedRecovery struct {
 	Source                  *tracker.NativeChangeReference
 	ExpectedRevision        int64
+	EventSequence           int64
 	ProjectID               tracker.ProjectID
 	WorkItemID              tracker.NativeWorkItemID
 	Attempt                 Attempt

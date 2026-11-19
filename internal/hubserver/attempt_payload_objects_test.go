@@ -1362,7 +1362,7 @@ func (p *payloadRecoveryRepository) reader(ctx context.Context, r tenantstore.Re
 	if ctx.Value(payloadRecoveryProbeKey{}) != p {
 		return r
 	}
-	return payloadRecoveryReader{Reader: r, WorkflowTransitionReader: r.(eventstore.WorkflowTransitionReader), AttemptMetadataReader: r.(tenantstore.AttemptMetadataReader), probe: p}
+	return payloadRecoveryReader{Reader: r, WorkflowTransitionReader: r.(eventstore.WorkflowTransitionReader), AttemptMetadataReader: r.(tenantstore.AttemptMetadataReader), AttemptEventPageReader: r.(eventstore.AttemptEventPageReader), probe: p}
 }
 
 func (p *payloadRecoveryRepository) writer(ctx context.Context, w tenantstore.Writer) tenantstore.Writer {
@@ -1393,6 +1393,7 @@ type payloadRecoveryReader struct {
 	tenantstore.Reader
 	eventstore.WorkflowTransitionReader
 	tenantstore.AttemptMetadataReader
+	eventstore.AttemptEventPageReader
 	probe *payloadRecoveryRepository
 }
 
@@ -1400,6 +1401,12 @@ func (r payloadRecoveryReader) AttemptMetadata(ctx context.Context, project trac
 	metadata, err := r.AttemptMetadataReader.AttemptMetadata(ctx, project, item, attempts, evidence)
 	r.probe.rows.Add(int64(len(metadata.Events)))
 	return metadata, err
+}
+
+func (r payloadRecoveryReader) AttemptEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempt string, after int64, limit int) ([]eventstore.Event, error) {
+	events, err := r.AttemptEventPageReader.AttemptEvents(ctx, project, item, attempt, after, limit)
+	r.probe.rows.Add(int64(len(events)))
+	return events, err
 }
 
 func (r payloadRecoveryReader) LatestRunEvent(ctx context.Context, project tracker.ProjectID, id string) (eventstore.Event, error) {

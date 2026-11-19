@@ -6,12 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -62,6 +64,12 @@ func TestRecordedRecoveryDoesNotHoldGraphWhileWaitingForClaimRunner(t *testing.T
 		t.Fatal(err)
 	}
 	cfg.MaxConns = 4
+	const observerConnections = 2
+	f.admin.SetMaxOpenConns(observerConnections)
+	connectionLimit := f.service.config.Postgres.Pool.MaxConnections + int(cfg.MaxConns) + observerConnections
+	if _, err := f.admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{cfg.ConnConfig.Database}.Sanitize()+" CONNECTION LIMIT "+strconv.Itoa(connectionLimit)); err != nil {
+		t.Fatal(err)
+	}
 	pgtransport.Configure(cfg)
 	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
 	if err != nil {
@@ -188,7 +196,6 @@ func TestRecordedRecoveryDoesNotHoldGraphWhileWaitingForClaimRunner(t *testing.T
 	}
 	interleave := &recoveryClaimInterleave{Repository: repository, reached: make(chan struct{}), release: make(chan struct{})}
 	f.service.config.TenantRepository = interleave
-	f.admin.SetMaxOpenConns(2)
 	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	var workers sync.WaitGroup
 	var release sync.Once

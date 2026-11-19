@@ -215,22 +215,16 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 		claim := request.NativeClaim
 		claim.WorkItemID = plans[index].Candidate.WorkItemID
 		rows := plans[index]
-		if strings.EqualFold(rows.Candidate.State, "Blocked") && rows.Replay == nil {
-			issue, err := s.hydrateWorkItemRecord(ctx, rows.Item, rows.Version)
-			if err != nil {
-				return nil, err
-			}
-			recovery, err := s.readRecordedRecoveryIntent(ctx, scope, rows.Item, issue)
-			if err != nil {
-				return nil, err
-			}
-			if recovery == nil || recovery.Policy.PolicyID != claim.PolicyID || !claimIncludesRecoveredState(claim, recovery.State) {
+		if rows.Replay == nil && rows.Project.Core.Profile == "native" && strings.EqualFold(rows.Candidate.State, "Blocked") {
+			recovered, err := s.runnerClaimDeps().PlanNativeClaimRecovery(ctx, scope, claim, rows)
+			if errors.Is(err, ErrNoClaimableWork) {
 				plans[index] = hubrecords.NativeClaimPlan{}
 				continue
 			}
-			rows.Item.WorkflowStateName = &recovery.State
-			rows.Candidate.State = recovery.State
-			rows.LatestAttemptFound = false
+			if err != nil {
+				return nil, err
+			}
+			rows = recovered
 		}
 		plan, err := s.hydrateNativeClaimPlan(ctx, scope, claim, now, rows, descriptor)
 		if errors.Is(err, ErrNoClaimableWork) {

@@ -58,7 +58,8 @@ type ReviewDisposition struct {
 }
 
 type Signal struct {
-	ReviewDispositions []ReviewDisposition `json:"review_dispositions,omitempty" yaml:"review_dispositions,omitempty"`
+	ExplicitHumanBlocker bool                `json:"-" yaml:"-"`
+	ReviewDispositions   []ReviewDisposition `json:"review_dispositions,omitempty" yaml:"review_dispositions,omitempty"`
 	// UnknownKeys records ignored YAML field paths for diagnostics only.
 	UnknownKeys []string          `json:"unknown_keys,omitempty" yaml:"unknown_keys,omitempty"`
 	Source      string            `json:"source,omitempty" yaml:"source,omitempty"`
@@ -235,6 +236,10 @@ func BlockedDetail(summary, humanAction string) string {
 	return summary + "\n\n" + status
 }
 
+func IsSymbolicRef(ref string) bool {
+	return symbolicRefPattern.MatchString(ref)
+}
+
 func LastStatusBlock(body string) (string, bool) {
 	content, found, _ := lastStatusBlock(body)
 	return content, found
@@ -393,6 +398,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	}
 	reasonCode := normalizeReasonCode(raw.ReasonCode)
 	blockers := make([]Blocker, 0, len(raw.Blockers))
+	explicitHumanBlocker := false
 	for index, blocker := range raw.Blockers {
 		for key := range blocker.Unknown {
 			unknownKeys = append(unknownKeys, fmt.Sprintf("blockers[%d].%s", index, key))
@@ -414,7 +420,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 			problems = append(problems, fmt.Sprintf("blockers[%d].%s", index, problem))
 		}
 		identifier := ""
-		if ref != "" && !symbolicRefPattern.MatchString(ref) {
+		if ref != "" && !IsSymbolicRef(ref) {
 			parsed, err := ParseRef(ref, repo)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("blockers[%d].ref %q must be #N or owner/repo#N", index, ref))
@@ -423,7 +429,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 				identifier = parsed
 			}
 		}
-		symbolic := symbolicRefPattern.MatchString(ref) || predicate != nil && symbolicRefPattern.MatchString(predicate.Ref)
+		symbolic := IsSymbolicRef(ref) || predicate != nil && IsSymbolicRef(predicate.Ref)
 		if symbolic {
 			if ref == "" {
 				ref = predicate.Ref
@@ -452,6 +458,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		if predicate == nil && reason == "" && !symbolic {
 			problems = append(problems, fmt.Sprintf("blockers[%d] requires a ref, predicate, or reason", index))
 		}
+		explicitHumanBlocker = explicitHumanBlocker || owner == BlockerOwnerHuman && strings.EqualFold(strings.TrimSpace(blocker.Owner), BlockerOwnerHuman)
 		blockers = append(blockers, Blocker{
 			Ref:             ref,
 			Identifier:      identifier,
@@ -510,14 +517,15 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	}
 	sort.Strings(unknownKeys)
 	signal := &Signal{
-		ReviewDispositions: raw.ReviewDispositions,
-		UnknownKeys:        unknownKeys,
-		Source:             SourceStructured,
-		Status:             raw.Status,
-		ReasonCode:         reasonCode,
-		Blockers:           blockers,
-		HumanAction:        humanAction,
-		Fields:             fields,
+		ExplicitHumanBlocker: explicitHumanBlocker,
+		ReviewDispositions:   raw.ReviewDispositions,
+		UnknownKeys:          unknownKeys,
+		Source:               SourceStructured,
+		Status:               raw.Status,
+		ReasonCode:           reasonCode,
+		Blockers:             blockers,
+		HumanAction:          humanAction,
+		Fields:               fields,
 	}
 	if refProblems > 0 {
 		return signal, errors.New(strings.Join(problems, "; "))
@@ -544,7 +552,7 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 		ref = strings.TrimSpace(blockerRef)
 	}
 	identifier := ""
-	if ref != "" && !symbolicRefPattern.MatchString(ref) {
+	if ref != "" && !IsSymbolicRef(ref) {
 		parsed, err := ParseRef(ref, repo)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("predicate.ref %q must be #N or owner/repo#N", ref))
@@ -577,7 +585,7 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 	}
 	switch predicate.Type {
 	case PredicateIssueState:
-		if predicate.Identifier == "" && !symbolicRefPattern.MatchString(ref) {
+		if predicate.Identifier == "" && !IsSymbolicRef(ref) {
 			problems = append(problems, "predicate.ref is required for issue_state")
 			// An inherited malformed ref already explains the missing identifier.
 			if inheritedRef && ref != "" {

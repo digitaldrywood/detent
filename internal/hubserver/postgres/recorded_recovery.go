@@ -38,7 +38,14 @@ EXISTS (
  AND NOT EXISTS (SELECT 1 FROM collaboration_events changed
   WHERE changed.organization_id=$1 AND changed.project_id=$2 AND changed.work_item_id=$11
   AND changed.sequence>$13 AND changed.sequence<>$15 AND changed.type<>'scheduler.decision'
-  AND (changed.event_revision>$17 OR changed.actor_kind='human' AND changed.type IN ('comment.created','comment.edited')))
+  AND changed.event_revision>$17)
+ AND NOT EXISTS (
+  SELECT 1 FROM unnest(ARRAY['comment.created','comment.edited']) kind(type)
+  WHERE (SELECT count(*)>100 OR coalesce(bool_or(comment.actor_kind='human'),false)
+   FROM (SELECT actor_kind FROM collaboration_events
+    WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$11 AND type=kind.type AND sequence>$13
+    ORDER BY sequence DESC LIMIT 101) comment)
+ )
 ),
 (SELECT count(DISTINCT reported.number) FROM unnest($18::bigint[]) reported(number)
  CROSS JOIN LATERAL (
