@@ -24,6 +24,7 @@ import (
 )
 
 type Reader interface {
+	WorkItemBlockerBatchReader
 	threadstore.Reader
 	viewstore.Reader
 	billingstore.Reader
@@ -42,6 +43,7 @@ type Reader interface {
 }
 
 type Writer interface {
+	WorkItemBlockerBatchReader
 	threadstore.Writer
 	viewstore.Writer
 	billingstore.Writer
