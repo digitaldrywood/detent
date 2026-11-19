@@ -1,4 +1,4 @@
-package hubserver
+package changelanding
 
 import (
 	"context"
@@ -15,12 +15,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) hydrateChangeVersion(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, row eventstore.Version) (tracker.ChangeVersion, error) {
-	return s.hydrateChangeVersionWithRows(ctx, scope, item, row, nil)
+func (s *Observations) HydrateChangeVersion(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, row eventstore.Version) (tracker.ChangeVersion, error) {
+	return s.HydrateChangeVersionWithRows(ctx, scope, item, row, nil)
 }
 
-func (s *Service) hydrateChangeVersionWithRows(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, row eventstore.Version, captured *tenantstore.ChangeVersionRows) (tracker.ChangeVersion, error) {
-	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+func (s *Observations) HydrateChangeVersionWithRows(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, row eventstore.Version, captured *tenantstore.ChangeVersionRows) (tracker.ChangeVersion, error) {
+	content := eventstore.NewContent(s.deps.RunDetailStoreFor(ctx))
 	version, err := content.Version(ctx, row)
 	if err != nil {
 		return version, err
@@ -40,7 +40,7 @@ func (s *Service) hydrateChangeVersionWithRows(ctx context.Context, scope hubsco
 	request := tenantstore.ChangeVersionRequest{WorkItemID: item, Reference: tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}}
 	if captured == nil {
 		captured = &tenantstore.ChangeVersionRows{OrganizationID: scope.Organization, ProjectID: scope.Project, Request: request}
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			publication, err := r.PRPublication(ctx, version.ID)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				return err
@@ -88,7 +88,7 @@ func (s *Service) hydrateChangeVersionWithRows(ctx context.Context, scope hubsco
 	return version, nil
 }
 
-func sameNativeLandingObservation(left, right *tracker.NativeLandingReceipt) bool {
+func SameNativeLandingObservation(left, right *tracker.NativeLandingReceipt) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}
@@ -98,9 +98,9 @@ func sameNativeLandingObservation(left, right *tracker.NativeLandingReceipt) boo
 	return reflect.DeepEqual(a, b)
 }
 
-func (s *Service) readNativeLandingObservation(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, ref tracker.NativeChangeReference) (*tracker.NativeLandingReceipt, string, error) {
+func (s *Observations) ReadNativeLandingObservation(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, ref tracker.NativeChangeReference) (*tracker.NativeLandingReceipt, string, error) {
 	var observation eventstore.LandingObservation
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(eventstore.ChangeLandingReader)
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
@@ -115,12 +115,12 @@ func (s *Service) readNativeLandingObservation(ctx context.Context, scope hubsco
 	return s.hydrateNativeLandingObservation(ctx, scope, item, ref, observation)
 }
 
-func (s *Service) hydrateNativeLandingObservation(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, ref tracker.NativeChangeReference, observation eventstore.LandingObservation) (*tracker.NativeLandingReceipt, string, error) {
+func (s *Observations) hydrateNativeLandingObservation(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, ref tracker.NativeChangeReference, observation eventstore.LandingObservation) (*tracker.NativeLandingReceipt, string, error) {
 	event := observation.Event
 	if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != item {
 		return nil, "", corestore.ErrTenantMismatch
 	}
-	payload, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).Event(ctx, event)
+	payload, err := eventstore.NewContent(s.deps.RunDetailStoreFor(ctx)).Event(ctx, event)
 	if err != nil {
 		return nil, "", err
 	}
