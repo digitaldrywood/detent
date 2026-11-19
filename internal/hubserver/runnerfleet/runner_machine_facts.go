@@ -1,12 +1,12 @@
-package hubserver
+package runnerfleet
 
-type machineSpriteFacts struct {
+type MachineSpriteFacts struct {
 	Name         *string `json:"sprite_name"`
 	WokenAt      *string `json:"sprite_woken_at"`
 	WakeFailedAt *string `json:"sprite_wake_failed_at"`
 }
 
-func spriteFactValue(value *string) string {
+func SpriteFactValue(value *string) string {
 	if value == nil {
 		return ""
 	}
