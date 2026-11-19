@@ -17,6 +17,7 @@ import (
 )
 
 type NativeClaimPlan struct {
+	Recovery             *leasestore.RecordedRecovery    `json:"-"`
 	SnapshotLoaded       bool                            `json:"-"`
 	Ranking              *runnerstore.ProjectRanking     `json:"-"`
 	ReleaseDelivery      ReleaseDeliveryContractFacts    `json:"-"`

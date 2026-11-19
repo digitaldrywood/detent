@@ -115,6 +115,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 	var mergeHistoryTruncated bool
 	var projectSequence int64
 	var continuationEligible *bool
+	var ownsLiveLease bool
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return tracker.NativeRecovery{}, hubapi.NativeRunEventStorageUnavailable()
@@ -143,6 +144,19 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		}
 		if known {
 			continuationEligible = &eligible
+		}
+		if eligible && strings.EqualFold(hubapi.ValueOrEmpty(row.WorkflowStateName), "Blocked") && scope.Credential.Runner.RunnerID != "" {
+			lease, err := r.ActiveLeaseForIssue(ctx, row.ID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err == nil {
+				owner, err := r.RunnerForLease(ctx, lease.LeaseID)
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				ownsLiveLease = err == nil && owner.RunnerID == scope.Credential.Runner.RunnerID
+			}
 		}
 		version, err = r.CollaborationVersion(ctx, item, row.Revision)
 		if err != nil {
@@ -399,7 +413,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 	if err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &result.Issue); err != nil {
 		return result, fmt.Errorf("hydrate recovery work item relationships: %w", err)
 	}
-	if continuationEligible != nil && *continuationEligible && strings.EqualFold(result.Issue.State, "Blocked") {
+	if continuationEligible != nil && *continuationEligible && !ownsLiveLease && strings.EqualFold(result.Issue.State, "Blocked") {
 		recovery, err := s.readRecordedRecoveryIntent(ctx, scope, row, result.Issue)
 		if err != nil {
 			return result, fmt.Errorf("read recorded recovery intent: %w", err)

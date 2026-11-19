@@ -62,6 +62,9 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 		if err != nil {
 			return err
 		}
+		if lane.ActorKind != "runner" {
+			return corestore.ErrRevisionConflict
+		}
 		if attemptID == "" {
 			attempt, err := r.LatestAttempt(ctx, row.ID)
 			if err != nil {
@@ -103,6 +106,13 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 	if !valid || issueContractWorkerHumanAction(row, issue) != nil || recordedHumanHold(attempt.TerminalFailure, attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
 		return nil, corestore.ErrRevisionConflict
 	}
+	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt)
+	if err != nil {
+		return nil, err
+	}
+	if question {
+		return nil, corestore.ErrRevisionConflict
+	}
 	var bound policystore.LeasePolicy
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -129,15 +139,13 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 	}
 	state := prior
 	if !recordedRecoveryStateAllowed(project, issue.State, state) {
-		descriptor, err := content.ProjectPolicy(ctx, approved)
+		state, err = recordedRetryLane(ctx, content, approved)
 		if err != nil {
 			return nil, err
 		}
-		workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, descriptor)
-		if err != nil {
-			return nil, err
+		if machine && !staleBase && len(dependencies) == 0 {
+			state = recordedMachineRetryLane(project, issue.State, state)
 		}
-		state = workflow.Config.Tracker.BlockedRecovery.TargetState
 		if !recordedRecoveryStateAllowed(project, issue.State, state) {
 			return nil, corestore.ErrRevisionConflict
 		}
@@ -146,7 +154,7 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 		ProjectID: scope.Project, WorkItemID: issue.WorkItemID, Attempt: snapshot.Attempt,
 		ReportEventID: snapshot.Event.ID, ReportSequence: snapshot.Event.Sequence, ReportRevision: max(snapshot.Event.EventRevision, snapshot.Attempt.WorkItemRevision),
 		WorkflowEventID: lane.ID, WorkflowSequence: lane.Sequence, WorkflowObjectKey: lane.PayloadObjectKey,
-		DependencyNumbers: []int64{}, MergedDependencyNumbers: []int64{}, Policy: approved, AttemptPolicyID: attempt.PolicyID, State: state, ExpectedRevision: row.Revision, Source: source, Now: s.config.Clock().UTC(),
+		DependencyNumbers: []int64{}, MergedDependencyNumbers: []int64{}, Policy: approved, AttemptPolicyID: attempt.PolicyID, State: state, ExpectedRevision: row.Revision, EventSequence: row.EventSequence, Source: source, Now: s.config.Clock().UTC(),
 	}
 	for number, merged := range dependencies {
 		prepared.DependencyNumbers = append(prepared.DependencyNumbers, number)
@@ -185,10 +193,90 @@ func (s *Service) recordedWorkerMachineHold(ctx context.Context, scope hubscope.
 		return nil, nil
 	}
 	dependencies, valid := recordedRecoveryDependencies(run.Disposition, string(scope.Project))
-	if recordedMachineFailure(run.TerminalFailure, run.Disposition) || valid && len(dependencies) > 0 || run.Disposition != nil && run.Disposition.ReasonCode == "stale_base" {
-		return &snapshot.Attempt, nil
+	if !recordedMachineFailure(run.TerminalFailure, run.Disposition) || !valid || len(dependencies) != 0 || run.Disposition != nil && run.Disposition.ReasonCode == "stale_base" {
+		return nil, nil
 	}
-	return nil, nil
+	question, err := s.recordedWorkpadQuestion(ctx, scope, row, snapshot.Attempt)
+	if err != nil || question {
+		return nil, err
+	}
+	return &snapshot.Attempt, nil
+}
+
+func recordedRetryLane(ctx context.Context, content *eventstore.Content, approved policystore.Revision) (string, error) {
+	descriptor, err := content.ProjectPolicy(ctx, approved)
+	if err != nil {
+		return "", err
+	}
+	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, descriptor)
+	if err != nil {
+		return "", err
+	}
+	return workflow.Config.Tracker.BlockedRecovery.TargetState, nil
+}
+
+func (s *Service) recordedWorkpadQuestion(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, attempt leasestore.Attempt) (bool, error) {
+	type commentVersion struct {
+		row     corestore.Comment
+		version eventstore.CollaborationVersion
+	}
+	var versions []commentVersion
+	var incomplete bool
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(eventstore.AttemptEventPageReader)
+		if !ok {
+			return hubapi.NativeRunEventStorageUnavailable()
+		}
+		start, err := reader.AttemptEvents(ctx, scope.Project, row.NativeID, attempt.ID, 0, 1)
+		if err != nil {
+			return err
+		}
+		if len(start) == 0 {
+			incomplete = true
+			return nil
+		}
+		comments, err := r.Comments(ctx, scope.Project, row.NativeID, start[0].Sequence, corestore.MaxPageSize)
+		if err != nil {
+			return err
+		}
+		incomplete = len(comments) == corestore.MaxPageSize
+		for _, comment := range comments {
+			if comment.Deleted || comment.ActorKind != "runner" && comment.ActorKind != "human" {
+				continue
+			}
+			version, err := r.CollaborationVersion(ctx, comment.ID, comment.Revision)
+			if err != nil {
+				return err
+			}
+			versions = append(versions, commentVersion{row: comment, version: version})
+		}
+		return nil
+	})
+	if err != nil || incomplete {
+		return incomplete, err
+	}
+	for _, version := range versions {
+		comment, err := s.hydrateCommentRecord(ctx, version.row, version.version)
+		if err != nil {
+			return false, err
+		}
+		if signal := recordedWorkpadQuestionSignal(comment.Body); signal != nil && explicitRecordedHumanHold(signal) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func recordedMachineRetryLane(project projectstore.Record, from, preferred string) string {
+	if recordedRecoveryStateAllowed(project, from, preferred) {
+		return preferred
+	}
+	for _, lane := range project.States {
+		if recordedRecoveryStateAllowed(project, from, lane.Name) {
+			return lane.Name
+		}
+	}
+	return ""
 }
 
 func recordedRecoveryStateAllowed(project projectstore.Record, from, to string) bool {
@@ -269,25 +357,38 @@ func recordedBlockedLane(issue tracker.NativeIssue, attempt tracker.NativeAttemp
 }
 
 func recordedHumanHold(failure *tracker.NativeTerminalFailure, disposition *tracker.NativeDisposition, texts ...string) bool {
-	if disposition != nil && disposition.ReasonCode == "permission_wait" {
+	if disposition != nil && (disposition.ReasonCode == "permission_wait" || slices.ContainsFunc(disposition.BlockerEvidence, func(blocker workpad.Blocker) bool {
+		return blocker.Owner == workpad.BlockerOwnerHuman
+	})) {
 		return true
 	}
 	for _, text := range texts {
-		block, found := workpad.LastStatusBlock(text)
-		if !found {
+		signal := recordedWorkpadQuestionSignal(text)
+		if signal == nil {
 			continue
 		}
-		signal, err := workpad.ParseStatusBlock(block, "")
-		if err != nil || signal.Invalid != nil || signal.Status != workpad.StatusBlocked || strings.TrimSpace(signal.HumanAction) == "" {
-			continue
-		}
-		if signal.ReasonCode == "permission_wait" || signal.Fields["human_action_source"] == "issue_contract" ||
-			len(signal.Blockers) != 0 && !recordedMachineFailure(failure, nil) ||
-			slices.ContainsFunc(signal.Blockers, func(blocker workpad.Blocker) bool { return blocker.Owner == workpad.BlockerOwnerHuman }) {
+		if explicitRecordedHumanHold(signal) ||
+			slices.ContainsFunc(signal.Blockers, func(blocker workpad.Blocker) bool { return !recordedInstanceBlocker(blocker) }) && !recordedMachineFailure(failure, nil) {
 			return true
 		}
 	}
 	return false
+}
+
+func recordedWorkpadQuestionSignal(text string) *workpad.Signal {
+	block, found := workpad.LastStatusBlock(text)
+	if !found {
+		return nil
+	}
+	signal, err := workpad.ParseStatusBlock(block, "")
+	if err != nil || signal.Invalid != nil || signal.Status != workpad.StatusBlocked || strings.TrimSpace(signal.HumanAction) == "" {
+		return nil
+	}
+	return signal
+}
+
+func explicitRecordedHumanHold(signal *workpad.Signal) bool {
+	return signal.ExplicitHumanBlocker || signal.ReasonCode == "permission_wait" || signal.Fields["human_action_source"] == "issue_contract"
 }
 
 func recordedMachineFailure(failure *tracker.NativeTerminalFailure, disposition *tracker.NativeDisposition) bool {
@@ -300,9 +401,11 @@ func recordedMachineFailure(failure *tracker.NativeTerminalFailure, disposition 
 	if disposition.ReasonCode == "instance_limitation" {
 		return true
 	}
-	return len(disposition.BlockerEvidence) > 0 && slices.ContainsFunc(disposition.BlockerEvidence, func(blocker workpad.Blocker) bool {
-		return blocker.Owner == workpad.BlockerOwnerInstance && !blocker.Unverifiable
-	})
+	return slices.ContainsFunc(disposition.BlockerEvidence, recordedInstanceBlocker)
+}
+
+func recordedInstanceBlocker(blocker workpad.Blocker) bool {
+	return blocker.Owner == workpad.BlockerOwnerInstance && (!blocker.Unverifiable || blocker.Predicate == nil && workpad.IsSymbolicRef(blocker.Ref))
 }
 
 func recordedRecoveryDependencies(disposition *tracker.NativeDisposition, project string) (map[int64]bool, bool) {
@@ -311,7 +414,7 @@ func recordedRecoveryDependencies(disposition *tracker.NativeDisposition, projec
 	}
 	dependencies := make(map[int64]bool, len(disposition.BlockerEvidence))
 	for _, blocker := range disposition.BlockerEvidence {
-		if blocker.Owner == workpad.BlockerOwnerInstance && !blocker.Unverifiable {
+		if recordedInstanceBlocker(blocker) {
 			continue
 		}
 		predicate := blocker.Predicate
@@ -432,4 +535,26 @@ func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenants
 	}
 	recovery.Now = now
 	return writer.AuthorizeRecordedRecovery(ctx, recovery)
+}
+
+func (s *Service) readClaimRecoveryIntent(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, version eventstore.CollaborationVersion) (*leasestore.RecordedRecovery, error) {
+	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
+	if err != nil {
+		return nil, err
+	}
+	return s.readRecordedRecoveryIntent(ctx, scope, row, issue)
+}
+
+func (s *Service) prepareNativeClaimRecoveryWrite(ctx context.Context, scope hubscope.NativeScope, recovery *leasestore.RecordedRecovery) (func(context.Context, tenantstore.Writer) error, error) {
+	command := nativeClaimRecoveryWrite{recovery: recovery}
+	request := tracker.Transition{
+		Mutation:         tracker.Mutation{IdempotencyKey: "recorded-recovery/" + recovery.WorkflowEventID, LeaseID: tracker.LeaseID(recovery.Attempt.LeaseID), FencingToken: tracker.FencingToken(recovery.Attempt.FencingToken)},
+		ExpectedRevision: tracker.Revision(recovery.ExpectedRevision), State: recovery.State, Reason: "dependency_ready", BlockerAttemptID: recovery.Attempt.ID, PolicyID: recovery.Policy.PolicyID,
+	}
+	_, err := s.prepareOrTransitionNativeIssue(ctx, scope, string(recovery.WorkItemID), request, nil, "", &command)
+	var conflict *hubapi.NativeError
+	if errors.As(err, &conflict) && conflict.Code == "revision_conflict" {
+		err = ErrNoClaimableWork
+	}
+	return command.write, err
 }

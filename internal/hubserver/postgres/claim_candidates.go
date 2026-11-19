@@ -235,11 +235,13 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	sourceColumn := "false"
 	if query.IncludeUnclassifiedSource {
 		sourceColumn = unclassifiedSource
+	} else if query.IncludeRecordedRecovery && query.WorkItemID != "" {
+		sourceColumn = "CASE WHEN lower(trim(ws.name))='blocked' THEN " + unclassifiedSource + " ELSE false END"
 	}
 	dispatchable := "ws.dispatchable=true"
 	recovery := "false"
 	if query.IncludeRecordedRecovery {
-		recovery = recordedRecoveryCandidate
+		recovery = "(p.profile='native' AND lower(trim(ws.name))='blocked')"
 		dispatchable = "(" + dispatchable + " OR " + recovery + ")"
 	}
 	statement := `SELECT i.id,i.revision,i.number,i.native_id,lower(trim(ws.name)),f.author_login,f.repository,
