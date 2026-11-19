@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.NativeScope, view runnerauth.ProjectConfiguration, receivedAt time.Time, writer runnerstore.Writer) error {
+func StoreRunnerProjectObservationTenant(ctx context.Context, prune func(*runnerauth.ProjectDiagnostics, time.Time) bool, digestConfiguration func(runnerauth.ProjectConfiguration) (string, error), scope hubscope.NativeScope, view runnerauth.ProjectConfiguration, receivedAt time.Time, writer runnerstore.Writer) error {
 	if view.ProjectID != string(scope.Project) || view.ObservedAt.IsZero() {
 		return runnerstore.ErrInvalidRecord
 	}
@@ -27,7 +27,7 @@ func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.Nat
 		diagnostics := *view.Diagnostics
 		diagnostics.Records = slices.Clone(view.Diagnostics.Records)
 		diagnostics.Admissions = slices.Clone(view.Diagnostics.Admissions)
-		pruneExpiredProjectDiagnostics(&diagnostics, receivedAt)
+		prune(&diagnostics, receivedAt)
 		diagnostics.Counts = cloneDiagnosticCounts(view.Diagnostics.Counts)
 		diagnostics.Unavailable = cloneDiagnosticUnavailable(view.Diagnostics.Unavailable)
 		for i := range diagnostics.Records {
@@ -69,7 +69,7 @@ func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.Nat
 	if observation.Diagnostics != nil {
 		stored.Diagnostics = observation.Diagnostics
 	}
-	digest, err := projectConfigurationDigest(stored)
+	digest, err := digestConfiguration(stored)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 
 const runnerAdmissionDecisionLimit = 16
 
-type preparedRunnerAdmissionDecisions struct {
+type PreparedRunnerAdmissionDecisions struct {
 	project   tracker.ProjectID
 	runnerID  string
 	decisions []preparedRunnerAdmissionDecision
@@ -72,18 +72,18 @@ func runnerAdmissionDecisionCandidates(scope hubscope.NativeScope, view *runnera
 	return latest, keys, nil
 }
 
-func (s *Service) prepareRunnerAdmissionDecisions(ctx context.Context, credential hubapi.APICredential, view *runnerauth.ProjectConfiguration) (preparedRunnerAdmissionDecisions, error) {
-	var prepared preparedRunnerAdmissionDecisions
+func (d DiagnosticDeps) PrepareRunnerAdmissionDecisions(ctx context.Context, credential hubapi.APICredential, view *runnerauth.ProjectConfiguration) (PreparedRunnerAdmissionDecisions, error) {
+	var prepared PreparedRunnerAdmissionDecisions
 	if view == nil {
 		return prepared, nil
 	}
 	scope := hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: tracker.ProjectID(view.ProjectID), Credential: credential}
-	admissions, keys, err := runnerAdmissionDecisionCandidates(scope, view, s.config.Clock().UTC())
+	admissions, keys, err := runnerAdmissionDecisionCandidates(scope, view, d.Now().UTC())
 	if err != nil || len(keys) == 0 {
 		return prepared, err
 	}
 	var pending []eventstore.RunnerAdmissionDecision
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(eventstore.RunnerAdmissionDecisionReader)
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
@@ -97,25 +97,25 @@ func (s *Service) prepareRunnerAdmissionDecisions(ctx context.Context, credentia
 	if len(pending) > runnerAdmissionDecisionLimit {
 		pending = pending[:runnerAdmissionDecisionLimit]
 	}
-	prepared = preparedRunnerAdmissionDecisions{project: scope.Project, runnerID: credential.Runner.RunnerID}
-	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	prepared = PreparedRunnerAdmissionDecisions{project: scope.Project, runnerID: credential.Runner.RunnerID}
+	content := eventstore.NewContent(d.DetailsFor(ctx))
 	for _, key := range pending {
 		admission := admissions[key.WorkItemID]
 		decision := tracker.CollaborationEvent{ID: key.EventID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: key.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: key.ObservedAt, Data: tracker.CollaborationData{Revision: tracker.Revision(key.Revision), Decision: &tracker.NativeSchedulerDecision{RunnerID: credential.Runner.RunnerID, Source: "native_runner_admission", Outcome: admission.Result, Reason: admission.Predicate, At: key.ObservedAt, WorkItemRevision: tracker.Revision(key.Revision)}}}
 		raw, err := json.Marshal(decision)
 		if err != nil {
-			return preparedRunnerAdmissionDecisions{}, err
+			return PreparedRunnerAdmissionDecisions{}, err
 		}
 		row, err := content.PrepareEvent(ctx, scope.Organization, raw)
 		if err != nil {
-			return preparedRunnerAdmissionDecisions{}, err
+			return PreparedRunnerAdmissionDecisions{}, err
 		}
 		prepared.decisions = append(prepared.decisions, preparedRunnerAdmissionDecision{key: key, row: row})
 	}
 	return prepared, nil
 }
 
-func appendRunnerAdmissionDecisions(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, prepared preparedRunnerAdmissionDecisions, receivedAt time.Time) error {
+func AppendRunnerAdmissionDecisions(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, prepared PreparedRunnerAdmissionDecisions, receivedAt time.Time) error {
 	if len(prepared.decisions) == 0 {
 		return nil
 	}

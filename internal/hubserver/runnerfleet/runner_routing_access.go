@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet
 
 import (
 	"context"
@@ -19,8 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, projects []tracker.ProjectID, routingScope string) error {
-	if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
+func (d RoutingDeps) authorizeRunnerRoutingAccess(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, projects []tracker.ProjectID, routingScope string) error {
+	if err := d.AuthorizeAccess(ctx, reader, scope, true); err != nil {
 		return err
 	}
 	for _, project := range projects {
@@ -33,7 +33,7 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 		}
 		selected := scope
 		selected.Project = project
-		if err := s.authorizeAccessScope(ctx, reader, selected, true); err != nil {
+		if err := d.AuthorizeAccess(ctx, reader, selected, true); err != nil {
 			return err
 		}
 		if scope.Credential.Hosted != nil {
@@ -64,7 +64,7 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 		credential.HostedProjectAccess = hubapi.HostedProjectAccess(key.ProjectAccess)
 		organizationAdmin := (credential.HostedRole == "owner" || credential.HostedRole == "admin") && (credential.HostedKeyScope == "" || credential.HostedProjectAccess == hubapi.HostedProjectsAll)
 		if !organizationAdmin {
-			allowed, err := s.appAllRunnerGrantsWith(ctx, reader, credential, nil)
+			allowed, err := d.AllRunnerGrantsWith(ctx, reader, credential, nil)
 			if errors.Is(err, corestore.ErrInvalidPage) {
 				return hubapi.NativeNotFound()
 			}
@@ -79,7 +79,7 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 	return nil
 }
 
-func (s *Service) readRunnerRoutingReceipt(ctx context.Context, scope hubscope.NativeScope, resource string, receipt eventstore.Receipt, content *eventstore.Content) (json.RawMessage, error) {
+func (d RoutingDeps) readRunnerRoutingReceipt(ctx context.Context, scope hubscope.NativeScope, resource string, receipt eventstore.Receipt, content *eventstore.Content) (json.RawMessage, error) {
 	raw, err := content.Receipt(ctx, receipt)
 	if err != nil {
 		return nil, err
@@ -116,8 +116,8 @@ func (s *Service) readRunnerRoutingReceipt(ctx context.Context, scope hubscope.N
 		slices.Sort(projects)
 		projects = slices.Compact(projects)
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		return s.authorizeRunnerRoutingAccess(ctx, reader, scope, projects, represented.Scope)
+	if err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		return d.authorizeRunnerRoutingAccess(ctx, reader, scope, projects, represented.Scope)
 	}); err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
