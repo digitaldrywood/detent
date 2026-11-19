@@ -85,9 +85,6 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO issue_notification_notices(organization_id,work_item_id,user_id,event_id,source_item,due_at,state_from,state_to,author,comment_id,related,verify) SELECT $1,$2,$3,'a_'||n,$2,$4::timestamptz-n*interval '1 microsecond','','','','',false,false FROM generate_series(1,$5::integer) n`, org, first.WorkItemID, first.UserID, now, backlog); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), `ANALYZE issue_notification_notices`); err != nil {
-			t.Fatal(err)
-		}
 		held, err := admin.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)

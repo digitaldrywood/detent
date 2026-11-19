@@ -70,9 +70,6 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
  FROM native_work_item_pages WHERE organization_id=$1 AND work_item_id LIKE 'wi_window_%' ON CONFLICT DO NOTHING`, org); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.admin.ExecContext(ctx, "ANALYZE issues,native_board_items,native_work_item_pages,native_work_item_search"); err != nil {
-			t.Fatal(err)
-		}
 	}
 	const text = "magazine count reason code"
 	matching := func(org tracker.OrganizationID) int {
@@ -178,9 +175,6 @@ func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
 		if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_work_item_fingerprints(organization_id,project_id,work_item_id,kind,record_id,fingerprint_digest,is_origin,origin_kind) VALUES($1,'prj_first',$2,$3,$4,$5,true,'worker')`, row.org, row.item, row.kind, row.record, searchstore.FingerprintDigest("example-old")); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, err := f.admin.ExecContext(ctx, "ANALYZE native_work_item_fingerprints"); err != nil {
-		t.Fatal(err)
 	}
 	for org, want := range map[tracker.OrganizationID]tracker.NativeWorkItemID{"org_first": "wi_window_1", "org_second": "wi_window_2"} {
 		var rows []viewstore.BoardRecord
