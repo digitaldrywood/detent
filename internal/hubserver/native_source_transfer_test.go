@@ -36,6 +36,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 		sameRunner, advanced                                                 bool
 		hosted                                                               bool
 		replacement, stopped, acknowledged                                   bool
+		worker, retired                                                      bool
 	}{
 		{name: "transfer retains a nondispatchable lane and human label", held: true, released: true, status: http.StatusOK},
 		{name: "transfer and duplicate request", released: true, status: http.StatusOK},
@@ -48,6 +49,11 @@ func TestNativeSourceTransfer(t *testing.T) {
 		{name: "cancel explicit routing", released: true, cancel: true, status: http.StatusOK},
 		{name: "concurrent transfer revisions", released: true, concurrent: true, status: http.StatusOK},
 		{name: "released historical running attempt", historical: true, released: true, status: http.StatusOK},
+		{name: "worker receipt before checkpoint and release", worker: true, retired: true, running: true, released: true, status: http.StatusUnprocessableEntity},
+		{name: "worker without receipt before checkpoint and release", worker: true, running: true, released: true, status: http.StatusUnprocessableEntity},
+		{name: "worker retired and attempt cleanup acknowledged", worker: true, retired: true, stopped: true, running: true, acknowledged: true, status: http.StatusOK},
+		{name: "worker outstanding after attempt cleanup acknowledged", worker: true, stopped: true, running: true, acknowledged: true, status: http.StatusUnprocessableEntity},
+		{name: "worker outstanding after terminal release", worker: true, released: true, status: http.StatusUnprocessableEntity},
 		{name: "released selected running attempt", running: true, released: true, status: http.StatusUnprocessableEntity},
 		{name: "active execution", running: true, status: http.StatusUnprocessableEntity},
 		{name: "hosted recovery explains active execution", running: true, hosted: true, status: http.StatusUnprocessableEntity},
@@ -123,7 +129,16 @@ func TestNativeSourceTransfer(t *testing.T) {
 			}
 			event := nativeStartedEvent(lease)
 			event.Data.Identity.Role, event.Data.MachineID = "code", lease.MachineID
+			if test.worker {
+				event.Worker = &tracker.NativeAttemptWorker{PID: 101, PGID: 101, StartedAt: clock.Now(), StartKey: "worker-birth"}
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
+			if test.retired {
+				retire := tracker.NativeRunEvent{Type: "run.finished", SchemaVersion: 1, WorkerCleanup: event.Worker,
+					Data: tracker.NativeRunData{AttemptID: event.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, retire), http.StatusOK)
+			}
+			event.Worker = nil
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
 			input := changeTestInput()
 			bundle := changeTestSource(t, &input)
@@ -216,9 +231,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 				var nextSequence int64
 				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
 					attempt, err := reader.Attempt(t.Context(), event.Data.AttemptID)
-					if err == nil {
-						nextSequence = attempt.Sequence + 1
-					}
+					nextSequence = attempt.Sequence + 1
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -300,7 +313,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 				var acknowledged tracker.NativeAttempt
 				decodeHubResponse(t, response, &acknowledged)
 				status := acknowledged.Status
-				if failure := acknowledged.TerminalFailure; status != "cancelled" || failure == nil || failure.ErrorClass != "lease_released" || failure.Stage != "lease_release" || !strings.HasSuffix(failure.Error, "release reason: cancelled") || failure.ObservedAt.IsZero() {
+				if failure := acknowledged.TerminalFailure; acknowledged.CleanupAcknowledgedAt == nil || status != "cancelled" || failure == nil || failure.ErrorClass != "lease_released" || failure.Stage != "lease_release" || !strings.HasSuffix(failure.Error, "release reason: cancelled") || failure.ObservedAt.IsZero() {
 					t.Fatalf("cancelled attempt ended without its release cause: status=%s failure=%+v", status, failure)
 				}
 			}
@@ -335,6 +348,18 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, recoveryRead, http.StatusOK)
 			var observed sourceRecoveryView
 			decodeHubResponse(t, recoveryRead, &observed)
+			if test.worker {
+				if observed.Quiesced != (test.status == http.StatusOK) {
+					t.Errorf("source recovery quiesced = %t, transfer should return %d", observed.Quiesced, test.status)
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(a.binding.MachineID)+"/heartbeat?attempt_worker_after=", a.redemption.Credential, struct{}{})
+				requireNativeStatus(t, response, http.StatusOK)
+				var inventory runnerauth.AttemptWorkerInventory
+				decodeHubResponse(t, response, &inventory)
+				if inventory.Page == nil || (test.retired && len(inventory.Page.Workers) != 0) || (!test.retired && (len(inventory.Page.Workers) != 1 || inventory.Page.Workers[0].AttemptID != event.Data.AttemptID)) {
+					t.Errorf("worker retired = %t, inventory = %+v", test.retired, inventory.Page)
+				}
+			}
 			if test.replacement && !test.acknowledged && (observed.AttemptID != event.Data.AttemptID || observed.VersionID != version.ID || observed.HeadSHA != input.HeadSHA || !observed.Available || observed.Quiesced) {
 				t.Fatalf("replacement erased source identity or treated interruption as completion: %+v", observed)
 			}

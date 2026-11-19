@@ -1,6 +1,8 @@
 package runnerruntime_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -23,7 +25,7 @@ func TestFencedRunEventRecordsWorkerInventory(t *testing.T) {
 	var lease tracker.NativeLease
 	hubfixture.Decode(t, response, &lease)
 	start := hubfixture.StartedEvent(lease)
-	worker := tracker.NativeAttemptWorker{PID: 101, PGID: 101, StartedAt: f.Hub.Now().Truncate(time.Microsecond), StartKey: "kernel-birth"}
+	worker := tracker.NativeAttemptWorker{PID: 101, PGID: 101, StartedAt: f.Hub.Now().UTC().Truncate(time.Microsecond), StartKey: "kernel-birth"}
 	start.Worker = &worker
 	path := f.Base + "/work-items/" + string(f.Issue.WorkItemID) + "/events"
 	send := func(event tracker.NativeRunEvent, want int) {
@@ -35,6 +37,22 @@ func TestFencedRunEventRecordsWorkerInventory(t *testing.T) {
 	badStart := start
 	badStart.Worker = &oversize
 	send(badStart, http.StatusUnprocessableEntity)
+	imprecise := worker
+	imprecise.StartedAt = worker.StartedAt.Add(time.Nanosecond)
+	badStart.Worker = &imprecise
+	send(badStart, http.StatusUnprocessableEntity)
+	sendSubnanosecond := func(event tracker.NativeRunEvent) {
+		t.Helper()
+		body, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		formatted := worker.StartedAt.Format(time.RFC3339Nano)
+		overprecise := worker.StartedAt.Format("2006-01-02T15:04:05.000000") + "0001Z"
+		body = bytes.Replace(body, []byte(`"started_at":"`+formatted+`"`), []byte(`"started_at":"`+overprecise+`"`), 1)
+		hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, path, token, json.RawMessage(body)), http.StatusUnprocessableEntity)
+	}
+	sendSubnanosecond(start)
 	send(start, http.StatusOK)
 	send(start, http.StatusOK)
 
@@ -84,13 +102,20 @@ func TestFencedRunEventRecordsWorkerInventory(t *testing.T) {
 
 	cleanup := tracker.NativeRunEvent{Type: "run.finished", SchemaVersion: 1, WorkerCleanup: &worker,
 		Data: tracker.NativeRunData{AttemptID: owner.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}}
+	sendSubnanosecond(cleanup)
 	wrongFence := cleanup
 	wrongFence.Data.FencingToken++
 	send(wrongFence, http.StatusConflict)
 	wrongWorker := cleanup
 	wrongWorker.WorkerCleanup = &other
 	send(wrongWorker, http.StatusConflict)
-	if page := read(); len(page.Workers) != 1 || page.Workers[0].Worker.StartKey != worker.StartKey {
+	wrongWorker.WorkerCleanup = &imprecise
+	send(wrongWorker, http.StatusUnprocessableEntity)
+	later := worker
+	later.StartedAt = worker.StartedAt.Add(time.Microsecond)
+	wrongWorker.WorkerCleanup = &later
+	send(wrongWorker, http.StatusConflict)
+	if page := read(); len(page.Workers) != 1 || page.Workers[0] != owner {
 		t.Fatalf("stale cleanup changed inventory: %+v", page)
 	}
 	send(cleanup, http.StatusOK)

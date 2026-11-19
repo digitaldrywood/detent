@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -55,7 +54,7 @@ func Acknowledge(ctx context.Context, queries *pgquery.Queries, organization tra
 	_, err = queries.AcknowledgeAttemptWorker(ctx, pgquery.AcknowledgeAttemptWorkerParams{
 		OrganizationID: organization, ProjectID: cleanup.ProjectID, WorkItemID: string(cleanup.WorkItemID), AttemptID: cleanup.AttemptID,
 		LeaseID: cleanup.Fence.LeaseID, FencingToken: cleanup.Fence.FencingToken, RunnerID: new(cleanup.RunnerID), MachineID: string(cleanup.MachineID),
-		Pid: worker.PID, Pgid: worker.PGID, StartedAt: pgtransport.Timestamp(worker.StartedAt), StartKey: worker.StartKey, AcknowledgedAt: now,
+		Pid: worker.PID, Pgid: worker.PGID, StartedAt: worker.StartedAt.UTC(), StartKey: worker.StartKey, AcknowledgedAt: now,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return leasestore.ErrAttemptConflict
@@ -65,7 +64,7 @@ func Acknowledge(ctx context.Context, queries *pgquery.Queries, organization tra
 
 func Columns(worker *tracker.NativeAttemptWorker) (pid, pgid pgtype.Int4, start *time.Time, key *string) {
 	if worker != nil {
-		return pgtype.Int4{Int32: worker.PID, Valid: true}, pgtype.Int4{Int32: worker.PGID, Valid: true}, new(pgtransport.Timestamp(worker.StartedAt)), &worker.StartKey
+		return pgtype.Int4{Int32: worker.PID, Valid: true}, pgtype.Int4{Int32: worker.PGID, Valid: true}, new(worker.StartedAt.UTC()), &worker.StartKey
 	}
 	return
 }

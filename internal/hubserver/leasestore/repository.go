@@ -159,6 +159,7 @@ type Lease struct {
 }
 
 type Attempt struct {
+	WorkerOutstanding         bool  `json:"-"`
 	LocalAttemptID            int64 `json:"-"`
 	LocalAttemptIDRecorded    bool  `json:"-"`
 	ClaimDisposition          *string
@@ -185,6 +186,10 @@ type Attempt struct {
 	Identity                  AttemptIdentity `json:"-"`
 	StartedAt                 time.Time
 	UpdatedAt                 time.Time
+}
+
+func (a Attempt) SourceExecutionFinished() bool {
+	return !a.WorkerOutstanding && (a.Status == "succeeded" || a.Status == "failed" || a.Status == "cancelled")
 }
 
 type AttemptCursor struct {
