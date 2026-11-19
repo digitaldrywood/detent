@@ -9,7 +9,7 @@ a retired entry; numbers are never reused or renumbered.
 
 ## INV-1 — Lane ownership
 
-The Hub’s orchestrator alone applies lane transitions and grants one fenced renewable lease per item across phases. Workers submit authenticated outcomes. Lease loss ends their authority and makes the item eligible for continuation from its last recorded phase commit.
+The Hub is the source of truth for an item’s lane and grants one fenced, renewable lease per item across its phases. The runner holding that lease moves the item through its lanes as phases complete, and the Hub accepts a move only under a valid lease. Agent sessions report outcomes and never write lanes. Lease loss ends the runner’s authority and makes the item eligible for continuation from its last recorded phase commit.
 
 Blocked is reserved for an explicit operator stop or a genuine unresolved decision or permission request. Record the request as a typed `human_action`, surface it durably to the human and release executing capacity. Only authorized human action clears the request. Machine failures use the retry loop.
 

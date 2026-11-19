@@ -93,7 +93,7 @@ Detent's self-protection mechanisms (brakes, breakers, leases, parks, recovery s
 - Claim eligibility is recomputed from current workflow intent, typed dependencies, source, review, access, lease and capacity facts.
 - Execution ownership is a fenced, renewed item lease. Deferred completion payloads do not extend it. [INV-1](docs/invariants.md#inv-1--lane-ownership) governs eligibility after lease loss.
 - Uncertain publication is reconciled against the remote ref: an intended SHA match is published, an unchanged or absent ref permits a compare-and-swap push, a moved ref returns to Rework.
-- The orchestrator is the only writer of tracker lane state; workers report outcomes and never write lanes or labels.
+- The Hub is the source of truth for lane state. The runner holding the item’s lease moves it from lane to lane; agent sessions report outcomes and never write lanes or labels.
 
 ## Multi-tenancy
 
