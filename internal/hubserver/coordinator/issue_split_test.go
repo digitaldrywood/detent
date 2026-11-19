@@ -1,4 +1,4 @@
-package hubserver
+package coordinator
 
 import (
 	"encoding/json"
@@ -37,18 +37,18 @@ func TestValidateCoordinatorIssueSplit(t *testing.T) {
 		}, false},
 		{"empty", func(s *chat.IssueSplit) { s.Children = nil }, false},
 		{"maximum children", func(s *chat.IssueSplit) {
-			for len(s.Children) < coordinatorSplitMaxChildren {
+			for len(s.Children) < SplitMaxChildren {
 				s.Children = append(s.Children, s.Children[0])
 			}
 		}, true},
 		{"too many children", func(s *chat.IssueSplit) {
-			for len(s.Children) <= coordinatorSplitMaxChildren {
+			for len(s.Children) <= SplitMaxChildren {
 				s.Children = append(s.Children, s.Children[0])
 			}
 		}, false},
-		{"long title", func(s *chat.IssueSplit) { s.Children[0].Title = strings.Repeat("t", coordinatorProposalTitleBytes+1) }, false},
+		{"long title", func(s *chat.IssueSplit) { s.Children[0].Title = strings.Repeat("t", proposalTitleBytes+1) }, false},
 		{"long description", func(s *chat.IssueSplit) {
-			s.Children[0].Description = strings.Repeat("x", coordinatorProposalBodyRunes+1)
+			s.Children[0].Description = strings.Repeat("x", proposalBodyRunes+1)
 		}, false},
 		{"missing title", func(s *chat.IssueSplit) { s.Children[0].Title = " " }, false},
 		{"missing description", func(s *chat.IssueSplit) { s.Children[0].Description = "" }, false},
@@ -59,7 +59,7 @@ func TestValidateCoordinatorIssueSplit(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			split := chat.IssueSplit{ParentID: "wi_parent", Children: []chat.IssueSplitChild{{Title: "Storage", Description: "Build storage", State: "Todo"}, {Title: "API", Description: "Build API", State: "Todo"}}}
 			test.change(&split)
-			err := validateCoordinatorIssueSplit(split)
+			err := ValidateIssueSplit(split)
 			if (err == nil) != test.valid {
 				t.Fatalf("validation=%v, want valid=%v", err, test.valid)
 			}
@@ -68,7 +68,7 @@ func TestValidateCoordinatorIssueSplit(t *testing.T) {
 				if !errors.As(err, &native) {
 					t.Fatalf("validation error = %v, want native validation", err)
 				}
-				result := coordinatorToolError(fmt.Errorf("split arguments: %w", err))
+				result := ToolError(fmt.Errorf("split arguments: %w", err))
 				var feedback struct {
 					Error string `json:"error"`
 				}

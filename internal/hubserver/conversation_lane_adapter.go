@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -871,4 +873,148 @@ func (s *Service) readConversationTenantWorkload(ctx context.Context, org tracke
 
 func (s *Service) writeConversationTenantWorkload(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	return s.config.TenantRepository.WriteTenant(ctx, org, workload, write)
+}
+func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.issueProposalDeps().PreviewArchive(ctx, record, call)
+}
+
+func (s *Service) executeCoordinatorIssueArchive(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.issueCommandDeps().ExecuteArchive(ctx, action)
+}
+
+func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscope.NativeScope, command tracker.Mutation, archive chat.IssueArchive) (json.RawMessage, error) {
+	return s.issueCommandDeps().Archive(ctx, scope, command, archive)
+}
+
+var validateCoordinatorArchiveIDs = coordinator.ValidateArchiveIDs
+
+const coordinatorArchiveMaxItems = coordinator.ArchiveMaxItems
+
+func (t *coordinatorToolset) loadSplitIssueSkill(raw json.RawMessage) (any, error) {
+	return coordinator.LoadSplitIssueSkill(raw)
+}
+
+func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.issueProposalDeps().PreviewSplit(ctx, record, call)
+}
+
+func (s *Service) executeCoordinatorIssueSplit(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.issueCommandDeps().ExecuteSplit(ctx, action)
+}
+
+func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, command tracker.Mutation, split chat.IssueSplit) (json.RawMessage, error) {
+	return s.issueCommandDeps().Split(ctx, scope, options, command, split)
+}
+
+var coordinatorIssueSplitTool = coordinator.IssueSplitTool
+var validateCoordinatorIssueSplit = coordinator.ValidateIssueSplit
+
+const coordinatorSplitMaxChildren = coordinator.SplitMaxChildren
+
+func (t *coordinatorToolset) issueProposalDeps() coordinator.IssueProposalDeps {
+	return coordinator.IssueProposalDeps{ProposalDeps: t.proposalDeps(), Commands: t.coordinator.server.issueCommandDeps()}
+}
+
+func (s *Service) issueCommandDeps() coordinator.IssueCommandDeps {
+	return coordinator.IssueCommandDeps{
+		StorageAvailable: s.config.TenantRepository != nil && s.config.AccessRepository != nil,
+		ReadTenant:       s.readConversationTenantWorkload,
+		WriteTenant:      s.writeConversationTenantWorkload,
+		Now:              s.config.Clock,
+		Operation:        nativeOperation,
+		HydrateIssue:     s.hydrateWorkItemRecord,
+		ReadWorkItem:     s.readWorkItemRecord,
+		ReadProject:      s.readProjectRecord,
+		BeginAuthority:   s.beginProjectRecordAuthority,
+		RecheckMutation:  s.recheckProjectRecordMutation,
+		Authorize:        s.authorizeWorkItemRecordScope,
+		LoadArchivePlan: func(ctx context.Context, scope hubscope.NativeScope, item string, revision tracker.Revision) (hubrecords.WorkItemRecordPlan, error) {
+			input := workItemArchive{archiveIssueRequest: archiveIssueRequest{ExpectedRevision: revision}, Archived: true}
+			return s.loadWorkItemPlan(ctx, scope, item, "", input)
+		},
+		PlanArchive: func(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan, revision tracker.Revision) (hubrecords.WorkItemRecordPlan, error) {
+			input := workItemArchive{archiveIssueRequest: archiveIssueRequest{ExpectedRevision: revision}, Archived: true}
+			return s.planWorkItemRecord(ctx, scope, plan, input)
+		},
+		LoadPlan:           s.loadWorkItemPlan,
+		PlanWorkItem:       s.planWorkItemRecord,
+		PrepareFields:      s.prepareWorkItemFields,
+		IssueResponse:      s.nativeIssueResponse,
+		Receipt:            s.workItemRecordReceipt,
+		RecordEntryAudit:   s.recordEntryAccessKeyAuditWith,
+		SignalDispatch:     s.signalNativeDispatch,
+		Details:            s.runDetailStore,
+		Plans:              s.database.plansService,
+		ValidateCreate:     validateWorkItemRecordCreateInput,
+		ValidateFiling:     s.validateWorkItemRecordFilingTenant,
+		PrepareAttachments: s.prepareWorkItemAttachmentReferences,
+		AttachmentQuota:    s.attachmentQuotaLimit,
+		WakeSpriteRunners:  s.wakeSpriteRunnersAfter,
+	}
+}
+
+var coordinatorToolError = coordinator.ToolError
+
+func (c *conversationTurnCoordinator) modelChoiceGranted(ctx context.Context, r tenantstore.Reader, organization tracker.OrganizationID, now time.Time) (bool, error) {
+	return c.server.conversationModelChoiceGranted(ctx, r, organization, now)
+}
+
+func (c *conversationTurnCoordinator) modelChoices(ctx context.Context, r tenantstore.Reader, project tracker.ProjectID, now time.Time) ([]conversationModel, error) {
+	return c.server.conversationModelChoices(ctx, r, []tracker.ProjectID{project}, now)
+}
+func (c *conversationTurnCoordinator) appendMessage(ctx context.Context, w tenantstore.Writer, record *conversationRecord, message *conversationMessageRecord, now time.Time) error {
+	return coordinator.AppendMessage(ctx, w, record, message, now)
+}
+
+func (c *conversationTurnCoordinator) updateMessage(ctx context.Context, w tenantstore.Writer, message conversationMessageRecord, now time.Time) error {
+	return coordinator.UpdateMessage(ctx, w, message, now)
+}
+
+func (c *conversationTurnCoordinator) saveConversation(ctx context.Context, w tenantstore.Writer, record *conversationRecord, now time.Time) error {
+	return coordinator.SaveConversation(ctx, w, record, now)
+}
+
+func (c *conversationTurnCoordinator) updateExecution(ctx context.Context, w tenantstore.Writer, record *conversationRecord, execution conversation.Execution, now time.Time) error {
+	return coordinator.UpdateExecution(ctx, w, record, execution, now)
+}
+
+func (c *conversationTurnCoordinator) appendDelta(ctx context.Context, w tenantstore.Writer, message *conversationMessageRecord, text string, now time.Time) error {
+	return coordinator.AppendDelta(ctx, w, message, text, now)
+}
+
+func (c *conversationTurnCoordinator) setControlDelivery(ctx context.Context, w tenantstore.Writer, message *conversationMessageRecord, delivery conversation.Delivery, failure *conversation.ReceiptError, now time.Time) error {
+	return coordinator.SetControlDelivery(ctx, w, message, delivery, failure, now)
+}
+
+func (c *conversationTurnCoordinator) coordinatorMessages(ctx context.Context, filter conversationstore.MessageFilter) ([]conversationMessageRecord, error) {
+	return c.recordDeps().ReadMessages(ctx, filter)
+}
+
+func (c *conversationTurnCoordinator) authorizeRecord(ctx context.Context, scope hubscope.NativeScope, record conversationRecord, write bool) error {
+	return c.recordDeps().AuthorizeRecord(ctx, scope, record, write)
+}
+
+func (c *conversationTurnCoordinator) attachmentContent(ctx context.Context, id string) ([]byte, error) {
+	return c.recordDeps().AttachmentContent(ctx, id)
+}
+
+func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Context, id string) error {
+	return c.recordDeps().DeliverCommands(ctx, id)
+}
+
+var appendCoordinatorEvent = coordinator.AppendEvent
+var coordinatorMonthlyBudget = coordinator.MonthlyBudget
+
+func (c *conversationTurnCoordinator) recordDeps() coordinator.RecordDeps {
+	return coordinator.RecordDeps{
+		Service:     c.service,
+		ReadTenant:  c.server.readConversationTenant,
+		WriteTenant: c.server.writeConversationTenant,
+		ReadObject: func(ctx context.Context, org string, ref attachment.ArchiveReference, target *conversations.ConversationContent) error {
+			return c.server.readConversationObject(ctx, org, ref, target)
+		},
+		Authorize: c.server.authorizeAccessScope,
+		Now:       func() time.Time { return c.server.config.Clock() },
+		Cancel:    c.cancelRecordedTurn,
+	}
 }
