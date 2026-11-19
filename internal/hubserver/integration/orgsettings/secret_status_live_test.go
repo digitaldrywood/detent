@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
@@ -11,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -88,12 +88,20 @@ func TestSecretStatusLiveDatabase(t *testing.T) {
 	}
 	response := h.Hub.Request(t, http.MethodGet, hubfixture.OrganizationBase(organization)+"/secrets/status?after_kind="+accessstore.NativeCursorKeyKind, h.AdminToken(), nil)
 	hubfixture.RequireStatus(t, response, http.StatusOK)
-	var status hubserver.HostedSecretStatus
+	type secretVersion struct {
+		Kind             string `json:"kind"`
+		MasterKeyVersion int    `json:"master_key_version"`
+	}
+	var status struct {
+		OrganizationID string            `json:"organization_id"`
+		Counts         []secretVersion   `json:"counts"`
+		Problems       []json.RawMessage `json:"problems"`
+	}
 	hubfixture.Decode(t, response, &status)
-	committedSecret := slices.ContainsFunc(status.Counts, func(group hubserver.SecretVersionCount) bool {
+	committedSecret := slices.ContainsFunc(status.Counts, func(group secretVersion) bool {
 		return group.Kind == secretKind && group.MasterKeyVersion == 2
 	})
-	if status.OrganizationID != organization || len(status.Problems) != 0 || !committedSecret {
+	if status.OrganizationID != string(organization) || len(status.Problems) != 0 || !committedSecret {
 		t.Fatalf("live status=%+v", status)
 	}
 	if after := readSecret(); !reflect.DeepEqual(after, before) {
