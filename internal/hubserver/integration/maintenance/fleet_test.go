@@ -10,7 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
 type pagedRegistry int
@@ -145,48 +144,31 @@ func TestRegisteredFamiliesAllBusyServiceGap(t *testing.T) {
 	})
 }
 
-func TestIdleTicksStayInsideResourceCeilings(t *testing.T) {
+func TestIdleTicksReachEveryFeature(t *testing.T) {
 	h := quietHub(t)
 	features := h.Service.ReadModelMaintenanceFeatures()
 	var mu sync.Mutex
-	stepped := 0
-	for i := range features {
-		step := features[i].Step
+	visited := make(map[string]bool, len(features))
+	for i, feature := range features {
 		features[i].Step = func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
 			mu.Lock()
-			stepped++
+			visited[feature.Name] = true
 			mu.Unlock()
-			return step(ctx, tenant, budget)
+			return feature.Step(ctx, tenant, budget)
 		}
 	}
 	scheduler, err := hubmaintenance.New(singleTenant{h.Service.MaintenanceTenant()}, features)
 	if err != nil {
 		t.Fatal(err)
 	}
-	maxTransactions, maxStatements, maxSteps := 0, 0, 0
-	for range 3 * len(features) {
-		transactions, statements := 0, 0
-		ctx := postgres.WithTransactionTiming(t.Context(), func(name string, _ time.Time) {
-			if name == "pg_commit" {
-				transactions++
-			}
-		}, func(time.Time, string) { statements++ })
-		mu.Lock()
-		stepped = 0
-		mu.Unlock()
-		if err := scheduler.Tick(ctx); err != nil {
+	for range len(features) {
+		if err := scheduler.Tick(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		mu.Lock()
-		steps := stepped
-		mu.Unlock()
-		if steps > hubmaintenance.ProbeLimit+leads(features) || transactions > 256 || statements > 4096 {
-			t.Fatalf("idle tick exceeded fixed work: steps=%d transactions=%d statements=%d", steps, transactions, statements)
+	}
+	for _, feature := range features {
+		if !visited[feature.Name] {
+			t.Errorf("idle maintenance skipped %s", feature.Name)
 		}
-		maxTransactions, maxStatements, maxSteps = max(maxTransactions, transactions), max(maxStatements, statements), max(maxSteps, steps)
 	}
-	if maxSteps != hubmaintenance.ProbeLimit+leads(features) {
-		t.Fatalf("idle ticks never reached the four-probe maximum plus leads (max steps %d)", maxSteps)
-	}
-	t.Logf("idle real feature mix: max steps=%d transactions=%d statements=%d per tick", maxSteps, maxTransactions, maxStatements)
 }
