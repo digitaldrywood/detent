@@ -40,7 +40,7 @@ func (s *Service) githubWebhookService() *githubwebhook.Service {
 		Organization:     organization,
 		Details:          s.runDetailStore(),
 		Now:              s.config.Clock,
-		Jitter:           s.config.deps.Jitter,
+		Jitter:           s.config.Deps().Jitter,
 		Logger:           s.config.Logger,
 		Secret:           s.config.GitHubWebhookSecret,
 		Retention:        s.config.WebhookPayloadRetention,

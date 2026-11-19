@@ -138,7 +138,7 @@ func TestPostgresMemberMutationRoutesPreserveCurrentAuthority(t *testing.T) {
 	provider := newHostedSecurityProvider()
 	details := &memoryRunDetails{}
 	plans := hostedplans.PilotPlans()
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: "org_security", now: time.Now, logger: discardLogger()}, config: Config{Logger: discardLogger(), Clock: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken}, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider, Plans: &plans}}}
+	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: "org_security", now: time.Now, logger: discardLogger()}, config: WithDeps(Config{Logger: discardLogger(), Clock: time.Now, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider, Plans: &plans}}, hubdeps.Deps{GenerateToken: apikey.GenerateToken})}
 	sessions, err := auth.NewSessionService(auth.SessionConfig{SessionTTL: 24 * time.Hour, PublicURL: service.config.Hosted.PublicURL}, service)
 	if err != nil {
 		t.Fatal(err)

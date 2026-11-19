@@ -102,7 +102,7 @@ func (s *Service) prepareHostedCheckout(ctx context.Context, actor, price string
 		}
 		return checkout, nil
 	}
-	checkout = hostedCheckout{Key: "detent_" + s.config.deps.NewLeaseID(), PriceID: price, ExpiresAt: now.Truncate(time.Second).Add(time.Hour)}
+	checkout = hostedCheckout{Key: "detent_" + s.config.Deps().NewLeaseID(), PriceID: price, ExpiresAt: now.Truncate(time.Second).Add(time.Hour)}
 	return checkout, s.saveHostedCheckout(ctx, actor, checkout, "checkout_requested")
 }
 

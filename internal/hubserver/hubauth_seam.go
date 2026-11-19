@@ -15,7 +15,7 @@ import (
 
 func (s *Service) requestAuth() *hubauth.Authenticator {
 	deps := hubauth.Deps{
-		TrustedProxy: s.config.TrustedProxy, GenerateToken: s.config.deps.GenerateToken, Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.Clock,
+		TrustedProxy: s.config.TrustedProxy, GenerateToken: s.config.Deps().GenerateToken, Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.Clock,
 		Classify: hubscope.OperatorAuthorizationError, SharedSession: s.sharedHostedSession, CompleteInvitation: s.completePendingHostedInvitation,
 
 		BoardCredential: func(ctx context.Context) (hubauth.Credential, bool) {

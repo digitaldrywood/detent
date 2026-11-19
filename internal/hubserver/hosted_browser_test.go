@@ -304,7 +304,7 @@ func hostedPostgresConfig(t *testing.T, cfg Config) Config {
 	if len(cfg.InitialAdminToken) == 0 {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)
 	}
-	normalized := cfg.normalized()
+	normalized := cfg.Normalized()
 	now := normalized.Clock()
 	store, err := openDatabase(t.Context(), normalized)
 	if err != nil {
@@ -1118,7 +1118,7 @@ func (w browserShutdownFrameWriter) Flush() {
 
 func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
 	t.Parallel()
-	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig, func(cfg *Config) { cfg.deps.ConversationStreamHeartbeat = time.Millisecond })
+	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig, func(cfg *Config) { cfg.Deps().ConversationStreamHeartbeat = time.Millisecond })
 	f.seedConversation(t)
 	draining := make(chan struct{})
 	f.server.Config.RegisterOnShutdown(func() { close(draining) })
