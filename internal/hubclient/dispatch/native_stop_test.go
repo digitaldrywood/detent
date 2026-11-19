@@ -446,7 +446,11 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if todo {
 		request.Destination, request.Priority, request.Reason = "Todo", priority, "Prioritize the next dispatch"
 	}
-	for attempt := range 2 {
+	requests := 2
+	if checkDelivery != nil {
+		requests = 1
+	}
+	for attempt := range requests {
 		result, err := orch.StopRun(t.Context(), request)
 		if err != nil || result.Outcome != "pending" || !result.CompletedAt.IsZero() || result.AlreadyStopped != (attempt == 1) || todo && (result.Priority != priority || result.PriorityName != priorityName) {
 			t.Fatalf("stop acknowledgement = %+v, %v", result, err)
@@ -469,6 +473,14 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		}
 		return nil
 	})
+	if checkDelivery != nil {
+		recovery, err := h.admin.Recovery(t.Context(), current.WorkItemID)
+		if err != nil || len(recovery.Attempts) != 1 {
+			t.Fatalf("stopped attempts %d, error %v", len(recovery.Attempts), err)
+		}
+		checkDelivery(recovery.Attempts[0])
+		return
+	}
 	if _, err := orch.RequestRefresh(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -504,9 +516,6 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
 	if err != nil || len(recovery.Attempts) != 1 || !interrupted.Load() || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Outcome != "interrupted" && (recovery.Attempts[0].Outcome != "cancelled" || recovery.Attempts[0].CleanupAcknowledgedAt == nil) || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA == "" || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
 		t.Fatalf("stopped checkpoint or native outcome = %+v, %v", recovery.Attempts, err)
-	}
-	if checkDelivery != nil {
-		checkDelivery(recovery.Attempts[0])
 	}
 	wantExit := 0
 	if mode == "stop with failed gate" {
