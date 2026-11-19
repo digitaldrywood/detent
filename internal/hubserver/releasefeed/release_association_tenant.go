@@ -1,4 +1,4 @@
-package hubserver
+package releasefeed
 
 import (
 	"context"
@@ -18,8 +18,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope.NativeScope, item, operation string, request tracker.AssociateReleasePick) (json.RawMessage, error) {
-	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+func (s *Delivery) AssociateReleasePickTenant(ctx context.Context, scope hubscope.NativeScope, item, operation string, request tracker.AssociateReleasePick) (json.RawMessage, error) {
+	if err := s.deps.RecheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
@@ -32,8 +32,8 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 	if raw, found, err := s.releaseAssociationReceipt(ctx, scope, operation, request.IdempotencyKey, hash); err != nil || found {
 		return raw, err
 	}
-	now := s.config.Clock().UTC().Truncate(time.Microsecond)
-	existing, refreshing, err := s.readReleaseDeliveryRecord(ctx, scope, item)
+	now := s.deps.Clock().UTC().Truncate(time.Microsecond)
+	existing, refreshing, err := s.ReadReleaseDeliveryRecord(ctx, scope, item)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 	if err != nil {
 		return nil, err
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(s.deps.RunDetailStore())
 	delivery := tracker.ReleaseDelivery{ReleasePickInput: request.ReleasePickInput, Actor: scope.Actor(), AssociatedAt: now}
 	unchanged := check.found && check.existing.ReleasePickInput == request.ReleasePickInput
 	if unchanged {
@@ -59,18 +59,18 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 	var events []eventstore.Event
 	if !unchanged {
 		if check.found {
-			change, err = s.readChangeRecord(ctx, scope, item, check.existing.ChangeID)
+			change, err = s.deps.ReadChangeRecord(ctx, scope, item, check.existing.ChangeID)
 			if err != nil {
 				return nil, err
 			}
-			transition, err = s.changeWorkflow().PrepareChangeWorkflowTransition(ctx, scope, change, check.approval, true, now)
+			transition, err = s.deps.PrepareChangeWorkflowTransition(ctx, scope, change, check.approval, true, now)
 			if err != nil {
 				return nil, err
 			}
 			change.Revision++
 			change.CurrentVersion, change.UpdatedAt = "", now
 		} else {
-			if err := approveReleaseDeliveryContract(&plan.Issue, check.approval.Policy, now); err != nil {
+			if err := s.deps.ApproveReleaseDeliveryContract(&plan.Issue, check.approval.Policy, now); err != nil {
 				return nil, err
 			}
 			change = tracker.ChangeRequest{ID: hubcontent.PayloadNativeID(ctx, "change"), OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), LinkedIssues: []tracker.NativeWorkItemID{tracker.NativeWorkItemID(item)}, Title: plan.Issue.Title, Revision: 1, CreatedAt: now, UpdatedAt: now}
@@ -90,11 +90,11 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 		plan.Issue.ReleaseDelivery = &delivery
 		plan.Issue.Revision++
 		plan.Issue.UpdatedAt, plan.Issue.LastActivityAt = now, now
-		fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
+		fields, err = s.deps.PrepareWorkItemFields(ctx, scope.Organization, plan)
 		if err != nil {
 			return nil, err
 		}
-		raw, err = json.Marshal(s.nativeIssueResponse(plan.Issue))
+		raw, err = json.Marshal(s.deps.NativeIssueResponse(plan.Issue))
 		if err != nil {
 			return nil, err
 		}
@@ -121,7 +121,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			transition.Plan.Issue.ReleaseDelivery = &delivery
 			transition.Plan.Issue.Revision++
 			transition.Version.Revision++
-			raw, err := json.Marshal(s.nativeIssueResponse(transition.Plan.Issue))
+			raw, err := json.Marshal(s.deps.NativeIssueResponse(transition.Plan.Issue))
 			if err != nil {
 				return nil, err
 			}
@@ -148,10 +148,10 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 	if err != nil {
 		return nil, err
 	}
-	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+	if err := s.deps.RecheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 			return err
 		}
@@ -175,8 +175,8 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 		if err := s.recheckReleaseDelivery(ctx, w, scope, check); err != nil {
 			return err
 		}
-		if s.database.plansService().Plans() != nil {
-			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
+		if s.deps.HasPlans() {
+			if err := s.deps.RequireCollaboration(ctx, w, s.deps.Clock()); err != nil {
 				return err
 			}
 		}
@@ -186,7 +186,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 		}
 		if !unchanged {
 			if transition != nil {
-				if _, err := s.changeWorkflow().LockChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
+				if _, err := s.deps.LockChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
 					return err
 				}
 			}
@@ -226,7 +226,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			}
 			if transition != nil && transition.Eligible {
 				transition.Plan.Current.Revision++
-				if err := s.changeWorkflow().ApplyChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
+				if err := s.deps.ApplyChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
 					return err
 				}
 			}
@@ -243,7 +243,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 		return nil, releaseAssociationError(err)
 	}
 	select {
-	case s.boardRefresh <- struct{}{}:
+	case s.deps.BoardRefresh <- struct{}{}:
 	default:
 	}
 	return raw, nil

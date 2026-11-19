@@ -6,16 +6,20 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/changeapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/changelanding"
 	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/releaseaudits"
+	"github.com/digitaldrywood/detent/internal/hubserver/releasefeed"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -411,4 +415,105 @@ func validateVersionAttachments(ctx context.Context, r tenantstore.Reader, scope
 
 func bindVersionAttachments(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item string, artifacts []tracker.ChangeArtifact) error {
 	return bindChangeRecordContent(ctx, w, scope, item, nil, artifacts, "artifacts")
+}
+
+func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
+	return s.changeDelivery().GetReleaseDeliveryStatus(c)
+}
+
+func (s *Service) associateReleasePick(c echo.Context) error {
+	return s.changeDelivery().AssociateReleasePick(c)
+}
+
+func readReleaseDeliveryContractFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID, states []tracker.NativeState) (hubrecords.ReleaseDeliveryContractFacts, error) {
+	return releasefeed.ReadReleaseDeliveryContractFacts(ctx, r, scope, item, states)
+}
+
+func releaseDeliveryContractFactsCurrent(plan hubrecords.NativeClaimPlan, contract config.IssueContract) bool {
+	return releasefeed.ReleaseDeliveryContractFactsCurrent(plan, contract)
+}
+
+func readNativeClaimReleaseDeliveryFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
+	return releasefeed.ReadNativeClaimReleaseDeliveryFacts(ctx, r, scope, plans)
+}
+
+func (s *Service) readReleaseDeliveryRecord(ctx context.Context, scope hubscope.NativeScope, item string) (tracker.ReleaseDelivery, bool, error) {
+	return s.changeDelivery().ReadReleaseDeliveryRecord(ctx, scope, item)
+}
+
+func (s *Service) prepareReleasePublication(ctx context.Context, scope hubscope.NativeScope, item string, r tracker.PublishReleasePick) (tracker.ReleasePickPublication, error) {
+	return s.changeDelivery().PrepareReleasePublication(ctx, scope, item, r)
+}
+
+func (s *Service) publishReleasePick(c echo.Context) error {
+	return s.changeDelivery().PublishReleasePick(c)
+}
+
+func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.PublishReleasePick, result tracker.ReleasePickPublication) (json.RawMessage, error) {
+	return s.changeDelivery().RecordReleasePublicationCommand(ctx, scope, item, request, result)
+}
+
+func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope.NativeScope, item, operation string, request tracker.AssociateReleasePick) (json.RawMessage, error) {
+	return s.changeDelivery().AssociateReleasePickTenant(ctx, scope, item, operation, request)
+}
+
+func (s *Service) changeDelivery() *releasefeed.Delivery {
+	return releasefeed.NewDelivery(releasefeed.DeliveryDeps{
+		Repository:                          s.config.TenantRepository,
+		Clock:                               s.config.Clock,
+		BoardRefresh:                        s.boardRefresh,
+		RunDetailContext:                    s.runDetailContext,
+		RunDetailStore:                      s.runDetailStore,
+		InvalidAPIRequest:                   s.invalidAPIRequest,
+		NativeAPIError:                      s.nativeAPIError,
+		RecheckProjectRecordMutation:        s.recheckProjectRecordMutation,
+		AuthorizeWorkItemRecordScope:        s.authorizeWorkItemRecordScope,
+		ReadWorkItemRecord:                  s.readWorkItemRecord,
+		HydrateWorkItemRecord:               s.hydrateWorkItemRecord,
+		ReadChangeRecord:                    s.readChangeRecord,
+		NativeIssueResponse:                 s.nativeIssueResponse,
+		PrepareWorkItemFields:               s.prepareWorkItemFields,
+		PrepareChangeWorkflowTransition:     s.changeWorkflow().PrepareChangeWorkflowTransition,
+		LockChangeWorkflowTransition:        s.changeWorkflow().LockChangeWorkflowTransition,
+		ApplyChangeWorkflowTransition:       s.changeWorkflow().ApplyChangeWorkflowTransition,
+		HydrateNativeAttemptTenant:          s.hydrateNativeAttemptTenant,
+		HydrateCurrentChangeVersionApproval: hydrateCurrentChangeVersionApproval,
+		AnsweredClaimKind:                   answeredClaimKind,
+		ApproveReleaseDeliveryContract:      approveReleaseDeliveryContract,
+		ProjectRecordActor:                  projectRecordActor,
+		ValidCheckoutRepository:             validCheckoutRepository,
+		ValidateReleasePick:                 validateReleasePick,
+		ValidatePreparedReleasePick:         validatePreparedReleasePick,
+		SameReleasePickDelivery:             sameReleasePickDelivery,
+		RequireCollaboration:                s.requireReleaseCollaboration,
+		HasPlans:                            func() bool { return s.database.plansService().Plans() != nil },
+		CheckoutRepository:                  s.releaseCheckoutRepository,
+		InvalidatePullRequests: func(scope hubscope.NativeScope, item string) {
+			s.pullRequests.invalidate(pullRequestCacheKey(scope, item))
+		},
+		DeliveryVerifier: func() (githubcontract.ReleaseDeliveryVerifier, bool) {
+			v, ok := s.config.ReconcileBackend.(ReleaseDeliveryVerifier)
+			return v, ok
+		},
+		PickVerifier: func() (githubcontract.ReleasePickVerifier, bool) {
+			v, ok := s.config.ReconcileBackend.(ReleasePickVerifier)
+			return v, ok
+		},
+		PickPublisher: func() (githubcontract.ReleasePickPublisher, bool) {
+			v, ok := s.config.ReconcileBackend.(ReleasePickPublisher)
+			return v, ok
+		},
+	})
+}
+
+func (s *Service) releaseCheckoutRepository(ctx context.Context, scope hubscope.NativeScope) (string, bool, error) {
+	connector, _, _, err := s.projectRepositoryBinding(ctx, nil, scope)
+	if err != nil || connector == nil {
+		return "", false, err
+	}
+	return connector.Repository, true, nil
+}
+
+func (s *Service) requireReleaseCollaboration(ctx context.Context, r tenantstore.Reader, now time.Time) error {
+	return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", now))
 }

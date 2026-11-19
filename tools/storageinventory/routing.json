@@ -20267,14 +20267,14 @@
         ]
       }
     },
-    "internal/hubserver/runner_spend_api.go": {
+    "internal/hubserver/executionapi/runner_spend_api.go": {
       "disposition": "serving",
       "families": [
         "analytics"
       ],
       "inventory": {
         "operations": {
-          "Service.getRunnerSpend:SQL": 1
+          "SpendDeps.GetRunnerSpend:SQL": 1
         },
         "tables": []
       }

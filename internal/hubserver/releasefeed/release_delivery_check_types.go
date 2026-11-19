@@ -1,4 +1,4 @@
-package hubserver
+package releasefeed
 
 import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
