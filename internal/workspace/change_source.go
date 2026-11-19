@@ -13,6 +13,31 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func (l *LocalGit) CaptureRecoveryChangeSource(ctx context.Context, issue Issue, base, head string) (tracker.ChangeSourceCapture, error) {
+	current, previous := issue.AttemptWorkspace, issue.RecoveryAttemptWorkspace
+	if current.Key() == "" {
+		return tracker.ChangeSourceCapture{}, ErrMissingWorkspace
+	}
+	if previous != (AttemptWorkspace{}) {
+		if previous.Key() == "" || previous.Organization != current.Organization || previous.Project != current.Project {
+			return tracker.ChangeSourceCapture{}, ErrMissingWorkspace
+		}
+		issue.AttemptWorkspace = previous
+	}
+	info, err := l.Existing(issue)
+	if errors.Is(err, ErrMissingWorkspace) && previous != (AttemptWorkspace{}) {
+		issue.AttemptWorkspace = AttemptWorkspace{}
+		info, err = l.Existing(issue)
+	}
+	if err != nil {
+		return tracker.ChangeSourceCapture{}, err
+	}
+	if !l.isSourceWorktree(ctx, info.Path) {
+		return tracker.ChangeSourceCapture{}, ErrLocalCheckpointChanged
+	}
+	return CaptureChangeSource(ctx, info.Path, base, head)
+}
+
 func (l *LocalGit) importChangeSource(ctx context.Context, source *ChangeSource) (err error) {
 	version := source.Version
 	if !validLandingHead(version.HeadSHA) || !validLandingHead(version.BaseSHA) || version.Repository == "" || RepositoryURL(ctx, l.sourceRoot) != version.Repository {
