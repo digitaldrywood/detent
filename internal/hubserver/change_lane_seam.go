@@ -6,13 +6,17 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/changeapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/changefiles"
 	"github.com/digitaldrywood/detent/internal/hubserver/changelanding"
 	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -516,4 +520,80 @@ func (s *Service) releaseCheckoutRepository(ctx context.Context, scope hubscope.
 
 func (s *Service) requireReleaseCollaboration(ctx context.Context, r tenantstore.Reader, now time.Time) error {
 	return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", now))
+}
+
+func prepareChangeContent(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	return changefiles.PrepareChangeContent(ctx, organization, data)
+}
+
+func prepareMeteredContent(ctx context.Context, organization string, data []byte, billable bool) (attachment.ArchiveReference, error) {
+	return changefiles.PrepareMeteredContent(ctx, organization, data, billable)
+}
+
+func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference, billable bool) error {
+	return s.changeContent().RegisterChangeContent(ctx, organization, ref, billable)
+}
+
+func (s *Service) registerConfigurationContent(ctx context.Context, organization string, ref attachment.ArchiveReference) error {
+	return s.changeContent().RegisterConfigurationContent(ctx, organization, ref)
+}
+
+func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore.Writer, organization string, ref attachment.ArchiveReference, billable, withinAllowance bool) error {
+	return s.changeContent().RegisterChangeContentRecord(ctx, w, organization, ref, billable, withinAllowance)
+}
+
+func (s *Service) checkChangeContentAllowance(ctx context.Context, organization string, refs map[string]attachment.ArchiveReference, next attachment.ArchiveReference) error {
+	return s.changeContent().CheckChangeContentAllowance(ctx, organization, refs, next)
+}
+
+func (s *Service) changeContent() *changefiles.Content {
+	return changefiles.NewContent(changefiles.ContentDeps{
+		Repository: s.config.TenantRepository,
+		Clock:      s.config.Clock,
+		Plans:      func() *hostedplans.HostedPlansConfig { return s.database.plansService().Plans() },
+		EntitlementRecord: func(ctx context.Context, r billingstore.Reader, now time.Time) (hostedplans.HostedEntitlement, error) {
+			return s.database.plansService().EntitlementRecord(ctx, r, now)
+		},
+	})
+}
+
+func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape tracker.QualityEscape) error {
+	return changerules.ValidateQualityBasis(snapshot, escape)
+}
+
+type preparedTenantQualityEscape = changerules.PreparedQualityEscape
+
+func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.DiscussChange, now time.Time) (*preparedTenantQualityEscape, error) {
+	return s.changeQuality().PrepareQualityEscapeTenant(ctx, scope, change, request, now)
+}
+
+func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, escape tracker.QualityEscape, prepared *preparedTenantQualityEscape) error {
+	return changerules.RecheckTenantQualityEscape(ctx, w, scope, change, escape, prepared)
+}
+
+func (s *Service) changeQuality() *changerules.QualityEscapes {
+	return changerules.NewQualityEscapes(changerules.QualityEscapesDeps{
+		PopulationLimit:                maxAnalyticsPopulation,
+		Repository:                     s.config.TenantRepository,
+		AuthorizeAccessScope:           s.authorizeAccessScope,
+		RunDetailStoreFor:              s.runDetailStoreFor,
+		HydrateCanonicalWorkItemRecord: s.hydrateCanonicalWorkItemRecord,
+		HydrateCommentRecord:           s.hydrateCommentRecord,
+	})
+}
+
+func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string, locked bool) ([]string, error) {
+	return changefiles.ValidateRecordContent(ctx, r, scope, changeAttachmentFields(fields), artifacts, artifactName, locked, cloudContentAttachmentReferences)
+}
+
+func bindChangeRecordContent(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item string, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string) error {
+	return changefiles.BindRecordContent(ctx, w, scope, item, changeAttachmentFields(fields), artifacts, artifactName, cloudContentAttachmentReferences)
+}
+
+func changeAttachmentFields(fields []cloudContentField) []changefiles.ContentField {
+	result := make([]changefiles.ContentField, len(fields))
+	for i, field := range fields {
+		result[i] = changefiles.ContentField{Name: field.name, Value: field.value}
+	}
+	return result
 }

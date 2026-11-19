@@ -1,4 +1,4 @@
-package hubserver
+package changefiles
 
 import (
 	"context"
@@ -16,7 +16,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string, locked bool) ([]string, error) {
+type ContentField struct {
+	Name  string
+	Value string
+}
+type AttachmentReferences func(string, hubscope.NativeScope) ([]attachment.Reference, error)
+
+func ValidateRecordContent(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, fields []ContentField, artifacts []tracker.ChangeArtifact, artifactName string, locked bool, references AttachmentReferences) ([]string, error) {
 	project, err := r.ProjectMetadata(ctx, scope.Project)
 	if err != nil {
 		return nil, err
@@ -26,7 +32,7 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 	}
 	var ids []string
 	for _, field := range fields {
-		refs, err := cloudContentAttachmentReferences(field.value, scope)
+		refs, err := references(field.Value, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -65,10 +71,10 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 	}
 	resolve := func(id string) (attachment.Metadata, error) { return metadata[id], nil }
 	for _, field := range fields {
-		err := attachment.ValidateVisualReferences(field.value, string(scope.Organization), string(scope.Project), resolve)
+		err := attachment.ValidateVisualReferences(field.Value, string(scope.Organization), string(scope.Project), resolve)
 		var refusal *attachment.VisualReferenceError
 		if errors.As(err, &refusal) {
-			return nil, hubapi.NativePublicInvalid(fmt.Sprintf("%s block %d: %s", field.name, refusal.Block, attachment.VisualReferenceMessage))
+			return nil, hubapi.NativePublicInvalid(fmt.Sprintf("%s block %d: %s", field.Name, refusal.Block, attachment.VisualReferenceMessage))
 		}
 		if err != nil {
 			return nil, err
@@ -90,8 +96,8 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 	return ids, nil
 }
 
-func bindChangeRecordContent(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item string, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string) error {
-	ids, err := validateChangeRecordContent(ctx, w, scope, fields, artifacts, artifactName, true)
+func BindRecordContent(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item string, fields []ContentField, artifacts []tracker.ChangeArtifact, artifactName string, references AttachmentReferences) error {
+	ids, err := ValidateRecordContent(ctx, w, scope, fields, artifacts, artifactName, true, references)
 	if err != nil {
 		return err
 	}

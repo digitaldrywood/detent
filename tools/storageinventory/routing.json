@@ -2021,7 +2021,7 @@
         "tables": []
       }
     },
-    "internal/hubserver/change_content.go": {
+    "internal/hubserver/changefiles/change_content.go": {
       "disposition": "serving",
       "families": [
         "collaboration",
@@ -2030,7 +2030,7 @@
       ],
       "inventory": {
         "operations": {
-          "prepareMeteredContent:Prepare": 1
+          "PrepareMeteredContent:Prepare": 1
         },
         "tables": []
       }
