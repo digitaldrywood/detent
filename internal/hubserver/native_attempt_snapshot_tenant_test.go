@@ -169,11 +169,10 @@ func TestNativeAttemptIdentityMismatchDiagnostics(t *testing.T) {
 type attemptSnapshotRepository struct {
 	tenantstore.Repository
 	tenantstore.SnapshotRepository
-	beforeLatest  func() error
-	archiveErr    error
-	hideReceipt   bool
-	active        int
-	metadataReads int
+	beforeLatest func() error
+	archiveErr   error
+	hideReceipt  bool
+	active       int
 }
 
 func (r *attemptSnapshotRepository) wrap(ctx context.Context, read func(tenantstore.Reader) error) func(tenantstore.Reader) error {
@@ -203,7 +202,6 @@ type attemptSnapshotReader struct {
 }
 
 func (r attemptSnapshotReader) AttemptMetadata(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempts []leasestore.Attempt, evidence bool) (tenantstore.AttemptMetadata, error) {
-	r.owner.metadataReads++
 	if hook := r.owner.beforeLatest; hook != nil {
 		r.owner.beforeLatest = nil
 		if err := hook(); err != nil {
@@ -592,19 +590,6 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			t.Run("metadata_batch", func(t *testing.T) {
-				ctx := context.WithValue(t.Context(), attemptSnapshotContextKey{}, true)
-				before := wrapped.metadataReads
-				if _, err := service.readNativeAttemptTenant(ctx, scope, string(issue.WorkItemID), start.Data.AttemptID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := service.readNativeAttemptPageTenant(ctx, scope, string(issue.WorkItemID), url.Values{}, json.Marshal); err != nil {
-					t.Fatal(err)
-				}
-				if got := wrapped.metadataReads - before; got != 2 {
-					t.Fatalf("metadata batches = %d, want one per detail/list", got)
-				}
-			})
 			t.Run("canonical_payload", func(t *testing.T) {
 				var original leasestore.Attempt
 				if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {

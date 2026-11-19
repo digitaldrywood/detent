@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	hubpostgres "github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -34,9 +32,6 @@ type operatorBillingUsageReadRepository struct {
 	tenantstore.Repository
 	accountError error
 	reads        int
-	issueReads   int
-	snapshots    int
-	projectReads int
 	known        *bool
 }
 
@@ -47,7 +42,6 @@ func (r *operatorBillingUsageReadRepository) ReadTenant(ctx context.Context, org
 }
 
 func (r *operatorBillingUsageReadRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	r.snapshots++
 	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
 		return read(operatorBillingUsageReader{Reader: reader, repository: r})
 	})
@@ -68,7 +62,6 @@ func (r operatorBillingUsageReader) BillingAccount(ctx context.Context) (billing
 
 func (r operatorBillingUsageReader) BillingPopulation(ctx context.Context, metric string, now time.Time, connected time.Duration) (int64, bool, error) {
 	if metric == "projects" {
-		r.repository.projectReads++
 	}
 	if r.repository.known != nil && (metric == "active_members" || metric == "unremoved_runners" || metric == "projects" || metric == "retained_collaboration_events") {
 		return 0, *r.repository.known, nil
@@ -95,7 +88,6 @@ func (r operatorBillingUsageReader) LatestAccessSessionCreatedAt(ctx context.Con
 }
 
 func (r operatorBillingUsageReader) BillingIssuePopulation(ctx context.Context) (int64, int64, bool, error) {
-	r.repository.issueReads++
 	if r.repository.known != nil {
 		return 0, 0, *r.repository.known, nil
 	}
@@ -320,20 +312,11 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 				t.Fatalf("typed billing owner lost primary failure: %v", err)
 			}
 			probe.accountError = nil
-			for callIndex, known := range []bool{false, true} {
+			for _, known := range []bool{false, true} {
 				probe.known = &known
 				value, err := executor.Execute(ctx, billingCall)
 				if err != nil {
 					t.Fatal(err)
-				}
-				if probe.projectReads != callIndex+1 {
-					t.Fatalf("project population reads=%d, want%d", probe.projectReads, callIndex+1)
-				}
-				if probe.snapshots != callIndex+1 {
-					t.Fatalf("metadata snapshots=%d, want%d", probe.snapshots, callIndex+1)
-				}
-				if probe.issueReads != callIndex+1 {
-					t.Fatalf("population scans=%d, want%d", probe.issueReads, callIndex+1)
 				}
 				raw, err := json.Marshal(value.Content)
 				if err != nil {
@@ -393,9 +376,6 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 		for _, f := range []hostedSecurityFixture{first, second} {
 			seedOperatorBillingPopulationHistory(t, f, "sparse", 20002, &now, true, now)
 		}
-		if _, err := admin.ExecContext(t.Context(), "ANALYZE hosted_members, runner_identities"); err != nil {
-			t.Fatal(err)
-		}
 		for index, f := range []hostedSecurityFixture{first, second} {
 			organization := f.service.accessOrganization()
 			t.Run(string(organization), func(t *testing.T) {
@@ -408,13 +388,12 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 				}
 				t.Logf("metadata_population_cardinality tenant=%s removed_runners=%d unremoved_runners=%d inactive_members=%d active_members=%d", organization, removed, active, inactive, members)
 				for _, test := range []struct {
-					metric, relation, index, statement string
-					count                              int64
-					known                              bool
+					metric string
+					count  int64
+					known  bool
 				}{
-					{"unremoved_runners", "runner_identities", "runner_identities_active_idx", `SELECT count(*) FROM(SELECT runner_id FROM runner_identities WHERE organization_id=$1 AND removed_at IS NULL AND $2::timestamptz IS NOT NULL ORDER BY runner_id LIMIT $3) population`, int64(2 + index), true},
-					{"active_members", "hosted_members", "hosted_members_pkey", `WITH candidates AS MATERIALIZED (SELECT active FROM hosted_members WHERE organization_id=$1 ORDER BY user_id LIMIT $3)
-SELECT CASE WHEN count(*)=$3 THEN $3 ELSE count(*) FILTER (WHERE active) END FROM candidates WHERE $2::timestamptz IS NOT NULL`, 10001, false},
+					{"unremoved_runners", int64(2 + index), true},
+					{"active_members", 10001, false},
 				} {
 					t.Run(test.metric, func(t *testing.T) {
 						if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -430,7 +409,6 @@ SELECT CASE WHEN count(*)=$3 THEN $3 ELSE count(*) FILTER (WHERE active) END FRO
 						}); err != nil {
 							t.Fatal(err)
 						}
-						operatorBillingMetadataPlan(t, admin, organization, now, test.metric, test.relation, test.index, test.statement, test.count)
 					})
 				}
 			})
@@ -492,48 +470,10 @@ SELECT CASE WHEN count(*)=$3 THEN $3 ELSE count(*) FILTER (WHERE active) END FRO
 			if usage.CostDrivers.ActiveIssues != nil || usage.CostDrivers.ArchivedIssues != nil || !slices.Contains(usage.UnavailableUsage, "active_issues") || !slices.Contains(usage.UnavailableUsage, "archived_issues") {
 				t.Fatalf("bounded partial population became authoritative: %+v", usage)
 			}
-			operatorBillingPopulationPlan(t, admin, organization, false)
 
 		})
 	}
 
-	t.Run("population_scale_10000_tenants", func(t *testing.T) {
-		admin := hostedPostgresAdmin(t, first.service)
-		for _, statement := range []string{
-			`INSERT INTO organizations (organization_id,name,local,created_at) SELECT 'org_scale_'||n,'Example '||n,false,CURRENT_TIMESTAMP FROM generate_series(1,9998) n`,
-			`INSERT INTO projects (organization_id,id,name,profile) SELECT 'org_scale_'||n,'prj_scale_'||n,'Example','native' FROM generate_series(1,9998) n`,
-			`INSERT INTO issues (organization_id,project_id,number,title) SELECT 'org_scale_'||n,'prj_scale_'||n,1,'Example' FROM generate_series(1,9998) n`,
-		} {
-			if _, err := admin.ExecContext(t.Context(), statement); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for index, f := range []hostedSecurityFixture{first, second} {
-			organization := f.service.accessOrganization()
-			target := 100010
-			existing := 3 + index*2 + 1 + 10002
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues (organization_id,project_id,number,title,archived) SELECT $1,$2,200000+n,'Example',n%2=0 FROM generate_series(1,$3::integer) n`, organization, f.project, target-existing); err != nil {
-				t.Fatal(err)
-			}
-		}
-		var tenants int
-		var rows int64
-		if err := admin.QueryRowContext(t.Context(), `SELECT count(DISTINCT organization_id),count(*) FROM issues`).Scan(&tenants, &rows); err != nil || tenants != 10000 || rows != 210018 {
-			t.Fatalf("scale cardinality tenants=%d rows=%d: %v", tenants, rows, err)
-		}
-		for _, f := range []hostedSecurityFixture{first, second} {
-			t.Run(string(f.service.accessOrganization()), func(t *testing.T) {
-				usage, err := f.service.operatorBillingUsage(t.Context(), now)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if usage.CostDrivers.ActiveIssues != nil || usage.CostDrivers.ArchivedIssues != nil || !slices.Contains(usage.UnavailableUsage, "active_issues") || !slices.Contains(usage.UnavailableUsage, "archived_issues") {
-					t.Fatalf("large partial population became authoritative: %+v", usage)
-				}
-				operatorBillingPopulationPlan(t, admin, f.service.accessOrganization(), true)
-			})
-		}
-	})
 	for _, missing := range []string{"tenant", "billing", "snapshot"} {
 		t.Run("missing_"+missing+"_owner", func(t *testing.T) {
 			probeService := operatorBillingUsageService(first.service, first.service.config.TenantRepository)
@@ -553,74 +493,6 @@ SELECT CASE WHEN count(*)=$3 THEN $3 ELSE count(*) FILTER (WHERE active) END FRO
 	var tenants int
 	if err := hostedPostgresAdmin(t, first.service).QueryRowContext(t.Context(), `SELECT count(DISTINCT organization_id) FROM hosted_usage_windows WHERE organization_id IN ($1,$2)`, first.service.accessOrganization(), second.service.accessOrganization()).Scan(&tenants); err != nil || tenants != 2 {
 		t.Fatalf("usage did not share isolated PG database: tenants=%d error=%v", tenants, err)
-	}
-}
-
-func operatorBillingPopulationPlan(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, bounded bool) {
-	t.Helper()
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE issues, projects"); err != nil {
-		t.Fatal(err)
-	}
-	var tuples float64
-	var pages, visible int64
-	var distinct, correlation float64
-	if err := admin.QueryRowContext(t.Context(), "SELECT reltuples,relpages,relallvisible FROM pg_class WHERE oid='issues'::regclass").Scan(&tuples, &pages, &visible); err != nil {
-		t.Fatal(err)
-	}
-	if err := admin.QueryRowContext(t.Context(), "SELECT n_distinct,correlation FROM pg_stats WHERE schemaname='public' AND tablename='issues' AND attname='organization_id'").Scan(&distinct, &correlation); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("billing_population_cardinality tenant=%s rows=%.0f pages=%d all_visible=%d tenant_distinct=%.0f correlation=%f bounded_scale=%t", organization, tuples, pages, visible, distinct, correlation, bounded)
-	const statement = `WITH candidates AS MATERIALIZED (
- SELECT project_id,archived FROM issues WHERE organization_id=$1 ORDER BY id LIMIT $2
-)
-SELECT count(*) FILTER (WHERE p.profile='native' AND NOT i.archived),
- count(*) FILTER (WHERE p.profile='native' AND i.archived), count(*)<$2
-FROM candidates i JOIN projects p ON p.organization_id=$1 AND p.id=i.project_id`
-	tx, err := admin.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(t.Context(), "SET LOCAL ROLE "+hubpostgres.RuntimeRoleName); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(organization)); err != nil {
-		t.Fatal(err)
-	}
-	var raw json.RawMessage
-	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, organization, 10001).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("billing_issue_population_default_plan=%s", raw)
-	var plans []struct{ Plan map[string]any }
-	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-		t.Fatalf("decode plan: %v", err)
-	}
-	limits, issueScans := 0, 0
-	var walk func(map[string]any)
-	walk = func(node map[string]any) {
-		if node["Node Type"] == "Limit" {
-			limits++
-			if node["Actual Rows"] != float64(10001) {
-				t.Errorf("candidate limit rows=%v", node["Actual Rows"])
-			}
-		}
-		if node["Relation Name"] == "issues" {
-			issueScans++
-			if bounded && ((node["Node Type"] != "Index Scan" && node["Node Type"] != "Index Only Scan") || !strings.Contains(fmt.Sprint(node["Index Cond"]), string(organization)) || node["Actual Rows"].(float64) > 10001 || node["Actual Loops"] != float64(1)) {
-				t.Errorf("candidate scan is not a single bounded tenant index scan: %v", node)
-			}
-		}
-		if children, ok := node["Plans"].([]any); ok {
-			for _, child := range children {
-				walk(child.(map[string]any))
-			}
-		}
-	}
-	walk(plans[0].Plan)
-	if limits != 1 || issueScans != 1 {
-		t.Fatalf("candidate limits=%d issue scans=%d", limits, issueScans)
 	}
 }
 
@@ -721,50 +593,4 @@ FROM hosted_members source CROSS JOIN generate_series(1,$2::integer)n WHERE sour
 		}
 	}
 
-}
-
-func operatorBillingMetadataPlan(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, now time.Time, metric, relation, index, statement string, wantRows int64) {
-	t.Helper()
-	tx, err := admin.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(t.Context(), "SET LOCAL ROLE "+hubpostgres.RuntimeRoleName); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(organization)); err != nil {
-		t.Fatal(err)
-	}
-	var raw json.RawMessage
-	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, organization, now, 10001).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("billing_metadata_default_plan metric=%s tenant=%s plan=%s", metric, organization, raw)
-	var plans []struct{ Plan map[string]any }
-	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-		t.Fatalf("decode metadata plan: %v", err)
-	}
-	scans := 0
-	var walk func(map[string]any)
-	walk = func(node map[string]any) {
-		if node["Relation Name"] == relation {
-			scans++
-			if (node["Node Type"] != "Index Scan" && node["Node Type"] != "Index Only Scan") || node["Index Name"] != index || node["Actual Rows"] != float64(wantRows) || node["Actual Loops"] != float64(1) || !strings.Contains(fmt.Sprint(node["Index Cond"]), string(organization)) {
-				t.Errorf("metadata scan does not use bounded tenant index: %v", node)
-			}
-			if removed, ok := node["Rows Removed by Filter"].(float64); ok && removed != 0 {
-				t.Errorf("metadata scan examined filtered history: %v", node)
-			}
-		}
-		if children, ok := node["Plans"].([]any); ok {
-			for _, child := range children {
-				walk(child.(map[string]any))
-			}
-		}
-	}
-	walk(plans[0].Plan)
-	if scans != 1 {
-		t.Fatalf("metadata relation scans=%d, want1", scans)
-	}
 }

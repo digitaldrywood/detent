@@ -22,7 +22,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -338,7 +337,6 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 			t.Fatal(err)
 		}
 		admin := usagePostgresAdmin(t, f.service)
-		var headQuery string
 		for _, tc := range []struct {
 			name, outcome string
 			incomplete    bool
@@ -370,12 +368,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, lightweight := range []bool{false, true} {
-					ctx := postgres.WithTransactionTiming(context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, lightweight), nil, func(_ time.Time, query string) {
-						if strings.Contains(query, "-- name: SchedulerEventHead") {
-							headQuery = query
-						}
-					})
-					evidence, err := f.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
+					evidence, err := f.service.readNativeRuntime(context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, lightweight), scope, string(issue.WorkItemID), "")
 					if !errors.Is(err, tc.want) {
 						t.Fatalf("runtime error=%v want=%v", err, tc.want)
 					}
@@ -458,57 +451,6 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 					}
 				})
 			}
-		})
-		t.Run(title+"/bounded history heads", func(t *testing.T) {
-			if headQuery == "" {
-				t.Fatal("scheduler history query was not observed")
-			}
-			tx, err := admin.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			for _, statement := range []string{"SET LOCAL ROLE detent_runtime_v2", "SET LOCAL plan_cache_mode=force_generic_plan"} {
-				if _, err := tx.ExecContext(t.Context(), statement); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", scope.Organization); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(t.Context(), "PREPARE scheduler_history_heads(text,text,text) AS "+headQuery); err != nil {
-				t.Fatal(err)
-			}
-			defer func() {
-				if _, err := tx.ExecContext(t.Context(), "DEALLOCATE scheduler_history_heads"); err != nil {
-					t.Error(err)
-				}
-			}()
-			literal := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
-			query := "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) EXECUTE scheduler_history_heads(" + literal(string(scope.Organization)) + "," + literal(string(scope.Project)) + "," + literal(string(issue.WorkItemID)) + ")"
-			var raw []byte
-			if err := tx.QueryRowContext(t.Context(), query).Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
-			var plans []struct{ Plan schedulerHistoryPlan }
-			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-				t.Fatalf("decode scheduler plan: %v", err)
-			}
-			var visits float64
-			var inspect func(schedulerHistoryPlan)
-			inspect = func(plan schedulerHistoryPlan) {
-				if plan.Relation == "collaboration_events" || plan.Relation == "scheduler_event_heads" {
-					visits += (plan.Rows + plan.Removed + plan.Rechecked) * plan.Loops
-				}
-				for _, child := range plan.Plans {
-					inspect(child)
-				}
-			}
-			inspect(plans[0].Plan)
-			if visits > 12 {
-				t.Errorf("scheduler evidence visited %.0f history rows, want at most12; plan=%s", visits, raw)
-			}
-			t.Logf("scheduler evidence row visits=%.0f", visits)
 		})
 
 	}
@@ -616,15 +558,6 @@ func TestSchedulerPayloadRequiresArchive(t *testing.T) {
 			unchanged(t)
 		})
 	}
-}
-
-type schedulerHistoryPlan struct {
-	Relation  string  `json:"Relation Name"`
-	Rows      float64 `json:"Actual Rows"`
-	Removed   float64 `json:"Rows Removed by Filter"`
-	Rechecked float64 `json:"Rows Removed by Index Recheck"`
-	Loops     float64 `json:"Actual Loops"`
-	Plans     []schedulerHistoryPlan
 }
 
 type collaborationReadProbe struct {

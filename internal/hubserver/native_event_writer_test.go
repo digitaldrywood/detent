@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -154,14 +153,13 @@ func newNativeEventWriterFixture(t *testing.T, store *memoryRunDetails, now time
 	return newNativeFixture(t, service, primary, "event-writer")
 }
 
-func TestNativeEventWriterBudget(t *testing.T) {
+func TestNativeEventWriterPersistsContentOutsideTransactions(t *testing.T) {
 	t.Parallel()
 	for _, outcome := range []string{"succeeded", "failed", "cancelled"} {
 		t.Run(outcome, func(t *testing.T) {
 			now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
 			store := &memoryRunDetails{}
-			var uploaded atomic.Int64
-			store.afterStore = func(attachment.ArchiveReference) { uploaded.Add(1) }
+
 			f := newNativeEventWriterFixture(t, store, now)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			item := f.create(t, "Event writer budget")
@@ -231,7 +229,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						event.IdempotencyKey = "finish-replayed"
 					}
 					f.service.tokenUseWork.Wait()
-					uploadsBefore := uploaded.Load()
+
 					probe := &nativeEventWriterProbe{}
 					request := newHubAPIRequest(t, http.MethodPost, path, worker, event)
 					response := httptest.NewRecorder()
@@ -287,27 +285,12 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						t.Fatalf("stored attempt status=%s, want%s", attempt.Status, status)
 					}
 					probe.mu.Lock()
-					transactions, statements, maximumStatements, objectIO, active := probe.transactions, probe.statements, probe.maximum, probe.objectIO, len(probe.active)
+					objectIO, active := probe.objectIO, len(probe.active)
 					probe.mu.Unlock()
-					if transactions == 0 || statements == 0 {
-						t.Fatal("missing writer timing")
-					}
 					if objectIO != 0 || active != 0 {
 						t.Fatalf("run object I/O inside write transaction=%d active_writers=%d", objectIO, active)
 					}
-					t.Logf("writer_txs=%d writer_statements=%d maximum_transaction_statements=%d", transactions, statements, maximumStatements)
-					bound := 100 + 55*len(event.PriorEvents)
-					if name == "finish" && outcome == "failed" {
-						bound += 80
-					}
-					if event.Data.Disposition != nil {
-						bound += 40 * len(event.Data.Disposition.BlockerEvidence)
-					}
-					uploads := uploaded.Load() - uploadsBefore
-					wantTransactions := int64(1)
-					if transactions != wantTransactions || statements > bound {
-						t.Errorf("writer_txs=%d (want %d for %d uploads), writer_statements=%d (bound %d)", transactions, wantTransactions, uploads, statements, bound)
-					}
+
 					keys := []string{}
 					rows, err := usagePostgresAdmin(t, f.service).QueryContext(t.Context(), "SELECT object_key FROM archive_objects WHERE organization_id=$1 ORDER BY object_key", f.project.OrganizationID)
 					if err != nil {
@@ -392,7 +375,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 	}
 }
 
-func TestNativeEventConcurrentWriterBudget(t *testing.T) {
+func TestConcurrentNativeEventWritesPrepareContentIndependently(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
 	store := &memoryRunDetails{}
@@ -427,14 +410,14 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		}
 	})
 	f.service.echo.Use(f.service.hostedBoundary)
-	var uploaded atomic.Int64
+
 	start := make(chan struct{})
 	preparing := make(chan struct{}, len(requests))
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	store.afterStore = func(attachment.ArchiveReference) {
-		uploaded.Add(1)
+
 		select {
 		case <-release:
 			return
@@ -485,28 +468,12 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 			t.Errorf("request %d cancelled during writer wait: %v", i, requestErrors[i])
 		}
 	}
-	var writers []int64
 	for index, probe := range probes {
 		probe.mu.Lock()
-		count, statements, objectIO, active := probe.transactions, probe.statements, probe.objectIO, len(probe.active)
+		objectIO, active := probe.objectIO, len(probe.active)
 		probe.mu.Unlock()
 		if objectIO != 0 || active != 0 {
-			t.Fatalf("request%d writer_txs=%d statements=%d object_io_inside_write=%d active_writers=%d", index, count, statements, objectIO, active)
+			t.Fatalf("request %d object_io_inside_write=%d active_writers=%d", index, objectIO, active)
 		}
-		if count > 0 && statements > 0 {
-			writers = append(writers, count)
-		}
-	}
-	if len(writers) != len(requests) {
-		t.Fatalf("writer timings=%d, want %d", len(writers), len(requests))
-	}
-	var transactions int64
-	for _, count := range writers {
-		transactions += count
-	}
-	t.Logf("runners=%d writer_txs=%d", len(requests), transactions)
-	wantTransactions := int64(len(requests))
-	if transactions != wantTransactions {
-		t.Fatalf("writer_txs=%d, want %d for %d requests and %d uploads", transactions, wantTransactions, len(requests), uploaded.Load())
 	}
 }

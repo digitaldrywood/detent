@@ -21,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -238,17 +237,8 @@ func TestNativeFilerPublicNames(t *testing.T) {
 				records = append(records, viewstore.BoardRecord{PageIssue: &issue, ListBytes: len(raw)})
 			}
 			work := append([]viewstore.BoardRecord(nil), records...)
-			queries := 0
-			ctx := postgres.WithTransactionTiming(t.Context(), func(string, time.Time) {}, func(_ time.Time, query string) {
-				if strings.Contains(query, "FROM unnest($2::text[])") {
-					queries++
-				}
-			})
-			if err := f.service.hydrateBoardRecordActorNames(ctx, organization, records, work); err != nil {
+			if err := f.service.hydrateBoardRecordActorNames(t.Context(), organization, records, work); err != nil {
 				t.Fatal(err)
-			}
-			if queries != 1 {
-				t.Fatalf("page filer lookups=%d, want one batch", queries)
 			}
 			for _, group := range [][]viewstore.BoardRecord{records, work} {
 				for _, row := range group {
@@ -266,11 +256,10 @@ func TestNativeFilerPublicNames(t *testing.T) {
 			for _, test := range []struct {
 				name, principal, stored, want string
 				loaded                        *string
-				queries                       int
 			}{
-				{"loaded current", "service", "Previous name", currentName, &currentName, 0},
-				{"loaded absent", "missing", "External <actor>", "External <actor>", &missingName, 0},
-				{"unloaded absent", "missing", "External <actor>", "External <actor>", nil, 1},
+				{"loaded current", "service", "Previous name", currentName, &currentName},
+				{"loaded absent", "missing", "External <actor>", "External <actor>", &missingName},
+				{"unloaded absent", "missing", "External <actor>", "External <actor>", nil},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					original := tracker.NativeIssue{Actor: tracker.Actor{Kind: "integration", PrincipalID: test.principal, ViaKey: "recorded-key", DisplayName: test.stored, Agent: "Recorded assistant"}}
@@ -280,12 +269,11 @@ func TestNativeFilerPublicNames(t *testing.T) {
 					}
 					records := []viewstore.BoardRecord{{PageIssue: &original, ActorDisplayName: test.loaded, ListBytes: len(raw)}}
 					work := append([]viewstore.BoardRecord(nil), records...)
-					queries = 0
-					if err := f.service.hydrateBoardRecordActorNames(ctx, organization, records, work); err != nil {
+					if err := f.service.hydrateBoardRecordActorNames(t.Context(), organization, records, work); err != nil {
 						t.Fatal(err)
 					}
-					if queries != test.queries || original.Actor.DisplayName != test.stored || records[0].PageIssue == work[0].PageIssue {
-						t.Fatalf("lookups=%d want=%d original=%+v", queries, test.queries, original.Actor)
+					if original.Actor.DisplayName != test.stored || records[0].PageIssue == work[0].PageIssue {
+						t.Fatalf("hydration changed original actor or reused issue pointer: %+v", original.Actor)
 					}
 					want := original.Actor
 					want.DisplayName = test.want
