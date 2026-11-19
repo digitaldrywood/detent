@@ -7,32 +7,16 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/githubhosted"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type GitHubImport struct {
-	EditSequence    int64            `json:"edit_sequence,string"`
-	IntakePending   bool             `json:"intake_pending"`
-	ID              string           `json:"import_id"`
-	IssueNumber     int              `json:"issue_number"`
-	WorkItemID      string           `json:"work_item_id,omitempty"`
-	Stage           string           `json:"stage"`
-	Cursor          string           `json:"cursor,omitempty"`
-	Revision        tracker.Revision `json:"revision,string"`
-	Pages           int              `json:"pages"`
-	Status          string           `json:"status"`
-	Gaps            []string         `json:"gaps"`
-	LastError       string           `json:"last_error,omitempty"`
-	RetryAfter      *time.Time       `json:"retry_after,omitempty"`
-	SourceUpdatedAt string           `json:"source_updated_at,omitempty"`
-	ObservedAt      string           `json:"observed_at"`
-}
+type GitHubImport = githubhosted.Import
 
 type startGitHubImportRequest struct {
 	tracker.Mutation
