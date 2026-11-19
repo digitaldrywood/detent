@@ -323,7 +323,7 @@ check-fast: check-invariants check-migrations check-generated check-app lint vet
 
 .PHONY: check-invariants
 check-invariants:
-	go test -timeout=120s ./internal/invariants
+	$(GO_TEST) ./internal/invariants
 
 modernize-check:
 	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...
