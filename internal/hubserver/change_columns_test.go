@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -24,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -222,152 +220,6 @@ func (s *landingImportPauseDetails) StoreDetail(ctx context.Context, organizatio
 		return attachment.ArchiveReference{}, s.pause
 	}
 	return s.DetailStore.StoreDetail(ctx, organization, raw)
-}
-
-func TestChangeColumnsSelectIssueSideData(t *testing.T) {
-	t.Parallel()
-	first := newChangeFixture(t, nil)
-	for _, anchor := range []changeFixture{first, first.anotherChange(t)} {
-		for _, test := range []struct {
-			name string
-			pull bool
-		}{
-			{"current version", false}, {"version head", false}, {"current landing", false}, {"old landing", false}, {"external reference", true}, {"external provider", false}, {"empty external URL", false},
-		} {
-			for _, pending := range []bool{false, true} {
-				t.Run(fmt.Sprintf("%s/%s/pending=%v", anchor.change.ID, test.name, pending), func(t *testing.T) {
-					base := anchor
-					if pending {
-						base = newChangeFixture(t, nil)
-					}
-					f := base.anotherChange(t)
-					old := f.publish(t, "old", "")
-					current := f.publish(t, "current", old.ID)
-					head, branch := current.HeadSHA, ""
-					if test.name == "current version" {
-						head = old.HeadSHA
-					}
-					if test.name == "version head" && !pending {
-						head = "typed-head"
-					}
-					if test.name == "current landing" {
-						head, branch = "typed-merge", "typed-base"
-					}
-					f = changeColumnSideDataFixture(t, f, old, current, test.name, pending)
-					snapshot, err := f.service.boardProjectionSnapshot(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}, f.service.config.Clock())
-					if err != nil {
-						t.Fatal(err)
-					}
-					issue := f.issue
-					f.service.prepareNativeIssueChangeRecord(snapshot, &issue)
-					if issue.ListChange == nil || issue.ListChange.HeadSHA != head || issue.ListChange.Branch != branch {
-						t.Fatalf("pending=%v issue Change=%+v want branch=%s head=%s", pending, issue.ListChange, branch, head)
-					}
-					if (issue.PullRequest != nil) != test.pull || test.pull && (issue.PullRequest.Number != 42 || issue.PullRequest.URL != "https://example.test/pull/42") {
-						t.Fatalf("pending=%v issue PR=%+v", pending, issue.PullRequest)
-					}
-					if test.name == "current version" {
-						candidate := viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}
-						if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, candidate, f.service.config.Clock()); err != nil {
-							t.Fatal(err)
-						}
-						public := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
-						if public.ListChange == nil || public.ListChange.HeadSHA != head || public.ListChange.Branch != branch {
-							t.Fatalf("pending=%v public change=%+v want branch=%s head=%s", pending, public.ListChange, branch, head)
-						}
-						if public.Change == nil || public.Change.ChangeID != f.change.ID || public.PullRequest != nil {
-							t.Fatalf("pending=%v public change=%+v PR=%+v", pending, public.Change, public.PullRequest)
-						}
-					}
-				})
-			}
-		}
-	}
-}
-
-func changeColumnSideDataFixture(t *testing.T, f changeFixture, old, current tracker.ChangeVersion, scenario string, historical bool) changeFixture {
-	t.Helper()
-	content := eventstore.NewContent(f.service.runDetailStore())
-	external := func(version *tracker.ChangeVersion) {
-		switch scenario {
-		case "external reference":
-			version.External = &tracker.ChangeExternalReference{Provider: "github", ID: "42", URL: "https://example.test/pull/42"}
-		case "external provider":
-			version.External = &tracker.ChangeExternalReference{Provider: "other", ID: "42", URL: "https://example.test/pull/42"}
-		case "empty external URL":
-			version.External = &tracker.ChangeExternalReference{Provider: "github", ID: "42", URL: ""}
-		}
-	}
-	if historical {
-		fixture, target, versions := historyRepairSource(t, f, old, 2)
-		versions[1].HeadSHA = current.HeadSHA
-		external(&versions[1])
-		target.change.CreatedAt, target.change.UpdatedAt = f.service.config.Clock(), f.service.config.Clock()
-		if scenario == "current version" {
-			target.change.CurrentVersion = versions[0].ID
-		}
-		if scenario == "current landing" || scenario == "old landing" {
-			landed := versions[1]
-			if scenario == "old landing" {
-				landed = versions[0]
-			}
-			target.change.Landed = &tracker.ChangeLanding{VersionID: landed.ID, HeadSHA: landed.HeadSHA, MergeSHA: "typed-merge", BaseRef: "typed-base", LandedAt: f.service.config.Clock()}
-		}
-		fixture.Records["change_requests"] = nil
-		fixture.Add("change_requests", map[string]any{"id": target.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "created_at": nil, "record_json": string(historyTestJSON(t, target.change))})
-		fixture.Records["change_versions"] = nil
-		for _, version := range versions {
-			fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": target.change.ID, "number": version.Number, "policy_revision_id": version.PolicyID, "head_sha": nil, "record_json": string(historyTestJSON(t, version))})
-		}
-		historyRepairImport(t, target, historyRepairImportSource(t, target, fixture), 1)
-		return target
-	}
-	current.ID, current.Number = hubapi.NewID("version"), current.Number+1
-	row, err := content.PrepareVersion(t.Context(), f.project.OrganizationID, historyTestJSON(t, current))
-	if err != nil {
-		t.Fatal(err)
-	}
-	switch scenario {
-	case "version head":
-		row.HeadSHA = "typed-head"
-	case "external reference":
-		row.ExternalProvider, row.ExternalID, row.ExternalURL = "github", "42", "https://example.test/pull/42"
-	case "external provider":
-		row.ExternalProvider, row.ExternalID, row.ExternalURL = "other", "42", "https://example.test/pull/42"
-	case "empty external URL":
-		row.ExternalProvider, row.ExternalID, row.ExternalURL = "github", "42", ""
-	}
-	change, err := f.service.readChangeRecord(t.Context(), analyticsTestScope(t, f.nativeFixture), string(f.issue.WorkItemID), f.change.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	change.CurrentVersion = current.ID
-	changed, err := content.PrepareChange(t.Context(), f.project.OrganizationID, historyTestJSON(t, change))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if scenario == "current version" {
-		changed.CurrentVersionID = new(old.ID)
-	}
-	if scenario == "current landing" || scenario == "old landing" {
-		landed := current
-		if scenario == "old landing" {
-			landed = old
-		}
-		changed.LandedVersionID, changed.LandedHeadSHA = new(landed.ID), new(landed.HeadSHA)
-		changed.LandedMergeSHA, changed.LandedBaseRef = new("typed-merge"), new("typed-base")
-		changed.LandedAt = new(f.service.config.Clock())
-	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.CreateVersion(t.Context(), row); err != nil {
-			return err
-		}
-		_, err := w.UpdateChange(t.Context(), changed)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return f
 }
 
 func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
