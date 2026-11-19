@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -207,5 +209,54 @@ func TestHubOwnedBlockedRecoveryR2PreservesInterruptedStop(t *testing.T) {
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
 	if after := f.reload(t); response.Code == http.StatusOK || after.State != "Blocked" || after.Revision != current.Revision+1 {
 		t.Fatalf("interrupted stop returned HTTP %d and left %s at revision %d", response.Code, after.State, after.Revision)
+	}
+}
+
+func TestHubOwnedBlockedRecoveryResumesCommentEvidence(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	configureHubOwnedBlockedRecovery(t, f)
+	f.finish(t, &tracker.NativeDisposition{Status: workpad.StatusBlocked, ReasonCode: "instance_limitation"})
+	path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+	var first tracker.NativeComment
+	for i := range 401 {
+		if i > 0 && i%75 == 0 {
+			f.advance(time.Minute)
+		}
+		request := tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("progress-%d", i), LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Body: "Machine diagnostic."}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.worker, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		if i == 0 {
+			decodeHubResponse(t, response, &first)
+		}
+	}
+	reportRunnerCapacity(t, f.service, f.base, f.worker, f.runner.binding.MachineID, f.runner.redemption.DisplayName, f.runner.redemption.BackendIsolation, f.runner.redemption.Capacity)
+	f.release(t)
+	blocked := seedHubOwnedBlockedRecovery(t, f.nativeFixture, f.reload(t), tracker.Actor{Kind: "runner", PrincipalID: f.runner.binding.RunnerID})
+	response := performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=recovery", f.worker, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	claim := hubOwnedRecoveryClaim(f, "resume-comment-evidence")
+	claim.WorkItemID = blocked.WorkItemID
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+	requireNativeStatus(t, response, http.StatusConflict)
+	if got := f.reload(t); got.State != "Blocked" || got.Revision != blocked.Revision {
+		t.Fatalf("partial evidence moved the item to %s revision %d", got.State, got.Revision)
+	}
+	edit := tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "question-in-examined-page"}, ExpectedRevision: first.Revision, Body: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - owner: human\n    reason: Product approval\nhuman_action: Choose the default visibility.\n```"}
+	response = performHubAPIRequest(t, f.service, http.MethodPatch, path+"/comments/"+first.ID, f.token, edit)
+	requireNativeStatus(t, response, http.StatusOK)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+	requireNativeStatus(t, response, http.StatusConflict)
+	if got := f.reload(t); got.State != "Blocked" || got.Revision != blocked.Revision {
+		t.Fatalf("claim crossed a question in the examined page: %+v", got)
+	}
+	edit.IdempotencyKey, edit.ExpectedRevision, edit.Body = "answered-question", first.Revision+1, "Use private visibility."
+	response = performHubAPIRequest(t, f.service, http.MethodPatch, path+"/comments/"+first.ID, f.token, edit)
+	requireNativeStatus(t, response, http.StatusOK)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	if got := f.reload(t); lease.WorkItemID != blocked.WorkItemID || got.Revision != blocked.Revision+1 || got.State != "Todo" {
+		t.Fatalf("resumed claim returned lease %+v with item %s at revision %d", lease, got.State, got.Revision)
 	}
 }

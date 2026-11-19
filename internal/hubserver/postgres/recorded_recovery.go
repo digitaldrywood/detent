@@ -22,7 +22,7 @@ func (s *session) AuthorizeRecordedRecovery(ctx context.Context, recovery leases
  AND a.lease_id=$8 AND a.fencing_token=$9 AND l.issue_id=a.issue_id AND l.fencing_token=a.fencing_token
  AND ($21::bigint=0 OR EXISTS (SELECT 1 FROM issues item
   WHERE item.organization_id=$1 AND item.project_id=$2 AND item.id=$3 AND item.native_id=$11
-  AND item.revision=$21 AND NOT item.archived AND lower(item.workflow_state_name)='blocked'))
+  AND item.revision=$21 AND item.event_sequence=$22 AND NOT item.archived AND lower(item.workflow_state_name)='blocked'))
  AND NOT EXISTS (SELECT 1 FROM native_attempts newer WHERE newer.organization_id=$1 AND newer.issue_id=$3 AND newer.fencing_token>a.fencing_token)
  AND NOT EXISTS (SELECT 1 FROM leases active WHERE active.organization_id=$1 AND active.issue_id=$3 AND active.released_at IS NULL AND active.expires_at>$10)
 ),
@@ -37,15 +37,8 @@ EXISTS (
   AND newer.type='workflow.transitioned' AND newer.sequence>$15)
  AND NOT EXISTS (SELECT 1 FROM collaboration_events changed
   WHERE changed.organization_id=$1 AND changed.project_id=$2 AND changed.work_item_id=$11
-  AND changed.sequence>$13 AND changed.sequence<>$15 AND changed.type<>'scheduler.decision'
-  AND changed.event_revision>$17)
- AND NOT EXISTS (
-  SELECT 1 FROM unnest(ARRAY['comment.created','comment.edited']) kind(type)
-  WHERE (SELECT count(*)>100 OR coalesce(bool_or(comment.actor_kind='human'),false)
-   FROM (SELECT actor_kind FROM collaboration_events
-    WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$11 AND type=kind.type AND sequence>$13
-    ORDER BY sequence DESC LIMIT 101) comment)
- )
+  AND changed.sequence>$13 AND changed.sequence<>$15 AND changed.type NOT IN ('scheduler.decision','comment.created','comment.edited')
+  AND changed.event_revision>0 AND changed.event_revision>$17)
 ),
 (SELECT count(DISTINCT reported.number) FROM unnest($18::bigint[]) reported(number)
  CROSS JOIN LATERAL (
@@ -81,7 +74,7 @@ AND NOT EXISTS (
    AND v.change_id=c.id AND v.id=c.landed_version_id AND v.landed_merge_sha=c.landed_merge_sha
   WHERE b.organization_id=$1 AND b.project_id=$2 AND b.number=merged.number AND v.landing_history_known AND v.landed_at IS NOT NULL
  )
-)`, s.organization, recovery.ProjectID, attempt.IssueID, attempt.ID, attempt.Sequence, attempt.PayloadObjectKey, attempt.CheckpointObjectKey, attempt.LeaseID, attempt.FencingToken, recovery.Now, recovery.WorkItemID, recovery.ReportEventID, recovery.ReportSequence, recovery.WorkflowEventID, recovery.WorkflowSequence, recovery.WorkflowObjectKey, recovery.ReportRevision, recovery.DependencyNumbers, attempt.Status, recovery.MergedDependencyNumbers, recovery.ExpectedRevision).Scan(&current, &history, &linked, &ready)
+)`, s.organization, recovery.ProjectID, attempt.IssueID, attempt.ID, attempt.Sequence, attempt.PayloadObjectKey, attempt.CheckpointObjectKey, attempt.LeaseID, attempt.FencingToken, recovery.Now, recovery.WorkItemID, recovery.ReportEventID, recovery.ReportSequence, recovery.WorkflowEventID, recovery.WorkflowSequence, recovery.WorkflowObjectKey, recovery.ReportRevision, recovery.DependencyNumbers, attempt.Status, recovery.MergedDependencyNumbers, recovery.ExpectedRevision, recovery.EventSequence).Scan(&current, &history, &linked, &ready)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -98,4 +91,13 @@ AND NOT EXISTS (
 		return fmt.Errorf("verify recorded recovery readiness: %w", corestore.ErrRevisionConflict)
 	}
 	return nil
+}
+
+func (s *session) RecoveryCommentHistory(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (string, int64, error) {
+	var progress string
+	var edit int64
+	err := s.db.QueryRow(ctx, `SELECT
+ coalesce((SELECT id FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='recovery.comments_examined' ORDER BY sequence DESC LIMIT 1),''),
+ coalesce((SELECT sequence FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='comment.edited' ORDER BY sequence DESC LIMIT 1),0)`, s.organization, project, item).Scan(&progress, &edit)
+	return progress, edit, mapError(ctx, err)
 }

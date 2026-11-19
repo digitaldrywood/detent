@@ -17992,7 +17992,9 @@
       "inventory": {
         "operations": {
           "session.AuthorizeRecordedRecovery:QueryRow": 1,
-          "session.AuthorizeRecordedRecovery:SQL": 1
+          "session.AuthorizeRecordedRecovery:SQL": 1,
+          "session.RecoveryCommentHistory:QueryRow": 1,
+          "session.RecoveryCommentHistory:SQL": 1
         },
         "tables": [
           "hub/change_requests",
