@@ -23,16 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type nativeClaimPreviewIssue struct {
-	tracker.NativeIssue
-	Blockers []nativeClaimBlocker `json:"blockers"`
-}
-
-type nativeClaimPreviewPage struct {
-	Items []nativeClaimPreviewIssue `json:"items"`
-	Next  tracker.WorkItemID        `json:"next,omitempty"`
-}
-
 func (s *Service) previewProviderCandidates(c echo.Context) error {
 	var request tracker.NativeCapacityPreview
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
@@ -49,7 +39,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusOK, page)
+	return c.JSONBlob(http.StatusOK, page)
 }
 
 func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeCapacityPreview, now time.Time) (nativeClaimPreviewPage, error) {
@@ -65,7 +55,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	var identity runnerstore.Identity
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nativeClaimPreviewPage{}, hubapi.NativeRunEventStorageUnavailable()
+		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -180,13 +170,13 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 		return nil
 	})
 	if err != nil {
-		return nativeClaimPreviewPage{}, err
+		return nil, err
 	}
 	if err := s.prepareNativeClaimLegacyAuditFacts(ctx, scope, plans); err != nil {
-		return nativeClaimPreviewPage{}, err
+		return nil, err
 	}
 	if err := s.prepareNativeClaimApprovals(ctx, scope, plans); err != nil {
-		return nativeClaimPreviewPage{}, err
+		return nil, err
 	}
 	refs := []attachment.ArchiveReference{}
 	if len(plans) > 0 {
@@ -212,11 +202,11 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	if len(plans) > 0 {
 		loaded, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).ProjectPolicy(ctx, projectPolicy)
 		if err != nil {
-			return nativeClaimPreviewPage{}, err
+			return nil, err
 		}
 		descriptor = &loaded
 		if err := loaded.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
-			return nativeClaimPreviewPage{}, &hubapi.NativeError{Code: "selector_no_match", Message: err.Error(), Status: http.StatusConflict}
+			return nil, &hubapi.NativeError{Code: "selector_no_match", Message: err.Error(), Status: http.StatusConflict}
 		}
 	}
 	for index := range plans {
@@ -228,13 +218,14 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			continue
 		}
 		if err != nil {
-			return nativeClaimPreviewPage{}, err
+			return nil, err
 		}
 		plans[index] = plan
 	}
 	landingCapacityChecked := false
 	landingCapacityAvailable := false
-	page := nativeClaimPreviewPage{Items: []nativeClaimPreviewIssue{}}
+	page := nativeClaimPreviewPage(nativePreviewPagePrefix)
+	var last tracker.WorkItemID
 	for _, plan := range plans {
 		if plan.Candidate.WorkItemID == "" {
 			continue
@@ -249,7 +240,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			if !landingCapacityChecked {
 				landingCapacityAvailable, err = s.nativeClaimLandingCapacityAvailable(ctx, scope.Organization, scope.Project, request.LandingCapacity, now)
 				if err != nil {
-					return nativeClaimPreviewPage{}, err
+					return nil, err
 				}
 				landingCapacityChecked = true
 			}
@@ -274,12 +265,21 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 				issue.OmittedFields = append(issue.OmittedFields, field)
 			}
 		}
-		page.Items = append(page.Items, nativeClaimPreviewIssue{NativeIssue: s.nativeIssueResponse(issue), Blockers: summary.Blockers})
+		cursor := tracker.WorkItemID(plan.Candidate.ID)
+		var added bool
+		page, added, err = page.add(nativeClaimPreviewIssue{NativeIssue: s.nativeIssueResponse(issue), Blockers: summary.Blockers})
+		if err != nil {
+			return nil, err
+		}
+		if !added {
+			return page.finish(last), nil
+		}
+		last = cursor
 	}
 	if len(candidates) == limit {
-		page.Next = tracker.WorkItemID(candidates[len(candidates)-1].ID)
+		return page.finish(tracker.WorkItemID(candidates[len(candidates)-1].ID)), nil
 	}
-	return page, nil
+	return page.finish(0), nil
 }
 
 func (s *Service) nativeClaimLandingCapacityAvailable(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, requested int, now time.Time) (bool, error) {
