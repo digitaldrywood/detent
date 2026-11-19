@@ -80,10 +80,18 @@ type AttemptWorker struct {
 
 const AttemptWorkerPageSize = 100
 
+type AttemptTermination struct {
+	WorkItemID   tracker.NativeWorkItemID `json:"work_item_id"`
+	AttemptID    string                   `json:"attempt_id"`
+	LeaseID      tracker.LeaseID          `json:"lease_id"`
+	FencingToken tracker.FencingToken     `json:"fencing_token,string"`
+}
+
 type AttemptWorkerPage struct {
-	ProjectID tracker.ProjectID `json:"project_id"`
-	Workers   []AttemptWorker   `json:"workers"`
-	Next      string            `json:"next"`
+	PendingTerminations []AttemptTermination `json:"pending_terminations,omitempty"`
+	ProjectID           tracker.ProjectID    `json:"project_id"`
+	Workers             []AttemptWorker      `json:"workers"`
+	Next                string               `json:"next"`
 }
 
 type ClaimState struct {

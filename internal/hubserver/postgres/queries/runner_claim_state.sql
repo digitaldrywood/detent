@@ -30,14 +30,15 @@ WHERE organization_id=sqlc.arg(organization_id) AND runner_id=sqlc.arg(runner_id
 
 -- name: RunnerAttemptWorkers :many
 WITH page AS MATERIALIZED (
- SELECT n.id,n.issue_id,n.lease_id,n.fencing_token,n.worker_pid,n.worker_pgid,n.worker_started_at,n.worker_start_key
+ SELECT n.id,n.issue_id,n.lease_id,n.fencing_token,n.worker_pid,n.worker_pgid,n.worker_started_at,n.worker_start_key,n.worker_retired_at
  FROM native_attempts n
  WHERE n.organization_id=sqlc.arg(organization_id) AND n.project_id=sqlc.arg(project_id) AND n.worker_runner_id=sqlc.arg(runner_id)
- AND n.worker_pid IS NOT NULL AND n.worker_retired_at IS NULL AND n.id>sqlc.arg(after_id)
+ AND n.worker_pid IS NOT NULL AND (n.worker_retired_at IS NULL OR (n.cleanup_acknowledged_at IS NULL AND n.status IN ('running','interrupted','cancelled')))
+ AND n.id>sqlc.arg(after_id)
  ORDER BY n.id LIMIT sqlc.arg(page_size)
 )
 SELECT page.id,i.native_id AS work_item_id,page.lease_id,page.fencing_token,l.machine_id,l.expires_at,
- page.worker_pid,page.worker_pgid,page.worker_started_at,page.worker_start_key,
+ page.worker_pid,page.worker_pgid,page.worker_started_at,page.worker_start_key,page.worker_retired_at,l.released_at,
  CASE WHEN l.released_at IS NULL AND l.expires_at>sqlc.arg(now)::timestamptz THEN 'live'
  WHEN EXISTS (SELECT 1 FROM leases newer WHERE newer.organization_id=l.organization_id AND newer.issue_id=l.issue_id AND newer.fencing_token>l.fencing_token) THEN 'replaced'
  WHEN l.released_at IS NULL OR l.release_reason='expired' THEN 'expired'
