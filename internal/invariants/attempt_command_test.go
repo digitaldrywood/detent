@@ -93,7 +93,7 @@ func checkAttemptCommands(t *testing.T, packagesByPath []*packages.Package) {
 
 func authorizedTransport(pkg, file, name string) bool {
 	switch pkg + "/" + file + ":" + name {
-	case "antigravity/process.go:RunTurn", "claudecode/process.go:RunTurn", "opencode/process.go:RunTurn", "piagent/process.go:RunTurn", "codex/transport.go:NewTransport", "workspace/hook.go:runHookCommand", "workspace/merge.go:runValidationCommand", "procgroup/identity.go:startOwnedCommand":
+	case "antigravity/process.go:RunTurn", "claudecode/process.go:runTurn", "opencode/process.go:RunTurn", "piagent/process.go:RunTurn", "codex/transport.go:NewTransport", "workspace/hook.go:runHookCommand", "workspace/merge.go:runValidationCommand", "procgroup/identity.go:startOwnedCommand":
 		return true
 	}
 	return false
