@@ -114,8 +114,8 @@ func testResumeClearedAuditAcrossTenants(t *testing.T) {
 	blockOnAuditReview(t, other, otherRun)
 	other.release(t)
 	otherBlocked := other.reload(t)
-	if otherBlocked.State != "Blocked" {
-		t.Fatalf("other tenant started in %s", otherBlocked.State)
+	if otherBlocked.State != "Blocked" || otherBlocked.Number != prior.Number {
+		t.Fatalf("other tenant item #%d started in %s, want #%d in Blocked", otherBlocked.Number, otherBlocked.State, prior.Number)
 	}
 	for i := range 401 {
 		if i > 0 && i%75 == 0 {
