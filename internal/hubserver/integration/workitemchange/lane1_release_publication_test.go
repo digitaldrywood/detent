@@ -103,17 +103,15 @@ func TestReleasePublication(t *testing.T) {
 				t.Fatalf("publication=%+v creates=%d", result, publisher.creates)
 			}
 			if name == "lost response" {
-				return
+				publisher.publication.URL += "?replay=1"
 			}
 			replay := h.Request(t, f.owner, http.MethodPost, path, request)
 			hubfixture.RequireStatus(t, replay, http.StatusOK)
 			if replay.Body.String() != response.Body.String() || publisher.creates != 1 {
 				t.Fatal("retry changed publication")
 			}
-			request.SourceMergeSHA = strings.Repeat("9", 40)
-			if rejected := h.Request(t, f.owner, http.MethodPost, path, request); rejected.Code == http.StatusOK {
-				t.Fatal("changed command replay accepted")
-			}
+			request.FencingToken = 1
+			hubfixture.RequireStatus(t, h.Request(t, f.owner, http.MethodPost, path, request), http.StatusConflict)
 		})
 	}
 	t.Run("repository spelling conflict", func(t *testing.T) {
