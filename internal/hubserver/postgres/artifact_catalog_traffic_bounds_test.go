@@ -166,7 +166,7 @@ func verifyCatalogTrafficAuthorityLock(t *testing.T, pool *pgxpool.Pool, org tra
 			t.Error(err)
 		}
 	}()
-	if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(org)); err != nil {
+	if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, true)", string(org)); err != nil {
 		t.Fatal(err)
 	}
 	var present int
