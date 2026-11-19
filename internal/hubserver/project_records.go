@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectadmin"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -148,16 +149,7 @@ func (s *Service) projectRecordWorkflow(ctx context.Context, record projectstore
 }
 
 func (s *Service) projectWorkflowMarkdown(ctx context.Context, v projectstore.Settings) (string, error) {
-	if v.WorkflowKey == "" {
-		return "", nil
-	}
-	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{OrganizationID: v.OrganizationID, PayloadObjectKey: v.WorkflowKey, PayloadSHA256: v.WorkflowSHA256, PayloadBytes: v.WorkflowBytes, PayloadContentBytes: v.WorkflowContentBytes})
-	if err != nil {
-		return "", err
-	}
-	var markdown string
-	err = json.Unmarshal(raw, &markdown)
-	return markdown, err
+	return projectadmin.WorkflowMarkdown(ctx, s.runDetailStore(), v)
 }
 
 func (s *Service) projectRecordNative(ctx context.Context, record projectstore.Record, models ...policystore.OrganizationModels) (tracker.NativeProject, error) {
