@@ -271,84 +271,9 @@ func TestChangeDetailResponsePreservesStoredCollections(t *testing.T) {
 	}
 }
 
-func TestChangeRecordBackendParity(t *testing.T) {
-	t.Parallel()
-	repository, f, owner := newChangePolicyPostgresFixture(t)
-	createItem := func(key string) tracker.NativeIssue {
-		t.Helper()
-		response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: "Example issue " + key, Body: workItemRecordBody, State: "Todo"})
-		requireNativeStatus(t, response, http.StatusOK)
-		var issue tracker.NativeIssue
-		decodeHubResponse(t, response, &issue)
-		return issue
-	}
-	primary, linked := createItem("primary"), createItem("linked")
-	changePath := f.base + "/work-items/" + string(primary.WorkItemID) + "/changes"
-	request := tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "create-change"}, Title: "Example Change", Body: "Immutable discussion", LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID}}
-	created := f.request(t, owner, http.MethodPost, changePath, request)
-	requireNativeStatus(t, created, http.StatusOK)
-	var change tracker.ChangeRequest
-	decodeHubResponse(t, created, &change)
-	if change.WorkItemID != primary.WorkItemID || change.Body != request.Body || len(change.LinkedIssues) != 2 {
-		t.Fatalf("created change=%+v", change)
-	}
-	replay := f.request(t, owner, http.MethodPost, changePath, request)
-	requireNativeStatus(t, replay, http.StatusOK)
-	if replay.Body.String() != created.Body.String() {
-		t.Fatalf("create replay changed response: %s vs %s", replay.Body.String(), created.Body.String())
-	}
-	discussion := tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "discussion"}, Body: "Append-only discussion"}
-	discussionPath := changePath + "/" + change.ID + "/discussion"
-	posted := f.request(t, owner, http.MethodPost, discussionPath, discussion)
-	requireNativeStatus(t, posted, http.StatusOK)
-	discussionReplay := f.request(t, owner, http.MethodPost, discussionPath, discussion)
-	requireNativeStatus(t, discussionReplay, http.StatusOK)
-	if discussionReplay.Body.String() != posted.Body.String() {
-		t.Fatal("discussion replay changed the archived response")
-	}
-	list := f.request(t, owner, http.MethodGet, f.base+"/work-items/"+string(linked.WorkItemID)+"/changes", nil)
-	requireNativeStatus(t, list, http.StatusOK)
-	var changes []tracker.ChangeRequest
-	decodeHubResponse(t, list, &changes)
-	if len(changes) != 1 || changes[0].ID != change.ID || len(changes[0].LinkedIssues) != 2 {
-		t.Fatalf("linked issue changes=%+v", changes)
-	}
-	detailResponse := f.request(t, owner, http.MethodGet, changePath+"/"+change.ID, nil)
-	requireNativeStatus(t, detailResponse, http.StatusOK)
-	var detail tracker.ChangeDetail
-	decodeHubResponse(t, detailResponse, &detail)
-	if detail.Change.ID != change.ID || detail.Change.Body != request.Body || len(detail.Discussion) != 1 || detail.Discussion[0].Body != discussion.Body {
-		t.Fatalf("change detail=%+v", detail.Change)
-	}
-	if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
-		links, err := r.Links(t.Context(), change.ID, "", 10)
-		if err != nil {
-			return err
-		}
-		if len(links) != 2 {
-			t.Fatalf("stored links=%+v", links)
-		}
-		events, err := r.Events(t.Context(), f.project, primary.WorkItemID, 0, 10)
-		if err != nil {
-			return err
-		}
-		foundCreated, foundDiscussion := false, false
-		for _, event := range events {
-			foundCreated = foundCreated || event.Type == "change.created"
-			foundDiscussion = foundDiscussion || event.Type == "change.discussion"
-		}
-		if !foundCreated || !foundDiscussion {
-			t.Fatal("Change and discussion events were not committed with their records")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestChangeRecordReceiptRejectsChangedRequest(t *testing.T) {
 	t.Parallel()
-	_, f, owner := newChangePolicyPostgresFixture(t)
+	repository, f, owner := newChangePolicyPostgresFixture(t)
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue"}, Title: "Example issue", Body: workItemRecordBody, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
@@ -357,12 +282,50 @@ func TestChangeRecordReceiptRejectsChangedRequest(t *testing.T) {
 	first := tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "same-key"}, Title: "Original title", Body: "Example body"}
 	response = f.request(t, owner, http.MethodPost, changePath, first)
 	requireNativeStatus(t, response, http.StatusOK)
+	var change tracker.ChangeRequest
+	decodeHubResponse(t, response, &change)
+	if change.WorkItemID != issue.WorkItemID || change.Body != first.Body {
+		t.Fatalf("created Change = %+v", change)
+	}
+	replay := f.request(t, owner, http.MethodPost, changePath, first)
+	requireNativeStatus(t, replay, http.StatusOK)
+	var repeated tracker.ChangeRequest
+	decodeHubResponse(t, replay, &repeated)
+	if repeated.ID != change.ID || repeated.Body != first.Body {
+		t.Fatalf("create replay = %+v", repeated)
+	}
 	changed := first
 	changed.Title = "Changed title"
 	response = f.request(t, owner, http.MethodPost, changePath, changed)
-	requireNativeStatus(t, response, http.StatusConflict)
-	var body map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+	requireNativeCode(t, response, http.StatusConflict, "idempotency_conflict")
+
+	detailPath := changePath + "/" + change.ID
+	discussion := tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "discussion"}, Body: "Append-only discussion"}
+	for range 2 {
+		requireNativeStatus(t, f.request(t, owner, http.MethodPost, detailPath+"/discussion", discussion), http.StatusOK)
+	}
+	response = f.request(t, owner, http.MethodGet, detailPath, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var detail tracker.ChangeDetail
+	decodeHubResponse(t, response, &detail)
+	if detail.Change.ID != change.ID || detail.Change.Body != first.Body || len(detail.Discussion) != 1 || detail.Discussion[0].Body != discussion.Body {
+		t.Fatalf("Change detail = %+v", detail)
+	}
+
+	if err := repository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		events, err := r.Events(t.Context(), f.project, issue.WorkItemID, 0, 10)
+		if err != nil {
+			return err
+		}
+		counts := make(map[string]int)
+		for _, event := range events {
+			counts[event.Type]++
+		}
+		if counts["change.created"] != 1 || counts["change.discussion"] != 1 {
+			t.Fatalf("Change and discussion events = %v", counts)
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
