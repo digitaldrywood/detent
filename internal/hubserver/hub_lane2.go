@@ -6,15 +6,24 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerfleet"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -250,4 +259,264 @@ func (s *Service) runnerNotifyDispatch() func(tracker.OrganizationID) {
 
 func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.NativeScope, view runnerauth.ProjectConfiguration, receivedAt time.Time, writer runnerstore.Writer) error {
 	return runnerfleet.StoreRunnerProjectObservationTenant(ctx, pruneExpiredProjectDiagnostics, projectConfigurationDigest, scope, view, receivedAt, writer)
+}
+
+func (s *Service) runnerDiffDeps() executionapi.DiffDeps {
+	return executionapi.DiffDeps{
+		Repository:     s.config.TenantRepository,
+		Now:            s.config.Clock,
+		HTTPError:      s.nativeAPIError,
+		InvalidRequest: s.invalidAPIRequest,
+		Details:        s.runDetailStore,
+		Unavailable:    nativeUnavailable,
+		ArchiveJSON:    nativeArchiveJSON,
+		HostedShared:   s.hostedShared,
+		QuotaLimit:     s.attachmentQuotaLimit,
+		ServiceClaims:  hostedSharedClaims,
+	}
+}
+
+func (s *Service) checkAttemptDiff(c echo.Context) error {
+	return s.runnerDiffDeps().CheckAttemptDiff(c)
+}
+
+func (s *Service) postAttemptDiff(c echo.Context) error {
+	return s.runnerDiffDeps().PostAttemptDiff(c)
+}
+
+func (s *Service) getAttemptDiff(c echo.Context) error {
+	return s.runnerDiffDeps().GetAttemptDiff(c)
+}
+
+func (s *Service) readAttemptDiff(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+	return s.runnerDiffDeps().ReadAttemptDiff(ctx, scope, item, attemptID, source, seq)
+}
+
+func (s *Service) getWorkItemDiff(c echo.Context) error {
+	return s.runnerDiffDeps().GetWorkItemDiff(c)
+}
+
+func (s *Service) readWorkItemDiff(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
+	return s.runnerDiffDeps().ReadWorkItemDiff(ctx, scope, item, source)
+}
+
+func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest, checkOnly bool) (tracker.AttemptDiffReceipt, error) {
+	return s.runnerDiffDeps().PostAttemptDiffTenant(ctx, scope, attemptID, request, checkOnly)
+}
+
+func (s *Service) readAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+	return s.runnerDiffDeps().ReadAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
+}
+
+func (s *Service) readWorkItemDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
+	return s.runnerDiffDeps().ReadWorkItemDiffTenant(ctx, scope, item, source)
+}
+
+func (s *Service) attemptDiffBodyExists(c echo.Context) error {
+	return s.runnerDiffDeps().AttemptDiffBodyExists(c)
+}
+
+func (s *Service) manifestDiffBodyExists(ctx context.Context, key string) (bool, error) {
+	return s.runnerDiffDeps().ManifestDiffBodyExists(ctx, key)
+}
+
+func (s *Service) runnerEvidenceDeps() executionapi.EvidenceDeps {
+	return executionapi.EvidenceDeps{
+		Repository:    s.config.TenantRepository,
+		Now:           s.config.Clock,
+		PlansEnabled:  func() bool { return s.database.plansService().Plans() != nil },
+		ValidateLease: s.validateRunnerLeaseTenant,
+		StaleLease:    nativeStaleLease,
+	}
+}
+
+func (s *Service) checkAttachmentEvidence(c echo.Context, input *attachment.EvidenceRequest) (resultErr error) {
+	return s.runnerEvidenceDeps().CheckAttachmentEvidence(c, input)
+}
+
+func escapeEvidenceCaption(caption string) string {
+	return executionapi.EscapeEvidenceCaption(caption)
+}
+
+func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope hubscope.NativeScope, input attachment.EvidenceRequest) error {
+	return s.runnerEvidenceDeps().CheckAttachmentEvidenceTenant(ctx, scope, input)
+}
+
+func (s *Service) publishEvidenceCompletion(ctx context.Context, w tenantstore.Writer, publication hubrecords.AttachmentEvidencePublication) error {
+	return executionapi.PublishEvidenceCompletion(ctx, w, publication)
+}
+
+func (s *Service) runnerCommandDeps() executionapi.CommandDeps {
+	return executionapi.CommandDeps{
+		Repository:    s.config.TenantRepository,
+		WriteClaim:    s.writeNativeClaimCommand,
+		OwnsRunEvents: s.runnerOwnsRunEvents,
+	}
+}
+
+func (s *Service) readNativeRunCommand(ctx context.Context, scope hubscope.NativeScope, command eventstore.RunCommand, read func(context.Context, tenantstore.Reader) error) error {
+	return s.runnerCommandDeps().ReadNativeRunCommand(ctx, scope, command, read)
+}
+
+func (s *Service) writeNativeRunCommand(ctx context.Context, scope hubscope.NativeScope, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
+	return s.runnerCommandDeps().WriteNativeRunCommand(ctx, scope, command, write)
+}
+
+func lockRunnerCredential(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope) error {
+	return executionapi.LockRunnerCredential(ctx, w, scope)
+}
+
+func runnerEventCommandRoute(c echo.Context) bool {
+	return executionapi.RunnerEventCommandRoute(c)
+}
+
+func (s *Service) runnerEventCommandScope(c echo.Context, scope hubscope.NativeScope) bool {
+	return s.runnerCommandDeps().RunnerEventCommandScope(c, scope)
+}
+
+func (s *Service) runnerSessionDeps() executionapi.SessionDeps {
+	return executionapi.SessionDeps{
+		ValidateDetailReference: validateNativeDetailReference,
+		RegisterWorkerProcess:   registerSessionWorkerProcess,
+		Repository:              s.config.TenantRepository,
+		HTTPError:               s.nativeAPIError,
+		InvalidRequest:          s.invalidAPIRequest,
+		Details:                 s.runDetailStore,
+		AuthorizeAccess:         s.authorizeAccessScope,
+		ReadCommand:             s.readNativeRunCommand,
+		WriteCommand:            s.writeNativeRunCommand,
+	}
+}
+
+func (s *Service) readRunnerSessionPayload(ctx context.Context, record runnersession.Record) (runnersession.Snapshot, error) {
+	return s.runnerSessionDeps().ReadRunnerSessionPayload(ctx, record)
+}
+
+func (s *Service) getRunnerSession(c echo.Context) error {
+	return s.runnerSessionDeps().GetRunnerSession(c)
+}
+
+func (s *Service) findRunnerSession(c echo.Context) error {
+	return s.runnerSessionDeps().FindRunnerSession(c)
+}
+
+func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request runnersession.Mutation, issue string, lock bool) (leasestore.Attempt, policystore.Revision, error) {
+	return s.runnerSessionDeps().RunnerSessionFence(ctx, r, scope, request, issue, lock)
+}
+
+type heldRunnerSessionAuthority struct{ owner runnerstore.Identity }
+
+func (s *Service) runnerSessionFenceHeld(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request runnersession.Mutation, issue string, lock bool, held *heldRunnerSessionAuthority) (leasestore.Attempt, corestore.WorkItem, policystore.Revision, error) {
+	var current *executionapi.HeldRunnerSessionAuthority
+	if held != nil {
+		current = &executionapi.HeldRunnerSessionAuthority{Owner: held.owner}
+	}
+	return s.runnerSessionDeps().RunnerSessionFenceHeld(ctx, r, scope, request, issue, lock, current)
+}
+
+func (s *Service) mutateRunnerSession(c echo.Context) error {
+	return s.runnerSessionDeps().MutateRunnerSession(c)
+}
+
+func (s *Service) getRunnerSessionHistory(c echo.Context) error {
+	return s.runnerSessionDeps().GetRunnerSessionHistory(c)
+}
+
+func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
+	return s.runnerSessionDeps().GetRunnerSessionProcesses(c)
+}
+
+func (s *Service) verifyRunnerSessionFinalization(ctx context.Context, scope hubscope.NativeScope, record runnersession.Record, snapshot runnersession.Snapshot) error {
+	return s.runnerSessionDeps().VerifyRunnerSessionFinalization(ctx, scope, record, snapshot)
+}
+
+func (s *Service) runnerDependencyDeps() executionapi.DependencyDeps {
+	return executionapi.DependencyDeps{
+		Repository:      s.config.TenantRepository,
+		Details:         s.runDetailStore,
+		AuthorizeAccess: s.authorizeAccessScope,
+		WriteClaim:      s.writeNativeClaimCommand,
+		LoadPlan:        s.loadWorkItemPlan,
+		PlanWorkItem:    s.planWorkItemRecord,
+		PrepareFields:   s.prepareWorkItemFields,
+	}
+}
+
+type preparedRunnerDependencies struct {
+	state   *executionapi.PreparedRunnerDependencies
+	final   corestore.WorkItem
+	version eventstore.CollaborationVersion
+}
+
+func normalizeRunnerDependencyDisposition(data *tracker.NativeRunData, project projectstore.Metadata) {
+	executionapi.NormalizeRunnerDependencyDisposition(data, project)
+}
+
+func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.NativeScope, source corestore.WorkItem, event tracker.NativeRunEvent) (*preparedRunnerDependencies, bool, error) {
+	state, changed, err := s.runnerDependencyDeps().PrepareRunnerDependencies(ctx, scope, source, event)
+	if state == nil {
+		return nil, changed, err
+	}
+	return &preparedRunnerDependencies{state: state, final: state.Final, version: state.Version}, changed, err
+}
+
+func (s *Service) writeRunnerDependenciesCommand(ctx context.Context, scope hubscope.NativeScope, command eventstore.RunCommand, dependencies *preparedRunnerDependencies, write func(context.Context, tenantstore.Writer) error) error {
+	return s.runnerDependencyDeps().WriteRunnerDependenciesCommand(ctx, scope, command, dependencies.state, write)
+}
+
+func applyRunnerDependencies(ctx context.Context, w tenantstore.Writer, dependencies *preparedRunnerDependencies) error {
+	return executionapi.ApplyRunnerDependencies(ctx, w, dependencies.state)
+}
+
+func (s *Service) runnerSpendDeps() executionapi.SpendDeps {
+	return executionapi.SpendDeps{
+		Repository:      s.config.TenantRepository,
+		HTTPError:       s.nativeAPIError,
+		AuthorizeAccess: s.authorizeAccessScope,
+	}
+}
+
+func (s *Service) getRunnerSpend(c echo.Context) error {
+	return s.runnerSpendDeps().GetRunnerSpend(c)
+}
+
+func (s *Service) getRunnerModelQuantiles(c echo.Context) error {
+	return s.runnerSpendDeps().GetRunnerModelQuantiles(c)
+}
+
+func (s *Service) runnerOwnsRunEvents() bool {
+	switch s.config.NativeRunEvents.(type) {
+	case tenantNativeRunEventParticipant, *tenantNativeRunEventParticipant:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) runnerUsageDeps() executionapi.UsageDeps {
+	return executionapi.UsageDeps{
+		Repository:       s.config.TenantRepository,
+		HTTPError:        s.nativeAPIError,
+		AuthorizeAccess:  s.authorizeAccessScope,
+		ReadAttempt:      s.readNativeAttemptTenant,
+		Plans:            func() *hostedplans.HostedPlansConfig { return s.database.plansService().Plans() },
+		Entitlement:      s.runnerUsageEntitlement,
+		HasRequestBudget: func(ctx context.Context) bool { return ctx.Value(runnerRequestBudgetContext{}) == true },
+	}
+}
+
+func (s *Service) accountRunnerUsage(c echo.Context) error {
+	return s.runnerUsageDeps().AccountRunnerUsage(c)
+}
+
+func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstore.Writer, now time.Time, receiptID string, completion, heartbeat bool) error {
+	return s.runnerUsageDeps().ApplyRunnerTenantUsage(ctx, writer, now, receiptID, completion, heartbeat)
+}
+
+func (s *Service) checkRunnerAdmission(ctx context.Context, writer billingstore.Writer, now time.Time, counted int64, metrics ...string) error {
+	return s.runnerUsageDeps().CheckRunnerAdmission(ctx, writer, now, counted, metrics...)
+}
+
+func (s *Service) runnerUsageEntitlement(ctx context.Context, r billingstore.Reader, now time.Time) (hostedplans.HostedEntitlement, error) {
+	return hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, now))
 }

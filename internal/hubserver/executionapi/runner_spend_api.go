@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -17,7 +18,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-func (s *Service) getRunnerSpend(c echo.Context) error {
+type SpendDeps struct {
+	Repository      tenantstore.Repository
+	HTTPError       func(echo.Context, error, ...any) error
+	AuthorizeAccess func(context.Context, accessstore.Reader, hubscope.NativeScope, bool) error
+}
+
+func (d SpendDeps) GetRunnerSpend(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := hubscope.NativeRequestScope(c)
@@ -25,16 +32,16 @@ func (s *Service) getRunnerSpend(c echo.Context) error {
 	if raw := c.QueryParam("day"); raw != "" {
 		parsed, err := time.Parse(time.DateOnly, raw)
 		if err != nil {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("day must be a UTC calendar date"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("day must be a UTC calendar date"))
 		}
 		day = &parsed
 	}
 	if (day == nil) == (c.QueryParam("issue") == "") {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("select exactly one day or issue"))
+		return d.HTTPError(c, hubapi.NativePublicInvalid("select exactly one day or issue"))
 	}
 	var result store.TokenSpend
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
 			return err
 		}
 		reader, ok := r.(leasestore.RunnerSpendReader)
@@ -51,24 +58,24 @@ func (s *Service) getRunnerSpend(c echo.Context) error {
 	})
 	if err != nil {
 		if errors.Is(err, leasestore.ErrUnaccountedUsage) {
-			return s.nativeAPIError(c, &hubapi.NativeError{Code: "usage_unaccounted", Message: "Runner usage requires verified historical Hub receipt accounting", Status: http.StatusServiceUnavailable, PublicMessage: true})
+			return d.HTTPError(c, &hubapi.NativeError{Code: "usage_unaccounted", Message: "Runner usage requires verified historical Hub receipt accounting", Status: http.StatusServiceUnavailable, PublicMessage: true})
 		}
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) getRunnerModelQuantiles(c echo.Context) error {
+func (d SpendDeps) GetRunnerModelQuantiles(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := hubscope.NativeRequestScope(c)
 	limit, err := strconv.ParseInt(c.QueryParam("limit"), 10, 64)
 	if err != nil || limit < 1 || limit > 200 || c.QueryParam("model") == "" {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("model and a limit from 1 to 200 are required"))
+		return d.HTTPError(c, hubapi.NativePublicInvalid("model and a limit from 1 to 200 are required"))
 	}
 	var result store.ModelTokenQuantiles
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+	err = d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
 			return err
 		}
 		reader, ok := r.(leasestore.RunnerSpendReader)
@@ -84,7 +91,7 @@ func (s *Service) getRunnerModelQuantiles(c echo.Context) error {
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
 }

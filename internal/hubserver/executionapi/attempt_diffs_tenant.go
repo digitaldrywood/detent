@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"bytes"
@@ -26,9 +26,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest, checkOnly bool) (tracker.AttemptDiffReceipt, error) {
+func (d DiffDeps) PostAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest, checkOnly bool) (tracker.AttemptDiffReceipt, error) {
 	var receipt tracker.AttemptDiffReceipt
-	if s.config.TenantRepository == nil || s.runDetailStore() == nil {
+	if d.Repository == nil || d.Details() == nil {
 		return receipt, hubapi.NativeRunEventStorageUnavailable()
 	}
 	if request.Producer.Kind != tracker.DiffSourceAttempt {
@@ -47,7 +47,7 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 	if err != nil {
 		return receipt, err
 	}
-	if s.hostedShared() {
+	if d.HostedShared() {
 		for _, file := range files {
 			if file.Patch != "" {
 				return receipt, hubapi.NativePublicInvalid("Shared diff bodies must arrive through object storage")
@@ -55,9 +55,9 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 		}
 	}
 	if checkOnly {
-		return receipt, s.validateAttemptDiffTenant(ctx, scope, attemptID, request)
+		return receipt, d.validateAttemptDiffTenant(ctx, scope, attemptID, request)
 	}
-	if err := s.validateAttemptDiffTenant(ctx, scope, attemptID, request); err != nil {
+	if err := d.validateAttemptDiffTenant(ctx, scope, attemptID, request); err != nil {
 		return receipt, err
 	}
 	data, err := json.Marshal(files)
@@ -68,10 +68,10 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 	if err != nil {
 		return receipt, err
 	}
-	if err := s.checkAttemptDiffStorageAdmission(ctx, scope, preparedRef); err != nil {
+	if err := d.checkAttemptDiffStorageAdmission(ctx, scope, preparedRef); err != nil {
 		return receipt, err
 	}
-	store := s.runDetailStore()
+	store := d.Details()
 	ref, err := store.StoreDetail(ctx, string(scope.Organization), data)
 	if err != nil {
 		return receipt, fmt.Errorf("store attempt diff: %w", err)
@@ -97,9 +97,9 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 	for _, file := range files {
 		truncated = truncated || file.Truncated
 	}
-	now := s.config.Clock().UTC()
+	now := d.Now().UTC()
 	diffID, archiveID := hubapi.NewID("diff"), hubapi.NewID("archive")
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = d.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := resolveAttemptDiffTenant(ctx, w, scope, attemptID, request, now); err != nil {
 			return err
 		}
@@ -110,11 +110,11 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 		if request.Generation.Seq <= latest {
 			return attemptDiffStaleGeneration("Generation " + strconv.FormatInt(request.Generation.Seq, 10) + " is not ahead of the stored generation " + strconv.FormatInt(latest, 10))
 		}
-		item, err := resolveAttemptDiffTenant(ctx, w, scope, attemptID, request, s.config.Clock().UTC())
+		item, err := resolveAttemptDiffTenant(ctx, w, scope, attemptID, request, d.Now().UTC())
 		if err != nil {
 			return err
 		}
-		limit, err := s.attachmentQuotaLimit(ctx, w)
+		limit, err := d.QuotaLimit(ctx, w)
 		if err != nil {
 			return err
 		}
@@ -165,9 +165,9 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 	return tracker.AttemptDiffReceipt{Accepted: true, DiffID: diffID, Generation: request.Generation, FileCount: len(files), PatchBytes: patchBytes, Truncated: truncated}, nil
 }
 
-func (s *Service) checkAttemptDiffStorageAdmission(ctx context.Context, scope hubscope.NativeScope, ref attachment.ArchiveReference) error {
-	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		limit, err := s.attachmentQuotaLimit(ctx, r)
+func (d DiffDeps) checkAttemptDiffStorageAdmission(ctx context.Context, scope hubscope.NativeScope, ref attachment.ArchiveReference) error {
+	return d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		limit, err := d.QuotaLimit(ctx, r)
 		if err != nil {
 			return err
 		}
@@ -190,9 +190,9 @@ func (s *Service) checkAttemptDiffStorageAdmission(ctx context.Context, scope hu
 	})
 }
 
-func (s *Service) validateAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest) error {
-	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		_, err := resolveAttemptDiffTenant(ctx, r, scope, attemptID, request, s.config.Clock().UTC())
+func (d DiffDeps) validateAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest) error {
+	return d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := resolveAttemptDiffTenant(ctx, r, scope, attemptID, request, d.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -269,10 +269,10 @@ func resolveAttemptDiffTenant(ctx context.Context, r tenantstore.Reader, scope h
 	return string(item.NativeID), nil
 }
 
-func (s *Service) readAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+func (d DiffDeps) ReadAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
 	var diff leasestore.AttemptDiff
 	var archive artifactstore.ArchiveObject
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		if seq > 0 {
 			diff, err = r.AttemptDiff(ctx, scope.Project, attemptID, tracker.DiffGeneration{Source: source, Seq: seq})
@@ -296,14 +296,14 @@ func (s *Service) readAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 	if err != nil {
 		return tracker.AttemptDiff{}, err
 	}
-	return s.loadTenantAttemptDiff(ctx, scope, diff, archive)
+	return d.loadTenantAttemptDiff(ctx, scope, diff, archive)
 }
 
-func (s *Service) readWorkItemDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
+func (d DiffDeps) ReadWorkItemDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
 	var diff leasestore.AttemptDiff
 	var archive artifactstore.ArchiveObject
 	foundDiff := false
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if _, err := attemptDiffReadableWorkItem(ctx, r, scope, tracker.NativeWorkItemID(item)); err != nil {
 			return err
 		}
@@ -322,7 +322,7 @@ func (s *Service) readWorkItemDiffTenant(ctx context.Context, scope hubscope.Nat
 	if err != nil {
 		return tracker.WorkItemDiff{}, err
 	}
-	loaded, err := s.loadTenantAttemptDiff(ctx, scope, diff, archive)
+	loaded, err := d.loadTenantAttemptDiff(ctx, scope, diff, archive)
 	if err != nil {
 		return tracker.WorkItemDiff{}, err
 	}
@@ -347,11 +347,11 @@ func attemptDiffReadableWorkItem(ctx context.Context, r tenantstore.Reader, scop
 	return item, nil
 }
 
-func (s *Service) loadTenantAttemptDiff(ctx context.Context, scope hubscope.NativeScope, diff leasestore.AttemptDiff, archive artifactstore.ArchiveObject) (tracker.AttemptDiff, error) {
-	if s.runDetailStore() == nil {
+func (d DiffDeps) loadTenantAttemptDiff(ctx context.Context, scope hubscope.NativeScope, diff leasestore.AttemptDiff, archive artifactstore.ArchiveObject) (tracker.AttemptDiff, error) {
+	if d.Details() == nil {
 		return tracker.AttemptDiff{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	data, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), archive.Reference)
+	data, err := d.Details().ReadDetail(ctx, string(scope.Organization), archive.Reference)
 	if err != nil {
 		return tracker.AttemptDiff{}, err
 	}
