@@ -113,12 +113,6 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,project_id,native_id,number,title,workflow_state_name,created_at,native_updated_at) SELECT $1,'prj_second','noise-'||n,n+100,'Other project','Todo',$2::timestamptz,$2::timestamptz FROM generate_series(1,10000)n`, org, base); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `ANALYZE collaboration_events`); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := admin.ExecContext(t.Context(), `ANALYZE issues`); err != nil {
-				t.Fatal(err)
-			}
 			query := eventstore.AnalyticsResidenceQuery{ProjectID: "prj_first", From: base.Add(-time.Hour), To: base.Add(time.Hour), Limit: 1000}
 			read := func(query eventstore.AnalyticsResidenceQuery) eventstore.AnalyticsResidencePage {
 				t.Helper()
@@ -196,9 +190,6 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				}
 				return page
 			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE attempt_usage"); err != nil {
-				t.Fatal(err)
-			}
 			query := reportstore.AnalyticsUsageQuery{ProjectID: "prj_1", From: base, To: base.Add(time.Hour), Limit: 1000}
 			head := read(query)
 
@@ -240,9 +231,6 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO report_usage_current(organization_id,source_key,revision,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,complete) SELECT $1,'other-current-'||n,1,'prj_2','usage_other',$2,'example','model-'||lpad(n::text,4,'0'),4,1,3,9,true FROM generate_series(0,9999)n`, org, base); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE report_usage_current"); err != nil {
 				t.Fatal(err)
 			}
 			rawHead := read(query)
@@ -339,9 +327,6 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				}
 				return page
 			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE native_attempts"); err != nil {
-				t.Fatal(err)
-			}
 			head = read(query)
 
 			if len(head.Items) != 1000 || head.Examined != 1001 || !head.Partial || head.Next.ID != "analytics-0003" || head.Next.Submicro != 0 || head.Items[0].AttemptID != "analytics-0998" || head.Items[1].AttemptID != "analytics-0995" {
@@ -365,9 +350,6 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				if _, err := admin.ExecContext(t.Context(), statement, args...); err != nil {
 					t.Fatal(err)
 				}
-			}
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE native_attempts"); err != nil {
-				t.Fatal(err)
 			}
 			query.After = reportstore.AnalyticsAttemptCursor{}
 			recent := read(query)
