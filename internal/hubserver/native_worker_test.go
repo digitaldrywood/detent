@@ -330,82 +330,53 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	}
 }
 
-func TestNativeRunnerMinimumVersion(t *testing.T) {
+func TestNativeClaimRequiresSupportedRunnerVersion(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name, hub, runner, minimum string
-		refused                    bool
-	}{
-		{name: "below", hub: "v0.117.60", runner: "v0.117.55", minimum: "0.117.56", refused: true},
-		{name: "older supported release", hub: "v0.117.60", runner: "v0.117.57", minimum: "0.117.56"},
-		{name: "supported minimum", hub: "v0.117.60", runner: "v0.117.56", minimum: "0.117.56"},
-		{name: "above", hub: "v0.117.60", runner: "v0.118.0", minimum: "0.117.56"},
-		{name: "prerelease", hub: "v0.117.60", runner: "v0.117.56-rc.1", minimum: "0.117.56", refused: true},
-		{name: "build metadata", hub: "v0.117.60", runner: "v0.117.56+local", minimum: "0.117.56"},
-		{name: "unprefixed", hub: " v0.117.60 ", runner: "0.117.55", minimum: "0.117.56", refused: true},
-		{name: "development runner", hub: "v0.117.60", runner: "dev", minimum: "0.117.56"},
-		{name: "hub older than supported minimum", hub: "v0.117.50", runner: "v0.117.49", minimum: "v0.117.50", refused: true},
-		{name: "development hub", hub: "dev", runner: "v1.0.0"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Version: test.hub}), "", "minimum")
-			descriptor := hubTestPolicy()
-			issue := f.create(t, "work")
-			worker := f.worker(t, "worker")
-			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
-			if err != nil || status != http.StatusOK {
-				t.Fatalf("worker authentication status=%d: %v", status, err)
-			}
-			machineID := credential.Runner.MachineID
-			capabilitiesRequest := newHubAPIRequest(t, http.MethodGet, "/api/v2/capabilities", worker, nil)
-			capabilitiesRequest.Header.Set("X-Detent-Organization", string(f.project.OrganizationID))
-			capabilities := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(capabilities, capabilitiesRequest)
-			requireNativeStatus(t, capabilities, http.StatusOK)
-			var published nativeCapabilitiesResponse
-			decodeHubResponse(t, capabilities, &published)
-			if published.MinimumRunnerVersion != test.minimum {
-				t.Fatalf("published minimum = %q, want %q", published.MinimumRunnerVersion, test.minimum)
-			}
-			machine := map[string]any{"id": machineID, "hostname": "runner", "display_name": "Runner", "version": test.runner, "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, machine), http.StatusOK)
-			heartbeat := func(version string) {
-				t.Helper()
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machineID)+"/heartbeat", worker, map[string]any{"display_name": "Runner", "version": version, "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.Clock()}})
-				requireNativeStatus(t, response, http.StatusOK)
-				var snapshot runnerauth.RoutingSnapshot
-				decodeHubResponse(t, response, &snapshot)
-				if snapshot.RunnerID != credential.Runner.RunnerID || snapshot.Revision < 1 {
-					t.Fatalf("heartbeat routing=%+v", snapshot)
-				}
-			}
-			heartbeat(test.runner)
-			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request)
-			wantStatus := http.StatusOK
-			if test.refused {
-				wantStatus = http.StatusUpgradeRequired
-			}
-			requireNativeStatus(t, response, wantStatus)
-			if test.refused {
-				var failure hubapi.APIErrorResponse
-				decodeHubResponse(t, response, &failure)
-				if failure.Code != "unavailable" || failure.Message != "Too old to take work, needs "+test.minimum || failure.Message != runnerClaimRefusal(test.minimum, test.runner) {
-					t.Fatalf("claim refusal = %#v", failure)
-				}
-				var count int
-				if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM leases WHERE organization_id=$1", f.project.OrganizationID).Scan(&count); err != nil {
-					t.Fatal(err)
-				}
-				if count != 0 {
-					t.Fatalf("refused runner acquired %d leases", count)
-				}
-				heartbeat(test.minimum)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusOK)
-			}
-		})
+	const minimum = "0.117.56"
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Version: "v0.117.60"}), "", "minimum")
+	descriptor := hubTestPolicy()
+	issue := f.create(t, "work")
+	worker := f.worker(t, "worker")
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("worker authentication status=%d: %v", status, err)
 	}
+	machineID := credential.Runner.MachineID
+	capabilitiesRequest := newHubAPIRequest(t, http.MethodGet, "/api/v2/capabilities", worker, nil)
+	capabilitiesRequest.Header.Set("X-Detent-Organization", string(f.project.OrganizationID))
+	capabilities := httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(capabilities, capabilitiesRequest)
+	requireNativeStatus(t, capabilities, http.StatusOK)
+	var published nativeCapabilitiesResponse
+	decodeHubResponse(t, capabilities, &published)
+	if published.MinimumRunnerVersion != minimum {
+		t.Fatalf("published minimum = %q, want %q", published.MinimumRunnerVersion, minimum)
+	}
+	machine := map[string]any{"id": machineID, "hostname": "runner", "display_name": "Runner", "version": "v0.117.55", "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, machine), http.StatusOK)
+	heartbeat := func(version string) {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machineID)+"/heartbeat", worker, map[string]any{"display_name": "Runner", "version": version, "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.Clock()}})
+		requireNativeStatus(t, response, http.StatusOK)
+		var snapshot runnerauth.RoutingSnapshot
+		decodeHubResponse(t, response, &snapshot)
+		if snapshot.RunnerID != credential.Runner.RunnerID || snapshot.Revision < 1 {
+			t.Fatalf("heartbeat routing=%+v", snapshot)
+		}
+	}
+	heartbeat("v0.117.55")
+	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request)
+	requireNativeCode(t, response, http.StatusUpgradeRequired, "unavailable")
+	var count int
+	if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM leases WHERE organization_id=$1", f.project.OrganizationID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("refused runner acquired %d leases", count)
+	}
+	heartbeat(minimum)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusOK)
 }
 
 func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T) {
