@@ -308,26 +308,8 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot hubre
 		LeaseRenewedAt: lease.RenewedAt, LeaseExpiresAt: lease.ExpiresAt, Current: lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt),
 		Checkpoint: checkpoint, RuntimeFreshness: "unavailable",
 		TerminalFailureAvailability: "unavailable", FinalizationAvailability: "unavailable", Unavailable: []string{"evidence"}}
-	if snapshot.Evidence {
-		var evidence []tracker.NativeEvidence
-		budget := 1 << 20
-		for _, record := range snapshot.EvidenceRows {
-			if record.OrganizationID != attempt.OrganizationID || record.Metadata.ProjectID != string(snapshot.Event.ProjectID) || record.Metadata.WorkItemID != string(snapshot.Event.WorkItemID) || record.EvidenceAttemptID != attempt.ID || record.Metadata.Validate() != nil {
-				return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt evidence: %w", artifact.ErrIntegrity)
-			}
-			file := tracker.NativeEvidence{AttachmentID: record.Metadata.ID, Caption: record.EvidenceCaption, Reference: record.Metadata.Markdown(string(attempt.OrganizationID))}
-			raw, err := json.Marshal(file)
-			if err != nil {
-				return tracker.NativeAttempt{}, err
-			}
-			budget -= len(raw) + 1
-			if budget < 0 {
-				return tracker.NativeAttempt{}, hubapi.NativePublicInvalid("Attempt evidence exceeds the 1048576-byte read limit")
-			}
-			evidence = append(evidence, file)
-		}
-		result.Evidence = append(result.Evidence, evidence...)
-		result.Unavailable = slices.DeleteFunc(result.Unavailable, func(value string) bool { return value == "evidence" })
+	if err := projectAttemptEvidence(&result, snapshot); err != nil {
+		return tracker.NativeAttempt{}, err
 	}
 	result.ArtifactIDs = run.ArtifactIDs
 	if snapshot.ArtifactsPayload != nil {
@@ -380,6 +362,44 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot hubre
 		}
 	}
 	return result, nil
+}
+
+func projectAttemptEvidence(result *tracker.NativeAttempt, snapshot hubrecords.TenantAttemptSnapshot) error {
+	attempt := snapshot.Attempt
+	if snapshot.Evidence {
+		var evidence []tracker.NativeEvidence
+		budget := 1 << 20
+		if snapshot.EvidencePage {
+			budget = operatortool.WorkHistoryPageBytes / 2
+		}
+		for i, record := range snapshot.EvidenceRows {
+			if record.OrganizationID != attempt.OrganizationID || record.Metadata.ProjectID != string(snapshot.Event.ProjectID) || record.Metadata.WorkItemID != string(snapshot.Event.WorkItemID) || record.EvidenceAttemptID != attempt.ID || record.Metadata.Validate() != nil {
+				return fmt.Errorf("hydrate attempt evidence: %w", artifact.ErrIntegrity)
+			}
+			file := tracker.NativeEvidence{AttachmentID: record.Metadata.ID, Caption: record.EvidenceCaption, Reference: record.Metadata.Markdown(string(attempt.OrganizationID))}
+			raw, err := json.Marshal(file)
+			if err != nil {
+				return err
+			}
+			budget -= len(raw) + 1
+			if snapshot.EvidencePage && (i >= 200 || budget < 0) {
+				if len(evidence) == 0 {
+					return hubapi.NativePublicInvalid("Attempt evidence descriptor exceeds page budget")
+				}
+				result.NextEvidenceAfter = evidence[len(evidence)-1].AttachmentID
+				break
+			}
+			if budget < 0 {
+				return hubapi.NativePublicInvalid("Attempt evidence exceeds the 1048576-byte read limit")
+			}
+			evidence = append(evidence, file)
+		}
+		result.Evidence = append(result.Evidence, evidence...)
+		if result.NextEvidenceAfter == "" {
+			result.Unavailable = slices.DeleteFunc(result.Unavailable, func(value string) bool { return value == "evidence" })
+		}
+	}
+	return nil
 }
 
 func nativeAttemptRunMatches(snapshot hubrecords.TenantAttemptSnapshot, run tracker.NativeRunData) bool {

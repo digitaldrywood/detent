@@ -196,8 +196,12 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	for _, finding := range result.Findings {
 		fmt.Fprintf(&body, "\n\n%s %s: %s", finding.Severity, finding.Path, finding.Body)
 	}
+	if body.Len() > 64<<10 {
+		body.Reset()
+		fmt.Fprintf(&body, "Independent acceptance validation for %s. The structured validator result contains the complete summary, findings and command receipts.", result.HeadSHA)
+	}
 	client, item := e.claim.source.NativeClient(), e.claim.lease.WorkItemID
-	_, err := client.ReviewChange(ctx, item, e.change.ChangeID, result.VersionID, tracker.ReviewChange{
+	err := client.PublishValidator(ctx, item, e.change.ChangeID, result.VersionID, tracker.ReviewChange{
 		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":validator:" + strconv.FormatInt(result.SessionID, 10), LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: result.VersionID, Decision: decision, Body: body.String(), Validator: &result,
 	})

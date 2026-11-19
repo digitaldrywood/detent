@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,10 +15,123 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestValidatorPublicationTransfersLargeResultOnce(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		bytes   int
+		lost    bool
+		archive bool
+	}{
+		{"legacy inline", 600 << 10, false, false},
+		{"inline with oversized response", 1000 << 10, true, false},
+		{"oversized result with lost acknowledgement", 1300 << 10, true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 7}
+			request := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "acceptance"}, ExpectedVersionID: "version_example", Decision: "approved", Validator: &gate.ValidatorResult{VersionID: "version_example", SessionID: 41, Verdict: "pass", Commands: []gate.CommandResult{{Command: "make test", Output: strings.Repeat("x", test.bytes)}}}}
+			if test.archive {
+				request.Validator.Findings = []gate.Finding{{Severity: "p3", Body: strings.Repeat("finding ", 12000)}}
+			}
+			var uploads, posts, reads int
+			var commandHash string
+			var original []byte
+			var stored attachment.ArchiveReference
+			var uploadedDigest string
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					reads++
+					if r.URL.Query().Get("view") != "validator_receipt" || r.URL.Query().Get("idempotency_key") != request.IdempotencyKey || r.URL.Query().Get("version_id") != request.ExpectedVersionID {
+						t.Fatal("uncertain result did not read its exact receipt")
+					}
+					json.NewEncoder(w).Encode(map[string]string{"request_sha256": commandHash})
+					return
+				}
+				raw, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.HasSuffix(r.URL.Path, "/archives") {
+					uploads++
+					var data changerequest.ValidatorArchive
+					if json.Unmarshal(raw, &data) != nil || data.OrganizationID != "org_example" || data.ProjectID != "prj_example" || data.WorkItemID != lease.WorkItemID || data.ChangeID != "change_example" || data.VersionID != request.ExpectedVersionID || data.Review.LeaseID != lease.ID || data.Review.FencingToken != lease.FencingToken || data.Review.Validator == nil || !reflect.DeepEqual(data.Review.Validator, request.Validator) {
+						t.Fatal("archive omitted fenced validator output")
+					}
+					stored, _, err = attachment.PrepareArchive("org_example", 1, bytes.NewReader(raw))
+					if err != nil {
+						t.Fatal(err)
+					}
+					encoded, err := json.Marshal(data.Review)
+					if err != nil {
+						t.Fatal(err)
+					}
+					logical := sha256.Sum256(encoded)
+					commandHash = hex.EncodeToString(logical[:])
+					digest := sha256.Sum256(raw)
+					uploadedDigest = hex.EncodeToString(digest[:])
+					json.NewEncoder(w).Encode(stored)
+					return
+				}
+				if !strings.HasSuffix(r.URL.Path, "/versions/version_example/reviews") {
+					t.Fatalf("unexpected publication path %s", r.URL.Path)
+				}
+				posts++
+				var submitted changerequest.ReviewSubmission
+				if json.Unmarshal(raw, &submitted) != nil || submitted.IdempotencyKey != request.IdempotencyKey || submitted.LeaseID != lease.ID || submitted.FencingToken != lease.FencingToken {
+					t.Fatal("review mutation lost its original fence or key")
+				}
+				if test.archive {
+					if uploads != 1 || len(raw) > 2048 || submitted.Validator != nil || submitted.ValidatorArchive == nil || submitted.ValidatorArchive.SHA256 != stored.SHA256 || submitted.ValidatorArchive.ContentSHA256 != uploadedDigest {
+						t.Fatal("large result was not published by verified reference")
+					}
+				} else if submitted.ValidatorArchive != nil || submitted.Validator == nil || !reflect.DeepEqual(submitted.Validator.Commands, request.Validator.Commands) {
+					t.Fatal("legacy inline submission changed")
+				}
+				if test.lost && !test.archive {
+					sum := sha256.Sum256(raw)
+					commandHash = hex.EncodeToString(sum[:])
+					w.Write(bytes.Repeat([]byte("x"), maxResponseBytes+1))
+					return
+				}
+				if test.lost {
+					if original != nil && !bytes.Equal(original, raw) {
+						t.Fatal("second acknowledgement changed the command")
+					}
+					original = raw
+					w.WriteHeader(http.StatusBadGateway)
+					w.Write([]byte(`{"code":"unavailable"}`))
+					return
+				}
+				if original != nil && !bytes.Equal(original, raw) {
+					t.Fatal("uncertain publication replay changed command")
+				}
+				w.Write([]byte(`{"review_id":"review_example","version_id":"version_example"}`))
+			})
+			client, err := New(Config{URL: "http://native-hub.test", TokenSource: func() string { return "test" }, HTTPClient: providerHandlerClient(handler)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := WithMutationAuthority(t.Context(), native.Scope(), lease, nil)
+			if err := native.PublishValidator(ctx, lease.WorkItemID, "change_example", request.ExpectedVersionID, request); err != nil {
+				t.Fatal(err)
+			}
+			if test.archive && (uploads != 1 || posts != 2 || reads != 1) || !test.archive && (uploads != 0 || posts != 1 || (reads == 1) != test.lost) {
+				t.Fatalf("uploads=%d posts=%d", uploads, posts)
+			}
+		})
+	}
+}
 
 func TestChangeClientIdentityValidation(t *testing.T) {
 	t.Parallel()

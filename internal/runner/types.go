@@ -749,6 +749,7 @@ type ValidatorRequest struct {
 	workspacePrepared    bool
 	SecurityAudit        *NativeSecurityAuditEvidence
 	Discussion           NativeReviewDiscussion
+	EvidenceContinuation *tracker.NativeAttemptEvidenceCursor
 	Evidence             []tracker.NativeEvidence
 	Commands             []gate.CommandResult
 	implementationReview bool

@@ -35,10 +35,20 @@ func (s *session) LockAttachment(ctx context.Context, project tracker.ProjectID,
 	return r, mapError(ctx, err)
 }
 func (s *session) AttachmentEvidence(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempt string, limit int) ([]attachmentstore.Record, error) {
+	return s.AttachmentEvidenceAfter(ctx, project, item, attempt, time.Time{}, "", limit)
+}
+
+func (s *session) AttachmentEvidenceAfter(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempt string, at time.Time, after string, limit int) ([]attachmentstore.Record, error) {
 	if limit < 1 || limit > 201 {
 		return nil, corestore.ErrInvalidPage
 	}
-	rows, err := s.db.Query(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND evidence_attempt_id=$4 ORDER BY created_at,id LIMIT $5`, s.organization, project, item, attempt, limit)
+	query := `SELECT ` + attachmentRecordColumns + ` FROM attachments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND evidence_attempt_id=$4`
+	args := []any{s.organization, project, item, attempt, limit}
+	if after != "" {
+		query += ` AND (created_at,id)>($6,$7)`
+		args = append(args, at, after)
+	}
+	rows, err := s.db.Query(ctx, query+` ORDER BY created_at,id LIMIT $5`, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

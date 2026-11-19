@@ -409,12 +409,41 @@ func TestNativeValidatorReceivesScopedEvidenceReads(t *testing.T) {
 
 func TestValidatorEvidenceToolsExcludeWrites(t *testing.T) {
 	t.Parallel()
-	tools := validatorEvidenceTools([]AgentTool{{Name: operatortool.WorkItem}, {Name: operatortool.WorkComments}, {Name: operatortool.ReadAttachment}, {Name: operatortool.ReadAttachmentMetadata}, {Name: "attach_evidence"}, {Name: "move_item"}, {Name: operatortool.RunnerProjectDiagnostics}})
-	var names []string
-	for _, tool := range tools {
-		names = append(names, tool.Name)
+	available := []AgentTool{{Name: operatortool.WorkItem}, {Name: operatortool.WorkComments}, {Name: operatortool.ReadAttachment}, {Name: operatortool.ReadAttachmentMetadata}, {Name: operatortool.WorkAttemptReceipt}, {Name: "attach_evidence"}, {Name: "move_item"}, {Name: operatortool.RunnerProjectDiagnostics}}
+	for _, paged := range []bool{false, true} {
+		expected := []string{operatortool.WorkItem, operatortool.WorkComments, operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata}
+		if paged {
+			expected = append(expected, operatortool.WorkAttemptReceipt)
+		}
+		var names []string
+		for _, tool := range validatorEvidenceTools(available, paged) {
+			names = append(names, tool.Name)
+		}
+		if !slices.Equal(names, expected) {
+			t.Fatalf("paged=%v validator tool access=%v", paged, names)
+		}
 	}
-	if !slices.Equal(names, []string{operatortool.WorkItem, operatortool.WorkComments, operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata}) {
-		t.Fatalf("validator tool access=%v", names)
+	for _, test := range []struct {
+		item, attempt, cursor string
+		allowed               bool
+	}{
+		{"wi_example", "attempt_example", "start", true},
+		{"wi_other", "attempt_example", "start", false},
+		{"wi_example", "attempt_other", "start", false},
+		{"wi_example", "attempt_example", "", false},
+	} {
+		called := false
+		reader := validatorAttachments{item: "wi_example", continuation: &tracker.NativeAttemptEvidenceCursor{AttemptID: "attempt_example", After: "start"}, handle: func(context.Context, AgentToolCall) (AgentToolResult, error) {
+			called = true
+			return AgentToolResult{Success: true}, nil
+		}}
+		raw, err := json.Marshal(map[string]string{"project_id": "prj_example", "reference": test.item, "native_attempt_id": test.attempt, "cursor": test.cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = reader.call(t.Context(), AgentToolCall{Name: operatortool.WorkAttemptReceipt, Arguments: raw})
+		if called != test.allowed || (err == nil) != test.allowed {
+			t.Fatalf("evidence continuation for %s/%s at %q: called=%v error=%v", test.item, test.attempt, test.cursor, called, err)
+		}
 	}
 }

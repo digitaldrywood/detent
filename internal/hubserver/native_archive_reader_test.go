@@ -159,6 +159,23 @@ func assertArchiveGolden(t *testing.T, hot, archived []byte) {
 	}
 }
 
+func TestRuntimeEvidenceEnvelope(t *testing.T) {
+	t.Parallel()
+	result := tracker.NativeRuntimeEvidence{Attempt: &tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{
+		CompletionBody: strings.Repeat("a", (1<<20)-(12<<10)),
+		Evidence:       []tracker.NativeEvidence{{AttachmentID: "att_" + strings.Repeat("a", 32), Caption: strings.Repeat("<", 3072)}},
+	}}}
+	recorder := httptest.NewRecorder()
+	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), recorder)
+	if err := nativeArchiveJSON(c, http.StatusOK, result); err != nil {
+		t.Fatal(err)
+	}
+	var got tracker.NativeRuntimeEvidence
+	if recorder.Body.Len() > 1<<20 || json.Unmarshal(recorder.Body.Bytes(), &got) != nil || got.Attempt == nil || got.Attempt.NextEvidenceAfter != "start" || !slices.Contains(got.Attempt.Unavailable, "evidence") || got.Attempt.CompletionBody != result.Attempt.CompletionBody {
+		t.Fatalf("runtime envelope did not preserve a readable receipt and evidence continuation: %d bytes", recorder.Body.Len())
+	}
+}
+
 func TestNativeArchiveSectionFailures(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

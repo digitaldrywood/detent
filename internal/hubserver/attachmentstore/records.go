@@ -39,6 +39,7 @@ type Reader interface {
 	AttachmentObjectExists(context.Context, string, string) (bool, error)
 	Attachment(context.Context, tracker.ProjectID, string) (Record, error)
 	AttachmentReferences(context.Context, tracker.ProjectID, string, int) ([]Reference, error)
+	AttachmentEvidenceAfter(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, time.Time, string, int) ([]Record, error)
 	AttachmentEvidence(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int) ([]Record, error)
 }
 type LockingReader interface {

@@ -27,6 +27,13 @@ func NativeRuntimeResult(name string, request WorkReadRequest, evidence tracker.
 	if name == WorkAttemptReceipt && (evidence.Attempt == nil || request.NativeAttemptID != "" && evidence.Attempt.AttemptID != request.NativeAttemptID || request.AttemptID != 0 && localAttemptID != request.AttemptID) {
 		return Result{}, explain.ErrNotFound
 	}
+	if name == WorkAttemptReceipt && request.Cursor != "" {
+		return nativeRuntimeEnvelope(request, evidence, struct {
+			AttemptID  string                   `json:"native_attempt_id"`
+			Evidence   []tracker.NativeEvidence `json:"evidence"`
+			NextCursor string                   `json:"next_cursor,omitempty"`
+		}{evidence.Attempt.AttemptID, evidence.Attempt.Evidence, evidence.Attempt.NextEvidenceAfter})
+	}
 	if name == BoardSessionHistory {
 		if evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Activity == nil {
 			return Result{}, &RequestError{Code: "not_found", Message: "No recorded session activity exists for this work item and attempt"}

@@ -54,13 +54,14 @@ type WorkerLifetimeExecution interface {
 }
 
 type NativeValidation struct {
-	NoChange      *tracker.NativeNoChangeCompletion
-	SecurityAudit *NativeSecurityAuditEvidence
-	Discussion    NativeReviewDiscussion
-	Evidence      []tracker.NativeEvidence
-	Commands      []gate.CommandResult
-	Version       *tracker.ChangeVersion
-	Diff          *connector.ValidationDiff
+	NoChange             *tracker.NativeNoChangeCompletion
+	SecurityAudit        *NativeSecurityAuditEvidence
+	Discussion           NativeReviewDiscussion
+	EvidenceContinuation *tracker.NativeAttemptEvidenceCursor
+	Evidence             []tracker.NativeEvidence
+	Commands             []gate.CommandResult
+	Version              *tracker.ChangeVersion
+	Diff                 *connector.ValidationDiff
 }
 
 // NativeSecurityAuditEvidence identifies an accepted Hub review of this source.
@@ -1292,7 +1293,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		request.source = source
 	}
@@ -1358,7 +1359,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 	if routeErr != nil {
 		return false, routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		request.source = source
 	}

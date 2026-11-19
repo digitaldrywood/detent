@@ -61,8 +61,14 @@ type NativeChangeReference struct {
 	HeadSHA   string `json:"head_sha"`
 }
 
+type NativeAttemptEvidenceCursor struct {
+	AttemptID string `json:"native_attempt_id"`
+	After     string `json:"cursor"`
+}
+
 type NativeAttempt struct {
 	NativeRunData
+	NextEvidenceAfter           string            `json:"next_evidence_after,omitempty"`
 	LocalAttemptID              int64             `json:"local_attempt_id,omitempty"`
 	Unavailable                 []string          `json:"unavailable,omitempty"`
 	TerminalFailureAvailability string            `json:"terminal_failure_availability"`

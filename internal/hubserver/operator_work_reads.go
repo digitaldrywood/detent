@@ -173,6 +173,13 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		if name == operatortool.GitHubScopeTimings && scope.Credential.Runner.RunnerID != "" && scope.Credential.Runner.RunnerID != request.RunnerID {
 			return operatortool.Result{}, explain.ErrNotFound
 		}
+		if name == operatortool.WorkAttemptReceipt && request.Cursor != "" {
+			evidence, _, _, err := s.readSelectedNativeRuntimeTenant(ctx, scope, string(item.WorkItemID), runtimeAttemptSelector{attemptID: request.NativeAttemptID, evidenceAfter: request.Cursor})
+			if err != nil {
+				return operatortool.Result{}, hubapi.SafeWorkReadError(err)
+			}
+			return operatortool.NativeRuntimeResult(name, request, evidence)
+		}
 		if request.Cursor != "" {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
