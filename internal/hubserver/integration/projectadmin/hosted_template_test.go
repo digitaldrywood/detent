@@ -1,25 +1,30 @@
-package hubserver
+package projectadmin_test
 
 import (
 	"net/http"
+	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// TestHostedProjectTemplateHasReviewLane checks that a project created by a
-// hosted owner starts with the review lane a completed run's Change Request
-// waits in: neither dispatchable nor terminal, reachable from In Progress by
-// the orchestrator, and left by a person to Done or back to In Progress.
 func TestHostedProjectTemplateHasReviewLane(t *testing.T) {
 	t.Parallel()
-	f := newBrowserHostedFixture(t, true)
-	project := f.createProject(t, "Template project")
-	response := f.page(t, "owner", "/api/v2/organizations/"+f.service.config.Hosted.OrganizationID+"/projects/"+project)
-	requireNativeStatus(t, response, http.StatusOK)
+	h := hubfixture.NewHostedSecurity(t)
+	owner := h.User(t, "owner", "owner", "owner@example.test", "", "")
+	response := h.Request(t, owner, http.MethodPost, "/projects", url.Values{"name": {"Template project"}, "grant_access": {"true"}})
+	hubfixture.RequireStatus(t, response, http.StatusSeeOther)
+	project := strings.TrimPrefix(response.Header().Get("Location"), "/projects/")
+	if !strings.HasPrefix(project, "prj_") {
+		t.Fatalf("invalid project location: %q", response.Header().Get("Location"))
+	}
+	response = h.Request(t, owner, http.MethodGet, hubfixture.ProjectBase(h.Primary, tracker.ProjectID(project)), nil)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var created tracker.NativeProject
-	decodeHubResponse(t, response, &created)
+	hubfixture.Decode(t, response, &created)
 	names := make([]string, 0, len(created.States))
 	for _, state := range created.States {
 		names = append(names, state.Name)
