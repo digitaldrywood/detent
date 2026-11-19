@@ -59,7 +59,7 @@ func (s *ChangeEvidence) PostAuditDisposition(c echo.Context) error {
 			return err
 		}
 		candidates, err = reader.AuditReviewCandidates(ctx, scope.Project, request.Key, 100)
-		if err == nil {
+		if err == nil && scope.Credential.HostedRole == "reporter" {
 			candidates, err = s.visibleAuditCandidates(ctx, r, scope, candidates)
 		}
 		return err
