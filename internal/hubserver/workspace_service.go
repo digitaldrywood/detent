@@ -3,9 +3,10 @@ package hubserver
 import (
 	"context"
 	"log/slog"
-	"math/rand/v2"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacerelay"
 
@@ -87,30 +88,6 @@ func (w *workspaceService) StopContext(ctx context.Context) {
 	})
 }
 
-func (w *workspaceService) maintain(ctx context.Context) {
-	defer close(w.stopped)
-	next := func() time.Duration {
-		spread := w.sweepInterval / 2
-		if spread <= 0 {
-			return w.sweepInterval
-		}
-		return w.sweepInterval - spread/2 + time.Duration(rand.Int64N(int64(spread)))
-	}
-	timer := time.NewTimer(next())
-	defer timer.Stop()
-	for {
-		select {
-		case <-w.stop:
-			return
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-			w.sweep(ctx)
-			timer.Reset(next())
-		}
-	}
-}
-
 // now reads the hub clock through the service's configuration so a test can
 // drive every deadline.
 func (w *workspaceService) now() time.Time { return w.server.config.Clock().UTC() }
@@ -136,30 +113,28 @@ func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connect
 	w.relayHTTP().CloseIfEndedSinceUpgrade(ctx, connection)
 }
 
-// sweep enforces every deadline of the workspace session contract that no request would reach on
-// its own: a request no runner claimed, two missed heartbeats, a lost lease, an
-// idle workspace, the hard lifetime cap and the re-bind grace.
+func (w *workspaceService) maintain(ctx context.Context) {
+	workspacehub.Maintain(ctx, w.stop, w.stopped, func() time.Duration { return w.sweepInterval }, time.NewTimer, w.sweep)
+}
+
 func (w *workspaceService) sweep(ctx context.Context) {
-	now := w.now()
-	records, err := w.dueWorkspaces(ctx, now)
-	if err != nil {
-		w.logger.Warn("workspace.sweep_failed", "error", err)
-		return
-	}
-	for _, record := range records {
-		moved, changed, err := w.applyDeadline(ctx, record, now)
-		if err != nil {
-			w.logger.Warn("workspace.sweep_transition_failed", "workspace_id", record.ID, "error", err)
-			continue
-		}
-		if changed {
-			w.committed(ctx, moved)
-		}
-	}
-	w.sweepActionRuns(ctx)
-	w.dispatchQueuedActionRuns(ctx)
-	w.relay.sweep(ctx, now)
-	if err := w.sweepRelayTickets(ctx, now); err != nil {
-		w.logger.Warn("workspace.ticket_sweep_failed", "error", err)
-	}
+	workspacehub.Sweep(ctx, workspacehub.SweepDeps{
+		Now: w.now,
+		Due: func(ctx context.Context, now time.Time) ([]workspacehub.Record, error) {
+			rows, err := w.lifecycleService().Due(ctx, now)
+			return rows, hubapi.FromFeatureError(err)
+		},
+		ApplyDeadline: func(ctx context.Context, record workspacehub.Record, now time.Time) (workspacehub.Record, bool, error) {
+			next, changed, err := w.lifecycleService().ApplyDeadline(ctx, record, now)
+			return next, changed, hubapi.FromFeatureError(err)
+		},
+		Committed: func(ctx context.Context, record workspacehub.Record) {
+			w.committed(ctx, workspaceRecord(record))
+		},
+		SweepActions:    w.sweepActionRuns,
+		DispatchActions: w.dispatchQueuedActionRuns,
+		SweepRelay:      w.relay.sweep,
+		SweepTickets:    w.sweepRelayTickets,
+		Logger:          w.logger,
+	})
 }

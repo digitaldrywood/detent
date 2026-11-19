@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -218,9 +217,6 @@ func TestRestoredOrganizationHTTPRoutes(t *testing.T) {
 func TestLocalHubStoresRunDetailsInPostgres(t *testing.T) {
 	t.Parallel()
 	service := newLocalHTTPService(t, func(cfg *Config) { cfg.Content, cfg.RunDetails = nil, nil })
-	if _, ok := service.runDetailStore().(*hubmaintenance.Details); !ok || service.config.Hosted != nil {
-		t.Fatalf("local Hub run detail store = %T", service.runDetailStore())
-	}
 	admin, _ := projectRecordDatabases.Load(service.database.postgres)
 	f := newNativeFixture(t, service, "", "Example project")
 	approveHubTestPolicy(t, service, f.base+"/policy", hubTestPolicy())

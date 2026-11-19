@@ -1,6 +1,11 @@
 package runnerruntime_test
 
 import (
+	"net/http/httptest"
+	"slices"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
+
 	"maps"
 	"net/http"
 	"testing"
@@ -89,4 +94,68 @@ func listWorkspaceRoutes(t *testing.T, project hubfixture.Native, query string) 
 	var listing workspacehub.ListResponse
 	hubfixture.Decode(t, response, &listing)
 	return listing.Workspaces
+}
+
+func TestWorkspaceOpenLimitsNameTheScopeReached(t *testing.T) {
+	t.Parallel()
+	hub := hubfixture.Open(t, hubfixture.Config{Workspace: &workspacehub.Config{Enabled: true, PersonMaxOpen: 2, PlanMaxOpen: 3}})
+	project := hubfixture.NewNative(t, hub, "", "Workspace limits")
+	issue := project.Create(t, "Workspace limit subject")
+	other := hubtest.Credential(t, hub.Repository, project.Organization(), hubtest.CredentialOptions{Projects: []tracker.ProjectID{project.Project.ID}, Now: hub.Now()})
+	post := func(t *testing.T, token string) *httptest.ResponseRecorder {
+		t.Helper()
+		return hub.Request(t, http.MethodPost, project.Base+"/workspaces", map[string]string{"work_item_id": string(issue.WorkItemID), "idempotency_key": hubapi.NewID("open")})
+	}
+	for range 2 {
+		hubfixture.RequireStatus(t, post(t, project.Token), http.StatusCreated)
+	}
+
+	t.Run("a person past their own cap is refused with scope person", func(t *testing.T) {
+		requireWorkspaceLimit(t, post(t, project.Token), "person", 2)
+	})
+
+	t.Run("an organization past its plan cap is refused with scope organization", func(t *testing.T) {
+		hubfixture.RequireStatus(t, post(t, other.Token), http.StatusCreated)
+		requireWorkspaceLimit(t, post(t, other.Token), "organization", 3)
+	})
+}
+
+func requireWorkspaceLimit(t *testing.T, response *httptest.ResponseRecorder, scope string, limit int) {
+	t.Helper()
+	hubfixture.RequireCode(t, response, http.StatusUnprocessableEntity, "workspace_limit")
+	var failure hubapi.NativeError
+	hubfixture.Decode(t, response, &failure)
+	if failure.Details["scope"] != scope {
+		t.Fatalf("details = %#v, want scope %s", failure.Details, scope)
+	}
+	if value, ok := failure.Details["limit"].(float64); !ok || int(value) != limit {
+		t.Fatalf("details = %#v, want limit %d", failure.Details, limit)
+	}
+}
+
+func TestNativeCapabilitiesAdvertiseWorkspaceSessionsOnlyWhenServed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		workspace *workspacehub.Config
+		want      bool
+	}{
+		{name: "workspaces enabled", workspace: &workspacehub.Config{Enabled: true}, want: true},
+		{name: "workspaces disabled", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := hubfixture.NewDefaultNative(t, hubfixture.Config{Workspace: test.workspace})
+			response := f.Request(t, http.MethodGet, "/api/v2/capabilities", nil)
+			hubfixture.RequireStatus(t, response, http.StatusOK)
+			var document struct {
+				Features []string `json:"features"`
+			}
+			hubfixture.Decode(t, response, &document)
+			if got := slices.Contains(document.Features, tracker.NativeWorkspaceCapability); got != test.want {
+				t.Fatalf("features = %v, advertise workspace sessions = %t, want %t", document.Features, got, test.want)
+			}
+		})
+	}
 }

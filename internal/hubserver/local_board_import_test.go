@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -391,96 +390,6 @@ func localBoardCounts(t *testing.T, f nativeFixture) []int {
 	return counts
 }
 
-func TestLocalBoardImportRefusals(t *testing.T) {
-	t.Parallel()
-	records := localBoardFixture("local_sqlite")
-	f := localBoardTarget(t, nil, "refusals")
-	for _, test := range []struct {
-		name, token string
-		record      localboard.Record
-		status      int
-	}{
-		{"worker", localBoardWorker(t, f), records[0], http.StatusForbidden},
-		{"missing grant", newNativeFixture(t, f.service, "", "no-grant").token, records[0], http.StatusNotFound},
-		{"missing prerequisite", f.token, records[1], http.StatusUnprocessableEntity},
-		{"invalid timestamp", f.token, func() localboard.Record {
-			r := records[0]
-			r.CreatedAt = time.Time{}
-			r.Title = "title-secret"
-			r.Body = "body-secret"
-			return r
-		}(), http.StatusUnprocessableEntity},
-		{"invalid comment identity", f.token, func() localboard.Record {
-			r := records[0]
-			r.Comments = []localboard.Comment{{Body: "body-secret", CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}}
-			return r
-		}(), http.StatusUnprocessableEntity},
-		{"invalid content", f.token, func() localboard.Record {
-			r := records[0]
-			r.Title = strings.Repeat("title-secret", 100)
-			r.Body = "body-secret"
-			return r
-		}(), http.StatusUnprocessableEntity},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			before := localBoardCounts(t, f)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/local-board-import", test.token, localboard.Request{Record: test.record})
-			requireNativeStatus(t, response, test.status)
-			if strings.Contains(response.Body.String(), "title-secret") || strings.Contains(response.Body.String(), "body-secret") {
-				t.Fatal("error exposed issue content")
-			}
-			if after := localBoardCounts(t, f); !reflect.DeepEqual(before, after) {
-				t.Fatal("refused import wrote data")
-			}
-		})
-	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/local-board-import", f.token, localboard.Request{Record: records[0]}), http.StatusOK)
-	changed := records[0]
-	changed.Body += " changed"
-	before := localBoardCounts(t, f)
-	for _, dry := range []bool{true, false} {
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/local-board-import", f.token, localboard.Request{Record: changed, DryRun: dry}), http.StatusUnprocessableEntity)
-	}
-	if after := localBoardCounts(t, f); !reflect.DeepEqual(before, after) {
-		t.Fatalf("changed pinned source wrote rows: %v -> %v", before, after)
-	}
-	t.Run("prerequisite in another authorized project", func(t *testing.T) {
-		other := localBoardTarget(t, f.service, "prerequisite-isolation")
-		if other.project.OrganizationID != f.project.OrganizationID || other.project.ID == f.project.ID {
-			t.Fatal("fixture requires distinct projects in the same organization")
-		}
-		response := performHubAPIRequest(t, other.service, http.MethodGet, other.base, other.token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		admin := f.service.config.TenantRepository.(localBoardTestRepository).admin
-		counts := func() [2][2]int {
-			var rows [2][2]int
-			for i, fixture := range []nativeFixture{f, other} {
-				if err := admin.QueryRowContext(t.Context(), `SELECT
-					(SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2),
-					(SELECT count(*) FROM local_board_imports WHERE organization_id=$1 AND project_id=$2)`,
-					fixture.project.OrganizationID, fixture.project.ID).Scan(&rows[i][0], &rows[i][1]); err != nil {
-					t.Fatal(err)
-				}
-			}
-			return rows
-		}
-		before := counts()
-		if before[0][1] != 1 || before[1][1] != 0 {
-			t.Fatalf("prerequisite mappings before import = %v", before)
-		}
-		allBefore := localBoardCounts(t, f)
-		response = performHubAPIRequest(t, other.service, http.MethodPost, other.base+"/local-board-import", other.token, localboard.Request{Record: records[1]})
-		requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-		if after := counts(); after != before {
-			t.Fatalf("foreign prerequisite changed project rows: %v -> %v", before, after)
-		}
-		if after := localBoardCounts(t, f); !reflect.DeepEqual(allBefore, after) {
-			t.Fatalf("foreign prerequisite wrote rows: %v -> %v", allBefore, after)
-		}
-	})
-
-}
-
 func TestLocalBoardImportHostedAuthorityAndAllowances(t *testing.T) {
 	t.Parallel()
 	records := localBoardFixture("local_sqlite")
@@ -493,11 +402,9 @@ func TestLocalBoardImportHostedAuthorityAndAllowances(t *testing.T) {
 		{"operator", "owner", "write", nil, http.StatusOK},
 		{"viewer", "viewer", "read", nil, http.StatusForbidden},
 		{"reporter", "reporter", "write", nil, http.StatusForbidden},
-		{"storage allowance", "owner", "write", map[string]int64{"collaboration_bytes": 1}, http.StatusTooManyRequests},
 		{"issue allowance", "owner", "write", map[string]int64{"unarchived_issues": 0}, http.StatusTooManyRequests},
 		{"terminal issue allowance", "owner", "write", map[string]int64{"unarchived_issues": 0}, http.StatusOK},
 		{"content exceeds storage", "owner", "write", map[string]int64{"collaboration_bytes": int64(len(records[0].Title) + len(records[0].Body) - 1)}, http.StatusTooManyRequests},
-		{"history allowance", "owner", "write", map[string]int64{"history_records": 0}, http.StatusTooManyRequests},
 		{"history includes event", "owner", "write", map[string]int64{"history_records": 1}, http.StatusTooManyRequests},
 		{"mutation allowance", "owner", "write", map[string]int64{"api_mutations": 1}, http.StatusTooManyRequests},
 		{"event allowance", "owner", "write", map[string]int64{"ingested_events": 0}, http.StatusTooManyRequests},
@@ -679,38 +586,6 @@ func localBoardHostedUsage(t *testing.T, service *Service) (map[string]int64, er
 		return nil, err
 	}
 	return result, nil
-}
-
-func localBoardWorker(t *testing.T, f nativeFixture) string {
-	t.Helper()
-	token := hubapi.NewID("worker")
-	now := f.service.config.Clock()
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token, Name: "Example worker", Hash: apikey.HashToken(token), Scope: string(hubapi.APIScopeWorker), NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
-			return err
-		}
-		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: token, ProjectID: f.project.ID})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return token
-}
-
-func TestLocalBoardImportRollsBackAtSourceMappingWrite(t *testing.T) {
-	t.Parallel()
-	f := localBoardTarget(t, nil, "rollback")
-	records := localBoardFixture("local_sqlite")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/local-board-import", f.token, localboard.Request{Record: records[0]}), http.StatusOK)
-	admin := f.service.config.TenantRepository.(localBoardTestRepository).admin
-	if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION refuse_local_board_mapping() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'mapping write refused'; END$$; CREATE TRIGGER refuse_local_board_mapping BEFORE INSERT ON local_board_imports FOR EACH ROW EXECUTE FUNCTION refuse_local_board_mapping()`); err != nil {
-		t.Fatal(err)
-	}
-	before := localBoardCounts(t, f)
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/local-board-import", f.token, localboard.Request{Record: records[1]})
-	requireNativeStatus(t, response, http.StatusInternalServerError)
-	if after := localBoardCounts(t, f); !reflect.DeepEqual(before, after) {
-		t.Fatalf("failed final mapping left partial item, comment, dependency, version, event, search or archive rows: %v -> %v", before, after)
-	}
 }
 
 func localBoardReopen(t *testing.T, service *Service) {

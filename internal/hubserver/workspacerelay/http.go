@@ -266,7 +266,7 @@ func relayCloseText(reason string) string {
 // with the re-check on every person-originated frame it is how a membership,
 // role, grant or session change closes a connection.
 func (w *HTTP) watchPersonAuthority(ctx context.Context, c echo.Context, scope hubscope.NativeScope, record workspacehub.Record, connection *Connection) {
-	ticker := time.NewTicker(workspacesession.AuthorityRecheckInterval)
+	ticker := w.AuthorityTicker(workspacesession.AuthorityRecheckInterval)
 	defer ticker.Stop()
 	for {
 		select {
