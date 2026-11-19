@@ -34,7 +34,7 @@ func controlledHostedDelivery(t *testing.T, cfg hubdeps.DashboardDelivery, confi
 	cfg.NewTimer = func(time.Duration) hubdeps.Timer {
 		return hubdeps.Timer{C: make(chan time.Time), Reset: func(time.Duration) {}, Stop: func() {}}
 	}
-	configure = append([]func(*Config){func(c *Config) { c.deps.DashboardDelivery = &cfg; c.Workspace = &WorkspaceConfig{Enabled: true} }}, configure...)
+	configure = append([]func(*Config){func(c *Config) { c.Deps().DashboardDelivery = &cfg; c.Workspace = &WorkspaceConfig{Enabled: true} }}, configure...)
 	f := newHostedSecurityFixture(t, configure...)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
@@ -775,7 +775,7 @@ func TestHostedEventsWriteDeadlineFailureClosesBeforeWrite(t *testing.T) {
 				close(ready)
 				return hubdeps.Timer{C: tick, Reset: func(time.Duration) {}, Stop: func() {}}
 			}}
-			s := &Service{config: Config{Logger: discardLogger(), deps: hubdeps.Deps{DashboardDelivery: &cfg}}}
+			s := &Service{config: WithDeps(Config{Logger: discardLogger()}, hubdeps.Deps{DashboardDelivery: &cfg})}
 			s.dashboard = newDashboardDelivery(s)
 			ctx, cancel := context.WithCancel(t.Context())
 			writer := failedDashboardDeadlineWriter{ResponseRecorder: httptest.NewRecorder(), written: make(chan struct{}, 1)}

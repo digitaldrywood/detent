@@ -170,15 +170,15 @@ func (s *Service) refreshConversationStream(readCtx context.Context, c echo.Cont
 }
 
 func (s *Service) streamHeartbeat() time.Duration {
-	if s.config.deps.ConversationStreamHeartbeat > 0 {
-		return s.config.deps.ConversationStreamHeartbeat
+	if s.config.Deps().ConversationStreamHeartbeat > 0 {
+		return s.config.Deps().ConversationStreamHeartbeat
 	}
 	return conversationHeartbeatInterval
 }
 
 func (s *Service) streamAuthorize() time.Duration {
-	if s.config.deps.ConversationStreamAuthorize > 0 {
-		return s.config.deps.ConversationStreamAuthorize
+	if s.config.Deps().ConversationStreamAuthorize > 0 {
+		return s.config.Deps().ConversationStreamAuthorize
 	}
 	return conversationAuthorizeInterval
 }

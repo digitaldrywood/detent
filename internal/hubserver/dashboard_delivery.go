@@ -132,7 +132,7 @@ type dashboardDelivery struct {
 
 func newDashboardDelivery(s *Service) *dashboardDelivery {
 	cfg := hubdeps.DashboardDelivery{NewTimer: hubdeps.NewTimer, PageSize: 64, QueueSize: 128, TenantLimit: 128, Budget: 32}
-	if override := s.config.deps.DashboardDelivery; override != nil {
+	if override := s.config.Deps().DashboardDelivery; override != nil {
 		if override.NewTimer != nil {
 			cfg.NewTimer = override.NewTimer
 		}

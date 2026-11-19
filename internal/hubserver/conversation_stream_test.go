@@ -110,7 +110,7 @@ type streamFixture struct {
 
 func newStreamFixture(t *testing.T) streamFixture {
 	t.Helper()
-	return newStreamFixtureWithAPI(t, newConversationAPIFixtureConfig(t, nil, Config{deps: hubdeps.Deps{ConversationStreamHeartbeat: 40 * time.Millisecond, ConversationStreamAuthorize: 40 * time.Millisecond}}))
+	return newStreamFixtureWithAPI(t, newConversationAPIFixtureConfig(t, nil, WithDeps(Config{}, hubdeps.Deps{ConversationStreamHeartbeat: 40 * time.Millisecond, ConversationStreamAuthorize: 40 * time.Millisecond})))
 }
 
 func newStreamFixtureWithAPI(t *testing.T, f conversationAPIFixture) streamFixture {
@@ -628,7 +628,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, browserPreviewConfig, func(cfg *Config) { cfg.deps.ConversationStreamHeartbeat = 40 * time.Millisecond })
+			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, browserPreviewConfig, func(cfg *Config) { cfg.Deps().ConversationStreamHeartbeat = 40 * time.Millisecond })
 			f.seedConversation(t)
 			f.service.config.Hosted.Provider = &streamMembershipFailureProvider{HostedProvider: f.provider}
 			request := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation+"/events", nil)

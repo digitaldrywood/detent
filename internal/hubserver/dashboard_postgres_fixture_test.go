@@ -44,7 +44,7 @@ func controlledPostgresDelivery(t *testing.T, cfg hubdeps.DashboardDelivery, con
 			return hubdeps.Timer{C: make(chan time.Time), Reset: func(time.Duration) {}, Stop: func() {}}
 		}
 	}
-	f.service.config.deps.DashboardDelivery = &cfg
+	f.service.config.Deps().DashboardDelivery = &cfg
 	f.service.database.dashboardCommitted = boardCommitChannel(repository)
 	d := newDashboardDelivery(f.service)
 	f.service.dashboard = d
