@@ -362,7 +362,7 @@ func boardDerivesPageData(query string) bool {
 		return strings.Contains(query, "count(*)")
 	}
 	window, after, found := strings.Cut(rest, "), summary(")
-	const indexedClose = "coalesce(b.closed_at,'-infinity'::timestamptz)"
+	const indexedClose = "b.closed_at"
 	const asOf = "coalesce($6::timestamptz,statement_timestamp())"
 	return !found || strings.Contains(before+after, "count(*)") ||
 		!strings.Contains(window, "WHERE b.organization_id=$1 AND b.project_id=") ||

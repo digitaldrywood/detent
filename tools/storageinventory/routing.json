@@ -4111,6 +4111,7 @@
       ],
       "inventory": {
         "operations": {
+          "CompletionCountsSQL:SQL": 1,
           "boardViewDependencyRows:SQL": 1,
           "boardViewLinkRows:SQL": 2,
           "boardViewReasonRows:SQL": 1,
@@ -12249,6 +12250,20 @@
         "tables": [
           "hub/native_attempts",
           "hub/organizations"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261119210731_board_items_closed_at_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "board"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/native_board_items"
         ]
       }
     },
