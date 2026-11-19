@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -40,6 +42,7 @@ type dispatchGuardFixture struct {
 	worktreeState      string
 	completionBody     string
 	checkpoint         *tracker.NativeCheckpoint
+	failure            *tracker.NativeTerminalFailure
 	authority          hubapi.APICredential
 	acceptanceRecorded bool
 }
@@ -144,6 +147,10 @@ func (f dispatchGuardFixture) finish(t *testing.T, disposition ...*tracker.Nativ
 	}
 
 	event.Data.Sequence++
+	if f.failure != nil {
+		event.Data.Outcome = "failed"
+		event.Data.TerminalFailure = f.failure
+	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 }
 
@@ -1062,4 +1069,335 @@ func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
 	if !candidate(t) {
 		t.Fatal("wiping historical dependency evidence changed eligibility")
 	}
+}
+
+func TestHubOwnedBlockedRecoveryClaimsLegacyInstanceHold(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	f.failure = &tracker.NativeTerminalFailure{ErrorClass: tracker.WorkspaceSharedMemoryExhausted, Stage: "workspace_preparation", Source: "runner", Coverage: "complete", ObservedAt: f.now, Summary: "Example workspace setup failed"}
+	f.completionBody = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Restore the host shared-memory capacity.\n```"
+	blocked := legacyInstanceBlock(t, f)
+	claim := hubOwnedRecoveryClaim(f, "recover-instance")
+	path := f.base + "/work-items/" + string(blocked.WorkItemID)
+	var recovery tracker.NativeRecovery
+	read := performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=recovery", f.worker, nil)
+	requireNativeStatus(t, read, http.StatusOK)
+	decodeHubResponse(t, read, &recovery)
+	if recovery.ContinuationEligible == nil || !*recovery.ContinuationEligible || f.reload(t).Revision != blocked.Revision {
+		t.Fatalf("diagnostic recovery eligibility=%v at revision %d", recovery.ContinuationEligible, f.reload(t).Revision)
+	}
+	var preview tracker.NativeCapacityPage
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", f.worker, tracker.NativeCapacityPreview{NativeClaim: claim})
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &preview)
+	if len(preview.Items) != 1 || preview.Items[0].State != "Todo" || preview.Items[0].Revision != blocked.Revision || f.reload(t).State != "Blocked" {
+		t.Fatalf("preview changed or omitted the legacy hold: %+v", preview.Items)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	if lease.WorkItemID != blocked.WorkItemID || lease.FencingToken <= f.lease.FencingToken {
+		t.Fatalf("claim = %+v", lease)
+	}
+	current := f.reload(t)
+	if current.State != "Todo" || current.Revision != blocked.Revision+1 {
+		t.Fatalf("recovered item %s at %d, want Todo at %d", current.State, current.Revision, blocked.Revision+1)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var replay tracker.NativeLease
+	decodeHubResponse(t, response, &replay)
+	if replay.ID != lease.ID || f.reload(t).Revision != current.Revision {
+		t.Fatal("claim replay changed the lease or applied another transition")
+	}
+}
+
+func seedHubOwnedBlockedRecovery(t *testing.T, f nativeFixture, issue tracker.NativeIssue, actor tracker.Actor) tracker.NativeIssue {
+	t.Helper()
+	from := issue.State
+	issue.State = "Blocked"
+	issue.Revision++
+	content := eventstore.NewContent(f.service.runDetailStore())
+	raw, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		row, err := w.LockWorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		row.WorkflowStateName = &issue.State
+		if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
+			return err
+		}
+		_, err = w.CreateCollaborationVersion(t.Context(), version)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	appendTestHealthEventAs(t, f, actor, issue, "workflow.transitioned", tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: issue.State, Reason: "worker_progress"}, f.service.config.Clock())
+	return issue
+}
+
+func configureHubOwnedBlockedRecovery(t *testing.T, f dispatchGuardFixture) {
+	t.Helper()
+	configureDispatchGuardState(t, f, tracker.NativeState{Name: "Cancelled", Terminal: true})
+	configureDispatchGuardState(t, f, tracker.NativeState{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done", "Blocked", "Cancelled"}})
+}
+
+func legacyInstanceBlock(t *testing.T, f dispatchGuardFixture) tracker.NativeIssue {
+	t.Helper()
+	configureHubOwnedBlockedRecovery(t, f)
+	if f.checkpoint == nil {
+		f.checkpoint = nativeTestCheckpoint()
+		f.checkpoint.Resume, f.checkpoint.WorktreeState = "fresh_checkout", "clean"
+	}
+	disposition := &tracker.NativeDisposition{Status: workpad.StatusBlocked, HumanAction: true}
+	if f.failure == nil {
+		disposition.ReasonCode = "instance_limitation"
+		disposition.BlockerEvidence = []workpad.Blocker{{Owner: workpad.BlockerOwnerInstance, Ref: "instance:postgres"}}
+	}
+	f.succeed(t, disposition)
+	return seedHubOwnedBlockedRecovery(t, f.nativeFixture, f.reload(t), tracker.Actor{Kind: "runner", PrincipalID: f.runner.binding.RunnerID})
+}
+
+func hubOwnedRecoveryClaim(f dispatchGuardFixture, session string) tracker.NativeClaim {
+	return tracker.NativeClaim{PolicyID: f.policy, MachineID: f.runner.binding.MachineID, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: []string{"Todo"}, SessionID: session, TTLSeconds: 600}
+}
+
+func TestHubOwnedBlockedRecoveryUsesDependencyPredicates(t *testing.T) {
+	for _, merged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("requires merge=%t", merged), func(t *testing.T) {
+			f := newDispatchGuardFixture(t)
+			configureHubOwnedBlockedRecovery(t, f)
+			prerequisite := f.create(t, "Example prerequisite")
+			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", f.token, tracker.DependencyMutation{
+				Mutation: tracker.Mutation{IdempotencyKey: "record-prerequisite"}, ExpectedRevision: f.reload(t).Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "add",
+			})
+			requireNativeStatus(t, response, http.StatusOK)
+			ref := fmt.Sprintf("%s#%d", f.project.ID, prerequisite.Number)
+			predicate := &workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: ref, States: []string{"open"}}
+			if merged {
+				predicate.Type, predicate.States = workpad.PredicatePullRequestState, []string{"open", "closed", "missing"}
+			}
+			f.succeed(t, &tracker.NativeDisposition{Status: workpad.StatusBlocked, Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: ref, Owner: workpad.BlockerOwnerOrchestrator, Predicate: predicate}}})
+			blocked := seedHubOwnedBlockedRecovery(t, f.nativeFixture, f.reload(t), tracker.Actor{Kind: "runner", PrincipalID: f.runner.binding.RunnerID})
+			claim := hubOwnedRecoveryClaim(f, "recover-dependency")
+			claim.WorkItemID = blocked.WorkItemID
+			assertHeld := func() {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+				if response.Code == http.StatusOK || f.reload(t).Revision != blocked.Revision {
+					t.Fatalf("unresolved prerequisite released the hold: %s", response.Body.String())
+				}
+			}
+			assertHeld()
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(prerequisite.WorkItemID)+"/workflow", f.token, tracker.Transition{
+				Mutation: tracker.Mutation{IdempotencyKey: "cancel-prerequisite"}, ExpectedRevision: prerequisite.Revision, State: "Cancelled", Reason: "user_requested",
+			}), http.StatusOK)
+			if merged {
+				assertHeld()
+				seedAnalyticsTestChange(t, f.service, f.scope(), prerequisite.WorkItemID, "merged-prerequisite", f.now,
+					&tracker.ChangeLanding{MergeSHA: strings.Repeat("c", 40), BaseRef: "develop", Method: "merge", LandedAt: f.now})
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+			requireNativeStatus(t, response, http.StatusOK)
+			if after := f.reload(t); after.State != "Todo" || after.Revision != blocked.Revision+1 {
+				t.Fatalf("resolved prerequisite left state=%q revision=%d", after.State, after.Revision)
+			}
+		})
+	}
+}
+
+func TestHubOwnedBlockedRecoveryPreservesHumanIntent(t *testing.T) {
+	t.Run("operator stop", func(t *testing.T) {
+		f := newDispatchGuardFixture(t)
+		configureHubOwnedBlockedRecovery(t, f)
+		f.succeed(t, &tracker.NativeDisposition{Status: workpad.StatusBlocked, ReasonCode: "instance_limitation"})
+		path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{
+			Mutation: tracker.Mutation{IdempotencyKey: "operator-hold"}, ExpectedRevision: f.reload(t).Revision, State: "Blocked", Reason: "user_requested",
+		}), http.StatusOK)
+		stopped := f.reload(t)
+		claim := hubOwnedRecoveryClaim(f, "held-by-operator")
+		claim.WorkItemID = stopped.WorkItemID
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+		if response.Code == http.StatusOK || f.reload(t).Revision != stopped.Revision {
+			t.Fatalf("operator-stopped item was released: %s", response.Body.String())
+		}
+		var history tracker.Page[tracker.CollaborationEvent]
+		decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?limit=100", f.token, nil), &history)
+		if !slices.ContainsFunc(history.Items, func(event tracker.CollaborationEvent) bool {
+			return event.Type == "workflow.transitioned" && event.Actor.Kind == "human" && event.Data.ToState == "Blocked" && event.Data.Operation == "operator_stop"
+		}) {
+			t.Fatal("operator stop is missing typed evidence")
+		}
+	})
+	t.Run("separate product question", func(t *testing.T) {
+		f := newDispatchGuardFixture(t)
+		f.completionBody = "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - owner: human\n    reason: Product approval\nhuman_action: Choose the default visibility.\n```"
+		blocked := legacyInstanceBlock(t, f)
+		claim := hubOwnedRecoveryClaim(f, "held-by-question")
+		claim.WorkItemID = blocked.WorkItemID
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+		if response.Code == http.StatusOK || f.reload(t).Revision != blocked.Revision {
+			t.Fatalf("separate product question was released: %s", response.Body.String())
+		}
+		f.issue = f.create(t, "Independent issue")
+		f.claim(t)
+		f.completionBody = ""
+		recoverable := legacyInstanceBlock(t, f)
+		claim.WorkItemID, claim.SessionID = recoverable.WorkItemID, "no-product-question"
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusOK)
+	})
+}
+
+type hubOwnedRecoverySource struct {
+	ReconcileBackend
+	t       *testing.T
+	baseSHA string
+	current bool
+}
+
+func (s *hubOwnedRecoverySource) CommitOnCurrentBase(_ context.Context, repository, branch, commit string) (bool, error) {
+	s.t.Helper()
+	if repository != "example-org/example-project" || branch != "develop" || commit != s.baseSHA {
+		s.t.Errorf("unexpected source proof: %q %q %q", repository, branch, commit)
+		return false, nil
+	}
+	return s.current, nil
+}
+
+func TestHubOwnedBlockedRecoveryVerifiesCurrentBase(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	configureHubOwnedBlockedRecovery(t, f)
+	const repository = "example-org/example-project"
+	coordinatorFixtureProject(t, f.service, f.project.OrganizationID, f.project.ID, func(row *projectstore.Record) {
+		row.Settings.CheckoutRepository = repository
+	})
+	changeID := hubapi.NewID("change")
+	version := tracker.ChangeVersion{
+		ID: hubapi.NewID("version"), ChangeID: changeID, Number: 1, CreatedAt: f.now, Actor: tracker.Actor{Kind: "runner", PrincipalID: f.runner.binding.RunnerID},
+		ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("a", 40), PolicyID: f.policy, Repository: repository, AttemptID: f.attempt},
+	}
+	change := tracker.ChangeRequest{ID: changeID, OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, CurrentVersion: version.ID, Revision: 1, Title: "Source change", CreatedAt: f.now, UpdatedAt: f.now}
+	content := eventstore.NewContent(f.service.runDetailStore())
+	changeRow, err := content.PrepareChange(t.Context(), f.project.OrganizationID, historyTestJSON(t, change))
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionRow, err := content.PrepareVersion(t.Context(), f.project.OrganizationID, historyTestJSON(t, version))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
+			return err
+		}
+		if _, err := w.CreateVersion(t.Context(), versionRow); err != nil {
+			return err
+		}
+		return w.PutPRPublication(t.Context(), eventstore.NativePRPublication{
+			OrganizationID: f.project.OrganizationID, VersionID: version.ID, ChangeID: version.ChangeID, HeadSHA: version.HeadSHA,
+			Repository: repository, BaseRef: "develop", Branch: "example-branch", PolicyID: f.policy, RecorderAttemptID: f.attempt,
+			External: tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: "https://github.com/" + repository + "/pull/1"},
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := &hubOwnedRecoverySource{t: t, baseSHA: strings.Repeat("a", 40)}
+	f.service.config.ReconcileBackend = source
+	f.checkpoint = &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "git_ref", Availability: "available", WorktreeState: "clean", ExternalEffect: "none", EffectState: "none",
+		Ref: tracker.CheckpointRefPrefix + "example", BaseSHA: source.baseSHA, CommitSHA: version.HeadSHA, TreeSHA: strings.Repeat("c", 40),
+		Change: &tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA},
+	}
+	f.succeed(t, &tracker.NativeDisposition{Status: workpad.StatusBlocked, ReasonCode: "stale_base", HumanAction: true})
+	blocked := seedHubOwnedBlockedRecovery(t, f.nativeFixture, f.reload(t), tracker.Actor{Kind: "runner", PrincipalID: f.runner.binding.RunnerID})
+	claim := hubOwnedRecoveryClaim(f, "recover-stale-base")
+	claim.WorkItemID = blocked.WorkItemID
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+	if response.Code == http.StatusOK || f.reload(t).Revision != blocked.Revision {
+		t.Fatalf("unverified base was released: %s", response.Body.String())
+	}
+	source.current = true
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusOK)
+}
+
+func TestHubOwnedBlockedRecoveryAllowsOnlyOneClaim(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	blocked := legacyInstanceBlock(t, f)
+	second := conversationWorkerRunner(t, f.nativeFixture)
+	reportRunnerCapacity(t, f.service, f.base, second.redemption.Credential, second.binding.MachineID, second.redemption.DisplayName, second.redemption.BackendIsolation, second.redemption.Capacity)
+	start := make(chan struct{})
+	results := make(chan int, 2)
+	for _, current := range []runnerFixture{f.runner, second} {
+		go func() {
+			<-start
+			claim := hubOwnedRecoveryClaim(f, "recover-"+current.binding.RunnerID)
+			claim.WorkItemID, claim.MachineID = blocked.WorkItemID, current.binding.MachineID
+			results <- performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", current.redemption.Credential, claim).Code
+		}()
+	}
+	close(start)
+	var successful int
+	for range 2 {
+		if <-results == http.StatusOK {
+			successful++
+		}
+	}
+	if successful != 1 || f.reload(t).Revision != blocked.Revision+1 {
+		t.Fatalf("successful claims=%d state=%+v", successful, f.reload(t))
+	}
+}
+
+func TestHubOwnedBlockedRecoveryUsesNextRunnerReadiness(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	blocked := legacyInstanceBlock(t, f)
+	placementFixtureHeartbeat(t, f.nativeFixture, f.runner.binding.RunnerID, f.now.Add(-time.Hour))
+	first := hubOwnedRecoveryClaim(f, "stale-runner")
+	first.WorkItemID = blocked.WorkItemID
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, first)
+	if response.Code == http.StatusOK {
+		t.Fatal("runner with stale readiness claimed the item")
+	}
+	next := conversationWorkerRunner(t, f.nativeFixture)
+	reportRunnerCapacity(t, f.service, f.base, next.redemption.Credential, next.binding.MachineID, next.redemption.DisplayName, next.redemption.BackendIsolation, next.redemption.Capacity)
+	claim := hubOwnedRecoveryClaim(f, "ready-runner")
+	claim.WorkItemID, claim.MachineID = blocked.WorkItemID, next.binding.MachineID
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", next.redemption.Credential, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	if lease.MachineID != next.binding.MachineID || f.reload(t).Revision != blocked.Revision+1 {
+		t.Fatalf("healthy runner did not receive the recovered work: %+v", lease)
+	}
+}
+
+func TestHubOwnedBlockedRecoveryLeavesNewFailureDispatchable(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	configureHubOwnedBlockedRecovery(t, f)
+	f.completionBody = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Repair the runner checkout.\n```"
+	f.finish(t, &tracker.NativeDisposition{Status: workpad.StatusBlocked, HumanAction: true, ReasonCode: "instance_limitation"})
+	current := f.reload(t)
+	path := f.base + "/work-items/" + string(current.WorkItemID)
+	request := tracker.Transition{ExpectedRevision: current.Revision, State: "Blocked", Reason: "worker_progress", ReasonDetail: f.completionBody,
+		Mutation: tracker.Mutation{IdempotencyKey: "machine-hold", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken},
+	}
+	for range 2 {
+		response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		if after := f.reload(t); after.State != current.State || after.Revision != current.Revision {
+			t.Fatalf("instance hold changed state=%q revision=%d", after.State, after.Revision)
+		}
+	}
+	f.release(t)
+	claim := hubOwnedRecoveryClaim(f, "retry-instance")
+	claim.WorkItemID = current.WorkItemID
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusOK)
 }

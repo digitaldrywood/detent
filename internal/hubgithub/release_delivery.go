@@ -320,3 +320,38 @@ func equivalentReleasePatch(source, pick []releasePickFile) bool {
 	sourcePatches, pickPatches := patches(source), patches(pick)
 	return sourcePatches != nil && pickPatches != nil && maps.Equal(sourcePatches, pickPatches)
 }
+
+func (r *Reconciler) CommitOnCurrentBase(ctx context.Context, repository, branch, commit string) (bool, error) {
+	if r == nil || r.client == nil {
+		return false, errors.New("repository transport is unavailable")
+	}
+	owner, name, ok := strings.Cut(repository, "/")
+	if !ok || owner == "" || name == "" || branch == "" || commit == "" {
+		return false, errors.New("repository, base branch and commit are required")
+	}
+	ctx = scopedRequests(ctx, "native", "reconcile")
+	path := repositoryRESTPath(owner, name)
+	var ref struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	branch = strings.TrimPrefix(branch, "refs/heads/")
+	if err := r.client.REST(ctx, http.MethodGet, path+"/git/ref/heads/"+url.PathEscape(branch), nil, &ref); err != nil {
+		return false, fmt.Errorf("read current base: %w", err)
+	}
+	if ref.Object.SHA == "" {
+		return false, errors.New("current base identity is unavailable")
+	}
+	if ref.Object.SHA == commit {
+		return true, nil
+	}
+	var comparison struct {
+		Status string `json:"status"`
+	}
+	err := r.client.REST(ctx, http.MethodGet, path+"/compare/"+url.PathEscape(commit)+"..."+url.PathEscape(ref.Object.SHA)+"?per_page=1", nil, &comparison)
+	if err != nil {
+		return false, fmt.Errorf("compare against current base: %w", err)
+	}
+	return comparison.Status == "ahead" || comparison.Status == "identical", nil
+}
