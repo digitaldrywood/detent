@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -64,7 +63,7 @@ var postgresStartupTemplate = pgtest.NewTemplate(func(ctx context.Context, db *s
 })
 
 func startupMigrationProvider(pool *sql.DB) (*goose.Provider, error) {
-	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
+	migrations, err := postgres.MigrationFiles()
 	if err != nil {
 		return nil, err
 	}

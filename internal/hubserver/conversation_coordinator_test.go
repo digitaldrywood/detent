@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -2288,7 +2287,7 @@ func reopenCoordinatorService(t *testing.T, original *Service, configure ...func
 	if err := original.Close(); err != nil {
 		t.Fatal(err)
 	}
-	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
+	migrations, err := postgres.MigrationFiles()
 	if err != nil {
 		t.Fatal(err)
 	}

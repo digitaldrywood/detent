@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"io/fs"
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 
@@ -23,7 +22,7 @@ func validateDatabaseBackend(cfg Config) error {
 }
 
 func openPostgresDatabase(ctx context.Context, cfg postgres.Config) (*database, error) {
-	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
+	migrations, err := postgres.MigrationFiles()
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +57,7 @@ func MigratePostgres(ctx context.Context, connection pgtransport.Connection) err
 }
 
 func MigratePostgresWithConversationSources(ctx context.Context, connection pgtransport.Connection, sources ...postgres.ConversationHistoryImportSource) error {
-	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
+	migrations, err := postgres.MigrationFiles()
 	if err != nil {
 		return err
 	}

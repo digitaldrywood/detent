@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"errors"
+	"io/fs"
 	"reflect"
 	"testing"
 	"testing/fstest"
@@ -105,7 +106,11 @@ func TestHostedPlanStorageMigration(t *testing.T) {
 		}
 	}
 	const file = "20261112124958_historical_plan_storage_floors.sql"
-	data, err := migrationFiles.ReadFile("postgres/migrations/" + file)
+	migrations, err := postgres.MigrationFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := fs.ReadFile(migrations, file)
 	if err != nil {
 		t.Fatal(err)
 	}

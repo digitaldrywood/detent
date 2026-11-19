@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"io/fs"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -16,7 +15,7 @@ func tfConvReopenConversationService(t *testing.T, original *Service, configure 
 	if err := original.Close(); err != nil {
 		t.Fatal(err)
 	}
-	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
+	migrations, err := postgres.MigrationFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
