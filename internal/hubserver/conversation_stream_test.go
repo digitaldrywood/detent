@@ -748,9 +748,9 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 					}
 				}
 				requireClosed(t, frame, tt.want)
-				if tt.withheldError != "" && strings.Contains(sink.text(), tt.withheldError) {
-					t.Fatal("stream logs contain private authorization details")
-				}
+				requireConversationLogFields(t, sink.only(t, "conversation.stream_reauthorize_failed"), map[string]any{
+					"conversation_id": f.conversation, "reason": tt.want, "error": err.Error(),
+				})
 			}
 			if tt.refresh {
 				reconnect := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation, nil)

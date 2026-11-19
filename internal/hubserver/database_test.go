@@ -40,6 +40,37 @@ const (
 	testHubAdminToken = "detent_test_hub_admin_token_00000000000000000000000000000000"
 )
 
+func TestOpenTestServiceUsesPostgres(t *testing.T) {
+	t.Parallel()
+	for _, hosted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
+			cfg := Config{InitialAdminToken: []byte("example_fixture_admin_token")}
+			if hosted {
+				plans := hostedplans.PilotPlans()
+				cfg.Hosted = &hostedplans.HostedConfig{
+					Plans:                &plans,
+					OrganizationID:       "org_example",
+					WorkOSOrganizationID: "provider_example",
+					PublicURL:            "https://hub.example.test",
+					Provider:             newHostedSecurityProvider(),
+				}
+			}
+			service := openTestService(t, cfg)
+			if service.database.postgres == nil || service.config.TenantRepository == nil {
+				t.Fatal("required PostgreSQL fixture owners are not configured")
+			}
+			if hosted && service.config.Hosted != cfg.Hosted {
+				t.Fatal("shared service fixture replaced the supplied hosted configuration")
+			}
+			response := performHubAPIRequest(t, service, http.MethodGet, "/health", string(cfg.InitialAdminToken), nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			if err := service.retainHostedOperationRecords(t.Context(), time.Now().UTC()); err != nil {
+				t.Fatalf("retain hosted operation records: %v", err)
+			}
+		})
+	}
+}
+
 var testChangeObjects sync.Map
 
 func openTestService(t *testing.T, cfg Config) *Service {
