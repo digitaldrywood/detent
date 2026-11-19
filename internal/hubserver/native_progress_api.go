@@ -210,17 +210,10 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence, expectedRevision: input.ExpectedRevision, publicationHash: publicationHash}
-	if id != input.RequestID {
-		record, err := owner.replayAfterCleanup(c.Request().Context(), input.RequestID, id)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, record)
-	}
-	if !request.NeedsCheck() {
+	if id == input.RequestID && !request.NeedsCheck() {
 		return s.nativeAPIError(c, hubapi.NativeInvalid("Progress decision requires a non-progressing previous attempt"))
 	}
-	record, err := owner.Publish(c.Request().Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: input.Decision})
+	record, err := owner.publishTenant(c.Request().Context(), progresscheck.Record{RequestID: input.RequestID, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: input.Decision}, id)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
