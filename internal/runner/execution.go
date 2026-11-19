@@ -333,7 +333,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return RunResult{}, fmt.Errorf("%w: native review execution is unavailable", ErrNativeRecoveryRequired)
 		}
 		result, err := r.run(ctx, req)
-		return result, r.attributeFailure(ctx, req, err)
+		return result, r.attributeFailure(ctx, req, err, result.TurnStartRefused)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -443,7 +443,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	} else {
 		result, runErr = r.run(guarded, req)
 	}
-	runErr = r.attributeFailure(guarded, req, runErr)
+	runErr = r.attributeFailure(guarded, req, runErr, result.TurnStartRefused)
 	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok && result.TurnStarted {
 		diagnostics.ProviderCompleted(r.now())
 	}
@@ -516,7 +516,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 					outcome = "interrupted"
 				}
 				// Deferred lease release publishes the prepared outcome after Run returns.
-				runErr = r.attributeFailure(guarded, req, runErr)
+				runErr = r.attributeFailure(guarded, req, runErr, result.TurnStartRefused)
 				reprepareCtx, reprepareCancel := r.finalizationContext(context.WithoutCancel(guarded), r.afterRunTimeout, context.DeadlineExceeded)
 				reprepareErr := prepared.PrepareFinish(reprepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
 				reprepareCancel()

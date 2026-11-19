@@ -24,10 +24,23 @@ func TestCertainFailureBypassesDecision(t *testing.T) {
 	for _, err := range []error{ErrNativeRecoveryRequired, ErrExecutionAuthorityUnavailable, fmt.Errorf("fencing: %w", ErrExecutionAuthorityUnavailable), context.Canceled, NewCancellationCause(context.Canceled, "runner.lease_expired"), ErrSessionMemoryCeilingExceeded, ErrTurnDurationExceeded} {
 		t.Run(err.Error(), func(t *testing.T) {
 			var runner *Runner
-			if got := runner.attributeFailure(t.Context(), RunRequest{}, err); !errors.Is(got, err) {
+			if got := runner.attributeFailure(t.Context(), RunRequest{}, err, false); !errors.Is(got, err) {
 				t.Fatalf("certain failure changed: %v", got)
 			}
 		})
+	}
+}
+
+func TestRefusedTurnStartBypassesDecision(t *testing.T) {
+	refusal := &testProviderResponseError{operation: "turn/start"}
+	var runner *Runner
+	err := runner.attributeFailure(t.Context(), RunRequest{}, refusal, true)
+	if decision, ok := FailureDecision(err); !ok || decision.Outcome != "instance" || !errors.Is(err, refusal) {
+		t.Fatalf("confirmed turn start refusal attribution = %+v, error = %v", decision, err)
+	}
+	failure := nativeTerminalFailure(encodeSSHError(err).err(), time.Now(), true)
+	if failure == nil || failure.Attribution != "instance" || !failure.TurnStartRefused {
+		t.Fatalf("confirmed turn start refusal receipt = %+v", failure)
 	}
 }
 
@@ -75,7 +88,7 @@ func TestFailureDecisionControlsRetryAndPublication(t *testing.T) {
 			}
 			now := time.Now().UTC()
 			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine_example"}, Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_current"}}, InstanceSuccesses: []tracker.FailureStepSuccess{{Step: "validation", MachineID: "machine_example", WorkItemID: "wi_other", CompletedAt: now.Add(-time.Minute)}}}}
-			attributed := r.attributeFailure(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution}, test.failure)
+			attributed := r.attributeFailure(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution}, test.failure, false)
 			decision, ok := FailureDecision(attributed)
 			if !ok || decision.Outcome != test.outcome || backend.failureCalls != test.decisionCalls || test.decisionCalls > 0 && (!backend.failureRequest.ReadOnly || !backend.failureRequest.TextOnly) || !errors.Is(attributed, test.failure) {
 				t.Fatalf("decision=%+v calls=%d error=%v", decision, backend.failureCalls, attributed)
@@ -200,7 +213,7 @@ func TestIndependentAttributionLaunchAndSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := workspace.WithAttemptWorkspace(t.Context(), a)
-	r.attributeFailure(ctx, RunRequest{Mode: RunModeImplement, Execution: &testExecution{}, AttemptWorkspace: a}, failedStep("validation", &workspace.CommandError{Command: "go", ExitCode: 1, Output: "assertion failed"}))
+	r.attributeFailure(ctx, RunRequest{Mode: RunModeImplement, Execution: &testExecution{}, AttemptWorkspace: a}, failedStep("validation", &workspace.CommandError{Command: "go", ExitCode: 1, Output: "assertion failed"}), false)
 	if _, err := os.Stat(b.marker); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("failure decision launched an independent provider without acknowledgement: marker=%v", err)
 	}

@@ -92,7 +92,7 @@ func failureEvidence(err error, step string) tracker.FailureEvidence {
 	return evidence
 }
 
-func (r *Runner) attributeFailure(ctx context.Context, req RunRequest, err error) error {
+func (r *Runner) attributeFailure(ctx context.Context, req RunRequest, err error, turnStartRefused bool) error {
 	if err == nil {
 		return nil
 	}
@@ -104,6 +104,9 @@ func (r *Runner) attributeFailure(ctx context.Context, req RunRequest, err error
 	}
 	if certainFailureDecision(err) != nil || errors.Is(err, context.Canceled) || ctx.Err() != nil {
 		return err
+	}
+	if turnStartRefused {
+		return RestoreFailureDecision(err, tracker.FailureAttribution{Outcome: "instance", Reason: "provider refused turn start"})
 	}
 	evidence := r.collectFailureEvidence(ctx, req, err).Public()
 	decision := tracker.FailureAttribution{Evidence: evidence, Outcome: "unknown", Reason: "failure decision backend unavailable"}
