@@ -120,8 +120,16 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 }
 
 func (c *NativeClient) ValidateLease(ctx context.Context, lease tracker.NativeLease) (runnerauth.Runner, error) {
+	return c.validateLease(ctx, lease, "")
+}
+
+func (c *NativeClient) ValidateLeaseOwner(ctx context.Context, lease tracker.NativeLease) (runnerauth.Runner, error) {
+	return c.validateLease(ctx, lease, "?view=owner")
+}
+
+func (c *NativeClient) validateLease(ctx context.Context, lease tracker.NativeLease, query string) (runnerauth.Runner, error) {
 	var result runnerauth.Runner
-	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/validate", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken}, &result)
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/validate"+query, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken}, &result)
 	return result, err
 }
 

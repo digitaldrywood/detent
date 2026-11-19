@@ -253,7 +253,11 @@ type publicationAuthority struct{ execution *nativeExecution }
 
 func (a publicationAuthority) Authorize(ctx context.Context) error {
 	e := a.execution
-	if e.remaining() <= 0 {
+	if errors.Is(api.MutationEffectError(ctx), runner.ErrOperatorStopped) {
+		if err := e.receiptAuthority(ctx); err != nil {
+			return err
+		}
+	} else if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {
 			return e.executionError(ctx, err)
 		}
@@ -261,7 +265,7 @@ func (a publicationAuthority) Authorize(ctx context.Context) error {
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
 		return e.executionError(ctx, e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err))
 	}
-	if _, err := e.claim.source.NativeClient().ValidateLease(ctx, e.claim.lease); err != nil {
+	if _, err := e.claim.source.NativeClient().ValidateLeaseOwner(ctx, e.claim.lease); err != nil {
 		return e.executionError(ctx, err)
 	}
 	return nil

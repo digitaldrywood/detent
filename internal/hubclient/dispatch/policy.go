@@ -120,7 +120,7 @@ func (s *Scheduler) checkClaimRunner(ctx context.Context, issueID, pinnedID stri
 		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "claim has no matching pinned repository policy; release it and request a new claim"}
 	}
 	if native {
-		r, err := claim.source.NativeClient().ValidateLease(ctx, claim.lease)
+		r, err := claim.source.NativeClient().ValidateLeaseOwner(ctx, claim.lease)
 		if err != nil {
 			return err
 		}

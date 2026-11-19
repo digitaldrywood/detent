@@ -511,6 +511,14 @@ func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
 	if scope.Credential.Runner.RunnerID == "" {
 		return s.nativeAPIError(c, hubscope.RunnerUnauthorized())
 	}
+	var sessionID int64
+	if raw := c.QueryParam("session"); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id < 1 {
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("session must be a positive session ID"))
+		}
+		sessionID = id
+	}
 	var records []runnersession.Record
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -521,7 +529,7 @@ func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		records, err = reader.RunnerSessionProcesses(ctx, scope.Project, string(scope.Credential.Runner.MachineID), c.QueryParam("attempt"), 200)
+		records, err = reader.RunnerSessionProcesses(ctx, scope.Project, string(scope.Credential.Runner.MachineID), c.QueryParam("attempt"), sessionID, 200)
 		return err
 	})
 	if err != nil {
@@ -540,7 +548,11 @@ func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
 		if value.Worker.PID < 1 || value.Worker.StartedAt.IsZero() {
 			result.Unobserved = true
 		}
-		result.Workers = append(result.Workers, store.WorkerProcess{SessionID: record.ID, IssueID: record.IssueID, WorkerProcessIdentity: value.Worker.WorkerProcessIdentity, CleanupRoot: value.Worker.CleanupRoot, CleanupPath: value.Worker.CleanupPath})
+		process := store.WorkerProcess{SessionID: record.ID, IssueID: record.IssueID, WorkerProcessIdentity: value.Worker.WorkerProcessIdentity}
+		if sessionID == 0 {
+			process.CleanupRoot, process.CleanupPath = value.Worker.CleanupRoot, value.Worker.CleanupPath
+		}
+		result.Workers = append(result.Workers, process)
 	}
 	return c.JSON(http.StatusOK, result)
 }

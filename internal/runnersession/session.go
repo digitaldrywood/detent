@@ -114,7 +114,7 @@ type Reader interface {
 	RunnerSession(context.Context, tracker.ProjectID, int64) (Record, error)
 	FindRunnerSession(context.Context, tracker.ProjectID, string, string, store.AgentResumeLookup) (Record, error)
 	RunnerSessionHistory(context.Context, tracker.ProjectID, int64, int64, int) ([]History, error)
-	RunnerSessionProcesses(context.Context, tracker.ProjectID, string, string, int) ([]Record, error)
+	RunnerSessionProcesses(context.Context, tracker.ProjectID, string, string, int64, int) ([]Record, error)
 }
 
 type ResumeLookup struct {

@@ -18,7 +18,7 @@ import (
 
 func (e *nativeExecution) fencedAttempt(ctx context.Context) (tracker.NativeAttempt, error) {
 	client := e.claim.source.NativeClient()
-	attempt, err := client.NativeAttempt(ctx, e.claim.lease.WorkItemID, e.data.AttemptID)
+	attempt, err := client.ExecutionAttempt(ctx, e.claim.lease.WorkItemID, e.data.AttemptID)
 	if err != nil {
 		return attempt, err
 	}
@@ -47,12 +47,11 @@ func (e *nativeExecution) sendGeneration(ctx context.Context, diff *tracker.Atte
 	if attempt.ClaimReleasedAt != nil || attempt.Outcome != "" {
 		return runner.ErrExecutionAuthorityUnavailable
 	}
-	path, readErr := api.NativeAttemptDiffPath(e.data.AttemptID)
+	stored, readErr := client.ExecutionDiff(ctx, e.data.AttemptID, request.Generation.Seq)
 	if readErr != nil {
-		return readErr
-	}
-	var stored tracker.AttemptDiff
-	if readErr := client.Transport().Request(ctx, http.MethodGet, client.Scope()+path+"?at="+strconv.FormatInt(request.Generation.Seq, 10), nil, &stored); readErr != nil {
+		if errors.As(readErr, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == "not_found" {
+			return errors.Join(errUnverifiedReceipt, readErr)
+		}
 		return e.executionError(ctx, readErr)
 	}
 	producer := request.Producer
@@ -169,7 +168,7 @@ func (e *nativeExecution) stopAttempt(ctx context.Context) (*tracker.NativeAttem
 				if err := e.receiptAuthority(ctx); err != nil {
 					return false, err
 				}
-				_, err = e.claim.source.NativeClient().ValidateLease(ctx, e.claim.lease)
+				_, err = e.claim.source.NativeClient().ValidateLeaseOwner(ctx, e.claim.lease)
 			}
 			err = e.executionError(ctx, err)
 			return nativeTransportUnavailable(err), err

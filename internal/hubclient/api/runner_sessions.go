@@ -292,7 +292,18 @@ func (s *RunnerSessions) UpdateSessionWorkerProcess(ctx context.Context, id int6
 	return err
 }
 func (s *RunnerSessions) ListActiveWorkerProcesses(ctx context.Context) ([]store.WorkerProcess, error) {
-	result, err := s.runnerProcesses(ctx, "")
+	return s.listWorkerProcesses(ctx, 0)
+}
+
+func (s *RunnerSessions) ListSessionWorkerProcesses(ctx context.Context, id int64) ([]store.WorkerProcess, error) {
+	if id <= 0 {
+		return nil, errors.New("worker process read requires a positive session ID")
+	}
+	return s.listWorkerProcesses(ctx, id)
+}
+
+func (s *RunnerSessions) listWorkerProcesses(ctx context.Context, id int64) ([]store.WorkerProcess, error) {
+	result, err := s.runnerProcesses(ctx, "", id)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +315,7 @@ func (s *RunnerSessions) ListActiveWorkerProcesses(ctx context.Context) ([]store
 	workers := make([]store.WorkerProcess, 0, len(result.Workers))
 	for _, worker := range result.Workers {
 		local, ok := s.workers[worker.SessionID]
-		if !ok {
+		if !ok || id != 0 && worker.SessionID != id {
 			continue
 		}
 		worker.WorkerProcessIdentity, worker.CleanupRoot, worker.CleanupPath = local.WorkerProcessIdentity, local.CleanupRoot, local.CleanupPath
@@ -322,14 +333,18 @@ func (s *RunnerSessions) MarkSessionWorkerProcessReaped(ctx context.Context, id 
 	return nil
 }
 
-func (c *NativeClient) runnerProcesses(ctx context.Context, attempt string) (runnersession.Processes, error) {
+func (c *NativeClient) runnerProcesses(ctx context.Context, attempt string, sessionID int64) (runnersession.Processes, error) {
 	var result runnersession.Processes
-	err := c.client.Request(ctx, http.MethodGet, c.base()+"/runner-processes?attempt="+url.QueryEscape(attempt), nil, &result)
+	query := url.Values{"attempt": {attempt}}
+	if sessionID != 0 {
+		query.Set("session", strconv.FormatInt(sessionID, 10))
+	}
+	err := c.client.Request(ctx, http.MethodGet, c.base()+"/runner-processes?"+query.Encode(), nil, &result)
 	return result, err
 }
 
 func (c *NativeClient) ReleasedProvidersStopped(ctx context.Context, attempt string) (bool, error) {
-	result, err := c.runnerProcesses(ctx, attempt)
+	result, err := c.runnerProcesses(ctx, attempt, 0)
 	if err != nil {
 		return false, err
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -210,4 +211,19 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 			}
 		})
 	}
+	t.Run("owner in a large organization", func(t *testing.T) {
+		if _, err := admin.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE organization_id=$1 AND runner_id=$2", scope.Organization, runnerID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO projects (organization_id, id, name, profile) SELECT $1, 'prj_example_' || i, 'Example ' || i, 'native' FROM generate_series(1, $2::integer) AS i`, scope.Organization, runnerstore.MaxRunnerProjectList); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.readRunnerLeaseTenant(t.Context(), scope, leaseID, tracker.FencingToken(lease.FencingToken), false); !errors.Is(err, runnerstore.ErrLimitExceeded) {
+			t.Fatalf("full routing list error = %v", err)
+		}
+		owner, err := service.validateRunnerLeaseTenant(t.Context(), scope, leaseID, tracker.FencingToken(lease.FencingToken))
+		if err != nil || owner.Binding != validated.Binding || owner.OrganizationID != validated.OrganizationID || !slices.Equal(owner.Tags, validated.Tags) || len(owner.ProjectIDs) != 0 {
+			t.Fatalf("scoped lease owner = %+v, error %v", owner, err)
+		}
+	})
 }

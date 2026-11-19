@@ -182,14 +182,7 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope hubscope.Na
 	for _, page := range result.Read.Sections {
 		result.Read.Complete = result.Read.Complete && page.Complete
 	}
-	latest, err := s.readChangeRecord(ctx, scope, args.ItemID, args.ChangeID)
-	if err != nil {
-		return result, err
-	}
-	if latest.Revision != change.Revision || latest.CurrentVersion != change.CurrentVersion || !slices.Equal(latest.LinkedIssues, change.LinkedIssues) {
-		return result, mutation.ErrConflict
-	}
-	if err := s.recheckChangeReadAuthority(ctx, scope); err != nil {
+	if err := s.recheckChangeSource(ctx, scope, args, change); err != nil {
 		return result, err
 	}
 	if result.Detail != nil {
@@ -197,6 +190,60 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope hubscope.Na
 		result.Detail = &detail
 	}
 	return result, nil
+}
+
+func (s *Service) recheckChangeSource(ctx context.Context, scope hubscope.NativeScope, args operatortool.ChangeArguments, change tracker.ChangeRequest) error {
+	latest, err := s.readChangeRecord(ctx, scope, args.ItemID, args.ChangeID)
+	if err != nil {
+		return err
+	}
+	if latest.Revision != change.Revision || latest.CurrentVersion != change.CurrentVersion || !slices.Equal(latest.LinkedIssues, change.LinkedIssues) {
+		return mutation.ErrConflict
+	}
+	return s.recheckChangeReadAuthority(ctx, scope)
+}
+
+func (s *Service) readPublicationSource(ctx context.Context, scope hubscope.NativeScope, args operatortool.ChangeArguments, result operatortool.ChangeResult) (operatortool.ChangeResult, error) {
+	change, err := s.readChangeRecord(ctx, scope, args.ItemID, args.ChangeID)
+	if err != nil {
+		return result, err
+	}
+	detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: change.ID, ProjectID: change.ProjectID, WorkItemID: change.WorkItemID, CurrentVersion: change.CurrentVersion}}
+	if landed := change.CurrentLanding(); landed != nil {
+		detail.Change.Landed = &tracker.ChangeLanding{VersionID: landed.VersionID}
+	}
+	if change.CurrentVersion != "" {
+		row, err := s.readChangeVersionRecord(ctx, scope.Organization, change.ID, change.CurrentVersion)
+		if err != nil {
+			return result, hubapi.ProjectRecordError(err)
+		}
+		content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+		version, err := content.Version(ctx, row)
+		if err != nil {
+			return result, err
+		}
+		var rows hubrecords.CurrentChangePolicyRows
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			rows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
+			return err
+		})
+		if err != nil {
+			return result, hubapi.ProjectRecordError(err)
+		}
+		approved, err := hydrateChangeSummaryPolicy(ctx, content, scope, rows)
+		if err != nil {
+			return result, err
+		}
+		policyID, reviewID := changerequest.CurrentPolicyIdentities(&version, approved.Policy, approved.ReviewPolicy)
+		if policyID != version.PolicyID || reviewID != version.ReviewPolicy.ID {
+			detail.Summary.Status = "stale_policy"
+		}
+		detail.Versions = []tracker.ChangeVersion{{ID: version.ID, ChangeID: version.ChangeID, ChangeVersionInput: tracker.ChangeVersionInput{Repository: version.Repository, HeadSHA: version.HeadSHA, BaseSHA: version.BaseSHA, AttemptID: version.AttemptID, RunID: version.RunID, PolicyID: version.PolicyID}}}
+	}
+	result.Detail = &detail
+	result.Read = &operatortool.ChangeRead{VersionID: change.CurrentVersion}
+	return result, s.recheckChangeSource(ctx, scope, args, change)
 }
 
 func (s *Service) readExactChangeVersionRecord(ctx context.Context, scope hubscope.NativeScope, item, changeID, versionID string) (tracker.ChangeVersion, error) {

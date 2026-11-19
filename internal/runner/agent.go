@@ -86,6 +86,10 @@ type sessionWorkerProcessReaper interface {
 	MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error
 }
 
+type sessionWorkerProcessReader interface {
+	ListSessionWorkerProcesses(context.Context, int64) ([]store.WorkerProcess, error)
+}
+
 type workerProcessReapFunc func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error)
 type workspaceProcessReapFunc func(context.Context, string, time.Duration) (int, error)
 
@@ -4607,7 +4611,13 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 	staleIdentity := false
 	processStore, ok := r.store.(sessionWorkerProcessReaper)
 	if ok && sessionID > 0 {
-		active, err := processStore.ListActiveWorkerProcesses(context.WithoutCancel(ctx))
+		var active []store.WorkerProcess
+		var err error
+		if reader, ok := processStore.(sessionWorkerProcessReader); ok {
+			active, err = reader.ListSessionWorkerProcesses(context.WithoutCancel(ctx), sessionID)
+		} else {
+			active, err = processStore.ListActiveWorkerProcesses(context.WithoutCancel(ctx))
+		}
 		if err != nil {
 			reapErrors = fmt.Errorf("list agent session worker processes: %w", err)
 		}

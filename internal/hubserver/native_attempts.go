@@ -338,8 +338,8 @@ func nativeExecutionDisplayIdentity(execution *tracker.NativeExecutionIdentity, 
 }
 
 func (s *Service) getNativeAttempt(c echo.Context) error {
-	if c.QueryParam("view") == "cleanup" {
-		result, err := s.readNativeCleanupAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"))
+	if view := c.QueryParam("view"); view == "execution" || view == "cleanup" {
+		result, err := s.readNativeRunnerAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"), view == "cleanup")
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -352,7 +352,7 @@ func (s *Service) getNativeAttempt(c echo.Context) error {
 	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
-func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
+func (s *Service) readNativeRunnerAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string, cleanup bool) (tracker.NativeAttempt, error) {
 	if !scope.Credential.Runner.Valid() {
 		return tracker.NativeAttempt{}, hubapi.NativeNotFound()
 	}
@@ -390,7 +390,7 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope hubscope.N
 		if err != nil {
 			return err
 		}
-		if snapshot.Lease.IssueID != issue.ID || snapshot.Lease.FencingToken != snapshot.Attempt.FencingToken || snapshot.Lease.MachineID != string(scope.Credential.Runner.MachineID) || snapshot.Lease.ReleasedAt == nil {
+		if snapshot.Lease.IssueID != issue.ID || snapshot.Lease.FencingToken != snapshot.Attempt.FencingToken || snapshot.Lease.MachineID != string(scope.Credential.Runner.MachineID) || cleanup && snapshot.Lease.ReleasedAt == nil {
 			return corestore.ErrNotFound
 		}
 		runner, err := r.RunnerForLease(ctx, snapshot.Lease.LeaseID)
@@ -407,6 +407,9 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope hubscope.N
 		if snapshot.Event.WorkItemID != tracker.NativeWorkItemID(item) {
 			return corestore.ErrNotFound
 		}
+		if cleanup {
+			return hubrecords.ReadTenantAttemptRunPayload(ctx, r, &snapshot)
+		}
 		return hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot)
 	})
 	if err != nil {
@@ -422,7 +425,27 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope hubscope.N
 	if !nativeAttemptRunMatches(snapshot, data) || data.RunnerID != scope.Credential.Runner.RunnerID {
 		return tracker.NativeAttempt{}, artifact.ErrIntegrity
 	}
-	if !nativeRunCleanupRequired(data) || data.MachineID != scope.Credential.Runner.MachineID {
+	if data.MachineID != scope.Credential.Runner.MachineID {
+		return tracker.NativeAttempt{}, hubapi.NativeNotFound()
+	}
+	if !cleanup {
+		checkpoint, err := s.readNativeAttemptCheckpointTenant(ctx, snapshot)
+		if err != nil {
+			return tracker.NativeAttempt{}, err
+		}
+		data.ArtifactIDs, err = s.readAttemptArtifactIDs(ctx, snapshot, data.ArtifactIDs)
+		if err != nil {
+			return tracker.NativeAttempt{}, err
+		}
+		data.Sequence = snapshot.Attempt.Sequence
+		data.Handoff = nil
+		released := snapshot.Lease.ReleasedAt
+		if released == nil && !snapshot.Lease.ExpiresAt.After(s.config.Clock()) {
+			released = &snapshot.Lease.ExpiresAt
+		}
+		return tracker.NativeAttempt{NativeRunData: data, Checkpoint: checkpoint, ClaimReleasedAt: released, CleanupAcknowledgedAt: snapshot.Attempt.CleanupAcknowledgedAt}, nil
+	}
+	if !nativeRunCleanupRequired(data) {
 		return tracker.NativeAttempt{}, hubapi.NativeNotFound()
 	}
 	return tracker.NativeAttempt{

@@ -154,6 +154,8 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			t.Fatalf("runner %d cleanup = %+v", index, snapshot.ClaimState)
 		}
 		cleanupPath := "/api/v2/organizations/org_startup/projects/prj_runner/work-items/" + string(lease.WorkItemID) + "/attempts/" + data.AttemptID + "?view=cleanup"
+		executionPath := strings.TrimSuffix(cleanupPath, "cleanup") + "execution"
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, executionPath, f.tokens[1-index], nil), http.StatusNotFound)
 		response := performHubAPIRequest(t, f.service, http.MethodGet, cleanupPath, f.tokens[index], nil)
 		if index == 0 {
 			requireNativeStatus(t, response, http.StatusOK)
@@ -173,14 +175,14 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			original := f.service.config.RunDetails
 			f.service.config.RunDetails = nil
 			missingErr := readSnapshot()
-			_, cleanupErr := f.service.readNativeCleanupAttempt(t.Context(), scope, string(lease.WorkItemID), data.AttemptID)
+			_, cleanupErr := f.service.readNativeRunnerAttempt(t.Context(), scope, string(lease.WorkItemID), data.AttemptID, true)
 			f.service.config.RunDetails = original
 			if missingErr != nil || cleanupErr == nil || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 {
 				t.Fatalf("known cleanup depended on archive: registration=%v cleanup=%v claims=%+v", missingErr, cleanupErr, snapshot.ClaimState)
 			}
 			f.service.config.RunDetails = invalidRegistrationArchive{DetailStore: original}
 			err := readSnapshot()
-			_, cleanupErr = f.service.readNativeCleanupAttempt(t.Context(), scope, string(lease.WorkItemID), data.AttemptID)
+			_, cleanupErr = f.service.readNativeRunnerAttempt(t.Context(), scope, string(lease.WorkItemID), data.AttemptID, true)
 			f.service.config.RunDetails = original
 			if err != nil || !errors.Is(cleanupErr, artifact.ErrIntegrity) || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 {
 				t.Fatalf("corrupt archive errors: registration=%v cleanup=%v", err, cleanupErr)

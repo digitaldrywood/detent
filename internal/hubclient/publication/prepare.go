@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 
@@ -78,11 +79,15 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 				return err
 			}
 
-			current, err := executionState.Client.RuntimeChange(ctx, executionState.Lease.WorkItemID, change.ChangeID)
+			current, err := executionState.Client.PublicationSource(ctx, executionState.Lease.WorkItemID, change.ChangeID)
 			if err != nil {
+				var refusal *api.APIError
+				if errors.As(err, &refusal) && (refusal.Status == http.StatusConflict && refusal.Code == "revision_conflict" || refusal.Status == http.StatusNotFound && refusal.Code == "not_found") {
+					return ErrSourceChanged
+				}
 				return err
 			}
-			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != executionState.Repository || current.Summary.Status == "stale_policy" && !reconcileStale || current.Change.CurrentLanding() != nil {
+			if len(current.Versions) == 0 || current.Versions[0].ID != version.ID || current.Versions[0].HeadSHA != version.HeadSHA || current.Versions[0].Repository != version.Repository || current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != executionState.Repository || current.Summary.Status == "stale_policy" && !reconcileStale || current.Change.CurrentLanding() != nil {
 				return ErrSourceChanged
 			}
 			// Inherited effects need restored source proof. Effects started by
@@ -92,10 +97,13 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 				if executionState.Role != runner.RoleCode && executionState.Role != runner.RoleRework || !checkpoint.UncertainForgeEffect() || executionState.RecoveredSource == nil ||
 					checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
 					checkpoint.HeadSHA != version.HeadSHA || checkpoint.Storage != "local_only" && !checkpoint.GitRef() || checkpoint.Availability != "available" || executionState.Diff().HeadSHA != version.HeadSHA {
-					return errors.New("uncertain publication requires unchanged verified current source under its newly owned lease; preserve its checkpoint and reconcile the source, version and policy before retrying")
+					return ErrSourceChanged
 				}
 			}
-			return host.CheckSource(current, *executionState.Diff())
+			if err := host.CheckSource(current, *executionState.Diff()); err != nil {
+				return errors.Join(ErrSourceChanged, err)
+			}
+			return nil
 		}
 		authorizeStart := func(ctx context.Context) error {
 			if err := api.MutationEffectError(ctx); err != nil {

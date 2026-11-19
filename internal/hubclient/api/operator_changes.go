@@ -74,16 +74,24 @@ func (c *NativeClient) BindArtifactService(ctx context.Context, binding artifact
 	return result, err
 }
 
+func nativeAttemptPath(item tracker.NativeWorkItemID, attempt string) (string, error) {
+	path, err := NativeItemPath(item)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(attempt, "attempt_") || strings.ContainsAny(attempt, "/\\?#%") {
+		return "", operatortool.ErrInvalidArguments
+	}
+	return path + "/attempts/" + attempt, nil
+}
+
 func (c *NativeClient) NativeAttempt(ctx context.Context, item tracker.NativeWorkItemID, attempt string) (tracker.NativeAttempt, error) {
 	var result tracker.NativeAttempt
-	path, err := NativeItemPath(item)
+	path, err := nativeAttemptPath(item, attempt)
 	if err != nil {
 		return result, err
 	}
-	if !strings.HasPrefix(attempt, "attempt_") || strings.ContainsAny(attempt, "/\\?#%") {
-		return result, operatortool.ErrInvalidArguments
-	}
-	err = c.client.request(ctx, http.MethodGet, c.base()+path+"/attempts/"+attempt, nil, &result)
+	err = c.client.request(ctx, http.MethodGet, c.base()+path, nil, &result)
 	return result, err
 }
 

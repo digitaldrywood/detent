@@ -705,7 +705,7 @@ func (s *Service) validateRunnerLease(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	runner, err := s.validateRunnerLeaseTenant(c.Request().Context(), hubscope.NativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken)
+	runner, err := s.readRunnerLeaseTenant(c.Request().Context(), hubscope.NativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken, c.QueryParam("view") == "owner")
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

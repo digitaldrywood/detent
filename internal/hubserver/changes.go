@@ -219,7 +219,11 @@ func (s *Service) getChange(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("invalid Change read selector"))
 	}
 	result := (hubChangeApplication{service: s}).result(scope, args)
-	result, err = s.readBoundedChangeRecord(ctx, scope, args, result)
+	if c.QueryParam("projection") == "publication_source" {
+		result, err = s.readPublicationSource(ctx, scope, args, result)
+	} else {
+		result, err = s.readBoundedChangeRecord(ctx, scope, args, result)
+	}
 	if err != nil {
 		var refusal *operatortool.RequestError
 		if errors.As(err, &refusal) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -40,7 +41,7 @@ func TestStoppedGateReconciliation(t *testing.T) {
 }
 
 func TestGateDiffDelivery(t *testing.T) {
-	for _, mode := range []string{"matched", "413 fallback", "unsubmitted fallback", "files differ", "runner differs", "fence differs", "generation differs"} {
+	for _, mode := range []string{"matched", "large matched", "413 fallback", "unsubmitted fallback", "files differ", "generation missing", "runner differs", "fence differs", "generation differs"} {
 		t.Run(mode, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			item := h.createInProgress(t, "Record validation")
@@ -53,6 +54,9 @@ func TestGateDiffDelivery(t *testing.T) {
 			e.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 				req, ok := nativeChangeDiff(head, "example.go")(ctx)
 				req.WorkspaceDigest = digest
+				if mode == "large matched" {
+					req.Files[0].Patch = strings.Repeat("x", tracker.MaxDiffPatchBytes)
+				}
 				return req, ok
 			})
 			source := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: head, WorkspaceDigest: digest, ExternalEffect: "none", EffectState: "none"}
@@ -96,6 +100,12 @@ func TestGateDiffDelivery(t *testing.T) {
 					return nil, err
 				}
 				reads++
+				if mode == "generation missing" {
+					res.Body.Close()
+					res.StatusCode = http.StatusNotFound
+					res.Body = io.NopCloser(strings.NewReader(`{"code":"not_found"}`))
+					return res, nil
+				}
 				var diff tracker.AttemptDiff
 				if err := json.NewDecoder(res.Body).Decode(&diff); err != nil {
 					return nil, err
@@ -137,7 +147,7 @@ func TestGateDiffDelivery(t *testing.T) {
 			if !reflect.DeepEqual(attempt.Evidence, evidence) {
 				t.Fatalf("released attempt evidence %v, want %v", attempt.Evidence, evidence)
 			}
-			if mode == "matched" || mode == "413 fallback" {
+			if mode == "matched" || mode == "large matched" || mode == "413 fallback" {
 				if err != nil || attempt.ClaimReleasedAt == nil || attempt.Outcome != "interrupted" || len(attempt.Steps) != 1 || !reflect.DeepEqual(attempt.Steps[0].Validation, &result) {
 					t.Fatalf("release %v, outcome %s, steps %+v, error %v", attempt.ClaimReleasedAt, attempt.Outcome, attempt.Steps, err)
 				}
@@ -219,39 +229,94 @@ func TestStopWithCheckpointArtifacts(t *testing.T) {
 
 func seedAttemptEvidence(t *testing.T, h *nativeChangeHub, e *nativeExecution) []tracker.NativeEvidence {
 	t.Helper()
-	ctx, item := t.Context(), e.claim.lease.WorkItemID
-	uploader, _ := testsupport.NativeChangePublisher(t, h.config, h.project)
-	metadata := attachment.Metadata{ID: "att_" + strings.Repeat("a", 32), ProjectID: string(h.project), WorkItemID: string(item), Uploader: uploader, Name: "verification.txt", ContentType: "text/plain", Size: 1, SHA256: strings.Repeat("a", 64), CreatedAt: h.clock().UTC()}
-	const caption = "Verification output"
-	testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
-		return w.CreateAttachment(ctx, attachmentstore.Record{OrganizationID: h.organization, Kind: "attachment", EvidenceAttemptID: e.data.AttemptID, EvidenceCaption: caption, Metadata: metadata})
-	})
-	attempt, err := h.native.NativeAttempt(ctx, item, e.data.AttemptID)
-	want := []tracker.NativeEvidence{{AttachmentID: metadata.ID, Caption: caption, Reference: metadata.Markdown(string(h.organization))}}
+	want := insertAttemptEvidence(t, h, e, 1)
+	attempt, err := h.native.NativeAttempt(t.Context(), e.claim.lease.WorkItemID, e.data.AttemptID)
 	if err != nil || !reflect.DeepEqual(attempt.Evidence, want) {
 		t.Fatalf("evidence before stop %v, want %v, error %v", attempt.Evidence, want, err)
 	}
 	return want
 }
 
+func insertAttemptEvidence(t *testing.T, h *nativeChangeHub, e *nativeExecution, count int) []tracker.NativeEvidence {
+	t.Helper()
+	ctx, item := t.Context(), e.claim.lease.WorkItemID
+	uploader, _ := testsupport.NativeChangePublisher(t, h.config, h.project)
+	metadata := attachment.Metadata{ProjectID: string(h.project), WorkItemID: string(item), Uploader: uploader, Name: "verification.txt", ContentType: "text/plain", Size: 1, SHA256: strings.Repeat("a", 64), CreatedAt: h.clock().UTC()}
+	var want []tracker.NativeEvidence
+	testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
+		for i := range count {
+			metadata.ID = fmt.Sprintf("att_%032x", i+1)
+			caption := fmt.Sprintf("Verification output %d", i+1)
+			if err := w.CreateAttachment(ctx, attachmentstore.Record{OrganizationID: h.organization, Kind: "attachment", EvidenceAttemptID: e.data.AttemptID, EvidenceCaption: caption, Metadata: metadata}); err != nil {
+				return err
+			}
+			want = append(want, tracker.NativeEvidence{AttachmentID: metadata.ID, Caption: caption, Reference: metadata.Markdown(string(h.organization))})
+		}
+		return nil
+	})
+	return want
+}
+
 func TestStopWithAttachedEvidence(t *testing.T) {
-	h := newNativeChangeHub(t, true)
-	issue := h.createInProgress(t, "Stop with attached verification")
-	h.claim(t, issue.ID)
-	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-	ctx, lease := t.Context(), e.claim.lease
-	if err := e.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
-		t.Fatal(err)
-	}
-	evidence := seedAttemptEvidence(t, h, e)
-	stopErr := h.scheduler.ReleaseClaim(ctx, issue.ID, runner.FinalStateOperatorStopped)
-	attempt, err := h.admin.NativeAttempt(ctx, lease.WorkItemID, e.data.AttemptID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, leaseErr := h.native.ValidateLease(ctx, lease)
-	if stopErr != nil || !nativeLeaseLost(leaseErr) || attempt.ClaimReleasedAt == nil || attempt.Sequence != 2 || attempt.Outcome != "interrupted" || !reflect.DeepEqual(attempt.Evidence, evidence) {
-		t.Fatalf("stop %v, lease %v, released %v, sequence %d, outcome %q, evidence %v", stopErr, leaseErr, attempt.ClaimReleasedAt, attempt.Sequence, attempt.Outcome, attempt.Evidence)
+	for _, count := range []int{1, 200, 201} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Stop with attached verification")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			ctx, lease := t.Context(), e.claim.lease
+			if err := e.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			id := e.data.AttemptID
+			want := insertAttemptEvidence(t, h, e, count)
+			checkDetail := func() {
+				t.Helper()
+				detail, err := h.native.NativeAttempt(ctx, lease.WorkItemID, id)
+				if count <= 200 {
+					if err != nil || !reflect.DeepEqual(detail.Evidence, want) {
+						t.Fatalf("detail evidence count %d, error %v", len(detail.Evidence), err)
+					}
+				} else {
+					var refusal *APIError
+					if !errors.As(err, &refusal) || refusal.Status != http.StatusUnprocessableEntity {
+						t.Fatalf("detail error %v", err)
+					}
+				}
+			}
+			checkDetail()
+			if _, err := h.native.ValidateLease(ctx, lease); err != nil {
+				t.Fatal(err)
+			}
+			stopErr := h.scheduler.ReleaseClaim(ctx, issue.ID, runner.FinalStateOperatorStopped)
+			_, leaseErr := h.native.ValidateLease(ctx, lease)
+			checkDetail()
+			testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
+				attempt, err := w.Attempt(ctx, id)
+				if err != nil {
+					return err
+				}
+				stored, err := w.Lease(ctx, string(lease.ID))
+				if err != nil {
+					return err
+				}
+				rows, err := w.AttachmentEvidence(ctx, h.project, lease.WorkItemID, id, 201)
+				if err != nil {
+					return err
+				}
+				var got []tracker.NativeEvidence
+				for _, row := range rows {
+					got = append(got, tracker.NativeEvidence{AttachmentID: row.Metadata.ID, Caption: row.EvidenceCaption, Reference: row.Metadata.Markdown(string(h.organization))})
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("retained evidence differs, got %d records, want %d", len(got), count)
+				}
+				if stopErr != nil || !nativeLeaseLost(leaseErr) || stored.ReleasedAt == nil || attempt.Sequence != 2 || attempt.Status != "interrupted" {
+					t.Errorf("stop %v, lease %v, released %v, sequence %d, status %q", stopErr, leaseErr, stored.ReleasedAt, attempt.Sequence, attempt.Status)
+				}
+				return nil
+			})
+		})
 	}
 }
 

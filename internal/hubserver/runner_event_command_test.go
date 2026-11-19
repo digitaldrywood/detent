@@ -316,11 +316,6 @@ func newRunnerEventWireFixtures(t *testing.T) (runnerPGFixture, runnerPGFixture,
 			t.Error(err)
 		}
 	})
-	original := f.service.database.postgres
-	t.Cleanup(func() { f.service.config.TenantRepository = original; f.service.database.postgres = original })
-	f.service.config.TenantRepository = repository
-	f.service.database.postgres = repository
-
 	apiLog := new(bytes.Buffer)
 	localService := openLocalPostgresHubTestService(t, repository, Config{RunDetails: f.service.runDetailStore(), SecretKeys: secretTestKeys(t, "1", "1"), Logger: slog.New(slog.NewTextHandler(apiLog, nil))})
 	first := f

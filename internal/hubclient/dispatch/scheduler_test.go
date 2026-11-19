@@ -638,7 +638,7 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 			"GET /api/v2/organizations/" + string(h.organization) + "/runners/" + identity.Identity.RunnerID + "/routing": 1,
 			"POST " + base + "/claims": 1,
 			"GET " + base + "/work-items/" + string(item.WorkItemID) + "?view=recovery": 1,
-			"POST " + leasePath + "/validate":                                           2,
+			"POST " + leasePath + "/validate?view=owner":                                2,
 			"POST " + leasePath + "/renew":                                              2,
 			"POST " + leasePath + "/release":                                            1,
 		}

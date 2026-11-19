@@ -36,6 +36,10 @@ func runnerIdentityMatchesHeldLease(identity runnerstore.Identity, organization 
 }
 
 func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID, fencing tracker.FencingToken) (runnerauth.Runner, error) {
+	return s.readRunnerLeaseTenant(ctx, scope, leaseID, fencing, true)
+}
+
+func (s *Service) readRunnerLeaseTenant(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID, fencing tracker.FencingToken, ownerOnly bool) (runnerauth.Runner, error) {
 	if s.config.TenantRepository == nil || scope.Credential.Runner.RunnerID == "" || scope.Credential.EntryKey != nil {
 		return runnerauth.Runner{}, hubscope.RunnerUnauthorized()
 	}
@@ -113,12 +117,15 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 			return hubapi.PolicyMismatch("Lease policy is missing or outside the authorized project")
 		}
 		selector = pinned.Selector
-		projects, err := reader.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
-		if err != nil {
-			return err
-		}
-		if !slices.Contains(projects, scope.Project) {
-			projects = append(projects, scope.Project)
+		projects := []tracker.ProjectID{scope.Project}
+		if !ownerOnly {
+			projects, err = reader.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
+			if err != nil {
+				return err
+			}
+			if !slices.Contains(projects, scope.Project) {
+				projects = append(projects, scope.Project)
+			}
 		}
 		runner = runnerauth.Runner{
 			Binding:          runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID},
@@ -165,6 +172,9 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 	}
 	if err := runnerExcluded(runner.Exclusions(scope.Project, *selector, true)); err != nil {
 		return runnerauth.Runner{}, err
+	}
+	if ownerOnly {
+		return runnerauth.Runner{Binding: runner.Binding, OrganizationID: runner.OrganizationID, Routing: runnerauth.Routing{Tags: runner.Tags}}, nil
 	}
 	return runner, nil
 }

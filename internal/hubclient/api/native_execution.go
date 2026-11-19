@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -69,4 +72,25 @@ func CancelNativeReleasedAttempt(ctx context.Context, client *NativeClient, item
 		Sequence: attempt.Sequence + 1, Outcome: "cancelled"}
 	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":terminated:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
 	return client.AppendEvent(ctx, item, event)
+}
+
+func (c *NativeClient) ExecutionAttempt(ctx context.Context, item tracker.NativeWorkItemID, attempt string) (tracker.NativeAttempt, error) {
+	var result tracker.NativeAttempt
+	path, err := nativeAttemptPath(item, attempt)
+	if err != nil {
+		return result, err
+	}
+	err = c.readExecutionJSON(ctx, c.base()+path+"?view=execution", 3*attachment.MaxSectionBytes, &result)
+	return result, err
+}
+
+func (c *NativeClient) readExecutionJSON(ctx context.Context, path string, limit int64, value any) error {
+	raw, _, err := c.client.download(ctx, path, limit)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, value); err != nil {
+		return fmt.Errorf("%w: decode execution response: %w", ErrUnavailable, err)
+	}
+	return nil
 }

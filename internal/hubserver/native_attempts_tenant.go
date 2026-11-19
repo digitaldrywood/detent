@@ -329,16 +329,9 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot hubre
 		result.Evidence = append(result.Evidence, evidence...)
 		result.Unavailable = slices.DeleteFunc(result.Unavailable, func(value string) bool { return value == "evidence" })
 	}
-	result.ArtifactIDs = run.ArtifactIDs
-	if snapshot.ArtifactsPayload != nil {
-		ref := *snapshot.ArtifactsPayload
-		raw, err := s.runDetailStoreFor(ctx).ReadDetail(ctx, string(attempt.OrganizationID), ref)
-		if err != nil {
-			return tracker.NativeAttempt{}, nativeAttemptArchiveReadError(&ref, err)
-		}
-		if int64(len(raw)) != ref.UncompressedSize || json.Unmarshal(raw, &result.ArtifactIDs) != nil {
-			return tracker.NativeAttempt{}, nativeAttemptArchiveReadError(&ref, artifact.ErrIntegrity)
-		}
+	result.ArtifactIDs, err = s.readAttemptArtifactIDs(ctx, snapshot, run.ArtifactIDs)
+	if err != nil {
+		return tracker.NativeAttempt{}, err
 	}
 	result.CleanupAcknowledgedAt = attempt.CleanupAcknowledgedAt
 	if lease.ReleasedAt != nil {
@@ -380,6 +373,20 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot hubre
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) readAttemptArtifactIDs(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, ids []string) ([]string, error) {
+	if snapshot.ArtifactsPayload != nil {
+		ref := *snapshot.ArtifactsPayload
+		raw, err := s.runDetailStoreFor(ctx).ReadDetail(ctx, string(snapshot.Attempt.OrganizationID), ref)
+		if err != nil {
+			return nil, nativeAttemptArchiveReadError(&ref, err)
+		}
+		if int64(len(raw)) != ref.UncompressedSize || json.Unmarshal(raw, &ids) != nil {
+			return nil, nativeAttemptArchiveReadError(&ref, artifact.ErrIntegrity)
+		}
+	}
+	return ids, nil
 }
 
 func nativeAttemptRunMatches(snapshot hubrecords.TenantAttemptSnapshot, run tracker.NativeRunData) bool {

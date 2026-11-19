@@ -60,20 +60,32 @@ func (c *NativeClient) Change(ctx context.Context, item tracker.NativeWorkItemID
 	return result, err
 }
 
-func (c *NativeClient) RuntimeChange(ctx context.Context, item tracker.NativeWorkItemID, id string) (tracker.ChangeDetail, error) {
+func (c *NativeClient) readRuntimeChange(ctx context.Context, item tracker.NativeWorkItemID, id string, params url.Values) (operatortool.ChangeResult, error) {
 	path, err := ChangePath(item, id, "")
 	if err != nil || id == "" {
-		return tracker.ChangeDetail{}, errors.New("valid Change Request identity is required")
+		return operatortool.ChangeResult{}, errors.New("valid Change Request identity is required")
 	}
+	var page operatortool.ChangeResult
+	if err := c.client.request(ctx, http.MethodGet, c.base()+path+"?"+params.Encode(), nil, &page); err != nil {
+		return page, err
+	}
+	if page.OrganizationID != string(c.organization) || page.ProjectID != string(c.project) || page.WorkItemID != string(item) || page.Detail == nil || page.Read == nil || page.Detail.Change.ID != id || page.Detail.Change.ProjectID != c.project || page.Detail.Change.WorkItemID != item || page.Read.VersionID != page.Detail.Change.CurrentVersion {
+		return page, fmt.Errorf("%w: bounded Change read has incomplete or mismatched identity", ErrUnavailable)
+	}
+	return page, nil
+}
+
+func (c *NativeClient) PublicationSource(ctx context.Context, item tracker.NativeWorkItemID, id string) (tracker.ChangeDetail, error) {
+	page, err := c.readRuntimeChange(ctx, item, id, url.Values{"view": {"bounded"}, "projection": {"publication_source"}})
+	if err != nil {
+		return tracker.ChangeDetail{}, err
+	}
+	return *page.Detail, nil
+}
+
+func (c *NativeClient) RuntimeChange(ctx context.Context, item tracker.NativeWorkItemID, id string) (tracker.ChangeDetail, error) {
 	read := func(params url.Values) (operatortool.ChangeResult, error) {
-		var page operatortool.ChangeResult
-		if err := c.client.request(ctx, http.MethodGet, c.base()+path+"?"+params.Encode(), nil, &page); err != nil {
-			return page, err
-		}
-		if page.OrganizationID != string(c.organization) || page.ProjectID != string(c.project) || page.WorkItemID != string(item) || page.Detail == nil || page.Read == nil || page.Detail.Change.ID != id || page.Detail.Change.ProjectID != c.project || page.Detail.Change.WorkItemID != item || page.Read.VersionID != page.Detail.Change.CurrentVersion {
-			return page, fmt.Errorf("%w: bounded Change read has incomplete or mismatched identity", ErrUnavailable)
-		}
-		return page, nil
+		return c.readRuntimeChange(ctx, item, id, params)
 	}
 	first, err := read(url.Values{"view": {"bounded"}})
 	if err != nil {

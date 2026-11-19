@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -54,4 +55,14 @@ func attemptDiffTooLarge(err error) bool {
 		return false
 	}
 	return apiErr.Code == "diff_too_large" || apiErr.Code == "payload_too_large"
+}
+
+func (c *NativeClient) ExecutionDiff(ctx context.Context, attempt string, sequence int64) (tracker.AttemptDiff, error) {
+	var result tracker.AttemptDiff
+	path, err := NativeAttemptDiffPath(attempt)
+	if err != nil {
+		return result, err
+	}
+	err = c.readExecutionJSON(ctx, c.base()+path+"?at="+strconv.FormatInt(sequence, 10), 6*tracker.MaxDiffBytes+2*maxResponseBytes, &result)
+	return result, err
 }

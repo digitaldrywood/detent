@@ -66,6 +66,21 @@ func (c *SSHCallbacks) handleLocalProcess(ctx context.Context, method string, ar
 		if !ok || len(args) != 0 {
 			return nil, errors.New("local session process reads are unavailable")
 		}
+		if reader, ok := processes.(sessionWorkerProcessReader); ok {
+			var result []store.WorkerProcess
+			for id := range owned {
+				active, err := reader.ListSessionWorkerProcesses(ctx, id)
+				if err != nil {
+					return nil, err
+				}
+				for _, process := range active {
+					if process.SessionID == id {
+						result = append(result, process)
+					}
+				}
+			}
+			return result, nil
+		}
 		active, err := processes.ListActiveWorkerProcesses(ctx)
 		if err != nil {
 			return nil, err

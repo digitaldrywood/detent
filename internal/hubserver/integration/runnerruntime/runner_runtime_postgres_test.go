@@ -530,6 +530,17 @@ func TestPostgresRunnerProcessRegistrationRequiresSessionAuthority(t *testing.T)
 	if _, err := os.Stat(secret); err != nil {
 		t.Fatalf("Hub-supplied cleanup path deleted a file outside the local registration: %v", err)
 	}
+	if _, err := f.Admin.ExecContext(t.Context(), `INSERT INTO runner_sessions (organization_id, project_id, issue_id, attempt_id, start_key, started_at, backend_id, backend_kind, role, model, policy_id, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
+		SELECT organization_id, project_id, issue_id, attempt_id, 'example-process-' || n, started_at, backend_id, backend_kind, role, model, policy_id, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM runner_sessions CROSS JOIN generate_series(1, 200) n WHERE organization_id=$1 AND id=$2`, f.Organization, trustedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trusted.ListActiveWorkerProcesses(ctx); err == nil {
+		t.Fatal("expected incomplete machine process inventory")
+	}
+	processes, err := trusted.ListSessionWorkerProcesses(ctx, trustedID)
+	if err != nil || len(processes) != 1 || processes[0].SessionID != trustedID || processes[0].WorkerProcessIdentity != owned || processes[0].CleanupPath != scratch {
+		t.Fatalf("scoped process = %+v, error %v", processes, err)
+	}
 	if err := trusted.MarkSessionWorkerProcessReaped(ctx, trustedID, store.WorkerProcessReap{ReapedAt: time.Now().UTC(), Outcome: "exited", Reason: "test"}); err != nil {
 		t.Fatalf("trusted reap refused: %v", err)
 	}

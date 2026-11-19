@@ -372,6 +372,10 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			source, err := native.PublicationSource(t.Context(), issue.WorkItemID, change.ID)
+			if err != nil || len(source.Versions) != 1 || source.Versions[0].ID != reference.VersionID || source.Versions[0].HeadSHA != reference.HeadSHA || len(source.Reviews)+len(source.Checks)+len(source.Discussion)+len(source.PublicationPushes) != 0 {
+				t.Fatalf("publication source for %s = %+v, error %v", change.ID, source, err)
+			}
 			if recovered.Summary.Status != status || recovered.Summary.NativeReview != decision || recovered.Summary.Checks != conclusion {
 				t.Fatalf("wrong semantic summary: %+v", recovered.Summary)
 			}

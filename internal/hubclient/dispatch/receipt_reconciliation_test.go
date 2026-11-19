@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/stoptest"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
@@ -30,11 +31,16 @@ func TestStoppedPublicationReconciliation(t *testing.T) {
 			}
 		}
 	}
+	for _, change := range []string{"changed during read", "missing"} {
+		t.Run(change, func(t *testing.T) { runStoppedPublication(t, "git_push", "confirmed", "undelivered", change) })
+	}
 }
 
 func runStoppedPublication(t *testing.T, effect, state, delivery, policy string) {
 	t.Helper()
 	h := newNativeChangeHub(t, true)
+	now := h.scheduler.now()
+	h.scheduler.now = func() time.Time { return now }
 	h.descriptor.Gates.GitHubPullRequest = true
 	h.repolicy(t)
 	issue := h.createInProgress(t, "Stop after publication")
@@ -62,6 +68,9 @@ func runStoppedPublication(t *testing.T, effect, state, delivery, policy string)
 	var seq int64
 	var posts int
 	transport.Store(testsupport.RoundTrip(func(r *http.Request) (*http.Response, error) {
+		if candidate != nil && strings.HasSuffix(r.URL.Path, "/renew") {
+			t.Error("stop tried to extend the lease to record a completed effect")
+		}
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/events") {
 			event := stoptest.ReadEvent(t, r)
 			checkpoint := event.Data.Handoff
@@ -86,6 +95,14 @@ func runStoppedPublication(t *testing.T, effect, state, delivery, policy string)
 						return nil, io.ErrUnexpectedEOF
 					}
 				}
+			}
+		}
+		if candidate != nil && r.Method == http.MethodGet && r.URL.Query().Get("projection") == "publication_source" {
+			switch policy {
+			case "changed during read":
+				return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"revision_conflict"}`))}, nil
+			case "missing":
+				return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"not_found"}`))}, nil
 			}
 		}
 		res, err := next.RoundTrip(r)
@@ -130,12 +147,17 @@ func runStoppedPublication(t *testing.T, effect, state, delivery, policy string)
 	if err := e.PrepareFinish(context.WithoutCancel(ctx), "succeeded", "", nil); err == nil || candidate == nil || pending == nil || posts != 1 {
 		t.Fatalf("publication setup: pending %+v, receipt %+v, posts %d, error %v", pending, candidate, posts, err)
 	}
+	h.scheduler.mu.Lock()
+	claim := h.scheduler.nativeClaims[issue.ID]
+	claim.deadline = now.Add(time.Second)
+	h.scheduler.nativeClaims[issue.ID] = claim
+	h.scheduler.mu.Unlock()
 	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, runner.FinalStateOperatorStopped); err != nil {
 		t.Fatalf("stop after %s receipt: %v", delivery, err)
 	}
 	want, wantSeq, wantPosts := candidate, seq+1, 1
 	if delivery == "undelivered" {
-		if policy == "stale" {
+		if policy != "current" {
 			want, wantSeq = pending, seq
 		} else {
 			wantPosts++
