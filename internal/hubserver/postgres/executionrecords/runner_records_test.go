@@ -133,7 +133,7 @@ func TestRunnerProviderAccountLockScopesCurrentReports(t *testing.T) {
 func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	const organization tracker.OrganizationID = "org_usage"
 	pgstoretest.SeedLeaseFamily(t, repository, organization)
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
