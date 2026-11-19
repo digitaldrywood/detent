@@ -1,39 +1,17 @@
 # Repository invariants
 
-These rules apply to all repository changes. Follow the
-[validation policy](../WORKFLOW.md#validation). Only a change to an invariant's
-rule or its enforcing check edits this document. Identify affected INV IDs in
-the Change description; put per-change rationale, evidence and verification
-there or in issue comments, as required by INV-16. A passing check does not
-authorize weakening a rule.
+These rules apply to all repository changes. Each invariant is a concept, stated in a few sentences and applied at review. Identify affected INV IDs in the Change description; put per-change rationale, evidence and verification there or in issue comments, as required by INV-16.
 
-An invariant is a rule, not a specification. Each section states its rule in
-a few short paragraphs and then names its enforcing checks. Implementation
-detail that changes with ordinary feature work (how a path verifies, retries,
-routes or formats) belongs in the named tests and in package documentation,
-never here. A change that edits this document without changing a rule or an
-enforcing check fails review.
+An invariant is a rule, not a specification and not a test. Implementation detail, and the automated checks that guard some rules, live in code and in the [check contract](../invariants/README.md), never here. A passing check does not authorize weakening a rule. Only a change to a rule edits this document.
 
 INV numbers are permanent identifiers. A retired invariant keeps its number as
 a retired entry; numbers are never reused or renumbered.
-
-**Checks:** `make check-invariants` runs the exact behavioral tests in
-[policy.json](../invariants/policy.json) through
-[tools/invariantcheck](../tools/invariantcheck/main.go); missing, skipped or
-failed test evidence fails the check. These repository-local checks do not
-authenticate policy exceptions, enforce live settings or protect themselves
-against edits. Source checks cover non-test Go packages under `internal`,
-`cmd` and `tools` for the selected build platform. Natural-language and raw
-HTTP bypasses remain review boundaries. See the
-[check contract](../invariants/README.md).
 
 ## INV-1 — Lane ownership
 
 The Hub’s orchestrator alone applies lane transitions and grants one fenced renewable lease per item across phases. Workers submit authenticated outcomes. Lease loss ends their authority and makes the item eligible for continuation from its last recorded phase commit.
 
 Blocked is reserved for an explicit operator stop or a genuine unresolved decision or permission request. Record the request as a typed `human_action`, surface it durably to the human and release executing capacity. Only authorized human action clears the request. Machine failures use the retry loop.
-
-**Enforcement:** `TestRepositorySources` in `internal/invariants`. Review checks lane writes, lease authority and human-action handling.
 
 ## INV-2 — Instance-owned infrastructure failures
 
@@ -47,8 +25,6 @@ Infrastructure failures belong to the instance. Retry the failed phase with capp
 
 Lease renewal proves ownership only, and the existing stall owner ends a quiet provider session and restarts it in place. At the end of each round, an AI verdict judges progress against the issue’s acceptance criteria and open findings, never by commits or activity.
 
-**Enforcement:** `TestRepositorySources` and `TestSourceViolations` in `internal/invariants`, and the seed cases in `FuzzSafetyCriticalOrchestratorBoundaries`. Review verifies removal or consolidation.
-
 ## INV-4 — Native merge queue
 
 Moved to [Delivery policy](../WORKFLOW.md#delivery-policy).
@@ -56,8 +32,6 @@ Moved to [Delivery policy](../WORKFLOW.md#delivery-policy).
 ## INV-5 — Local validation and release evidence
 
 Acceptance and release decisions require authentic evidence bound to the exact source and relevant inputs. Reuse it only while those inputs remain valid. [WORKFLOW.md](../WORKFLOW.md#evidence-policy) specifies the commands, independent reviews and release authority.
-
-**Enforcement:** `TestRepositoryWorkflow` and `TestWorkflowViolations` in `internal/invariants`. Review preserves project-specific policy and release authority.
 
 ## INV-6 — Isolated agent home
 
@@ -67,17 +41,9 @@ the Detent-provided worktree remain authoritative. Codex workers run with an
 isolated Codex home; resuming a persisted thread copies only that thread into
 the isolated profile and leaves the host copy unchanged.
 
-**Enforcement:** `TestPrepareCodexCommandForServiceIsolatesInstructions`,
-`TestPrepareWorkerCodexHomeExistingInstructions`, and
-`TestPrepareLegacyCodexRollout` in `internal/cli`;
-`TestAppServerThreadPreparation` in `internal/codex`. Review applies the rule
-to other backends.
-
 ## INV-7 — Machine issue identity
 
 Machine defects have stable provenance and fingerprints. Update the existing incident only when evidence or disposition changes. Respect human cancellation and allow explicitly authorized, already-deduplicated filing without another confirmation. Retain historical occurrences without per-round issue narration.
-
-**Enforcement:** `TestDefectFingerprint` in `internal/issueorigin`. Review checks fingerprint stability.
 
 ## INV-8 — No strict freshness protection
 
@@ -91,15 +57,11 @@ Merged into [INV-3](#inv-3--net-zero-mechanisms).
 
 Priority chooses the next executable work. Active work keeps its execution slot, and retained item leases reserve no idle execution slots. Enforce configured capacity and access limits and explicit operator stops using current facts.
 
-**Enforcement:** `TestGlobalDispatchGatePriorityOnlyPicksNextJob` in `internal/scheduler`. Review rejects semantic reservation and preemption substitutes.
-
 ## INV-11 — Retired
 
 ## INV-12 — Native toolchain caches
 
 Use native toolchain caches for speed only, preserving configured environments and active process outputs. Workspace and cache cleanup must preserve live work.
-
-**Enforcement:** `TestINV12WorkerInheritsToolchainEnvironment` in `internal/runner` and `TestINV12TrimReadout` in `internal/toolcache`. Review checks that cleanup preserves live work.
 
 ## INV-13 — A board card is a title and one status line
 
@@ -127,16 +89,11 @@ UI to make them observable, including on Diagnostics, behind toggles or debug
 flags. Agents describe proposed UI additions in their outcome or file Backlog
 work for a human to author or rewrite; they do not build them.
 
-**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#ui). No additional gate,
-configuration, reason code or UI surface enforces this rule.
-
 ## INV-16 — The Hub carries execution context and Git carries source
 
 <a id="inv-16--the-tracker-database-is-the-only-shared-knowledge-channel"></a>
 
 The Hub carries issue direction, phase receipts, verdicts and findings. Git carries source commits. Agents never carry execution state through repository notes or machine issue-comment streams. Human discussion and final outcomes remain in the tracker.
-
-**Enforcement:** `TestNativeRuntimeCheckpointsDoNotGrowHistory` and `TestNativeAttemptTerminalActivityReceipts` in `internal/hubclient/runtimeevidence`. Review checks publication ownership against [AGENTS.md](../AGENTS.md#repository-invariants).
 
 ## INV-17 — Hub-owned assignment and retained item worktrees
 
@@ -145,8 +102,6 @@ The Hub carries issue direction, phase receipts, verdicts and findings. Git carr
 The Hub alone owns assignment and execution authority through one fenced, renewable item lease. The runner retains the same worktree across the item’s phases and retries. Each completed phase pushes ordinary commits and records commit-bound receipts in the Hub. After lease loss, a new runner resumes from the last pushed phase commit at the first phase without a valid receipt, and uncommitted work may be lost.
 
 Runners use their declared install configuration. Keep unrelated jobs independent of machine-local state. Never open a local application database, discover configuration by scanning the machine, route work by where it previously ran, or use local files or queues as execution or recovery authority.
-
-**Enforcement:** `TestCheckpointAuthorityAndJournalFailures` and `TestNativePublicationRecoveryOnAnyRunner` in `internal/runner`. Review checks assignment and workspace custody in runner, workspace, Hub client, recovery and placement changes.
 
 ## INV-18 — Hub writes stay small
 
@@ -160,15 +115,6 @@ by the size of history. Reads use the reader pool, never the writer
 connection. Stored data shape is governed by
 [INV-20](#inv-20--sql-never-reads-or-writes-inside-stored-json): new Hub
 columns are typed, never JSON.
-
-**Enforcement:** `TestINV18RequestCommitDoesNoDerivedWork` and
-`TestINV18HubMigrationsUseTypedColumns` in `internal/hubserver`. Review applies
-the history bound and reader rule to Hub persistence changes.
-`TestINV20HubTableLifecycles` checks every application table in the migrated Hub
-template against `internal/invariants/table_lifecycle_policy.json`. Each table
-declares immutable payload in object storage, derived data with an explicit
-retention contract, hot state, or an index. SQLite-owned shadow and system
-tables are excluded; new application tables require declarations.
 
 ## INV-19 — No flaky tests
 
@@ -184,10 +130,6 @@ waits and timeouts never grow to hide a flake; a suite's overall execution
 budget may be sized from measured runtime. CI keeps Playwright's
 `failOnFlakyTests` on with at most one retry, so a test that only passes on
 retry still fails the run and is reported.
-
-**Enforcement:** `TestINV19NoFlakeAccommodation` in `internal/invariants`
-checks the Playwright CI settings, that no browser spec skips, marks or retries
-a test, and that no Go test skips itself as flaky.
 
 ## INV-20 — SQL never reads or writes inside stored JSON
 
@@ -216,28 +158,6 @@ column is current display text, never a serialized history payload. JSON and
 other serialized payload columns remain prohibited; the frozen legacy payload
 list does not expand for read models.
 
-**Enforcement:** Review enforces payload placement in object storage. `TestINV20NoSQLOverJSON` in `internal/hubserver` scans non-test
-Go files in Hub and store (including generated SQL), and `db/queries` SQL sources.
-Per-file function counts must equal `testdata/inv20_json_sql_baseline.txt`;
-reductions must lower the baseline in the same change, and increases are forbidden.
-Migrations from the INV-18 adoption cutoff (`20261015000000`) are also checked;
-existing calls are baseline debt and new migrations have no allowance. The scan
-conservatively counts function calls even on parameters or literals. It does not
-recognize `->` or `->>` operators, to avoid false positives outside SQL strings;
-review enforces these operators and conversion of edited queries to typed columns.
-
-`TestINV20HubTableLifecycles` also rejects inline history and derived payload
-columns unless their exact table and column appear in the frozen
-`legacy_payloads` list in `internal/invariants/table_lifecycle_policy.json`.
-Each debt entry names its owning conversion family, including families whose
-conversion is still pending. This list may only shrink: never add entries,
-broaden an entry to a table or pattern, or relabel history as hot state or an
-index to bypass it. Removing a payload column requires removing its debt entry
-in the same change. `TestTableLifecycleViolations` mutates copies of the migrated PostgreSQL
-template to verify unknown tables, inline payloads and stale debt are rejected.
-Discovery includes application tables in both the public and platform schemas;
-non-public table names are schema-qualified in the lifecycle catalog.
-
 ## INV-21 — Designs hold at ten thousand tenants and runners
 
 Every design is judged at 10,000 tenants and 10,000 runners, with up to 1,000
@@ -253,24 +173,13 @@ heartbeats, polls, retries and reconnects use capped jittered intervals, and the
 control plane applies per-tenant and per-runner admission limits, so one tenant
 or a synchronized fleet cannot starve the others.
 
-**Enforcement:** a Change that adds or modifies a hot path (per-request,
-per-heartbeat or per-event code), a shared lock, or a periodic job states its
-cost at INV-21 scale in its description, for example "per heartbeat: one row
-read and one row written, no history reads" or "per tick: at most 500 rows, lock
-held around one object". Review rejects such a Change without that statement or
-with unbounded scans or fan-out over history or the fleet. Hot-path changes attach
-benchmark evidence where a benchmark exists. A manually run scale soak against a seeded
-large tenant and a simulated runner fleet provides release evidence when it is
-run; it never blocks merging or releasing.
+A Change that adds or modifies a hot path, a shared lock or a periodic job states its cost at this scale in its description, for example "per heartbeat: one row read and one row written, no history reads". Review rejects unbounded scans or fan-out over history or the fleet.
 
 ## INV-22 — Tests never use production credentials or systems
 
 Automated tests and development use isolated fixtures and no production credentials or effects. Explicitly authorized operational release checks follow the [release procedure](../WORKFLOW.md#release) and are recorded as production operations.
 
-**Enforcement:** a test package whose code under test reads a credential from
-the environment clears it in `TestMain` or injects a fake. Review rejects a
-Change that enables a production credential in any development, test or CI
-environment, or a test that can open a connection to a production endpoint.
+Code under test that reads a credential from the environment has it cleared in `TestMain` or replaced with a fake. No development, test or CI environment enables a production credential or can open a connection to a production endpoint.
 
 ## INV-23 — The tenant is never a process
 
@@ -288,23 +197,3 @@ dedicated placement is a shard assignment Cory approves, with a recorded
 reason, using the same shard machinery. This invariant incorporates
 [the multi-tenancy architecture](architecture/multi-tenancy.md) as normative;
 where they differ, this section wins.
-
-**Enforcement:** `TestRepositoryTenancy` in `internal/invariants` is a
-syntactic ratchet over non-test Go files in the whole repository. Process
-package imports and launch symbols, and physical pool constructors and
-factories, are pinned to named sites in
-`internal/invariants/tenancy_policy.json`; occurrences in the hosted serving
-tree, pool constructors outside `internal/pgtransport`, hosted-path timer
-constructors and process-wide organization reads are debt that only shrinks.
-Test-support packages are exempt only by name, and only the named scratch
-paths and directories the Go toolchain ignores are skipped. Counts must equal
-the policy. Landing refuses growth: `scripts/check-tenancy-policy.py`, run by
-`make check-land` and the landing gate against the target revision, rejects
-any raised debt or exception count and any test-support entry not already in
-the target set. `-tenancy-baseline` is a local rewrite convenience, not
-protection. `TestTenancyPolicyViolations`, `TestTenancyBaselineRefusesGrowth`
-and `scripts/check_tenancy_policy_test.py` test the scanner and the landing
-comparison. The ratchet does not follow call graphs, types or runtime
-multiplicity, and an empty debt list is not proof the migration is complete;
-review applies the remaining rules and the
-[review checklist](architecture/multi-tenancy.md#review-checklist).
