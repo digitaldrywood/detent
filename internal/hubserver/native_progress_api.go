@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -27,7 +27,7 @@ type nativeProgressView struct {
 type nativeProgressSnapshot struct {
 	request              progresscheck.Request
 	sequence             int64
-	completedDependency  corestore.WorkItemReference
+	dependencies         nativeProgressDependencies
 	receiptsAfterCleanup []progresscheck.Receipt
 }
 
@@ -64,17 +64,18 @@ func (s *Service) readNativeProgressSnapshot(ctx context.Context, scope hubscope
 	}
 	request := progresscheck.NativeRequest(recovery, policy, instance)
 	request.EvidenceRevision = strconv.FormatInt(evidenceSequence, 10)
-	defectReceipt, completedDependency, err := s.nativeProgressDefectReceiptTenant(ctx, scope, item)
+	var dependencies nativeProgressDependencies
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		dependencies, err = readNativeProgressDependencies(ctx, reader, scope.Project, before.NativeID)
+		return err
+	})
 	if err != nil {
-		return nativeProgressSnapshot{}, err
+		return nativeProgressSnapshot{}, hubapi.ProjectRecordError(err)
 	}
-	receiptsAfterCleanup := request.Receipts
-	if defectReceipt.ID != "" {
-		if len(request.Receipts) == progresscheck.MaxReceipts {
-			request.Receipts = request.Receipts[1:]
-		}
-		request.Receipts = append(request.Receipts, defectReceipt)
-	}
+	baseReceipts := request.Receipts
+	request.Receipts = nativeProgressReceipts(baseReceipts, dependencies.latest)
+
 	if instance != "" {
 		var version string
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -114,52 +115,57 @@ func (s *Service) readNativeProgressSnapshot(ctx context.Context, scope hubscope
 			return nativeProgressSnapshot{}, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 		}
 	}
-	return nativeProgressSnapshot{request: request, sequence: after.EventSequence, completedDependency: completedDependency, receiptsAfterCleanup: receiptsAfterCleanup}, nil
+	return nativeProgressSnapshot{request: request, sequence: after.EventSequence, dependencies: dependencies, receiptsAfterCleanup: nativeProgressReceipts(baseReceipts, dependencies.surviving)}, nil
 }
 
-func (s *Service) nativeProgressDefectReceiptTenant(ctx context.Context, scope hubscope.NativeScope, item string) (progresscheck.Receipt, corestore.WorkItemReference, error) {
-	var defect corestore.WorkItemReference
-	var defectState string
-	var defectCreated time.Time
-	var owned bool
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		cursor := corestore.WorkItemBlockerCursor{}
-		for range claimPreparationLimit {
-			page, err := reader.ProgressDependencies(ctx, scope.Project, tracker.NativeWorkItemID(item), cursor, corestore.MaxPageSize)
-			if err != nil {
-				return err
-			}
-			for _, relationship := range page[:min(corestore.MaxPageSize, len(page))] {
-				blocker, err := reader.WorkItemByNativeID(ctx, relationship.WorkItemID)
-				if err != nil {
-					return err
-				}
-				state := hubapi.StringValue(blocker.WorkflowStateName)
-				if relationship.CreatedAt.After(defectCreated) || relationship.CreatedAt.Equal(defectCreated) && relationship.WorkItemID > defect.WorkItemID {
-					defect = corestore.WorkItemReference{ProjectID: relationship.ProjectID, WorkItemID: relationship.WorkItemID}
-					defectState, defectCreated = state, relationship.CreatedAt
-					owned = strings.HasPrefix(hubapi.StringValue(blocker.NativeSourceKey), nativeProgressDependencySourcePrefix)
-				}
-			}
-			if len(page) <= corestore.MaxPageSize {
-				return nil
-			}
-			last := page[corestore.MaxPageSize-1]
-			cursor = corestore.WorkItemBlockerCursor{ProjectID: last.ProjectID, IssueID: last.IssueID}
+type nativeProgressDependencies struct {
+	latest    corestore.ProgressDependency
+	surviving corestore.ProgressDependency
+}
+
+func nativeProgressCompletionID(edge corestore.ProgressDependency) tracker.NativeWorkItemID {
+	if hubapi.StringValue(edge.WorkflowStateName) == "Done" {
+		return edge.WorkItemID
+	}
+	return ""
+}
+
+func nativeProgressReceipts(base []progresscheck.Receipt, latest corestore.ProgressDependency) []progresscheck.Receipt {
+	if nativeProgressCompletionID(latest) == "" {
+		return base
+	}
+	if len(base) == progresscheck.MaxReceipts {
+		base = base[1:]
+	}
+	return append(slices.Clip(base), progresscheck.Receipt{ID: string(latest.WorkItemID) + ":done", Step: "system_defect", Outcome: "fixed"})
+}
+
+func readNativeProgressDependencies(ctx context.Context, reader corestore.Reader, project tracker.ProjectID, item tracker.NativeWorkItemID) (nativeProgressDependencies, error) {
+	var dependencies nativeProgressDependencies
+	cursor := corestore.WorkItemBlockerCursor{}
+	newer := func(edge, previous corestore.ProgressDependency) bool {
+		return edge.CreatedAt.After(previous.CreatedAt) || edge.CreatedAt.Equal(previous.CreatedAt) && edge.WorkItemID > previous.WorkItemID
+	}
+	for range claimPreparationLimit {
+		page, err := reader.ProgressDependencies(ctx, project, item, cursor, corestore.MaxPageSize)
+		if err != nil {
+			return nativeProgressDependencies{}, err
 		}
-		return corestore.ErrInvalidPage
-	})
-	if err != nil {
-		return progresscheck.Receipt{}, corestore.WorkItemReference{}, hubapi.ProjectRecordError(err)
+		for _, edge := range page[:min(corestore.MaxPageSize, len(page))] {
+			if newer(edge, dependencies.latest) {
+				dependencies.latest = edge
+			}
+			if !strings.HasPrefix(hubapi.StringValue(edge.NativeSourceKey), nativeProgressDependencySourcePrefix) && newer(edge, dependencies.surviving) {
+				dependencies.surviving = edge
+			}
+		}
+		if len(page) <= corestore.MaxPageSize {
+			return dependencies, nil
+		}
+		last := page[corestore.MaxPageSize-1]
+		cursor = corestore.WorkItemBlockerCursor{ProjectID: last.ProjectID, IssueID: last.IssueID}
 	}
-	if defect.WorkItemID == "" || defectState != "Done" {
-		return progresscheck.Receipt{}, corestore.WorkItemReference{}, nil
-	}
-	receipt := progresscheck.Receipt{ID: string(defect.WorkItemID) + ":done", Step: "system_defect", Outcome: "fixed"}
-	if !owned {
-		defect = corestore.WorkItemReference{}
-	}
-	return receipt, defect, nil
+	return nativeProgressDependencies{}, corestore.ErrInvalidPage
 }
 
 func (s *Service) getNativeProgress(c echo.Context) error {
@@ -205,7 +211,7 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 	}
 	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence, expectedRevision: input.ExpectedRevision, publicationHash: publicationHash}
 	if id != input.RequestID {
-		record, err := owner.replayAfterCleanup(c.Request().Context(), input.RequestID, id, sequence)
+		record, err := owner.replayAfterCleanup(c.Request().Context(), input.RequestID, id)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
