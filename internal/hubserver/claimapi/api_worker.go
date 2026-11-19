@@ -1,4 +1,4 @@
-package hubserver
+package claimapi
 
 import (
 	"errors"
@@ -12,7 +12,7 @@ import (
 
 var ErrNoClaimableWork = errors.New("no compatible work item is claimable")
 
-func (s *Service) trackerAPIError(c echo.Context, err error) error {
+func (d Deps) TrackerAPIError(c echo.Context, err error) error {
 	status := http.StatusInternalServerError
 	code := "hub_operation_failed"
 	message := "Hub operation failed"
@@ -32,7 +32,7 @@ func (s *Service) trackerAPIError(c echo.Context, err error) error {
 	case errors.Is(err, tracker.ErrInvalidClaimRequest), errors.Is(err, tracker.ErrInvalidLeaseRequest), errors.Is(err, tracker.ErrInvalidWorkEvent), errors.Is(err, tracker.ErrInvalidCandidateQuery):
 		status, code, message = http.StatusUnprocessableEntity, "invalid_request", "Request is invalid"
 	}
-	return s.refusedAPIError(c, status, code, message, hubapi.APIErrorResponse{Code: code, Message: message})
+	return d.RefusedAPIError(c, status, code, message, hubapi.APIErrorResponse{Code: code, Message: message})
 }
 
 // claimPreflightAcquire bounds how long a preflight waits for a claim reader;

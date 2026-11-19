@@ -1,10 +1,19 @@
-package hubserver
+package claimapi
 
 import (
+	"context"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func answeredClaimKind(data tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint) string {
+type AttemptFactsDeps struct {
+	ReadAttempt    func(context.Context, hubrecords.TenantAttemptSnapshot) (tracker.NativeRunData, error)
+	ReadCheckpoint func(context.Context, hubrecords.TenantAttemptSnapshot) (*tracker.NativeCheckpoint, error)
+	AttemptStatus  func(tracker.NativeRunEvent) (string, error)
+}
+
+func AnsweredClaimKind(data tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint) string {
 	disposition := data.Disposition
 	publication := checkpoint != nil && (checkpoint.ExternalEffect == "git_push" || checkpoint.ExternalEffect == "pr_create")
 	if publication && (disposition == nil || checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") {

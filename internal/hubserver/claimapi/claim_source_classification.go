@@ -1,4 +1,4 @@
-package hubserver
+package claimapi
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-const claimSourceClassificationLimit = 50
+const ClaimSourceClassificationLimit = 50
 
 type claimSourceState int
 
@@ -29,13 +29,13 @@ type claimSourceBudget struct {
 	remaining int
 }
 
-func (s *Service) classifyClaimCandidateSource(ctx context.Context, scope hubscope.NativeScope, candidate claimstore.Candidate, budget *claimSourceBudget) (claimSourceState, error) {
+func (d Deps) classifyClaimCandidateSource(ctx context.Context, scope hubscope.NativeScope, candidate claimstore.Candidate, budget *claimSourceBudget) (claimSourceState, error) {
 	if budget.remaining < 1 {
 		return claimSourcePending, nil
 	}
 	var snapshots []hubrecords.TenantAttemptSnapshot
 	more, classifiedTail := false, false
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		snapshots, more, classifiedTail = nil, false, false
 		reader, ok := r.(leasestore.CheckpointAttemptReader)
 		if !ok {
@@ -69,7 +69,7 @@ func (s *Service) classifyClaimCandidateSource(ctx context.Context, scope hubsco
 	preserved, unverifiable := false, false
 	for _, snapshot := range snapshots {
 		budget.remaining--
-		checkpoint, err := s.readNativeAttemptCheckpointTenant(ctx, snapshot)
+		checkpoint, err := d.ReadCheckpoint(ctx, snapshot)
 		if err == nil && checkpoint == nil {
 			err = artifact.ErrIntegrity
 		}
@@ -77,7 +77,7 @@ func (s *Service) classifyClaimCandidateSource(ctx context.Context, scope hubsco
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return claimSourcePending, ctxErr
 			}
-			s.config.Logger.WarnContext(ctx, "claim checkpoint source classification unavailable", "organization_id", scope.Organization, "project_id", scope.Project, "work_item_id", candidate.WorkItemID, "attempt_id", snapshot.Attempt.ID, "error", err)
+			d.Logger.WarnContext(ctx, "claim checkpoint source classification unavailable", "organization_id", scope.Organization, "project_id", scope.Project, "work_item_id", candidate.WorkItemID, "attempt_id", snapshot.Attempt.ID, "error", err)
 			unverifiable = true
 			break
 		}
@@ -88,7 +88,7 @@ func (s *Service) classifyClaimCandidateSource(ctx context.Context, scope hubsco
 		}
 	}
 	if len(facts) > 0 {
-		if err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := d.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			owner, ok := w.(leasestore.CheckpointSourceWriter)
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()

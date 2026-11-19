@@ -1,4 +1,4 @@
-package hubserver
+package claimapi
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readRunnerRecoveryEligibility(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID) (bool, bool, error) {
+func ReadRunnerRecoveryEligibility(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID) (bool, bool, error) {
 	if scope.Credential.Scope != hubapi.APIScopeWorker || scope.Credential.Runner.RunnerID == "" || !slices.Contains(scope.Credential.Runner.Operations, runnerauth.Claim) {
 		return false, false, nil
 	}

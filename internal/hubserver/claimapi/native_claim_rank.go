@@ -1,4 +1,4 @@
-package hubserver
+package claimapi
 
 import (
 	"cmp"
@@ -28,7 +28,7 @@ import (
 
 const (
 	nativeClaimRankProjects = 16
-	nativeClaimRankBudget   = claimPreparationLimit
+	nativeClaimRankBudget   = ClaimPreparationLimit
 )
 
 type nativeClaimRankPosition struct {
@@ -81,11 +81,11 @@ func readNativeClaimRanking(ctx context.Context, r tenantstore.Reader, scope hub
 	return &ranking, nil
 }
 
-func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, plan hubrecords.NativeClaimPlan, now time.Time) (bool, error) {
+func (d Deps) nativeClaimOutranked(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, plan hubrecords.NativeClaimPlan, now time.Time) (bool, error) {
 	if plan.Replay != nil || slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) || plan.Ranking != nil && len(plan.Ranking.Projects) == 0 {
 		return false, nil
 	}
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	repository, ok := d.Repository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return false, hubapi.NativeRunEventStorageUnavailable()
 	}
@@ -134,7 +134,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 			if err != nil {
 				return err
 			}
-			if !nativeClaimProjectEnabled(project) {
+			if !NativeClaimProjectEnabled(project) {
 				continue
 			}
 			current, err := r.ProjectPolicy(ctx, ranked.ProjectID)
@@ -153,7 +153,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 					continue
 				}
 			}
-			allowed, err := spriteAllocationRunnerAllowedFacts(ctx, r, projectScope, identity, machine, true)
+			allowed, err := d.SpriteAllocationAllowed(ctx, r, projectScope, identity, machine, true)
 			if err != nil {
 				return err
 			}
@@ -162,7 +162,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 			}
 			projectRequest := request
 			projectRequest.PolicyID, projectRequest.WorkItemID, projectRequest.SessionID, projectRequest.ProviderCandidates = current.PolicyID, "", "", nil
-			query := nativeTenantCandidateQuery(projectScope, projectRequest, "", now)
+			query := NativeTenantCandidateQuery(projectScope, projectRequest, "", now)
 			sourceRevision, err := nativeClaimSelectionSourceRevision(project, current, query)
 			if err != nil {
 				return err
@@ -192,7 +192,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 				continue
 			}
 			incomplete := len(page.Items) > quota && nativeClaimOutranks(nativeClaimRankPosition{rank: ranked.Rank, preferred: ranked.ProjectID == preferred, candidate: page.Items[quota]}, self)
-			cursor.Position = claimCandidateCursor(outranking[len(outranking)-1])
+			cursor.Position = ClaimCandidateCursor(outranking[len(outranking)-1])
 			rows, err := batch.ClaimPreviewPlanRows(ctx, ranked.ProjectID, outranking)
 			if err != nil {
 				return err
@@ -209,19 +209,19 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 				if row.Err != nil {
 					return row.Err
 				}
-				candidate := nativeClaimPlanFromBatch(shared, outranking[index], row)
+				candidate := NativeClaimPlanFromBatch(shared, outranking[index], row)
 				if candidate.Item.Revision != candidate.Candidate.Revision || candidate.Item.Archived {
 					continue
 				}
-				if err := validateClaimSnapshotPolicy(projectScope, candidate); err != nil {
+				if err := ValidateClaimSnapshotPolicy(projectScope, candidate); err != nil {
 					return err
 				}
 				competitor.plans = append(competitor.plans, candidate)
 			}
-			if err := readNativeClaimReleaseDeliveryFacts(ctx, r, projectScope, competitor.plans); err != nil {
+			if err := d.ReadReleaseDeliveryFacts(ctx, r, projectScope, competitor.plans); err != nil {
 				return err
 			}
-			if err := readNativeClaimChangeFacts(ctx, r, projectScope, competitor.plans); err != nil {
+			if err := ReadNativeClaimChangeFacts(ctx, r, projectScope, competitor.plans); err != nil {
 				return err
 			}
 			if len(competitor.plans) > 0 || incomplete {
@@ -235,7 +235,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 	}
 	var pending []claimstore.SelectionCursor
 	for _, competitor := range competitors {
-		claimable, excluded, err := s.nativeClaimRankCompetitorClaimable(ctx, competitor, request, identity, machine, reports, now)
+		claimable, excluded, err := d.nativeClaimRankCompetitorClaimable(ctx, competitor, request, identity, machine, reports, now)
 		if err != nil || claimable {
 			return claimable, err
 		}
@@ -246,7 +246,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 	if len(pending) == 0 {
 		return false, nil
 	}
-	return true, s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
+	return true, d.WriteNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
 		for _, cursor := range pending {
 			if _, err := w.PutSelectionCursor(ctx, cursor, cursor.Revision); err != nil {
 				return err
@@ -256,18 +256,18 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 	})
 }
 
-func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor nativeClaimRankCompetitor, request tracker.NativeClaim, identity runnerstore.Identity, machine leasestore.Machine, reports []providercapacity.Report, now time.Time) (bool, bool, error) {
+func (d Deps) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor nativeClaimRankCompetitor, request tracker.NativeClaim, identity runnerstore.Identity, machine leasestore.Machine, reports []providercapacity.Report, now time.Time) (bool, bool, error) {
 	plans := competitor.plans
-	if err := s.prepareNativeClaimLegacyAuditFacts(ctx, competitor.scope, plans); err != nil {
+	if err := d.PrepareNativeClaimLegacyAuditFacts(ctx, competitor.scope, plans); err != nil {
 		return false, false, err
 	}
-	if err := s.prepareNativeClaimApprovals(ctx, competitor.scope, plans); err != nil {
+	if err := d.PrepareNativeClaimApprovals(ctx, competitor.scope, plans); err != nil {
 		return false, false, err
 	}
 	var descriptor *policy.Descriptor
 	var resolver *runner.BoardIdentityResolver
 	for _, rows := range plans {
-		plan, err := s.hydrateNativeClaimPlan(ctx, competitor.scope, competitor.request, now, rows, descriptor)
+		plan, err := d.HydrateNativeClaimPlan(ctx, competitor.scope, competitor.request, now, rows, descriptor)
 		if errors.Is(err, ErrNoClaimableWork) {
 			continue
 		}
@@ -278,14 +278,14 @@ func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, compet
 		if plan.Descriptor.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags) != nil {
 			return false, true, nil
 		}
-		if !nativeClaimIssueContractAllowed(plan) {
+		if !d.nativeClaimIssueContractAllowed(plan) {
 			continue
 		}
 		if (hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending) && !plan.ChangeReady {
 			continue
 		}
 		if plan.LandingRequired {
-			available, reason, err := s.nativeClaimForeignLandingAvailable(ctx, competitor.scope, request, now)
+			available, reason, err := d.nativeClaimForeignLandingAvailable(ctx, competitor.scope, request, now)
 			if err != nil {
 				return false, false, err
 			}
@@ -293,7 +293,7 @@ func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, compet
 				if reason != "" {
 					refused := competitor.request
 					refused.WorkItemID = plan.Candidate.WorkItemID
-					if err := s.recordRequestedClaimRefusal(ctx, competitor.scope, refused, now, true, reason, nil); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
+					if err := d.recordRequestedClaimRefusal(ctx, competitor.scope, refused, now, true, reason, nil); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
 						return false, false, err
 					}
 				}
@@ -302,7 +302,7 @@ func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, compet
 		}
 		if len(reports) > 0 {
 			if resolver == nil {
-				resolver, err = s.nativeClaimRankResolver(ctx, competitor.scope, plan)
+				resolver, err = d.nativeClaimRankResolver(ctx, competitor.scope, plan)
 				if err != nil {
 					return false, false, err
 				}
@@ -311,7 +311,7 @@ func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, compet
 				continue
 			}
 		}
-		allowed, err := s.nativeClaimRankBudgetAllowed(ctx, competitor.scope, plan, machine, now)
+		allowed, err := d.nativeClaimRankBudgetAllowed(ctx, competitor.scope, plan, machine, now)
 		if err != nil {
 			return false, false, err
 		}
@@ -323,7 +323,7 @@ func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, compet
 	return false, false, nil
 }
 
-func (s *Service) nativeClaimRankBudgetAllowed(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan, machine leasestore.Machine, now time.Time) (bool, error) {
+func (d Deps) nativeClaimRankBudgetAllowed(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan, machine leasestore.Machine, now time.Time) (bool, error) {
 	runnerAPI := true
 	if plan.Descriptor.Configuration != nil {
 		workflow, err := hubrecords.ProjectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), plan.Descriptor)
@@ -333,8 +333,8 @@ func (s *Service) nativeClaimRankBudgetAllowed(ctx context.Context, scope hubsco
 		runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
 	}
 	allowed := false
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		input, err := readBillingMonthlyBudgetInput(ctx, r, scope, now)
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		input, err := d.ReadMonthlyBudget(ctx, r, scope, now)
 		if err != nil {
 			return err
 		}
@@ -342,7 +342,7 @@ func (s *Service) nativeClaimRankBudgetAllowed(ctx context.Context, scope hubsco
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		input.Exposure, input.Admitted = monthlyCostExposure(machine, false, runnerAPI), err == nil
+		input.Exposure, input.Admitted = d.MonthlyCostExposure(machine, false, runnerAPI), err == nil
 		decision, err := billingstore.EvaluateMonthlyBudget(input)
 		allowed = decision.Allowed
 		return err
@@ -350,13 +350,13 @@ func (s *Service) nativeClaimRankBudgetAllowed(ctx context.Context, scope hubsco
 	return allowed, err
 }
 
-func (s *Service) nativeClaimRankResolver(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan) (*runner.BoardIdentityResolver, error) {
+func (d Deps) nativeClaimRankResolver(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan) (*runner.BoardIdentityResolver, error) {
 	workflow, err := hubrecords.ProjectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), plan.Descriptor)
 	if err != nil {
 		return nil, err
 	}
 	workflow.Config.Plan.Enabled = plan.Descriptor.Gates.PlanEnabled
-	selection, err := s.projectRecordModel(ctx, plan.Project.Settings)
+	selection, err := d.ProjectModel(ctx, plan.Project.Settings)
 	if err != nil {
 		return nil, err
 	}
@@ -382,13 +382,13 @@ func nativeClaimRankProviderSupported(resolver *runner.BoardIdentityResolver, pl
 	return slices.ContainsFunc(reports, func(report providercapacity.Report) bool { return report.Supports(requirement) })
 }
 
-func (s *Service) nativeClaimForeignLandingAvailable(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (bool, string, error) {
+func (d Deps) nativeClaimForeignLandingAvailable(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (bool, string, error) {
 	if request.LandingCapacity <= 0 && !slices.Contains(request.Capabilities, tracker.NativeLandingCapacityCapability) {
-		available, err := s.nativeClaimLandingCapacityAvailable(ctx, scope.Organization, scope.Project, 0, now)
+		available, err := d.LandingCapacityAvailable(ctx, scope.Organization, scope.Project, 0, now)
 		return available, "", err
 	}
 	var usage claimstore.LandingCapacityUsage
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		usage, err = r.LandingCapacityUsage(ctx, scope.Project, now)
 		return err
