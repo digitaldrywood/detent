@@ -1,13 +1,11 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -17,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectadmin"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/readableurl"
@@ -87,149 +86,42 @@ func (s *Service) readableReference(ctx context.Context, scope hubscope.NativeSc
 	return s.readableRecordReference(ctx, scope, parts, true)
 }
 
+func (s *Service) readableLinks() projectadmin.ReadableLinks {
+	var publicURL *string
+	if s.config.Hosted != nil {
+		publicURL = &s.config.Hosted.PublicURL
+	}
+	return projectadmin.ReadableLinks{
+		PublicURL:  publicURL,
+		HostedBase: s.hostedBase,
+		IssuePath: func(ctx context.Context, id string) (string, error) {
+			return s.readIssueBrowserPath(ctx, tracker.OrganizationID(s.appOrganizationID()), id)
+		},
+		IssueAliasPath: func(ctx context.Context, parts []string) (string, bool, error) {
+			if s.config.TenantRepository == nil {
+				return "", false, hubapi.NativeWorkItemStorageUnavailable()
+			}
+			id, err := s.readableRecordReference(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID())}, parts, false)
+			if hubapi.IsNativeNotFound(err) {
+				return "", false, nil
+			}
+			if err != nil {
+				return "", false, err
+			}
+			path, err := s.readIssueBrowserPath(ctx, tracker.OrganizationID(s.appOrganizationID()), id)
+			return path, true, err
+		},
+		ProjectPath:      s.projectBrowserPath,
+		OrganizationSlug: s.readableOrganizationSlug,
+	}
+}
+
 func (s *Service) canonicalToolResult(ctx context.Context, result operatortool.Result, name string) (operatortool.Result, error) {
-	var value any
-	decoder := json.NewDecoder(bytes.NewReader(result.Content))
-	decoder.UseNumber()
-	if err := decoder.Decode(&value); err != nil {
-		return result, err
-	}
-	var visit func(any) error
-	visit = func(value any) error {
-		switch value := value.(type) {
-		case []any:
-			for _, child := range value {
-				if err := visit(child); err != nil {
-					return err
-				}
-			}
-		case map[string]any:
-			for key, child := range value {
-				if link, ok := child.(string); ok && (key == "url" || key == "href" || strings.HasSuffix(key, "_url")) {
-					if name == operatortool.WorkList {
-						if key == "web_url" || key == "url" && value["web_url"] == link {
-							continue
-						}
-					}
-					parsed, err := url.Parse(link)
-					if err != nil {
-						continue
-					}
-					if strings.HasPrefix(parsed.Path, "/api/") && key != "url" && key != "web_url" && key != "browser_url" && key != "issue_url" {
-						continue
-					}
-					canonical, err := s.canonicalBrowserLink(ctx, link)
-					if err != nil {
-						return err
-					}
-					value[key] = canonical
-				} else if err := visit(child); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-	if err := visit(value); err != nil {
-		return operatortool.Result{}, err
-	}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return operatortool.Result{}, err
-	}
-	limit := operatortool.ResultByteLimit(name)
-	if len(raw) > limit {
-		return operatortool.Result{}, &operatortool.ResultTooLargeError{SizeBytes: len(raw), LimitBytes: limit}
-	}
-	return operatortool.Result{Content: raw}, nil
+	return s.readableLinks().ToolResult(ctx, result, name)
 }
 
 func (s *Service) canonicalBrowserLink(ctx context.Context, link string) (string, error) {
-	parsed, err := url.Parse(link)
-	if err != nil {
-		return link, nil
-	}
-	if parsed.Host != "" {
-		if s.config.Hosted == nil {
-			return link, nil
-		}
-		public, err := url.Parse(s.config.Hosted.PublicURL)
-		if err != nil {
-			return "", err
-		}
-		if parsed.Host != public.Host || parsed.Scheme != public.Scheme {
-			return link, nil
-		}
-	}
-	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	path := ""
-	for i, part := range parts {
-		if strings.HasPrefix(part, "wi_") && i > 0 && (parts[i-1] == "i" || parts[i-1] == "issues" || parts[i-1] == "work-items") {
-			path, err = s.readIssueBrowserPath(ctx, tracker.OrganizationID(s.appOrganizationID()), part)
-			if err != nil {
-				return "", err
-			}
-			if i+1 < len(parts) {
-				path += "/" + strings.Join(parts[i+1:], "/")
-			}
-			break
-		}
-	}
-	if path == "" && len(parts) >= 4 && parts[2] == "issues" {
-		if s.config.TenantRepository == nil {
-			return "", hubapi.NativeWorkItemStorageUnavailable()
-		}
-		id, err := s.readableRecordReference(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID())}, parts, false)
-		if err == nil {
-			path, err = s.readIssueBrowserPath(ctx, tracker.OrganizationID(s.appOrganizationID()), id)
-			if err != nil {
-				return "", err
-			}
-			if len(parts) > 4 {
-				path += "/" + strings.Join(parts[4:], "/")
-			}
-		} else if !hubapi.IsNativeNotFound(err) {
-			return "", err
-		}
-	}
-	if path == "" {
-		for i, part := range parts {
-			if strings.HasPrefix(part, "prj_") && i > 0 && (parts[i-1] == "projects" || parts[i-1] == "p") && i == len(parts)-1 {
-				path, err = s.projectBrowserPath(ctx, tracker.ProjectID(part))
-				if err != nil {
-					return "", err
-				}
-				break
-			}
-		}
-	}
-	if path == "" && s.config.Hosted != nil {
-		localPath := strings.TrimPrefix(parsed.Path, s.hostedBase())
-		first := strings.Split(strings.Trim(localPath, "/"), "/")[0]
-		if localPath == "" || localPath == "/" {
-			localPath = "/work"
-			first = "work"
-		}
-		if slices.Contains([]string{"work", "chat", "settings", "projects", "organization", "fleet", "reports", "diagnostics", "support"}, first) {
-			orgSlug, err := s.readableOrganizationSlug(ctx)
-			if err != nil {
-				return "", err
-			}
-			path = "/" + orgSlug + localPath
-		}
-	}
-	if path == "" {
-		return link, nil
-	}
-	parsed.Path, parsed.RawPath = path, ""
-	if s.config.Hosted != nil {
-		public, err := url.Parse(s.config.Hosted.PublicURL)
-		if err != nil {
-			return "", err
-		}
-		parsed.Scheme, parsed.Host = public.Scheme, public.Host
-	}
-	return parsed.String(), nil
+	return s.readableLinks().BrowserLink(ctx, link)
 }
 
 func (s *Service) resolveReadablePage(c echo.Context) error {
