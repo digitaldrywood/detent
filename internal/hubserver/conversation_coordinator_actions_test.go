@@ -46,7 +46,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 			runCoordinatorIssueSplitPostgresCases(t)
 			continue
 		}
-		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
+		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "wrong role", "no write grant", "bad arguments"}
 		switch tool {
 		case "propose_set_priority":
 			outcomes = []string{"execute", "reject", "revoked", "stale", "wrong role"}
@@ -54,7 +54,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 			outcomes = []string{"execute", "revoked", "stale", "wrong role"}
 		}
 		if tool == operatortool.MoveItem {
-			outcomes = append(outcomes, "human answer", "human empty answer", "human comment failure", "human transition failure", "human park recorded on submit", "dependency park")
+			outcomes = append(outcomes, "expired session", "human answer", "human empty answer", "human comment failure", "human transition failure", "human park recorded on submit", "dependency park")
 		}
 		if tool == "propose_stop_run" {
 			outcomes = append(outcomes, "replaced attempt", "expired attempt", "release failure", "routing failure", "no active attempt")
