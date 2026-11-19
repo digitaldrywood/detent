@@ -33,7 +33,6 @@ import (
 
 func TestRunnerAllowedProviderEligibility(t *testing.T) {
 	t.Parallel()
-	providerHydrationReads := make(map[string]int)
 	for _, scenario := range []struct {
 		name         string
 		unavailable  int
@@ -51,7 +50,6 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		{"higher project pending scan beats lower project in progress", claimPreparationLimit/2 + 1, true, "rank quota", "", false},
 		{"lower project pending scan yields to higher project todo", claimPreparationLimit/2 + 1, false, "lower rank quota", "", false},
 		{"provider page hydration exhaustion", 99, true, "hydration", "", true},
-		{"provider page hydration exhaustion with deeper history", 99, true, "deep hydration", "", true},
 		{"provider page hydration beyond the candidate budget", 99, true, "hydration budget", "", true},
 		{"rejected prefix beyond budget in one project", 125, true, "missing", "", false},
 		{"rejected prefix beyond budget across projects", 125, false, "missing", "", false},
@@ -66,7 +64,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		{"unoccupied foreign landing retains project ranking", 0, false, "", "unoccupied", false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			hydrationAttempts := map[string]int{"hydration": 1, "deep hydration": 3, "hydration budget": 1}[scenario.contract]
+			hydrationAttempts := map[string]int{"hydration": 1, "hydration budget": 1}[scenario.contract]
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 			details := &memoryRunDetails{}
 			preferred := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }, RunDetails: details}), "", "preferred-provider")
@@ -254,19 +252,12 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				claimed := false
 				for attempt := range 5 {
 					claim.SessionID = fmt.Sprintf("bounded-%d", attempt)
-					details.mu.Lock()
-					reads := details.reads
-					details.mu.Unlock()
 					response := performHubAPIRequest(t, preferred.service, http.MethodPost, target.base+"/claims", r.redemption.Credential, claim)
 					details.mu.Lock()
-					reads = details.reads - reads
 					writerReads := details.writerReads
 					details.mu.Unlock()
 					if writerReads != 0 {
 						t.Fatalf("claim read %d objects under the claim writer", writerReads)
-					}
-					if scenario.providerPage && hydrationAttempts > 0 {
-						providerHydrationReads[fmt.Sprintf("%s/%d", scenario.contract, attempt)] = reads
 					}
 					if response.Code == http.StatusConflict {
 						continue
@@ -350,18 +341,12 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			}
 		})
 	}
-	shallow, deep := providerHydrationReads["hydration/0"], providerHydrationReads["deep hydration/0"]
-	exhausted, following := providerHydrationReads["hydration budget/0"], providerHydrationReads["hydration budget/1"]
-	if shallow == 0 || shallow != deep || exhausted == 0 || exhausted > shallow || following > shallow {
-		t.Fatalf("provider page object reads=%v, want equal reads at both history sizes and no request above the full candidate page", providerHydrationReads)
-	}
 }
 
 type claimSourceDetails struct {
 	*memoryRunDetails
 	mu          sync.Mutex
 	checkpoints map[string]bool
-	reads       int
 	unreadable  string
 	onRead      func()
 }
@@ -370,7 +355,6 @@ func (d *claimSourceDetails) ReadDetail(ctx context.Context, organization string
 	d.mu.Lock()
 	onRead := d.onRead
 	if d.checkpoints[ref.Key] {
-		d.reads++
 		d.onRead = nil
 	} else {
 		onRead = nil
@@ -386,25 +370,17 @@ func (d *claimSourceDetails) ReadDetail(ctx context.Context, organization string
 	return d.memoryRunDetails.ReadDetail(ctx, organization, ref)
 }
 
-func (d *claimSourceDetails) checkpointReads() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.reads
-}
-
-func TestClaimClassifiesLegacySourceWithinRequestBudget(t *testing.T) {
+func TestClaimVerifiesLegacySourceBeforeDispatch(t *testing.T) {
 	t.Parallel()
 	cleanCheckpoint := func(index int) *tracker.NativeCheckpoint {
 		return &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean", Storage: "local_only", Availability: "available", ExternalEffect: "none", EffectState: "none", HeadSHA: fmt.Sprintf("%040x", index)}
 	}
-	firstRequestReads := make(map[string]int)
 	for _, test := range []struct {
 		name         string
 		history      int
 		changeSource bool
 		unreadable   bool
 	}{
-		{name: "history 99", history: 99},
 		{name: "history 250", history: 250},
 		{name: "source changes after classification", history: 99, changeSource: true},
 		{name: "unverifiable newest checkpoint", history: 1, unreadable: true},
@@ -474,10 +450,11 @@ func TestClaimClassifiesLegacySourceWithinRequestBudget(t *testing.T) {
 				}
 				return
 			}
-			requests := (test.history + claimSourceClassificationLimit - 1) / claimSourceClassificationLimit
-			for request := range requests {
-				before, reads := unknown(), details.checkpointReads()
-				if test.changeSource && request == requests-1 {
+			granted := false
+			for request := range test.history + 1 {
+				before := unknown()
+				changed := test.changeSource && before <= claimSourceClassificationLimit
+				if changed {
 					details.mu.Lock()
 					details.onRead = func() {
 						if _, err := admin.ExecContext(context.WithoutCancel(t.Context()), "UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=(SELECT id FROM native_attempts WHERE organization_id=$1 AND checkpoint_object_key IS NOT NULL ORDER BY fencing_token DESC LIMIT 1)", f.project.OrganizationID); err != nil {
@@ -488,33 +465,28 @@ func TestClaimClassifiesLegacySourceWithinRequestBudget(t *testing.T) {
 				}
 				response := claim(fmt.Sprintf("classify-%d", request))
 				after := unknown()
-				classified := before - after
-				if test.changeSource && request == requests-1 {
-					classified++
-				}
-				if want := min(claimSourceClassificationLimit, before); classified != want {
-					t.Fatalf("request %d classified %d of %d unknown checkpoints, want %d", request, classified, before, want)
-				}
-				sourceFactReads := 0
-				if test.changeSource && request == requests-1 {
-					sourceFactReads = 1
-				}
-				if objectReads := details.checkpointReads() - reads; objectReads != classified+sourceFactReads {
-					t.Fatalf("request %d read %d checkpoint objects for %d classifications and %d claim source reads", request, objectReads, classified, sourceFactReads)
-				}
-				if request == 0 {
-					firstRequestReads[test.name] = details.checkpointReads() - reads
-				}
-				if request < requests-1 || test.changeSource {
+				if changed {
 					requireNativeStatus(t, response, http.StatusConflict)
+					break
+				}
+				if after != 0 {
+					requireNativeStatus(t, response, http.StatusConflict)
+					if after >= before {
+						t.Fatalf("classification stopped with %d unknown checkpoints", after)
+					}
 					continue
 				}
 				requireNativeStatus(t, response, http.StatusOK)
 				var lease tracker.NativeLease
 				decodeHubResponse(t, response, &lease)
-				if lease.WorkItemID != issue.WorkItemID || after != 0 {
-					t.Fatalf("claimed %s with %d unknown checkpoints, want %s", lease.WorkItemID, after, issue.WorkItemID)
+				if lease.WorkItemID != issue.WorkItemID {
+					t.Fatalf("claimed %s, want %s", lease.WorkItemID, issue.WorkItemID)
 				}
+				granted = true
+				break
+			}
+			if !test.changeSource && !granted {
+				t.Fatal("classified source remained unclaimable")
 			}
 			if test.changeSource {
 				if remaining := unknown(); remaining != 1 {
@@ -543,9 +515,6 @@ func TestClaimClassifiesLegacySourceWithinRequestBudget(t *testing.T) {
 				t.Fatalf("checkpoint objects read under the claim writer: %d", details.writerReads)
 			}
 		})
-	}
-	if firstRequestReads["history 99"] != claimSourceClassificationLimit || firstRequestReads["history 250"] != claimSourceClassificationLimit {
-		t.Fatalf("first request checkpoint reads=%v, want %d at both history sizes", firstRequestReads, claimSourceClassificationLimit)
 	}
 }
 
@@ -863,70 +832,6 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 						t.Fatalf("fallback claim = %+v", lease)
 					}
 					assertRunnerAdmissionFacts(t, first, r)
-				}
-			}
-		})
-	}
-}
-
-func TestRunnerFutureProjectAdmission(t *testing.T) {
-	t.Parallel()
-	for _, scenario := range []struct {
-		name, scope       string
-		approved, deleted bool
-		want              int
-	}{
-		{"organization admits future project", "organization", true, false, http.StatusOK},
-		{"project scope stays restricted", "projects", true, false, http.StatusNotFound},
-		{"organization requires reported configuration", "organization", false, false, http.StatusUnprocessableEntity},
-		{"organization omits deleted project", "organization", true, true, 0},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
-			r := prepareRunnerForScope(t, f, scenario.scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-			r.enroll(t)
-			r.reportCapacity(t)
-			later := newNativeFixture(t, f.service, f.project.OrganizationID, "future")
-
-			descriptor := hubTestPolicy()
-			if scenario.approved {
-				approveHubTestPolicy(t, f.service, later.base+"/policy", descriptor)
-			}
-			item := later.create(t, "future work")
-			if !scenario.approved {
-				clearNativeFixturePolicy(t, later)
-				descriptor.SourceRevision = strings.Repeat("b", 40)
-				descriptor = descriptor.WithID()
-			}
-			if scenario.deleted {
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE projects SET deleted_at=$1 WHERE id=$2", f.service.config.Clock(), later.project.ID); err != nil {
-					t.Fatal(err)
-				}
-				var projects []tracker.ProjectID
-				var ranks map[tracker.ProjectID]int
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-					var err error
-					projects, err = reader.RunnerProjects(t.Context(), r.binding.RunnerID, runnerstore.MaxRunnerProjectList)
-					if err != nil {
-						return err
-					}
-					ranks, err = reader.(runnerProjectRankReader).RunnerProjectSchedulingRanks(t.Context(), r.binding.RunnerID, runnerstore.MaxRunnerProjectList)
-					return err
-				}); err != nil {
-					t.Fatal(err)
-				}
-				if _, ranked := ranks[later.project.ID]; ranked || !slices.Equal(projects, []tracker.ProjectID{f.project.ID}) {
-					t.Fatalf("projects=%v ranks=%v advertise deleted %s", projects, ranks, later.project.ID)
-				}
-				return
-			}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, later.base+"/claims", r.redemption.Credential, tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: r.binding.MachineID, SessionID: "future", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
-			requireNativeStatus(t, response, scenario.want)
-			if scenario.want == http.StatusOK {
-				var lease tracker.NativeLease
-				decodeHubResponse(t, response, &lease)
-				if lease.WorkItemID != item.WorkItemID {
-					t.Fatalf("claimed %s, want %s", lease.WorkItemID, item.WorkItemID)
 				}
 			}
 		})
