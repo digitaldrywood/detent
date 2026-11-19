@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
@@ -170,6 +171,33 @@ type priorAuditEvidence struct {
 	NextBeforeReviewSequence int64                       `json:"next_before_review_sequence,omitempty"`
 }
 
+func (s *ChangeEvidence) authorizePriorAuditChange(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, changeID string) error {
+	if scope.Credential.Runner.RunnerID == "" {
+		return s.authorizeAuditChange(ctx, r, scope, changeID)
+	}
+	change, err := r.Change(ctx, changeID)
+	if err != nil {
+		return err
+	}
+	if change.OrganizationID != scope.Organization || change.ProjectID != scope.Project {
+		return corestore.ErrNotFound
+	}
+	item, err := r.WorkItem(ctx, scope.Project, change.WorkItemID)
+	if err != nil {
+		return err
+	}
+	lease, err := r.ActiveLeaseForIssue(ctx, item.ID)
+	if err != nil {
+		return err
+	}
+	fence := runnersession.Mutation{LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}
+	_, _, err = s.deps.RunnerSessionFence(ctx, r, scope, fence, string(change.WorkItemID), false)
+	if errors.Is(err, tracker.ErrStaleFencingToken) {
+		return corestore.ErrNotFound
+	}
+	return err
+}
+
 func (s *ChangeEvidence) getPriorAuditEvidence(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
@@ -193,7 +221,7 @@ func (s *ChangeEvidence) getPriorAuditEvidence(c echo.Context) error {
 		if err := s.deps.AuthorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		if err := s.authorizeAuditChange(ctx, r, scope, query.ChangeID); err != nil {
+		if err := s.authorizePriorAuditChange(ctx, r, scope, query.ChangeID); err != nil {
 			return err
 		}
 		reader, ok := r.(eventstore.PriorAuditReader)
