@@ -19251,14 +19251,17 @@
       "families": [
         "claim",
         "core",
+        "event",
         "lease"
       ],
       "inventory": {
         "operations": {
+          "recordedRunnerTransition:SQL": 1,
           "session.RunnerRecoveryEligibility:QueryRow": 1,
           "session.RunnerRecoveryEligibility:SQL": 1
         },
         "tables": [
+          "hub/collaboration_events",
           "hub/issue_dependencies",
           "hub/issues",
           "hub/leases",
