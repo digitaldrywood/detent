@@ -295,10 +295,15 @@ func ResolveSSHWorkflow(ctx context.Context, workflow config.Workflow) (config.W
 	return workflow, nil
 }
 
-func (r *Runner) SSHWorkflow(ctx context.Context) (config.Workflow, bool, bool, error) {
+func (r *Runner) WorkerWorkflowSnapshot() (config.Workflow, bool, bool) {
 	workflow, _, checker, estimator := r.runtimeSnapshot()
+	return workflow, checker != nil, estimator != nil
+}
+
+func (r *Runner) SSHWorkflow(ctx context.Context) (config.Workflow, bool, bool, error) {
+	workflow, checker, estimator := r.WorkerWorkflowSnapshot()
 	resolved, err := ResolveSSHWorkflow(ctx, workflow)
-	return resolved, checker != nil, estimator != nil, err
+	return resolved, checker, estimator, err
 }
 
 func (r *Runner) SSHCallbackHandler(request RunRequest) func(context.Context, string, []json.RawMessage) (any, error) {

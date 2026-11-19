@@ -784,7 +784,7 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			if err := json.Unmarshal(raw, &mutation); err != nil {
 				return nil, err
 			}
-			if mutation.Worker != nil {
+			if mutation.Worker != nil && mutation.Worker.CleanupPath != "" {
 				mu.Lock()
 				registration = mutation
 				mu.Unlock()
@@ -986,6 +986,28 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			t.Fatalf("same-fence progress changed ownership: first=%+v second=%+v", first, second)
 		}
 		return
+	}
+	if scenario == "before_registration" || scenario == "lost_reply" {
+		commandDir := t.TempDir()
+		t.Setenv("PATH", commandDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		for name, args := range map[string]string{"gh": "auth token", "git": "config --get remote.origin.url"} {
+			body := fmt.Sprintf("#!/bin/sh\ncase \"$*\" in *'%s') : > \"$0.started\";; esac\necho fixture-value\n", args)
+			if err := os.WriteFile(filepath.Join(commandDir, name), []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		workflow.Config.Worker.GitHubToken = "gh"
+		if err := run.UpdateWorkflowChecked(workflow); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			for _, name := range []string{"gh", "git"} {
+				_, err := os.Stat(filepath.Join(commandDir, name+".started"))
+				if scenario == "before_registration" && !errors.Is(err, os.ErrNotExist) || scenario == "lost_reply" && err != nil {
+					t.Errorf("%s launch marker after %s: %v", name, scenario, err)
+				}
+			}
+		}()
 	}
 	outcome, runErr = run.Run(ctx, request)
 	if scenario == "recovered_live" || scenario == "recovered_exited" {

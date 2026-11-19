@@ -15,16 +15,20 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func (r *Runner) WorkerCommandContext(ctx context.Context, req RunRequest) context.Context {
+	ctx = bindSessionExecution(ctx, r.store, req.Execution)
+	ctx = workspace.WithAttemptWorkspace(ctx, req.AttemptWorkspace)
+	return r.withValidationProcessOwner(ctx, req.Issue, req.WorkAttemptID)
+}
+
 func (r *Runner) Run(ctx context.Context, req RunRequest) (result RunResult, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx = bindSessionExecution(ctx, r.store, req.Execution)
-	ctx = workspace.WithAttemptWorkspace(ctx, req.AttemptWorkspace)
 	ctx = gobudget.WithContext(ctx, r.currentGoBudget())
 	ctx = r.buildCache.WithContext(ctx)
+	ctx = r.WorkerCommandContext(ctx, req)
 	ctx = r.withCacheWaitObserver(ctx, req)
-	ctx = r.withValidationProcessOwner(ctx, req.Issue, req.WorkAttemptID)
 	ctx = gotestreceipt.WithContext(ctx, r.goTestReceipts)
 	return r.runExecution(ctx, req)
 }
