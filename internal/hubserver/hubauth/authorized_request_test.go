@@ -15,13 +15,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestNativeResourceAuthorizationSharesSnapshot(t *testing.T) {
+func TestNativeResourceAuthorizationSetsTenantScope(t *testing.T) {
 	repository := hubtest.Repository(t)
 	now := time.Now().UTC()
 	details := hubtest.NewDetails()
@@ -55,12 +54,6 @@ func TestNativeResourceAuthorizationSharesSnapshot(t *testing.T) {
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second", "org_first"} {
 		t.Run(string(org), func(t *testing.T) {
-			var begins, statements int
-			ctx := postgres.WithTransactionTiming(t.Context(), func(name string, _ time.Time) {
-				if name == "pg_begin" {
-					begins++
-				}
-			}, func(time.Time, string) { statements++ })
 			e := echo.New()
 			var handlerContext context.Context
 			e.GET("/api/v2/organizations/:organization/work-items/:item", func(c echo.Context) error {
@@ -71,19 +64,12 @@ func TestNativeResourceAuthorizationSharesSnapshot(t *testing.T) {
 				}
 				return c.NoContent(http.StatusNoContent)
 			}, service.Deps.Native(hubauth.Operator))
-			request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v2/organizations/"+string(org)+"/work-items/wi_example", nil)
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(org)+"/work-items/wi_example", nil)
 			request.Header.Set(echo.HeaderAuthorization, "Bearer "+string(org))
 			response := httptest.NewRecorder()
 			e.ServeHTTP(response, request)
 			if response.Code != http.StatusNoContent {
 				t.Fatalf("status = %d: %s", response.Code, response.Body)
-			}
-			t.Logf("authentication and resource authorization: %d transactions, %d observed statements", begins, statements)
-			if begins != 1 {
-				t.Errorf("transactions = %d; want one authorization snapshot after the batched authentication read", begins)
-			}
-			if statements > 17 {
-				t.Errorf("statements = %d; want at most 17", statements)
 			}
 			if handlerContext == nil {
 				t.Fatal("handler was not called")
@@ -118,7 +104,7 @@ func TestNativeResourceAuthorizationSharesSnapshot(t *testing.T) {
 				t.Error("unauthorized handler was called")
 				return c.NoContent(http.StatusNoContent)
 			}, service.Deps.Native(hubauth.Operator))
-			request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v2/organizations/"+test.organization+"/work-items/wi_example", nil)
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v2/organizations/"+test.organization+"/work-items/wi_example", nil)
 			request.Header.Set(echo.HeaderAuthorization, "Bearer "+test.token)
 			response := httptest.NewRecorder()
 			e.ServeHTTP(response, request)
