@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -90,4 +91,29 @@ func PrepareProgress(ctx context.Context, backend workspace.Backend, issue works
 		return workspace.Info{}, nil, fmt.Errorf("prepare progress workspace: %w", err)
 	}
 	return info, finish, nil
+}
+
+type AttemptOwner interface {
+	AttemptWorkspace() workspace.AttemptWorkspace
+}
+
+func ResolveAttempt(ctx context.Context, attempt workspace.AttemptWorkspace, execution AttemptOwner, issue connector.Issue) (workspace.AttemptWorkspace, bool) {
+	if bound := workspace.AttemptWorkspaceFromContext(ctx); bound != (workspace.AttemptWorkspace{}) {
+		if attempt != (workspace.AttemptWorkspace{}) && attempt != bound {
+			return workspace.AttemptWorkspace{}, false
+		}
+		attempt = bound
+	}
+	if execution != nil {
+		bound := execution.AttemptWorkspace()
+		if attempt != (workspace.AttemptWorkspace{}) && attempt != bound {
+			return workspace.AttemptWorkspace{}, false
+		}
+		attempt = bound
+	}
+	org, projectID := issue.Metadata["hub_organization_id"], issue.Metadata["hub_project_id"]
+	if attempt == (workspace.AttemptWorkspace{}) {
+		return attempt, org == "" && projectID == "" && !strings.HasPrefix(issue.ID, "wi_")
+	}
+	return attempt, attempt.Key() != "" && (org == "" || org == attempt.Organization) && (projectID == "" || projectID == attempt.Project)
 }

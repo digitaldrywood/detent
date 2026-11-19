@@ -2,13 +2,9 @@ package workspace
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
@@ -33,27 +29,7 @@ type AttemptWorkspace struct {
 }
 
 func (a AttemptWorkspace) Key() string {
-	id, typed := strings.CutPrefix(a.Attempt, "attempt_")
-	if !typed || len(id) != 32 {
-		return ""
-	}
-	if _, err := hex.DecodeString(id); err != nil {
-		return ""
-	}
-	scope := a.scope()
-	if scope == "" {
-		return ""
-	}
-	return "attempt-" + scope + "-" + strings.ToLower(id)
-}
-
-func (a AttemptWorkspace) scope() string {
-	if a.Organization == "" || a.Project == "" {
-		return ""
-	}
-	ids, _ := json.Marshal([2]string{a.Organization, a.Project})
-	digest := sha256.Sum256(ids)
-	return hex.EncodeToString(digest[:16])
+	return workpath.AttemptKey(a.Organization, a.Project, a.Attempt)
 }
 
 func workspaceIssueKey(issue Issue) string {
@@ -91,21 +67,6 @@ func AttemptWorkspaceFromContext(ctx context.Context) AttemptWorkspace {
 	return attempt
 }
 
-func splitCheckoutIssueKey(key string) (scope, issueKey string) {
-	owner, issue, ok := strings.Cut(key, "--")
-	if !ok || issue == "" {
-		return "", key
-	}
-	owner, ok = strings.CutPrefix(owner, "attempt-")
-	if !ok {
-		return "", key
-	}
-	scope, attempt, ok := strings.Cut(owner, "-")
-	if !ok || len(scope) != 32 || len(attempt) != 32 {
-		return "", key
-	}
-	if _, err := hex.DecodeString(scope + attempt); err != nil {
-		return "", key
-	}
-	return "attempt-" + owner, issue
+func splitCheckoutIssueKey(key string) (string, string) {
+	return workpath.SplitCheckoutIssueKey(key)
 }
