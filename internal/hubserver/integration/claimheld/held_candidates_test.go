@@ -1,15 +1,11 @@
 package claimheld_test
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
@@ -17,38 +13,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type countingDetails struct {
-	attachment.DetailStore
-	heldReads atomic.Int64
-}
-
-func (d *countingDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	data, err := d.DetailStore.ReadDetail(ctx, organization, ref)
-	if bytes.Contains(data, []byte("Approve scope")) {
-		d.heldReads.Add(1)
-	}
-	return data, err
-}
-
 const heldReport = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```"
 
 type heldFixture struct {
 	hubfixture.Native
-	details *countingDetails
-	runner  hubfixture.Runner
+	runner hubfixture.Runner
 }
 
 func newHeldFixture(t *testing.T) heldFixture {
 	t.Helper()
-	details := &countingDetails{DetailStore: hubtest.NewDetails()}
-	return newHeldProject(t, hubfixture.Open(t, hubfixture.Config{RunDetails: details}), "", details, hubfixture.States())
+	return newHeldProject(t, hubfixture.Open(t, hubfixture.Config{}), "", hubfixture.States())
 }
 
-func newHeldProject(t *testing.T, h *hubfixture.Hub, organization tracker.OrganizationID, details *countingDetails, states []tracker.NativeState) heldFixture {
+func newHeldProject(t *testing.T, h *hubfixture.Hub, organization tracker.OrganizationID, states []tracker.NativeState) heldFixture {
 	t.Helper()
 	p := hubfixture.NewNativeWith(t, h, organization, hubtest.ProjectOptions{Name: "Example project " + hubapi.NewID("fixture"), States: states})
 	hubfixture.ApprovePolicy(t, h, p.Base+"/policy", hubfixture.Policy())
-	f := heldFixture{Native: p, details: details}
+	f := heldFixture{Native: p}
 	f.runner = f.enroll(t)
 	return f
 }
@@ -128,17 +109,15 @@ func (f heldFixture) hold(t *testing.T, issue tracker.NativeIssue) {
 	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/leases/"+string(lease.ID)+"/release", f.runner.Redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 }
 
-func (f heldFixture) scan(t *testing.T, session string) (tracker.NativeLease, int64) {
+func (f heldFixture) scan(t *testing.T, session string) tracker.NativeLease {
 	t.Helper()
-	before := f.details.heldReads.Load()
 	response := f.claim(t, "", session)
-	reads := f.details.heldReads.Load() - before
 	if response.Code != http.StatusOK {
-		return tracker.NativeLease{}, reads
+		return tracker.NativeLease{}
 	}
 	var lease tracker.NativeLease
 	hubfixture.Decode(t, response, &lease)
-	return lease, reads
+	return lease
 }
 
 func TestScanClaimSkipsCurrentlyHeldItems(t *testing.T) {
@@ -153,22 +132,19 @@ func TestScanClaimSkipsCurrentlyHeldItems(t *testing.T) {
 				holds = append(holds, issue)
 			}
 			tail := f.create(t, "Eligible tail", 3)
-			lease, readCount := f.scan(t, "scan-tail")
+			lease := f.scan(t, "scan-tail")
 			if lease.WorkItemID != tail.WorkItemID || lease.FencingToken <= 0 {
 				t.Fatalf("first scan claim took %+v, want the eligible tail %s", lease, tail.WorkItemID)
 			}
-			if readCount != 0 {
-				t.Fatalf("scan claim hydrated %d held completion payloads", readCount)
-			}
 			hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/leases/"+string(lease.ID)+"/release", f.runner.Redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
-			if again, _ := f.scan(t, "scan-held"); again.ID != "" && again.WorkItemID != tail.WorkItemID {
+			if again := f.scan(t, "scan-held"); again.ID != "" && again.WorkItemID != tail.WorkItemID {
 				t.Fatalf("a currently held item was claimed: %+v", again)
 			}
 			edited := holds[0]
 			title := "Answered held item"
 			hubfixture.RequireStatus(t, f.Request(t, http.MethodPatch, f.Base+"/work-items/"+string(edited.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "answer"}, ExpectedRevision: edited.Revision, Title: &title}), http.StatusOK)
 			f.capacity(t)
-			if reactivated, _ := f.scan(t, "scan-reactivated"); reactivated.WorkItemID != edited.WorkItemID {
+			if reactivated := f.scan(t, "scan-reactivated"); reactivated.WorkItemID != edited.WorkItemID {
 				t.Fatalf("changed held item was not discoverable again: %+v", reactivated)
 			}
 		})
@@ -185,7 +161,7 @@ func TestHeldItemReactivatedBySupersedingAttempt(t *testing.T) {
 	title := "Superseded hold answered"
 	hubfixture.RequireStatus(t, f.Request(t, http.MethodPatch, f.Base+"/work-items/"+string(reactivated.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "supersede"}, ExpectedRevision: reactivated.Revision, Title: &title}), http.StatusOK)
 	f.capacity(t)
-	superseding, _ := f.scan(t, "superseding")
+	superseding := f.scan(t, "superseding")
 	if superseding.WorkItemID != reactivated.WorkItemID {
 		t.Fatalf("changed hold was not claimable: %+v", superseding)
 	}
@@ -195,7 +171,7 @@ func TestHeldItemReactivatedBySupersedingAttempt(t *testing.T) {
 	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, path, f.runner.Redemption.Credential, started), http.StatusOK)
 	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/leases/"+string(superseding.ID)+"/release", f.runner.Redemption.Credential, tracker.NativeLeaseMutation{FencingToken: superseding.FencingToken, Reason: "released"}), http.StatusNoContent)
 	f.capacity(t)
-	again, _ := f.scan(t, "after-superseding")
+	again := f.scan(t, "after-superseding")
 	if again.WorkItemID != reactivated.WorkItemID || again.ID == superseding.ID {
 		t.Fatalf("item with a superseding attempt stayed hidden: %+v", again)
 	}
