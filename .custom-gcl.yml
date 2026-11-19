@@ -1,4 +1,4 @@
-version: v2.15.0
+version: v2.14.0
 name: golangci-lint-custom
 plugins:
   - module: github.com/digitaldrywood/heft
