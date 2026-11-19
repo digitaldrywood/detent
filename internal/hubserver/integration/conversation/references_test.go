@@ -22,7 +22,7 @@ func openConversationTestHub(t *testing.T) *hubfixture.Hub {
 	var mu sync.Mutex
 	objects := map[string][]byte{}
 	return hubfixture.Open(t, hubfixture.Config{
-		Conversation: &hubfixture.ConversationConfig{Enabled: true},
+		Conversation: &conversations.ConversationConfig{Enabled: true},
 		Content: func(_ context.Context, req entryauthority.ContentRequest) ([]byte, error) {
 			mu.Lock()
 			defer mu.Unlock()
