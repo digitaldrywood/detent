@@ -163,3 +163,58 @@ func (s *Service) updateRunnerCapacity(c echo.Context) error {
 func (s *Service) runnerCapacityView(ctx context.Context, query hubapi.NativeQueryer, r runnerauth.Runner, backend string, now time.Time) (runnerauth.CapacityView, error) {
 	return s.runnerCapacityDeps().RunnerCapacityView(ctx, query, r, backend, now)
 }
+
+func (s *Service) runnerIdentityDeps() runnerfleet.IdentityDeps {
+	return runnerfleet.IdentityDeps{
+		Repository:            s.config.TenantRepository,
+		Now:                   s.config.Clock,
+		HTTPError:             s.nativeAPIError,
+		InvalidRequest:        s.invalidAPIRequest,
+		NotifyDispatch:        s.runnerNotifyDispatch(),
+		ApplyUsage:            s.applyRunnerTenantUsage,
+		Heartbeat:             s.heartbeatNativeMachineTenant,
+		RequireAdministration: s.requireRunnerAdministrationTenant,
+	}
+}
+
+func (s *Service) getRunnerIdentity(c echo.Context) error {
+	return s.runnerIdentityDeps().GetRunnerIdentity(c)
+}
+
+func (s *Service) renewRunnerIdentity(c echo.Context) error {
+	return s.runnerIdentityDeps().RenewRunnerIdentity(c)
+}
+
+func (s *Service) rotateRunnerIdentity(c echo.Context) error {
+	return s.runnerIdentityDeps().RotateRunnerIdentity(c)
+}
+
+func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential hubapi.APICredential, replacement string) (runnerauth.Identity, error) {
+	return s.runnerIdentityDeps().ChangeRunnerCredentialTenant(ctx, credential, replacement)
+}
+
+func (s *Service) revokeRunnerIdentity(c echo.Context) error {
+	return s.runnerIdentityDeps().RevokeRunnerIdentity(c)
+}
+
+func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope hubscope.NativeScope, resource string) (any, error) {
+	return s.runnerIdentityDeps().RevokeRunnerIdentityCommand(ctx, scope, resource)
+}
+
+func (s *Service) revokeRunnerIdentityTenant(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, resource, actorID string, clock func() time.Time) error {
+	return s.runnerIdentityDeps().RevokeRunnerIdentityTenant(ctx, w, organization, resource, actorID, clock)
+}
+
+type nativeMachineHeartbeatRequest = runnerfleet.NativeMachineHeartbeatRequest
+
+func (s *Service) heartbeatNativeMachine(c echo.Context) error {
+	return s.runnerIdentityDeps().HeartbeatNativeMachine(c)
+}
+
+func validRunnerPlatform(os, architecture string) bool {
+	return runnerfleet.ValidRunnerPlatform(os, architecture)
+}
+
+func (s *Service) readRunnerIdentityTenant(ctx context.Context, organization tracker.OrganizationID, runnerID string) (runnerauth.Identity, error) {
+	return s.runnerIdentityDeps().ReadRunnerIdentityTenant(ctx, organization, runnerID)
+}

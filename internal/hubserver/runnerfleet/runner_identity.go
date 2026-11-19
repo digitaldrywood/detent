@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet
 
 import (
 	"context"
@@ -12,8 +12,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/attemptworkers"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -26,6 +28,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
+type IdentityDeps struct {
+	Repository            tenantstore.Repository
+	Now                   func() time.Time
+	HTTPError             func(echo.Context, error, ...any) error
+	InvalidRequest        func(echo.Context, error) error
+	NotifyDispatch        func(tracker.OrganizationID)
+	ApplyUsage            func(context.Context, billingstore.Writer, time.Time, string, bool, bool) error
+	Heartbeat             func(echo.Context, NativeMachineHeartbeatRequest) error
+	RequireAdministration func(context.Context, tenantstore.Reader, hubscope.NativeScope) error
+}
+
 func authenticatedRunner(c echo.Context) (hubapi.APICredential, error) {
 	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok || credential.Runner.RunnerID == "" || credential.Runner.RunnerID != c.Param("runner") || string(credential.Runner.OrganizationID) != c.Param("organization") {
@@ -34,66 +47,66 @@ func authenticatedRunner(c echo.Context) (hubapi.APICredential, error) {
 	return credential, nil
 }
 
-func (s *Service) getRunnerIdentity(c echo.Context) error {
+func (d IdentityDeps) GetRunnerIdentity(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	credential, err := authenticatedRunner(c)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
-	identity, err := s.readRunnerIdentityTenant(ctx, tracker.OrganizationID(c.Param("organization")), c.Param("runner"))
+	identity, err := d.ReadRunnerIdentityTenant(ctx, tracker.OrganizationID(c.Param("organization")), c.Param("runner"))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	if identity.Binding != credential.Runner.Binding {
-		return s.nativeAPIError(c, hubapi.NativeNotFound())
+		return d.HTTPError(c, hubapi.NativeNotFound())
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, identity)
 }
 
-func (s *Service) renewRunnerIdentity(c echo.Context) error {
+func (d IdentityDeps) RenewRunnerIdentity(c echo.Context) error {
 	var request struct{}
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return d.InvalidRequest(c, err)
 	}
-	return s.changeRunnerCredential(c, "")
+	return d.changeRunnerCredential(c, "")
 }
 
-func (s *Service) rotateRunnerIdentity(c echo.Context) error {
+func (d IdentityDeps) RotateRunnerIdentity(c echo.Context) error {
 	var request runnerauth.Rotation
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return d.InvalidRequest(c, err)
 	}
 	if !runnerauth.ValidCredential(request.Credential) {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("A host-generated replacement credential is required"))
+		return d.HTTPError(c, hubapi.NativePublicInvalid("A host-generated replacement credential is required"))
 	}
-	return s.changeRunnerCredential(c, request.Credential)
+	return d.changeRunnerCredential(c, request.Credential)
 }
 
-func (s *Service) changeRunnerCredential(c echo.Context, replacement string) error {
+func (d IdentityDeps) changeRunnerCredential(c echo.Context, replacement string) error {
 	credential, err := authenticatedRunner(c)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	if apikey.HashToken(replacement) == credential.Hash {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Rotation requires a different credential"))
+		return d.HTTPError(c, hubapi.NativePublicInvalid("Rotation requires a different credential"))
 	}
-	identity, err := s.changeRunnerCredentialTenant(c.Request().Context(), credential, replacement)
+	identity, err := d.ChangeRunnerCredentialTenant(c.Request().Context(), credential, replacement)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, identity)
 }
 
-func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential hubapi.APICredential, replacement string) (runnerauth.Identity, error) {
+func (d IdentityDeps) ChangeRunnerCredentialTenant(ctx context.Context, credential hubapi.APICredential, replacement string) (runnerauth.Identity, error) {
 	organization := credential.Runner.OrganizationID
-	if s.config.TenantRepository == nil || organization == "" || credential.ID == "" {
+	if d.Repository == nil || organization == "" || credential.ID == "" {
 		return runnerauth.Identity{}, hubscope.RunnerUnauthorized()
 	}
 	updated := runnerauth.Identity{}
-	err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err := d.Repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.RunnerIdentity(ctx, credential.Runner.RunnerID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -111,8 +124,8 @@ func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential h
 			}
 			return err
 		}
-		now := s.config.Clock()
-		if current.ID != credential.ID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || current.ExpiresAt == nil || !current.ExpiresAt.After(current.CreatedAt) || !validRunnerCredentialForRenewal(current, credential.Hash, now, replacement == "") || current.UserID != "" || current.MembershipID != "" {
+		now := d.Now()
+		if current.ID != credential.ID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || current.ExpiresAt == nil || !current.ExpiresAt.After(current.CreatedAt) || !hubauth.ValidRunnerCredentialForRenewal(current, credential.Hash, now, replacement == "") || current.UserID != "" || current.MembershipID != "" {
 			return hubscope.RunnerUnauthorized()
 		}
 		if replacement != "" && !record.ExpiresAt.After(now) {
@@ -137,7 +150,7 @@ func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential h
 		if err := w.RecordRunnerIdentityEvent(ctx, runnerstore.Event{OrganizationID: organization, RunnerID: record.RunnerID, ActorID: current.ID, Kind: kind, OccurredAt: now}); err != nil {
 			return err
 		}
-		updated, err = runnerIdentityRecord(ctx, w, record)
+		updated, err = hubauth.RunnerIdentityRecord(ctx, w, record)
 		return err
 	})
 	if err != nil {
@@ -146,38 +159,38 @@ func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential h
 	return updated, nil
 }
 
-func (s *Service) revokeRunnerIdentity(c echo.Context) error {
+func (d IdentityDeps) RevokeRunnerIdentity(c echo.Context) error {
 	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
-		return s.nativeAPIError(c, hubscope.RunnerUnauthorized())
+		return d.HTTPError(c, hubscope.RunnerUnauthorized())
 	}
-	_, err := s.revokeRunnerIdentityCommand(c.Request().Context(), hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}, c.Param("runner"))
+	_, err := d.RevokeRunnerIdentityCommand(c.Request().Context(), hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}, c.Param("runner"))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope hubscope.NativeScope, resource string) (any, error) {
+func (d IdentityDeps) RevokeRunnerIdentityCommand(ctx context.Context, scope hubscope.NativeScope, resource string) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := s.requireRunnerAdministrationTenant(ctx, w, scope); err != nil {
+	err := d.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := d.RequireAdministration(ctx, w, scope); err != nil {
 			return err
 		}
-		return s.revokeRunnerIdentityTenant(ctx, w, scope.Organization, resource, scope.Credential.ID, func() time.Time { return s.config.Clock().UTC() })
+		return d.RevokeRunnerIdentityTenant(ctx, w, scope.Organization, resource, scope.Credential.ID, func() time.Time { return d.Now().UTC() })
 	})
 	if err != nil {
 		return nil, err
 	}
-	if s.notifications != nil {
-		s.notifications.notify(dispatchNotificationKey(scope.Organization))
+	if d.NotifyDispatch != nil {
+		d.NotifyDispatch(scope.Organization)
 	}
 	return struct{}{}, nil
 }
 
-func (s *Service) revokeRunnerIdentityTenant(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, resource, actorID string, clock func() time.Time) error {
+func (d IdentityDeps) RevokeRunnerIdentityTenant(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, resource, actorID string, clock func() time.Time) error {
 	identity, err := w.RunnerIdentity(ctx, resource)
 	if err != nil {
 		return err
@@ -208,10 +221,10 @@ func (s *Service) revokeRunnerIdentityTenant(ctx context.Context, w tenantstore.
 	if err := w.RemoveRunnerIdentity(ctx, resource, now); err != nil {
 		return err
 	}
-	return s.applyRunnerTenantUsage(ctx, w, now, resource, true, false)
+	return d.ApplyUsage(ctx, w, now, resource, true, false)
 }
 
-type nativeMachineHeartbeatRequest struct {
+type NativeMachineHeartbeatRequest struct {
 	HostMetrics           json.RawMessage                     `json:"host_metrics,omitempty"`
 	ChangeCursor          *string                             `json:"change_cursor,omitempty"`
 	Admission             *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
@@ -236,24 +249,24 @@ type nativeMachineHeartbeatRequest struct {
 	CheckoutRepository    *string                             `json:"checkout_repository,omitempty"`
 }
 
-func (s *Service) heartbeatNativeMachine(c echo.Context) error {
+func (d IdentityDeps) HeartbeatNativeMachine(c echo.Context) error {
 	if after, requested := c.QueryParams()["attempt_worker_after"]; requested {
 		credential, _ := c.Get("hub_api_credential").(hubapi.APICredential)
 		scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Project: tracker.ProjectID(c.Param("project")), Credential: credential}
-		inventory, err := attemptworkers.Read(c.Request().Context(), s.config.TenantRepository, scope, tracker.MachineID(c.Param("machine")), after, s.config.Clock)
+		inventory, err := attemptworkers.Read(c.Request().Context(), d.Repository, scope, tracker.MachineID(c.Param("machine")), after, d.Now)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return d.HTTPError(c, err)
 		}
 		c.Response().Header().Set("Cache-Control", "no-store")
 		return c.JSON(http.StatusOK, inventory)
 	}
-	var request nativeMachineHeartbeatRequest
+	var request NativeMachineHeartbeatRequest
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return d.InvalidRequest(c, err)
 	}
-	return s.heartbeatNativeMachineTenant(c, request)
+	return d.Heartbeat(c, request)
 }
 
-func validRunnerPlatform(os, architecture string) bool {
+func ValidRunnerPlatform(os, architecture string) bool {
 	return (os == "" || policy.ValidToken(os)) && (architecture == "" || policy.ValidToken(architecture))
 }
