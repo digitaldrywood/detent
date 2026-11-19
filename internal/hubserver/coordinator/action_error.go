@@ -2,10 +2,14 @@ package coordinator
 
 import (
 	"cmp"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 
+	"github.com/digitaldrywood/detent/internal/runner"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -35,4 +39,22 @@ func ActionError(err error) error {
 		return err
 	}
 	return errors.New("project change is unavailable")
+}
+
+func ToolError(err error) runner.AgentToolResult {
+	err = hubapi.FromFeatureError(err)
+	message := err.Error()
+	var native *hubapi.NativeError
+	var request *operatortool.RequestError
+	switch {
+	case errors.As(err, &native) && native.Code == "invalid_request":
+		message = native.Message
+	case errors.As(err, &request) && request.Message != "":
+		message = request.Message
+	}
+	encoded, encodeErr := json.Marshal(map[string]string{"error": conversations.BoundRunes(message, 2000)})
+	if encodeErr != nil {
+		encoded = []byte(`{"error":"tool failed"}`)
+	}
+	return runner.AgentToolResult{Content: string(encoded), Success: false}
 }

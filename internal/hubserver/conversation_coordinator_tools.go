@@ -22,7 +22,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -127,24 +126,6 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 		return coordinatorToolError(fmt.Errorf("%s result exceeds %d bytes; narrow the request", call.Name, limit)), nil
 	}
 	return runner.AgentToolResult{Content: string(encoded), Success: true}, nil
-}
-
-func coordinatorToolError(err error) runner.AgentToolResult {
-	err = hubapi.FromFeatureError(err)
-	message := err.Error()
-	var native *hubapi.NativeError
-	var request *operatortool.RequestError
-	switch {
-	case errors.As(err, &native) && native.Code == "invalid_request":
-		message = native.Message
-	case errors.As(err, &request) && request.Message != "":
-		message = request.Message
-	}
-	encoded, encodeErr := json.Marshal(map[string]string{"error": boundRunes(message, coordinatorErrorRunes)})
-	if encodeErr != nil {
-		encoded = []byte(`{"error":"tool failed"}`)
-	}
-	return runner.AgentToolResult{Content: string(encoded), Success: false}
 }
 
 func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolCall) (any, error) {
