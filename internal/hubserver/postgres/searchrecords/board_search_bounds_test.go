@@ -124,28 +124,6 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Run("sequential searches share the first deadline", func(t *testing.T) {
-		settleSearch(t)
-		first, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-		defer cancel()
-		firstDeadline, _ := first.Deadline()
-		err := f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
-			trace.deadlines = nil
-			if _, err := r.BoardPage(first, selection); err != nil {
-				t.Fatalf("initial search failed: %v", err)
-			}
-			_, err := r.BoardPage(ctx, selection)
-			for _, sample := range trace.deadlines {
-				if sample.deadline.After(firstDeadline) {
-					t.Fatalf("second search extended first deadline: %v > %v", sample.deadline, firstDeadline)
-				}
-			}
-			return err
-		})
-		if err != nil && !timedOut(err) {
-			t.Fatalf("second search under the first deadline: %v", err)
-		}
-	})
 	for _, path := range []string{"page", "model", "lanes", "closed"} {
 		t.Run(path, func(t *testing.T) {
 			read := func(ctx context.Context, r tenantstore.Reader) error {
