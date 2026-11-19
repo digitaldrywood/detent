@@ -137,7 +137,7 @@ func (s *Service) tenantProjectPolicyRead(ctx context.Context, organization trac
 		if err != nil {
 			return projectPolicyRead{}, err
 		}
-		observed, err := decodeProjectPolicy(ctx, string(organization)+"/"+string(project), row.PolicyID, string(raw), policy.Approval{})
+		observed, err := hubrecords.DecodeProjectPolicy(ctx, string(organization)+"/"+string(project), row.PolicyID, string(raw), policy.Approval{})
 		if err != nil {
 			return projectPolicyRead{}, err
 		}
@@ -280,7 +280,7 @@ func (s *Service) projectPolicyDescriptor(ctx context.Context, content *eventsto
 	if err != nil {
 		return policy.Descriptor{}, err
 	}
-	approval, err := decodeProjectPolicy(ctx, string(organization)+"/"+string(project), revision.PolicyID, string(raw), policy.Approval{})
+	approval, err := hubrecords.DecodeProjectPolicy(ctx, string(organization)+"/"+string(project), revision.PolicyID, string(raw), policy.Approval{})
 	return approval.Policy, err
 }
 
@@ -319,7 +319,7 @@ func (s *Service) decodeTenantProjectPolicy(ctx context.Context, organization tr
 	if err != nil {
 		return policy.Approval{}, err
 	}
-	return decodeProjectPolicy(ctx, string(organization)+"/"+string(project), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: hubapi.FormatHubTime(revision.ApprovedAt)})
+	return hubrecords.DecodeProjectPolicy(ctx, string(organization)+"/"+string(project), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: hubapi.FormatHubTime(revision.ApprovedAt)})
 }
 
 func (s *Service) approveProjectPolicy(c echo.Context) error {
@@ -719,7 +719,7 @@ func (s *Service) readTenantObservedPolicy(ctx context.Context, organization tra
 	if err != nil {
 		return policy.Descriptor{}, err
 	}
-	approval, err := decodeProjectPolicy(ctx, string(organization)+"/"+string(project), policyID, string(raw), policy.Approval{})
+	approval, err := hubrecords.DecodeProjectPolicy(ctx, string(organization)+"/"+string(project), policyID, string(raw), policy.Approval{})
 	if err != nil {
 		return policy.Descriptor{}, err
 	}
@@ -1267,16 +1267,6 @@ func (s *Service) policyCacheMiddleware(next echo.HandlerFunc) echo.HandlerFunc 
 		c.SetRequest(c.Request().WithContext(s.database.postgres.WithProjectWorkflows(ctx)))
 		return next(c)
 	}
-}
-
-func decodeProjectPolicy(ctx context.Context, scope, id, raw string, result policy.Approval) (policy.Approval, error) {
-	cache := hubrecords.ProjectPolicyCacheFromContext(ctx)
-	resolved, err := cache.Resolve(scope, id, raw)
-	if err != nil {
-		return result, err
-	}
-	result.Policy = resolved.Descriptor()
-	return result, nil
 }
 
 func validateCloudWorkflowPolicy(markdown string, descriptor policy.Descriptor) (bool, error) {

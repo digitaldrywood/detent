@@ -126,3 +126,13 @@ func ProjectPolicyWorkflow(ctx context.Context, scope string, descriptor policy.
 	}
 	return workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, descriptor)
 }
+
+func DecodeProjectPolicy(ctx context.Context, scope, id, raw string, result policy.Approval) (policy.Approval, error) {
+	cache := ProjectPolicyCacheFromContext(ctx)
+	resolved, err := cache.Resolve(scope, id, raw)
+	if err != nil {
+		return result, err
+	}
+	result.Policy = resolved.Descriptor()
+	return result, nil
+}
