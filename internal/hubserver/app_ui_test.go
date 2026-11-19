@@ -548,7 +548,7 @@ func TestRunnerBehind(t *testing.T) {
 		{name: "unprefixed below supported minimum", current: "0.117.60", reported: "0.117.55", want: true, refused: true},
 		{name: "prerelease below supported minimum", current: "v0.117.60", reported: "v0.117.56-rc.1", want: true, refused: true},
 		{name: "build metadata at minimum", current: "v0.117.60", reported: "v0.117.56+local", want: true},
-		{name: "hub predates supported minimum", current: "v0.117.50", reported: "v0.117.49", minimum: "0.117.50", want: true, refused: true},
+		{name: "hub predates supported minimum", current: "v0.117.50", reported: "v0.117.49", minimum: "v0.117.50", want: true, refused: true},
 		{name: "not a release version", current: "v1.2.3", reported: "abc123"},
 		{name: "runner never reported", current: "v1.2.3", reported: ""},
 		{name: "runner on a development build", current: "v1.2.3", reported: "dev"},

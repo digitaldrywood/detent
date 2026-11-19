@@ -47,7 +47,7 @@ func TestHostedLoginLogsStayRedactedOutsideDenials(t *testing.T) {
 
 	var timing hostedLogBuffer
 	logger := slog.New(hostedLogHandler{output: slog.NewJSONHandler(&timing, nil)})
-	logger.Info("hub request timing", "route", "/example/private-route-sentinel", "owner", "secret=private-owner-sentinel", "title", "private-title-sentinel", "pool_full", "private-pool-sentinel")
+	logger.Info("hub request timing", "route", "/work/private route sentinel", "owner", "secret=private-owner-sentinel", "title", "private-title-sentinel", "pool_full", "private-pool-sentinel")
 	logger.Info("conversation.receipt", "text", "private-conversation-sentinel", "status", "private-status-sentinel")
 	logger.Info("conversation.restart_normalized", "message", "private-message-sentinel", "token", 789123, "code", 456789)
 	for _, private := range []string{"sentinel", "789123", "456789"} {

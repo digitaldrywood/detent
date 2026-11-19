@@ -297,7 +297,7 @@ func TestChangeRecordReceiptRejectsChangedRequest(t *testing.T) {
 	changed := first
 	changed.Title = "Changed title"
 	response = f.request(t, owner, http.MethodPost, changePath, changed)
-	requireNativeCode(t, response, http.StatusConflict, "idempotency_conflict")
+	requireNativeCode(t, response, http.StatusConflict, "revision_conflict")
 
 	detailPath := changePath + "/" + change.ID
 	discussion := tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "discussion"}, Body: "Append-only discussion"}
