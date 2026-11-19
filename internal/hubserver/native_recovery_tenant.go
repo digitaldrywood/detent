@@ -399,6 +399,13 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 	if err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &result.Issue); err != nil {
 		return result, fmt.Errorf("hydrate recovery work item relationships: %w", err)
 	}
+	if continuationEligible != nil && *continuationEligible && strings.EqualFold(result.Issue.State, "Blocked") {
+		recovery, err := s.readRecordedRecoveryIntent(ctx, scope, row, result.Issue)
+		if err != nil {
+			return result, fmt.Errorf("read recorded recovery intent: %w", err)
+		}
+		continuationEligible = new(recovery != nil)
+	}
 	result.ContinuationEligible = continuationEligible
 	result.Issue.OmittedFields = append(result.Issue.OmittedFields, "change_sequence")
 	if change.ID != "" {

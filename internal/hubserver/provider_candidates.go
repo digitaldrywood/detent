@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -91,6 +92,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			return hubapi.PolicyMismatch("Claim configuration changed; load the current project policy before previewing candidates")
 		}
 		query := nativeTenantCandidateQuery(scope, request.NativeClaim, "", now)
+		query.IncludeRecordedRecovery = true
 		query.Limit = limit
 		if request.After > 0 {
 			anchor, err := r.WorkItemByID(ctx, scope.Project, int64(request.After))
@@ -212,7 +214,25 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	for index := range plans {
 		claim := request.NativeClaim
 		claim.WorkItemID = plans[index].Candidate.WorkItemID
-		plan, err := s.hydrateNativeClaimPlan(ctx, scope, claim, now, plans[index], descriptor)
+		rows := plans[index]
+		if strings.EqualFold(rows.Candidate.State, "Blocked") && rows.Replay == nil {
+			issue, err := s.hydrateWorkItemRecord(ctx, rows.Item, rows.Version)
+			if err != nil {
+				return nil, err
+			}
+			recovery, err := s.readRecordedRecoveryIntent(ctx, scope, rows.Item, issue)
+			if err != nil {
+				return nil, err
+			}
+			if recovery == nil || recovery.Policy.PolicyID != claim.PolicyID || !claimIncludesRecoveredState(claim, recovery.State) {
+				plans[index] = hubrecords.NativeClaimPlan{}
+				continue
+			}
+			rows.Item.WorkflowStateName = &recovery.State
+			rows.Candidate.State = recovery.State
+			rows.LatestAttemptFound = false
+		}
+		plan, err := s.hydrateNativeClaimPlan(ctx, scope, claim, now, rows, descriptor)
 		if errors.Is(err, ErrNoClaimableWork) {
 			plans[index] = hubrecords.NativeClaimPlan{}
 			continue

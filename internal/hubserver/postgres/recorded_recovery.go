@@ -11,15 +11,18 @@ import (
 
 func (s *session) AuthorizeRecordedRecovery(ctx context.Context, recovery leasestore.RecordedRecovery) error {
 	attempt := recovery.Attempt
-	if attempt.OrganizationID != s.organization || attempt.IssueID <= 0 || attempt.ID == "" || attempt.Status != "succeeded" || recovery.Now.IsZero() || len(recovery.DependencyNumbers) > corestore.MaxPageSize {
+	if attempt.OrganizationID != s.organization || attempt.IssueID <= 0 || attempt.ID == "" || recovery.Now.IsZero() || len(recovery.DependencyNumbers) > corestore.MaxPageSize || len(recovery.MergedDependencyNumbers) > corestore.MaxPageSize {
 		return corestore.ErrRevisionConflict
 	}
 	var current, history, linked, ready bool
 	err := s.db.QueryRow(ctx, `SELECT EXISTS (
  SELECT 1 FROM native_attempts a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
- WHERE a.organization_id=$1 AND a.issue_id=$3 AND a.id=$4 AND a.sequence=$5 AND a.status='succeeded'
+ WHERE a.organization_id=$1 AND a.issue_id=$3 AND a.id=$4 AND a.sequence=$5 AND a.status=$19 AND a.status IN ('succeeded','failed','interrupted','cancelled')
  AND a.payload_object_key=$6 AND a.checkpoint_object_key IS NOT DISTINCT FROM $7::text
  AND a.lease_id=$8 AND a.fencing_token=$9 AND l.issue_id=a.issue_id AND l.fencing_token=a.fencing_token
+ AND ($21::bigint=0 OR EXISTS (SELECT 1 FROM issues item
+  WHERE item.organization_id=$1 AND item.project_id=$2 AND item.id=$3 AND item.native_id=$11
+  AND item.revision=$21 AND NOT item.archived AND lower(item.workflow_state_name)='blocked'))
  AND NOT EXISTS (SELECT 1 FROM native_attempts newer WHERE newer.organization_id=$1 AND newer.issue_id=$3 AND newer.fencing_token>a.fencing_token)
  AND NOT EXISTS (SELECT 1 FROM leases active WHERE active.organization_id=$1 AND active.issue_id=$3 AND active.released_at IS NULL AND active.expires_at>$10)
 ),
@@ -29,9 +32,13 @@ EXISTS (
  WHERE report.organization_id=$1 AND report.project_id=$2 AND report.work_item_id=$11
  AND report.id=$12 AND report.sequence=$13 AND report.type='run.finished' AND report.attempt_id=$4
  AND lane.id=$14 AND lane.sequence=$15 AND lane.payload_object_key=$16 AND lane.type='workflow.transitioned'
+ AND NOT EXISTS (SELECT 1 FROM collaboration_events newer
+  WHERE newer.organization_id=$1 AND newer.project_id=$2 AND newer.work_item_id=$11
+  AND newer.type='workflow.transitioned' AND newer.sequence>$15)
  AND NOT EXISTS (SELECT 1 FROM collaboration_events changed
   WHERE changed.organization_id=$1 AND changed.project_id=$2 AND changed.work_item_id=$11
-  AND changed.sequence>$13 AND changed.sequence<>$15 AND changed.event_revision>0 AND changed.event_revision>$17)
+  AND changed.sequence>$13 AND changed.sequence<>$15 AND changed.type<>'scheduler.decision'
+  AND (changed.event_revision>$17 OR changed.actor_kind='human' AND changed.type IN ('comment.created','comment.edited')))
 ),
 (SELECT count(DISTINCT reported.number) FROM unnest($18::bigint[]) reported(number)
  CROSS JOIN LATERAL (
@@ -57,7 +64,17 @@ NOT EXISTS (
   WHERE state.organization_id=$1 AND state.project_id=d.blocker_project_id AND state.name=b.workflow_state_name OFFSET 0
  ) state ON true
  WHERE state.terminal IS DISTINCT FROM true
-)`, s.organization, recovery.ProjectID, attempt.IssueID, attempt.ID, attempt.Sequence, attempt.PayloadObjectKey, attempt.CheckpointObjectKey, attempt.LeaseID, attempt.FencingToken, recovery.Now, recovery.WorkItemID, recovery.ReportEventID, recovery.ReportSequence, recovery.WorkflowEventID, recovery.WorkflowSequence, recovery.WorkflowObjectKey, recovery.ReportRevision, recovery.DependencyNumbers).Scan(&current, &history, &linked, &ready)
+)
+AND NOT EXISTS (
+ SELECT 1 FROM unnest($20::bigint[]) merged(number)
+ WHERE NOT EXISTS (
+  SELECT 1 FROM issues b
+  JOIN change_requests c ON c.organization_id=b.organization_id AND c.project_id=b.project_id AND c.work_item_id=b.native_id
+  JOIN change_versions v ON v.organization_id=c.organization_id AND v.project_id=c.project_id
+   AND v.change_id=c.id AND v.id=c.landed_version_id AND v.landed_merge_sha=c.landed_merge_sha
+  WHERE b.organization_id=$1 AND b.project_id=$2 AND b.number=merged.number AND v.landing_history_known AND v.landed_at IS NOT NULL
+ )
+)`, s.organization, recovery.ProjectID, attempt.IssueID, attempt.ID, attempt.Sequence, attempt.PayloadObjectKey, attempt.CheckpointObjectKey, attempt.LeaseID, attempt.FencingToken, recovery.Now, recovery.WorkItemID, recovery.ReportEventID, recovery.ReportSequence, recovery.WorkflowEventID, recovery.WorkflowSequence, recovery.WorkflowObjectKey, recovery.ReportRevision, recovery.DependencyNumbers, attempt.Status, recovery.MergedDependencyNumbers, recovery.ExpectedRevision).Scan(&current, &history, &linked, &ready)
 	if err != nil {
 		return mapError(ctx, err)
 	}

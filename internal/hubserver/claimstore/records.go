@@ -45,6 +45,7 @@ type CandidateQuery struct {
 	IncludeLeasedAnchor       bool
 	ExcludeSatisfiedAnchor    bool
 	IncludeUnclassifiedSource bool
+	IncludeRecordedRecovery   bool
 	Limit                     int
 }
 

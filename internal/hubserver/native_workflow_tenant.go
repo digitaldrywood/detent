@@ -220,6 +220,17 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				return nil, err
 			}
 		}
+		var machineHold *leasestore.Attempt
+		if !human && !recordedRecovery && strings.EqualFold(request.State, "Blocked") && issueContractWorkerHumanAction(row, issue) == nil {
+			machineHold, err = s.recordedWorkerMachineHold(ctx, scope, row, request)
+			if err != nil {
+				return nil, err
+			}
+		}
+		destination := request.State
+		if machineHold != nil {
+			destination = issue.State
+		}
 		previousContract, err := json.Marshal(issue.IssueContract)
 		if err != nil {
 			return nil, err
@@ -231,11 +242,11 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if stop != nil && stop.Priority != nil {
 			issue.Priority = new(*stop.Priority - 1)
 		}
-		issue.State = request.State
+		issue.State = destination
 		issue.Revision = tracker.Revision(row.Revision + 1)
 		issue.UpdatedAt = now
 		issue.LastActivityAt = now
-		issue.Terminal = hubrecords.TenantProjectStateTerminal(project, request.State)
+		issue.Terminal = hubrecords.TenantProjectStateTerminal(project, destination)
 		if issue.Terminal {
 			if issue.ClosedAt == nil {
 				issue.ClosedAt = &now
@@ -285,11 +296,11 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
-		unchanged := human && stop == nil && previousState == request.State && bytes.Equal(previousContract, currentContract)
+		unchanged := machineHold != nil || human && stop == nil && previousState == destination && bytes.Equal(previousContract, currentContract)
 		if unchanged {
 			issue.Revision = tracker.Revision(row.Revision)
 			issue.UpdatedAt = previousUpdatedAt
-			if !strings.EqualFold(request.State, "Blocked") {
+			if machineHold != nil || !strings.EqualFold(destination, "Blocked") {
 				issue.LastActivityAt = previousActivityAt
 			}
 		}
@@ -314,8 +325,11 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
-		data := tracker.CollaborationData{Revision: issue.Revision, FromState: previousState, ToState: request.State, Reason: request.Reason, ReasonDetail: reasonDetail, BlockerAttemptID: request.BlockerAttemptID}
-		if previousState != request.State {
+		data := tracker.CollaborationData{Revision: issue.Revision, FromState: previousState, ToState: destination, Reason: request.Reason, ReasonDetail: reasonDetail, BlockerAttemptID: request.BlockerAttemptID}
+		if human && !batchRouting && (stop != nil || strings.EqualFold(request.State, "Blocked")) {
+			data.Operation = "operator_stop"
+		}
+		if previousState != destination {
 			data.Change, err = s.landingTransitionSource(ctx, scope, row)
 			if err != nil {
 				return nil, err
@@ -458,7 +472,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if locked.Archived || locked.Revision != row.Revision || locked.ID != row.ID || locked.NativeID != issue.WorkItemID {
 				return corestore.ErrRevisionConflict
 			}
-			if recordedRecovery && locked.EventSequence != row.EventSequence {
+			if (recordedRecovery || machineHold != nil) && locked.EventSequence != row.EventSequence {
 				return corestore.ErrRevisionConflict
 			}
 			if answerComment != nil && locked.EventSequence != row.EventSequence {
@@ -467,7 +481,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if err := answerAttempt.recheck(ctx, w, locked.ID); err != nil {
 				return err
 			}
-			if previousState != request.State && nativeDoneState(request.State) && nativeHumanFiled(issue) {
+			if previousState != destination && nativeDoneState(destination) && nativeHumanFiled(issue) {
 				workspace, err := w.IsWorkspaceWorkItem(ctx, scope.Project, issue.WorkItemID)
 				if err != nil {
 					return err
@@ -548,6 +562,15 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				if !allowed {
 					return tracker.ErrMachineNotFound
 				}
+				if machineHold != nil {
+					latest, err := w.LatestAttempt(ctx, locked.ID)
+					if err != nil {
+						return err
+					}
+					if latest.ID != machineHold.ID || latest.Sequence != machineHold.Sequence || latest.PayloadObjectKey != machineHold.PayloadObjectKey {
+						return corestore.ErrRevisionConflict
+					}
+				}
 				if recordedHold != nil && !recordedHold.current(locked) {
 					return corestore.ErrRevisionConflict
 				}
@@ -559,7 +582,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				}
 			}
 			if unchanged {
-				if strings.EqualFold(request.State, "Blocked") {
+				if machineHold == nil && strings.EqualFold(destination, "Blocked") {
 					if _, err := w.AppendEvent(ctx, event); err != nil {
 						return err
 					}

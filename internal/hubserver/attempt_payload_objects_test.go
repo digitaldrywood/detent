@@ -644,11 +644,8 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			if issue.Revision <= f.issue.Revision || !slices.Contains(issue.Dependencies, dependency.WorkItemID) {
 				t.Fatal("completion did not add the dependency and advance revision")
 			}
-			transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "blocked", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "worker_progress"}
-			blocked := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, transition)
-			requireNativeStatus(t, blocked, http.StatusOK)
-			decodeHubResponse(t, blocked, &issue)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/release", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			issue = seedHubOwnedBlockedRecovery(t, f.nativeFixture, issue, tracker.Actor{Kind: "runner", PrincipalID: "example-runner"})
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(dependency.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "dependency-done"}, ExpectedRevision: dependency.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
 			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.worker), "", "")
 			if err != nil {
@@ -723,7 +720,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			if valid != (test.postRunEdits == 0) {
 				t.Errorf("post-run edits=%d: recovery authorized=%t error=%v", test.postRunEdits, valid, proofErr)
 			}
-			transition = tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "recover", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ExpectedRevision: issue.Revision, State: "Todo", Reason: "dependency_ready", ReasonDetail: "recorded blocker recovery", BlockerAttemptID: f.attempt, PolicyID: f.policy}
+			transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "recover", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ExpectedRevision: issue.Revision, State: "Todo", Reason: "dependency_ready", ReasonDetail: "recorded blocker recovery", BlockerAttemptID: f.attempt, PolicyID: f.policy}
 			if test.postRunEdits > 0 {
 				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, transition)
 				requireNativeStatus(t, response, http.StatusConflict)
