@@ -724,7 +724,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 				} else if len(raw) > coordinatorToolResultBytes {
 					prompt = "Workflow evidence is too large; read scoped workflow tools before answering.\n\n" + prompt
 				} else {
-					prompt = "<workflow_evidence>\n" + coordinatorDataDelimiters.Replace(string(raw)) + "\n</workflow_evidence>\n\n" + prompt
+					prompt = "<workflow_evidence>\n" + escapeCoordinatorData(string(raw)) + "\n</workflow_evidence>\n\n" + prompt
 				}
 			}
 		}
@@ -1065,17 +1065,6 @@ func coordinatorPrompt(transcript, pending []conversationMessageRecord) string {
 	return prompt.String()
 }
 
-// escapeCoordinatorData neutralizes the delimiters that fence data blocks so
-// that quoted content cannot close its own block and read as instructions.
-func escapeCoordinatorData(value string) string {
-	return coordinatorDataDelimiters.Replace(value)
-}
-
-var coordinatorDataDelimiters = strings.NewReplacer("<transcript>", "&lt;transcript&gt;", "</transcript>", "&lt;/transcript&gt;", "<issue_context>", "&lt;issue_context&gt;", "</issue_context>", "&lt;/issue_context&gt;", "<workflow_evidence>", "&lt;workflow_evidence&gt;", "</workflow_evidence>", "&lt;/workflow_evidence&gt;")
-
-// handleUpdate reacts to backend progress. Failures to persist progress are
-// logged and never abort the turn: the completion write carries the final
-// text.
 func (s *coordinatorTurnState) handleUpdate(ctx context.Context, update runner.AgentUpdate) {
 	if model := strings.TrimSpace(update.Model); model != "" {
 		s.mu.Lock()

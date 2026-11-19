@@ -1,4 +1,4 @@
-package hubserver
+package coordinator
 
 import (
 	"context"
@@ -12,21 +12,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 )
 
-func coordinatorSlashActionTools() []runner.AgentTool {
+func SlashActionTools() []runner.AgentTool {
 	return []runner.AgentTool{
-		coordinatorTool("propose_stop_run", "Propose releasing the exact active runner attempt and routing its item. Explicit client confirmation is required; the runner stops through existing lease-loss handling.", `{"type":"object","required":["work_item_id","destination"],"properties":{"work_item_id":{"type":"string"},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}},"additionalProperties":false}`),
-		coordinatorTool("propose_file_issue", "Propose filing an issue in this project. Show a card; explicit client confirmation is required.", `{"type":"object","required":["title","description"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"state":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`),
-		coordinatorTool("propose_maintenance_issue", "Propose filing a maintenance issue in this project. Show a card; explicit client confirmation is required.", `{"type":"object","required":["title","description"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"state":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`),
-		coordinatorTool("propose_move_item", "Propose moving an issue to a lane. Show a card; explicit client confirmation is required.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"}},"additionalProperties":false}`),
-		coordinatorTool("propose_set_priority", "Propose setting issue priority: 1 Urgent, 2 High, 3 Normal, 4 Low. Show a card; explicit client confirmation is required.", `{"type":"object","required":["work_item_id","priority"],"properties":{"work_item_id":{"type":"string"},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`),
-		coordinatorTool("propose_backlog_admission", "Propose admitting a Backlog issue to Todo after reviewing its criteria. Show a card; explicit client confirmation is required.", `{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string"}},"additionalProperties":false}`),
+		Tool("propose_stop_run", "Propose releasing the exact active runner attempt and routing its item. Explicit client confirmation is required; the runner stops through existing lease-loss handling.", `{"type":"object","required":["work_item_id","destination"],"properties":{"work_item_id":{"type":"string"},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}},"additionalProperties":false}`),
+		Tool("propose_file_issue", "Propose filing an issue in this project. Show a card; explicit client confirmation is required.", `{"type":"object","required":["title","description"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"state":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`),
+		Tool("propose_maintenance_issue", "Propose filing a maintenance issue in this project. Show a card; explicit client confirmation is required.", `{"type":"object","required":["title","description"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"state":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`),
+		Tool("propose_move_item", "Propose moving an issue to a lane. Show a card; explicit client confirmation is required.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"}},"additionalProperties":false}`),
+		Tool("propose_set_priority", "Propose setting issue priority: 1 Urgent, 2 High, 3 Normal, 4 Low. Show a card; explicit client confirmation is required.", `{"type":"object","required":["work_item_id","priority"],"properties":{"work_item_id":{"type":"string"},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`),
+		Tool("propose_backlog_admission", "Propose admitting a Backlog issue to Todo after reviewing its criteria. Show a card; explicit client confirmation is required.", `{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string"}},"additionalProperties":false}`),
 	}
 }
 
-func (t *coordinatorToolset) slashAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
-	ctx, err := t.actionContext(ctx, record)
+func PreviewSlashAction(ctx context.Context, record conversations.ConversationRecord, call runner.AgentToolCall, deps SlashActionDeps) (any, error) {
+	ctx, err := deps.ActionContext(ctx, record)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +44,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 			Labels      []string `json:"labels,omitempty"`
 			Priority    *int     `json:"priority,omitempty"`
 		}
-		if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
+		if err := DecodeArguments(call.Arguments, &args); err != nil {
 			return nil, err
 		}
 		request := operatortool.FileIssueArguments{ProjectID: string(record.ProjectID), Title: args.Title, Description: args.Description, State: args.State, Labels: args.Labels, Priority: args.Priority}
@@ -54,7 +56,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 			return nil, err
 		}
 		action := chat.Action{ConversationID: record.ID, Kind: chat.ActionFileIssue, ProjectID: string(record.ProjectID), Title: args.Title, Description: "File issue: " + args.Title, Material: true, RequiresConfirmation: true}
-		action.RequestID = coordinatorActionRequestID(t.state.users[len(t.state.users)-1].ID, call)
+		action.RequestID = ActionRequestID(deps.MessageID(), call)
 		action.Arguments, err = json.Marshal(struct {
 			operatortool.FileIssueArguments
 			RequestID string `json:"request_id"`
@@ -62,14 +64,14 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 		if err != nil {
 			return nil, err
 		}
-		return t.submitCoordinatorAction(ctx, record, call, action)
+		return deps.Submit(ctx, record, call, action)
 	}
 	var args struct {
 		WorkItemID string `json:"work_item_id"`
 		State      string `json:"state,omitempty"`
 		Priority   *int   `json:"priority,omitempty"`
 	}
-	if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
+	if err := DecodeArguments(call.Arguments, &args); err != nil {
 		return nil, err
 	}
 	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
@@ -81,7 +83,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 		return nil, err
 	}
 	scope.Project = record.ProjectID
-	issue, err := t.coordinator.server.resolveOperatorNativeItem(ctx, nil, scope, args.WorkItemID)
+	issue, err := deps.ResolveIssue(ctx, scope, args.WorkItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +112,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 		return nil, operatortool.ErrUnknownTool
 	}
 	if name == operatortool.MoveItem {
-		project, err := t.coordinator.server.readProjectRecord(ctx, scope)
+		project, err := deps.ReadProject(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -122,5 +124,5 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 	if err != nil {
 		return nil, err
 	}
-	return t.projectAction(ctx, record, runner.AgentToolCall{Name: name, Arguments: raw}, true)
+	return deps.ProjectAction(ctx, record, runner.AgentToolCall{Name: name, Arguments: raw}, true)
 }

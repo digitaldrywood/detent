@@ -1,13 +1,11 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"slices"
 	"strconv"
@@ -49,12 +47,6 @@ const (
 	coordinatorToolProposeIssue  = "propose_issue"
 )
 
-var errCoordinatorToolArguments = errors.New("invalid tool arguments")
-
-// errCoordinatorProjectUnreadable ends every tool call once the
-// conversation's owner has lost read access to its project.
-var errCoordinatorProjectUnreadable = errors.New("the conversation owner can no longer read this project")
-
 // coordinatorToolset executes the coordination tools for one turn.
 // Every query is scoped to the conversation's organization; project access
 // follows the conversation owner's grants.
@@ -65,10 +57,6 @@ type coordinatorToolset struct {
 
 func newCoordinatorToolset(coordinator *conversationTurnCoordinator, state *coordinatorTurnState) *coordinatorToolset {
 	return &coordinatorToolset{coordinator: coordinator, state: state}
-}
-
-func coordinatorTool(name, description, schema string) runner.AgentTool {
-	return runner.AgentTool{Name: name, Description: description, InputSchema: json.RawMessage(schema)}
 }
 
 func (t *coordinatorToolset) tools() []runner.AgentTool {
@@ -266,28 +254,6 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 	default:
 		return nil, fmt.Errorf("unknown tool %q", call.Name)
 	}
-}
-
-func decodeCoordinatorArguments(raw json.RawMessage, target any) error {
-	return decodeCoordinatorArgumentsWithLimit(raw, target, hubapi.CoordinatorToolArgumentBytes)
-}
-
-func decodeCoordinatorArgumentsWithLimit(raw json.RawMessage, target any, limit int) error {
-	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
-		raw = json.RawMessage(`{}`)
-	}
-	if len(raw) > limit {
-		return fmt.Errorf("%w: payload exceeds %d bytes", errCoordinatorToolArguments, limit)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("%w: %w", errCoordinatorToolArguments, err)
-	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%w: trailing content", errCoordinatorToolArguments)
-	}
-	return nil
 }
 
 // readableProjects returns the projects in the conversation's organization

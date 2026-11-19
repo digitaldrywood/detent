@@ -5,6 +5,13 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+
+	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/coordinator"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/runner"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/artifact/cataloghub"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -431,4 +438,286 @@ func (s *Service) contentSettingsHTTP() conversations.ContentSettingsHTTP {
 			return s.executeProjectRecordMutation(ctx, scope, options, req.Mutation, req)
 		},
 	})
+}
+
+var coordinatorTool = coordinator.Tool
+var decodeCoordinatorArguments = coordinator.DecodeArguments
+var decodeCoordinatorArgumentsWithLimit = coordinator.DecodeArgumentsWithLimit
+var errCoordinatorToolArguments = coordinator.ErrToolArguments
+var coordinatorActionRequestID = coordinator.ActionRequestID
+var escapeCoordinatorData = coordinator.EscapeData
+var coordinatorWorkflowTool = coordinator.WorkflowTool
+var coordinatorWorkflowMutation = coordinator.WorkflowMutation
+var coordinatorWorkflowTools = coordinator.WorkflowTools
+var coordinatorSettingsDiff = coordinator.SettingsDiff
+var coordinatorPolicyEvidence = coordinator.PolicyEvidence
+
+func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewWorkflow(ctx, record, call, t.workflowPreviewDeps())
+}
+
+func (s *Service) executeCoordinatorWorkflowAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return coordinator.ExecuteWorkflow(ctx, action, s.workflowExecutionDeps())
+}
+
+var coordinatorSlashActionTools = coordinator.SlashActionTools
+
+func (t *coordinatorToolset) slashAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewSlashAction(ctx, record, call, t.slashActionDeps())
+}
+
+func (t *coordinatorToolset) issueContext(ctx context.Context, record conversationRecord) (operatortool.IssueContext, error) {
+	return t.issueContextDeps().IssueContext(ctx, record)
+}
+
+func (t *coordinatorToolset) readIssueHistory(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.issueContextDeps().ReadIssueHistory(ctx, record, call)
+}
+
+var coordinatorSubjectPrompt = coordinator.SubjectPrompt
+
+func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewStopRun(ctx, record, call, t.stopRunPreviewDeps())
+}
+
+func (s *Service) executeCoordinatorStopRun(ctx context.Context, scope hubscope.NativeScope, action chat.Action) (chat.ActionExecution, error) {
+	return coordinator.ExecuteStopRun(ctx, scope, action, s.stopNativeRunCommand)
+}
+
+func (s *Service) stopNativeRunCommand(ctx context.Context, scope hubscope.NativeScope, requestID string, request coordinatorStopRunArguments) (json.RawMessage, error) {
+	return coordinator.StopRun(ctx, scope, requestID, request, s.transitionNativeIssueTenantWithStop)
+}
+
+var coordinatorActionError = coordinator.ActionError
+
+type coordinatorCatalogEntry = coordinator.CatalogEntry
+
+func (s *Service) coordinatorCatalog(ctx context.Context) ([]operatortool.Definition, error) {
+	return coordinator.Catalog(ctx, (hostedOperatorExecutor{service: s}).ListTools, coordinatorCatalogExcluded)
+}
+
+func (t *coordinatorToolset) findTools(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.catalogToolDeps().FindTools(ctx, record, call)
+}
+
+func (t *coordinatorToolset) callTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.catalogToolDeps().CallTool(ctx, record, call)
+}
+
+func (s *Service) executeCoordinatorCatalogCall(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return coordinator.ExecuteCatalogCall(ctx, action, s.catalogExecutionDeps())
+}
+
+var errCoordinatorProjectUnreadable = coordinator.ErrProjectUnreadable
+
+func (t *coordinatorToolset) proposalDeps() coordinator.ProposalDeps {
+	return coordinator.ProposalDeps{
+		ActionContext: t.actionContext,
+		MessageID: func() string {
+			return t.state.users[len(t.state.users)-1].ID
+		},
+		Submit: t.submitCoordinatorAction,
+	}
+}
+
+func (t *coordinatorToolset) workflowPreviewDeps() coordinator.WorkflowPreviewDeps {
+	executor := hubProjectExecutor{t.coordinator.server}
+	return coordinator.WorkflowPreviewDeps{
+		ProposalDeps:       t.proposalDeps(),
+		ProjectScope:       projectToolScope,
+		LocalConfiguration: executor.localProjectConfiguration,
+		ReadConfiguration:  executor.Execute,
+		ReadPolicy:         executor.read,
+		PreviewApproval: func(ctx context.Context, call operatortool.Call) (json.RawMessage, error) {
+			return executor.command(ctx, call, projectCommandPreview)
+		},
+		PreviewConfiguration: func(ctx context.Context, name string, args operatortool.LocalProjectArguments) (operatortool.Result, error) {
+			return executor.projectConfigurationCommand(ctx, name, args, true)
+		},
+	}
+}
+
+func (s *Service) workflowExecutionDeps() coordinator.WorkflowExecutionDeps {
+	executor := hubProjectExecutor{s}
+	return coordinator.WorkflowExecutionDeps{
+		LocalConfiguration: executor.localProjectConfiguration,
+		Approve: func(ctx context.Context, call operatortool.Call) (json.RawMessage, error) {
+			return executor.command(ctx, call, projectCommandExecute)
+		},
+		Audit: executor.AuditAction,
+	}
+}
+
+func (s *Service) resolveCoordinatorIssue(ctx context.Context, scope hubscope.NativeScope, reference string) (tracker.NativeIssue, error) {
+	return s.resolveOperatorNativeItem(ctx, nil, scope, reference)
+}
+
+func (t *coordinatorToolset) slashActionDeps() coordinator.SlashActionDeps {
+	s := t.coordinator.server
+	return coordinator.SlashActionDeps{
+		ProposalDeps:  t.proposalDeps(),
+		ResolveIssue:  s.resolveCoordinatorIssue,
+		ReadProject:   s.readProjectRecord,
+		ProjectAction: t.projectAction,
+	}
+}
+
+func (t *coordinatorToolset) issueContextDeps() coordinator.IssueContextDeps {
+	return coordinator.IssueContextDeps{
+		ActionContext:    t.actionContext,
+		ResolveReference: t.resolveIssueReference,
+		WorkReader: func(scope hubscope.NativeScope) operatortool.WorkReader {
+			return operatorWorkReads{service: t.coordinator.server, scope: scope}
+		},
+	}
+}
+
+func (t *coordinatorToolset) stopRunPreviewDeps() coordinator.StopRunPreviewDeps {
+	s := t.coordinator.server
+	return coordinator.StopRunPreviewDeps{
+		ActionContext: t.actionContext,
+		Submit:        t.submitCoordinatorAction,
+		ResolveIssue:  s.resolveCoordinatorIssue,
+		ReadProject:   s.readProjectRecord,
+		ActiveLease:   s.readCoordinatorStopRunLease,
+		Now:           s.config.Clock,
+	}
+}
+
+func (s *Service) readCoordinatorStopRunLease(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID) (lease leasestore.Lease, err error) {
+	err = s.readConversationTenant(ctx, scope.Organization, func(r tenantstore.Reader) error {
+		lease, err = coordinator.ReadStopRunLease(ctx, r, scope, item, s.authorizeAccessScope)
+		return err
+	})
+	return lease, err
+}
+
+func (t *coordinatorToolset) catalogToolDeps() coordinator.CatalogToolDeps {
+	s := t.coordinator.server
+	return coordinator.CatalogToolDeps{
+		ProposalDeps: t.proposalDeps(),
+		Operator:     currentHubOperator,
+		WithOperator: s.withOperatorCatalog,
+		Catalog:      s.coordinatorCatalog,
+		Execute:      (hostedOperatorExecutor{service: s}).Execute,
+		Excluded:     coordinatorCatalogExcluded,
+	}
+}
+
+func (s *Service) catalogExecutionDeps() coordinator.CatalogExecutionDeps {
+	return coordinator.CatalogExecutionDeps{
+		BindConnection: s.bindCoordinatorConnection,
+		Catalog:        s.coordinatorCatalog,
+		Execute:        (hostedOperatorExecutor{service: s}).Execute,
+	}
+}
+
+func (t *coordinatorToolset) workReadContext(ctx context.Context, record conversationRecord) (context.Context, hubscope.NativeScope, error) {
+	return t.issueContextDeps().WorkReadContext(ctx, record)
+}
+func (s *Service) coordinatorRunner(ctx context.Context, scope hubscope.NativeScope, id string) (runnerauth.Runner, error) {
+	return s.coordinatorRunnerDeps().Runner(ctx, scope, id)
+}
+
+func (s *Service) coordinatorRunners(ctx context.Context, scope hubscope.NativeScope, args coordinatorRunnerArguments) ([]runnerauth.Runner, error) {
+	return s.coordinatorRunnerDeps().Runners(ctx, scope, args)
+}
+
+func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewRunner(ctx, record, call, t.runnerPreviewDeps())
+}
+
+func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.coordinatorRunnerDeps().Execute(ctx, action)
+}
+
+var coordinatorRunnerTools = coordinator.RunnerTools
+
+type coordinatorRunnerArguments = coordinator.RunnerArguments
+
+func coordinatorSettingsRequirement(name, project string) operatortool.Requirement {
+	return coordinator.SettingsRequirement(name, project, hubFleetRequirement, projectToolScope)
+}
+
+func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversationRecord, name string, raw json.RawMessage) error {
+	return s.coordinatorSettingsDeps().CheckTarget(ctx, record, name, raw)
+}
+
+func (t *coordinatorToolset) settingsTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewSettings(ctx, record, call, t.settingsPreviewDeps())
+}
+
+func (s *Service) executeCoordinatorSettingsAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.coordinatorSettingsDeps().Execute(ctx, action)
+}
+
+var coordinatorSettingsNames = coordinator.SettingsNames
+var coordinatorSettingsTool = coordinator.SettingsTool
+var coordinatorSettingsTools = coordinator.SettingsTools
+
+func (s *Service) coordinatorRunnerDeps() coordinator.RunnerDeps {
+	repository, available := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	return coordinator.RunnerDeps{
+		SnapshotAvailable: available,
+		ReadSnapshot: func(ctx context.Context, org tracker.OrganizationID, read func(tenantstore.Reader) error) error {
+			return repository.ReadTenantSnapshot(ctx, org, corestore.Serving, read)
+		},
+		Authorize: s.authorizeAccessScope,
+		View:      runnerFromRoutingRecord,
+		Scope:     s.coordinatorScope,
+		Now:       s.config.Clock,
+		UpdateRouting: func(ctx context.Context, scope hubscope.NativeScope, id string, change runnerauth.RoutingChange, tier *string) error {
+			_, err := s.updateRunnerRoutingCommand(ctx, scope, id, runnerRoutingRequest{RoutingChange: change, IsolationTier: tier})
+			return err
+		},
+	}
+}
+
+func (t *coordinatorToolset) runnerPreviewDeps() coordinator.RunnerPreviewDeps {
+	return coordinator.RunnerPreviewDeps{
+		ProposalDeps:     t.proposalDeps(),
+		Runners:          t.coordinator.server.coordinatorRunnerDeps(),
+		ReadableProjects: t.readableProjects,
+	}
+}
+
+func (s *Service) coordinatorSettingsDeps() coordinator.SettingsDeps {
+	return coordinator.SettingsDeps{
+		Operator: currentHubOperator,
+		Runner:   s.coordinatorRunner,
+		DecodeRouting: func(raw json.RawMessage) (runnerauth.RoutingChange, error) {
+			var request runnerRoutingRequest
+			err := operatortool.DecodeArguments(raw, &request)
+			return request.RoutingChange, err
+		},
+		DecodeCapacity: func(raw json.RawMessage) (string, string, error) {
+			var args hubFleetRequest
+			if err := operatortool.DecodeArguments(raw, &args); err != nil {
+				return "", "", err
+			}
+			var change runnerCapacityChange
+			err := operatortool.DecodeArguments(args.Change, &change)
+			return args.RunnerID, change.Backend, err
+		},
+		FleetTool:          hubFleetTool,
+		FleetPermitted:     s.hubFleetReadPermitted,
+		ExecuteProject:     (hubProjectExecutor{s}).ExecuteAction,
+		ExecuteFleet:       (hubFleetExecutor{s}).ExecuteAction,
+		ReadCapacity:       s.readRunnerCapacity,
+		ReadProjectRunners: s.coordinatorProjectRunners,
+	}
+}
+
+func (t *coordinatorToolset) settingsPreviewDeps() coordinator.SettingsPreviewDeps {
+	s := t.coordinator.server
+	return coordinator.SettingsPreviewDeps{
+		ProposalDeps: t.proposalDeps(),
+		Settings:     s.coordinatorSettingsDeps(),
+		Requirement:  coordinatorSettingsRequirement,
+		PreviewFleet: (hubFleetExecutor{s}).proposal,
+		PreviewProject: func(ctx context.Context, call operatortool.Call) (json.RawMessage, error) {
+			return (hubProjectExecutor{s}).command(ctx, call, projectCommandPreview)
+		},
+		ProjectError: projectToolError,
+	}
 }
