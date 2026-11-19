@@ -40,12 +40,13 @@ type Caller struct {
 	SessionID    string
 }
 type Cursor struct {
-	Version    int            `json:"v"`
-	Scope      string         `json:"scope"`
-	After      string         `json:"after"`
-	Expires    int64          `json:"expires"`
-	Issues     *IssuePosition `json:"issues,omitempty"`
-	Compaction int64          `json:"compaction,omitempty"`
+	Version    int                   `json:"v"`
+	Scope      string                `json:"scope"`
+	After      string                `json:"after"`
+	Expires    int64                 `json:"expires"`
+	Issues     *IssuePosition        `json:"issues,omitempty"`
+	Scan       *corestore.ScanCursor `json:"scan,omitempty"`
+	Compaction int64                 `json:"compaction,omitempty"`
 }
 
 type IssuePosition struct {

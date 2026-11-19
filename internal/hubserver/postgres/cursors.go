@@ -114,20 +114,25 @@ func cursorError(ctx context.Context, err error) error {
 	return err
 }
 
+func (s *session) workItemScanCursor(ctx context.Context, project tracker.ProjectID, cursor corestore.ScanCursor) (corestore.ScanCursor, error) {
+	if cursor != (corestore.ScanCursor{}) {
+		return cursor, nil
+	}
+	through, err := s.queries.WorkItemScanThrough(ctx, pgquery.WorkItemScanThroughParams{OrganizationID: s.organization, ProjectID: project})
+	return corestore.ScanCursor{After: math.MinInt64, Through: through}, mapError(ctx, err)
+}
+
 func (s *session) ScanWorkItems(ctx context.Context, project tracker.ProjectID, cursor corestore.ScanCursor, limit int) (corestore.Scan[corestore.WorkItem], error) {
 	var page corestore.Scan[corestore.WorkItem]
 	if err := checkPage(limit); err != nil {
 		return page, err
 	}
-	if cursor == (corestore.ScanCursor{}) {
-		through, err := s.queries.WorkItemScanThrough(ctx, pgquery.WorkItemScanThroughParams{OrganizationID: s.organization, ProjectID: project})
-		if errors.Is(mapError(ctx, err), corestore.ErrNotFound) {
-			return page, nil
-		}
-		if err != nil {
-			return page, mapError(ctx, err)
-		}
-		cursor = corestore.ScanCursor{After: math.MinInt64, Through: through}
+	cursor, err := s.workItemScanCursor(ctx, project, cursor)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return page, nil
+	}
+	if err != nil {
+		return page, err
 	}
 	rows, err := s.queries.ScanWorkItems(ctx, pgquery.ScanWorkItemsParams{OrganizationID: s.organization, ProjectID: project, AfterID: cursor.After, ThroughID: cursor.Through, PageLimit: int32(limit)})
 	if err != nil {
@@ -141,6 +146,43 @@ func (s *session) ScanWorkItems(ctx context.Context, project tracker.ProjectID, 
 		page.Next = corestore.ScanCursor{After: rows[len(rows)-1].ID, Through: cursor.Through}
 	}
 	return page, nil
+}
+
+func (s *session) RunnerWorkItemKeys(ctx context.Context, project tracker.ProjectID, state string, cursor corestore.ScanCursor, limit int) (corestore.Scan[corestore.RunnerWorkItemKey], error) {
+	var page corestore.Scan[corestore.RunnerWorkItemKey]
+	if err := checkPage(limit); err != nil {
+		return page, err
+	}
+	cursor, err := s.workItemScanCursor(ctx, project, cursor)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return page, nil
+	}
+	if err != nil {
+		return page, err
+	}
+	query := `SELECT id,native_id FROM issues WHERE organization_id=$1 AND project_id=$2 AND id>$3 AND id<=$4`
+	args := []any{s.organization, project, cursor.After, cursor.Through, limit + 1}
+	if state != "" {
+		query += " AND NOT archived AND workflow_state_name=$6"
+		args = append(args, state)
+	}
+	rows, err := s.db.Query(ctx, query+" ORDER BY id LIMIT $5", args...)
+	if err != nil {
+		return page, mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item corestore.RunnerWorkItemKey
+		if err := rows.Scan(&item.ID, &item.NativeID); err != nil {
+			return page, mapError(ctx, err)
+		}
+		if len(page.Items) == limit {
+			page.Next = corestore.ScanCursor{After: page.Items[limit-1].ID, Through: cursor.Through}
+			break
+		}
+		page.Items = append(page.Items, item)
+	}
+	return page, mapError(ctx, rows.Err())
 }
 
 func (s *session) ScanComments(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.ScanCursor, limit int) (corestore.Scan[corestore.Comment], error) {

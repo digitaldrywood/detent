@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workpage"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -247,6 +248,11 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	if !includeBoard {
 		cursorParams = nativeWorkCursorParams(params)
 	}
+	runnerList := bodies && scope.Credential.Runner.RunnerID != "" && workpage.RunnerEnumeration(params)
+	if runnerList {
+		path += "/runner-enumeration"
+		cursorParams.Set("cursor", strings.TrimPrefix(params.Get("cursor"), workpage.RunnerCursorPrefix))
+	}
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, cursorParams, maximum, hubapi.DefaultAPIPageLimit)
 	if err != nil {
 		return page, nil, err
@@ -270,6 +276,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		}
 	}
 	var snapshot viewstore.BoardModelPage
+	var scan workpage.RunnerScan
 	var overlay boardoverlay.Overlay
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
@@ -294,6 +301,17 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 			value.WorkOrder = true
 			value.Terminal = new(false)
 			work = &value
+		}
+		if runnerList {
+			keys, ok := reader.(corestore.RunnerWorkItemReader)
+			if !ok {
+				return hubapi.NativeWorkItemStorageUnavailable()
+			}
+			scan, err = workpage.ReadRunnerScan(ctx, keys, scope.Project, params.Get("state"), cursor.Scan, limit)
+			if err != nil {
+				return err
+			}
+			selection.WorkItemIDs = scan.IDs
 		}
 		snapshot, err = model.BoardModelPages(ctx, selection, work, s.accessAuthority(scope, false))
 		if legacy && snapshot.Pending && err == nil && selection.SearchText == "" {
@@ -404,6 +422,9 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		}
 	}
 	records := snapshot.Records
+	if runnerList {
+		scan.Order(records)
+	}
 	hasMore := len(records) > limit
 	if hasMore {
 		records = records[:limit]
@@ -487,6 +508,10 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 			used += row.ListBytes
 			page.Work.Items = append(page.Work.Items, card.Issue)
 		}
+	}
+	if runnerList {
+		page.NextCursor, cursors, err = scan.Cursors(cursor, key, returned)
+		return page, cursors, err
 	}
 	if bodies && !picker && !legacy && !compact && !includeBoard && !includeWork && !includeSummary {
 		for _, row := range returned {
