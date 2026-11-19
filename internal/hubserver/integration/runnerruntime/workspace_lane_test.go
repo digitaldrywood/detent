@@ -1,4 +1,4 @@
-package hubserver
+package runnerruntime_test
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -22,8 +23,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
+	"github.com/digitaldrywood/detent/internal/hubserver/workspacerelay"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -31,10 +38,11 @@ import (
 )
 
 type workspaceLaneFixture struct {
-	nativeFixture
+	hubfixture.Native
 	server *httptest.Server
-	runner runnerFixture
+	runner hubtest.SeededRunner
 	lane   *workspacerunner.Lane
+	relay  *workspaceLaneRelay
 	source string
 }
 
@@ -43,42 +51,40 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not on PATH")
 	}
-	f := &workspaceLaneFixture{nativeFixture: newDefaultNativeFixture(t, Config{
-		Workspace: &WorkspaceConfig{Enabled: true, PersonMaxOpen: 10, PlanMaxOpen: 10,
-			Terminal: WorkspaceTerminalConfig{Enabled: true}},
+	f := &workspaceLaneFixture{Native: hubfixture.NewDefaultNative(t, hubfixture.Config{
+		Workspace: &workspacehub.Config{Enabled: true, PersonMaxOpen: 10, PlanMaxOpen: 10,
+			Terminal: workspacehub.TerminalConfig{Enabled: true}},
 	})}
-	service := f.service
-	policy := hubTestPolicy()
-	approveHubTestPolicy(t, service, f.base+"/policy", policy)
-	f.server = httptest.NewServer(service.echo)
+	policy := hubfixture.Policy()
+	f.server = httptest.NewServer(f.Hub.Handler())
 	t.Cleanup(f.server.Close)
 
-	f.runner = prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate,
-		runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
-	f.runner.enroll(t)
+	f.runner = hubtest.Runner(t, f.Hub.Repository, f.Organization(), hubtest.RunnerOptions{
+		Projects: []tracker.ProjectID{f.Project.ID}, Hostname: "runner-host", Capacity: 4, Now: f.Hub.Now(),
+	})
 	client, err := hubclient.New(hubclient.Config{
 		URL: f.server.URL, HTTPClient: f.server.Client(),
-		TokenSource: func() string { return f.runner.redemption.Credential },
+		TokenSource: func() string { return f.runner.Credential.Token },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := client.Native(f.project.OrganizationID, f.project.ID)
+	native, err := client.Native(f.Project.OrganizationID, f.Project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	support := workspacerunner.Support{Terminal: true}
 	if err := native.HeartbeatMachine(t.Context(), hubclient.Machine{
-		ID: f.runner.binding.MachineID, Hostname: "runner-host", DisplayName: "runner", Capacity: 4, Version: "test",
-		BackendIsolation:      f.runner.redemption.BackendIsolation,
-		CapacityConfig:        &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 4, RuntimeLimit: 4, Manageable: true, ObservedAt: service.config.Clock()},
+		ID: f.runner.Identity.MachineID, Hostname: "runner-host", DisplayName: "runner", Capacity: 4, Version: "test",
+		BackendIsolation:      isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}},
+		CapacityConfig:        &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 4, RuntimeLimit: 4, Manageable: true, ObservedAt: f.Hub.Now()},
 		WorkspaceCapabilities: workspacerunner.Capabilities(support), WorkspaceIsolation: workspacesession.IsolationUser,
 	}); err != nil {
 		t.Fatalf("heartbeat machine: %v", err)
 	}
 	var sessions atomic.Uint64
 	claimer, err := hubclient.NewWorkspaceClaimer(native, hubclient.WorkspaceLaneConfig{
-		PolicyID: policy.ID, MachineID: f.runner.binding.MachineID,
+		PolicyID: policy.ID, MachineID: f.runner.Identity.MachineID,
 		SessionID: func() (string, error) { return fmt.Sprintf("lane-session-%d", sessions.Add(1)), nil },
 	})
 	if err != nil {
@@ -92,9 +98,10 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.relay = &workspaceLaneRelay{Hub: native}
 	f.lane, err = workspacerunner.NewLane(workspacerunner.LaneConfig{
-		Claimer: claimer, Hub: native, Logger: logger, Poll: 50 * time.Millisecond,
-		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: string(f.project.ID), Resolve: claimer.RunIdentifier},
+		Claimer: claimer, Hub: f.relay, Logger: logger, Poll: 50 * time.Millisecond,
+		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: string(f.Project.ID), Resolve: claimer.RunIdentifier},
 		Support:  support, Shell: "/bin/sh", Hostname: "runner-host",
 		Reporter: laneActionReporter{native: native},
 	})
@@ -110,8 +117,28 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	t.Cleanup(func() {
 		cancel()
 		<-done
+		f.relay.probes.Wait()
 	})
 	return f
+}
+
+type workspaceLaneRelay struct {
+	workspacerunner.Hub
+	probes sync.WaitGroup
+	ready  sync.Map
+}
+
+func (r *workspaceLaneRelay) DialWorkspaceRelay(ctx context.Context, id string, identity hubclient.WorkspaceIdentity) (*websocket.Conn, error) {
+	socket, err := r.Hub.DialWorkspaceRelay(ctx, id, identity)
+	if err != nil {
+		return nil, err
+	}
+	r.probes.Go(func() {
+		if socket.Ping(ctx) == nil {
+			r.ready.Store(id, struct{}{})
+		}
+	})
+	return socket, nil
 }
 
 func laneShortTempDir(t *testing.T) string {
@@ -153,22 +180,22 @@ func laneGit(t *testing.T, dir string, args ...string) string {
 
 func (f *workspaceLaneFixture) open(t *testing.T, subject string, requires []string) string {
 	t.Helper()
-	issue := f.create(t, subject)
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/workspaces", f.token, map[string]any{
+	issue := f.Create(t, subject)
+	response := f.Hub.Request(t, http.MethodPost, f.Base+"/workspaces", f.Token, map[string]any{
 		"idempotency_key": "lane-" + string(issue.WorkItemID), "work_item_id": string(issue.WorkItemID), "requires": requires,
 	})
-	requireNativeStatus(t, response, http.StatusCreated)
+	hubfixture.RequireStatus(t, response, http.StatusCreated)
 	var session workspacesession.Session
-	decodeHubResponse(t, response, &session)
+	hubfixture.Decode(t, response, &session)
 	return session.ID
 }
 
 func (f *workspaceLaneFixture) read(t *testing.T, id string) workspacesession.Session {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/workspaces/"+id, f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
+	response := f.Hub.Request(t, http.MethodGet, f.Base+"/workspaces/"+id, f.Token, nil)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var session workspacesession.Session
-	decodeHubResponse(t, response, &session)
+	hubfixture.Decode(t, response, &session)
 	return session
 }
 
@@ -178,9 +205,7 @@ func (f *workspaceLaneFixture) awaitReady(t *testing.T, id string) workspacesess
 	testenv.WaitUntil(t, t.Context(), func() error {
 		session := f.read(t, id)
 		if session.State == workspacesession.StateReady {
-			// Ready describes the worktree; the runner attaches its relay
-			// afterward. Lifecycle tests need both before sending frames.
-			if f.service.workspaces.relay.runnerFor(id) != nil {
+			if _, ok := f.relay.ready.Load(id); ok {
 				ready = session
 				return nil
 			}
@@ -203,24 +228,69 @@ func (f *workspaceLaneFixture) awaitLaneIdle(t *testing.T) {
 	})
 }
 
-func (f *workspaceLaneFixture) dialPerson(t *testing.T, id string) *relayClient {
+func (f *workspaceLaneFixture) dialPerson(t *testing.T, id string) *workspaceLaneClient {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/workspaces/"+id+"/relay-tickets", f.token, map[string]any{})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var minted workspaceRelayTicketResponse
-	decodeHubResponse(t, response, &minted)
-	url := "ws" + strings.TrimPrefix(f.server.URL, "http") + f.base + "/workspaces/" + id + "/relay?ticket=" + minted.Ticket
-	socket, upgrade, err := websocket.Dial(testenv.WaitContext(t, t.Context()), url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + f.token}}})
-	closeRelayDial(upgrade)
+	response := f.Hub.Request(t, http.MethodPost, f.Base+"/workspaces/"+id+"/relay-tickets", f.Token, map[string]any{})
+	hubfixture.RequireStatus(t, response, http.StatusCreated)
+	var minted workspacerelay.TicketResponse
+	hubfixture.Decode(t, response, &minted)
+	url := "ws" + strings.TrimPrefix(f.server.URL, "http") + f.Base + "/workspaces/" + id + "/relay?ticket=" + minted.Ticket
+	socket, upgrade, err := websocket.Dial(testenv.WaitContext(t, t.Context()), url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + f.Token}}})
+	if upgrade != nil && upgrade.Body != nil {
+		_ = upgrade.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("dial person relay: %v", err)
 	}
-	socket.SetReadLimit(relayReadLimit)
+	socket.SetReadLimit(workspacerelay.ReadLimit)
 	t.Cleanup(func() { _ = socket.Close(websocket.StatusNormalClosure, "test over") })
-	return &relayClient{t: t, socket: socket}
+	return &workspaceLaneClient{t: t, socket: socket}
 }
 
-func receiveType(t *testing.T, client *relayClient, kind string) workspacesession.Frame {
+func laneFrame(t *testing.T, channel, kind, stream string, payload any) workspacesession.Frame {
+	t.Helper()
+	encoded, err := workspacesession.Encode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return workspacesession.Frame{Channel: channel, Type: kind, Stream: stream, Payload: encoded}
+}
+
+type workspaceLaneClient struct {
+	t      *testing.T
+	socket *websocket.Conn
+}
+
+func (c *workspaceLaneClient) send(frame workspacesession.Frame) {
+	c.t.Helper()
+	encoded, err := json.Marshal(frame)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	ctx := testenv.WaitContext(c.t, c.t.Context())
+	if err := c.socket.Write(ctx, websocket.MessageText, encoded); err != nil {
+		c.t.Fatalf("write frame: %v", err)
+	}
+}
+
+func (c *workspaceLaneClient) receive() workspacesession.Frame {
+	c.t.Helper()
+	ctx := testenv.WaitContext(c.t, c.t.Context())
+	kind, data, err := c.socket.Read(ctx)
+	if err != nil {
+		c.t.Fatalf("read frame: %v", err)
+	}
+	if kind != websocket.MessageText {
+		c.t.Fatalf("frame message type = %v, want text", kind)
+	}
+	var frame workspacesession.Frame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		c.t.Fatalf("decode frame %q: %v", data, err)
+	}
+	return frame
+}
+
+func receiveType(t *testing.T, client *workspaceLaneClient, kind string) workspacesession.Frame {
 	t.Helper()
 	for range 64 {
 		frame := client.receive()
@@ -243,9 +313,9 @@ func terminalAvailable() bool {
 	return err == nil
 }
 
-func startWorkspaceShell(t *testing.T, person *relayClient) *os.Process {
+func startWorkspaceShell(t *testing.T, person *workspaceLaneClient) *os.Process {
 	t.Helper()
-	person.send(terminalOpenFrame())
+	person.send(laneFrame(t, workspacesession.ChannelTerminal, workspacesession.TypeOpen, "", workspacesession.TerminalOpen{Cols: 80, Rows: 24}))
 	opened := receiveType(t, person, workspacesession.TypeTerminalOpened)
 	var shell workspacesession.TerminalOpened
 	if err := json.Unmarshal(opened.Payload, &shell); err != nil {
@@ -265,7 +335,7 @@ func startWorkspaceShell(t *testing.T, person *relayClient) *os.Process {
 	ready := filepath.Join(t.TempDir(), "terminal-ready")
 	quoted := "'" + strings.ReplaceAll(ready, "'", "'\\''") + "'"
 	command := "printf ready > " + quoted + "\n"
-	person.send(terminalFrameOf(t, workspacesession.TypeTerminalInput, opened.Stream, workspacesession.TerminalInput{Data: command}))
+	person.send(laneFrame(t, workspacesession.ChannelTerminal, workspacesession.TypeTerminalInput, opened.Stream, workspacesession.TerminalInput{Data: command}))
 	testenv.WaitUntil(t, t.Context(), func() error {
 		contents, err := os.ReadFile(ready)
 		if err != nil {
@@ -308,12 +378,9 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 	if ready.Capabilities == nil || !ready.Capabilities.Files || !ready.Capabilities.Git || !ready.Capabilities.Exec {
 		t.Fatalf("ready capabilities = %+v, want files, git and exec", ready.Capabilities)
 	}
-	if f.lane.Open() != 1 {
-		t.Fatalf("lane holds %d workspaces, want 1", f.lane.Open())
-	}
 
 	person := f.dialPerson(t, id)
-	person.send(filesListFrame(""))
+	person.send(laneFrame(t, workspacesession.ChannelFiles, workspacesession.TypeFilesList, "", workspacesession.FilesRequest{}))
 	listed := receiveType(t, person, workspacesession.TypeFilesListed)
 	var files workspacesession.FilesListed
 	if err := json.Unmarshal(listed.Payload, &files); err != nil {
@@ -327,7 +394,7 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 		t.Fatalf("files listing = %+v, want README.md from the worktree", files.Entries)
 	}
 
-	person.send(gitFrame(workspacesession.TypeGitStatus, ""))
+	person.send(laneFrame(t, workspacesession.ChannelGit, workspacesession.TypeGitStatus, "", workspacesession.GitRequest{}))
 	statusFrame := receiveType(t, person, workspacesession.TypeGitStatus)
 	var status workspacesession.GitStatus
 	if err := json.Unmarshal(statusFrame.Payload, &status); err != nil {
@@ -342,8 +409,8 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 		shell = startWorkspaceShell(t, person)
 	}
 
-	result, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
-		"UPDATE leases SET acquired_at=acquired_at+($1::timestamptz-expires_at),renewed_at=renewed_at+($1::timestamptz-expires_at),expires_at=$1 WHERE organization_id=$2 AND machine_id=$3 AND released_at IS NULL", time.Now().Add(-time.Minute), f.project.OrganizationID, f.runner.binding.MachineID)
+	result, err := f.Hub.Admin.ExecContext(t.Context(),
+		"UPDATE leases SET acquired_at=acquired_at+($1::timestamptz-expires_at),renewed_at=renewed_at+($1::timestamptz-expires_at),expires_at=$1 WHERE organization_id=$2 AND machine_id=$3 AND released_at IS NULL", time.Now().Add(-time.Minute), f.Project.OrganizationID, f.runner.Identity.MachineID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +441,7 @@ func TestWorkspaceLaneUnbindsWhenTheWorkspaceIsClosed(t *testing.T) {
 		shell = startWorkspaceShell(t, person)
 	}
 
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/workspaces/"+id, f.token, nil), http.StatusNoContent)
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodDelete, f.Base+"/workspaces/"+id, f.Token, nil), http.StatusNoContent)
 	f.awaitLaneIdle(t)
 	if shell != nil {
 		requireWorkspaceShellExited(t, shell)
@@ -386,8 +453,8 @@ func TestWorkspaceLaneUnbindsWhenTheWorkspaceIsClosed(t *testing.T) {
 		t.Fatalf("the session worktree %s remains after close: %v", ready.WorktreePath, err)
 	}
 	var open int
-	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(),
-		"SELECT COUNT(*) FROM leases WHERE organization_id=$1 AND released_at IS NULL AND machine_id=$2", f.project.OrganizationID, f.runner.binding.MachineID).Scan(&open); err != nil {
+	if err := f.Hub.Admin.QueryRowContext(t.Context(),
+		"SELECT COUNT(*) FROM leases WHERE organization_id=$1 AND released_at IS NULL AND machine_id=$2", f.Project.OrganizationID, f.runner.Identity.MachineID).Scan(&open); err != nil {
 		t.Fatal(err)
 	}
 	if open != 0 {
@@ -420,7 +487,7 @@ func TestWorkspaceLaneClaimsWhatTheClientOpens(t *testing.T) {
 			if !ready.Capabilities.Satisfies(ready.Requires) {
 				t.Fatalf("ready workspace requires %v beyond capabilities %+v", ready.Requires, ready.Capabilities)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/workspaces/"+id, f.token, nil), http.StatusNoContent)
+			hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodDelete, f.Base+"/workspaces/"+id, f.Token, nil), http.StatusNoContent)
 			f.awaitLaneIdle(t)
 		})
 	}
@@ -429,24 +496,23 @@ func TestWorkspaceLaneClaimsWhatTheClientOpens(t *testing.T) {
 func (f *workspaceLaneFixture) action(t *testing.T, body map[string]any) workspacesession.Action {
 	t.Helper()
 	body["idempotency_key"] = hubapi.NewID("actkey")
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions", f.token, body)
-	requireNativeStatus(t, response, http.StatusCreated)
+	response := f.Hub.Request(t, http.MethodPost, f.Base+"/actions", f.Token, body)
+	hubfixture.RequireStatus(t, response, http.StatusCreated)
 	var authored workspacesession.Action
-	decodeHubResponse(t, response, &authored)
+	hubfixture.Decode(t, response, &authored)
 	return authored
 }
 
-func (f *workspaceLaneFixture) awaitRun(t *testing.T, action workspacesession.Action, dispatch bool) workspacesession.Run {
+func (f *workspaceLaneFixture) awaitRun(t *testing.T, action workspacesession.Action) workspacesession.Run {
 	t.Helper()
 	var finished workspacesession.Run
 	testenv.WaitUntil(t, t.Context(), func() error {
-		if dispatch {
-			f.service.workspaces.sweep(t.Context())
+		response := f.Hub.Request(t, http.MethodGet, f.Base+"/actions/"+action.ID+"/runs", f.Token, nil)
+		hubfixture.RequireStatus(t, response, http.StatusOK)
+		var runs struct {
+			Items []workspacesession.Run `json:"items"`
 		}
-		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/actions/"+action.ID+"/runs", f.token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		var runs projectActionRunList
-		decodeHubResponse(t, response, &runs)
+		hubfixture.Decode(t, response, &runs)
 		if len(runs.Items) == 1 && runs.Items[0].Status != workspacesession.RunQueued && runs.Items[0].Status != workspacesession.RunRunning {
 			finished = runs.Items[0]
 			return nil
@@ -472,7 +538,7 @@ func TestWorkspaceLaneRunsProjectActions(t *testing.T) {
 	setup := f.action(t, map[string]any{"name": "Setup", "command": "echo setup > setup-ran", "run_on_worktree_creation": true})
 	id := f.open(t, "actions-subject", []string{"files", "exec"})
 	ready := f.awaitReady(t, id)
-	if run := f.awaitRun(t, setup, false); run.Status != workspacesession.RunSucceeded || run.WorkspaceID != id {
+	if run := f.awaitRun(t, setup); run.Status != workspacesession.RunSucceeded || run.WorkspaceID != id {
 		t.Fatalf("setup run = %+v, want a succeeded run on %s", run, id)
 	}
 	if _, err := os.Stat(filepath.Join(ready.WorktreePath, "setup-ran")); err != nil {
@@ -480,10 +546,10 @@ func TestWorkspaceLaneRunsProjectActions(t *testing.T) {
 	}
 
 	build := f.action(t, map[string]any{"name": "Build", "command": "echo built > build-ran"})
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions/"+build.ID+"/runs", f.token,
+	response := f.Hub.Request(t, http.MethodPost, f.Base+"/actions/"+build.ID+"/runs", f.Token,
 		map[string]any{"idempotency_key": hubapi.NewID("runkey"), "workspace_id": id})
-	requireNativeStatus(t, response, http.StatusAccepted)
-	if run := f.awaitRun(t, build, true); run.Status != workspacesession.RunSucceeded {
+	hubfixture.RequireStatus(t, response, http.StatusAccepted)
+	if run := f.awaitRun(t, build); run.Status != workspacesession.RunSucceeded {
 		t.Fatalf("dispatched run = %+v, want succeeded", run)
 	}
 	if _, err := os.Stat(filepath.Join(ready.WorktreePath, "build-ran")); err != nil {

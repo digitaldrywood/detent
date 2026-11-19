@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -110,7 +111,11 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	laneGit(t, root, "init", "-q", ".")
+	gitInit := exec.CommandContext(t.Context(), "git", "-c", "init.defaultBranch=main", "init", "-q", ".")
+	gitInit.Dir = root
+	if output, err := gitInit.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
+	}
 	for _, directory := range []string{"empty", "pages"} {
 		if err := os.Mkdir(filepath.Join(root, directory), 0700); err != nil {
 			t.Fatal(err)
