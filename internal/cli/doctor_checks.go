@@ -174,12 +174,6 @@ func checkDoctorGateInstructionConflict(id, command string, files []doctorInstru
 func checkDoctorWorkflowSourceDrift(ctx context.Context, id string, project globalconfig.Project, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
 	return doctorCheckResultFrom(doctor.CheckWorkflowSourceDrift(ctx, id, project, cfg, doctorCheckDeps(deps)))
 }
-func checkDoctorInvariants(ctx context.Context, id, root string, run func(context.Context, string) error) []doctorCheck {
-	return doctorCheckResultsFrom(doctor.CheckInvariants(ctx, id, root, run))
-}
-func runDoctorInvariants(ctx context.Context, root string) error {
-	return doctor.RunInvariants(ctx, root)
-}
 
 func checkDoctorModelPolicy(id string, cfg workflowconfig.Config) doctorCheck {
 	return doctorCheckResultFrom(doctor.CheckModelPolicy(id, cfg))

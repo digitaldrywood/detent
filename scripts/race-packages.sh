@@ -38,7 +38,6 @@ BEGIN {
     weight[module "/internal/pause"] = 1.034
     weight[module "/internal/provenance"] = 1.030
     weight[module "/internal/displayorder"] = 1.028
-    weight[module "/tools/invariantcheck"] = 1.023
     weight[module "/internal/scheduleowner"] = 1.022
     weight[module "/internal/operations"] = 1.018
     weight[module "/internal/serviceapi"] = 1.015

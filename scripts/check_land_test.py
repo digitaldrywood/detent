@@ -88,7 +88,7 @@ elif args[0] in ("build", "vet", "test"):
         if arg.startswith("-coverprofile="):
             Path(arg.split("=", 1)[1]).write_text("mode: set\n")
 else:
-    stage = "workspace" if "./tools/testgate" in args else "docs" if "./internal/config/cmd/configdoc" in args else "migrations" if "./tools/migrationcheck" in args else "invariant-manifest" if "./tools/invariantcheck" in args else "sqlc"
+    stage = "workspace" if "./tools/testgate" in args else "docs" if "./internal/config/cmd/configdoc" in args else "migrations" if "./tools/migrationcheck" in args else "sqlc"
     budget = int(os.environ["GOMAXPROCS"])
     if stage == "sqlc" and "internal/hubserver/postgres/sqlc.yaml" in args:
         stage = "hub-sqlc"
@@ -149,7 +149,7 @@ class LandingGateTest(unittest.TestCase):
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "sqlite-policy"), (4, "tenancy-policy"), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "hub-sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
+        cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "sqlite-policy"), (4, "tenancy-policy"), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "hub-sqlc"), (4, "invariants"), (4, "migrations"))]
         cases += [(target, 4, "", "") for target in ("test", "test-fast", "test-race", "test-cover")]
         cases += [("test-cover", 4, failure, shard) for failure, shard in (("", "2/3"), ("", "3/3"), ("hub-2", "2/3"))]
         cases += [("test-race", 4, "", shard) for shard in ("1/3", "2/3", "hub-2")]
@@ -247,7 +247,7 @@ class LandingGateTest(unittest.TestCase):
                         del active[event["stage"]]
                 self.assertFalse(active)
                 self.assertEqual(set(starts[:4]), {"lint", "vet", "build", "unit-short"})
-                tail = ["invariant-manifest", "invariants", "migrations"]
+                tail = ["invariants", "migrations"]
                 if failure in tail:
                     tail = tail[:tail.index(failure) + 1]
                 elif failure:

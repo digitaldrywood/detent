@@ -95,7 +95,7 @@ func TestMakeCheckFastOverlapsWorktrees(t *testing.T) {
 set -eu
 case "$*" in
   'build ./...') exec "$DETENT_MAKE_TEST_BINARY" -test.run='^TestMakeCheckFastBuildHelper$' ;;
-  'run ./tools/invariantcheck'|'run ./tools/migrationcheck'|'run ./internal/config/cmd/configdoc -root .') exit 0 ;;
+  'test -timeout=120s ./internal/invariants'|'run ./tools/migrationcheck'|'run ./internal/config/cmd/configdoc -root .') exit 0 ;;
   'run github.com/sqlc-dev/sqlc/cmd/sqlc@'*' diff -f internal/hubserver/postgres/sqlc.yaml') exit 0 ;;
   *) echo "unexpected gate command: $*" >&2; exit 99 ;;
 esac
@@ -241,7 +241,7 @@ test ! -f broken-enrollmentdocs
 				write("go", `#!/bin/sh
 set -eu
 case "$*" in
-  'run ./tools/invariantcheck')
+  'test -timeout=120s ./internal/invariants')
     echo invariants >> trace
     test ! -f invalid-invariants
     ;;

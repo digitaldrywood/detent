@@ -63,11 +63,6 @@
       "import:os/exec": 1,
       "process:exec.CommandContext": 5
     },
-    "internal/cli/doctor/doctor_invariants.go": {
-      "import:github.com/digitaldrywood/detent/internal/procgroup": 1,
-      "import:os/exec": 1,
-      "process:exec.CommandContext": 1
-    },
     "internal/cli/doctor/doctor_workflow_source.go": {
       "import:os/exec": 1,
       "process:exec.CommandContext": 1
@@ -485,10 +480,6 @@
       "process:exec.CommandContext": 1
     },
     "tools/cifailure/release_audit.go": {
-      "import:os/exec": 1,
-      "process:exec.CommandContext": 1
-    },
-    "tools/invariantcheck/main.go": {
       "import:os/exec": 1,
       "process:exec.CommandContext": 1
     },

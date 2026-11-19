@@ -1,4 +1,4 @@
-// Package invariants holds repository policy tests registered with tools/invariantcheck.
+// Package invariants holds repository policy tests.
 package invariants
 
 import (
