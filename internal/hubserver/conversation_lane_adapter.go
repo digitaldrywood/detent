@@ -941,3 +941,82 @@ func (c *conversationTurnCoordinator) recordDeps() coordinator.RecordDeps {
 		Cancel:    c.cancelRecordedTurn,
 	}
 }
+
+func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.issueProposalDeps().PreviewArchive(ctx, record, call)
+}
+
+func (s *Service) executeCoordinatorIssueArchive(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.issueCommandDeps().ExecuteArchive(ctx, action)
+}
+
+func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscope.NativeScope, command tracker.Mutation, archive chat.IssueArchive) (json.RawMessage, error) {
+	return s.issueCommandDeps().Archive(ctx, scope, command, archive)
+}
+
+var validateCoordinatorArchiveIDs = coordinator.ValidateArchiveIDs
+
+const coordinatorArchiveMaxItems = coordinator.ArchiveMaxItems
+
+func (t *coordinatorToolset) loadSplitIssueSkill(raw json.RawMessage) (any, error) {
+	return coordinator.LoadSplitIssueSkill(raw)
+}
+
+func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.issueProposalDeps().PreviewSplit(ctx, record, call)
+}
+
+func (s *Service) executeCoordinatorIssueSplit(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.issueCommandDeps().ExecuteSplit(ctx, action)
+}
+
+func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, command tracker.Mutation, split chat.IssueSplit) (json.RawMessage, error) {
+	return s.issueCommandDeps().Split(ctx, scope, options, command, split)
+}
+
+var coordinatorIssueSplitTool = coordinator.IssueSplitTool
+var validateCoordinatorIssueSplit = coordinator.ValidateIssueSplit
+
+const coordinatorSplitMaxChildren = coordinator.SplitMaxChildren
+
+func (t *coordinatorToolset) issueProposalDeps() coordinator.IssueProposalDeps {
+	return coordinator.IssueProposalDeps{ProposalDeps: t.proposalDeps(), Commands: t.coordinator.server.issueCommandDeps()}
+}
+
+func (s *Service) issueCommandDeps() coordinator.IssueCommandDeps {
+	return coordinator.IssueCommandDeps{
+		StorageAvailable: s.config.TenantRepository != nil && s.config.AccessRepository != nil,
+		ReadTenant:       s.readConversationTenantWorkload,
+		WriteTenant:      s.writeConversationTenantWorkload,
+		Now:              s.config.Clock,
+		Operation:        nativeOperation,
+		HydrateIssue:     s.hydrateWorkItemRecord,
+		ReadWorkItem:     s.readWorkItemRecord,
+		ReadProject:      s.readProjectRecord,
+		BeginAuthority:   s.beginProjectRecordAuthority,
+		RecheckMutation:  s.recheckProjectRecordMutation,
+		Authorize:        s.authorizeWorkItemRecordScope,
+		LoadArchivePlan: func(ctx context.Context, scope hubscope.NativeScope, item string, revision tracker.Revision) (hubrecords.WorkItemRecordPlan, error) {
+			input := workItemArchive{archiveIssueRequest: archiveIssueRequest{ExpectedRevision: revision}, Archived: true}
+			return s.loadWorkItemPlan(ctx, scope, item, "", input)
+		},
+		PlanArchive: func(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan, revision tracker.Revision) (hubrecords.WorkItemRecordPlan, error) {
+			input := workItemArchive{archiveIssueRequest: archiveIssueRequest{ExpectedRevision: revision}, Archived: true}
+			return s.planWorkItemRecord(ctx, scope, plan, input)
+		},
+		LoadPlan:           s.loadWorkItemPlan,
+		PlanWorkItem:       s.planWorkItemRecord,
+		PrepareFields:      s.prepareWorkItemFields,
+		IssueResponse:      s.nativeIssueResponse,
+		Receipt:            s.workItemRecordReceipt,
+		RecordEntryAudit:   s.recordEntryAccessKeyAuditWith,
+		SignalDispatch:     s.signalNativeDispatch,
+		Details:            s.runDetailStore,
+		Plans:              s.database.plansService,
+		ValidateCreate:     validateWorkItemRecordCreateInput,
+		ValidateFiling:     s.validateWorkItemRecordFilingTenant,
+		PrepareAttachments: s.prepareWorkItemAttachmentReferences,
+		AttachmentQuota:    s.attachmentQuotaLimit,
+		WakeSpriteRunners:  s.wakeSpriteRunnersAfter,
+	}
+}

@@ -16,7 +16,10 @@ import (
 
 var ErrToolArguments = errors.New("invalid tool arguments")
 
-const proposalBodyRunes = 4000
+const (
+	proposalTitleBytes = 500
+	proposalBodyRunes  = 4000
+)
 
 func Tool(name, description, schema string) runner.AgentTool {
 	return runner.AgentTool{Name: name, Description: description, InputSchema: json.RawMessage(schema)}
