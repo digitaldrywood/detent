@@ -75,6 +75,10 @@ func TestFencedRunEventRecordsWorkerInventory(t *testing.T) {
 	replacement := heartbeat
 	replacement.IdempotencyKey, replacement.Data.Sequence, replacement.Worker = "observe-replacement", 3, &other
 	send(replacement, http.StatusConflict)
+	later := worker
+	later.StartedAt = worker.StartedAt.Add(time.Microsecond)
+	replacement.IdempotencyKey, replacement.Worker = "different-start-time", &later
+	send(replacement, http.StatusConflict)
 	replacement.IdempotencyKey, replacement.Worker = "observed-owner-confirmed", &worker
 	send(replacement, http.StatusOK)
 
@@ -111,8 +115,6 @@ func TestFencedRunEventRecordsWorkerInventory(t *testing.T) {
 	send(wrongWorker, http.StatusConflict)
 	wrongWorker.WorkerCleanup = &imprecise
 	send(wrongWorker, http.StatusUnprocessableEntity)
-	later := worker
-	later.StartedAt = worker.StartedAt.Add(time.Microsecond)
 	wrongWorker.WorkerCleanup = &later
 	send(wrongWorker, http.StatusConflict)
 	if page := read(); len(page.Workers) != 1 || page.Workers[0] != owner {
@@ -120,6 +122,7 @@ func TestFencedRunEventRecordsWorkerInventory(t *testing.T) {
 	}
 	send(cleanup, http.StatusOK)
 	send(cleanup, http.StatusOK)
+	send(replacement, http.StatusOK)
 	if page := read(); len(page.Workers) != 0 {
 		t.Fatalf("retired owner remains in inventory: %+v", page)
 	}
