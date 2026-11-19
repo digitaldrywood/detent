@@ -220,7 +220,6 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if err != nil || len(projects) != 0 {
 			t.Fatalf("idle projects=%d error=%v", len(projects), err)
 		}
-		t.Log("idle discovery examined 0 history rows")
 		if err := tx.Rollback(t.Context()); err != nil {
 			t.Fatal(err)
 		}
