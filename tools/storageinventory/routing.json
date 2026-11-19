@@ -17996,6 +17996,8 @@
           "session.AuthorizeRecordedRecovery:SQL": 1
         },
         "tables": [
+          "hub/change_requests",
+          "hub/change_versions",
           "hub/collaboration_events",
           "hub/issue_dependencies",
           "hub/issues",
