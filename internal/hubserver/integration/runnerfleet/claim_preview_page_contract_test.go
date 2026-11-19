@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"encoding/json"
@@ -8,20 +8,24 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeClaimPreviewPageBytes(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "Example project")
-	runner := prepareRunnerForScope(t, f, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-	runner.enroll(t)
-	runner.reportCapacity(t)
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	t.Parallel()
+	f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
+	runner := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	runner.Enroll(t)
+	runner.ReportCapacity(t)
 	want := map[tracker.NativeWorkItemID]tracker.NativeIssue{}
 	var largeID tracker.NativeWorkItemID
 	for index := range 6 {
-		issue := f.create(t, fmt.Sprintf("Example candidate %d", index))
+		issue := f.Create(t, fmt.Sprintf("Example candidate %d", index))
 		preamble := strings.Repeat("ordinary description ", 12000)
 		if index == 2 {
 			preamble = strings.Repeat("\"", 250<<10)
@@ -38,15 +42,15 @@ func TestNativeClaimPreviewPageBytes(t *testing.T) {
 			issue.Workpad = &tracker.NativeWorkpad{Body: strings.Repeat("Review notes. ", 3000)}
 		}
 		issue.Revision++
-		storeClaimPreviewRevision(t, f, issue, historyTestJSON(t, issue))
+		seedClaimPreviewRevision(t, f, issue)
 		want[issue.WorkItemID] = issue
 	}
 
-	request := tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID}}
+	request := tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: hubfixture.Policy().ID, MachineID: runner.Binding.MachineID}}
 	seen := map[tracker.NativeWorkItemID]bool{}
 	for pageNumber := 1; ; pageNumber++ {
-		resp := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview?pretty", runner.redemption.Credential, request)
-		requireNativeStatus(t, resp, http.StatusOK)
+		resp := f.Hub.Request(t, http.MethodPost, f.Base+"/claims/preview?pretty", runner.Redemption.Credential, request)
+		hubfixture.RequireStatus(t, resp, http.StatusOK)
 		if resp.Body.Len() > 1<<20 {
 			t.Fatalf("page %d has %d bytes, exceeds installed runner limit", pageNumber, resp.Body.Len())
 		}
@@ -84,11 +88,38 @@ func TestNativeClaimPreviewPageBytes(t *testing.T) {
 	claim := request.NativeClaim
 	claim.WorkItemID, claim.SessionID, claim.TTLSeconds = largeID, "large-candidate", 90
 	claim.ProtocolMajor, claim.Capabilities = tracker.NativeProtocolMajor, []string{"native_issues", "scoped_collaboration"}
-	resp := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, claim)
-	requireNativeStatus(t, resp, http.StatusOK)
+	resp := f.Hub.Request(t, http.MethodPost, f.Base+"/claims", runner.Redemption.Credential, claim)
+	hubfixture.RequireStatus(t, resp, http.StatusOK)
 	var lease tracker.NativeLease
-	decodeHubResponse(t, resp, &lease)
+	hubfixture.Decode(t, resp, &lease)
 	if lease.WorkItemID != largeID || lease.FencingToken == 0 || resp.Body.Len() > 1<<20 {
 		t.Fatalf("large candidate lease item=%s bytes=%d", lease.WorkItemID, resp.Body.Len())
+	}
+}
+
+func seedClaimPreviewRevision(t *testing.T, f hubfixture.Native, issue tracker.NativeIssue) {
+	t.Helper()
+	raw, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := eventstore.NewContent(f.Hub.Config.RunDetails).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{
+		OrganizationID: f.Project.OrganizationID, ProjectID: f.Project.ID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision),
+	}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Hub.Repository.WriteTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		row, err := w.WorkItem(t.Context(), f.Project.ID, issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
+			return err
+		}
+		_, err = w.CreateCollaborationVersion(t.Context(), version)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

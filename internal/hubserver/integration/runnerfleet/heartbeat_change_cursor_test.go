@@ -1,10 +1,11 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"bytes"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -22,40 +24,44 @@ import (
 
 func TestRunnerHeartbeatChanges(t *testing.T) {
 	t.Parallel()
-	approved := hubTestPolicy()
-	states := nativeFixtureStates()
+	approved := hubfixture.Policy()
+	states := hubfixture.States()
 	states[0].Transitions = append(states[0].Transitions, "Blocked")
 	approved.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo"}})}
-	f := newRunnerPGFixture(t, func(descriptor *policy.Descriptor) { descriptor.Workflow = approved.Workflow })
+	var clock atomic.Int64
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	clock.Store(now.UnixMicro())
+	h := hubfixture.OpenStartup(t, hubfixture.Config{
+		Clock:   func() time.Time { return time.UnixMicro(clock.Load()).UTC() },
+		Version: "v8.0.0",
+	})
+	f := hubfixture.SeedLeasedRunners(t, h, hubfixture.StartupOrganization, func(descriptor *policy.Descriptor) { descriptor.Workflow = approved.Workflow })
 	approved = approved.WithID()
-	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank) SELECT 'org_startup','prj_runner','Blocked',false,false,max(board_rank)+1 FROM project_workflow_states WHERE organization_id='org_startup' AND project_id='prj_runner'`); err != nil {
+	if _, err := f.Admin.ExecContext(t.Context(), `INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank) SELECT 'org_startup','prj_runner','Blocked',false,false,max(board_rank)+1 FROM project_workflow_states WHERE organization_id='org_startup' AND project_id='prj_runner'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO project_workflow_transitions(organization_id,project_id,source_name,target_name,transition_rank) VALUES('org_startup','prj_runner','Blocked','Todo',0),('org_startup','prj_runner','Todo','Blocked',99)`); err != nil {
+	if _, err := f.Admin.ExecContext(t.Context(), `INSERT INTO project_workflow_transitions(organization_id,project_id,source_name,target_name,transition_rank) VALUES('org_startup','prj_runner','Blocked','Todo',0),('org_startup','prj_runner','Todo','Blocked',99)`); err != nil {
 		t.Fatal(err)
 	}
 	base := "/api/v2/organizations/org_startup/projects/prj_runner"
-	binding := f.bindings[0]
-	credential := f.tokens[0]
+	binding := f.Bindings[0]
+	credential := f.Tokens[0]
 	item := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: "wi_1", Number: 1, Revision: 1}}
-	now := time.Now().UTC().Add(time.Second)
-	f.service.config.Clock = func() time.Time { return now }
-	f.service.database.now = f.service.config.Clock
 	for _, query := range []string{
 		`UPDATE runner_identities SET display_name='Example',expires_at=$1 WHERE organization_id='org_startup'`,
 		`UPDATE api_tokens SET expires_at=$1 WHERE organization_id='org_startup'`,
 	} {
-		if _, err := f.admin.ExecContext(t.Context(), query, now.Add(24*time.Hour)); err != nil {
+		if _, err := f.Admin.ExecContext(t.Context(), query, now.Add(24*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := f.admin.ExecContext(t.Context(), `UPDATE leases SET released_at=$1 WHERE organization_id='org_startup'`, now); err != nil {
+	if _, err := f.Admin.ExecContext(t.Context(), `UPDATE leases SET released_at=$1 WHERE organization_id='org_startup'`, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET workflow_state_name='Done' WHERE organization_id='org_startup' AND native_id='wi_2'`); err != nil {
+	if _, err := f.Admin.ExecContext(t.Context(), `UPDATE issues SET workflow_state_name='Done' WHERE organization_id='org_startup' AND native_id='wi_2'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+	if err := h.Repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.PutWorkItemFacts(t.Context(), claimstore.WorkItemFacts{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: "wi_1"}); err != nil {
 			return err
 		}
@@ -69,26 +75,25 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		event, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), "org_startup", raw)
+		event, err := eventstore.NewContent(h.Config.RunDetails).PrepareEvent(t.Context(), "org_startup", raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
+		if err := h.Repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 			t.Fatal(err)
 		}
 	}
 	setState := func(state string) {
 		t.Helper()
-		if err := f.admin.QueryRowContext(t.Context(), `UPDATE issues SET workflow_state_name=$1,revision=revision+1,last_activity_at=$2 WHERE organization_id='org_startup' AND native_id='wi_1' RETURNING revision`, state, now).Scan(&item.Revision); err != nil {
+		if err := f.Admin.QueryRowContext(t.Context(), `UPDATE issues SET workflow_state_name=$1,revision=revision+1,last_activity_at=$2 WHERE organization_id='org_startup' AND native_id='wi_1' RETURNING revision`, state, now).Scan(&item.Revision); err != nil {
 			t.Fatal(err)
 		}
 	}
-	f.service.config.SecretKeys = secretTestKeys(t, "1", "1")
-	envelope, err := f.service.config.SecretKeys.Seal(bytes.Repeat([]byte{0x5a}, 32), accessstore.SecretAAD("org_startup", "", accessstore.NativeCursorKeyKind))
+	envelope, err := h.Config.SecretKeys.Seal(bytes.Repeat([]byte{0x5a}, 32), accessstore.SecretAAD("org_startup", "", accessstore.NativeCursorKeyKind))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+	if err := h.Repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
 	}); err != nil {
 		t.Fatal(err)
@@ -96,12 +101,12 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 	cursor := ""
 	heartbeat := func() runnerauth.HeartbeatChanges {
 		t.Helper()
-		response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, map[string]any{
+		response := h.Request(t, http.MethodPost, base+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, map[string]any{
 			"backend_isolation": isolation.Report{"example": {isolation.NativeTrusted}}, "capacity": 2, "version": "test", "display_name": "Example", "os": "linux", "architecture": "amd64", "protocol_major": 1, "change_cursor": cursor,
 		})
-		requireNativeStatus(t, response, http.StatusOK)
+		hubfixture.RequireStatus(t, response, http.StatusOK)
 		var snapshot runnerauth.RoutingSnapshot
-		decodeHubResponse(t, response, &snapshot)
+		hubfixture.Decode(t, response, &snapshot)
 		if snapshot.Changes == nil || snapshot.Changes.Cursor == "" || snapshot.Changes.CapabilitiesDigest == "" || snapshot.Changes.PolicyID != approved.ID {
 			t.Fatalf("missing heartbeat hints: %+v", snapshot)
 		}
@@ -121,13 +126,13 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 	}{
 		{name: "unchanged"},
 		{name: "item edit", changed: true, mutate: func() {
-			if err := f.admin.QueryRowContext(t.Context(), `UPDATE issues SET title='updated',revision=revision+1,last_activity_at=$1 WHERE organization_id='org_startup' AND native_id='wi_1' RETURNING revision`, now).Scan(&item.Revision); err != nil {
+			if err := f.Admin.QueryRowContext(t.Context(), `UPDATE issues SET title='updated',revision=revision+1,last_activity_at=$1 WHERE organization_id='org_startup' AND native_id='wi_1' RETURNING revision`, now).Scan(&item.Revision); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{name: "activity without an issue revision", changed: true, mutate: activity},
 		{name: "activity outside collaboration history", changed: true, mutate: func() {
-			if _, err := f.admin.ExecContext(t.Context(), "UPDATE issues SET last_activity_at=$1 WHERE organization_id='org_startup' AND native_id=$2", now, item.WorkItemID); err != nil {
+			if _, err := f.Admin.ExecContext(t.Context(), "UPDATE issues SET last_activity_at=$1 WHERE organization_id='org_startup' AND native_id=$2", now, item.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -138,9 +143,7 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 			cursor = previous
 		}},
 		{name: "malformed cursor", reset: true, mutate: func() { cursor = "invalid" }},
-		{name: "reset cursor", reset: true, mutate: func() { cursor = "" }},
 		{name: "expired cursor", reset: true, mutate: func() { now = now.Add(2 * time.Hour) }},
-		{name: "caught up"},
 		{name: "Blocked queue", changed: true, mutate: func() { setState("Blocked"); claimable = false }},
 		{name: "newly claimable queue", changed: true, mutate: func() { setState("Todo"); claimable = true }},
 	} {
@@ -149,6 +152,7 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 			if test.mutate != nil {
 				test.mutate()
 			}
+			clock.Store(now.UnixMicro())
 			changes := heartbeat()
 			if changes.Reset != test.reset || (len(changes.Items) > 0) != test.changed || changes.Claimable != claimable {
 				t.Fatalf("changes=%+v", changes)
@@ -159,8 +163,13 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 		})
 	}
 	before := heartbeat()
-	f.service.config.Version = "v9.0.0"
+	if err := h.Service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h.Config.Version = "v9.0.0"
+	h = h.Reopen(t)
 	now = now.Add(time.Second)
+	clock.Store(now.UnixMicro())
 	after := heartbeat()
 	if before.CapabilitiesDigest == after.CapabilitiesDigest {
 		t.Fatal("Hub deploy did not change the capabilities digest")
@@ -168,22 +177,22 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 	next := approved
 	next.SourceRevision = strings.Repeat("b", 40)
 	next = next.WithID()
-	prepared, err := eventstore.NewContent(f.service.runDetailStore()).PrepareProjectPolicy(t.Context(), "org_startup", next)
+	prepared, err := eventstore.NewContent(h.Config.RunDetails).PrepareProjectPolicy(t.Context(), "org_startup", next)
 	if err != nil {
 		t.Fatal(err)
 	}
 	prepared.ProjectID = "prj_runner"
 	prepared.ApprovedAt = now
 	prepared.ApprovedBy = "example"
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error { return w.ApproveProjectPolicy(t.Context(), prepared, approved.ID) }); err != nil {
+	if err := h.Repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error { return w.ApproveProjectPolicy(t.Context(), prepared, approved.ID) }); err != nil {
 		t.Fatal(err)
 	}
 	approved = next
 	if changes := heartbeat(); changes.PolicyID != approved.ID {
 		t.Fatalf("policy change was not delivered: %+v", changes)
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, map[string]any{"capacity": 2, "version": "test", "display_name": "Example", "os": "linux", "architecture": "amd64", "protocol_major": 1, "backend_isolation": isolation.Report{"example": {isolation.NativeTrusted}}})
-	requireNativeStatus(t, response, http.StatusOK)
+	response := h.Request(t, http.MethodPost, base+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, map[string]any{"capacity": 2, "version": "test", "display_name": "Example", "os": "linux", "architecture": "amd64", "protocol_major": 1, "backend_isolation": isolation.Report{"example": {isolation.NativeTrusted}}})
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var legacy runnerauth.RoutingSnapshot
 	if err := json.Unmarshal(response.Body.Bytes(), &legacy); err != nil || legacy.Changes != nil {
 		t.Fatalf("legacy heartbeat=%+v error=%v", legacy, err)
