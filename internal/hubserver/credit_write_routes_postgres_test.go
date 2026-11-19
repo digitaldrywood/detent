@@ -1,12 +1,13 @@
 package hubserver
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
-	"context"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -16,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestPostgresCreditWriteRoutes(t *testing.T) {
