@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/digitaldrywood/detent/internal/gate"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
@@ -107,4 +109,20 @@ func BindRecordContent(ctx context.Context, w tenantstore.Writer, scope hubscope
 		}
 	}
 	return nil
+}
+
+func ReviewContentFields(request tracker.ReviewChange) []ContentField {
+	fields := []ContentField{{Name: "body", Value: request.Body}}
+	for _, result := range []struct {
+		name  string
+		value *gate.ValidatorResult
+	}{{"validator", request.Validator}, {"implementation_review", request.ImplementationReview}} {
+		if result.value == nil {
+			continue
+		}
+		for i, evidence := range result.value.CriteriaEvidence {
+			fields = append(fields, ContentField{Name: fmt.Sprintf("%s.criteria_evidence[%d].reference", result.name, i), Value: evidence.Reference})
+		}
+	}
+	return fields
 }

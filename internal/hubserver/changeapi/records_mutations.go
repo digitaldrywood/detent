@@ -118,7 +118,7 @@ func (s *RecordMutations) ChangeRecordEvidenceCommand(ctx context.Context, scope
 			return nil, hubapi.NativeWorkItemStorageUnavailable()
 		}
 		evidence.VersionID = new(versionID)
-		contentFields = s.deps.ChangeReviewContentFields(record)
+		contentFields = changefiles.ReviewContentFields(record)
 		review := tracker.ChangeReview{ID: hubcontent.PayloadNativeID(ctx, "review"), VersionID: versionID, Decision: record.Decision, Body: record.Body, Actor: scope.Actor(), CreatedAt: evidence.CreatedAt}
 		raw, err = json.Marshal(review)
 	default:

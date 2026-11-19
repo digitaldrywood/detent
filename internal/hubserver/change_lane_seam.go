@@ -735,9 +735,6 @@ func (s *Service) changeRecordMutations() *changeapi.RecordMutations {
 		HasPlans:                          func() bool { return s.database.plansService().Plans() != nil },
 		RequireCollaboration:              s.requireReleaseCollaboration,
 		AttachmentReferences:              cloudContentAttachmentReferences,
-		ChangeReviewContentFields: func(request tracker.ReviewChange) []changefiles.ContentField {
-			return changeAttachmentFields(changeReviewContentFields(request))
-		},
 	})
 }
 
@@ -885,9 +882,6 @@ func (s *Service) changeReview() *changeapi.Review {
 		Validator:                           s.changeValidatorDeps(),
 		AttachmentReferences:                cloudContentAttachmentReferences,
 		PrepareRepairs:                      s.prepareChangeReviewRepairs,
-		ChangeReviewContentFields: func(request tracker.ReviewChange) []changefiles.ContentField {
-			return changeAttachmentFields(changeReviewContentFields(request))
-		},
 	})
 }
 
