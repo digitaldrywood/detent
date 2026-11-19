@@ -135,8 +135,7 @@ expiry, capacity and protocol errors) do not consume the allowance.
 The former `agent.auto_promote.rework_limit` and
 `agent.auto_promote.no_progress_limit` keys are retired and fail configuration validation.
 Remove them from existing configuration. There is no replacement tuning key.
-See [INV-3](invariants.md#inv-3--net-zero-mechanisms) for the consolidation and
-historical-reader compatibility contract.
+See [INV-3](invariants.md#inv-3--net-zero-mechanisms) for the retry and consolidation rules.
 
 ## Session limits by complexity level
 
