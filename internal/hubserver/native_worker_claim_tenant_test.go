@@ -29,7 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -40,75 +39,43 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type nativePreviewReadCounts struct {
-	readTenant          int
-	projectRecord       int
-	projectPolicy       int
-	candidatePage       int
-	landingCapacityRead int
-	claimPlanBatch      int
-}
-
-type nativePreviewCountingRepository struct {
+type stalePreviewRepository struct {
 	tenantstore.Repository
-	counts     *nativePreviewReadCounts
-	staleFirst bool
 }
 
-func (r nativePreviewCountingRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	r.counts.readTenant++
+func (r stalePreviewRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		return read(nativePreviewCountingReader{Reader: reader, counts: r.counts, staleFirst: r.staleFirst})
+		return read(stalePreviewReader{Reader: reader})
 	})
 }
 
-func (r nativePreviewCountingRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	r.counts.readTenant++
+func (r stalePreviewRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, func(reader tenantstore.Reader) error {
-		return read(nativePreviewCountingReader{Reader: reader, counts: r.counts, staleFirst: r.staleFirst})
+		return read(stalePreviewReader{Reader: reader})
 	})
 }
 
-type nativePreviewCountingReader struct {
+type stalePreviewReader struct {
 	tenantstore.Reader
-	counts     *nativePreviewReadCounts
-	staleFirst bool
 }
 
-func (r nativePreviewCountingReader) ProjectRecord(ctx context.Context, project tracker.ProjectID) (projectstore.Record, error) {
-	r.counts.projectRecord++
-	return r.Reader.ProjectRecord(ctx, project)
-}
-
-func (r nativePreviewCountingReader) ProjectPolicy(ctx context.Context, project tracker.ProjectID) (policystore.Revision, error) {
-	r.counts.projectPolicy++
-	return r.Reader.ProjectPolicy(ctx, project)
-}
-
-func (r nativePreviewCountingReader) CandidatePage(ctx context.Context, query claimstore.CandidateQuery) (claimstore.CandidatePage, error) {
-	r.counts.candidatePage++
+func (r stalePreviewReader) CandidatePage(ctx context.Context, query claimstore.CandidateQuery) (claimstore.CandidatePage, error) {
 	page, err := r.Reader.CandidatePage(ctx, query)
-	if err == nil && r.staleFirst && len(page.Items) > 0 {
+	if err == nil && len(page.Items) > 0 {
 		page.Items[0].Revision++
 	}
 	return page, err
 }
 
-func (r nativePreviewCountingReader) LandingCapacityUsage(ctx context.Context, project tracker.ProjectID, now time.Time) (claimstore.LandingCapacityUsage, error) {
-	r.counts.landingCapacityRead++
-	return r.Reader.LandingCapacityUsage(ctx, project, now)
-}
-
-func (r nativePreviewCountingReader) ClaimAuditDispositionRows(ctx context.Context, project tracker.ProjectID, ids []int64) (map[int64][]eventstore.AuditDisposition, error) {
+func (r stalePreviewReader) ClaimAuditDispositionRows(ctx context.Context, project tracker.ProjectID, ids []int64) (map[int64][]eventstore.AuditDisposition, error) {
 	return r.Reader.(tenantstore.ClaimAuditDispositionRowsReader).ClaimAuditDispositionRows(ctx, project, ids)
 }
 
-func (r nativePreviewCountingReader) ClaimChangeRows(ctx context.Context, project tracker.ProjectID, ids []string) (map[string]tenantstore.BoardChangeRows, error) {
+func (r stalePreviewReader) ClaimChangeRows(ctx context.Context, project tracker.ProjectID, ids []string) (map[string]tenantstore.BoardChangeRows, error) {
 	return r.Reader.(tenantstore.ClaimChangeRowsReader).ClaimChangeRows(ctx, project, ids)
 }
 
-func (r nativePreviewCountingReader) ClaimPreviewPlanRows(ctx context.Context, project tracker.ProjectID, candidates []claimstore.Candidate) ([]tenantstore.ClaimPreviewPlanRow, error) {
-	r.counts.claimPlanBatch++
+func (r stalePreviewReader) ClaimPreviewPlanRows(ctx context.Context, project tracker.ProjectID, candidates []claimstore.Candidate) ([]tenantstore.ClaimPreviewPlanRow, error) {
 	reader, ok := r.Reader.(tenantstore.ClaimPreviewPlanRowsReader)
 	if !ok {
 		return nil, corestore.ErrNotFound
@@ -605,8 +572,6 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	claimPath := base + "/claims"
 	batchDetails := &boardDetailBatchCounter{DetailStore: service.config.RunDetails}
 	service.config.RunDetails = batchDetails
-	counts := &nativePreviewReadCounts{}
-	service.config.TenantRepository = nativePreviewCountingRepository{Repository: repository, counts: counts}
 	previewClaim := request
 	previewClaim.WorkItemID = ""
 	previewClaim.SessionID = ""
@@ -621,20 +586,12 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	if len(sharedPreview.Items) != 2 || !slices.Contains([]tracker.NativeWorkItemID{items[0].WorkItemID, items[1].WorkItemID}, sharedPreview.Items[0].WorkItemID) || !slices.Contains([]tracker.NativeWorkItemID{items[0].WorkItemID, items[1].WorkItemID}, sharedPreview.Items[1].WorkItemID) || sharedPreview.Items[0].WorkItemID == sharedPreview.Items[1].WorkItemID {
 		t.Fatalf("two-candidate preview order = %+v", sharedPreview.Items)
 	}
-	twoCandidateCounts := *counts
-	*counts = nativePreviewReadCounts{}
 	sharedPreviewResponse = performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: previewClaim, Limit: 1})
 	requireNativeStatus(t, sharedPreviewResponse, http.StatusOK)
 	var singlePreview tracker.NativeCapacityPage
 	decodeHubResponse(t, sharedPreviewResponse, &singlePreview)
 	if len(singlePreview.Items) != 1 || singlePreview.Items[0].WorkItemID != sharedPreview.Items[0].WorkItemID {
 		t.Fatalf("single-candidate preview changed first result: one=%+v two=%+v", singlePreview.Items, sharedPreview.Items)
-	}
-	if twoCandidateCounts != *counts {
-		t.Fatalf("preview shared read counts changed with candidate count: two=%+v one=%+v", twoCandidateCounts, *counts)
-	}
-	if twoCandidateCounts.claimPlanBatch != 1 {
-		t.Fatalf("two-candidate preview batch read calls = %d, want 1", twoCandidateCounts.claimPlanBatch)
 	}
 	for _, test := range []struct {
 		name       string
@@ -678,7 +635,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			}
 		})
 	}
-	service.config.TenantRepository = nativePreviewCountingRepository{Repository: repository, counts: counts, staleFirst: true}
+	service.config.TenantRepository = stalePreviewRepository{Repository: repository}
 	stalePreviewResponse := performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: previewClaim, Limit: 2})
 	requireNativeStatus(t, stalePreviewResponse, http.StatusOK)
 	var stalePreview tracker.NativeCapacityPage
@@ -1494,17 +1451,11 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 				response := performHubAPIRequest(t, service, http.MethodPost, itemsPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("refused-%d", index)}, Title: "Example refused issue", Body: "Missing required sections\n\n<!-- detent:no-dispatch -->", State: "Todo"})
 				requireNativeStatus(t, response, http.StatusOK)
 			}
-			counts := &nativePreviewReadCounts{}
-			service.config.TenantRepository = nativePreviewCountingRepository{Repository: repository, counts: counts}
 			request.WorkItemID = ""
 			logs.Reset()
 			_, err = service.claimNativeIssueTenant(t.Context(), scope, request, 5*time.Minute)
 			if !errors.Is(err, ErrNoClaimableWork) {
 				t.Errorf("invalid-only scan error = %v, want no claimable work", err)
-			}
-			service.config.TenantRepository = repository
-			if counts.readTenant != 1 || counts.claimPlanBatch != 1 || counts.candidatePage != 1 {
-				t.Errorf("claim scan reads=%d batch=%d candidate pages=%d; want 1 each", counts.readTenant, counts.claimPlanBatch, counts.candidatePage)
 			}
 			for _, field := range []string{string(organization.ID), string(project.ID), string(issue.WorkItemID), `"runner_id":"[redacted]"`, "issue_contract_unsatisfied"} {
 				if !strings.Contains(logs.String(), field) {

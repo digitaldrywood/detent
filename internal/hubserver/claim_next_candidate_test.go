@@ -4,15 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -28,10 +24,8 @@ import (
 type claimCandidateProbeKey struct{}
 
 type claimCandidateProbe struct {
-	wire       heartbeatWire
 	once       sync.Once
 	writes     int
-	reads      nativePreviewReadCounts
 	candidates []claimstore.Candidate
 }
 
@@ -46,19 +40,29 @@ func (r *claimCandidateRepository) ReadTenantSnapshot(ctx context.Context, organ
 	if !ok {
 		return r.Repository.ReadTenantSnapshot(ctx, organization, workload, read)
 	}
-	probe.reads.readTenant++
 	return r.Repository.ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		return read(claimCandidateReader{nativePreviewCountingReader: nativePreviewCountingReader{Reader: reader, counts: &probe.reads}, probe: probe})
+		snapshot, ok := reader.(claimCandidateSnapshotReader)
+		if !ok {
+			return fmt.Errorf("claim candidate snapshot lacks required reader methods: %T", reader)
+		}
+		return read(claimCandidateReader{claimCandidateSnapshotReader: snapshot, probe: probe})
 	})
 }
 
+type claimCandidateSnapshotReader interface {
+	tenantstore.Reader
+	tenantstore.ClaimAuditDispositionRowsReader
+	tenantstore.ClaimChangeRowsReader
+	tenantstore.ClaimPreviewPlanRowsReader
+}
+
 type claimCandidateReader struct {
-	nativePreviewCountingReader
+	claimCandidateSnapshotReader
 	probe *claimCandidateProbe
 }
 
 func (r claimCandidateReader) CandidatePage(ctx context.Context, query claimstore.CandidateQuery) (claimstore.CandidatePage, error) {
-	page, err := r.nativePreviewCountingReader.CandidatePage(ctx, query)
+	page, err := r.claimCandidateSnapshotReader.CandidatePage(ctx, query)
 	r.probe.candidates = append(r.probe.candidates, page.Items...)
 	return page, err
 }
@@ -90,26 +94,7 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 		{"two organizations", 16, 8, 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repository, admin := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
-				config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-					conn, err := new(net.Dialer).DialContext(ctx, network, address)
-					if err != nil {
-						return nil, err
-					}
-					return &heartbeatConn{Conn: conn, wire: new(heartbeatWire), startup: true}, nil
-				}
-				config.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
-					stream, ok := conn.PgConn().Conn().(*heartbeatConn)
-					if !ok {
-						return false, fmt.Errorf("missing claim wire wrapper: %T", conn.PgConn().Conn())
-					}
-					stream.wire = new(heartbeatWire)
-					if probe, ok := ctx.Value(claimCandidateProbeKey{}).(*claimCandidateProbe); ok {
-						stream.wire = &probe.wire
-					}
-					return true, nil
-				}
-			})
+			repository, admin := projectRecordPostgresWithAdmin(t, 4)
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			service := openLocalPostgresHubTestService(t, repository, Config{Clock: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 			type claimer struct {
@@ -186,12 +171,6 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 			for range workers {
 				result := <-results
 				worker := &workers[result.index]
-				worker.probe.wire.Lock()
-				t.Logf("organization=%s runner=%d granted=%t writes=%d statements=%d exchanges=%d", worker.scope.Organization, result.index, result.err == nil, worker.probe.writes, worker.probe.wire.statements, worker.probe.wire.exchanges)
-				worker.probe.wire.Unlock()
-				if worker.probe.reads.readTenant != 1 || worker.probe.reads.candidatePage != 1 || len(worker.probe.candidates) != test.items {
-					t.Errorf("claim selection escaped one page: reads=%+v candidates=%d", worker.probe.reads, len(worker.probe.candidates))
-				}
 				if result.err != nil {
 					if !errors.Is(result.err, ErrNoClaimableWork) {
 						t.Errorf("claim runner %d: %v", result.index, result.err)

@@ -27,7 +27,7 @@ func (r ordinaryProcessRepository) WriteRunnerEventCommand(ctx context.Context, 
 func TestWorkerSessionMutationPublishesProcessReceiptAtomically(t *testing.T) {
 	for _, ordinary := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ordinary_%t", ordinary), func(t *testing.T) {
-			first, second, repository, _, _ := newRunnerEventWireFixtures(t)
+			first, second, repository, _ := newRunnerEventFixtures(t)
 			if _, err := first.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_worker_receipt() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.pid=9999 THEN RAISE EXCEPTION 'fixture process receipt rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_worker_receipt BEFORE INSERT ON runner_process_receipts FOR EACH ROW EXECUTE FUNCTION reject_worker_receipt()`); err != nil {
 				t.Fatal(err)
 			}
