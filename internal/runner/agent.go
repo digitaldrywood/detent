@@ -4691,11 +4691,12 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 				"path", strings.TrimSpace(process.CleanupPath),
 			)
 		}
-		if err := processStore.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), sessionID, store.WorkerProcessReap{
+		err := processStore.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), sessionID, store.WorkerProcessReap{
 			ReapedAt: r.now().UTC(),
 			Outcome:  string(outcome),
 			Reason:   strings.TrimSpace(reason),
-		}); err != nil {
+		})
+		if err := WorkerBookkeepingError(ctx, "record agent session worker process reap", err); err != nil {
 			return fmt.Errorf("record agent session worker process reap: %w", err)
 		}
 	}

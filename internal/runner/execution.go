@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -45,6 +46,20 @@ type ReleaseDeliveryExecution interface {
 type ReleaseDeliveryResult struct {
 	Settled bool
 	Result  RunResult
+}
+
+type operatorStopCleanupKey struct{}
+
+func WithOperatorStopCleanup(ctx context.Context) context.Context {
+	return context.WithValue(ctx, operatorStopCleanupKey{}, true)
+}
+
+func WorkerBookkeepingError(ctx context.Context, operation string, err error) error {
+	if stopped, _ := ctx.Value(operatorStopCleanupKey{}).(bool); err != nil && stopped {
+		slog.WarnContext(ctx, operation, "error", err)
+		return nil
+	}
+	return err
 }
 
 type WorkerLifetimeExecution interface {

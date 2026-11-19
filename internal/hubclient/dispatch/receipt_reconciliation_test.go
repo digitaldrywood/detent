@@ -31,7 +31,7 @@ func TestStoppedPublicationReconciliation(t *testing.T) {
 			}
 		}
 	}
-	for _, change := range []string{"changed during read", "missing"} {
+	for _, change := range []string{"changed during read", "missing", "source read unavailable"} {
 		t.Run(change, func(t *testing.T) { runStoppedPublication(t, "git_push", "confirmed", "undelivered", change) })
 	}
 }
@@ -99,6 +99,8 @@ func runStoppedPublication(t *testing.T, effect, state, delivery, policy string)
 		}
 		if candidate != nil && r.Method == http.MethodGet && r.URL.Query().Get("projection") == "publication_source" {
 			switch policy {
+			case "source read unavailable":
+				return nil, io.ErrUnexpectedEOF
 			case "changed during read":
 				return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"revision_conflict"}`))}, nil
 			case "missing":

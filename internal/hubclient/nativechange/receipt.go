@@ -52,7 +52,11 @@ func (e *nativeExecution) sendGeneration(ctx context.Context, diff *tracker.Atte
 		if errors.As(readErr, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == "not_found" {
 			return errors.Join(errUnverifiedReceipt, readErr)
 		}
-		return e.executionError(ctx, readErr)
+		readErr = e.executionError(ctx, readErr)
+		if errors.Is(api.MutationEffectError(ctx), runner.ErrOperatorStopped) {
+			return receiptProofError(ctx, readErr)
+		}
+		return readErr
 	}
 	producer := request.Producer
 	producer.RunnerID = attempt.RunnerID
@@ -71,6 +75,13 @@ type completedReceipt struct {
 }
 
 var errUnverifiedReceipt = errors.New("completed receipt source cannot be verified")
+
+func receiptProofError(ctx context.Context, err error) error {
+	if ctx.Err() != nil || nativeAuthorityLost(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		return err
+	}
+	return errors.Join(errUnverifiedReceipt, err)
+}
 
 func validationRuntime(current *tracker.NativeRuntimeObservation, result gate.CommandResult, at time.Time) *tracker.NativeRuntimeObservation {
 	runtime := tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: at.UTC()}
@@ -130,10 +141,7 @@ func (e *nativeExecution) deliverStoppedReceipt(ctx context.Context, attempt *tr
 			generation = original.Data.Sequence
 		}
 		if err := e.captureGeneration(ctx, generation); err != nil {
-			if ctx.Err() != nil || nativeAuthorityLost(err) || nativeTransportUnavailable(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-				return err
-			}
-			return errors.Join(errUnverifiedReceipt, err)
+			return receiptProofError(ctx, err)
 		}
 		diff := e.generationDiff
 		if e.storedSeq != diff.Generation.Seq {
@@ -155,6 +163,9 @@ func (e *nativeExecution) deliverStoppedReceipt(ctx context.Context, attempt *tr
 }
 
 func (e *nativeExecution) stopAttempt(ctx context.Context) (*tracker.NativeAttempt, error) {
+	if !e.claim.lease.ExecutionAttemptView {
+		return nil, e.receiptAuthority(ctx)
+	}
 	var released *tracker.NativeAttempt
 	var interruption tracker.NativeRunEvent
 	var conflict error
@@ -245,7 +256,7 @@ func (e *nativeExecution) verifyReceipt(ctx context.Context) error {
 		if err := r.verifyPublication(ctx); errors.Is(err, publication.ErrSourceChanged) {
 			return errors.Join(errUnverifiedReceipt, err)
 		} else if err != nil {
-			return err
+			return receiptProofError(ctx, err)
 		}
 	} else {
 		if e.diffSource == nil || r.gate.Source.WorkspaceDigest == "" {

@@ -211,7 +211,10 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	var groupErr error
 	go func() {
 		waitErr = cmd.Wait()
-		groupErr = errors.Join(procgroup.Cleanup(groupID), output.Close())
+		groupErr = procgroup.Cleanup(groupID)
+		if err := output.Close(); err != nil {
+			r.logger.Warn("close execution worker output", "error", err)
+		}
 		peer.Close()
 		close(exited)
 	}()
@@ -240,19 +243,14 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 				r.logger.Warn("execution worker exited", "issue", request.Issue.Identifier, "error", waitErr)
 			}
 		})
-		if err := callbacks.Finish(closeCtx, time.Now()); err != nil {
-			return errors.Join(closeErr, err)
-		}
 		if groupErr != nil {
 			groupErr = procgroup.Cleanup(groupID)
 		}
-		if err := errors.Join(closeErr, groupErr); err != nil {
-			return err
+		sessionErr := callbacks.Finish(closeCtx, time.Now())
+		if err := errors.Join(groupErr, sessionErr); err != nil {
+			return errors.Join(err, closeErr)
 		}
-		if err := workspace.CleanupOwnedPath(scratchRoot, scratch); err != nil {
-			return err
-		}
-		return errors.Join(ownedArtifact.Release(), releaseCache())
+		return releaseLocalWorkerResources(closeCtx, scratchRoot, scratch, closeErr, ownedArtifact.Release, releaseCache)
 	}
 	var workerOwner runnerpkg.WorkerLifetimeExecution
 	defer func() {
@@ -322,4 +320,14 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		}
 	}
 	return response.Result, response.Err()
+}
+
+func releaseLocalWorkerResources(ctx context.Context, root, scratch string, pipeErr error, releaseArtifact, releaseCache func() error) error {
+	if err := runnerpkg.WorkerBookkeepingError(ctx, "close execution worker input", pipeErr); err != nil {
+		return err
+	}
+	if err := runnerpkg.WorkerBookkeepingError(ctx, "remove execution worker scratch", workspace.CleanupOwnedPath(root, scratch)); err != nil {
+		return err
+	}
+	return runnerpkg.WorkerBookkeepingError(ctx, "release execution worker resources", errors.Join(releaseArtifact(), releaseCache()))
 }

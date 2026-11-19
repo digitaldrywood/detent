@@ -577,19 +577,20 @@ type NativeClaimDependencyFacts struct {
 
 type NativeLease struct {
 	*NativeClaimDependencyFacts
-	RunDetailBatching   bool                          `json:"run_detail_batching,omitempty"`
-	IsolationPolicy     *isolation.Policy             `json:"isolation_policy,omitempty"`
-	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
-	ServerTime          time.Time                     `json:"server_time"`
-	PolicyID            string                        `json:"policy_id"`
-	ID                  LeaseID                       `json:"lease_id"`
-	WorkItemID          NativeWorkItemID              `json:"work_item_id"`
-	MachineID           MachineID                     `json:"machine_id"`
-	SessionID           string                        `json:"session_id"`
-	FencingToken        FencingToken                  `json:"fencing_token,string"`
-	AcquiredAt          time.Time                     `json:"acquired_at"`
-	RenewedAt           time.Time                     `json:"renewed_at"`
-	ExpiresAt           time.Time                     `json:"expires_at"`
+	ExecutionAttemptView bool                          `json:"execution_attempt_view,omitempty"`
+	RunDetailBatching    bool                          `json:"run_detail_batching,omitempty"`
+	IsolationPolicy      *isolation.Policy             `json:"isolation_policy,omitempty"`
+	ProviderReservation  *providercapacity.Reservation `json:"provider_reservation,omitempty"`
+	ServerTime           time.Time                     `json:"server_time"`
+	PolicyID             string                        `json:"policy_id"`
+	ID                   LeaseID                       `json:"lease_id"`
+	WorkItemID           NativeWorkItemID              `json:"work_item_id"`
+	MachineID            MachineID                     `json:"machine_id"`
+	SessionID            string                        `json:"session_id"`
+	FencingToken         FencingToken                  `json:"fencing_token,string"`
+	AcquiredAt           time.Time                     `json:"acquired_at"`
+	RenewedAt            time.Time                     `json:"renewed_at"`
+	ExpiresAt            time.Time                     `json:"expires_at"`
 }
 
 type NativeCapacityCandidate struct {

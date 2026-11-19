@@ -654,7 +654,8 @@ func (s *Service) writeNativeLeaseResponse(c echo.Context, lease leasestore.Leas
 	if details.WorkItemID == "" {
 		return s.nativeAPIError(c, corestore.ErrNotFound)
 	}
-	response := tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: details.IsolationPolicy,
+	runDetails := s.runDetailStore() != nil
+	response := tracker.NativeLease{ExecutionAttemptView: runDetails && hubscope.NativeRequestScope(c).Credential.Runner.Valid(), RunDetailBatching: runDetails, IsolationPolicy: details.IsolationPolicy,
 		ProviderReservation: details.ProviderReservation, ServerTime: s.config.Clock().UTC(), PolicyID: details.PolicyID,
 		ID: tracker.LeaseID(lease.LeaseID), WorkItemID: details.WorkItemID, MachineID: tracker.MachineID(lease.MachineID), SessionID: lease.SessionID,
 		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt}

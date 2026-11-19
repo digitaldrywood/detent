@@ -847,6 +847,9 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalWorkerCloseTimeout)
 	defer cancel()
+	if operatorStop {
+		cleanup = runner.WithOperatorStopCleanup(cleanup)
+	}
 	if err := e.CloseWorkers(cleanup); err != nil {
 		return err
 	}

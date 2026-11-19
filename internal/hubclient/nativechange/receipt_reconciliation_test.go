@@ -41,7 +41,7 @@ func TestStoppedGateReconciliation(t *testing.T) {
 }
 
 func TestGateDiffDelivery(t *testing.T) {
-	for _, mode := range []string{"matched", "large matched", "413 fallback", "unsubmitted fallback", "files differ", "generation missing", "runner differs", "fence differs", "generation differs"} {
+	for _, mode := range []string{"matched", "large matched", "413 fallback", "unsubmitted fallback", "files differ", "generation missing", "generation read unavailable", "generation read forbidden", "runner differs", "fence differs", "generation differs"} {
 		t.Run(mode, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			item := h.createInProgress(t, "Record validation")
@@ -100,6 +100,16 @@ func TestGateDiffDelivery(t *testing.T) {
 					return nil, err
 				}
 				reads++
+				if mode == "generation read forbidden" {
+					res.Body.Close()
+					res.StatusCode = http.StatusForbidden
+					res.Body = io.NopCloser(strings.NewReader(`{"code":"forbidden"}`))
+					return res, nil
+				}
+				if mode == "generation read unavailable" {
+					res.Body.Close()
+					return nil, io.ErrUnexpectedEOF
+				}
 				if mode == "generation missing" {
 					res.Body.Close()
 					res.StatusCode = http.StatusNotFound
@@ -146,6 +156,12 @@ func TestGateDiffDelivery(t *testing.T) {
 			}
 			if !reflect.DeepEqual(attempt.Evidence, evidence) {
 				t.Fatalf("released attempt evidence %v, want %v", attempt.Evidence, evidence)
+			}
+			if mode == "generation read forbidden" {
+				if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || attempt.ClaimReleasedAt != nil || attempt.Outcome != "" || len(attempt.Steps) != 0 {
+					t.Fatalf("authority refusal: release %v, outcome %q, steps %d, error %v", attempt.ClaimReleasedAt, attempt.Outcome, len(attempt.Steps), err)
+				}
+				return
 			}
 			if mode == "matched" || mode == "large matched" || mode == "413 fallback" {
 				if err != nil || attempt.ClaimReleasedAt == nil || attempt.Outcome != "interrupted" || len(attempt.Steps) != 1 || !reflect.DeepEqual(attempt.Steps[0].Validation, &result) {
@@ -258,13 +274,51 @@ func insertAttemptEvidence(t *testing.T, h *nativeChangeHub, e *nativeExecution,
 }
 
 func TestStopWithAttachedEvidence(t *testing.T) {
-	for _, count := range []int{1, 200, 201} {
-		t.Run(fmt.Sprint(count), func(t *testing.T) {
+	for _, tc := range []struct {
+		count  int
+		legacy bool
+	}{{1, false}, {200, false}, {201, false}, {200, true}, {201, true}} {
+		count := tc.count
+		name := fmt.Sprint(count)
+		if tc.legacy {
+			name = "legacy/" + name
+		}
+		t.Run(name, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			issue := h.createInProgress(t, "Stop with attached verification")
+			status := "interrupted"
+			if tc.legacy {
+				status = "cancelled"
+				requests := fixtureClient(h.native.Transport()).requests
+				next := requests.Load()
+				requests.Store(executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+					if req.URL.Query().Get("view") == "execution" {
+						req = req.Clone(req.Context())
+						req.URL.RawQuery = ""
+					}
+					res, err := next.RoundTrip(req)
+					if err != nil || !strings.HasSuffix(req.URL.Path, "/claims") || res.StatusCode != http.StatusOK {
+						return res, err
+					}
+					var lease tracker.NativeLease
+					err = json.NewDecoder(res.Body).Decode(&lease)
+					res.Body.Close()
+					if err != nil {
+						return nil, err
+					}
+					lease.ExecutionAttemptView = false
+					body, err := json.Marshal(lease)
+					res.Body = io.NopCloser(bytes.NewReader(body))
+					res.ContentLength = int64(len(body))
+					return res, err
+				}))
+			}
 			h.claim(t, issue.ID)
 			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 			ctx, lease := t.Context(), e.claim.lease
+			if lease.ExecutionAttemptView == tc.legacy {
+				t.Fatalf("lease advertised execution attempt view %t, legacy Hub %t", lease.ExecutionAttemptView, tc.legacy)
+			}
 			if err := e.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
@@ -311,7 +365,7 @@ func TestStopWithAttachedEvidence(t *testing.T) {
 				if !reflect.DeepEqual(got, want) {
 					t.Errorf("retained evidence differs, got %d records, want %d", len(got), count)
 				}
-				if stopErr != nil || !nativeLeaseLost(leaseErr) || stored.ReleasedAt == nil || attempt.Sequence != 2 || attempt.Status != "interrupted" {
+				if stopErr != nil || !nativeLeaseLost(leaseErr) || stored.ReleasedAt == nil || attempt.Sequence != 2 || attempt.Status != status {
 					t.Errorf("stop %v, lease %v, released %v, sequence %d, status %q", stopErr, leaseErr, stored.ReleasedAt, attempt.Sequence, attempt.Status)
 				}
 				return nil

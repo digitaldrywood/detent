@@ -708,3 +708,57 @@ func testLocalWorkerScenario(t *testing.T, scenario string) {
 		t.Fatalf("revoked worker survived cleanup: %t %v", alive, err)
 	}
 }
+
+func TestReleaseLocalWorkerResources(t *testing.T) {
+	pipeErr := errors.New("pipe close failed")
+	for _, tc := range []struct {
+		name             string
+		stopped, outside bool
+		pipeErr          error
+		wantCalls        int
+	}{
+		{name: "ordinary release", wantCalls: 1},
+		{name: "ordinary scratch failure", outside: true},
+		{name: "ordinary pipe failure", pipeErr: pipeErr},
+		{name: "stopped release", stopped: true, wantCalls: 1},
+		{name: "stopped scratch failure", stopped: true, outside: true, wantCalls: 1},
+		{name: "stopped pipe failure", stopped: true, pipeErr: pipeErr, wantCalls: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "execution")
+			if tc.outside {
+				dir = t.TempDir()
+			} else if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			ctx := t.Context()
+			if tc.stopped {
+				ctx = runnerpkg.WithOperatorStopCleanup(ctx)
+			}
+			artifactErr, cacheErr := errors.New("artifact release failed"), errors.New("cache release failed")
+			artifacts, caches := 0, 0
+			err := releaseLocalWorkerResources(ctx, root, dir, tc.pipeErr, func() error {
+				artifacts++
+				return artifactErr
+			}, func() error {
+				caches++
+				return cacheErr
+			})
+			if artifacts != tc.wantCalls || caches != tc.wantCalls || (err == nil) != tc.stopped {
+				t.Fatalf("artifact releases %d, cache releases %d, error %v", artifacts, caches, err)
+			}
+			if !tc.stopped && tc.wantCalls == 1 && (!errors.Is(err, artifactErr) || !errors.Is(err, cacheErr)) {
+				t.Fatalf("lost resource release error: %v", err)
+			}
+			if !tc.stopped && tc.pipeErr != nil && !errors.Is(err, tc.pipeErr) {
+				t.Fatalf("lost pipe close error: %v", err)
+			}
+			_, err = os.Stat(dir)
+			removed := tc.wantCalls == 1 && !tc.outside
+			if removed && !errors.Is(err, os.ErrNotExist) || !removed && err != nil {
+				t.Fatalf("scratch path status %v", err)
+			}
+		})
+	}
+}

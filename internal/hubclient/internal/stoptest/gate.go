@@ -44,7 +44,7 @@ func GateMatrix(t *testing.T, fixture func(*testing.T) GateFixture) {
 				t.Run(fmt.Sprintf("exit%d/%s/%s", exit, delivery, proof), func(t *testing.T) { runGate(t, fixture(t), exit, delivery, proof) })
 			}
 		}
-		for _, proof := range []string{"removed before diff", "unreadable before diff", "recapture failed", "changed before event"} {
+		for _, proof := range []string{"removed before diff", "unreadable before diff", "recapture failed", "recapture unavailable", "changed before event"} {
 			t.Run(fmt.Sprintf("exit%d/%s", exit, proof), func(t *testing.T) { runGate(t, fixture(t), exit, "before diff", proof) })
 		}
 	}
@@ -64,10 +64,11 @@ func runGate(t *testing.T, f GateFixture, exit int, delivery, proof string) {
 		return tracker.AttemptDiffRequest{BaseSHA: baseHead, HeadSHA: head, WorkspaceDigest: digest, Files: []tracker.AttemptDiffFile{{Path: "changed.go", Status: tracker.DiffStatusModified, Additions: 1, Patch: "@@ -1 +1 @@"}}}, true
 	}
 	source := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: head, WorkspaceDigest: digest, ExternalEffect: "none", EffectState: "none"}
-	if proof == "recapture failed" {
+	recapture := proof == "recapture failed" || proof == "recapture unavailable"
+	if recapture {
 		source.WorktreeState = "clean"
 	}
-	if delivery != "before diff" || proof == "recapture failed" || proof == "changed before event" {
+	if delivery != "before diff" || recapture || proof == "changed before event" {
 		f.SetDiffSource(live)
 	}
 	if proof != "first handoff" {
@@ -156,8 +157,11 @@ func runGate(t *testing.T, f GateFixture, exit int, delivery, proof string) {
 			f.SetDiffSource(nil)
 		case "unreadable before diff":
 			f.SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) { return tracker.AttemptDiffRequest{}, false })
-		case "recapture failed":
+		case "recapture failed", "recapture unavailable":
 			f.SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error) {
+				if proof == "recapture unavailable" {
+					return tracker.ChangeSourceCapture{}, api.ErrUnavailable
+				}
 				return tracker.ChangeSourceCapture{}, errors.New("workspace unavailable")
 			})
 		}
