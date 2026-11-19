@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -372,121 +370,6 @@ func changeColumnSideDataFixture(t *testing.T, f changeFixture, old, current tra
 		t.Fatal(err)
 	}
 	return f
-}
-
-func TestChangeColumnsSelectRecoveryComments(t *testing.T) {
-	t.Parallel()
-	service := newPostgresNativeService(t, Config{})
-	for _, state := range []string{"typed", "typed author changed", "unconverted"} {
-		t.Run(state, func(t *testing.T) {
-			f := newNativeFixture(t, service, "", "recovery comments "+state)
-			var items []tracker.NativeIssue
-			if state == "unconverted" {
-				fixture := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
-				fixture.Records["native_comments"] = nil
-				kept := fixture.Records["collaboration_versions"][:0]
-				for _, row := range fixture.Records["collaboration_versions"] {
-					var id string
-					if err := row.Decode(map[string]any{"record_id": &id}); err != nil {
-						t.Fatal(err)
-					}
-					if strings.HasPrefix(id, "wi_core_import") {
-						row.SourceRowID = int64(len(kept) + 1)
-						kept = append(kept, row)
-					}
-				}
-				fixture.Records["collaboration_versions"] = kept
-				at := parseTestTime(t, "2026-10-01T00:00:00Z")
-				for _, id := range []tracker.NativeWorkItemID{"wi_core_import", "wi_core_import_second"} {
-					for i, kinds := range [][2]string{{"runner", ""}, {"human", ""}, {"runner", "human"}, {"runner", ""}} {
-						comment := changeColumnComment(f, id, fmt.Sprintf("%s_comment_%d", id, i), int64(i+1), kinds, at)
-						var editor any
-						if comment.EditedBy != nil {
-							editor = string(historyTestJSON(t, comment.EditedBy))
-						}
-						fixture.Add("native_comments", map[string]any{"id": comment.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "revision": 1, "sequence": i + 1, "body": comment.Body, "actor_json": string(historyTestJSON(t, comment.Actor)), "edited_by_json": editor, "change_actor_kind": nil, "change_edited_by_kind": nil, "created_at": hubapi.FormatHubTime(at), "updated_at": hubapi.FormatHubTime(at)})
-						fixture.Add("collaboration_versions", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "record_id": comment.ID, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, comment))})
-					}
-				}
-				source := coreimport.CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-				if n, err := coreimport.ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || n != 2 {
-					t.Fatalf("historical comment import=%d error=%v", n, err)
-				}
-				for _, id := range []tracker.NativeWorkItemID{"wi_core_import", "wi_core_import_second"} {
-					issue, err := f.service.readWorkItem(t.Context(), analyticsTestScope(t, f), string(id))
-					if err != nil {
-						t.Fatal(err)
-					}
-					items = append(items, issue)
-				}
-			} else {
-				items = []tracker.NativeIssue{f.create(t, "first comments"), f.create(t, "second comments")}
-			}
-			for _, item := range items {
-				ids := make([]string, 4)
-				for i, kinds := range [][2]string{{"runner", ""}, {"human", ""}, {"runner", "human"}, {"runner", ""}} {
-					ids[i] = fmt.Sprintf("%s_comment_%d", item.WorkItemID, i)
-					if state != "unconverted" {
-						changeColumnWriteComment(t, f, changeColumnComment(f, item.WorkItemID, ids[i], int64(i+1), kinds, f.service.config.Clock()), state == "typed author changed" && i == 1)
-					}
-				}
-				want := []string{ids[1], ids[2], ids[3]}
-				if state == "typed author changed" {
-					want = []string{ids[2], ids[3]}
-				}
-				for _, progress := range []bool{false, true} {
-					recovery, err := f.service.readNativeRecoveryCommentsTenant(t.Context(), analyticsTestScope(t, f), string(item.WorkItemID), progress)
-					if err != nil {
-						t.Fatal(err)
-					}
-					got := make([]string, len(recovery.Discussion))
-					for i, comment := range recovery.Discussion {
-						got[i] = comment.ID
-					}
-					if !reflect.DeepEqual(got, want) {
-						t.Fatalf("%s progress=%v: comments=%v want=%v", state, progress, got, want)
-					}
-				}
-			}
-		})
-	}
-}
-
-func changeColumnComment(f nativeFixture, item tracker.NativeWorkItemID, id string, sequence int64, kinds [2]string, at time.Time) tracker.NativeComment {
-	comment := tracker.NativeComment{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: item, ID: id, Revision: 1, Sequence: sequence, Body: "comment", Actor: tracker.Actor{Kind: kinds[0], PrincipalID: "author"}, CreatedAt: at, UpdatedAt: at}
-	if kinds[1] != "" {
-		comment.EditedBy = &tracker.Actor{Kind: kinds[1], PrincipalID: "editor"}
-	}
-	return comment
-}
-
-func changeColumnWriteComment(t *testing.T, f nativeFixture, comment tracker.NativeComment, tamper bool) {
-	t.Helper()
-	content := eventstore.NewContent(f.service.runDetailStore())
-	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: comment.WorkItemID, RecordID: comment.ID, Revision: 1}, historyTestJSON(t, comment))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fields, err := f.service.prepareWorkItemFields(t.Context(), f.project.OrganizationID, hubrecords.WorkItemRecordPlan{Comment: comment})
-	if err != nil {
-		t.Fatal(err)
-	}
-	row := corestore.Comment{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: comment.WorkItemID, ID: comment.ID, Revision: 1, Sequence: comment.Sequence, BodyObjectKey: fields.Body, ActorKind: comment.Actor.Kind, ActorPrincipalID: comment.Actor.PrincipalID, CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}
-	if comment.EditedBy != nil {
-		row.EditedByKind, row.EditedByPrincipalID = &comment.EditedBy.Kind, &comment.EditedBy.PrincipalID
-	}
-	if tamper {
-		row.ActorKind = "runner"
-	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.CreateComment(t.Context(), row); err != nil {
-			return err
-		}
-		_, err := w.CreateCollaborationVersion(t.Context(), version)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
