@@ -205,7 +205,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return page, nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	picker, err := nativeIssuePickerRequested(params)
+	picker, err := workpage.PickerRequested(params)
 	if err != nil {
 		return page, nil, err
 	}

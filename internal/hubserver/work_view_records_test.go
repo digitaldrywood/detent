@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workpage"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -289,14 +290,14 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		pickerPath := f.base + "/work-items?fields=picker&q=example&limit=1"
 		pickerResponse := f.request(t, other, http.MethodGet, pickerPath, nil)
 		requireNativeStatus(t, pickerResponse, http.StatusOK)
-		var picker nativeIssuePickerPage
+		var picker workpage.PickerPage
 		decodeHubResponse(t, pickerResponse, &picker)
 		if picker.Total != -1 || len(picker.Items) != 1 || picker.Items[0].WorkItemID != "wi_second_example" || picker.NextCursor == "" {
 			t.Fatalf("picker issue list=%+v", picker)
 		}
 		continuedPicker := f.request(t, other, http.MethodGet, pickerPath+"&cursor="+url.QueryEscape(picker.NextCursor), nil)
 		requireNativeStatus(t, continuedPicker, http.StatusOK)
-		picker = nativeIssuePickerPage{}
+		picker = workpage.PickerPage{}
 		decodeHubResponse(t, continuedPicker, &picker)
 		if picker.Total != -1 || len(picker.Items) != 1 || picker.Items[0].WorkItemID != "wi_readable_example" || picker.NextCursor != "" {
 			t.Fatalf("continued picker issue list=%+v", picker)

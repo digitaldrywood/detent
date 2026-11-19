@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/workpage"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -89,8 +90,8 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if params.Get("fields") == nativeIssuePickerFields {
-		return c.JSON(http.StatusOK, nativeIssuePickerResponse(page))
+	if params.Get("fields") == workpage.PickerFields {
+		return c.JSON(http.StatusOK, workpage.ProjectPickerPage(page))
 	}
 	return c.JSON(http.StatusOK, page)
 }

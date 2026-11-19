@@ -1,15 +1,13 @@
-package hubserver
+package workpage
 
 import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// nativeIssuePickerFields selects the compact issue-picker projection on the
-// work item list: the fields a picker row shows, never bodies or history.
-const nativeIssuePickerFields = "picker"
+const PickerFields = "picker"
 
-type nativeIssuePickerItem struct {
+type pickerItem struct {
 	WorkItemID     tracker.NativeWorkItemID `json:"work_item_id"`
 	Number         int                      `json:"number"`
 	Title          string                   `json:"title"`
@@ -19,18 +17,18 @@ type nativeIssuePickerItem struct {
 	Priority       *int                     `json:"priority,omitempty"`
 }
 
-type nativeIssuePickerPage struct {
-	Items      []nativeIssuePickerItem `json:"items"`
-	NextCursor string                  `json:"next_cursor,omitempty"`
-	Total      int                     `json:"total"`
+type PickerPage struct {
+	Items      []pickerItem `json:"items"`
+	NextCursor string       `json:"next_cursor,omitempty"`
+	Total      int          `json:"total"`
 }
 
-func nativeIssuePickerRequested(params map[string][]string) (bool, error) {
+func PickerRequested(params map[string][]string) (bool, error) {
 	values, ok := params["fields"]
 	if !ok {
 		return false, nil
 	}
-	if len(values) != 1 || values[0] != nativeIssuePickerFields {
+	if len(values) != 1 || values[0] != PickerFields {
 		return false, hubapi.NativePublicInvalid("fields supports picker")
 	}
 	if _, include := params["include"]; include {
@@ -39,10 +37,10 @@ func nativeIssuePickerRequested(params map[string][]string) (bool, error) {
 	return true, nil
 }
 
-func nativeIssuePickerResponse(page tracker.NativeIssuePage) nativeIssuePickerPage {
-	items := make([]nativeIssuePickerItem, 0, len(page.Items))
+func ProjectPickerPage(page tracker.NativeIssuePage) PickerPage {
+	items := make([]pickerItem, 0, len(page.Items))
 	for _, issue := range page.Items {
-		items = append(items, nativeIssuePickerItem{
+		items = append(items, pickerItem{
 			WorkItemID:     issue.WorkItemID,
 			Number:         issue.Number,
 			Title:          issue.Title,
@@ -52,5 +50,5 @@ func nativeIssuePickerResponse(page tracker.NativeIssuePage) nativeIssuePickerPa
 			Priority:       issue.Priority,
 		})
 	}
-	return nativeIssuePickerPage{Items: items, NextCursor: page.NextCursor, Total: page.Total}
+	return PickerPage{Items: items, NextCursor: page.NextCursor, Total: page.Total}
 }
