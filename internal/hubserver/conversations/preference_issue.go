@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type conversationPreferenceIssue struct {
+type PreparedPreferenceIssue struct {
 	plan    hubrecords.WorkItemRecordPlan
 	fields  hubrecords.WorkItemRecordFields
 	version eventstore.CollaborationVersion
@@ -25,32 +25,30 @@ type conversationPreferenceIssue struct {
 	changed bool
 }
 
-func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope hubscope.NativeScope, record conversationRecord, preferences conversation.Preferences) (conversationPreferenceIssue, error) {
-	var result conversationPreferenceIssue
+func (s PreferenceIssueDeps) PrepareConversationPreferenceIssue(ctx context.Context, scope hubscope.NativeScope, record ConversationRecord, preferences conversation.Preferences) (PreparedPreferenceIssue, error) {
+	var result PreparedPreferenceIssue
 	if record.WorkItemID == "" {
 		return result, nil
 	}
-	plan, err := s.loadWorkItemPlan(ctx, scope, record.WorkItemID, "", tracker.UpdateIssue{})
+	plan, err := s.LoadPlan(ctx, scope, record.WorkItemID, "", tracker.UpdateIssue{})
 	if err != nil {
 		return result, err
 	}
 	result.plan = plan
-	body := conversationAgentOverrideBody(plan.Issue.Body, preferences)
+	body := ConversationAgentOverrideBody(plan.Issue.Body, preferences)
 	if body == plan.Issue.Body {
 		return result, nil
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		return s.authorizeWorkItemRecordScope(ctx, reader, scope)
-	}); err != nil {
+	if err := s.Authorize(ctx, scope); err != nil {
 		return result, err
 	}
-	now := s.config.Clock().UTC().Truncate(time.Microsecond)
+	now := s.Now().UTC().Truncate(time.Microsecond)
 	plan.Issue.Body = body
 	plan.Issue.Revision++
 	plan.Issue.UpdatedAt, plan.Issue.LastActivityAt = now, now
 	plan.Fields = []string{"body"}
 	result.plan, result.changed = plan, true
-	result.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
+	result.fields, err = s.PrepareFields(ctx, scope.Organization, plan)
 	if err != nil {
 		return result, err
 	}
@@ -58,7 +56,7 @@ func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope 
 	if err != nil {
 		return result, err
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(s.Details())
 	result.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, RecordID: record.WorkItemID, Revision: int64(plan.Issue.Revision)}, raw)
 	if err != nil {
 		return result, err
@@ -74,7 +72,7 @@ func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope 
 	return result, err
 }
 
-func (p conversationPreferenceIssue) Lock(ctx context.Context, writer tenantstore.Writer) error {
+func (p PreparedPreferenceIssue) Lock(ctx context.Context, writer tenantstore.Writer) error {
 	if p.plan.Current.ID == 0 {
 		return nil
 	}
@@ -95,7 +93,7 @@ func (p conversationPreferenceIssue) Lock(ctx context.Context, writer tenantstor
 	return nil
 }
 
-func (p conversationPreferenceIssue) Write(ctx context.Context, writer tenantstore.Writer) error {
+func (p PreparedPreferenceIssue) Write(ctx context.Context, writer tenantstore.Writer) error {
 	if !p.changed {
 		return nil
 	}
@@ -126,4 +124,4 @@ func (p conversationPreferenceIssue) Write(ctx context.Context, writer tenantsto
 	return nil
 }
 
-func (p conversationPreferenceIssue) Changed() bool { return p.changed }
+func (p PreparedPreferenceIssue) Changed() bool { return p.changed }
