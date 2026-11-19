@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -155,6 +157,20 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 					t.Fatalf("renew at %s: %v; state=%s eligible=%v dependencies=%t read=%v alive=%t probe=%v", elapsed, err, current.State, current.SchedulingEligible, current.DependencyReady, readErr, alive, probeErr)
 				}
 				assertRuntime(at.Add(elapsed/(ttl/3)*(ttl/3)), 1+int64(elapsed/(ttl/3)), false)
+			}
+			supervisorCtx, loseSupervisor := context.WithCancelCause(t.Context())
+			guarded, stopGuard, err := execution.Guard(supervisorCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stopGuard()
+			loseSupervisor(errors.New("supervisor lost"))
+			<-guarded.Done()
+			if alive, err := procgroup.Alive(worker); err != nil || !alive {
+				t.Fatalf("fixture worker must remain live after supervision ends: %v, %v", alive, err)
+			}
+			if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, now); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+				t.Errorf("heartbeat renewed after supervisor loss with a live worker: %v", err)
 			}
 			if err := command.Process.Kill(); err != nil {
 				t.Fatal(err)

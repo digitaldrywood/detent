@@ -2685,6 +2685,11 @@ func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Respons
 		response.Body.Close()
 		return nil, errors.New("version acknowledgment lost")
 	}
+	if err == nil && response.StatusCode == http.StatusOK && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/phases") && t.dropPhaseReceipt.Swap(false) {
+		response.Body.Close()
+		t.phaseReceiptDrops.Add(1)
+		return nil, errors.New("phase acknowledgment lost after persistence")
+	}
 	return response, err
 }
 
@@ -3060,16 +3065,18 @@ func newHubContentStore() entryauthority.ContentHandler {
 // changeFailingTransport refuses Change Request creation when armed, which is
 // how a hub that cannot open the change looks to the runner.
 type changeFailingTransport struct {
-	next            http.RoundTripper
-	fail            atomic.Bool
-	failDiffs       atomic.Bool
-	failEvents      atomic.Bool
-	failIntake      atomic.Bool
-	failDetails     atomic.Bool
-	failVersions    atomic.Bool
-	dropVersions    atomic.Bool
-	controlFailures atomic.Int32
-	controlsFailed  chan int
+	next              http.RoundTripper
+	fail              atomic.Bool
+	failDiffs         atomic.Bool
+	failEvents        atomic.Bool
+	failIntake        atomic.Bool
+	failDetails       atomic.Bool
+	failVersions      atomic.Bool
+	dropVersions      atomic.Bool
+	dropPhaseReceipt  atomic.Bool
+	phaseReceiptDrops atomic.Int32
+	controlFailures   atomic.Int32
+	controlsFailed    chan int
 }
 
 var changeRepositories = gitrepo.NewFixtures(func() string { return nativeChangeFixtureRoot })

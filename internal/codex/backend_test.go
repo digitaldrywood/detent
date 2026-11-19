@@ -657,18 +657,20 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 	for _, tt := range []struct {
 		name                                      string
 		resume, tools, supplemental, readOnly     bool
+		registered                                bool
 		turnTimeout, cancelAfter, commandDuration time.Duration
 		wantErr                                   error
 		wantElapsed                               time.Duration
 	}{
-		{name: "new worker", wantElapsed: 45 * time.Minute},
-		{name: "resumed worker", resume: true, wantElapsed: 45 * time.Minute},
-		{name: "supplemental worker", tools: true, supplemental: true, wantElapsed: 45 * time.Minute},
-		{name: "read-only worker", readOnly: true, wantElapsed: 45 * time.Minute},
+		{name: "quiet without a command", wantErr: ErrStreamStalled, wantElapsed: 5 * time.Minute},
+		{name: "registered quiet command", tools: true, registered: true, wantElapsed: 45 * time.Minute},
+		{name: "resumed worker", resume: true, registered: true, wantElapsed: 45 * time.Minute},
+		{name: "supplemental worker", tools: true, supplemental: true, registered: true, wantElapsed: 45 * time.Minute},
+		{name: "read-only worker", readOnly: true, registered: true, wantElapsed: 45 * time.Minute},
 		{name: "operator keeps stall limit", tools: true, wantErr: ErrStreamStalled, wantElapsed: 5 * time.Minute},
-		{name: "worker keeps stream limit", turnTimeout: 10 * time.Minute, wantErr: context.DeadlineExceeded, wantElapsed: 10 * time.Minute},
-		{name: "worker keeps default stream limit", commandDuration: 70 * time.Minute, wantErr: context.DeadlineExceeded, wantElapsed: time.Hour},
-		{name: "worker cancellation", cancelAfter: 7 * time.Minute, wantErr: context.Canceled, wantElapsed: 7 * time.Minute},
+		{name: "worker keeps stream limit", turnTimeout: 10 * time.Minute, registered: true, wantErr: context.DeadlineExceeded, wantElapsed: 10 * time.Minute},
+		{name: "worker keeps default stream limit", commandDuration: 70 * time.Minute, registered: true, wantErr: context.DeadlineExceeded, wantElapsed: time.Hour},
+		{name: "worker cancellation", cancelAfter: 7 * time.Minute, registered: true, wantErr: context.Canceled, wantElapsed: 7 * time.Minute},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -682,12 +684,16 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 				if duration == 0 {
 					duration = 45 * time.Minute
 				}
-				transport := &quietCommandTransport{fakeAppServerTransport: newFakeAppServerTransport([]Message{
+				messages := []Message{
 					responseMessage(t, 1, `{"userAgent":"codex-cli/0.155.1"}`),
 					rolloutResponseMessage(t, threadRequest, `{"thread":{"id":"thread-1","model":"gpt-6-astra"}}`, nil),
 					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
-					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
-				}), delay: duration}
+				}
+				if tt.registered {
+					messages = append(messages, notificationMessage(t, "item/started", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"command-1","type":"commandExecution","command":"make test","status":"inProgress"}}`))
+				}
+				messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`))
+				transport := &quietCommandTransport{fakeAppServerTransport: newFakeAppServerTransport(messages), delay: duration}
 				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Hour))
 				if err != nil {
 					t.Fatal(err)
