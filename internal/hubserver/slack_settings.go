@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 
@@ -15,14 +14,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/operatorcommands"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-const slackWebhookSecret = "slack_webhook"
+const slackWebhookSecret = operatorcommands.SlackWebhookSecret
 const maskedSlackWebhook = "https://hooks.slack.com/services/••••••••"
 
-var slackWebhookPath = regexp.MustCompile(`^/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$`)
 var slackChannelName = regexp.MustCompile(`^#?[\p{L}\p{N}_.-]{1,80}$`)
 
 type slackIntegrationStatus struct {
@@ -32,14 +31,6 @@ type slackIntegrationStatus struct {
 	LastFailureAt      *string `json:"last_failure_at"`
 	LastDeliveryFailed bool    `json:"last_delivery_failed"`
 	LastStatusCode     int     `json:"last_status_code"`
-}
-
-func validSlackWebhook(value string) bool {
-	u, err := url.Parse(value)
-	if err != nil {
-		return false
-	}
-	return u.Scheme == "https" && (u.Host == "hooks.slack.com" || u.Host == "hooks.slack-gov.com") && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.RawPath == "" && slackWebhookPath.MatchString(u.Path)
 }
 
 func readSlackIntegration(ctx context.Context, owner postgres.SlackReader) (slackIntegrationStatus, error) {
@@ -130,7 +121,7 @@ func (s *Service) setSlackIntegration(c echo.Context) error {
 		value := strings.TrimSpace(*request.Webhook)
 		request.Webhook = &value
 		if value != "" {
-			if !validSlackWebhook(value) {
+			if !operatorcommands.ValidSlackWebhook(value) {
 				return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter a Slack incoming webhook URL")
 			}
 			token = []byte(value)
@@ -237,8 +228,8 @@ func (s *Service) testSlackIntegration(c echo.Context) error {
 	if len(webhook) == 0 {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Save a Slack webhook before sending a test message")
 	}
-	sent := s.postSlack(ctx, webhook, "*Detent* · Test message")
-	statusCode, delivered := sent.status, sent.outcome == "committed"
+	sent := s.slackDelivery().Post(ctx, webhook, "*Detent* · Test message")
+	statusCode, delivered := sent.Status, sent.Outcome == "committed"
 	finishCtx, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), s.config.BusyTimeout)
 	defer cancelFinish()
 	var status slackIntegrationStatus
