@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/boardview"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -89,4 +90,8 @@ func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, result)
+}
+
+func readIssueArchiveSection(ctx context.Context, reader attachmentstore.StorageArchiveReader, scope hubscope.NativeScope, item, section string) (workitemread.ArchiveSection, error) {
+	return workitemread.ReadArchiveSection(ctx, reader, scope, item, section)
 }

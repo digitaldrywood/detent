@@ -1,4 +1,4 @@
-package hubserver
+package workitemread
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type issueArchiveSection struct {
+type ArchiveSection struct {
 	OrganizationID   tracker.OrganizationID `json:"organization_id"`
 	ProjectID        tracker.ProjectID      `json:"project_id"`
 	WorkItemID       string                 `json:"work_item_id"`
@@ -25,8 +25,8 @@ type issueArchiveSection struct {
 	AccessPath       string                 `json:"access_path"`
 }
 
-func readIssueArchiveSection(ctx context.Context, reader attachmentstore.StorageArchiveReader, scope hubscope.NativeScope, item, section string) (issueArchiveSection, error) {
-	result := issueArchiveSection{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, SectionID: section}
+func ReadArchiveSection(ctx context.Context, reader attachmentstore.StorageArchiveReader, scope hubscope.NativeScope, item, section string) (ArchiveSection, error) {
+	result := ArchiveSection{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, SectionID: section}
 	record, err := reader.StorageArchiveSection(ctx, attachmentstore.StorageArchiveSectionQuery{ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), SectionID: section})
 	if err != nil {
 		return result, err
