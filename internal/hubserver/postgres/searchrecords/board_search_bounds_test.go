@@ -166,6 +166,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 	}
 	t.Run("caller deadlines and cancellation are not busy searches", func(t *testing.T) {
 		config := pgstoretest.SmallPool()
+		config.MaxConnections = int(f.pool.Config().MaxConns)
 		config.SearchBudget = time.Hour
 		patient, err := postgres.NewRepository(ctx, f.pool, config)
 		if err != nil {
