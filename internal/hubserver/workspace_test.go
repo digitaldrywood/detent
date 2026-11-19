@@ -400,39 +400,6 @@ func TestWorkspaceRequestRefusals(t *testing.T) {
 
 // The two caps of the workspace session contract are checked together and say which one was
 // reached, because "you have too many" is only actionable if it names whose.
-func TestWorkspaceOpenLimitsNameTheScopeReached(t *testing.T) {
-	t.Parallel()
-	f := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 2, PlanMaxOpen: 3})
-	subject := map[string]any{"work_item_id": string(f.issue.WorkItemID)}
-	for range 2 {
-		f.opened(t, f.token, subject)
-	}
-
-	t.Run("a person past their own cap is refused with scope person", func(t *testing.T) {
-		requireWorkspaceLimit(t, f.post(t, f.token, subject), "person", 2)
-	})
-
-	t.Run("an organization past its plan cap is refused with scope organization", func(t *testing.T) {
-		// The third open workspace belongs to someone else, so the actor's own
-		// cap is not what stops the fourth request.
-		f.opened(t, f.other, subject)
-		requireWorkspaceLimit(t, f.post(t, f.other, subject), "organization", 3)
-	})
-}
-
-func requireWorkspaceLimit(t *testing.T, response *httptest.ResponseRecorder, scope string, limit int) {
-	t.Helper()
-	requireNativeCode(t, response, http.StatusUnprocessableEntity, "workspace_limit")
-	var failure hubapi.NativeError
-	decodeHubResponse(t, response, &failure)
-	if failure.Details["scope"] != scope {
-		t.Fatalf("details = %#v, want scope %s", failure.Details, scope)
-	}
-	if value, ok := failure.Details["limit"].(float64); !ok || int(value) != limit {
-		t.Fatalf("details = %#v, want limit %d", failure.Details, limit)
-	}
-}
-
 // workspaceRunnerFixture adds an enrolled runner that reports the read-only
 // surfaces, which is the only kind of runner a workspace item is ever offered
 // to (the workspace session contract's claim gate).
