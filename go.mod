@@ -42,13 +42,13 @@ require (
 	github.com/yuin/goldmark v1.7.13
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.59.0
-	golang.org/x/image v0.48.0
+	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.43.0
 	golang.org/x/net v0.63.0
-	golang.org/x/oauth2 v0.38.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.25.0
 	golang.org/x/sys v0.50.0
-	golang.org/x/time v0.16.0
+	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

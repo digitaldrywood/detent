@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/mod/modfile"
 )
 
 type sqlitePolicy struct {
@@ -86,6 +88,7 @@ func sqliteCountProblems(file string, current, baseline map[string]int) []string
 
 func scanSQLite(root fs.FS) (sqlitePolicy, error) {
 	current := sqlitePolicy{Files: make(map[string]map[string]int), Modules: make(map[string]map[string]int)}
+	var gooseTestSQLite bool
 	for _, file := range []string{"go.mod", "go.sum"} {
 		data, err := fs.ReadFile(root, file)
 		if file == "go.sum" && errors.Is(err, fs.ErrNotExist) {
@@ -94,11 +97,18 @@ func scanSQLite(root fs.FS) (sqlitePolicy, error) {
 		if err != nil {
 			return current, fmt.Errorf("read %s: %w", file, err)
 		}
+		if file == "go.mod" {
+			gooseTestSQLite = hasPinnedGooseTestSQLite(data)
+		}
 		counts := make(map[string]int)
 		for line := range strings.SplitSeq(string(data), "\n") {
 			line, _, _ = strings.Cut(line, "//")
 			fields := strings.Fields(line)
 			if file == "go.sum" && len(fields) > 0 {
+				if gooseTestSQLite && len(fields) == 3 && fields[0] == "modernc.org/sqlite" &&
+					(fields[1] == "v1.49.1" || fields[1] == "v1.49.1/go.mod") {
+					continue
+				}
 				fields = fields[:1]
 			}
 			for _, field := range fields {
@@ -176,6 +186,19 @@ func scanSQLite(root fs.FS) (sqlitePolicy, error) {
 		}
 	}
 	return current, nil
+}
+
+func hasPinnedGooseTestSQLite(data []byte) bool {
+	const goose = "github.com/pressly/goose/v3"
+	manifest, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(manifest.Require, func(require *modfile.Require) bool {
+		return require.Mod.Path == goose && require.Mod.Version == "v3.27.1"
+	}) && !slices.ContainsFunc(manifest.Replace, func(replace *modfile.Replace) bool {
+		return replace.Old.Path == goose
+	})
 }
 
 func sqliteSchemaPaths(file, data string) []string {
@@ -314,6 +337,8 @@ func TestSQLitePolicyViolations(t *testing.T) {
 	}
 	driver := "modernc.org/sqlite"
 	importSource := "package fixture\nimport _ " + strconv.Quote(driver)
+	gooseRequirement := "require github.com/pressly/goose/v3 v3.27.1"
+	gooseTestSums := "modernc.org/sqlite v1.49.1 h1:example\nmodernc.org/sqlite v1.49.1/go.mod h1:example\n"
 	for _, tt := range []struct {
 		name, file, source, module, sum, kind string
 		files                                 map[string]string
@@ -407,6 +432,10 @@ func TestSQLitePolicyViolations(t *testing.T) {
 		{name: "indirect module", module: "require (\n github.com/mattn/go-sqlite3 v1.0.0 // indirect\n)", kind: "github.com/mattn/go-sqlite3", want: "exceeds frozen baseline 0"},
 		{name: "transitive checksum only", sum: "github.com/mattn/go-sqlite3 v1.0.0 h1:example\n", kind: "github.com/mattn/go-sqlite3", want: "go.sum: SQLite github.com/mattn/go-sqlite3 count 1 exceeds frozen baseline 0"},
 		{name: "transitive module checksum", sum: "modernc.org/sqlite v1.0.0/go.mod h1:example\n", kind: driver, want: "go.sum: SQLite modernc.org/sqlite count 1 exceeds frozen baseline 0"},
+		{name: "pinned Goose test checksums", module: gooseRequirement, sum: gooseTestSums},
+		{name: "Goose test checksums without pinned Goose", sum: gooseTestSums, want: "go.sum: SQLite modernc.org/sqlite count 2 exceeds frozen baseline 0"},
+		{name: "Goose with a different SQLite checksum", module: gooseRequirement, sum: "modernc.org/sqlite v1.49.2 h1:example\n", want: "go.sum: SQLite modernc.org/sqlite count 1 exceeds frozen baseline 0"},
+		{name: "replaced Goose cannot authorize test checksums", module: gooseRequirement + "\nreplace github.com/pressly/goose/v3 => ./goose", sum: gooseTestSums, want: "go.sum: SQLite modernc.org/sqlite count 2 exceeds frozen baseline 0"},
 		{name: "existing checksum", sum: driver + " v1.0.0 h1:example\n", kind: driver, sumBaseline: 1},
 		{name: "removed checksum", kind: driver, sumBaseline: 1, want: "go.sum: shrink SQLite " + driver + " baseline from 1 to 0"},
 		{name: "empty checksum entry rejected", allowModules: map[string]map[string]int{"go.sum": {}}, want: "remove empty SQLite module baseline entry"},
