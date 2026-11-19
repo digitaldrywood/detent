@@ -1198,7 +1198,7 @@ func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository,
 			}
 		})
 	}
-	checkAccessAuditForeignUpdateDenied(t, admin, organizations, cutoff)
+	checkAccessAuditForeignUpdateDenied(t, admin, repository, organizations, cutoff)
 }
 
 func runAccessAuditPruneIsolation(t *testing.T, pool *pgxpool.Pool, admin *sql.DB, organizations []tracker.OrganizationID, ids map[tracker.OrganizationID]int64) {
@@ -1260,8 +1260,18 @@ func runAccessAuditPruneIsolation(t *testing.T, pool *pgxpool.Pool, admin *sql.D
 	}
 }
 
-func checkAccessAuditForeignUpdateDenied(t *testing.T, admin *sql.DB, organizations []tracker.OrganizationID, cutoff time.Time) {
+func checkAccessAuditForeignUpdateDenied(t *testing.T, admin *sql.DB, repository *postgres.Repository, organizations []tracker.OrganizationID, cutoff time.Time) {
 	t.Helper()
+	foreign := organizations[1]
+	at := cutoff.Add(-time.Hour)
+	var auditID int64
+	if err := repository.WriteTenant(t.Context(), foreign, corestore.Serving, func(w tenantstore.Writer) error {
+		var err error
+		auditID, err = w.RecordAccessAudit(t.Context(), accessstore.Audit{OrganizationID: foreign, SessionID: "retention-foreign-update", ActualActor: "actor", EffectiveUser: "actor", Event: "expired", Route: "POST /items", Status: 200, StartedAt: at, ExpiresAt: cutoff, RecordedAt: at, RecordedAtNS: at.UnixNano()})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	migration := pgstoretest.RolePool(t, admin, postgres.MigrationRoleName, "")
 	defer migration.Close()
 	t.Run("maintenance row locks do not permit foreign updates", func(t *testing.T) {
@@ -1282,7 +1292,11 @@ func checkAccessAuditForeignUpdateDenied(t *testing.T, admin *sql.DB, organizati
 		if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(organizations[0])); err != nil {
 			t.Fatal(err)
 		}
-		_, err = tx.Exec(t.Context(), `UPDATE hosted_audit SET status=403 WHERE organization_id=$1 AND recorded_at_ns<$2`, organizations[1], cutoff.UnixNano())
+		var lockedID int64
+		if err := tx.QueryRow(t.Context(), `SELECT id FROM hosted_audit WHERE organization_id=$1 AND id=$2 FOR UPDATE`, foreign, auditID).Scan(&lockedID); err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(t.Context(), `UPDATE hosted_audit SET status=403 WHERE organization_id=$1 AND id=$2`, foreign, lockedID)
 		pgstoretest.RequireSQLState(t, err, "42501")
 	})
 }
