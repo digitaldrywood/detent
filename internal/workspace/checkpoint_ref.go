@@ -69,6 +69,9 @@ func ownsCheckpointRef(issue Issue, ref string) bool {
 }
 
 func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue, previous CheckpointRef, validate func(context.Context) error) (_ CheckpointRef, _ bool, err error) {
+	if !issue.AttemptWorkspace.permitsCheckout(info.Key) || !issue.AttemptWorkspace.permitsCheckout(filepath.Base(info.Path)) {
+		return previous, false, ErrCheckpointUnsafe
+	}
 	if issue.AttemptWorkspace != (AttemptWorkspace{}) {
 		expected, err := l.infoForIssue(issue)
 		if err != nil || expected.Key != info.Key || expected.Path != info.Path || previous.Ref != "" && !ownsCheckpointRef(issue, previous.Ref) {

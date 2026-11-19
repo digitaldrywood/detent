@@ -54,7 +54,7 @@ func checkAttemptCommands(t *testing.T, packagesByPath []*packages.Package) {
 				if function, ok := decl.(*ast.FuncDecl); ok {
 					name = function.Name.Name
 				}
-				count := 0
+				rawCount, transportCount := 0, 0
 				ast.Inspect(decl, func(node ast.Node) bool {
 					id, ok := node.(*ast.Ident)
 					if !ok {
@@ -69,12 +69,18 @@ func checkAttemptCommands(t *testing.T, packagesByPath []*packages.Package) {
 					case "(*os/exec.Cmd).Start", "(*os/exec.Cmd).Run", "(*os/exec.Cmd).Output", "(*os/exec.Cmd).CombinedOutput", "os.StartProcess", "syscall.Exec", "syscall.ForkExec", "syscall.StartProcess", "golang.org/x/sys/unix.Exec", "golang.org/x/sys/windows.CreateProcess", prefix + "procgroup.Start":
 						raw = true
 					}
-					if fn.FullName() == prefix+"procgroup.StartAuthorized" && !authorizedTransport(strings.TrimPrefix(path, prefix), filename, name) {
-						t.Errorf("%s: use the scoped command owner for a new native launch", pkg.Fset.Position(id.Pos()))
+					if fn.FullName() == prefix+"procgroup.StartAuthorized" {
+						transportCount++
+						if transportCount > 1 || !authorizedTransport(strings.TrimPrefix(path, prefix), filename, name) {
+							t.Errorf("%s: use the scoped command owner for a new native launch", pkg.Fset.Position(id.Pos()))
+						}
+					}
+					if fn.FullName() == prefix+"shell.WithCommandStarter" && (path != prefix+"procgroup" || name != "WithCommandOwner") {
+						t.Errorf("%s: native commands require the fenced process owner", pkg.Fset.Position(id.Pos()))
 					}
 					if raw {
-						count++
-						if count > rawAttemptCommandAllowance(strings.TrimPrefix(path, prefix), filename, name) {
+						rawCount++
+						if rawCount > rawAttemptCommandAllowance(strings.TrimPrefix(path, prefix), filename, name) {
 							t.Errorf("%s: native command must use the acknowledged process launch", pkg.Fset.Position(id.Pos()))
 						}
 					}

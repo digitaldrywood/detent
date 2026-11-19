@@ -632,4 +632,17 @@ func TestIndependentFilesystemKeyOmitted(t *testing.T) {
 			t.Errorf("current attempt reports %d legacy files with info key %q", evidence.Files, info.Key)
 		}
 	}
+	issue.AttemptWorkspace = AttemptWorkspace{}
+	for _, info := range []Info{{Key: current.Key}, {Path: current.Path}, current} {
+		if _, err := backend.ArtifactEvidence(t.Context(), info, issue); !errors.Is(err, ErrMissingWorkspace) {
+			t.Fatalf("unscoped request accepted a private checkout: %v", err)
+		}
+	}
+	if _, err := backend.CleanupIssue(t.Context(), Issue{Identifier: current.Key}); !errors.Is(err, ErrMissingWorkspace) {
+		t.Fatalf("raw private key authorized cleanup: %v", err)
+	}
+	if _, err := os.Stat(current.Path); err != nil {
+		t.Fatal(err)
+	}
+
 }

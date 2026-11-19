@@ -282,6 +282,9 @@ func (f *Filesystem) infoForIssue(issue Issue) (Info, error) {
 		return Info{}, errors.New("workspace requires an exact attempt")
 	}
 	key := workspaceIssueKey(issue)
+	if !issue.AttemptWorkspace.permitsCheckout(key) {
+		return Info{}, ErrMissingWorkspace
+	}
 	path, err := validateWorkspacePath(f.root, filepath.Join(f.root, key))
 	if err != nil {
 		return Info{}, err
@@ -377,6 +380,9 @@ func (f *Filesystem) ArtifactEvidence(ctx context.Context, info Info, issue Issu
 }
 
 func (f *Filesystem) normalizeInfo(info Info, issue Issue) (Info, error) {
+	if !issue.AttemptWorkspace.permitsCheckout(info.Key) || !issue.AttemptWorkspace.permitsCheckout(filepath.Base(info.Path)) {
+		return Info{}, ErrMissingWorkspace
+	}
 	if issue.AttemptWorkspace != (AttemptWorkspace{}) && issue.AttemptWorkspace.Key() == "" {
 		return Info{}, ErrMissingWorkspace
 	}
