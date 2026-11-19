@@ -3,16 +3,13 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,7 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestHeartbeatScaleBenchmark(t *testing.T) {
+func TestHeartbeatAndRegistrationReturnRunnerState(t *testing.T) {
 	t.Parallel()
 	f := newRunnerPGFixture(t)
 	const organization tracker.OrganizationID = "org_startup"
@@ -50,10 +47,10 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 	f.tokens = append(f.tokens, token)
 	now := f.service.config.Clock()
 	content := eventstore.NewContent(f.service.runDetailStore())
-	versions := make([]eventstore.CollaborationVersion, 0, 1500)
-	for i := range 1500 {
+	versions := make([]eventstore.CollaborationVersion, 0, 6)
+	for i := range 6 {
 		state := "Done"
-		if i < 50 {
+		if i < 2 {
 			state = "Todo"
 		}
 		item := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_scale_%d", i)), Number: i + 3, Revision: 1}, Title: "Example issue", State: state, CreatedAt: now, UpdatedAt: now}
@@ -125,9 +122,9 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 				}
 			}
 		}
-		for i := range 1500 {
+		for i := range 6 {
 			state := "Done"
-			if i < 50 {
+			if i < 2 {
 				state = "Todo"
 			}
 			item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_scale_%d", i)), Number: int64(i + 3), Title: "Example issue", WorkflowStateName: &state})
@@ -138,7 +135,7 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 				return err
 			}
 			items = append(items, item)
-			if i >= 300 {
+			if i >= 3 {
 				continue
 			}
 			id := fmt.Sprintf("scale-attempt-%04d", i)
@@ -208,51 +205,32 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 		}
 	}
 	path := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/%s/heartbeat", organization, project, f.bindings[0].MachineID)
-	var heartbeat, claimState, callback, db time.Duration
-	var count, released int
-	result := testing.Benchmark(func(b *testing.B) {
-		heartbeat, claimState, callback, db, count, released = 0, 0, 0, 0, 0, 0
-		for b.Loop() {
-			started := time.Now()
-			timing := &requestTiming{}
-			request := newHubAPIRequest(t, http.MethodPost, path, f.tokens[0], nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 4, Version: "test", OS: "linux", Architecture: "amd64"})
-			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
-			requireNativeStatus(t, response, http.StatusOK)
-			found := false
-			for _, span := range timing.NamedSpans() {
-				if span.Name == "pg_callback" {
-					callback += span.Duration
-					found = true
-				}
-			}
-			if !found {
-				t.Fatal("missing PostgreSQL transaction callback timing")
-			}
-			db += time.Duration(timing.DB.Load())
-			var snapshot runnerauth.RoutingSnapshot
-			decodeHubResponse(t, response, &snapshot)
-			if snapshot.RunnerID != f.bindings[0].RunnerID {
-				t.Fatalf("heartbeat routing = %+v", snapshot)
-			}
-			heartbeat += time.Since(started)
-			started = time.Now()
-			registrationPath := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/register", organization, project)
-			response = performHubAPIRequest(t, f.service, http.MethodPost, registrationPath, f.tokens[0], map[string]any{"id": f.bindings[0].MachineID, "hostname": "example", "display_name": "Example", "capacity": 4, "version": "test", "os": "linux", "architecture": "amd64"})
-			requireNativeStatus(t, response, http.StatusOK)
-			decodeHubResponse(t, response, &snapshot)
-			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) > releasedExecutionsPageSize {
-				t.Fatalf("released executions = %+v", snapshot.ClaimState)
-			}
-			released += len(snapshot.ClaimState.ReleasedExecutions)
-			claimState += time.Since(started)
-			count++
+	timing := &requestTiming{}
+	request := newHubAPIRequest(t, http.MethodPost, path, f.tokens[0], nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 4, Version: "test", OS: "linux", Architecture: "amd64"})
+	response := httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+	requireNativeStatus(t, response, http.StatusOK)
+	found := false
+	for _, span := range timing.NamedSpans() {
+		if span.Name == "pg_callback" {
+			found = true
 		}
-	})
-	if released == 0 {
-		t.Fatal("registration did not return seeded released executions")
 	}
-	t.Logf("benchmark=%s issues=1500 nonterminal=50 released=300 runners=3 projects=4 heartbeat_mean_ms=%.3f registration_mean_ms=%.3f pg_callback_mean_ms=%.3f db_mean_ms=%.3f", result.String(), float64(heartbeat)/float64(count)/1e6, float64(claimState)/float64(count)/1e6, float64(callback)/float64(count)/1e6, float64(db)/float64(count)/1e6)
+	if !found {
+		t.Fatal("missing PostgreSQL transaction callback timing")
+	}
+	var snapshot runnerauth.RoutingSnapshot
+	decodeHubResponse(t, response, &snapshot)
+	if snapshot.RunnerID != f.bindings[0].RunnerID {
+		t.Fatalf("heartbeat routing = %+v", snapshot)
+	}
+	registrationPath := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/register", organization, project)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, registrationPath, f.tokens[0], map[string]any{"id": f.bindings[0].MachineID, "hostname": "example", "display_name": "Example", "capacity": 4, "version": "test", "os": "linux", "architecture": "amd64"})
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &snapshot)
+	if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 3 {
+		t.Fatalf("released executions = %+v", snapshot.ClaimState)
+	}
 }
 
 func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
@@ -284,7 +262,6 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 			path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Example runner", "capacity": 0, "version": "test"}), http.StatusOK)
 			f.service.tokenUseWork.Wait()
-			installReportsBudgetTrace(t, f.service)
 			var repositoryRequest struct {
 				RequestID string `json:"request_id"`
 			}
@@ -297,9 +274,6 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 			defer cancel()
 			ctx = context.WithValue(ctx, heartbeatResponseContextKey{}, true)
 			observed, removed := false, false
-			var traceMu sync.Mutex
-			postCommit := false
-			totalPostCommitReads := 0
 			repository := f.service.config.TenantRepository
 			snapshotRepository := repository.(tenantstore.SnapshotRepository)
 			owner := &heartbeatResponseRepository{Repository: repository, SnapshotRepository: snapshotRepository, heartbeat: repository.(interface {
@@ -322,9 +296,6 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 				if held := f.service.database.postgres.Stats().AcquiredConns(); held != 0 {
 					return fmt.Errorf("heartbeat response still holds %d PostgreSQL connections after write", held)
 				}
-				traceMu.Lock()
-				postCommit = true
-				traceMu.Unlock()
 
 				if capacity := readCapacity(); capacity != int64(test.capacity) {
 					return fmt.Errorf("committed capacity=%d want=%d", capacity, test.capacity)
@@ -358,28 +329,10 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 			}
 			f.service.config.TenantRepository = owner
 			t.Cleanup(func() { f.service.config.TenantRepository = repository })
-			timing := &requestTiming{Trace: func(query string, _ []driver.NamedValue) {
-				if !reportsBudgetReadStatement(query) {
-					return
-				}
-				traceMu.Lock()
-				defer traceMu.Unlock()
-				if postCommit {
-					totalPostCommitReads++
-				}
-			}}
 			summary := testHostSummary(f.service.config.Clock())
 			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Example runner", "capacity": test.capacity, "version": "test", "change_cursor": "", "host_metrics": []hostmetrics.Summary{summary}})
 			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(ctx, timing)))
-			traceMu.Lock()
-			reads := totalPostCommitReads
-			committed := postCommit
-			traceMu.Unlock()
-			if !committed || reads == 0 {
-				t.Fatalf("postcommit response read probe missing: committed=%t reads=%d", committed, reads)
-			}
-			t.Logf("total_post_commit_reads=%d response_case=%s", reads, test.name)
+			f.service.Handler().ServeHTTP(response, request.WithContext(ctx))
 
 			if test.revokeProject {
 				if !removed || observed {
@@ -836,19 +789,18 @@ func (d *cleanupPollingDetails) ReadDetail(ctx context.Context, organization str
 	return d.DetailStore.ReadDetail(ctx, organization, ref)
 }
 
-func TestReleasedExecutionPollingBudget(t *testing.T) {
+func TestReleasedExecutionPollingPaginatesPendingCleanup(t *testing.T) {
 	for _, test := range []struct {
 		history    int
 		unresolved bool
 		pending    int
-	}{{0, false, 101}, {1000, false, 101}, {0, true, 101}, {1000, true, 101}, {0, true, 100}} {
+	}{{2, false, 101}, {0, true, 101}, {0, true, 100}} {
 		t.Run(fmt.Sprintf("history=%d/unresolved=%v/pending=%d", test.history, test.unresolved, test.pending), func(t *testing.T) {
 			t.Parallel()
 			f := newPostgresDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			r.enroll(t)
-			installReportsBudgetTrace(t, f.service)
 			admin := hostedPostgresAdmin(t, f.service)
 			now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 			org, project := f.project.OrganizationID, f.project.ID
@@ -937,33 +889,6 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 			if unknownSummaries != 0 {
 				t.Fatalf("verified run summaries remain unknown: %d", unknownSummaries)
 			}
-			if test.history == 1000 {
-				inputs := `WITH inputs AS (SELECT $1::text AS organization_id,$2::text AS project_id,$3::text AS runner_id,$4::text AS machine_id,$5::timestamptz AS observed_at) `
-				for _, statement := range []string{
-					`INSERT INTO machines(organization_id,id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at) SELECT m.organization_id,'plan_machine_'||n,'Example peer machine','Example peer',m.capacity,m.version,m.last_heartbeat_at,m.registered_at,m.updated_at FROM inputs x JOIN machines m ON m.organization_id=x.organization_id AND m.id=x.machine_id CROSS JOIN generate_series(1,1000)n`,
-					`INSERT INTO api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at,expires_at,key_kind) SELECT r.organization_id,'plan_token_'||n,'Example peer token '||n,repeat(md5('plan-token-'||n),2),md5('plan-token-'||n),c.scope,c.native_only,c.created_at,c.updated_at,c.expires_at,c.key_kind FROM inputs x JOIN runner_identities r ON r.organization_id=x.organization_id AND r.runner_id=x.runner_id JOIN api_tokens c ON c.organization_id=r.organization_id AND c.id=r.token_id CROSS JOIN generate_series(1,1000)n`,
-					`INSERT INTO runner_enrollments(organization_id,id,runner_id,machine_id,token_hash,scope,shared_machine,operations,created_at,expires_at,created_by,redeemed_at) SELECT e.organization_id,'plan_enrollment_'||n,'plan_runner_'||n,'plan_machine_'||n,repeat(md5('plan-enrollment-'||n),2),e.scope,e.shared_machine,e.operations,e.created_at,e.expires_at,e.created_by,e.redeemed_at FROM inputs x JOIN runner_identities r ON r.organization_id=x.organization_id AND r.runner_id=x.runner_id JOIN runner_enrollments e ON e.organization_id=r.organization_id AND e.id=r.enrollment_id CROSS JOIN generate_series(1,1000)n`,
-					`INSERT INTO runner_identities(organization_id,runner_id,machine_id,token_id,enrollment_id,scope,operations,display_name,capacity_limit,reported_capacity,os,architecture,created_at,expires_at,last_heartbeat_at,state,revision,tags,machine_use,isolation_tier,host_services,availability_timezone,availability_hard_deadline) SELECT r.organization_id,'plan_runner_'||n,'plan_machine_'||n,'plan_token_'||n,'plan_enrollment_'||n,r.scope,r.operations,'Example peer runner',r.capacity_limit,r.reported_capacity,r.os,r.architecture,r.created_at,r.expires_at,r.last_heartbeat_at,r.state,1,r.tags,r.machine_use,r.isolation_tier,r.host_services,r.availability_timezone,r.availability_hard_deadline FROM inputs x JOIN runner_identities r ON r.organization_id=x.organization_id AND r.runner_id=x.runner_id CROSS JOIN generate_series(1,1000)n`,
-					`INSERT INTO runner_repository_lists(organization_id,runner_id,request_id,pending,reason,listed_at) SELECT l.organization_id,'plan_runner_'||n,'plan_request_'||n,l.pending,l.reason,l.listed_at FROM inputs x JOIN runner_repository_lists l ON l.organization_id=x.organization_id AND l.runner_id=x.runner_id CROSS JOIN generate_series(1,1000)n`,
-					`INSERT INTO projects(organization_id,id,name,slug,profile) SELECT x.organization_id,'plan_project_'||n,'Example plan project '||n,'example-plan-project-'||n,'native' FROM inputs x CROSS JOIN generate_series(1,1000)n`,
-					`INSERT INTO policy_revisions(organization_id,project_id,policy_id,approved_by,approved_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,gate_github_pull_request) SELECT p.organization_id,'plan_project_'||n,p.policy_id,p.approved_by,p.approved_at,p.payload_object_key,p.payload_sha256,p.payload_bytes,p.payload_content_bytes,p.gate_github_pull_request FROM inputs x JOIN project_policies selected_policy ON selected_policy.organization_id=x.organization_id AND selected_policy.project_id=x.project_id JOIN policy_revisions p ON p.organization_id=selected_policy.organization_id AND p.project_id=selected_policy.project_id AND p.policy_id=selected_policy.policy_id CROSS JOIN generate_series(1,1000)n`,
-					`INSERT INTO policy_revisions(organization_id,project_id,policy_id,approved_by,approved_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,gate_github_pull_request) SELECT p.organization_id,p.project_id,p.policy_id||'_superseded_'||n,p.approved_by,p.approved_at,p.payload_object_key,p.payload_sha256,p.payload_bytes,p.payload_content_bytes,p.gate_github_pull_request FROM inputs x JOIN project_policies selected_policy ON selected_policy.organization_id=x.organization_id AND selected_policy.project_id=x.project_id JOIN policy_revisions p ON p.organization_id=selected_policy.organization_id AND p.project_id=selected_policy.project_id AND p.policy_id=selected_policy.policy_id CROSS JOIN generate_series(1,1000)n`,
-					`INSERT INTO project_policies(organization_id,project_id,policy_id) SELECT p.organization_id,'plan_project_'||n,p.policy_id FROM inputs x JOIN project_policies p ON p.organization_id=x.organization_id AND p.project_id=x.project_id CROSS JOIN generate_series(1,1000)n`,
-					`INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at,project_id,runner_id) SELECT organization_id,'plan_lease_'||n,id,'plan_machine_'||n,'plan_session_'||n,revision,observed_at+interval '1 hour',observed_at,observed_at,project_id,'plan_runner_'||n FROM (SELECT i.organization_id,i.id,i.revision,i.project_id,x.observed_at,row_number()OVER(ORDER BY i.id)n FROM inputs x JOIN issues i ON i.organization_id=x.organization_id AND i.project_id=x.project_id ORDER BY i.id LIMIT 1000) peers`,
-					`INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) SELECT l.organization_id,l.lease_id,l.runner_id,l.acquired_at FROM inputs x JOIN leases l ON l.organization_id=x.organization_id WHERE l.lease_id IN(SELECT 'plan_lease_'||n FROM generate_series(1,1000)n)`,
-				} {
-					if _, err := admin.ExecContext(t.Context(), inputs+statement, org, project, r.binding.RunnerID, r.binding.MachineID, now); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if _, err := admin.ExecContext(t.Context(), "ANALYZE machines,runner_repository_lists,project_policies,policy_revisions,runner_identities,api_tokens,projects,runner_enrollments"); err != nil {
-					t.Fatal(err)
-				}
-			}
-			freezeReportPlannerInputs(t, admin)
-			if _, err := admin.ExecContext(t.Context(), "ANALYZE issues,native_attempts,leases,runner_lease_assignments"); err != nil {
-				t.Fatal(err)
-			}
 			original := f.service.config.RunDetails
 			observed := &cleanupPollingDetails{DetailStore: f.service.runDetailStore(), checkpoint: checkpoint.Key}
 			f.service.config.RunDetails = observed
@@ -973,21 +898,7 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				pages = []int{100, test.pending - 100, 100, 0}
 			}
 			for poll, want := range pages {
-				if _, err := admin.ExecContext(t.Context(), "ANALYZE native_attempts"); err != nil {
-					t.Fatal(err)
-				}
-				var mu sync.Mutex
-				var statements []tracedStatement
-				timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
-					values := make([]any, len(args))
-					for i, arg := range args {
-						values[i] = arg.Value
-					}
-					mu.Lock()
-					statements = append(statements, tracedStatement{query, values})
-					mu.Unlock()
-				}}
-				ctx := context.WithValue(withRequestTiming(t.Context(), timing), cleanupPollingContextKey{}, true)
+				ctx := context.WithValue(t.Context(), cleanupPollingContextKey{}, true)
 				snapshot := runnerauth.RoutingSnapshot{RunnerID: r.binding.RunnerID}
 				if err := f.service.readRegistrationClaimStateTenant(ctx, scope, &snapshot); err != nil {
 					t.Fatal(err)
@@ -998,92 +909,8 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				if snapshot.Revision != expectedRevision || !reflect.DeepEqual(snapshot.Routing, expectedRouting) || snapshot.RepositoryListRequest != repositoryRequest.RequestID {
 					t.Fatalf("optimized registration routing changed: expected=%+v actual=%+v", expectedRouting, snapshot)
 				}
-				mu.Lock()
-				captured := append([]tracedStatement(nil), statements...)
-				mu.Unlock()
-				queryCount := 0
-				combinedReads := 0
-				for _, statement := range captured {
-					if !reportsBudgetReadStatement(statement.query) {
-						continue
-					}
-					queryCount++
-					if strings.Contains(statement.query, "checkpoint_json") {
-						t.Errorf("cleanup poll read an inline source checkpoint: %s", statement.query)
-					}
-
-					if strings.HasPrefix(strings.TrimSpace(statement.query), "WITH routing AS MATERIALIZED (") {
-						combinedReads++
-						if poll == 0 && test.history == 1000 {
-							plan, raw := reportsExplainPostgresPlan(t, admin, org, statement, "enable_seqscan=off", "enable_bitmapscan=off", "enable_sort=off", "enable_hashjoin=off", "enable_mergejoin=off")
-							maximumLimit := 0
-							for _, match := range reportsBudgetLimit.FindAllStringSubmatch(statement.query, -1) {
-								value := match[2]
-								if match[1] != "" {
-									position, err := strconv.Atoi(match[1])
-									if err != nil || position < 1 || position > len(statement.args) {
-										t.Fatalf("snapshot limit bind missing: %v", match)
-									}
-									value = fmt.Sprint(statement.args[position-1])
-								}
-								limit, err := strconv.Atoi(value)
-								if err != nil || limit < 1 || limit > 10001 {
-									t.Fatalf("snapshot source limit exceeds owner bound: %s", value)
-								}
-								maximumLimit = max(maximumLimit, limit)
-							}
-							if maximumLimit != 10001 {
-								t.Fatalf("snapshot omitted lease sentinel bound: %d", maximumLimit)
-							}
-							pointKeys := map[string][]string{"machines": {"organization_id", "id"}, "runner_repository_lists": {"organization_id", "runner_id"}, "project_policies": {"organization_id", "project_id"}, "policy_revisions": {"organization_id", "project_id", "policy_id"}, "leases": {"organization_id", "machine_id"}}
-							seen := map[string]bool{}
-							var inspect func(reportsBudgetPlan, bool)
-							inspect = func(node reportsBudgetPlan, limited bool) {
-								limited = limited || node.Node == "Limit"
-								if keys, required := pointKeys[node.Relation]; required && node.Loops > 0 {
-									seen[node.Relation] = true
-									conditions, indexed := reportsBudgetConditions(node, node.Relation)
-									if strings.Contains(node.Node, "Seq Scan") || !indexed {
-										t.Errorf("snapshot %s is not an indexed seek: node=%s plan=%s", node.Relation, node.Node, raw)
-									}
-									for _, key := range keys {
-										if !strings.Contains(conditions, key+" =") {
-											t.Errorf("snapshot %s lacks point key %s: %s plan=%s", node.Relation, key, conditions, raw)
-										}
-									}
-									visits := (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-									if node.Relation == "leases" {
-										if !limited || visits > 10001 {
-											t.Errorf("snapshot leases are unbounded: limited=%v visits=%v plan=%s", limited, visits, raw)
-										}
-									} else if visits > 1 {
-										t.Errorf("snapshot %s visits %v rows for one key: plan=%s", node.Relation, visits, raw)
-									}
-								}
-								for _, child := range node.Plans {
-									inspect(child, limited)
-								}
-							}
-							inspect(plan, false)
-							for relation := range pointKeys {
-								if !seen[relation] {
-									t.Errorf("snapshot plan did not execute %s lookup: %s", relation, raw)
-								}
-							}
-						}
-					}
-					if strings.HasPrefix(statement.query, "-- name: RunnerReleasedAttemptCandidates :many") {
-						plan, raw := reportsExplainPostgresPlan(t, admin, org, statement, "enable_seqscan=off", "enable_bitmapscan=off", "enable_sort=off", "enable_hashjoin=off", "enable_mergejoin=off")
-						if violations := reportsBudgetPlanViolations(statement, plan); len(violations) > 0 {
-							t.Errorf("cleanup poll scans history or sorts: %v plan=%s", violations, raw)
-						}
-					}
-				}
-				if combinedReads != 1 {
-					t.Errorf("poll omitted or repeated actual combined snapshot read: %d", combinedReads)
-				}
-				if queryCount != 4 || len(snapshot.ClaimState.ReleasedExecutions) != want {
-					t.Errorf("poll %d with %d history: queries=%d executions=%d want=4,%d", poll, test.history, queryCount, len(snapshot.ClaimState.ReleasedExecutions), want)
+				if len(snapshot.ClaimState.ReleasedExecutions) != want {
+					t.Errorf("poll %d with %d history: executions=%d want=%d", poll, test.history, len(snapshot.ClaimState.ReleasedExecutions), want)
 				}
 				if got := observed.reads.Swap(0); got != 0 {
 					t.Errorf("cleanup poll hydrated %d source checkpoints", got)

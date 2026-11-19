@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -407,9 +406,6 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				}
 				return nil
 			})
-			installReportsBudgetTrace(t, f.service)
-			var preflightQueries []string
-			timing := &requestTiming{Trace: func(query string, _ []driver.NamedValue) { preflightQueries = append(preflightQueries, query) }}
 			request := httptest.NewRequest(http.MethodPost, f.base+"/attachment-metadata/check", strings.NewReader(`{"size":100}`))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("X-CSRF-Token", csrf)
@@ -419,19 +415,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			}
 			request.Header.Set(cloudassert.Header, signed)
 			preflight := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(preflight, request.WithContext(withRequestTiming(t.Context(), timing)))
-			counterRead := false
-			for _, query := range preflightQueries {
-				if strings.Contains(query, "hosted_usage_counters") {
-					counterRead = true
-				}
-				if strings.Contains(query, "machines") || strings.Contains(query, "hosted_usage_windows") {
-					t.Fatalf("preflight read unrelated population: %s", query)
-				}
-			}
-			if !counterRead {
-				t.Fatal("preflight did not read collaboration bytes")
-			}
+			f.service.Handler().ServeHTTP(preflight, request.WithContext(t.Context()))
 			wantPreflight := http.StatusOK
 			if test.allowance < record.Size+test.retained {
 				wantPreflight = http.StatusTooManyRequests

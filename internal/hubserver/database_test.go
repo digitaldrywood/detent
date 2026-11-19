@@ -381,14 +381,8 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			drainTestNativeBoard(t, f.service)
 			scope := analyticsTestScope(t, f)
 			item := string(issue.WorkItemID)
-			installReportsBudgetTrace(t, f.service)
 			repository := f.service.config.TenantRepository
 			admin := hostedPostgresAdmin(t, f.service)
-			poolConfig, err := f.service.config.Postgres.Connection.PoolConfig()
-			if err != nil {
-				t.Fatal(err)
-			}
-			login := poolConfig.ConnConfig.User
 			heldContext, cancelHeld := context.WithCancel(t.Context())
 			ready, release, heldDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
@@ -469,7 +463,7 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 				default:
 				}
 				var matches int
-				if err := admin.QueryRowContext(t.Context(), "SELECT count(*), coalesce(min(pid),0) FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction'", login).Scan(&matches, &heldPID); err != nil {
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*), coalesce(min(pid),0) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend' AND state='idle in transaction'").Scan(&matches, &heldPID); err != nil {
 					return err
 				}
 				if matches != 1 {
@@ -485,7 +479,7 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			}
 			writerAvailable := false
 			readerContext := testenv.WaitContext(t, t.Context())
-			err = repository.ReadTenant(readerContext, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			err := repository.ReadTenant(readerContext, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				writer, ok := reader.(tenantstore.Writer)
 				writerAvailable = ok
 				if !ok {
@@ -552,7 +546,7 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 				default:
 				}
 				var waiting bool
-				if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))`, login, heldPID).Scan(&waiting); err != nil {
+				if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))`, heldPID).Scan(&waiting); err != nil {
 					return err
 				}
 				if !waiting {

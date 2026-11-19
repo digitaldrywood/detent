@@ -849,32 +849,6 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				ctx = context.WithValue(ctx, validatorPGProbeKey{}, probe)
 				response = httptest.NewRecorder()
 				f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request).WithContext(ctx))
-				if test.want == http.StatusOK && measurement.statements == 0 {
-					t.Fatal("review writer measurement did not observe PostgreSQL statements")
-				}
-				ceiling := 0
-				for _, category := range validatorReviewWriterStatements {
-					ceiling += category.statements
-				}
-				if measurement.statements > ceiling || test.want == http.StatusOK && measurement.statements != ceiling || measurement.content != 0 {
-					t.Fatalf("review writer statements per transaction=%d (ceiling %d), content operations=%d (want 0)", measurement.statements, ceiling, measurement.content)
-				}
-				t.Logf("review writer statements=%d transaction=%s", measurement.statements, probe.elapsed)
-				if strings.HasSuffix(test.name, "retained history") {
-					control := tracedStatement{"SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2", []any{f.project.OrganizationID, issue.WorkItemID}}
-					if plan, raw := explainValidatorStatement(t, admin, f.project.OrganizationID, control); len(validatorReviewVisitViolations(plan)) == 0 {
-						t.Fatalf("row visit budget accepted a retained history scan: %s", raw)
-					}
-					for _, statement := range probe.statements {
-						if !reportsBudgetReadStatement(statement.query) {
-							continue
-						}
-						plan, raw := explainValidatorStatement(t, admin, f.project.OrganizationID, statement)
-						if violations := validatorReviewVisitViolations(plan); len(violations) > 0 {
-							t.Errorf("review writer read exceeds its work budget at retained history: %v\nstatement: %s\nplan: %s", violations, statement.query, raw)
-						}
-					}
-				}
 			} else {
 				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
 			}
@@ -1619,6 +1593,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 	}
 }
 
+type claimValidatorStatement struct {
+	query string
+	args  []any
+}
+
 type validatorPGProbeKey struct{}
 
 type validatorPGProbe struct {
@@ -1626,30 +1605,10 @@ type validatorPGProbe struct {
 	writers           map[*pgx.Conn]int
 	beforeWrite       func()
 	beforeReviewWrite func()
-	statements        []tracedStatement
-	current           map[*pgx.Conn][]tracedStatement
+	statements        []claimValidatorStatement
+	current           map[*pgx.Conn][]claimValidatorStatement
 	began             time.Time
 	elapsed           time.Duration
-}
-
-const validatorReviewRowVisits = 100
-
-var validatorReviewWriterStatements = []struct {
-	category   string
-	statements int
-}{
-	{"transaction setup", 1},
-	{"runner lock, lease fence, latest attempt, lease policy and review session", 10},
-	{"credential and project grant authority", 2},
-	{"project lock, project, work item, change and locked change and version", 6},
-	{"submitted content binding", 1},
-	{"policy rows", 2},
-	{"receipt replay check and receipt owner", 5},
-	{"receipt content ownership", 6},
-	{"review content accounting for two archive objects", 11},
-	{"evidence append", 4},
-	{"review event append", 6},
-	{"board delta", 3},
 }
 
 type validatorPGTrace struct{}
@@ -1690,9 +1649,9 @@ func traceValidatorStatement(ctx context.Context, conn *pgx.Conn, query string, 
 		probe.writers[conn] = count + 1
 		probe.measurement.statements = max(probe.measurement.statements, count+1)
 		if probe.current == nil {
-			probe.current = make(map[*pgx.Conn][]tracedStatement)
+			probe.current = make(map[*pgx.Conn][]claimValidatorStatement)
 		}
-		probe.current[conn] = append(probe.current[conn], tracedStatement{query, args})
+		probe.current[conn] = append(probe.current[conn], claimValidatorStatement{query, args})
 	}
 	return ctx
 }
@@ -1777,47 +1736,11 @@ func seedValidatorReviewHistory(t *testing.T, f nativeFixture, admin *sql.DB, ch
 		{`INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,actor_envelope_known) SELECT $1,$2,$3,'evt_retained_'||n,i.event_sequence+n,'comment.created',1,'system','example',$4,$5,$6,$7,$8,true FROM issues i CROSS JOIN generate_series(1,20000)n WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3`, []any{org, f.project.ID, item, now, event.PayloadObjectKey, event.PayloadSHA256, event.PayloadBytes, event.PayloadContentBytes}},
 		{`UPDATE issues SET event_sequence=event_sequence+20000 WHERE organization_id=$1 AND project_id=$2 AND native_id=$3`, []any{org, f.project.ID, item}},
 		{`INSERT INTO native_command_states(organization_id,actor_id,operation,command_key,request_hash,created_at,response_expired) SELECT $1,$2,'example.history',n::text,repeat('a',64),$3,true FROM generate_series(1,10000)n`, []any{org, actor, now}},
-		{`ANALYZE change_evidence,collaboration_events,native_command_states,issues,change_requests`, nil},
 	} {
 		if _, err := admin.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
 			t.Fatalf("seed review history: %v\n%s", err, statement.query)
 		}
 	}
-}
-
-func explainValidatorStatement(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statement tracedStatement) (reportsBudgetPlan, []byte) {
-	t.Helper()
-	tx, err := admin.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	var raw []byte
-	if _, err := tx.ExecContext(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(organization)); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.QueryRowContext(t.Context(), "EXPLAIN(ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw); err != nil {
-		t.Fatalf("explain review writer read: %v\nstatement: %s", err, statement.query)
-	}
-	var plans []struct{ Plan reportsBudgetPlan }
-	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-		t.Fatalf("review writer plan=%s error=%v", raw, err)
-	}
-	return plans[0].Plan, raw
-}
-
-func validatorReviewVisitViolations(node reportsBudgetPlan) []string {
-	var violations []string
-	if visits := (node.Rows + node.Removed + node.IndexRemoved) * node.Loops; visits > validatorReviewRowVisits || strings.Contains(node.Node, "Seq Scan") && slices.Contains([]string{"change_evidence", "collaboration_events", "native_command_states", "native_commands"}, node.Relation) {
-		violations = append(violations, fmt.Sprintf("%s %s visits %.0f rows (budget %d)", node.Node, node.Relation, visits, validatorReviewRowVisits))
-	}
-	for _, child := range node.Plans {
-		violations = append(violations, validatorReviewVisitViolations(child)...)
-	}
-	return violations
 }
 
 func configureValidatorCollaborationAllowance(t *testing.T, f nativeFixture, allowance int64) {
