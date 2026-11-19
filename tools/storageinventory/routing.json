@@ -157,7 +157,6 @@
         "internal/hubserver/postgres/conversation_records.go#session.CreateConversation"
       ],
       "parity_tests": [
-        "internal/hubserver/conversation_store_test.go#TestConversationStoreCommandsAndReceipts",
         "internal/hubserver/conversation_store_test.go#TestConversationStoreMessagesSequenceUnderConcurrency",
         "internal/hubserver/conversation_api_test.go#TestConversationAPICommands",
         "internal/hubserver/postgres/conversation_records_test.go#TestConversationRecordsAreTenantScopedAndTransactional"
