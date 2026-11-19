@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/sprites"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
@@ -1078,3 +1079,144 @@ func (s *Service) readCoordinatorProposalAgent(ctx context.Context, action chat.
 const coordinatorAgentName = coordinator.AgentName
 
 var coordinatorAgent = coordinator.Agent
+
+var coordinatorScreenReadNames = coordinator.ScreenReadNames
+
+var coordinatorScreenTools = coordinator.ScreenTools
+
+var coordinatorScreenRead = coordinator.ScreenRead
+
+var coordinatorReadPermission = coordinator.ReadPermission
+
+func (t *coordinatorToolset) screenRead(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.screenReadDeps().Read(ctx, record, call)
+}
+
+var coordinatorProjectReadScoped = coordinator.ProjectReadScoped
+
+func (s *Service) coordinatorRunnerAttached(ctx context.Context, record conversationRecord, id string) (bool, error) {
+	return coordinator.RunnerAttached(ctx, record, id, currentHubOperator, s.coordinatorRunner)
+}
+
+func (s *Service) coordinatorScreenReport(ctx context.Context, record conversationRecord, credential hubapi.APICredential, call runner.AgentToolCall) (any, error) {
+	return s.screenReportDeps().Report(ctx, record, credential, call)
+}
+
+var coordinatorScreenTarget = coordinator.ScreenTarget
+
+func (t *coordinatorToolset) restrictReadAudience(ctx context.Context, record conversationRecord, credential hubapi.APICredential) error {
+	return t.readAudienceDeps().Restrict(ctx, record, credential)
+}
+
+func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.spritePreviewDeps().Preview(ctx, record, call)
+}
+
+func (s *Service) coordinatorScope(ctx context.Context, project tracker.ProjectID, manage bool) (hubscope.NativeScope, error) {
+	return coordinator.NativeScope(ctx, project, manage)
+}
+
+func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope hubscope.NativeScope, settings spritePoolSettings) error {
+	return s.spriteCommandDeps().Validate(ctx, scope, settings)
+}
+
+func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.spriteCommandDeps().Execute(ctx, action)
+}
+
+var coordinatorSpriteTools = coordinator.SpriteTools
+
+var coordinatorSpriteTool = coordinator.IsSpriteTool
+
+var coordinatorSpriteMutation = coordinator.SpriteMutation
+
+var decodeCoordinatorSpriteArguments = coordinator.DecodeSpriteArguments
+
+type coordinatorSpriteChange = coordinator.SpriteChange
+
+type coordinatorSpriteArguments = coordinator.SpriteArguments
+
+func (t *coordinatorToolset) screenReadDeps() coordinator.ScreenReadDeps {
+	s := t.coordinator.server
+	return coordinator.ScreenReadDeps{
+		ActionContext:    t.actionContext,
+		Operator:         currentHubOperator,
+		AuthorizeRecord:  t.coordinator.authorizeRecord,
+		RestrictAudience: t.restrictReadAudience,
+		ReadSlack: func(ctx context.Context, org tracker.OrganizationID) (any, error) {
+			return s.coordinatorSlackIntegration(ctx, org)
+		},
+		ReadBudget: func(ctx context.Context, scope hubscope.NativeScope) (any, error) {
+			return readBillingMonthlySettings(ctx, s.config.TenantRepository, scope)
+		},
+		ReadRunners:      s.coordinatorProjectRunners,
+		AllRunnerGrants:  s.hostedAllRunnerGrants,
+		ReadReport:       s.coordinatorScreenReport,
+		FleetRequirement: hubFleetRequirement,
+		RunnerAttached:   s.coordinatorRunnerAttached,
+		ExecuteOperator:  (hostedOperatorExecutor{service: s}).Execute,
+		ProjectMembers:   coordinatorProjectMembers,
+	}
+}
+
+func (s *Service) screenReportDeps() coordinator.ScreenReportDeps {
+	return coordinator.ScreenReportDeps{
+		Now:            s.config.Clock,
+		FleetPermitted: s.hubFleetReadPermitted,
+		UsageWindow: func(name string, now time.Time) (operatortool.AnalyticsWindow, error) {
+			window, err := usageRangeWindow(name, now)
+			return operatortool.AnalyticsWindow{From: window.From, To: window.To, Bucket: time.Hour}, err
+		},
+		ReadProjectReport: func(ctx context.Context, credential hubapi.APICredential, project string, window operatortool.AnalyticsWindow) (any, bool, error) {
+			return s.readProjectReport(ctx, credential, project, window, reportsFilter{})
+		},
+		ReadDiagnostics: func(ctx context.Context, credential hubapi.APICredential, window operatortool.AnalyticsWindow, project tracker.ProjectID) (any, error) {
+			return s.readDiagnosticsTenant(ctx, credential, window, project)
+		},
+	}
+}
+
+func (t *coordinatorToolset) readAudienceDeps() coordinator.ReadAudienceDeps {
+	return coordinator.ReadAudienceDeps{
+		ReadTenant: t.coordinator.server.readConversationTenant,
+		Write:      t.coordinator.write,
+	}
+}
+
+func (s *Service) spriteCommandDeps() coordinator.SpriteCommandDeps {
+	return coordinator.SpriteCommandDeps{
+		HostedSecrets: s.config.Hosted != nil && s.config.SecretKeys != nil,
+		TokenPresent: func(ctx context.Context, scope hubscope.NativeScope) (bool, error) {
+			status, err := s.readAccessSecretStatus(ctx, scope)
+			return status.Present, err
+		},
+		ReadPool: func(ctx context.Context, scope hubscope.NativeScope) (coordinator.SpritePool, error) {
+			view, err := s.readSpritePool(ctx, scope)
+			if err != nil {
+				return coordinator.SpritePool{}, err
+			}
+			result := coordinator.SpritePool{
+				Settings: view.spritePoolSettings,
+				Status: func(ctx context.Context, scope hubscope.NativeScope, connector string, project tracker.ProjectID) (any, error) {
+					return s.coordinatorSpritePoolStatus(ctx, scope, view, connector, project)
+				},
+			}
+			if len(view.Members) > 0 {
+				last := view.Members[len(view.Members)-1]
+				result.LastBootstrap = &coordinator.SpriteBootstrap{Name: last.Name, State: last.State, BootstrapLog: last.BootstrapLog}
+			}
+			return result, nil
+		},
+		RecordAuthority: s.spritePoolRecordAuthority,
+		Update: func(ctx context.Context, scope hubscope.NativeScope, command tracker.Mutation, change coordinator.SpriteChange, resolve func(sprites.PoolSettings) (sprites.PoolSettings, *string, error)) error {
+			return s.executeSpritePoolSettingsCommand(ctx, scope, command, change, resolve)
+		},
+		RecheckMutation: s.recheckProjectRecordMutation,
+		StartPool:       s.startSpritePoolForQueue,
+	}
+}
+
+func (t *coordinatorToolset) spritePreviewDeps() coordinator.SpritePreviewDeps {
+	s := t.coordinator.server
+	return coordinator.SpritePreviewDeps{ProposalDeps: t.proposalDeps(), Commands: s.spriteCommandDeps(), HostedPath: s.hostedPath}
+}
