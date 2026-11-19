@@ -1,32 +1,53 @@
-package hubserver
+package coreimport_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/orgsettings"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPostgresLegacyBootstrapTenants(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
+	admin := hubtest.Database(t)
+	repository := hubtest.RepositoryOn(t, admin)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	key := hostedSharedKey(41)
-	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedStartupOrganization(t, repository, org)
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, ed25519.SeedSize))
+	organizations := []tracker.OrganizationID{"org_first", "org_second"}
+	configs := make(map[tracker.OrganizationID]hubserver.Config, len(organizations))
+	for _, org := range organizations {
+		cfg := hubfixture.StartupConfig()
+		cfg.Hosted.OrganizationID = string(org)
+		cfg.Hosted.WorkOSOrganizationID = "provider_" + string(org)
+		cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{
+			Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1,
+		}
+		cfg.SecretKeys = hubfixture.SecretKeys(t)
+		cfg.Clock = func() time.Time { return now }
+		cfg.Logger = hubfixture.DiscardLogger()
+		cfg.DatabaseBackend = hubserver.DatabasePostgres
+		configs[org] = cfg
+		deployment, generation := cfg.Hosted.Deployment()
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.UpdateAccessOrganizationName(t.Context(), "Example "+string(org)); err != nil {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example " + string(org), Slug: "example-" + strings.TrimPrefix(string(org), "org_"), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: cfg.Hosted.WorkOSOrganizationID, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 				return err
 			}
 			if err := w.UpdateOrganizationLogo(t.Context(), accessstore.Logo{ImageKey: "logo_" + string(org)}, 1); err != nil {
@@ -40,15 +61,21 @@ func TestPostgresLegacyBootstrapTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, org := range []string{"org_first", "org_second"} {
+	for _, organization := range organizations {
+		org := string(organization)
 		t.Run(org, func(t *testing.T) {
-			entry := &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
-			if err := entry.Validate(org); err != nil {
+			cfg := configs[organization]
+			connection := hubtest.PostgresConfig(t, admin, hubtest.WithClock(cfg.Clock))
+			cfg.Postgres = &connection
+			service, err := hubserver.Open(t.Context(), cfg)
+			if err != nil {
 				t.Fatal(err)
 			}
-			service := &Service{secretRewrapReady: make(chan struct{}), echo: echo.New(), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), Clock: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: org, PublicURL: "https://hub.example.test", SharedEntry: entry}}}
-			service.echo.Pre(service.hostedSharedEntry)
-			service.echo.GET("/app/bootstrap", service.appBootstrapPayload)
+			t.Cleanup(func() {
+				if err := service.Close(); err != nil {
+					t.Error(err)
+				}
+			})
 			target := "/organizations/" + org + "/app/bootstrap"
 			serve := func(audience string) *httptest.ResponseRecorder {
 				t.Helper()
@@ -68,9 +95,15 @@ func TestPostgresLegacyBootstrapTenants(t *testing.T) {
 				return response
 			}
 			response := serve(org)
-			requireNativeStatus(t, response, http.StatusOK)
-			var payload appBootstrap
-			decodeHubResponse(t, response, &payload)
+			hubfixture.RequireStatus(t, response, http.StatusOK)
+			var payload struct {
+				Organization struct {
+					ID   string            `json:"id"`
+					Name string            `json:"name"`
+					Logo *orgsettings.Logo `json:"logo"`
+				} `json:"organization"`
+			}
+			hubfixture.Decode(t, response, &payload)
 			if payload.Organization.ID != org || payload.Organization.Name != "Example "+org || payload.Organization.Logo == nil || payload.Organization.Logo.ImageKey != "logo_"+org {
 				t.Fatalf("bootstrap=%+v", payload.Organization)
 			}
@@ -78,7 +111,7 @@ func TestPostgresLegacyBootstrapTenants(t *testing.T) {
 			if org == foreign {
 				foreign = "org_second"
 			}
-			requireNativeStatus(t, serve(foreign), http.StatusUnauthorized)
+			hubfixture.RequireStatus(t, serve(foreign), http.StatusUnauthorized)
 		})
 	}
 }
