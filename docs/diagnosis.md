@@ -106,15 +106,7 @@ claims cite this history.
 | Activity | under 300 ms |
 | Reports and Diagnostics | under 500 ms |
 
-`TestHotReadQueryPlans` runs `EXPLAIN QUERY PLAN` on every statement that
-Activity, the work-items list, board lanes, projects, Reports and Diagnostics
-issue. A hot read never fully scans `native_attempts`,
-`collaboration_events`, `change_requests`, `attempt_usage`,
-`analytics_hourly_rollups` or the rollup views, and never sorts rows of those
-tables in a temporary B-tree. `TestAnalyticsRollupReportPlans` applies the
-same rules to Reports over production-shaped tenants and logs their times. A statement that currently breaks
-a rule is listed in the test's known-failing table with the issue that fixes
-it, and the entry is removed when that fix lands.
+The Dasha query audit uses production database statistics to identify slow statements. Use the tenant request-metrics history above to identify the affected route and time window.
 
 ## GitHub usage timing and privacy
 

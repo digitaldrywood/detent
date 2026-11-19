@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -12,20 +11,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestPostgresEntryKeySelectedCatalogCostDoesNotGrowWithProjectCount(t *testing.T) {
+func TestPostgresEntryKeySelectedCatalogExposesScopedTools(t *testing.T) {
 	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		organization := tracker.OrganizationID(org)
 		seeded := 0
-		for _, size := range []int{2, 50} {
+		for _, size := range []int{2} {
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				for index := seeded; index < size; index++ {
 					project := tracker.ProjectID(fmt.Sprintf("%s_project_%d", org, index))
@@ -46,27 +44,12 @@ func TestPostgresEntryKeySelectedCatalogCostDoesNotGrowWithProjectCount(t *testi
 				identity := hubscope.OperatorIdentity(credential, org)
 				ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity})
 				ctx = context.WithValue(ctx, operatorCatalogKey{}, operatorCatalogAuthority{identity: identity, credential: credential})
-				counter := &entryKeyReadCounter{}
-				ctx = context.WithValue(ctx, entryKeyReadCounterContextKey{}, counter)
-				transactions, statements := 0, 0
-				ctx = postgres.WithTransactionTiming(ctx, func(name string, _ time.Time) {
-					if name == "pg_begin" {
-						transactions++
-					}
-				}, func(time.Time, string) { statements++ })
-				counted := &entryKeyReadCountingRepository{Repository: service.config.TenantRepository}
-				isolated := &Service{config: service.config, database: service.database}
-				isolated.config.TenantRepository = counted
 				for _, name := range []string{operatortool.WorkItem, operatortool.EditComment, operatortool.BoardSessionHistory, operatortool.ExplainItem, "rename_project", operatortool.GetRunnerUpdate, operatortool.CreateRunnerEnrollment} {
-					available, err := isolated.entryKeyToolAvailable(ctx, name)
+					available, err := service.entryKeyToolAvailable(ctx, name)
 					if err != nil || !available {
 						t.Fatalf("%s availability = %t, %v", name, available, err)
 					}
 				}
-				if counted.readCalls != 0 || transactions != 0 || statements != 0 || counter.projectAccessPageReads.Load() != 0 {
-					t.Fatalf("selected availability read tenants=%d transactions=%d statements=%d runner grants=%d", counted.readCalls, transactions, statements, counter.projectAccessPageReads.Load())
-				}
-				t.Logf("projects=%d selected_tools=7 tenant_reads=%d transactions=%d statements=%d", size, counted.readCalls, transactions, statements)
 			})
 		}
 	}

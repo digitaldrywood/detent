@@ -645,6 +645,7 @@ func TestNativeRunEventRejectsInvalidUsage(t *testing.T) {
 // keeps a project the member cannot read opaque.
 func TestHostedUsageReportAccess(t *testing.T) {
 	t.Parallel()
+	now := time.Date(2026, time.October, 13, 0, 0, 0, 0, time.UTC)
 	f := newUsageHostedFixture(t)
 	for _, account := range []string{"owner", "viewer"} {
 		t.Run(account, func(t *testing.T) {
@@ -664,12 +665,30 @@ func TestHostedUsageReportAccess(t *testing.T) {
 	f.usage(t, "", browserHostedOrganizationBase+"/usage", http.StatusUnauthorized)
 	t.Run("reports", func(t *testing.T) {
 		for _, account := range []string{"owner", "viewer"} {
-			for _, window := range []string{"24h", "48h", "7d", "30d"} {
+			for _, window := range []string{"24h", "48h", "7d", "30d", "90d"} {
 				var report hostedReportsReport
 				usageDecode(t, f.usage(t, account, browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+window, http.StatusOK), &report)
 				if report.Analytics.ProjectID != f.project || len(report.Throughput) == 0 || len(report.Coverage) == 0 {
 					t.Fatalf("reports scope or coverage = %+v", report)
 				}
+			}
+		}
+		for _, hour := range []int{0, 10} {
+			to := now.Add(time.Duration(hour) * time.Hour)
+			fixture := newUsageHostedFixture(t, func(cfg *Config) { cfg.Clock = func() time.Time { return to } })
+			for _, days := range []int{30, 90} {
+				t.Run(fmt.Sprintf("%dd/%02dh", days, hour), func(t *testing.T) {
+					wantFrom := now.AddDate(0, 0, -days)
+					if hour != 0 {
+						wantFrom = wantFrom.AddDate(0, 0, 1)
+					}
+					var report hostedReportsReport
+					path := fmt.Sprintf("%s/reports?project=%s&range=%dd", browserHostedOrganizationBase, fixture.project, days)
+					usageDecode(t, fixture.usage(t, "owner", path, http.StatusOK), &report)
+					if window := report.Analytics.Window; !window.From.Equal(wantFrom) || !window.To.Equal(to) {
+						t.Fatalf("window=%+v, want %s through %s", window, wantFrom, to)
+					}
+				})
 			}
 		}
 		for _, request := range []struct {

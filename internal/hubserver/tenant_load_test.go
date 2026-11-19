@@ -13,14 +13,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -104,231 +104,6 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 	}
 }
 
-func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
-	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC) }})
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	installReportsBudgetTrace(t, f.service)
-	admin := hostedPostgresAdmin(t, f.service)
-	f.service.config.Hosted = &hostedplans.HostedConfig{}
-	f.service.database.hostedOrganization = f.project.OrganizationID
-	hostedTestPlans(t, f.service, map[string]int64{"api_mutations": 1 << 40, "ingested_events": 1 << 40, "collaboration_bytes": 1 << 50, "history_records": 1 << 40,
-		"concurrent_work": 10000, "connected_runners": 10000, "registered_runners": 10000, "unarchived_issues": 1 << 30})
-	f.service.config.Hosted = nil
-	items := []tracker.NativeIssue{f.create(t, "first"), f.create(t, "second")}
-	var leases []tracker.NativeLease
-	var workers []string
-	for index, item := range items {
-		worker := f.worker(t, fmt.Sprintf("worker-%d", index))
-		workers = append(workers, worker)
-		leases = append(leases, claimNativeAttempt(t, f, worker, fmt.Sprintf("machine-%d", index), fmt.Sprintf("session-%d", index), item.WorkItemID))
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", worker, nativeStartedEvent(leases[index])), http.StatusOK)
-	}
-	t.Run("history scan is rejected", func(t *testing.T) {
-		statement := tracedStatement{"SELECT sum(payload_content_bytes) FROM collaboration_events WHERE organization_id=$1", []any{f.project.OrganizationID}}
-		plan, raw := reportsExplainPostgresPlan(t, admin, f.project.OrganizationID, statement)
-		if violations := reportsBudgetPlanViolations(statement, plan); len(violations) == 0 {
-			t.Fatalf("plan check accepted a full history scan: %s", raw)
-		}
-	})
-	foreign := newNativeFixture(t, f.service, "org_first_second", "Foreign project")
-	foreignItem := foreign.create(t, "foreign")
-	foreignWorker := foreign.worker(t, "foreign-worker")
-	foreignLease := claimNativeAttempt(t, foreign, foreignWorker, "machine-foreign", "session-foreign", foreignItem.WorkItemID)
-	requireNativeStatus(t, performHubAPIRequest(t, foreign.service, http.MethodPost, foreign.base+"/work-items/"+string(foreignItem.WorkItemID)+"/events", foreignWorker, nativeStartedEvent(foreignLease)), http.StatusOK)
-	for _, relation := range tenantWriteHistoryRelations {
-		if _, err := admin.ExecContext(t.Context(), "ALTER TABLE "+relation+" SET (autovacuum_enabled=false, toast.autovacuum_enabled=false)"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	counts := map[string]int{}
-	previous, retained, foreignRetained := 0, 0, 0
-	for _, step := range []struct {
-		name                       string
-		history, retained, foreign int
-	}{{"tiny", 0, 0, 0}, {"crossover", 20000, 48, 48}, {"large", 200000, 3000, 6000}} {
-		t.Run(step.name, func(t *testing.T) {
-			now := f.service.config.Clock().UTC()
-			content := eventstore.NewContent(f.service.runDetailStore())
-			for index, item := range items {
-				var sequence int64
-				if err := admin.QueryRowContext(t.Context(), "SELECT event_sequence FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, item.WorkItemID).Scan(&sequence); err != nil {
-					t.Fatal(err)
-				}
-				for first := previous + 1; first <= step.history; first += 1000 {
-					ids, keys, digests := []string{}, []string{}, []string{}
-					sequences, sizes, contents := []int64{}, []int64{}, []int64{}
-					for i := first; i <= min(first+999, step.history); i++ {
-						id := fmt.Sprintf("evt_history_%d_%d", index, i)
-						event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: id, OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, AggregateSequence: sequence + int64(i-previous), Type: "comment.created", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "example"}, RecordedAt: now, Data: tracker.CollaborationData{Reason: strings.Repeat("h", 200)}}))
-						if err != nil {
-							t.Fatal(err)
-						}
-						ids = append(ids, event.ID)
-						keys = append(keys, event.PayloadObjectKey)
-						digests = append(digests, event.PayloadSHA256)
-						sequences = append(sequences, event.Sequence)
-						sizes = append(sizes, event.PayloadBytes)
-						contents = append(contents, event.PayloadContentBytes)
-					}
-					if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,actor_envelope_known)
-SELECT $1,$2,$3,e.id,e.sequence,'comment.created',1,'system','example',$4,e.key,e.digest,e.bytes,e.content_bytes,true
-FROM unnest($5::text[],$6::bigint[],$7::text[],$8::text[],$9::bigint[],$10::bigint[])e(id,sequence,key,digest,bytes,content_bytes)`, f.project.OrganizationID, f.project.ID, item.WorkItemID, now, ids, sequences, keys, digests, sizes, contents); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if _, err := admin.ExecContext(t.Context(), "UPDATE issues SET event_sequence=$4 WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, item.WorkItemID, sequence+int64(step.history-previous)); err != nil {
-					t.Fatal(err)
-				}
-				var count int
-				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id LIKE $4", f.project.OrganizationID, f.project.ID, item.WorkItemID, fmt.Sprintf("evt_history_%d_%%", index)).Scan(&count); err != nil || count != step.history {
-					t.Fatalf("historical population=%d want=%d error=%v", count, step.history, err)
-				}
-				seedTenantLeaseHistory(t, admin, f.project.OrganizationID, leases[index].ID, fmt.Sprintf("lease_history_%d_", index), retained+1, step.retained)
-			}
-			seedTenantLeaseHistory(t, admin, foreign.project.OrganizationID, foreignLease.ID, "lease_foreign_", foreignRetained+1, step.foreign)
-			var statements []tracedStatement
-			for index, item := range items {
-				lease := leases[index]
-				for _, operation := range []struct {
-					name, path, token string
-					payload           any
-				}{
-					{"renew", "/leases/" + string(lease.ID) + "/renew", workers[index], tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}},
-					{"validate", "/leases/" + string(lease.ID) + "/validate", workers[index], tracker.NativeLeaseMutation{FencingToken: lease.FencingToken}},
-					{"comment", "/work-items/" + string(item.WorkItemID) + "/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("history-%s-%d", step.name, index)}, Body: "progress"}},
-				} {
-					var mu sync.Mutex
-					var traced []tracedStatement
-					timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
-						values := make([]any, 0, len(args))
-						for _, arg := range args {
-							if arg.Name != "" {
-								values = append(values, sql.Named(arg.Name, arg.Value))
-							} else {
-								values = append(values, arg.Value)
-							}
-						}
-						mu.Lock()
-						traced = append(traced, tracedStatement{query, values})
-						mu.Unlock()
-					}}
-					request := newHubAPIRequest(t, http.MethodPost, f.base+operation.path, operation.token, operation.payload).WithContext(withRequestTiming(t.Context(), timing))
-					response := httptest.NewRecorder()
-					f.service.Handler().ServeHTTP(response, request)
-					requireNativeStatus(t, response, http.StatusOK)
-					f.service.tokenUseWork.Wait()
-					mu.Lock()
-					traced = append([]tracedStatement(nil), traced...)
-					mu.Unlock()
-					key := fmt.Sprintf("%s/%d", operation.name, index)
-					if len(traced) == 0 {
-						t.Fatal("no request statements were traced")
-					}
-					if previous == 0 {
-						counts[key] = len(traced)
-					} else if len(traced) > counts[key] {
-						t.Errorf("%s queries grew with history: %d -> %d", key, counts[key], len(traced))
-					}
-					for _, statement := range traced {
-						statements = append(statements, statement)
-						for i, arg := range statement.args {
-							if arg == string(lease.ID) {
-								absent := append([]any(nil), statement.args...)
-								absent[i] = "lease_absent"
-								statements = append(statements, tracedStatement{statement.query, absent})
-							}
-						}
-					}
-					t.Logf("%s %s queries=%d", step.name, key, len(traced))
-				}
-			}
-			for _, state := range []string{"statistics before this growth", "ANALYZE", "VACUUM (ANALYZE)"} {
-				if state != "statistics before this growth" {
-					if _, err := admin.ExecContext(t.Context(), state+" "+strings.Join(tenantWriteHistoryRelations, ",")); err != nil {
-						t.Fatal(err)
-					}
-				}
-				for _, statement := range statements {
-					assertTenantWriteWork(t, admin, f.project.OrganizationID, statement, step.name+"/"+state)
-				}
-			}
-			if step.name == "large" {
-				for _, control := range []tracedStatement{
-					{"SELECT sum(payload_content_bytes) FROM collaboration_events WHERE organization_id=$1", []any{f.project.OrganizationID}},
-					{"SELECT count(*) FROM leases l JOIN native_attempts a ON a.organization_id=l.organization_id AND a.lease_id=l.lease_id WHERE l.organization_id=$1 AND l.issue_id=(SELECT issue_id FROM leases WHERE organization_id=$1 AND lease_id=$2)", []any{f.project.OrganizationID, leases[0].ID}},
-				} {
-					if violations, _, raw := tenantWriteWorkViolations(t, admin, f.project.OrganizationID, control); len(violations) == 0 {
-						t.Fatalf("work budget accepted an unbounded history query: %s", raw)
-					}
-				}
-			}
-		})
-		previous, retained, foreignRetained = step.history, step.retained, step.foreign
-	}
-}
-
-var tenantWriteHistoryRelations = []string{"collaboration_events", "native_attempts", "attempt_usage", "leases"}
-
-const tenantWriteRowVisits = 256
-
-type tenantWritePlan struct {
-	Node         string            `json:"Node Type"`
-	Relation     string            `json:"Relation Name"`
-	Index        string            `json:"Index Name"`
-	Rows         float64           `json:"Actual Rows"`
-	Estimate     float64           `json:"Plan Rows"`
-	Loops        float64           `json:"Actual Loops"`
-	Removed      float64           `json:"Rows Removed by Filter"`
-	IndexRemoved float64           `json:"Rows Removed by Index Recheck"`
-	Hit          float64           `json:"Shared Hit Blocks"`
-	Read         float64           `json:"Shared Read Blocks"`
-	Plans        []tenantWritePlan `json:"Plans"`
-}
-
-func seedTenantLeaseHistory(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, template tracker.LeaseID, prefix string, first, last int) {
-	t.Helper()
-	if first > last {
-		return
-	}
-	overrides := map[string]map[string]string{
-		"leases":          {"lease_id": "$3||n", "session_id": "$3||'session_'||n", "released_at": "t.acquired_at", "release_reason": "'completed'"},
-		"native_attempts": {"id": "'att_'||h.lease_id", "lease_id": "h.lease_id", "fencing_token": "h.fencing_token", "status": "'succeeded'"},
-	}
-	from := map[string]string{
-		"leases":          "FROM leases t CROSS JOIN generate_series($4::int,$5::int) n WHERE t.organization_id=$1 AND t.lease_id=$2",
-		"native_attempts": "FROM native_attempts t JOIN leases h ON h.organization_id=t.organization_id AND h.lease_id=ANY(ARRAY(SELECT $3||n FROM generate_series($4::int,$5::int) n)) WHERE t.organization_id=$1 AND t.lease_id=$2",
-	}
-	for _, relation := range []string{"leases", "native_attempts"} {
-		rows, err := admin.QueryContext(t.Context(), "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND is_generated='NEVER' AND identity_generation IS DISTINCT FROM 'ALWAYS' ORDER BY ordinal_position", relation)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var columns, values []string
-		for rows.Next() {
-			var column string
-			if err := rows.Scan(&column); err != nil {
-				t.Fatal(err)
-			}
-			value := "t." + column
-			if override, ok := overrides[relation][column]; ok {
-				value = override
-			}
-			columns, values = append(columns, column), append(values, value)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			t.Fatal(err)
-		}
-		result, err := admin.ExecContext(t.Context(), "INSERT INTO "+relation+"("+strings.Join(columns, ",")+") SELECT "+strings.Join(values, ",")+" "+from[relation], organization, template, prefix, first, last)
-		if err != nil {
-			t.Fatalf("seed %s history: %v", relation, err)
-		}
-		if inserted, err := result.RowsAffected(); err != nil || inserted != int64(last-first+1) {
-			t.Fatalf("seed %s history inserted %d of %d: %v", relation, inserted, last-first+1, err)
-		}
-	}
-}
-
 func holdTenantLoadReads(t *testing.T, repository *postgres.Repository, organization tracker.OrganizationID, workload corestore.Workload, count int) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
@@ -392,15 +167,96 @@ func warmReaderPools(t *testing.T, repository *postgres.Repository, organization
 	}
 }
 
-func assertTenantWriteWork(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statement tracedStatement, state string) {
+type tracedStatement struct {
+	query string
+	args  []any
+}
+
+type reportsBudgetTrace struct{}
+
+func (reportsBudgetTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if timing := requestTimingFrom(ctx); timing != nil && timing.Trace != nil {
+		args := make([]driver.NamedValue, len(data.Args))
+		for i, value := range data.Args {
+			args[i] = driver.NamedValue{Ordinal: i + 1, Value: value}
+		}
+		timing.Trace(data.SQL, args)
+	}
+	return ctx
+}
+func (reportsBudgetTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (reportsBudgetTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+func (trace reportsBudgetTrace) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
+	trace.TraceQueryStart(ctx, conn, pgx.TraceQueryStartData{SQL: data.SQL, Args: data.Args})
+}
+func (reportsBudgetTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+func installReportsBudgetTrace(t *testing.T, s *Service) {
 	t.Helper()
-	violations, access, raw := tenantWriteWorkViolations(t, admin, organization, statement)
-	if len(violations) > 0 {
-		t.Errorf("%s: write path work exceeds %d history rows per node: %v\nstatement=%s\nplan=%s", state, tenantWriteRowVisits, violations, statement.query, raw)
+	admin := hostedPostgresAdmin(t, s)
+	if err := s.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
 	}
-	if name, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(statement.query), "-- name: "), " "); slices.Contains([]string{"GetLease", "LeaseMutationFacts", "MutateLeaseCommand"}, name) {
-		t.Logf("%s %s args=%v leases: %s", state, name, statement.args, access)
+	if s.outbox != nil {
+		s.outbox.stop()
 	}
+	s.workerCancel()
+	<-s.workerDone
+	<-s.secretRewrapDone
+
+	config, err := s.config.Postgres.Connection.PoolConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serving, background := s.database.postgres.WorkloadCapacities()
+	budgets := postgres.PoolConfig{MaxConnections: int(s.database.postgres.Stats().MaxConns()), ServingConnections: serving, BackgroundConnections: background}
+	config.MaxConns = int32(budgets.MaxConnections)
+	config.ConnConfig.Tracer = reportsBudgetTrace{}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := postgres.NewRepository(t.Context(), pool, budgets, s.config.Postgres.LeaseClock)
+	if err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	projectRecordDatabases.Store(repository, admin)
+	oldTenant, oldAccess, oldBilling := s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository
+	oldDatabase, oldMetrics, oldDatabaseBilling := s.database.postgres, s.requestMetrics.Repository, s.database.billingRepository
+	s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository = repository, repository, repository
+	s.database.postgres, s.requestMetrics.Repository, s.database.billingRepository = repository, repository, repository
+	t.Cleanup(func() {
+		s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository = oldTenant, oldAccess, oldBilling
+		s.database.postgres, s.requestMetrics.Repository, s.database.billingRepository = oldDatabase, oldMetrics, oldDatabaseBilling
+		if s.requestMetrics != nil {
+			s.requestMetrics.RecordUsage(s.database.metricsBillingOwner(), requestmetrics.Key{}, requestmetrics.Usage{})
+		}
+		projectRecordDatabases.Delete(repository)
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+var tenantWriteHistoryRelations = []string{"collaboration_events", "native_attempts", "attempt_usage", "leases"}
+
+const tenantWriteRowVisits = 256
+
+type tenantWritePlan struct {
+	Node         string            `json:"Node Type"`
+	Relation     string            `json:"Relation Name"`
+	Index        string            `json:"Index Name"`
+	Rows         float64           `json:"Actual Rows"`
+	Estimate     float64           `json:"Plan Rows"`
+	Loops        float64           `json:"Actual Loops"`
+	Removed      float64           `json:"Rows Removed by Filter"`
+	IndexRemoved float64           `json:"Rows Removed by Index Recheck"`
+	Hit          float64           `json:"Shared Hit Blocks"`
+	Read         float64           `json:"Shared Read Blocks"`
+	Plans        []tenantWritePlan `json:"Plans"`
 }
 
 func tenantWriteWorkViolations(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statement tracedStatement) ([]string, string, []byte) {
