@@ -852,7 +852,7 @@ func TestHookWithExitedShell(t *testing.T) {
 				if mode == "parent cancellation" {
 					cancel()
 				}
-				err = waitForError(t, done, 3*time.Second)
+				err = <-done
 				if mode == "success" {
 					if err != nil {
 						t.Fatalf("daemonized hook error = %v", err)
