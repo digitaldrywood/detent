@@ -86,6 +86,7 @@ const NativeClaimCandidatePageSize = 100
 var errNativeClaimPlanRefused = fmt.Errorf("claim plan refused: %w", ErrNoClaimableWork)
 
 type ContractEvaluation struct {
+	Missing    []string
 	Allowed    bool
 	ReasonCode string
 	Reason     string

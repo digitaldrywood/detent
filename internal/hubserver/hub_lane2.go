@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -1153,4 +1154,98 @@ func runtimeRunnersFromSnapshot(snapshot runnerstore.RuntimeCapacitySnapshot, sc
 
 func runtimeLandingCapacity(snapshot runnerstore.RuntimeProviderSnapshot, project tracker.ProjectID) (bool, int) {
 	return runnerfleet.RuntimeLandingCapacity(nativeLandingCapacityUnknown, snapshot, project)
+}
+
+func (s *Service) runnerClaimHTTPDeps() claimapi.HTTPDeps {
+	return claimapi.HTTPDeps{
+		Repository:       s.config.TenantRepository,
+		Now:              s.config.Clock,
+		HTTPError:        s.nativeAPIError,
+		InvalidRequest:   s.invalidAPIRequest,
+		AuthorizeAccess:  s.authorizeAccessScope,
+		NotifyDispatch:   s.runnerNotifyDispatch(),
+		TTL:              apiTTL,
+		Claim:            s.claimNativeIssueTenant,
+		RespondLease:     s.respondNativeLeaseTenant,
+		RenewLease:       s.renewNativeLeaseTenant,
+		ReleaseLease:     s.releaseNativeLeaseTenant,
+		ApplyUsage:       s.applyRunnerTenantUsage,
+		ReadClaimState:   s.readRegistrationClaimStateTenant,
+		ValidateCheckout: validateRunnerCheckoutReport,
+	}
+}
+
+func (s *Service) claimNativeIssue(c echo.Context) error {
+	return s.runnerClaimHTTPDeps().ClaimNativeIssue(c)
+}
+
+func (s *Service) renewNativeLease(c echo.Context) error {
+	return s.runnerClaimHTTPDeps().RenewNativeLease(c)
+}
+
+func (s *Service) releaseNativeLease(c echo.Context) error {
+	return s.runnerClaimHTTPDeps().ReleaseNativeLease(c)
+}
+
+func (s *Service) registerNativeMachine(c echo.Context) error {
+	return s.runnerClaimHTTPDeps().RegisterNativeMachine(c)
+}
+
+func (s *Service) runnerWaitDeps() claimapi.WaitDeps {
+	return claimapi.WaitDeps{
+		NewTimer:        newDispatchWaitTimer,
+		Repository:      s.config.TenantRepository,
+		Now:             s.config.Clock,
+		HTTPError:       s.nativeAPIError,
+		AuthorizeAccess: s.authorizeAccessScope,
+		Cursor:          s.notifications.dispatchCursor,
+		NotificationKey: dispatchNotificationKey,
+		Subscribe:       func(key string) (*eventbroker.Subscription, func()) { return s.notifications.Subscribe(key) },
+	}
+}
+
+func (s *Service) waitNativeCandidates(c echo.Context) error {
+	return s.runnerWaitDeps().WaitNativeCandidates(c)
+}
+
+func (s *Service) runnerAdmissionDeps() claimapi.AdmissionDeps {
+	return claimapi.AdmissionDeps{
+		RuntimeRunners:         runtimeRunnersFromSnapshot,
+		Repository:             s.config.TenantRepository,
+		Now:                    s.config.Clock,
+		Details:                s.runDetailStore,
+		AuthorizeAccess:        s.authorizeAccessScope,
+		DetailsFor:             s.runDetailStoreFor,
+		ReadCheckpoint:         s.readNativeAttemptCheckpointTenant,
+		AnsweredExclusion:      s.nativeClaimAnsweredExclusion,
+		IssueResponse:          s.nativeIssueResponse,
+		ReadReleaseDelivery:    readReleaseDeliveryContractFacts,
+		LandingClaimable:       nativeChangeLandingClaimable,
+		CutoverSource:          cutoverSourceReference,
+		ReleaseDeliveryCurrent: releaseDeliveryContractFactsCurrent,
+		Hosted:                 s.config.Hosted != nil,
+		LandingCapacityUnknown: nativeLandingCapacityUnknown,
+		ValidateRunnerVersion:  func(version string) error { return runnerVersionError(minimumRunnerVersion(s.config.Version), version) },
+	}
+}
+
+type runtimeAdmissionPageKey = claimapi.RuntimeAdmissionPageKey
+
+type runtimeAdmissionPage = claimapi.RuntimeAdmissionPage
+
+func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, evidence *tracker.NativeRuntimeEvidence, supplied []tracker.NativeAdmissionContext) error {
+	return s.runnerAdmissionDeps().ReadRuntimeAdmissionTenant(ctx, scope, issue, evidence, supplied)
+}
+
+func nativeRuntimeIssueContractEvaluation(plan hubrecords.NativeClaimPlan) (nativeContractEvaluation, error) {
+	evaluation, err := claimapi.NativeRuntimeIssueContractEvaluation(releaseDeliveryContractFactsCurrent, plan)
+	return nativeContractEvaluation{Allowed: evaluation.Allowed, ReasonCode: evaluation.ReasonCode, Reason: evaluation.Reason, Missing: evaluation.Missing}, err
+}
+
+func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, issue tracker.NativeIssue, project projectstore.Record) ([]tracker.NativeDependency, bool, error) {
+	return s.runnerAdmissionDeps().ReadRuntimeUnresolvedDependencies(ctx, r, scope, issue, project)
+}
+
+func decodeRunHistory(ctx context.Context, q hubapi.NativeQueryer, raw string, result *tracker.CollaborationData) error {
+	return executionapi.DecodeRunHistory(ctx, q, raw, result)
 }
