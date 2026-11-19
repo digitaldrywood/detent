@@ -2234,6 +2234,13 @@ type NativeAttempt struct {
 	WorkerStartKey                     *string
 	WorkerRunnerID                     *string
 	WorkerRetiredAt                    *time.Time
+	VerdictEvidenceRevision            *string
+	VerdictAttemptedStep               *string
+	VerdictSuccess                     pgtype.Bool
+	VerdictOutcome                     *string
+	VerdictReason                      *string
+	VerdictNextStep                    *string
+	VerdictDisposition                 *string
 }
 
 type NativeAttemptEvent struct {

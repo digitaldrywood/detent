@@ -228,7 +228,7 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 	return page, nil
 }
 
-const sourceCheckpointAttempts = `SELECT organization_id,id,project_id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,updated_at,started_at_submicro_ns,runner_tokens_recorded,cleanup_acknowledged_at,runtime_heartbeat_at,runtime_summary_sequence,claim_disposition,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,worker_cleanup_required,usage_pending_sequence,usage_projected_sequence,failure_sequence,failure_example,failure_class,failure_landing_observed_at,worker_pid,worker_pgid,worker_started_at,worker_start_key,worker_runner_id,worker_retired_at,` + attemptIdentitySelect + `
+const sourceCheckpointAttempts = `SELECT *
 FROM native_attempts WHERE organization_id=$1 AND issue_id=$2
 AND checkpoint_object_key IS NOT NULL AND checkpoint_preserves_source IS DISTINCT FROM FALSE
 ORDER BY fencing_token DESC LIMIT $3`
@@ -695,4 +695,23 @@ func (s *session) UpdateMachineSpriteWake(ctx context.Context, wake leasestore.S
 WHERE m.organization_id=$1 AND m.id=$2 AND m.sprite_name=$3 AND m.hostname=$3
 AND EXISTS (SELECT 1 FROM runner_identities r WHERE r.organization_id=m.organization_id AND r.runner_id=$4 AND r.machine_id=m.id AND r.removed_at IS NULL)`, s.organization, wake.MachineID, wake.Name, wake.RunnerID, wake.FailedAt, wake.WokenAt, wake.ObservedAt)
 	return updateOwned(ctx, result, err)
+}
+
+func (s *session) RecordTerminalProgressVerdict(ctx context.Context, verdict leasestore.TerminalProgressVerdict) error {
+	if err := s.checkOrganization(verdict.OrganizationID); err != nil {
+		return err
+	}
+	if verdict.ProjectID == "" || verdict.AttemptID == "" || verdict.EvidenceRevision == "" {
+		return corestore.ErrTenantMismatch
+	}
+	updated, err := s.queries.RecordTerminalProgressVerdict(ctx, pgquery.RecordTerminalProgressVerdictParams{
+		OrganizationID: verdict.OrganizationID, ProjectID: verdict.ProjectID, AttemptID: verdict.AttemptID,
+		TerminalSequence: verdict.TerminalSequence, EvidenceRevision: &verdict.EvidenceRevision,
+		AttemptedStep: &verdict.AttemptedStep, Success: pgtype.Bool{Bool: verdict.Success, Valid: true},
+		Outcome: &verdict.Outcome, Reason: &verdict.Reason, NextStep: verdict.NextStep, Disposition: verdict.Disposition,
+	})
+	if err == nil && updated != 1 {
+		return corestore.ErrRevisionConflict
+	}
+	return mapError(ctx, err)
 }

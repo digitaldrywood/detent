@@ -328,3 +328,21 @@ type AttemptFailureWriter interface {
 type AttemptReceiptReader interface {
 	AttemptReceiptSequences(context.Context, string, []int64) ([]int64, error)
 }
+
+type TerminalProgressVerdict struct {
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	AttemptID        string
+	TerminalSequence int64
+	EvidenceRevision string
+	AttemptedStep    string
+	Success          bool
+	Outcome          string
+	Reason           string
+	NextStep         *string
+	Disposition      *string
+}
+
+type TerminalProgressWriter interface {
+	RecordTerminalProgressVerdict(context.Context, TerminalProgressVerdict) error
+}

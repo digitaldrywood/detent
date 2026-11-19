@@ -75,20 +75,21 @@ type Comment struct {
 }
 
 type Request struct {
-	EmptyDelta       bool      `json:"empty_delta,omitempty"`
-	ProjectID        string    `json:"project_id"`
-	IssueID          string    `json:"issue_id"`
-	PolicyID         string    `json:"policy_id"`
-	EvidenceRevision string    `json:"evidence_revision"`
-	SourceSHA        string    `json:"source_sha"`
-	BaseSHA          string    `json:"base_sha"`
-	Instance         string    `json:"instance"`
-	InstanceVersion  string    `json:"instance_version,omitempty"`
-	Attempts         []Attempt `json:"attempts"`
-	Receipts         []Receipt `json:"receipts"`
-	Comments         []Comment `json:"comments"`
-	AvailableSteps   []string  `json:"available_steps"`
-	Context          string    `json:"context,omitempty"`
+	Terminal         *TerminalEvidence `json:"terminal,omitempty"`
+	EmptyDelta       bool              `json:"empty_delta,omitempty"`
+	ProjectID        string            `json:"project_id"`
+	IssueID          string            `json:"issue_id"`
+	PolicyID         string            `json:"policy_id"`
+	EvidenceRevision string            `json:"evidence_revision"`
+	SourceSHA        string            `json:"source_sha"`
+	BaseSHA          string            `json:"base_sha"`
+	Instance         string            `json:"instance"`
+	InstanceVersion  string            `json:"instance_version,omitempty"`
+	Attempts         []Attempt         `json:"attempts"`
+	Receipts         []Receipt         `json:"receipts"`
+	Comments         []Comment         `json:"comments"`
+	AvailableSteps   []string          `json:"available_steps"`
+	Context          string            `json:"context,omitempty"`
 }
 
 type EvidenceReference struct {
@@ -99,6 +100,9 @@ type EvidenceReference struct {
 }
 
 type Decision struct {
+	Succeeded         *bool               `json:"succeeded,omitempty"`
+	Advancement       string              `json:"advancement,omitempty"`
+	Disposition       string              `json:"disposition,omitempty"`
 	RetrievedEvidence []EvidenceReference `json:"retrieved_evidence,omitempty"`
 	Diagnosis         string              `json:"diagnosis,omitempty"`
 	Instruction       string              `json:"instruction,omitempty"`
@@ -113,6 +117,9 @@ type Decision struct {
 }
 
 type Record struct {
+	AttemptID        string `json:"attempt_id,omitempty"`
+	NextStep         string `json:"next_step,omitempty"`
+	Disposition      string `json:"disposition,omitempty"`
 	RequestID        string
 	ProjectID        string
 	IssueID          string
