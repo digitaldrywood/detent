@@ -1145,3 +1145,12 @@ type machineSpriteFacts = runnerfleet.MachineSpriteFacts
 func spriteFactValue(value *string) string {
 	return runnerfleet.SpriteFactValue(value)
 }
+
+func runtimeRunnersFromSnapshot(snapshot runnerstore.RuntimeCapacitySnapshot, scope hubscope.NativeScope, now time.Time) []runnerauth.Runner {
+	providers := runtimeProviderCapacity(snapshot.Providers)
+	return runnerfleet.RuntimeRunnersFromSnapshot(landingCapacityKey, providers.view, snapshot, scope, now)
+}
+
+func runtimeLandingCapacity(snapshot runnerstore.RuntimeProviderSnapshot, project tracker.ProjectID) (bool, int) {
+	return runnerfleet.RuntimeLandingCapacity(nativeLandingCapacityUnknown, snapshot, project)
+}
