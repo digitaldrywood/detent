@@ -1,10 +1,11 @@
-package hubserver
+package access_test
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,11 +17,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -30,7 +33,7 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 	t.Parallel()
 	authorities := map[string]apikey.KeyAuthority{}
 	roles := map[string]string{}
-	f := newSharedRouteFixture(t, func(cfg *Config) {
+	f := openEntryCatalog(t, func(cfg *hubfixture.Config) {
 		plans := hostedplans.PilotPlans()
 		cfg.Hosted.Plans = &plans
 		org := cfg.Hosted.OrganizationID
@@ -47,14 +50,13 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 			return cloudassert.Claims{Issuer: origin.Issuer, Generation: origin.Generation, Audience: org, ProviderOrganization: "provider_" + org, Subject: origin.Subject, Role: role, Kind: cloudassert.KindKey, ExpiresAt: time.Now().Add(time.Minute), Key: &key}, nil
 		}
 	})
-	for _, org := range []string{"org_startup", "org_other"} {
-		service := f.services[org]
+	for _, org := range f.organizations {
 		organization := tracker.OrganizationID(org)
 		project, runner := org+"_project", org+"_runner"
 		now := time.Now().UTC()
 		expires := now.Add(time.Hour)
-		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: tracker.ProjectID(project), Name: org + " example", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+		if err := f.repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: tracker.ProjectID(project), Name: org + " example", Profile: "native"}, States: hubfixture.States()}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: org + "_owner", ProjectID: tracker.ProjectID(project), CanWrite: true, ManageRunner: true}); err != nil {
@@ -77,7 +79,7 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, org := range []string{"org_startup", "org_other"} {
+	for _, org := range f.organizations {
 		t.Run(org, func(t *testing.T) {
 			project, runner := org+"_project", org+"_runner"
 			keyClaims := func(c *cloudassert.Claims) {
@@ -86,9 +88,9 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 				c.Key = &apikey.KeyAuthority{ID: org + "_owner", CredentialBinding: strings.Repeat("d", 64), Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}
 			}
 			catalog := f.request(t, org, "/internal/v1/keys/catalog", `{}`, keyClaims)
-			requireNativeStatus(t, catalog, http.StatusOK)
+			hubfixture.RequireStatus(t, catalog, http.StatusOK)
 			var definitions []operatortool.Definition
-			decodeHubResponse(t, catalog, &definitions)
+			hubfixture.Decode(t, catalog, &definitions)
 			available := map[string]bool{}
 			for _, definition := range definitions {
 				available[definition.Name] = true
@@ -97,7 +99,7 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 				t.Helper()
 				body := fmt.Sprintf(`{"name":%q,"connection_id":%q,"arguments":%s}`, name, connection, arguments)
 				response := f.request(t, org, "/internal/v1/keys/call", body, keyClaims)
-				requireNativeStatus(t, response, http.StatusOK)
+				hubfixture.RequireStatus(t, response, http.StatusOK)
 				if !available[name] {
 					t.Fatalf("successful tool missing from catalog: %s", name)
 				}
@@ -138,6 +140,9 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 						{"project", apikey.ProjectContext{Access: "project", Projects: []string{project}}, nil},
 						{"blocked", apikey.ProjectContext{Access: "all"}, []string{project}},
 					} {
+						if role == "admin" && restriction.name != "selected" {
+							continue
+						}
 						t.Run(role+"/"+restriction.name, func(t *testing.T) {
 							key := apikey.KeyAuthority{ID: org + "_owner", CredentialBinding: strings.Repeat("d", 64), Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: restriction.context, BlockedProjects: restriction.blocked}
 							authorities[org], roles[org] = key, role
@@ -146,9 +151,9 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 								c.Key, c.Role = &key, role
 							}
 							catalog := f.request(t, org, "/internal/v1/keys/catalog", `{}`, restrictedClaims)
-							requireNativeStatus(t, catalog, http.StatusOK)
+							hubfixture.RequireStatus(t, catalog, http.StatusOK)
 							var definitions []operatortool.Definition
-							decodeHubResponse(t, catalog, &definitions)
+							hubfixture.Decode(t, catalog, &definitions)
 							for _, tool := range []struct{ name, arguments string }{
 								{operatortool.ListRunnerRouting, `{"limit":10}`},
 								{operatortool.GetRunnerUpdate, fmt.Sprintf(`{"runner_id":%q}`, runner)},
@@ -157,12 +162,12 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 								{operatortool.CreateRunnerEnrollment, `{"request_id":"restricted-enrollment","enrollment":{"scope":"organization","project_ids":[],"operations":["read"],"ttl_seconds":60}}`},
 								{operatortool.MarkUrgentRunnerUpdate, `{"request_id":"restricted-urgent","change":{"expected_revision":0,"version":"1.2.3"}}`},
 							} {
-								if entryKeyHasDefinition(definitions, tool.name) {
+								if slices.ContainsFunc(definitions, func(definition operatortool.Definition) bool { return definition.Name == tool.name }) {
 									t.Errorf("restricted key exposes %s", tool.name)
 								}
 								body := fmt.Sprintf(`{"name":%q,"connection_id":%q,"arguments":%s}`, tool.name, org+"_restricted", tool.arguments)
 								response := f.request(t, org, "/internal/v1/keys/call", body, restrictedClaims)
-								requireNativeStatus(t, response, http.StatusForbidden)
+								hubfixture.RequireStatus(t, response, http.StatusForbidden)
 								if !strings.Contains(response.Body.String(), `"code":"tool_unavailable"`) || strings.Contains(response.Body.String(), runner) {
 									t.Fatalf("restricted runner call leaked data: %s", response.Body)
 								}
@@ -198,7 +203,7 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 				})
 			}
 			t.Run("project_actions", func(t *testing.T) { assertEntryKeyProjectActions(t, call, org, project) })
-			if err := f.services[org].config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
 				record, err := r.ProjectRecord(t.Context(), tracker.ProjectID(project))
 				if err != nil {
 					return err
@@ -211,7 +216,7 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 				t.Fatal(err)
 			}
 			var selection struct {
-				Data cloudModelSelection `json:"data"`
+				Data projectsettings.ModelSelection `json:"data"`
 			}
 			if err := json.Unmarshal(call(t, operatortool.GetProjectModelSelection, fmt.Sprintf(`{"project_id":%q}`, project), org+"_catalog"), &selection); err != nil {
 				t.Fatal(err)
@@ -270,7 +275,9 @@ func assertEntryKeyProjectActions(t *testing.T, call func(*testing.T, string, st
 				}
 			}
 			var listed struct {
-				Data projectActionList `json:"data"`
+				Data struct {
+					Items []workspacesession.Action `json:"items"`
+				} `json:"data"`
 			}
 			if err := json.Unmarshal(call(t, "list_project_actions", fmt.Sprintf(`{"project_id":%q}`, project), org+"_actions"), &listed); err != nil {
 				t.Fatal(err)

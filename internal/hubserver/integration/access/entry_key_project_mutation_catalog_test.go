@@ -1,10 +1,11 @@
-package hubserver
+package access_test
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,15 +18,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/usagecosts"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 	t.Parallel()
-	f := newSharedRouteFixture(t, func(cfg *Config) {
+	f := openEntryCatalog(t, func(cfg *hubfixture.Config) {
 		plans := hostedplans.PilotPlans()
 		cfg.Hosted.Plans = &plans
 		org := cfg.Hosted.OrganizationID
@@ -49,11 +52,11 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, org := range []string{"org_startup", "org_other"} {
+	for _, org := range f.organizations {
 		organization := tracker.OrganizationID(org)
 		project := tracker.ProjectID(org + "_project")
-		if err := f.services[org].config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: org + " example", Profile: "native"}, States: nativeFixtureStates()})
+		if err := f.repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: org + " example", Profile: "native"}, States: hubfixture.States()})
 			if err != nil {
 				return err
 			}
@@ -69,7 +72,7 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, org := range []string{"org_startup", "org_other"} {
+	for _, org := range f.organizations {
 		t.Run(org, func(t *testing.T) {
 			project := org + "_project"
 			keyClaims := func(c *cloudassert.Claims) {
@@ -78,9 +81,9 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 				c.Key = &apikey.KeyAuthority{ID: org + "_owner", CredentialBinding: strings.Repeat("f", 64), Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}
 			}
 			catalog := f.request(t, org, "/internal/v1/keys/catalog", `{}`, keyClaims)
-			requireNativeStatus(t, catalog, http.StatusOK)
+			hubfixture.RequireStatus(t, catalog, http.StatusOK)
 			var definitions []operatortool.Definition
-			decodeHubResponse(t, catalog, &definitions)
+			hubfixture.Decode(t, catalog, &definitions)
 			available := map[string]bool{}
 			for _, definition := range definitions {
 				available[definition.Name] = true
@@ -96,12 +99,18 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 			}
 			t.Run("bind without GitHub transport", func(t *testing.T) {
 				body := fmt.Sprintf(`{"name":"bind_native_repository","connection_id":%q,"arguments":{"project_id":%q,"request_id":%q,"input":{"expected_revision":"2","repository":"example-org/example-project"}}}`, org+"_transport", project, org+"_transport_bind")
-				requireNativeError(t, f.request(t, org, "/internal/v1/keys/call", body, keyClaims), http.StatusUnprocessableEntity, "invalid_request")
+				hubfixture.RequireCode(t, f.request(t, org, "/internal/v1/keys/call", body, keyClaims), http.StatusUnprocessableEntity, "invalid_request")
 			})
 			from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-			observation := costTestObservation("cpu", from, from.Add(time.Hour))
-			observation.ResourceID, observation.SourceID = org+"_sprite", org+"_meter"
-			usageInput, err := json.Marshal(operatortool.SpriteUsageInput{Observations: []costObservation{observation}})
+			to := from.Add(time.Hour)
+			observation := usagecosts.Observation{
+				Provider: "fly_sprites", ProviderAccount: "customer", ResourceID: org + "_sprite", ResourceName: "worker",
+				Bucket: usagecosts.SpriteBucket, Metric: "cpu", SourceID: org + "_meter", Revision: 1, From: from, To: to,
+				Quantity: new(2.0), Unit: "CPU-hour", QuantityBasis: "measured", Currency: "USD", Basis: "estimated",
+				UnitPriceMicros: new(int64(10_000)), RateSource: "https://fly.io/sprites/", RateEffectiveAt: from.AddDate(0, -1, 0),
+				EvidenceSource: "measurement-batch-1", ObservedAt: to, FreshUntil: to.AddDate(1, 0, 0), Coverage: "complete",
+			}
+			usageInput, err := json.Marshal(operatortool.SpriteUsageInput{Observations: []usagecosts.Observation{observation}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,9 +129,9 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 					for _, connection := range []string{org + "_mutations", org + "_mutations_reconnected"} {
 						body := fmt.Sprintf(`{"name":%q,"connection_id":%q,"arguments":%s}`, test.name, connection, test.arguments)
 						response := f.request(t, org, "/internal/v1/keys/call", body, keyClaims)
-						requireNativeStatus(t, response, http.StatusOK)
+						hubfixture.RequireStatus(t, response, http.StatusOK)
 						var action chatpkg.Action
-						decodeHubResponse(t, response, &action)
+						hubfixture.Decode(t, response, &action)
 						if !available[test.name] || action.Status != chatpkg.ActionSucceeded || !strings.Contains(action.Result, test.marker) || first != "" && action.Result != first {
 							t.Fatalf("project mutation missing, failed, or replay changed: %s", response.Body)
 						}
@@ -132,9 +141,9 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 			}
 			t.Run("write key", func(t *testing.T) {
 				catalog := f.request(t, org, "/internal/v1/keys/catalog", `{}`, writerClaims)
-				requireNativeStatus(t, catalog, http.StatusOK)
+				hubfixture.RequireStatus(t, catalog, http.StatusOK)
 				var definitions []operatortool.Definition
-				decodeHubResponse(t, catalog, &definitions)
+				hubfixture.Decode(t, catalog, &definitions)
 				listed := map[string]bool{}
 				for _, definition := range definitions {
 					listed[definition.Name] = true
@@ -143,7 +152,7 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 					t.Fatalf("write key catalog import=%v bind=%v, want import only", listed["start_git_hub_import"], listed["bind_native_repository"])
 				}
 				var before projectstore.Record
-				if err := f.services[org].config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+				if err := f.repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
 					before, err = r.ProjectRecord(t.Context(), tracker.ProjectID(project))
 					return err
@@ -151,8 +160,8 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 					t.Fatal(err)
 				}
 				body := fmt.Sprintf(`{"name":"bind_native_repository","connection_id":%q,"arguments":{"project_id":%q,"request_id":%q,"input":{"expected_revision":%q,"repository":"example-org/example-project","source":"runner_checkout"}}}`, org+"_writer", project, org+"_writer_bind", fmt.Sprint(before.Settings.Revision))
-				requireNativeError(t, f.request(t, org, "/internal/v1/keys/call", body, writerClaims), http.StatusForbidden, "key_permission_denied")
-				if err := f.services[org].config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+				hubfixture.RequireCode(t, f.request(t, org, "/internal/v1/keys/call", body, writerClaims), http.StatusForbidden, "key_permission_denied")
+				if err := f.repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
 					record, err := r.ProjectRecord(t.Context(), tracker.ProjectID(project))
 					if err == nil && (record.Settings.Revision != before.Settings.Revision || record.Settings.CheckoutRepository != before.Settings.CheckoutRepository || record.Settings.Repository != before.Settings.Repository || record.Settings.Intake != before.Settings.Intake) {
 						t.Fatalf("refused bind changed the project: before=%+v after=%+v", before.Settings, record.Settings)
@@ -163,13 +172,13 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 				}
 				body = fmt.Sprintf(`{"name":"start_git_hub_import","connection_id":%q,"arguments":{"project_id":%q,"request_id":%q,"input":{"issue_number":2}}}`, org+"_writer", project, org+"_writer_import")
 				response := f.request(t, org, "/internal/v1/keys/call", body, writerClaims)
-				requireNativeStatus(t, response, http.StatusOK)
+				hubfixture.RequireStatus(t, response, http.StatusOK)
 				var action chatpkg.Action
-				decodeHubResponse(t, response, &action)
+				hubfixture.Decode(t, response, &action)
 				if action.Status != chatpkg.ActionSucceeded || !strings.Contains(action.Result, `"status":"pending"`) {
 					t.Fatalf("write key import: %s", response.Body)
 				}
-				if err := f.services[org].config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+				if err := f.repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
 					job, err := r.(projectstore.GitHubImportReader).GitHubImportForIssue(t.Context(), tracker.ProjectID(project), 2)
 					if err != nil || job.Status != "pending" || job.Revision != 1 {
 						t.Fatalf("write key import job=%+v err=%v", job, err)
@@ -182,14 +191,17 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 			t.Run("monthly_usage_costs", func(t *testing.T) {
 				body := fmt.Sprintf(`{"name":"monthly_usage_costs","connection_id":%q,"arguments":{"project_id":%q,"month":"2026-01"}}`, org+"_mutations", project)
 				response := f.request(t, org, "/internal/v1/keys/call", body, keyClaims)
-				requireNativeStatus(t, response, http.StatusOK)
-				var report monthlyCostReport
-				decodeHubResponse(t, response, &report)
-				if !available["monthly_usage_costs"] || report.OrganizationID != org || report.SourceCount != 1 || len(report.Totals) != 1 || report.Totals[0].EstimatedMicros == nil || *report.Totals[0].EstimatedMicros != 20000 {
+				hubfixture.RequireStatus(t, response, http.StatusOK)
+				var report usagecosts.Report
+				hubfixture.Decode(t, response, &report)
+				receivedCost := slices.ContainsFunc(report.Totals, func(total usagecosts.Total) bool {
+					return total.EstimatedMicros != nil && *total.EstimatedMicros == 20000
+				})
+				if !available["monthly_usage_costs"] || report.OrganizationID != org || !receivedCost {
 					t.Fatalf("saved monthly usage not returned: %+v", report)
 				}
 			})
-			if err := f.services[org].config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
 				record, err := r.ProjectRecord(t.Context(), tracker.ProjectID(project))
 				if err != nil {
 					return err

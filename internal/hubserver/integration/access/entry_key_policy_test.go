@@ -1,4 +1,4 @@
-package hubserver
+package access_test
 
 import (
 	"fmt"
@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -17,11 +18,11 @@ import (
 
 func TestEntryKeyFilingPreservesPolicyMismatchPostgres(t *testing.T) {
 	t.Parallel()
-	f := newSharedRouteFixture(t)
-	for org, service := range f.services {
+	f := openEntryCatalog(t)
+	for _, org := range f.organizations {
 		t.Run(org, func(t *testing.T) {
-			if err := service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
-				_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: tracker.OrganizationID(org), ID: "example", Name: "Example", Profile: "native", WorkflowSource: "WORKFLOW.md", WorkflowSourceRevision: "example-revision"}, States: nativeFixtureStates()})
+			if err := f.repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: tracker.OrganizationID(org), ID: "example", Name: "Example", Profile: "native", WorkflowSource: "WORKFLOW.md", WorkflowSourceRevision: "example-revision"}, States: hubfixture.States()})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -32,13 +33,13 @@ func TestEntryKeyFilingPreservesPolicyMismatchPostgres(t *testing.T) {
 				c.ProviderOrganization = "provider_" + org
 				c.Key = &apikey.KeyAuthority{ID: "key_" + org, CredentialBinding: strings.Repeat("c", 64), Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
 			})
-			requireNativeStatus(t, response, http.StatusConflict)
+			hubfixture.RequireStatus(t, response, http.StatusConflict)
 			var result hubapi.APIErrorResponse
-			decodeHubResponse(t, response, &result)
+			hubfixture.Decode(t, response, &result)
 			if result.Code != "policy_mismatch" || result.Message != "Inspect get_project_policy and refresh the approved policy inputs before submitting this operation" {
 				t.Fatalf("policy refusal = %+v", result)
 			}
-			if err := service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
 				items, err := r.WorkItems(t.Context(), "example", 0, 10)
 				if len(items) != 0 {
 					return fmt.Errorf("policy refusal created %d items", len(items))
