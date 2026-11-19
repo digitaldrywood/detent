@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -889,6 +891,207 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 					t.Fatalf("publication count=%d, want 1: %v", count, err)
 				}
 			}
+		})
+	}
+}
+
+func TestNativeTerminalProgressPublication(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	f.release(t)
+	second := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "Second verdict project")
+	approveHubTestPolicy(t, second.service, second.base+"/policy", hubTestPolicy())
+	secondRunner := conversationWorkerRunner(t, second)
+	foreignItem := second.create(t, "Foreign attempt lookup")
+
+	for _, tc := range []struct {
+		name, outcome, step string
+		secondTenant        bool
+		failure             *tracker.NativeTerminalFailure
+		lost                bool
+		route, disposition  string
+	}{
+		{name: "partial success", outcome: "success", step: "implement"},
+		{name: "failure before provider", outcome: "failed", step: "workspace_preparation", secondTenant: true,
+			failure: &tracker.NativeTerminalFailure{Stage: "workspace_preparation", Attribution: "instance", ErrorClass: "workspace_hook", Error: "setup failed"}},
+		{name: "cancellation", outcome: "cancelled", step: "implement"},
+		{name: "acceptance setup failed on a passing head", outcome: "failed", step: "validator", route: "acceptance",
+			failure: &tracker.NativeTerminalFailure{Stage: "validator", Attribution: "instance", ErrorClass: "validator", Error: "acceptance checkout failed"}},
+		{name: "new source invalidates passing head", outcome: "success", step: "implement", route: "project_gate"},
+		{name: "verified landing", outcome: "success", step: "implement", disposition: "landed"},
+		{name: "lost lease", outcome: "cancelled", step: "lease_release", lost: true},
+		{name: "accepted no change", outcome: "success", step: "implement", secondTenant: true, disposition: "accepted_no_change"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project, runner := f.nativeFixture, f.runner
+			if tc.secondTenant {
+				project, runner = second, secondRunner
+			}
+			fixture := &conversationWorkerFixture{nativeFixture: project, runner: runner, worker: runner.redemption.Credential,
+				issue: project.create(t, tc.name), policy: f.policy, now: f.now}
+			fixture.claim(t)
+			path := fixture.base + "/work-items/" + string(fixture.issue.WorkItemID)
+			attemptID, lease := fixture.attempt, fixture.lease
+			query := path + "/progress?attempt=" + url.QueryEscape(attemptID)
+			with := func(method, route, token string, body any) *httptest.ResponseRecorder {
+				return performHubAPIRequest(t, fixture.service, method, route, token, body)
+			}
+			if tc.route == "acceptance" {
+				rules := tracker.ChangeReviewPolicy{PolicyID: fixture.policy, RequireReview: true}
+				requireNativeStatus(t, with(http.MethodPut, fixture.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "terminal-verdict-rules"}, Policy: rules}), http.StatusOK)
+			}
+			if tc.route != "" || tc.disposition == "landed" {
+				response := with(http.MethodPost, path+"/changes", testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("change")}, Title: "Pinned source"})
+				requireNativeStatus(t, response, http.StatusOK)
+				var change tracker.ChangeRequest
+				decodeHubResponse(t, response, &change)
+				source := changeTestInput()
+				bundle := changeTestSource(t, &source)
+				source.Validation = &gate.CommandResult{Stage: gate.StageSourceFinalization, Command: "make check", HeadSHA: source.HeadSHA, TreeSHA: strings.Repeat("c", 40), DurationNS: 1}
+				response = with(http.MethodPost, path+"/changes/"+change.ID+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("version")}, ChangeVersionInput: source, SourceBundle: bundle})
+				requireNativeStatus(t, response, http.StatusOK)
+				if tc.disposition == "landed" {
+					var version tracker.ChangeVersion
+					decodeHubResponse(t, response, &version)
+					payload := tracker.NativeLandingReceipt{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: strings.Repeat("d", 40), BaseRef: "develop", Landed: true, ObservedAt: fixture.now}
+					row, err := eventstore.NewContent(fixture.service.runDetailStore()).PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: fixture.project.OrganizationID, AttemptID: attemptID, VersionID: version.ID, Repository: version.Repository, BaseRef: payload.BaseRef}, payload)
+					if err != nil {
+						t.Fatal(err)
+					}
+					fixture.writeTenant(t, func(w tenantstore.Writer) error {
+						_, err := w.CreateLandingReceipt(t.Context(), row)
+						return err
+					})
+				}
+			}
+			if !tc.lost {
+				outcome := tc.outcome
+				if outcome == "success" {
+					outcome = "succeeded"
+				}
+				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
+					Data: tracker.NativeRunData{Sequence: 2, LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: fixture.run, AttemptID: attemptID, PolicyID: fixture.policy, Identity: &fixture.started, Outcome: outcome, TerminalFailure: tc.failure}}
+				if tc.failure != nil {
+					tc.failure.ObservedAt = fixture.now
+				}
+				if tc.route == "project_gate" {
+					event.Data.Finalization = &tracker.NativeFinalization{Changed: true, ObservedAt: fixture.now, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("e", 40)}
+				}
+				if tc.disposition == "accepted_no_change" {
+					sha := strings.Repeat("a", 40)
+					event.Data.Finalization = &tracker.NativeFinalization{Settled: true, ObservedAt: fixture.now, BaseSHA: sha, HeadSHA: sha,
+						NoChange: &tracker.NativeNoChangeCompletion{VerifiedSHA: sha, ReportedSHA: sha, PolicyID: fixture.policy, Repository: "example/repo", Evidence: "Verified on the current base"}}
+					event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: fixture.now,
+						Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: true, ObservedAt: fixture.now}}
+				}
+				requireNativeStatus(t, with(http.MethodPost, path+"/events", fixture.worker, event), http.StatusOK)
+				if tc.disposition == "accepted_no_change" {
+					var issue tracker.NativeIssue
+					response := with(http.MethodGet, path, fixture.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &issue)
+					requireNativeStatus(t, with(http.MethodPost, path+"/workflow", fixture.token, tracker.Transition{
+						Mutation: tracker.Mutation{IdempotencyKey: "verified-no-change-transition"}, State: "Done", ExpectedRevision: issue.Revision, Reason: "user_requested",
+					}), http.StatusOK)
+				}
+				fixture.release(t)
+			} else {
+				f.advance(time.Hour)
+				fixture.now = f.now
+				fixture.claim(t, false)
+			}
+
+			response := with(http.MethodGet, query, fixture.worker, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var pending struct {
+				Request struct {
+					Terminal *struct {
+						AttemptID   string `json:"attempt_id"`
+						Outcome     string `json:"outcome"`
+						Step        string `json:"step"`
+						NextStep    string `json:"next_step"`
+						Disposition string `json:"disposition"`
+					}
+					EvidenceRevision string `json:"evidence_revision"`
+					SourceSHA        string `json:"source_sha"`
+					Attempts         []struct {
+						ID, Error string
+					}
+				}
+				RequestID string `json:"request_id"`
+				Current   bool
+				Record    *struct {
+					NextStep    string `json:"next_step"`
+					Disposition string `json:"disposition"`
+				}
+			}
+			decodeHubResponse(t, response, &pending)
+			if terminal := pending.Request.Terminal; terminal == nil || terminal.AttemptID != attemptID || terminal.Outcome != tc.outcome || terminal.Step != tc.step || pending.RequestID == "" || pending.Request.EvidenceRevision == "" {
+				t.Fatalf("terminal evidence = %+v, request ID %q", terminal, pending.RequestID)
+			}
+			if tc.failure != nil {
+				last := pending.Request.Attempts[len(pending.Request.Attempts)-1]
+				if last.ID != attemptID || last.Error != tc.failure.Error {
+					t.Fatalf("terminal failure = %+v, want %q", last, tc.failure.Error)
+				}
+			}
+			if tc.route != "" && pending.Request.Terminal.NextStep != tc.route || pending.Request.Terminal.Disposition != tc.disposition {
+				t.Fatalf("terminal route = %+v, want %q %q", pending.Request.Terminal, tc.route, tc.disposition)
+			}
+			if tc.route == "project_gate" && pending.Request.SourceSHA != strings.Repeat("e", 40) {
+				t.Fatalf("progress evidence used the wrong source %q", pending.Request.SourceSHA)
+			}
+			decision := map[string]any{"outcome": "progressing", "succeeded": tc.outcome == "success", "advancement": "Recorded the attempt result", "reason": "Continue from the retained evidence", "step": "implement", "evidence": []string{attemptID}}
+			if tc.disposition != "" {
+				delete(decision, "step")
+				decision["disposition"] = tc.disposition
+			}
+			publication := map[string]any{
+				"attempt_id": attemptID, "request_id": pending.RequestID, "evidence_revision": pending.Request.EvidenceRevision,
+				"lease_id": lease.ID, "fencing_token": strconv.FormatInt(int64(lease.FencingToken), 10),
+				"decision": decision,
+			}
+			if tc.name == "partial success" {
+				unrelatedRunner := conversationWorkerRunner(t, fixture.nativeFixture)
+				requireNativeStatus(t, with(http.MethodPost, path+"/progress", unrelatedRunner.redemption.Credential, publication), http.StatusUnauthorized)
+				decision["step"], decision["disposition"] = "", "landed"
+				requireNativeStatus(t, with(http.MethodPost, path+"/progress", fixture.worker, publication), http.StatusUnprocessableEntity)
+				decision["step"] = "implement"
+				delete(decision, "disposition")
+			}
+			var responses [2]*httptest.ResponseRecorder
+			var group sync.WaitGroup
+			for i := range responses {
+				request := newHubAPIRequest(t, http.MethodPost, path+"/progress", fixture.worker, publication)
+				responses[i] = httptest.NewRecorder()
+				group.Go(func() { fixture.service.Handler().ServeHTTP(responses[i], request) })
+			}
+			group.Wait()
+			for _, response := range responses {
+				requireNativeStatus(t, response, http.StatusOK)
+			}
+			if !bytes.Equal(responses[0].Body.Bytes(), responses[1].Body.Bytes()) {
+				t.Fatal("concurrent replay returned different records")
+			}
+			response = with(http.MethodGet, query, fixture.worker, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &pending)
+			if pending.Record == nil || pending.Record.NextStep != pending.Request.Terminal.NextStep || pending.Record.Disposition != tc.disposition || !pending.Current {
+				t.Fatalf("recorded Hub route = %+v, request = %+v", pending.Record, pending.Request.Terminal)
+			}
+			if tc.name != "partial success" {
+				return
+			}
+			foreign := second.base + "/work-items/" + string(foreignItem.WorkItemID) + "/progress?attempt=" + url.QueryEscape(attemptID)
+			requireNativeStatus(t, with(http.MethodGet, foreign, secondRunner.redemption.Credential, nil), http.StatusNotFound)
+			comment := tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "new-human-feedback"}, Body: "Recheck this behavior before proceeding."}
+			requireNativeStatus(t, with(http.MethodPost, path+"/comments", fixture.token, comment), http.StatusOK)
+			response = with(http.MethodGet, query, fixture.worker, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &pending)
+			if pending.Current || pending.Record == nil {
+				t.Fatal("new feedback must leave the stored verdict historical")
+			}
+			requireNativeStatus(t, with(http.MethodPost, path+"/progress", fixture.worker, publication), http.StatusOK)
 		})
 	}
 }

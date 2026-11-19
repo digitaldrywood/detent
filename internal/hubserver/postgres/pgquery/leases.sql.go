@@ -128,7 +128,7 @@ AND ($5::integer IS NULL OR worker_pid IS NULL OR worker_retired_at IS NOT NULL
     ROW($5::integer,$6::integer,$7::timestamptz,$8::text))
 AND (status='running' OR status='interrupted' AND $12='running' OR $11::boolean AND status=$12 OR $9::boolean AND status IN ('interrupted','cancelled') AND $12='cancelled')
 AND (NOT $58::boolean OR CASE WHEN $11::boolean THEN status ELSE $12 END NOT IN ('running','interrupted') OR runtime_heartbeat_at IS NULL OR $3>=runtime_heartbeat_at)
-RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at
+RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at, verdict_evidence_revision, verdict_attempted_step, verdict_success, verdict_outcome, verdict_reason, verdict_next_step, verdict_disposition
 `
 
 type AdvanceLeaseAttemptParams struct {
@@ -324,6 +324,13 @@ func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttem
 		&i.WorkerStartKey,
 		&i.WorkerRunnerID,
 		&i.WorkerRetiredAt,
+		&i.VerdictEvidenceRevision,
+		&i.VerdictAttemptedStep,
+		&i.VerdictSuccess,
+		&i.VerdictOutcome,
+		&i.VerdictReason,
+		&i.VerdictNextStep,
+		&i.VerdictDisposition,
 	)
 	return i, err
 }
@@ -443,7 +450,7 @@ func (q *Queries) GetAttemptReceipt(ctx context.Context, arg GetAttemptReceiptPa
 }
 
 const getLatestIssueAttempt = `-- name: GetLatestIssueAttempt :one
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at, verdict_evidence_revision, verdict_attempted_step, verdict_success, verdict_outcome, verdict_reason, verdict_next_step, verdict_disposition FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1
 `
 
 type GetLatestIssueAttemptParams struct {
@@ -524,15 +531,22 @@ func (q *Queries) GetLatestIssueAttempt(ctx context.Context, arg GetLatestIssueA
 		&i.WorkerStartKey,
 		&i.WorkerRunnerID,
 		&i.WorkerRetiredAt,
+		&i.VerdictEvidenceRevision,
+		&i.VerdictAttemptedStep,
+		&i.VerdictSuccess,
+		&i.VerdictOutcome,
+		&i.VerdictReason,
+		&i.VerdictNextStep,
+		&i.VerdictDisposition,
 	)
 	return i, err
 }
 
 const getLatestIssueAttemptsByIssues = `-- name: GetLatestIssueAttemptsByIssues :many
-SELECT latest.organization_id, latest.id, latest.issue_id, latest.lease_id, latest.fencing_token, latest.run_id, latest.sequence, latest.status, latest.work_item_revision, latest.dispatch_generation, latest.payload_object_key, latest.checkpoint_object_key, latest.artifacts_object_key, latest.started_at, latest.updated_at, latest.started_at_submicro_ns, latest.runner_tokens_recorded, latest.cleanup_acknowledged_at, latest.runtime_heartbeat_at, latest.runtime_summary_sequence, latest.claim_disposition, latest.local_attempt_id, latest.local_attempt_id_recorded, latest.checkpoint_preserves_source, latest.project_id, latest.usage_pending_sequence, latest.usage_projected_sequence, latest.worker_cleanup_required, latest.failure_sequence, latest.failure_example, latest.failure_class, latest.failure_landing_observed_at, latest.identity_sequence, latest.identity_execution_role, latest.identity_execution_backend, latest.identity_execution_model, latest.identity_execution_reasoning_effort, latest.identity_selection_effort_clamped_from, latest.identity_selection_policy, latest.identity_selection_policy_source, latest.identity_selection_reason, latest.identity_selection_level, latest.identity_selection_requested_model, latest.identity_selection_model_source, latest.identity_selection_effort_source, latest.identity_selection_fallback_reason, latest.identity_selection_backend_source, latest.identity_selection_route_source, latest.identity_backend_id, latest.identity_backend_kind, latest.identity_route, latest.identity_role, latest.identity_provider, latest.identity_provider_provenance, latest.identity_requested_model, latest.identity_requested_model_provenance, latest.identity_resolved_model, latest.identity_resolved_model_provenance, latest.identity_reasoning_effort, latest.identity_reasoning_effort_provenance, latest.identity_service_tier, latest.identity_service_tier_provenance, latest.identity_observed_at, latest.worker_pid, latest.worker_pgid, latest.worker_started_at, latest.worker_start_key, latest.worker_runner_id, latest.worker_retired_at
+SELECT latest.organization_id, latest.id, latest.issue_id, latest.lease_id, latest.fencing_token, latest.run_id, latest.sequence, latest.status, latest.work_item_revision, latest.dispatch_generation, latest.payload_object_key, latest.checkpoint_object_key, latest.artifacts_object_key, latest.started_at, latest.updated_at, latest.started_at_submicro_ns, latest.runner_tokens_recorded, latest.cleanup_acknowledged_at, latest.runtime_heartbeat_at, latest.runtime_summary_sequence, latest.claim_disposition, latest.local_attempt_id, latest.local_attempt_id_recorded, latest.checkpoint_preserves_source, latest.project_id, latest.usage_pending_sequence, latest.usage_projected_sequence, latest.worker_cleanup_required, latest.failure_sequence, latest.failure_example, latest.failure_class, latest.failure_landing_observed_at, latest.identity_sequence, latest.identity_execution_role, latest.identity_execution_backend, latest.identity_execution_model, latest.identity_execution_reasoning_effort, latest.identity_selection_effort_clamped_from, latest.identity_selection_policy, latest.identity_selection_policy_source, latest.identity_selection_reason, latest.identity_selection_level, latest.identity_selection_requested_model, latest.identity_selection_model_source, latest.identity_selection_effort_source, latest.identity_selection_fallback_reason, latest.identity_selection_backend_source, latest.identity_selection_route_source, latest.identity_backend_id, latest.identity_backend_kind, latest.identity_route, latest.identity_role, latest.identity_provider, latest.identity_provider_provenance, latest.identity_requested_model, latest.identity_requested_model_provenance, latest.identity_resolved_model, latest.identity_resolved_model_provenance, latest.identity_reasoning_effort, latest.identity_reasoning_effort_provenance, latest.identity_service_tier, latest.identity_service_tier_provenance, latest.identity_observed_at, latest.worker_pid, latest.worker_pgid, latest.worker_started_at, latest.worker_start_key, latest.worker_runner_id, latest.worker_retired_at, latest.verdict_evidence_revision, latest.verdict_attempted_step, latest.verdict_success, latest.verdict_outcome, latest.verdict_reason, latest.verdict_next_step, latest.verdict_disposition
 FROM unnest($1::bigint[]) AS requested(issue_id)
 CROSS JOIN LATERAL (
-  SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at FROM native_attempts
+  SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at, verdict_evidence_revision, verdict_attempted_step, verdict_success, verdict_outcome, verdict_reason, verdict_next_step, verdict_disposition FROM native_attempts
   WHERE organization_id=$2 AND issue_id=requested.issue_id
   ORDER BY fencing_token DESC
   LIMIT 1
@@ -623,6 +637,13 @@ func (q *Queries) GetLatestIssueAttemptsByIssues(ctx context.Context, arg GetLat
 			&i.WorkerStartKey,
 			&i.WorkerRunnerID,
 			&i.WorkerRetiredAt,
+			&i.VerdictEvidenceRevision,
+			&i.VerdictAttemptedStep,
+			&i.VerdictSuccess,
+			&i.VerdictOutcome,
+			&i.VerdictReason,
+			&i.VerdictNextStep,
+			&i.VerdictDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -668,7 +689,7 @@ func (q *Queries) GetLease(ctx context.Context, arg GetLeaseParams) (Lease, erro
 }
 
 const getLeaseAttempt = `-- name: GetLeaseAttempt :one
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at FROM native_attempts WHERE organization_id=$1 AND id=$2
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at, verdict_evidence_revision, verdict_attempted_step, verdict_success, verdict_outcome, verdict_reason, verdict_next_step, verdict_disposition FROM native_attempts WHERE organization_id=$1 AND id=$2
 `
 
 type GetLeaseAttemptParams struct {
@@ -749,6 +770,13 @@ func (q *Queries) GetLeaseAttempt(ctx context.Context, arg GetLeaseAttemptParams
 		&i.WorkerStartKey,
 		&i.WorkerRunnerID,
 		&i.WorkerRetiredAt,
+		&i.VerdictEvidenceRevision,
+		&i.VerdictAttemptedStep,
+		&i.VerdictSuccess,
+		&i.VerdictOutcome,
+		&i.VerdictReason,
+		&i.VerdictNextStep,
+		&i.VerdictDisposition,
 	)
 	return i, err
 }
@@ -758,7 +786,7 @@ WITH unreleased AS MATERIALIZED (
  SELECT fencing_token FROM leases
  WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL
 )
-SELECT a.organization_id, a.id, a.issue_id, a.lease_id, a.fencing_token, a.run_id, a.sequence, a.status, a.work_item_revision, a.dispatch_generation, a.payload_object_key, a.checkpoint_object_key, a.artifacts_object_key, a.started_at, a.updated_at, a.started_at_submicro_ns, a.runner_tokens_recorded, a.cleanup_acknowledged_at, a.runtime_heartbeat_at, a.runtime_summary_sequence, a.claim_disposition, a.local_attempt_id, a.local_attempt_id_recorded, a.checkpoint_preserves_source, a.project_id, a.usage_pending_sequence, a.usage_projected_sequence, a.worker_cleanup_required, a.failure_sequence, a.failure_example, a.failure_class, a.failure_landing_observed_at, a.identity_sequence, a.identity_execution_role, a.identity_execution_backend, a.identity_execution_model, a.identity_execution_reasoning_effort, a.identity_selection_effort_clamped_from, a.identity_selection_policy, a.identity_selection_policy_source, a.identity_selection_reason, a.identity_selection_level, a.identity_selection_requested_model, a.identity_selection_model_source, a.identity_selection_effort_source, a.identity_selection_fallback_reason, a.identity_selection_backend_source, a.identity_selection_route_source, a.identity_backend_id, a.identity_backend_kind, a.identity_route, a.identity_role, a.identity_provider, a.identity_provider_provenance, a.identity_requested_model, a.identity_requested_model_provenance, a.identity_resolved_model, a.identity_resolved_model_provenance, a.identity_reasoning_effort, a.identity_reasoning_effort_provenance, a.identity_service_tier, a.identity_service_tier_provenance, a.identity_observed_at, a.worker_pid, a.worker_pgid, a.worker_started_at, a.worker_start_key, a.worker_runner_id, a.worker_retired_at FROM native_attempts a
+SELECT a.organization_id, a.id, a.issue_id, a.lease_id, a.fencing_token, a.run_id, a.sequence, a.status, a.work_item_revision, a.dispatch_generation, a.payload_object_key, a.checkpoint_object_key, a.artifacts_object_key, a.started_at, a.updated_at, a.started_at_submicro_ns, a.runner_tokens_recorded, a.cleanup_acknowledged_at, a.runtime_heartbeat_at, a.runtime_summary_sequence, a.claim_disposition, a.local_attempt_id, a.local_attempt_id_recorded, a.checkpoint_preserves_source, a.project_id, a.usage_pending_sequence, a.usage_projected_sequence, a.worker_cleanup_required, a.failure_sequence, a.failure_example, a.failure_class, a.failure_landing_observed_at, a.identity_sequence, a.identity_execution_role, a.identity_execution_backend, a.identity_execution_model, a.identity_execution_reasoning_effort, a.identity_selection_effort_clamped_from, a.identity_selection_policy, a.identity_selection_policy_source, a.identity_selection_reason, a.identity_selection_level, a.identity_selection_requested_model, a.identity_selection_model_source, a.identity_selection_effort_source, a.identity_selection_fallback_reason, a.identity_selection_backend_source, a.identity_selection_route_source, a.identity_backend_id, a.identity_backend_kind, a.identity_route, a.identity_role, a.identity_provider, a.identity_provider_provenance, a.identity_requested_model, a.identity_requested_model_provenance, a.identity_resolved_model, a.identity_resolved_model_provenance, a.identity_reasoning_effort, a.identity_reasoning_effort_provenance, a.identity_service_tier, a.identity_service_tier_provenance, a.identity_observed_at, a.worker_pid, a.worker_pgid, a.worker_started_at, a.worker_start_key, a.worker_runner_id, a.worker_retired_at, a.verdict_evidence_revision, a.verdict_attempted_step, a.verdict_success, a.verdict_outcome, a.verdict_reason, a.verdict_next_step, a.verdict_disposition FROM native_attempts a
 JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id AND l.fencing_token=a.fencing_token
 WHERE a.organization_id=$1 AND a.issue_id=$2
 AND a.fencing_token=COALESCE(
@@ -857,6 +885,13 @@ func (q *Queries) GetLeaseLossCandidate(ctx context.Context, arg GetLeaseLossCan
 		&i.WorkerStartKey,
 		&i.WorkerRunnerID,
 		&i.WorkerRetiredAt,
+		&i.VerdictEvidenceRevision,
+		&i.VerdictAttemptedStep,
+		&i.VerdictSuccess,
+		&i.VerdictOutcome,
+		&i.VerdictReason,
+		&i.VerdictNextStep,
+		&i.VerdictDisposition,
 	)
 	return i, err
 }
@@ -985,7 +1020,7 @@ identity_sequence,identity_execution_role,identity_execution_backend,identity_ex
 VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,1,$17::boolean,NULLIF($18::bigint,0),true,$19::boolean,(SELECT i.project_id FROM work_item_identities i WHERE i.organization_id=$1 AND i.id=$3),
 CASE WHEN $20::boolean THEN 1 END,$21::text,$22::text,$23::timestamptz,
 CASE WHEN $24::text IS NOT NULL THEN 1 END,$24::text,$25::text,$26::text,$27::text,$28::text,$29::text,$30::text,$31::text,$32::text,$33::text,$34::text,$35::text,$36::text,$37::text,$38::text,$39::text,$40::text,$41::text,$42::text,$43::text,$44::text,$45::text,$46::text,$47::text,$48::text,$49::text,$50::text,$51::text,$52::text,$53::timestamptz,$54::integer,$55::integer,$56::timestamptz,$57::text,
-CASE WHEN $54::integer IS NOT NULL THEN (SELECT a.runner_id FROM runner_lease_assignments a WHERE a.organization_id=$1 AND a.lease_id=$4) END) RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at
+CASE WHEN $54::integer IS NOT NULL THEN (SELECT a.runner_id FROM runner_lease_assignments a WHERE a.organization_id=$1 AND a.lease_id=$4) END) RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at, verdict_evidence_revision, verdict_attempted_step, verdict_success, verdict_outcome, verdict_reason, verdict_next_step, verdict_disposition
 `
 
 type InsertLeaseAttemptParams struct {
@@ -1179,6 +1214,13 @@ func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttempt
 		&i.WorkerStartKey,
 		&i.WorkerRunnerID,
 		&i.WorkerRetiredAt,
+		&i.VerdictEvidenceRevision,
+		&i.VerdictAttemptedStep,
+		&i.VerdictSuccess,
+		&i.VerdictOutcome,
+		&i.VerdictReason,
+		&i.VerdictNextStep,
+		&i.VerdictDisposition,
 	)
 	return i, err
 }
@@ -1868,7 +1910,7 @@ func (q *Queries) PageIssueAttemptFailures(ctx context.Context, arg PageIssueAtt
 }
 
 const pageIssueAttempts = `-- name: PageIssueAttempts :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at, verdict_evidence_revision, verdict_attempted_step, verdict_success, verdict_outcome, verdict_reason, verdict_next_step, verdict_disposition FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND ($3::bigint=0 OR fencing_token<$3::bigint)
 ORDER BY fencing_token DESC LIMIT $4
@@ -1965,6 +2007,13 @@ func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsPa
 			&i.WorkerStartKey,
 			&i.WorkerRunnerID,
 			&i.WorkerRetiredAt,
+			&i.VerdictEvidenceRevision,
+			&i.VerdictAttemptedStep,
+			&i.VerdictSuccess,
+			&i.VerdictOutcome,
+			&i.VerdictReason,
+			&i.VerdictNextStep,
+			&i.VerdictDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -1977,7 +2026,7 @@ func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsPa
 }
 
 const pageIssueAttemptsOldest = `-- name: PageIssueAttemptsOldest :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at, verdict_evidence_revision, verdict_attempted_step, verdict_success, verdict_outcome, verdict_reason, verdict_next_step, verdict_disposition FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND ($3::bigint=0 OR fencing_token>$3::bigint)
 AND ($4::bigint=0 OR fencing_token<=$4::bigint)
@@ -2077,6 +2126,13 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 			&i.WorkerStartKey,
 			&i.WorkerRunnerID,
 			&i.WorkerRetiredAt,
+			&i.VerdictEvidenceRevision,
+			&i.VerdictAttemptedStep,
+			&i.VerdictSuccess,
+			&i.VerdictOutcome,
+			&i.VerdictReason,
+			&i.VerdictNextStep,
+			&i.VerdictDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -2089,7 +2145,7 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 }
 
 const pageIssueCheckpointAttempts = `-- name: PageIssueCheckpointAttempts :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at, verdict_evidence_revision, verdict_attempted_step, verdict_success, verdict_outcome, verdict_reason, verdict_next_step, verdict_disposition FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND checkpoint_object_key IS NOT NULL
 AND ($3::bigint=0 OR fencing_token<$3::bigint)
@@ -2187,6 +2243,13 @@ func (q *Queries) PageIssueCheckpointAttempts(ctx context.Context, arg PageIssue
 			&i.WorkerStartKey,
 			&i.WorkerRunnerID,
 			&i.WorkerRetiredAt,
+			&i.VerdictEvidenceRevision,
+			&i.VerdictAttemptedStep,
+			&i.VerdictSuccess,
+			&i.VerdictOutcome,
+			&i.VerdictReason,
+			&i.VerdictNextStep,
+			&i.VerdictDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -2196,6 +2259,54 @@ func (q *Queries) PageIssueCheckpointAttempts(ctx context.Context, arg PageIssue
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordTerminalProgressVerdict = `-- name: RecordTerminalProgressVerdict :execrows
+UPDATE native_attempts SET
+    verdict_evidence_revision = $1,
+    verdict_attempted_step = $2,
+    verdict_success = $3,
+    verdict_outcome = $4,
+    verdict_reason = $5,
+    verdict_next_step = $6,
+    verdict_disposition = $7
+WHERE organization_id = $8 AND project_id = $9
+    AND id = $10 AND sequence = $11
+    AND status <> 'running' AND verdict_evidence_revision IS NULL
+`
+
+type RecordTerminalProgressVerdictParams struct {
+	EvidenceRevision *string
+	AttemptedStep    *string
+	Success          pgtype.Bool
+	Outcome          *string
+	Reason           *string
+	NextStep         *string
+	Disposition      *string
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	AttemptID        string
+	TerminalSequence int64
+}
+
+func (q *Queries) RecordTerminalProgressVerdict(ctx context.Context, arg RecordTerminalProgressVerdictParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordTerminalProgressVerdict,
+		arg.EvidenceRevision,
+		arg.AttemptedStep,
+		arg.Success,
+		arg.Outcome,
+		arg.Reason,
+		arg.NextStep,
+		arg.Disposition,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.AttemptID,
+		arg.TerminalSequence,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const registerLeaseMachine = `-- name: RegisterLeaseMachine :exec
