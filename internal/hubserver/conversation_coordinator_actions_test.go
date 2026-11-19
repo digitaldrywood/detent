@@ -47,6 +47,12 @@ func TestCoordinatorProjectActions(t *testing.T) {
 			continue
 		}
 		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
+		switch tool {
+		case "propose_set_priority":
+			outcomes = []string{"execute", "reject", "revoked", "stale", "wrong role"}
+		case "propose_backlog_admission":
+			outcomes = []string{"execute", "revoked", "stale", "wrong role"}
+		}
 		if tool == operatortool.MoveItem {
 			outcomes = append(outcomes, "human answer", "human empty answer", "human comment failure", "human transition failure", "human park recorded on submit", "dependency park")
 		}
