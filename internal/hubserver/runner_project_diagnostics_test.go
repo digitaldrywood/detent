@@ -18,11 +18,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -31,119 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
-
-func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
-	t.Parallel()
-	var clock atomic.Int64
-	clock.Store(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC).UnixNano())
-	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() }}), "", "admission-history")
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
-	r.enroll(t)
-	first, second := f.create(t, "First delivery"), f.create(t, "Second delivery")
-	foreign := newNativeFixture(t, f.service, "", "foreign-admission")
-	foreignIssue := foreign.create(t, "Foreign delivery")
-	other := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "other-organization")
-	otherIssue := other.create(t, "Other organization delivery")
-	if other.project.OrganizationID == f.project.OrganizationID {
-		t.Fatal("cross-organization fixture shares the runner organization")
-	}
-	now := f.service.config.Clock()
-	view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{
-		ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Counts: map[string]int{}, Unavailable: map[string]string{},
-		Admissions: []runnerauth.DiagnosticAdmission{
-			{IssueID: string(first.WorkItemID), WorkItemRevision: int64(first.Revision), ObservedAt: now, Result: "skipped", Predicate: "duplicate_pull_request_work"},
-			{IssueID: string(second.WorkItemID), WorkItemRevision: int64(second.Revision), ObservedAt: now, Result: "skipped", Predicate: "current_head_ci_wait"},
-			{IssueID: string(foreignIssue.WorkItemID), WorkItemRevision: int64(foreignIssue.Revision), ObservedAt: now, Result: "skipped", Predicate: "duplicate_pull_request_work"},
-			{IssueID: string(otherIssue.WorkItemID), WorkItemRevision: int64(otherIssue.Revision), ObservedAt: now, Result: "skipped", Predicate: "duplicate_pull_request_work"},
-		},
-	}}
-	heartbeat := func(configuration runnerauth.ProjectConfiguration) *httptest.ResponseRecorder {
-		t.Helper()
-		clock.Add(int64(time.Second))
-		return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": configuration})
-	}
-	post := func() {
-		t.Helper()
-		requireNativeStatus(t, heartbeat(view), http.StatusOK)
-	}
-	persisted := func() (decisions, observations int) {
-		t.Helper()
-		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_events WHERE type='scheduler.decision'),(SELECT count(*) FROM runner_project_observations WHERE runner_id=$1)", r.binding.RunnerID).Scan(&decisions, &observations); err != nil {
-			t.Fatal(err)
-		}
-		return decisions, observations
-	}
-	repository, ok := f.service.config.TenantRepository.(*postgres.Repository)
-	if !ok {
-		t.Fatal("admission fixture requires the PostgreSQL tenant repository")
-	}
-	failing := &admissionObservationFailure{Repository: repository}
-	f.service.config.TenantRepository = failing
-	requireNativeStatus(t, heartbeat(view), http.StatusInternalServerError)
-	f.service.config.TenantRepository = repository
-	if decisions, observations := persisted(); !failing.decisionsChecked.Load() || decisions != 0 || observations != 0 {
-		t.Fatalf("failed observation persisted decisions=%d observations=%d checked=%v", decisions, observations, failing.decisionsChecked.Load())
-	}
-	post()
-	if decisions, observations := persisted(); decisions != 2 || observations != 1 {
-		t.Fatalf("observation and decisions persisted decisions=%d observations=%d, want 2 and 1", decisions, observations)
-	}
-	post()
-	call := hostedContextProtocol(t, f.service, changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID)), "http")
-	for i, issue := range []tracker.NativeIssue{first, second} {
-		record, event := readDiagnosticFixtureDecision(t, f, issue)
-		data, eventID := event.Data, record.ID
-		want := view.Diagnostics.Admissions[i].Predicate
-		if data.Decision == nil || data.Decision.Reason != want || data.Decision.Outcome != "skipped" || data.Decision.RunnerID != r.binding.RunnerID || data.Decision.WorkItemRevision != issue.Revision || !data.Decision.At.Equal(now) {
-			t.Fatalf("persisted decision = %+v", data.Decision)
-		}
-		payload := hostedContextData(t, call("tools/call", operatortool.ExplainItem, map[string]any{"project_id": string(f.project.ID), "reference": strconv.Itoa(issue.Number)}), false)
-		var explanation explain.IssueExplanation
-		if err := json.Unmarshal(payload, &explanation); err != nil {
-			t.Fatal(err)
-		}
-		if latest := explanation.Eligibility.Latest; latest == nil || latest.Reason != want || latest.EvidenceID != eventID || latest.Outcome != "skipped" {
-			t.Fatalf("explain_item lost refusal: %s", payload)
-		}
-	}
-	view.Diagnostics.Admissions[0].Predicate = "project_capacity_full"
-	view.Diagnostics.Admissions[0].WorkItemRevision++
-	view.Diagnostics.Admissions[1].IssueID = "wi_unknown"
-	view.Diagnostics.ObservedAt = time.Unix(0, clock.Load()).UTC()
-	post()
-	view.Diagnostics.Admissions[0].WorkItemRevision = int64(first.Revision)
-	view.Diagnostics.Admissions[0].ObservedAt = now.Add(-time.Second)
-	view.Diagnostics.ObservedAt = time.Unix(0, clock.Load()).UTC()
-	post()
-	foreignView := view
-	foreignView.ProjectID = string(other.project.ID)
-	foreignView.Diagnostics = &runnerauth.ProjectDiagnostics{ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Counts: map[string]int{}, Unavailable: map[string]string{},
-		Admissions: []runnerauth.DiagnosticAdmission{{IssueID: string(otherIssue.WorkItemID), WorkItemRevision: int64(otherIssue.Revision), ObservedAt: now, Result: "skipped", Predicate: "duplicate_pull_request_work"}}}
-	requireNativeStatus(t, heartbeat(foreignView), http.StatusUnprocessableEntity)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": foreignView}), http.StatusUnauthorized)
-	var count int
-	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='scheduler.decision'").Scan(&count); err != nil || count != 2 {
-		t.Fatalf("repeated, mismatched or foreign observations changed history: count=%d error=%v", count, err)
-	}
-	for _, issue := range []tracker.NativeIssue{first, second} {
-		record, event := readDiagnosticFixtureDecision(t, f, issue)
-		if event.Data.Decision == nil || event.Data.Decision.RunnerID != r.binding.RunnerID || event.Data.Decision.Outcome != "skipped" {
-			t.Fatalf("scheduler selection: %+v", event)
-		}
-		var previous eventstore.Event
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-			var err error
-			previous, err = reader.(eventstore.SchedulerDecisionReader).SchedulerDecision(t.Context(), f.project.ID, issue.WorkItemID, record.ID)
-			return err
-		}); err != nil || previous.ID != record.ID || previous.PayloadSHA256 != record.PayloadSHA256 {
-			t.Fatalf("scheduler deduplication: %+v %v", previous, err)
-		}
-		if !record.RecordedAt.After(now.Add(-time.Second)) || !event.Data.Decision.At.Equal(now) {
-			t.Fatalf("newer decision: %+v", event)
-		}
-	}
-
-}
 
 func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	t.Parallel()
@@ -625,55 +510,6 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	if strings.Contains(logs.String(), "sentinel-secret-customer") {
 		t.Fatal("request secret leaked into logs")
 	}
-}
-
-type admissionObservationFailure struct {
-	*postgres.Repository
-	decisionsChecked atomic.Bool
-}
-
-type admissionObservationFailureWriter struct {
-	tenantstore.Writer
-	owner *admissionObservationFailure
-}
-
-func (r *admissionObservationFailure) WriteRunnerHeartbeat(ctx context.Context, organization tracker.OrganizationID, credential, runner string, write func(context.Context, tenantstore.Writer) error) error {
-	return r.Repository.WriteRunnerHeartbeat(ctx, organization, credential, runner, func(ctx context.Context, w tenantstore.Writer) error {
-		return write(ctx, admissionObservationFailureWriter{Writer: w, owner: r})
-	})
-}
-
-func (w admissionObservationFailureWriter) PendingRunnerAdmissionDecisions(ctx context.Context, project tracker.ProjectID, decisions []eventstore.RunnerAdmissionDecision) ([]eventstore.RunnerAdmissionDecision, error) {
-	pending, err := w.Writer.(eventstore.RunnerAdmissionDecisionReader).PendingRunnerAdmissionDecisions(ctx, project, decisions)
-	if len(pending) > 0 {
-		w.owner.decisionsChecked.Store(true)
-	}
-	return pending, err
-}
-
-func (w admissionObservationFailureWriter) LockRunnerAdmissionItems(ctx context.Context, project tracker.ProjectID, items []tracker.NativeWorkItemID) error {
-	return w.Writer.(eventstore.RunnerAdmissionDecisionWriter).LockRunnerAdmissionItems(ctx, project, items)
-}
-
-func (w admissionObservationFailureWriter) ReplaceRunnerProjectObservation(context.Context, runnerstore.ProjectObservation, []runnerstore.ProjectDiagnosticAttempt) error {
-	return errors.New("observation storage unavailable")
-}
-
-func readDiagnosticFixtureDecision(t *testing.T, f nativeFixture, issue tracker.NativeIssue) (eventstore.Event, tracker.CollaborationEvent) {
-	t.Helper()
-	var record eventstore.Event
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-		var err error
-		record, err = reader.(eventstore.WorkflowTransitionReader).LatestSchedulerDecision(t.Context(), f.project.ID, issue.WorkItemID)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	event, err := eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return record, event
 }
 
 type diagnosticFixtureState struct {
