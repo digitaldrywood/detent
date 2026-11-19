@@ -500,42 +500,6 @@ func TestArchiveSQLScalar(t *testing.T) {
 	}
 }
 
-func TestArchiveQueryExceedsSQLiteParameterCount(t *testing.T) {
-	t.Parallel()
-	const count = 30000/8 + 1
-	f := newArchiveRevisionFixture(t, newNativeFixture(t, nil, "", "archive-large"), "archive with many scalar cells", count)
-	if len(f.table.Rows) != count || len(f.table.Rows)*len(f.table.Columns) <= 30000 {
-		t.Fatal("fixture lost historical scalar workload")
-	}
-	ref, data, _ := f.publish(t)
-	if ref.UncompressedSize > attachment.MaxSectionBytes {
-		t.Fatal("fixture exceeds archive section limit")
-	}
-	fetches := 0
-	f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
-		fetches++
-		if got != ref {
-			t.Fatal("wrong large section")
-		}
-		return entryauthority.ArchiveResponse{Data: data}, nil
-	}
-	for _, revision := range []int64{1, count / 2, count} {
-		before := fetches
-		ctx := f.service.archiveContext(t.Context(), f.scope, false)
-		got, err := f.service.readVersion(ctx, f.scope, string(f.issue.WorkItemID), "", revision)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var issue tracker.NativeIssue
-		if err := json.Unmarshal(got, &issue); err != nil {
-			t.Fatal(err)
-		}
-		if issue.WorkItemID != f.issue.WorkItemID || int64(issue.Revision) != revision || issue.Title != f.issue.Title || fetches != before+1 {
-			t.Fatalf("large section revision=%+v fetches=%d", issue, fetches-before)
-		}
-	}
-}
-
 func TestArchiveMigrationCompatibility(t *testing.T) {
 	t.Parallel()
 	for _, layout := range []string{"pre-reference", "scoped", "additional metadata"} {

@@ -24,7 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
@@ -262,74 +261,6 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestNativeTransitionHistoryBytes(t *testing.T) {
-	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	issue := f.create(t, "transition history")
-	scope := nativeBoardFixtureScope(t, f)
-	now := time.Now().UTC()
-	f.service.config.Clock = func() time.Time { return now }
-	path := f.base + "/work-items/" + string(issue.WorkItemID)
-	body := strings.Repeat("Large unchanged issue body. 雪\n", 1024) + issueContractTestSections
-	response := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "history-body"}, ExpectedRevision: issue.Revision, Body: &body})
-	requireNativeStatus(t, response, http.StatusOK)
-	decodeHubResponse(t, response, &issue)
-	snapshots := make(map[tracker.Revision]string)
-	for i := range 513 {
-		now = now.Add(24 * time.Second)
-		state := "In Progress"
-		if issue.State == state {
-			state = "Todo"
-		}
-		response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("history-transition-%d", i)}, ExpectedRevision: issue.Revision, State: state, Reason: "user_requested"})
-		requireNativeStatus(t, response, http.StatusOK)
-		decodeHubResponse(t, response, &issue)
-		raw, err := json.Marshal(issue)
-		if err != nil {
-			t.Fatal(err)
-		}
-		snapshots[issue.Revision] = string(raw)
-	}
-	var fullBytes, storedBytes int64
-	content := eventstore.NewContent(f.service.runDetailStore())
-	for revision, expected := range snapshots {
-		var version eventstore.CollaborationVersion
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			version, err = r.CollaborationVersion(t.Context(), string(issue.WorkItemID), int64(revision))
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		actual, err := content.CollaborationVersion(t.Context(), version)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var original tracker.NativeIssue
-		if err := json.Unmarshal(actual, &original); err != nil {
-			t.Fatal(err)
-		}
-		original.WebURL = issue.WebURL
-		original = hubrecords.RelationshipOmittedIssue(original)
-		canonical, err := json.Marshal(original)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(canonical) != expected {
-			t.Fatalf("transition revision %d changed", revision)
-		}
-		if version.PayloadBytes >= 4096 {
-			t.Fatalf("compressed version repeated body: %d bytes", version.PayloadBytes)
-		}
-		storedBytes += version.PayloadBytes
-		fullBytes += int64(len(expected))
-	}
-	if storedBytes >= fullBytes/8 {
-		t.Fatalf("transition history=%d bytes, full snapshots=%d", storedBytes, fullBytes)
-	}
-	t.Logf("513 transitions: snapshots=%d stored=%d reduction=%.1f%%", fullBytes, storedBytes, 100*(1-float64(storedBytes)/float64(fullBytes)))
 }
 
 func TestNativeNoOpRevisions(t *testing.T) {

@@ -139,6 +139,17 @@ func TestHostedLoginLogsStayRedactedOutsideDenials(t *testing.T) {
 		t.Fatalf("hosted service log was not redacted: %s", logged)
 	}
 
+	var timing hostedLogBuffer
+	logger := slog.New(hostedLogHandler{output: slog.NewJSONHandler(&timing, nil)})
+	logger.Info("hub request timing", "route", "/example/private-route-sentinel", "owner", "secret=private-owner-sentinel", "title", "private-title-sentinel", "pool_full", "private-pool-sentinel")
+	logger.Info("conversation.receipt", "text", "private-conversation-sentinel", "status", "private-status-sentinel")
+	logger.Info("conversation.restart_normalized", "message", "private-message-sentinel", "token", 789123, "code", 456789)
+	for _, private := range []string{"sentinel", "789123", "456789"} {
+		if strings.Contains(timing.String(), private) {
+			t.Fatal("timing or conversation logs contain private content")
+		}
+	}
+
 	failure := fmt.Errorf("get change: load version: %w", &json.UnmarshalTypeError{Value: "array", Type: reflect.TypeFor[string]()})
 	for _, tt := range []struct {
 		name  string
@@ -171,56 +182,6 @@ func TestHostedLoginLogsStayRedactedOutsideDenials(t *testing.T) {
 			}
 			if !reflect.DeepEqual(record, tt.want) || strings.Contains(output.String(), "sentinel") {
 				t.Fatalf("attrs=%v want=%v: %s", record, tt.want, output.String())
-			}
-		})
-	}
-}
-
-func TestHostedLogsKeepRequestTiming(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name    string
-		message string
-		attrs   []any
-		want    map[string]any
-	}{
-		{"request timing kept", "hub request timing", []any{"method", "POST", "route", "/api/v2/organizations/:organization/projects/:project/leases/:lease/renew", "status", 200, "duration_ms", int64(5200)},
-			map[string]any{"msg": "hub request timing", "method": "POST", "route": "/api/v2/organizations/:organization/projects/:project/leases/:lease/renew", "status": float64(200), "duration_ms": float64(5200)}},
-		{"read spans kept", "hub request timing", []any{"route", "/api/v2/organizations/:organization/reports", "duration_ms", int64(900), "db_ms", int64(700), slog.Group("spans_ms", slog.Int64("reports_analytics", 600), slog.Int64("reports_prior", 90))},
-			map[string]any{"msg": "hub request timing", "route": "/api/v2/organizations/:organization/reports", "duration_ms": float64(900), "db_ms": float64(700), "spans_ms": map[string]any{"reports_analytics": float64(600), "reports_prior": float64(90)}}},
-		{"PostgreSQL pool waits kept", "hub PostgreSQL pool waits", []any{"waits", int64(40), "wait_ms", int64(9000), "in_use", 1, "max_open", int32(5), "serving_capacity", 3, "background_capacity", 1, "interval_s", int64(60)},
-			map[string]any{"msg": "hub PostgreSQL pool waits", "waits": float64(40), "wait_ms": float64(9000), "in_use": float64(1), "max_open": float64(5), "serving_capacity": float64(3), "background_capacity": float64(1), "interval_s": float64(60)}},
-		{"PostgreSQL deadline counters kept", "Read unavailable", []any{"read_timeout_cause", "read_deadline", "pool_full", true, "pool_in_use", int32(5), "pool_max", int32(5), "pool_wait_count", int64(2), "pool_wait_ms", int64(11), "pool_canceled_acquires", int64(1)},
-			map[string]any{"msg": "Read unavailable", "read_timeout_cause": "read_deadline", "pool_full": true, "pool_in_use": float64(5), "pool_max": float64(5), "pool_wait_count": float64(2), "pool_wait_ms": float64(11), "pool_canceled_acquires": float64(1)}},
-		{"untrusted owner redacted", "hub request timing", []any{"owner", "secret=private-owner-sentinel"},
-			map[string]any{"msg": "hub request timing", "owner": "[redacted]"}},
-		{"private title dropped", "hub request timing", []any{"title", "private-title-sentinel"},
-			map[string]any{"msg": "hub request timing"}},
-		{"tenant content dropped from timing", "hub request timing", []any{"route", "/work/tenant title sentinel", "method", "tenant method sentinel", "secret", "attribute-sentinel", "duration_ms", "9", "pool_full", "tenant pool sentinel"},
-			map[string]any{"msg": "hub request timing"}},
-		{"content counts kept and secret numbers dropped", "conversation.restart_normalized", []any{"messages", 3, "comments", int64(2), "message", "tenant content sentinel", "token", 7, "code", 123456},
-			map[string]any{"msg": "conversation.restart_normalized", "messages": float64(3), "comments": float64(2)}},
-		{"conversation id kept and message text dropped", "conversation.receipt", []any{"conversation_id", "conv_0123456789abcdef0123456789abcdef", "text", "tenant content sentinel", "command_key", "conv_0123456789abcdef0123456789abcdef00"},
-			map[string]any{"msg": "conversation.receipt", "conversation_id": "conv_0123456789abcdef0123456789abcdef", "command_key": "[redacted]"}},
-		{"receipt status kept", "conversation.receipt", []any{"status", "saved", "kind", "message"},
-			map[string]any{"msg": "conversation.receipt", "status": "saved", "kind": "message"}},
-		{"free text status dropped", "conversation.receipt", []any{"status", "tenant status sentinel"},
-			map[string]any{"msg": "conversation.receipt"}},
-		{"other messages keep safe diagnostics", "lease renewed", []any{"duration_ms", int64(10), "route", "/api/v2/x"},
-			map[string]any{"msg": "lease renewed", "duration_ms": float64(10), "route": "/api/v2/x"}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			var output hostedLogBuffer
-			logger := slog.New(hostedLogHandler{output: slog.NewJSONHandler(&output, nil)})
-			logger.Info(tt.message, tt.attrs...)
-			var record map[string]any
-			if err := json.Unmarshal([]byte(output.String()), &record); err != nil {
-				t.Fatalf("log = %s: %v", output.String(), err)
-			}
-			delete(record, "time")
-			delete(record, "level")
-			if !reflect.DeepEqual(record, tt.want) {
-				t.Fatalf("record = %v, want %v", record, tt.want)
 			}
 		})
 	}

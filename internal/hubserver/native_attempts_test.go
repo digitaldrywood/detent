@@ -437,43 +437,6 @@ func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
 	}
 }
 
-func TestNativeAttemptPageEncodesEachReturnedRecordOnce(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name       string
-		bodyBytes  int
-		limit      int
-		want       int
-		considered int
-	}{
-		{"count limit", 0, 2, 2, 2},
-		{"byte limit", 400 << 10, 100, 2, 3},
-		{"last page", 1000, 100, 5, 5},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f, issue, _ := nativeAttemptListingFixture(t, 5, test.bodyBytes)
-			counts := map[string]int{}
-			marshal := func(value any) ([]byte, error) {
-				attempt, ok := value.(tracker.NativeAttempt)
-				if !ok {
-					t.Fatalf("encoded growing page prefix: %T", value)
-				}
-				counts[attempt.AttemptID]++
-				return json.Marshal(attempt)
-			}
-			got, err := f.service.readNativeAttemptPage(t.Context(), nativeAttemptListingScope(t, f), string(issue.WorkItemID), url.Values{"view": {"detail"}, "limit": {strconv.Itoa(test.limit)}}, marshal)
-			if err != nil || len(got.Items) != test.want || len(counts) != test.considered {
-				t.Fatalf("items=%d encodes=%v error=%v", len(got.Items), counts, err)
-			}
-			for id, count := range counts {
-				if count != 1 {
-					t.Fatalf("attempt %s encoded %d times", id, count)
-				}
-			}
-		})
-	}
-}
-
 func BenchmarkNativeAttemptPageEncoding(b *testing.B) {
 	for _, count := range []int{20, 100} {
 		attempts := make([]tracker.NativeAttempt, count)

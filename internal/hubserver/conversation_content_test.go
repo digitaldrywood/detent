@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -334,6 +335,48 @@ func TestConversationCanonicalReadRejectsInvalidBodyLength(t *testing.T) {
 			}
 		})
 	}
+}
+
+type conversationIOProbeKey struct{}
+
+func conversationObjectIOContext(t *testing.T, objects *conversationContentFixture, statements ...func(time.Time, string)) context.Context {
+	t.Helper()
+	type span struct{ start, end time.Time }
+	var mu sync.Mutex
+	var spans []span
+	var operations []time.Time
+	marker := new(byte)
+	objects.onContextIO = func(ctx context.Context) error {
+		if ctx.Value(conversationIOProbeKey{}) == marker {
+			mu.Lock()
+			operations = append(operations, time.Now())
+			mu.Unlock()
+		}
+		return nil
+	}
+	ctx := context.WithValue(t.Context(), conversationIOProbeKey{}, marker)
+	ctx = postgres.WithTransactionTiming(ctx, func(name string, start time.Time) {
+		if name == "pg_callback" {
+			mu.Lock()
+			spans = append(spans, span{start, time.Now()})
+			mu.Unlock()
+		}
+	}, statements...)
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(spans) == 0 || len(operations) == 0 {
+			t.Fatalf("missing attributable transaction/object evidence: spans=%d operations=%d", len(spans), len(operations))
+		}
+		for _, operation := range operations {
+			for _, transaction := range spans {
+				if !operation.Before(transaction.start) && !operation.After(transaction.end) {
+					t.Error("object I/O held its operation's PostgreSQL transaction")
+				}
+			}
+		}
+	})
+	return ctx
 }
 
 func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {

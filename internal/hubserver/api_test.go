@@ -41,6 +41,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type conversationLogSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *conversationLogSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *conversationLogSink) text() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
 func TestAPITokensAreHashedScopedRotatableAndRedacted(t *testing.T) {
 	t.Parallel()
 
@@ -1206,6 +1223,7 @@ func TestControlPlaneRoutesRequireAuthentication(t *testing.T) {
 			}
 		})
 	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, "/api/v1/outbox/health", testHubAdminToken, nil), http.StatusNotFound)
 	t.Run("private credential maintenance", func(t *testing.T) {
 		config := hostedPostgresConfig(t, Config{ListenAddress: "127.0.0.1:0", CredentialMaintenance: true, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_api_auth", WorkOSOrganizationID: "provider_api_auth", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}})
 		maintenance := openTestService(t, config)

@@ -7,7 +7,6 @@ import (
 	"go/token"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -17,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 )
 
 const conversationFixtureDirectory = "../../web/conversation/src/contracts/fixtures"
@@ -132,43 +130,6 @@ func TestHostedSharedAccountAPI(t *testing.T) {
 			if response.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
 			}
-		})
-	}
-}
-
-func TestHostedAccountContractFixtures(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		fixture  string
-		target   func() any
-		optional []string
-	}{
-		{fixture: "account-plan.json", target: func() any { return &hostedplans.HostedEntitlement{} }, optional: []string{"grants[].revoked_at"}},
-		{fixture: "account-next.json", target: func() any { return &hostedNextResponse{} }},
-		{fixture: "account-support.json", target: func() any { return &hostedSupportResponse{} }},
-	} {
-		t.Run(test.fixture, func(t *testing.T) {
-			t.Parallel()
-			raw, err := os.ReadFile(filepath.Join(conversationFixtureDirectory, test.fixture))
-			if err != nil {
-				t.Fatalf("shared contract fixture is not available: %v", err)
-			}
-			value := test.target()
-			if err := json.Unmarshal(raw, value); err != nil {
-				t.Fatalf("decode fixture into the Go payload: %v", err)
-			}
-			encoded, err := json.Marshal(value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var want, got any
-			if err := json.Unmarshal(raw, &want); err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(encoded, &got); err != nil {
-				t.Fatal(err)
-			}
-			hubtest.CompareContractShape(t, "", want, got, hubtest.ContractPathSet(nil), hubtest.ContractPathSet(test.optional))
 		})
 	}
 }

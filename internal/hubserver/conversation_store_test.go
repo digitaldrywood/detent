@@ -64,6 +64,40 @@ func (f conversationFixture) create(t *testing.T, record conversationRecord) con
 	return record
 }
 
+func prepareRecordTestPayload(t *testing.T, f conversationFixture, record conversationRecord, values ...[]byte) context.Context {
+	t.Helper()
+	contents := make([][]byte, 0, len(values))
+	for _, raw := range values {
+		content, err := messageContent(conversationMessageRecord{Data: raw})
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents = append(contents, content)
+	}
+	ctx, err := f.store.PreparePayloads(t.Context(), string(record.OrganizationID), contents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx
+}
+
+func prepareTestConversationRecord(t *testing.T, store *conversationStore, record conversationRecord) context.Context {
+	t.Helper()
+	raw, err := recordPayload(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := messageContent(conversationMessageRecord{Data: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := store.PreparePayloads(t.Context(), string(record.OrganizationID), content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx
+}
+
 func TestConversationStoreCreateReadAndList(t *testing.T) {
 	t.Parallel()
 	f := newConversationFixture(t)

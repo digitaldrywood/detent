@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -225,7 +226,15 @@ func requireNativeError(t *testing.T, response *httptest.ResponseRecorder, statu
 
 func TestConversationAPICreate(t *testing.T) {
 	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
+	var sink conversationLogSink
+	f := newConversationAPIFixtureConfig(t, nil, Config{Logger: slog.New(slog.NewJSONHandler(&sink, nil))})
+	t.Cleanup(func() {
+		for _, secret := range []string{"Fix the login bug", "with details", f.token} {
+			if strings.Contains(sink.text(), secret) {
+				t.Fatal("conversation logs contain private message content or an API credential")
+			}
+		}
+	})
 	tests := []struct {
 		name      string
 		body      map[string]any

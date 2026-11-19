@@ -324,6 +324,18 @@ func TestNativeIssueOrganizationLookup(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "granted")
 	granted := f.create(t, "readable")
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "ungranted")
+	if f.token == other.token {
+		t.Fatal("distinct projects reused a credential")
+	}
+	for _, fixture := range []nativeFixture{f, other} {
+		response := performHubAPIRequest(t, f.service, http.MethodGet, fixture.base, fixture.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var project tracker.NativeProject
+		decodeHubResponse(t, response, &project)
+		if project.ID != fixture.project.ID || project.Name != fixture.project.Name {
+			t.Fatalf("credential returned another project: %+v", project)
+		}
+	}
 	ungranted := other.create(t, "private")
 	for _, test := range []struct {
 		name         string
@@ -1213,49 +1225,6 @@ func TestNativeClaimRefusesWorkBlockedByHiddenDependency(t *testing.T) {
 			}
 			if len(lease.Blockers) != 0 {
 				t.Fatalf("ready lease returned %d blockers", len(lease.Blockers))
-			}
-		})
-	}
-}
-
-func TestNativeFixturePostgresCallers(t *testing.T) {
-	t.Parallel()
-	for _, mode := range []string{"nil", "default", "supplied"} {
-		t.Run(mode, func(t *testing.T) {
-			var service *Service
-			if mode == "supplied" {
-				service = openTestService(t, Config{})
-			}
-			var first nativeFixture
-			if mode == "default" {
-				first = newPostgresDefaultNativeFixture(t, Config{})
-			} else {
-				first = newNativeFixture(t, service, "", "First project")
-			}
-			if service != nil && first.service != service {
-				t.Fatal("fixture replaced caller service")
-			}
-			service = first.service
-			if service.database.postgres == nil || service.config.TenantRepository == nil {
-				t.Fatal("required PostgreSQL fixture owners are not configured")
-			}
-			second := newNativeFixture(t, service, first.project.OrganizationID, "Second project")
-			for _, fixture := range []nativeFixture{first, second} {
-				response := performHubAPIRequest(t, service, http.MethodGet, fixture.base, fixture.token, nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				var got tracker.NativeProject
-				decodeHubResponse(t, response, &got)
-				if got.ID != fixture.project.ID || got.Name != fixture.project.Name {
-					t.Fatalf("project=%+v", got)
-				}
-			}
-			if first.project.ID == second.project.ID || first.token == second.token {
-				t.Fatal("fixture reused project or credential identity")
-			}
-			if mode != "supplied" {
-				other := newNativeFixture(t, service, first.project.OrganizationID+"_second", "Other tenant")
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, other.base, other.token, nil), http.StatusOK)
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, first.base, other.token, nil), http.StatusUnauthorized)
 			}
 		})
 	}

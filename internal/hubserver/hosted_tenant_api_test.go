@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -26,7 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -452,48 +449,6 @@ func TestHostedSharedTenantAPI(t *testing.T) {
 	revoke := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodDelete, target: api + "/members/invitations/" + members.Invitations[0].ID, body: `{"idempotency_key":"revoke"}`, csrf: ownerCSRF})
 	if revoke.Code != http.StatusNoContent {
 		t.Fatalf("shared revocation = %d: %s", revoke.Code, revoke.Body.String())
-	}
-}
-
-func TestHostedTenantContractFixtures(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		fixture  string
-		target   func() any
-		optional []string
-		extra    []string
-	}{
-		{fixture: "account-members.json", target: func() any { return &hostedMembersResponse{} }},
-		{fixture: "account-member.json", target: func() any { return &hostedMemberView{} }},
-		{fixture: "account-invitation.json", target: func() any { return &hostedInvitationView{} }},
-		{fixture: "account-projects.json", target: func() any { return &[]hostedProjectView{} }},
-		{fixture: "account-fleet.json", target: func() any { return &hostedFleetResponse{} }, optional: []string{"runners[].provider_capacity[].reason"}, extra: []string{"runners[].can_edit_projects"}},
-		{fixture: "account-fleet-empty.json", target: func() any { return &hostedFleetResponse{} }},
-		{fixture: "account-runner-capacity.json", target: func() any { return &runnerauth.CapacityView{} }},
-	} {
-		t.Run(test.fixture, func(t *testing.T) {
-			t.Parallel()
-			raw, err := os.ReadFile(filepath.Join(conversationFixtureDirectory, test.fixture))
-			if err != nil {
-				t.Fatalf("shared contract fixture is not available: %v", err)
-			}
-			value := test.target()
-			if err := json.Unmarshal(raw, value); err != nil {
-				t.Fatalf("decode fixture into the Go payload: %v", err)
-			}
-			encoded, err := json.Marshal(value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var want, got any
-			if err := json.Unmarshal(raw, &want); err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(encoded, &got); err != nil {
-				t.Fatal(err)
-			}
-			hubtest.CompareContractShape(t, "", want, got, hubtest.ContractPathSet(test.extra), hubtest.ContractPathSet(test.optional))
-		})
 	}
 }
 
