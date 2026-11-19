@@ -206,8 +206,11 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			<-finished
 		})
 		testenv.WaitUntil(t, ctx, func() error {
+			if _, err := blocker.ExecContext(ctx, "SELECT pg_stat_clear_snapshot()"); err != nil {
+				return err
+			}
 			var cancelled bool
-			if err := f.admin.QueryRowContext(ctx, `SELECT coalesce(bool_or(pg_cancel_backend(pid)),false) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%FROM native_work_item_search%'`).Scan(&cancelled); err != nil {
+			if err := blocker.QueryRowContext(ctx, `SELECT coalesce(bool_or(pg_cancel_backend(pid)),false) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%FROM native_work_item_search%'`).Scan(&cancelled); err != nil {
 				return err
 			}
 			if !cancelled {
