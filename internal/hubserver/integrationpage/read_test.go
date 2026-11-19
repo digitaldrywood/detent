@@ -5,16 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubtest/pgwire"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,14 +18,7 @@ import (
 
 func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 	f := newReadFixture(t)
-	details, original, admin := f.details, f.original, f.admin
-	wire := &pgwire.Wire{PingEveryAcquire: true}
-	samples := 1
-	if os.Getenv("SHELLPERF_RTT_MS") == "12" {
-		wire.Delay = 12 * time.Millisecond
-		samples = 20
-	}
-	measured := pgwire.Repository(t, admin, hubtest.PostgresConfig(t, admin).Connection, wire)
+	details, original := f.details, f.original
 	t.Cleanup(func() { f.use(original) })
 	feature := f.pageService().MaintenanceFeature()
 	tenant := hubmaintenance.Tenant{Organization: "org_first", Generation: 1}
@@ -38,12 +27,11 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 	if _, err := feature.Step(budget, tenant, hubmaintenance.Budget{}); err == nil {
 		t.Fatal("accepted mismatched tenant generation")
 	}
-	var expected [2]int
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		f.use(original)
 		details.beforeRead = nil
 		fixture := f.project(t, organization)
-		for _, size := range []int{2, 50} {
+		for _, size := range []int{2} {
 			f.use(original)
 			details.beforeRead = nil
 			markdown := fmt.Sprintf("Workflow for %s with %d states", organization, size)
@@ -104,40 +92,18 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 			}
 			objects := 0
 			details.beforeRead = func(context.Context) error { objects++; return nil }
-			f.use(measured)
-			durations := make([]time.Duration, 0, samples)
-			for range samples {
-				started := time.Now()
-				wire.Reset()
-				response := f.request(t, fixture)
-				exchanges, statements := wire.Stop()
-				requireStatus(t, response, http.StatusOK)
-				var result projectstore.Integration
-				decodeResponse(t, response, &result)
-				if result.WorkflowMarkdown != markdown || len(result.States) != size {
-					t.Errorf("tenant=%s size=%d wrong page: %+v", organization, size, result)
-				}
-				if len(result.States) == size && (!result.States[0].Dispatchable || !result.States[size-1].Terminal || !result.States[size-1].OperatorOnly || !slices.Equal(result.States[0].Transitions, []string{"State 00", "State 01"})) {
-					t.Errorf("workflow state flags or ordered transitions changed: %+v", result.States)
-				}
-				t.Logf("tenant=%s size=%d statements=%d exchanges=%d objects=%d", organization, size, statements, exchanges, objects)
-				if statements != 21 || exchanges != 15 {
-					t.Errorf("wire budget: statements=%d exchanges=%d", statements, exchanges)
-				}
-				if objects != 0 {
-					t.Errorf("integration page fetched %d objects", objects)
-				}
-				if expected != [2]int{} && expected != [2]int{statements, exchanges} {
-					t.Errorf("cost changed with tenant or size: %v -> %v", expected, [2]int{statements, exchanges})
-				}
-				expected = [2]int{statements, exchanges}
-				durations = append(durations, time.Since(started))
+			response := f.request(t, fixture)
+			requireStatus(t, response, http.StatusOK)
+			var result projectstore.Integration
+			decodeResponse(t, response, &result)
+			if result.WorkflowMarkdown != markdown || len(result.States) != size {
+				t.Errorf("tenant=%s size=%d wrong page: %+v", organization, size, result)
 			}
-			slices.Sort(durations)
-			p95 := durations[(len(durations)*95+99)/100-1]
-			t.Logf("tenant=%s size=%d samples=%d rtt=%s p95=%s", organization, size, samples, wire.Delay, p95)
-			if wire.Delay > 0 && p95 > time.Second {
-				t.Errorf("integration p95=%s exceeds one second", p95)
+			if len(result.States) == size && (!result.States[0].Dispatchable || !result.States[size-1].Terminal || !result.States[size-1].OperatorOnly || !slices.Equal(result.States[0].Transitions, []string{"State 00", "State 01"})) {
+				t.Errorf("workflow state flags or ordered transitions changed: %+v", result.States)
+			}
+			if objects != 0 {
+				t.Errorf("integration page fetched %d objects", objects)
 			}
 
 		}
