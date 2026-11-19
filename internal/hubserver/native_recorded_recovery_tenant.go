@@ -100,7 +100,7 @@ func (s *Service) planRecordedRecoveryTenant(ctx context.Context, scope hubscope
 		return nil, err
 	}
 	prior, valid := recordedBlockedLane(issue, attempt, report, transition)
-	if !valid || issueContractWorkerHumanAction(row, issue) != nil || recordedHumanHold(attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
+	if !valid || issueContractWorkerHumanAction(row, issue) != nil || recordedHumanHold(attempt.TerminalFailure, attempt.Disposition, attempt.CompletionBody, transition.Data.ReasonDetail) {
 		return nil, corestore.ErrRevisionConflict
 	}
 	var bound policystore.LeasePolicy
@@ -181,7 +181,7 @@ func (s *Service) recordedWorkerMachineHold(ctx context.Context, scope hubscope.
 	if err != nil {
 		return nil, err
 	}
-	if recordedHumanHold(run.Disposition, run.CompletionBody, request.ReasonDetail) {
+	if recordedHumanHold(run.TerminalFailure, run.Disposition, run.CompletionBody, request.ReasonDetail) {
 		return nil, nil
 	}
 	dependencies, valid := recordedRecoveryDependencies(run.Disposition, string(scope.Project))
@@ -268,7 +268,7 @@ func recordedBlockedLane(issue tracker.NativeIssue, attempt tracker.NativeAttemp
 	}
 }
 
-func recordedHumanHold(disposition *tracker.NativeDisposition, texts ...string) bool {
+func recordedHumanHold(failure *tracker.NativeTerminalFailure, disposition *tracker.NativeDisposition, texts ...string) bool {
 	if disposition != nil && disposition.ReasonCode == "permission_wait" {
 		return true
 	}
@@ -282,6 +282,7 @@ func recordedHumanHold(disposition *tracker.NativeDisposition, texts ...string) 
 			continue
 		}
 		if signal.ReasonCode == "permission_wait" || signal.Fields["human_action_source"] == "issue_contract" ||
+			len(signal.Blockers) != 0 && !recordedMachineFailure(failure, nil) ||
 			slices.ContainsFunc(signal.Blockers, func(blocker workpad.Blocker) bool { return blocker.Owner == workpad.BlockerOwnerHuman }) {
 			return true
 		}

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -1263,10 +1264,12 @@ type hubOwnedRecoverySource struct {
 	t       *testing.T
 	baseSHA string
 	current bool
+	calls   int
 }
 
 func (s *hubOwnedRecoverySource) CommitOnCurrentBase(_ context.Context, repository, branch, commit string) (bool, error) {
 	s.t.Helper()
+	s.calls++
 	if repository != "example-org/example-project" || branch != "develop" || commit != s.baseSHA {
 		s.t.Errorf("unexpected source proof: %q %q %q", repository, branch, commit)
 		return false, nil
@@ -1303,6 +1306,18 @@ func TestHubOwnedBlockedRecoveryVerifiesCurrentBase(t *testing.T) {
 		if _, err := w.CreateVersion(t.Context(), versionRow); err != nil {
 			return err
 		}
+		if err := w.LinkIssue(t.Context(), eventstore.Link{
+			OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID,
+			ChangeID: changeID, CreatedAt: f.now,
+		}); err != nil {
+			return err
+		}
+		if err := w.ReplaceRunnerCheckoutReport(t.Context(), runnerstore.CheckoutReport{
+			OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, RunnerID: f.runner.binding.RunnerID,
+			Repository: repository, ReportedAt: f.now,
+		}); err != nil {
+			return err
+		}
 		return w.PutPRPublication(t.Context(), eventstore.NativePRPublication{
 			OrganizationID: f.project.OrganizationID, VersionID: version.ID, ChangeID: version.ChangeID, HeadSHA: version.HeadSHA,
 			Repository: repository, BaseRef: "develop", Branch: "example-branch", PolicyID: f.policy, RecorderAttemptID: f.attempt,
@@ -1326,7 +1341,12 @@ func TestHubOwnedBlockedRecoveryVerifiesCurrentBase(t *testing.T) {
 		t.Fatalf("unverified base was released: %s", response.Body.String())
 	}
 	source.current = true
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusOK)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+	after := f.reload(t)
+	if after.State != "Todo" || after.Revision != blocked.Revision+1 {
+		t.Fatalf("refreshed base left state=%q revision=%d after %d source probes: %s", after.State, after.Revision, source.calls, response.Body.String())
+	}
+	requireNativeStatus(t, response, http.StatusOK)
 }
 
 func TestHubOwnedBlockedRecoveryAllowsOnlyOneClaim(t *testing.T) {
