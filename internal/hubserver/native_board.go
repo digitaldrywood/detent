@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -60,44 +59,4 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 			s.config.Logger.ErrorContext(ctx, "refresh native board card", attributes...)
 		}
 	}
-}
-
-func nativeBoardStatusLine(card tracker.NativeBoardCard) string {
-	if card.Issue.Terminal {
-		return card.Issue.State
-	}
-	blockers := 0
-	number := 0
-	for _, blocker := range card.Issue.Blockers {
-		if !blocker.Terminal {
-			blockers++
-			number = blocker.Number
-		}
-	}
-	if blockers > 0 {
-		if blockers == 1 && number > 0 {
-			return "Waiting on #" + strconv.Itoa(number)
-		}
-		return "Waiting on " + strconv.Itoa(blockers)
-	}
-	if card.Execution != nil {
-		if label := nativeBoardExecutionLabel(card.Execution.Stage); label != "" {
-			return label
-		}
-		if card.Execution.Running {
-			return "Running"
-		}
-		if card.Attempt == nil || card.Attempt.ID != card.Execution.ID {
-			return ""
-		}
-	}
-	if card.Attempt != nil {
-		switch card.Attempt.Status {
-		case "failed":
-			return "Attempt failed"
-		case "interrupted":
-			return "Interrupted"
-		}
-	}
-	return ""
 }

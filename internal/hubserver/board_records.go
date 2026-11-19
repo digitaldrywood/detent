@@ -581,50 +581,6 @@ func (s *Service) hydrateBoardRecordActorNames(ctx context.Context, organization
 	return nil
 }
 
-func boardModelCard(scope hubscope.NativeScope, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
-	if row.PageIssue == nil {
-		return tracker.NativeBoardCard{}, viewstore.ErrInvalidView
-	}
-	issue := *row.PageIssue
-	if scope.Credential.HostedRole == "reporter" {
-		facts := row.ReporterRelations
-		if facts == nil {
-			return tracker.NativeBoardCard{}, viewstore.ErrInvalidView
-		}
-		issue.ReporterStatus = facts.ReporterStatus
-		issue.Dependencies, issue.Blockers, issue.Dependents, issue.Related = facts.Dependencies, facts.Blockers, facts.Dependents, facts.Related
-		issue.DependencyReady, issue.BlockedReason, issue.UnblocksReason = facts.DependencyReady, facts.BlockedReason, facts.UnblocksReason
-	}
-	issue = boardIssueCollections(issue)
-	card := tracker.NativeBoardCard{Issue: issue, Attempt: row.Display.Attempt, Execution: row.Display.Execution, Change: row.Display.Change}
-	card.StatusLine = nativeBoardStatusLine(card)
-	if !scope.ReporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
-		card.Change = nil
-		card.Issue.Change, card.Issue.ListChange, card.Issue.PullRequest = nil, nil, nil
-	}
-	return card, nil
-}
-
-func boardIssueCollections(issue tracker.NativeIssue) tracker.NativeIssue {
-	for _, values := range []*[]string{&issue.Labels, &issue.Assignees} {
-		if *values == nil {
-			*values = []string{}
-		}
-	}
-	if issue.Dependencies == nil {
-		issue.Dependencies = []tracker.NativeWorkItemID{}
-	}
-	for _, values := range []*[]tracker.NativeDependency{&issue.Blockers, &issue.Dependents, &issue.Related} {
-		if *values == nil {
-			*values = []tracker.NativeDependency{}
-		}
-	}
-	if issue.ExternalReferences == nil {
-		issue.ExternalReferences = []tracker.ExternalReference{}
-	}
-	return issue
-}
-
 func (s *Service) boardAccessVersion(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (string, error) {
 	authority := s.accessAuthority(scope, false)
 	revisions, err := r.BoardAccessRevisions(ctx, authority.CredentialID, authority.UserID)

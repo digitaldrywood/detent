@@ -290,7 +290,7 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 	}
 	view := workBoardView{Projects: assembled.Projects, Cards: assembled.Cards, Lanes: []boardview.Lane{}}
 	for i := range view.Cards {
-		view.Cards[i].Issue = boardIssueCollections(view.Cards[i].Issue)
+		view.Cards[i].Issue = boardview.IssueCollections(view.Cards[i].Issue)
 		view.Cards[i].StatusLine = nativeBoardStatusLine(view.Cards[i])
 	}
 	raw, err := json.Marshal([]any{scope.Organization, scope.Credential.ID, selection.UserID, scope.Credential.HostedRole, entry.revisions, scope.Credential.EntryKey})
