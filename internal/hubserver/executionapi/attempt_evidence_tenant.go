@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
@@ -14,16 +14,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope hubscope.NativeScope, input attachment.EvidenceRequest) error {
+func (d EvidenceDeps) CheckAttachmentEvidenceTenant(ctx context.Context, scope hubscope.NativeScope, input attachment.EvidenceRequest) error {
 	if input.LeaseID == "" || input.FencingToken <= 0 {
 		return hubapi.NativeStaleExecution("Evidence producer lease is no longer current")
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	if _, err := s.validateRunnerLeaseTenant(ctx, scope, input.LeaseID, input.FencingToken); err != nil {
-		return nativeStaleLease(err, "Evidence producer lease is no longer current")
+	if _, err := d.ValidateLease(ctx, scope, input.LeaseID, input.FencingToken); err != nil {
+		return d.StaleLease(err, "Evidence producer lease is no longer current")
 	}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		item, err := r.WorkItem(ctx, scope.Project, input.WorkItemID)
 		if err != nil {
 			return hubapi.ProjectRecordError(err)
@@ -35,7 +35,7 @@ func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope hubsc
 		if err != nil {
 			return hubapi.ProjectRecordError(err)
 		}
-		now := s.config.Clock().UTC()
+		now := d.Now().UTC()
 		if lease.OrganizationID != scope.Organization || lease.IssueID != item.ID || lease.FencingToken != int64(input.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
 			return hubapi.NativeStaleExecution("Evidence producer lease is no longer current")
 		}
@@ -46,7 +46,7 @@ func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope hubsc
 		if attempt.OrganizationID != scope.Organization || attempt.IssueID != item.ID || attempt.LeaseID != lease.LeaseID || attempt.FencingToken != lease.FencingToken || attempt.Status != "running" {
 			return hubapi.NativeStaleExecution("Evidence producer is not the running attempt")
 		}
-		if s.database.plansService().Plans() != nil {
+		if d.PlansEnabled() {
 			if _, err := r.CollaborationBytes(ctx); err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
 					return &hubapi.NativeError{Code: "storage_owner_unavailable", Message: "Evidence upload accounting is unavailable with PostgreSQL storage", Status: http.StatusServiceUnavailable, PublicMessage: true}
@@ -62,7 +62,7 @@ func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope hubsc
 	return nil
 }
 
-func (s *Service) publishEvidenceCompletion(ctx context.Context, w tenantstore.Writer, publication hubrecords.AttachmentEvidencePublication) error {
+func PublishEvidenceCompletion(ctx context.Context, w tenantstore.Writer, publication hubrecords.AttachmentEvidencePublication) error {
 	if _, err := w.AdjustCollaborationBytes(ctx, publication.Bytes, math.MaxInt64); err != nil {
 		return err
 	}
