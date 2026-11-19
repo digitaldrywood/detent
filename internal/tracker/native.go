@@ -566,7 +566,13 @@ type NativeClaim struct {
 	LabelExclude            []string                  `json:"label_exclude,omitempty"`
 }
 
+type NativeClaimDependencyFacts struct {
+	Blockers        []NativeDependency `json:"blockers"`
+	DependencyReady bool               `json:"dependency_ready"`
+}
+
 type NativeLease struct {
+	*NativeClaimDependencyFacts
 	RunDetailBatching   bool                          `json:"run_detail_batching,omitempty"`
 	IsolationPolicy     *isolation.Policy             `json:"isolation_policy,omitempty"`
 	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`

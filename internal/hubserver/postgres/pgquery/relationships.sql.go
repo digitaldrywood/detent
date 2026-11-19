@@ -454,16 +454,19 @@ WITH requested AS (
     FROM requested
     JOIN issues source ON source.organization_id=$1 AND source.project_id=$3 AND source.native_id=requested.native_id
     JOIN issue_dependencies d ON d.organization_id=source.organization_id AND d.blocker_project_id=source.project_id AND d.blocker_issue_id=source.id
+    WHERE NOT $4::boolean
     UNION ALL
     SELECT source.native_id, 'related'::text, 'related'::text, r.second_project_id, r.second_issue_id, r.created_at
     FROM requested
     JOIN issues source ON source.organization_id=$1 AND source.project_id=$3 AND source.native_id=requested.native_id
     JOIN issue_relationships r ON r.organization_id=source.organization_id AND r.first_project_id=source.project_id AND r.first_issue_id=source.id
+    WHERE NOT $4::boolean
     UNION ALL
     SELECT source.native_id, 'related'::text, 'related'::text, r.first_project_id, r.first_issue_id, r.created_at
     FROM requested
     JOIN issues source ON source.organization_id=$1 AND source.project_id=$3 AND source.native_id=requested.native_id
     JOIN issue_relationships r ON r.organization_id=source.organization_id AND r.second_project_id=source.project_id AND r.second_issue_id=source.id
+    WHERE NOT $4::boolean
 )
 SELECT c.work_item_id,c.relationship_type,c.direction,c.related_project_id,target.native_id,c.created_at,target.number,target.title,target.workflow_state_name,COALESCE(states.terminal,false),COALESCE(states.dispatchable,false),target.actor_principal_id,COALESCE(organizations.slug,'') AS organization_slug,projects.slug AS project_slug,
     COALESCE(closed.closed_at,'0001-01-01 00:00:00+00'::timestamptz) AS closed_at,
@@ -494,6 +497,7 @@ type RelationshipBatchParams struct {
 	OrganizationID tracker.OrganizationID
 	WorkItemIds    []string
 	ProjectID      tracker.ProjectID
+	BlockersOnly   bool
 }
 
 type RelationshipBatchRow struct {
@@ -517,7 +521,12 @@ type RelationshipBatchRow struct {
 }
 
 func (q *Queries) RelationshipBatch(ctx context.Context, arg RelationshipBatchParams) ([]RelationshipBatchRow, error) {
-	rows, err := q.db.Query(ctx, relationshipBatch, arg.OrganizationID, arg.WorkItemIds, arg.ProjectID)
+	rows, err := q.db.Query(ctx, relationshipBatch,
+		arg.OrganizationID,
+		arg.WorkItemIds,
+		arg.ProjectID,
+		arg.BlockersOnly,
+	)
 	if err != nil {
 		return nil, err
 	}

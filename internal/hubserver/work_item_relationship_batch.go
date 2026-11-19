@@ -131,21 +131,7 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 						edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.Project
 					}
 				}
-				link := tracker.NativeDependency{
-					Dispatchable: relation.Dispatchable,
-					Number:       relation.Number,
-					Title:        relation.Title,
-					Identifier:   string(relation.RelatedProjectID) + "#" + strconv.Itoa(relation.Number),
-					ID:           relation.RelatedWorkItemID,
-					ProjectID:    relation.RelatedProjectID,
-					State:        relation.State,
-					Terminal:     relation.Terminal,
-					ClosedAt:     relation.ClosedAt,
-					StartedAt:    relation.StartedAt,
-				}
-				if relation.OrganizationSlug != "" && relation.ProjectSlug != "" && s.config.Hosted != nil {
-					link.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
-				}
+				link := s.nativeRelationshipLink(relation)
 				switch relation.Type {
 				case "dependency":
 					switch relation.Direction {
@@ -169,4 +155,66 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 		}
 	}
 	return nil
+}
+
+func (s *Service) nativeRelationshipLink(relation corestore.Relationship) tracker.NativeDependency {
+	link := tracker.NativeDependency{
+		Dispatchable: relation.Dispatchable,
+		Number:       relation.Number,
+		Title:        relation.Title,
+		Identifier:   string(relation.RelatedProjectID) + "#" + strconv.Itoa(relation.Number),
+		ID:           relation.RelatedWorkItemID,
+		ProjectID:    relation.RelatedProjectID,
+		State:        relation.State,
+		Terminal:     relation.Terminal,
+		ClosedAt:     relation.ClosedAt,
+		StartedAt:    relation.StartedAt,
+	}
+	if relation.OrganizationSlug != "" && relation.ProjectSlug != "" && s.config.Hosted != nil {
+		link.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
+	}
+	return link
+}
+
+func readNativeClaimBlockerFacts(ctx context.Context, r tenantstore.Reader, project tracker.ProjectID, ids []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	batch, ok := r.(tenantstore.WorkItemBlockerBatchReader)
+	if !ok {
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
+	}
+	return batch.WorkItemBlockerFacts(ctx, project, ids)
+}
+
+func (s *Service) visibleNativeClaimBlockers(ctx context.Context, scope hubscope.NativeScope, facts []tenantstore.WorkItemRelationshipFact) (map[tracker.NativeWorkItemID][]tracker.NativeDependency, error) {
+	projects := map[tracker.ProjectID]bool{}
+	for _, fact := range facts {
+		if fact.RelatedProjectVisible {
+			projects[fact.Relationship.RelatedProjectID] = true
+		}
+	}
+	allowed, err := s.relationshipProjectAccess(ctx, scope, projects)
+	if err != nil {
+		return nil, err
+	}
+	byItem := map[tracker.NativeWorkItemID][]tracker.NativeDependency{}
+	for _, fact := range facts {
+		relation := fact.Relationship
+		if !allowed[relation.RelatedProjectID] {
+			continue
+		}
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
+			continue
+		}
+		byItem[fact.WorkItemID] = append(byItem[fact.WorkItemID], s.nativeRelationshipLink(relation))
+	}
+	for _, blockers := range byItem {
+		slices.SortFunc(blockers, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
+	}
+	return byItem, nil
+}
+
+func nativeClaimDependenciesReady(blockers []tracker.NativeDependency) bool {
+	return !slices.ContainsFunc(blockers, func(blocker tracker.NativeDependency) bool { return !blocker.Terminal })
 }
