@@ -235,8 +235,10 @@ type WorkItemBlockerCursor struct {
 
 type ProgressDependency struct {
 	WorkItemReference
-	IssueID   int64
-	CreatedAt time.Time
+	IssueID           int64
+	CreatedAt         time.Time
+	NativeSourceKey   *string
+	WorkflowStateName *string
 }
 
 type WorkItemBlocker struct {

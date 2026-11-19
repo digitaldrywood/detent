@@ -280,6 +280,13 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if err != nil || !found || !reflect.DeepEqual(read, published) {
 				t.Fatalf("read = %+v, found %v, %v", read, found, err)
 			}
+			get := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+request.IssueID+"/progress?policy="+request.PolicyID+"&instance="+request.Instance, f.token, nil)
+			requireNativeStatus(t, get, http.StatusOK)
+			var view nativeProgressView
+			decodeHubResponse(t, get, &view)
+			if !reflect.DeepEqual(view.Record, &published) {
+				t.Fatalf("GET lost the retained decision without a POST digest: %+v", view.Record)
+			}
 			var comments int
 			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, scope.Organization, scope.Project, issue.WorkItemID).Scan(&comments); err != nil {
 				t.Fatal(err)
@@ -771,7 +778,7 @@ func TestPostgresProgressLocksGraphBeforeScopedEndpoints(t *testing.T) {
 			progressResult <- repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 				probe := &progressBlockerProbeWriter{Writer: w, expected: expected, seen: map[int64]bool{}}
 				started := time.Now()
-				removals, err := owner.lockProgressRelationships(ctx, probe, progresscheck.Record{ProjectID: "prj_first", IssueID: "wi_primary", DefectIssueID: "wi_next"})
+				removals, err := owner.lockProgressRelationships(ctx, probe, progresscheck.Record{ProjectID: "prj_first", IssueID: "wi_primary", DefectIssueID: "wi_next"}, corestore.WorkItemReference{})
 				if err != nil {
 					return err
 				}

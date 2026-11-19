@@ -39,10 +39,10 @@ const nativeProgressDependencySourcePrefix = "progress-check:"
 
 type nativeProgressReceipt struct {
 	progresscheck.Record
-	CleanupReplay *nativeProgressCleanupReplay `json:"cleanup_replay,omitempty"`
+	Replay *nativeProgressReplay `json:"cleanup_replay,omitempty"`
 }
 
-type nativeProgressCleanupReplay struct {
+type nativeProgressReplay struct {
 	RequestAfterCleanupID string `json:"request_after_cleanup_id"`
 	PublicationHash       string `json:"publication_hash"`
 }
@@ -150,22 +150,48 @@ func (o nativeProgressOwner) Load(ctx context.Context, project, issue, id string
 	return receipt.Record, true, nil
 }
 
-func (o nativeProgressOwner) replayAfterCleanup(ctx context.Context, originalID, currentID string, sequence int64) (progresscheck.Record, error) {
-	conflict := &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+func (o nativeProgressOwner) replayAfterCleanup(ctx context.Context, originalID, currentID string) (progresscheck.Record, error) {
 	if o.publicationHash == "" || len(originalID) != len(currentID) {
-		return progresscheck.Record{}, conflict
+		return progresscheck.Record{}, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+	}
+	record, found, err := o.retainedPublication(ctx, originalID)
+	if err == nil && !found {
+		err = &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+	}
+	return record, err
+}
+
+func (o nativeProgressOwner) retainedPublication(ctx context.Context, originalID string) (progresscheck.Record, bool, error) {
+	if o.publicationHash == "" {
+		return o.Load(ctx, o.request.ProjectID, o.request.IssueID, originalID)
 	}
 	receipt, found, err := o.loadReceipt(ctx, o.request.ProjectID, o.request.IssueID, originalID)
-	if err != nil {
-		return progresscheck.Record{}, err
+	if err != nil || !found {
+		return progresscheck.Record{}, false, err
 	}
-	if !found || receipt.CleanupReplay == nil || receipt.CleanupReplay.RequestAfterCleanupID != currentID || receipt.CleanupReplay.PublicationHash != o.publicationHash {
-		return progresscheck.Record{}, conflict
+	if receipt.Replay == nil || receipt.Replay.PublicationHash != o.publicationHash {
+		return progresscheck.Record{}, false, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+	}
+	current, sequence, err := o.service.nativeProgressRequestTenant(ctx, o.scope, o.request.IssueID, o.request.PolicyID, o.request.Instance)
+	if err != nil {
+		return progresscheck.Record{}, false, err
+	}
+	currentID, err := current.ID()
+	if err != nil {
+		return progresscheck.Record{}, false, err
+	}
+	if receipt.Replay.RequestAfterCleanupID != currentID {
+		return progresscheck.Record{}, false, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
+	}
+	if originalID == currentID {
+		if err := receipt.Record.Validate(current); err != nil {
+			return progresscheck.Record{}, false, err
+		}
 	}
 	if err := o.authorizePublication(ctx, &sequence); err != nil {
-		return progresscheck.Record{}, err
+		return progresscheck.Record{}, false, err
 	}
-	return receipt.Record, nil
+	return receipt.Record, true, nil
 }
 
 func (o nativeProgressOwner) loadReceipt(ctx context.Context, project, issue, id string) (nativeProgressReceipt, bool, error) {
@@ -236,7 +262,7 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 	return o.publishTenant(ctx, record)
 }
 
-func (o nativeProgressOwner) lockProgressRelationships(ctx context.Context, writer tenantstore.Writer, record progresscheck.Record) ([]corestore.Relationship, error) {
+func (o nativeProgressOwner) lockProgressRelationships(ctx context.Context, writer tenantstore.Writer, record progresscheck.Record, survivor corestore.WorkItemReference) ([]corestore.Relationship, error) {
 	if err := writer.LockRelationshipGraph(ctx); err != nil {
 		return nil, err
 	}
@@ -265,6 +291,10 @@ func (o nativeProgressOwner) lockProgressRelationships(ctx context.Context, writ
 	}
 	projects := []tracker.ProjectID{o.scope.Project}
 	items := []corestore.WorkItemReference{{ProjectID: o.scope.Project, WorkItemID: tracker.NativeWorkItemID(record.IssueID)}}
+	if survivor.WorkItemID != "" {
+		projects = append(projects, survivor.ProjectID)
+		items = append(items, survivor)
+	}
 	for _, relationship := range removals {
 		projects = append(projects, relationship.RelatedProjectID)
 		items = append(items, corestore.WorkItemReference{ProjectID: relationship.RelatedProjectID, WorkItemID: relationship.RelatedWorkItemID})
@@ -315,7 +345,7 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 			return progresscheck.Record{}, err
 		}
 		if id != record.RequestID {
-			return o.replayAfterCleanup(ctx, record.RequestID, id, sequence)
+			return o.replayAfterCleanup(ctx, record.RequestID, id)
 		}
 		if o.guardRevision != nil {
 			o.guardRevision = &sequence
@@ -346,7 +376,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 			return progresscheck.Record{}, err
 		}
 		if currentID != record.RequestID {
-			return o.replayAfterCleanup(ctx, record.RequestID, currentID, revision)
+			return o.replayAfterCleanup(ctx, record.RequestID, currentID)
 		}
 		if revision != *o.guardRevision {
 			return progresscheck.Record{}, corestore.ErrSerializationFailure
@@ -376,7 +406,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 	if err := o.authorizePublication(ctx, nil); err != nil {
 		return progresscheck.Record{}, err
 	}
-	if retained, found, err := o.Load(ctx, record.ProjectID, record.IssueID, record.RequestID); err != nil {
+	if retained, found, err := o.retainedPublication(ctx, record.RequestID); err != nil {
 		return progresscheck.Record{}, err
 	} else if found {
 		return retained, nil
@@ -520,22 +550,20 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 		return progresscheck.Record{}, err
 	}
 	if currentRequestID != record.RequestID {
-		return o.replayAfterCleanup(ctx, record.RequestID, currentRequestID, snapshot.sequence)
+		return o.replayAfterCleanup(ctx, record.RequestID, currentRequestID)
 	}
 	if snapshot.sequence != expectedSequence {
 		return progresscheck.Record{}, corestore.ErrSerializationFailure
 	}
 	stored := nativeProgressReceipt{Record: record}
-	var completedEdge corestore.Relationship
-	if o.publicationHash != "" && snapshot.completedDependency.WorkItemID != "" {
+	if o.publicationHash != "" {
 		requestAfterCleanup := snapshot.request
 		requestAfterCleanup.Receipts = snapshot.receiptsAfterCleanup
 		id, err := requestAfterCleanup.ID()
 		if err != nil {
 			return progresscheck.Record{}, err
 		}
-		stored.CleanupReplay = &nativeProgressCleanupReplay{RequestAfterCleanupID: id, PublicationHash: o.publicationHash}
-		completedEdge = corestore.Relationship{OrganizationID: o.scope.Organization, ProjectID: o.scope.Project, WorkItemID: tracker.NativeWorkItemID(record.IssueID), RelatedProjectID: snapshot.completedDependency.ProjectID, RelatedWorkItemID: snapshot.completedDependency.WorkItemID, Type: "dependency", Direction: "blocked_by"}
+		stored.Replay = &nativeProgressReplay{RequestAfterCleanupID: id, PublicationHash: o.publicationHash}
 	}
 	raw, err := json.Marshal(stored)
 	if err != nil {
@@ -567,12 +595,22 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 		if defectMutation.plan.Create && defectMutation.plan.Comment.ID == "" && !defectMutation.plan.Existing {
 			lockRecord.DefectIssueID = ""
 		}
-		removals, err := o.lockProgressRelationships(ctx, writer, lockRecord)
+		removals, err := o.lockProgressRelationships(ctx, writer, lockRecord, snapshot.dependencies.surviving.WorkItemReference)
 		if err != nil {
 			return err
 		}
-		if stored.CleanupReplay != nil && !slices.Contains(removals, completedEdge) {
-			return corestore.ErrSerializationFailure
+		checkCompletion := func(want corestore.ProgressDependency) error {
+			dependencies, err := readNativeProgressDependencies(ctx, writer, o.scope.Project, tracker.NativeWorkItemID(record.IssueID))
+			if err != nil {
+				return err
+			}
+			if dependencies.latest.WorkItemReference != want.WorkItemReference || nativeProgressCompletionID(dependencies.latest) != nativeProgressCompletionID(want) {
+				return corestore.ErrSerializationFailure
+			}
+			return nil
+		}
+		if err := checkCompletion(snapshot.dependencies.latest); err != nil {
+			return err
 		}
 		if err := o.validateProgressLeaseWriter(ctx, writer); err != nil {
 			return err
@@ -604,13 +642,9 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 				return err
 			}
 		}
-		if stored.CleanupReplay != nil {
-			retained, err := writer.RelationshipExists(ctx, completedEdge)
-			if err != nil {
+		if stored.Replay != nil && (len(removals) > 0 || snapshot.dependencies.latest.WorkItemReference != snapshot.dependencies.surviving.WorkItemReference) {
+			if err := checkCompletion(snapshot.dependencies.surviving); err != nil {
 				return err
-			}
-			if retained {
-				return corestore.ErrSerializationFailure
 			}
 		}
 		_, err = writer.PutReceipt(ctx, receipt)
@@ -625,7 +659,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 		if authErr := o.authorizePublication(ctx, nil); authErr != nil {
 			return progresscheck.Record{}, errors.Join(fmt.Errorf("store progress decision receipt: %w", err), authErr)
 		}
-		retained, found, readErr := o.Load(ctx, record.ProjectID, record.IssueID, record.RequestID)
+		retained, found, readErr := o.retainedPublication(ctx, record.RequestID)
 		if readErr == nil && found {
 			return retained, nil
 		}
