@@ -1,4 +1,4 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
@@ -13,12 +13,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type nativeRunReplaySnapshot struct {
-	rows     []eventstore.Event
-	attempts []leasestore.Attempt
+type RunReplaySnapshot struct {
+	Rows     []eventstore.Event
+	Attempts []leasestore.Attempt
 }
 
-func readNativeRunReplaySnapshot(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, events []tracker.NativeRunEvent) (*nativeRunReplaySnapshot, error) {
+func ReadNativeRunReplaySnapshot(historyID func(string, tracker.NativeRunData) string, ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, events []tracker.NativeRunEvent) (*RunReplaySnapshot, error) {
 	rows := make([]eventstore.Event, len(events))
 	attempts := make([]leasestore.Attempt, len(events))
 	reader, ok := r.(hubrecords.NativeRunEventReader)
@@ -26,7 +26,7 @@ func readNativeRunReplaySnapshot(ctx context.Context, r tenantstore.Reader, scop
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	for i, event := range events {
-		row, err := reader.RunEvent(ctx, scope.Project, tracker.NativeWorkItemID(item), nativeAttemptHistoryID(event.Type, event.Data))
+		row, err := reader.RunEvent(ctx, scope.Project, tracker.NativeWorkItemID(item), historyID(event.Type, event.Data))
 		if err != nil {
 			return nil, err
 		}
@@ -43,5 +43,5 @@ func readNativeRunReplaySnapshot(ctx context.Context, r tenantstore.Reader, scop
 		attempts[i] = attempt
 		rows[i] = row
 	}
-	return &nativeRunReplaySnapshot{rows: rows, attempts: attempts}, nil
+	return &RunReplaySnapshot{Rows: rows, Attempts: attempts}, nil
 }

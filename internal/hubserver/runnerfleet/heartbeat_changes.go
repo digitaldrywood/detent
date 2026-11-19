@@ -13,20 +13,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type heartbeatPosition struct {
+type HeartbeatPosition struct {
 	Version  int       `json:"cursor_version"`
 	Sequence int64     `json:"sequence"`
 	Observed time.Time `json:"observed_at"`
 }
 
-const (
-	sqliteHeartbeatCursorVersion   = 1
-	postgresHeartbeatCursorVersion = 2
-)
+const postgresHeartbeatCursorVersion = 2
 
 func ReadHeartbeatChangesTenant(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, cursor workpage.Cursor, key []byte, reset bool, digest, policyID string, now time.Time) (*runnerauth.HeartbeatChanges, error) {
 	changes := &runnerauth.HeartbeatChanges{Reset: reset, CapabilitiesDigest: digest, PolicyID: policyID, Items: []runnerauth.HeartbeatItem{}}
-	var previous heartbeatPosition
+	var previous HeartbeatPosition
 	if !reset && (json.Unmarshal([]byte(cursor.After), &previous) != nil || previous.Version != postgresHeartbeatCursorVersion || previous.Sequence < 0 || previous.Observed.IsZero() || previous.Observed.After(now)) {
 		changes.Reset = true
 	}
@@ -58,7 +55,7 @@ func ReadHeartbeatChangesTenant(ctx context.Context, reader tenantstore.Reader, 
 		return nil, err
 	}
 	changes.Claimable = len(candidates.Items) > 0
-	position, err := json.Marshal(heartbeatPosition{Version: postgresHeartbeatCursorVersion, Sequence: sequence, Observed: now})
+	position, err := json.Marshal(HeartbeatPosition{Version: postgresHeartbeatCursorVersion, Sequence: sequence, Observed: now})
 	if err != nil {
 		return nil, err
 	}

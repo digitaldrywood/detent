@@ -58,7 +58,7 @@ func (d HeartbeatDeps) ReadRegistrationClaimStateTenant(ctx context.Context, sco
 	return nil
 }
 
-func (d HeartbeatDeps) registrationCleanupRequired(candidate hubrecords.TenantAttemptSnapshot, run tracker.NativeRunData, runner string) (bool, error) {
+func (d HeartbeatDeps) RegistrationCleanupRequired(candidate hubrecords.TenantAttemptSnapshot, run tracker.NativeRunData, runner string) (bool, error) {
 	if !d.AttemptRunMatches(candidate, run) || run.RunnerID != runner {
 		return false, artifact.ErrIntegrity
 	}
