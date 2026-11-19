@@ -185,7 +185,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cfg = cfg.normalized()
+	cfg = cfg.Normalized()
 	if err := validateCredentialMaintenance(cfg); err != nil {
 		return nil, err
 	}
@@ -208,7 +208,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		startup.schema.Store(&MigrationHealth{SchemaVersion: database.schemaVersion, SchemaFingerprint: database.schemaFingerprint})
 	}
 	database.now = cfg.Clock
-	database.newLeaseID = cfg.deps.NewLeaseID
+	database.newLeaseID = cfg.Deps.NewLeaseID
 	var localOrganization tracker.OrganizationID
 	if database.postgres != nil {
 		database.logger = cfg.Logger
@@ -236,7 +236,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 				cfg.RunDetails = database.detailObjects
 			}
 		}
-		cfg = cfg.normalized()
+		cfg = cfg.Normalized()
 	}
 	ctx = database.policyContext(ctx)
 	if database.postgres != nil && cfg.Hosted != nil {
@@ -278,7 +278,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		secretRewrapReady:  make(chan struct{}),
 		secretRewrapDone:   make(chan struct{}),
 		boardRefresh:       make(chan struct{}, 1),
-		clientBuild:        conversationClientIdentity(cfg.staticFiles(), cfg.Version, cfg.Clock()),
+		clientBuild:        conversationClientIdentity(staticFiles(cfg.StaticFS), cfg.Version, cfg.Clock()),
 		pullRequests:       newPullRequestCache(),
 	}
 	if database.postgres != nil && !cfg.CredentialMaintenance {
@@ -391,7 +391,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cfg = cfg.normalized()
+	cfg = cfg.Normalized()
 	if err := validateListenerSecurity(cfg); err != nil {
 		return err
 	}
@@ -406,7 +406,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		}
 		network, address = "unix", path
 	}
-	listener, err := activation.Listen(ctx, network, address, cfg.deps.Listen)
+	listener, err := activation.Listen(ctx, network, address, cfg.Deps.Listen)
 	if err != nil {
 		return fmt.Errorf("listen for hub requests: %w", err)
 	}
@@ -695,7 +695,7 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 	defer close(s.workerDone)
 	var maintenance sync.WaitGroup
 	maintenance.Go(func() {
-		if err := s.config.deps.RunMaintenance(ctx, s.maintenance, func(err error) {
+		if err := s.config.Deps.RunMaintenance(ctx, s.maintenance, func(err error) {
 			s.config.Logger.WarnContext(ctx, "maintain hosted read models", "error", err)
 		}); err != nil && !errors.Is(err, context.Canceled) {
 			s.config.Logger.WarnContext(ctx, "stop hosted read-model maintenance", "error", err)

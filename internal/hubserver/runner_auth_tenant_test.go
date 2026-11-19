@@ -281,7 +281,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)}
-	service := &Service{database: &database{postgres: repository, now: clock.Now}, notifications: newNotificationBroker(), echo: echo.New(), secretRewrapReady: make(chan struct{}), config: (Config{RunDetails: &memoryRunDetails{}, TenantRepository: repository, AccessRepository: repository, Clock: clock.Now, Logger: discardLogger(), RunnerReleaseClient: &runnerReleaseFixture{}}).normalized()}
+	service := &Service{database: &database{postgres: repository, now: clock.Now}, notifications: newNotificationBroker(), echo: echo.New(), secretRewrapReady: make(chan struct{}), config: (Config{RunDetails: &memoryRunDetails{}, TenantRepository: repository, AccessRepository: repository, Clock: clock.Now, Logger: discardLogger(), RunnerReleaseClient: &runnerReleaseFixture{}}).Normalized()}
 	service.registerPostgresRoutes(service.echo)
 	organization := nativeOrganization{ID: "org_example", Name: "Example organization", Slug: "example"}
 	service.database.hostedOrganization = organization.ID

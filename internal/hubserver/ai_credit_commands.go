@@ -55,7 +55,7 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 	if _, err := authorize(ctx); err != nil {
 		return billingDestination{}, err
 	}
-	key := "detent-credit-" + s.config.deps.NewLeaseID()
+	key := "detent-credit-" + s.config.Deps.NewLeaseID()
 	if requestID != "" {
 		digest := sha256.Sum256([]byte(s.config.Hosted.OrganizationID + "\x00" + cfg.CreditMode() + "\x00" + requestID))
 		key = fmt.Sprintf("detent-credit-%x", digest)

@@ -31,12 +31,12 @@ func (s *Service) createAccessToken(ctx context.Context, request hubapi.TokenReq
 		return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Token name and scope are required")
 	}
 	now := s.config.Clock()
-	token, err := s.config.deps.GenerateToken()
+	token, err := s.config.Deps.GenerateToken()
 	if err != nil {
 		return hubapi.TokenResponse{}, err
 	}
 	hash := apikey.HashToken(token)
-	row := accessstore.Credential{OrganizationID: s.accessOrganization(), ID: strings.TrimSpace(s.config.deps.NewTokenID()), Name: request.Name, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(request.Scope), CreatedAt: now, UpdatedAt: now, ExpiresAt: request.ExpiresAt, ProjectAccess: "selected", Kind: "service"}
+	row := accessstore.Credential{OrganizationID: s.accessOrganization(), ID: strings.TrimSpace(s.config.Deps.NewTokenID()), Name: request.Name, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(request.Scope), CreatedAt: now, UpdatedAt: now, ExpiresAt: request.ExpiresAt, ProjectAccess: "selected", Kind: "service"}
 	if row.ID == "" {
 		return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Token identity is required")
 	}
@@ -118,7 +118,7 @@ func (s *Service) createAccessToken(ctx context.Context, request hubapi.TokenReq
 }
 
 func (s *Service) rotateAccessToken(ctx context.Context, id string) (hubapi.TokenResponse, error) {
-	token, err := s.config.deps.GenerateToken()
+	token, err := s.config.Deps.GenerateToken()
 	if err != nil {
 		return hubapi.TokenResponse{}, err
 	}

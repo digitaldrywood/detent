@@ -34,9 +34,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func (c *Config) staticFiles() fs.FS {
-	if c.StaticFS != nil {
-		return c.StaticFS
+func staticFiles(configured fs.FS) fs.FS {
+	if configured != nil {
+		return configured
 	}
 	return detent.StaticFS()
 }

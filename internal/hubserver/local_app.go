@@ -18,7 +18,7 @@ import (
 )
 
 func (s *Service) registerLocalAppRoutes(e *echo.Echo) {
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(s.config.staticFiles()))))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(staticFiles(s.config.StaticFS)))))
 	s.registerAppRoutes(e)
 	e.GET(hostedOrganizationBase+"/project-rank", s.hostedProjectRank, s.localAppOnly)
 	e.PUT(hostedOrganizationBase+"/project-rank", s.updateHostedProjectRank, s.localAppOnly)

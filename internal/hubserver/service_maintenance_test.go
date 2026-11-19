@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/goleak"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -26,48 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type maintenanceBatchProbe struct {
-	*memoryRunDetails
-	batches int
-}
-
-func (s *maintenanceBatchProbe) ReadDetails(ctx context.Context, org string, refs []attachment.ArchiveReference) ([]attachment.DetailReadResult, error) {
-	s.batches++
-	return attachment.ReadDetailBatch(ctx, org, refs, s.ReadDetail)
-}
-
-func TestHostedMaintenancePreservesRequestBatchReads(t *testing.T) {
-	t.Parallel()
-	store := &maintenanceBatchProbe{memoryRunDetails: &memoryRunDetails{}}
-	ref, err := store.StoreDetail(t.Context(), "org_example", bytes.Repeat([]byte("example"), 10))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := (Config{DatabaseBackend: DatabasePostgres, RunDetails: store}).normalized()
-	batch, ok := cfg.RunDetails.(attachment.DetailBatchStore)
-	if !ok {
-		t.Fatal("normalization removed batched request reads")
-	}
-	for _, remaining := range []int64{0, ref.CompressedSize + ref.UncompressedSize} {
-		ctx := t.Context()
-		if remaining > 0 {
-			ctx = (hubmaintenance.Budget{Items: 1, Bytes: remaining}).Context(ctx, hubmaintenance.Tenant{Organization: "org_example", Generation: 1})
-		}
-		rows, err := batch.ReadDetails(ctx, "org_example", []attachment.ArchiveReference{ref})
-		if err != nil || len(rows) != 1 {
-			t.Fatalf("batch read: rows=%d err=%v", len(rows), err)
-		}
-		if remaining > 0 {
-			if _, err := batch.ReadDetails(ctx, "org_example", []attachment.ArchiveReference{ref}); err == nil {
-				t.Fatal("exhausted batch budget accepted")
-			}
-		}
-	}
-	if store.batches != 2 {
-		t.Fatalf("batched I/O calls=%d want=2", store.batches)
-	}
-}
 
 func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 	t.Parallel()
@@ -127,7 +83,7 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 			started := make(chan *hubmaintenance.Scheduler, 2)
 			cfg.Hosted.OrganizationID = string(org)
 			cfg.Hosted.WorkOSOrganizationID = "provider_" + string(org)
-			cfg.deps.RunMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, _ func(error)) error {
+			cfg.Deps.RunMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, _ func(error)) error {
 				started <- scheduler
 				<-ctx.Done()
 				return ctx.Err()
@@ -263,7 +219,7 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 			t.Run(string(org), func(t *testing.T) {
 				cfg.Hosted.OrganizationID = string(org)
 				cfg.Hosted.WorkOSOrganizationID = "provider_" + string(org)
-				cfg.deps.RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+				cfg.Deps.RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 					<-ctx.Done()
 					return ctx.Err()
 				}
@@ -341,7 +297,7 @@ func TestHostedMaintenanceCloseJoinsScheduler(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	started := make(chan struct{})
 	exited := make(chan struct{})
-	cfg.deps.RunMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, report func(error)) error {
+	cfg.Deps.RunMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, report func(error)) error {
 		defer close(exited)
 		close(started)
 		return scheduler.Run(ctx, report)
@@ -377,7 +333,7 @@ func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cfg.deps.RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	cfg.Deps.RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}

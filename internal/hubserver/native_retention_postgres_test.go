@@ -311,7 +311,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_duplicate_challenges IN SHARE MODE"); err != nil {
 					t.Fatal(err)
 				}
-				service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}.WithDefaults()}}
+				service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, Deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}.WithDefaults()}}
 				retained := make(chan error, 1)
 				workers.Go(func() { retained <- service.expireNativeRecords(ctx, now.Add(2*time.Hour)) })
 				testenv.WaitUntil(t, testenv.WaitContext(t, ctx), func() error {
@@ -564,7 +564,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				schedulerDone := make(chan struct{})
 				service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, RunDetails: objects, Logger: discardLogger(), WebhookMaintenanceInterval: time.Millisecond,
 					Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() },
-					deps: hubdeps.Deps{RetentionTimeout: func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+					Deps: hubdeps.Deps{RetentionTimeout: func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 						if budget != backgroundStorageBudget {
 							wrongBudget.Store(true)
 						}

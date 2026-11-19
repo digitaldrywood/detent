@@ -44,7 +44,7 @@ type database struct {
 }
 
 func openDatabase(ctx context.Context, cfg Config) (*database, error) {
-	if err := validateDatabaseBackend(cfg); err != nil {
+	if err := cfg.ValidateDatabaseBackend(); err != nil {
 		return nil, err
 	}
 	store, err := openPostgresDatabase(ctx, *cfg.Postgres)

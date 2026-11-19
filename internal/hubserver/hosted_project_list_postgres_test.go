@@ -34,7 +34,7 @@ func TestPostgresHostedProjectListingUsesCurrentAccess(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	provider := newHostedSecurityProvider()
 	details := &memoryRunDetails{}
-	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), Clock: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken}, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider}}}
+	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), Clock: time.Now, Deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken}, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider}}}
 	sessions, err := auth.NewSessionService(auth.SessionConfig{SessionTTL: 24 * time.Hour, PublicURL: service.config.Hosted.PublicURL}, service)
 	if err != nil {
 		t.Fatal(err)

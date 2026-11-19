@@ -125,7 +125,7 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 func TestPostgresNativeSupportReadAudit(t *testing.T) {
 	t.Parallel()
 	f := newEntryKeyFixture(t, func(cfg *Config) {
-		cfg.deps.RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+		cfg.Deps.RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 			<-ctx.Done()
 			return ctx.Err()
 		}
@@ -142,7 +142,7 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 				hosted.SharedEntry = &entry
 				cfg.Hosted, cfg.SecretKeys = &hosted, f.service.config.SecretKeys
 				cfg.RunDetails = f.service.config.RunDetails
-				cfg.deps.RunMaintenance = f.service.config.deps.RunMaintenance
+				cfg.Deps.RunMaintenance = f.service.config.Deps.RunMaintenance
 				var err error
 				service, err = Open(t.Context(), cfg)
 				if err != nil {

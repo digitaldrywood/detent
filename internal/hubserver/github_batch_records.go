@@ -1088,7 +1088,7 @@ func (s *Service) reconcileRunnerGitHubBatch(ctx context.Context, scope hubscope
 		if !ok {
 			return errors.New("tenant writer does not support GitHub intake")
 		}
-		return intake.DeferGitHubIntake(ctx, scope.Project, s.config.Clock(), s.config.deps.Jitter())
+		return intake.DeferGitHubIntake(ctx, scope.Project, s.config.Clock(), s.config.Deps.Jitter())
 	})
 }
 

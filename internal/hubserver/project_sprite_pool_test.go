@@ -299,7 +299,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, hubscope
 	}
 	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://hub.example.test"}
 	f.service.config.Version = "v0.117.99"
-	f.service.config.deps.GenerateToken = func() (string, error) {
+	f.service.config.Deps.GenerateToken = func() (string, error) {
 		token, err := apikey.GenerateToken()
 		provider.mu.Lock()
 		provider.token = token

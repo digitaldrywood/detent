@@ -120,7 +120,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			cfg.Postgres = defaults.Postgres
 			if cfg.Hosted == nil {
 				cfg.Hosted = defaults.Hosted
-				seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.normalized().Clock().UTC())
+				seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.Normalized().Clock().UTC())
 			}
 		}
 	}
@@ -134,17 +134,17 @@ func openTestService(t *testing.T, cfg Config) *Service {
 		cfg.Postgres = defaults.Postgres
 		cfg.Postgres.Pool.SearchBudget = requested.Pool.SearchBudget
 		if cfg.Clock != nil {
-			cfg.Postgres.LeaseClock = cfg.normalized().Clock
+			cfg.Postgres.LeaseClock = cfg.Normalized().Clock
 		}
 		if cfg.Hosted == nil {
 			cfg.Hosted = defaults.Hosted
 		}
-		store, err := openDatabase(t.Context(), cfg.normalized())
+		store, err := openDatabase(t.Context(), cfg.Normalized())
 		if err != nil {
 			t.Fatalf("open PostgreSQL fixture: %v", err)
 		}
 		organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
-		now := cfg.normalized().Clock().UTC()
+		now := cfg.Normalized().Clock().UTC()
 		err = store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: "example", CreatedAt: now}); err != nil {
 				return err

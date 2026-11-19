@@ -128,7 +128,7 @@ func newPostgresNativeService(t *testing.T, cfg Config) *Service {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.normalized().Clock().UTC())
+		seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.Normalized().Clock().UTC())
 		service = openPostgresHubTestService(t, repository, cfg)
 	}
 	for _, organization := range []tracker.OrganizationID{primary + "_second", primary} {

@@ -240,7 +240,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
 		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
 		config: Config{
-			Logger: discardLogger(), Clock: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
+			Logger: discardLogger(), Clock: time.Now, Deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
 			TenantRepository: repository, AccessRepository: repository, RunDetails: details,
 			NativeRunEvents: participant, SecretKeys: keys,
 		},
@@ -515,13 +515,13 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
 		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
 		config: Config{
-			Logger: discardLogger(), Clock: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
+			Logger: discardLogger(), Clock: time.Now, Deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
 			TenantRepository: repository, AccessRepository: repository, RunDetails: details,
 			NativeRunEvents: participant, SecretKeys: keys,
 		},
 	}
 	service.config.DatabaseBackend = DatabasePostgres
-	service.config = service.config.normalized()
+	service.config = service.config.Normalized()
 	service.ready.Store(true)
 	service.registerNativeRoutes(service.echo)
 	wrapped := &attemptSnapshotRepository{Repository: repository, SnapshotRepository: repository}

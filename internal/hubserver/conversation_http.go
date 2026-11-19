@@ -135,8 +135,8 @@ func (s *Service) conversationHTTPDeps() conversations.HTTPDeps {
 		Error:           func(c echo.Context, err error) error { return s.nativeAPIError(c, err) },
 		InvalidRequest:  s.invalidAPIRequest,
 		RefreshStream:   s.refreshConversationStream,
-		StreamHeartbeat: s.config.streamHeartbeat,
-		StreamAuthorize: s.config.streamAuthorize,
+		StreamHeartbeat: s.streamHeartbeat,
+		StreamAuthorize: s.streamAuthorize,
 	}
 }
 
@@ -169,16 +169,16 @@ func (s *Service) refreshConversationStream(readCtx context.Context, c echo.Cont
 	return hubapi.FromFeatureError(s.requestAuth().RequireActiveProject(readCtx, s.authInput(*scope)))
 }
 
-func (c *Config) streamHeartbeat() time.Duration {
-	if c.deps.ConversationStreamHeartbeat > 0 {
-		return c.deps.ConversationStreamHeartbeat
+func (s *Service) streamHeartbeat() time.Duration {
+	if s.config.Deps.ConversationStreamHeartbeat > 0 {
+		return s.config.Deps.ConversationStreamHeartbeat
 	}
 	return conversationHeartbeatInterval
 }
 
-func (c *Config) streamAuthorize() time.Duration {
-	if c.deps.ConversationStreamAuthorize > 0 {
-		return c.deps.ConversationStreamAuthorize
+func (s *Service) streamAuthorize() time.Duration {
+	if s.config.Deps.ConversationStreamAuthorize > 0 {
+		return s.config.Deps.ConversationStreamAuthorize
 	}
 	return conversationAuthorizeInterval
 }

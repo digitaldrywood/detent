@@ -33,7 +33,7 @@ func (s *Service) runnerUpdateService() *runnerupdate.Service {
 		Now:             s.config.Clock,
 		Version:         s.config.Version,
 		ReleaseClient:   s.config.RunnerReleaseClient,
-		VerifySignature: s.config.deps.VerifyReleaseSignature,
+		VerifySignature: s.config.Deps.VerifyReleaseSignature,
 		Published:       &s.runnerPublishedReleases,
 		ApplyUsage:      s.applyRunnerTenantUsage,
 		Details:         s.runDetailStore,

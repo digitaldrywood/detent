@@ -193,7 +193,7 @@ func TestPostgresImportStarts(t *testing.T) {
 	repair := &gitHubRepairFixture{}
 	service.config.ImportBackend, service.config.ReconcileBackend = repair, repair
 	service.config.Clock = func() time.Time { return now }
-	service.config.deps.Jitter = func() float64 { return 0.5 }
+	service.config.Deps.Jitter = func() float64 { return 0.5 }
 	service.config.ReconcileInterval = time.Minute
 	if err := service.maintainGitHubReconciliationRecords(t.Context()); !errors.Is(err, errGitHubRepairFixture) {
 		t.Fatalf("unavailable repository=%v", err)

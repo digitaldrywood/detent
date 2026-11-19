@@ -103,7 +103,7 @@ func TestAPIRefusals(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	f := accountPreferencesPostgresFixture(t, repository)
-	f.service.config.deps.NewTokenID = func() string { return hubapi.NewID("credential") }
+	f.service.config.Deps.NewTokenID = func() string { return hubapi.NewID("credential") }
 	for _, organization := range []tracker.OrganizationID{"org_security", "org_other"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}); err != nil {

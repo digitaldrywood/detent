@@ -22,7 +22,7 @@ import (
 )
 
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(s.config.staticFiles()))))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(staticFiles(s.config.StaticFS)))))
 	e.GET("/", s.hostedLanding)
 	e.GET("/login", s.appShell)
 	e.GET("/auth/oidc/start", s.startHostedLogin)

@@ -1301,10 +1301,10 @@ func testMaintenanceMemberPreparation(t *testing.T) {
 			principal := "hosted_" + apikey.HashToken(identity.Subject)[:32]
 			provider := &maintenanceInvitationProvider{browserHostedProvider: f.provider}
 			s.config.Hosted.Provider = provider
-			originalGenerator := s.config.deps.GenerateToken
+			originalGenerator := s.config.Deps.GenerateToken
 			generated := 0
 			generationFailure := errors.New("fixture random unavailable")
-			s.config.deps.GenerateToken = func() (string, error) { generated++; return "", generationFailure }
+			s.config.Deps.GenerateToken = func() (string, error) { generated++; return "", generationFailure }
 			if scenario == "provider read failure" {
 				provider.readErr = tenantauth.ErrUnavailable
 			}
@@ -1334,7 +1334,7 @@ func testMaintenanceMemberPreparation(t *testing.T) {
 				if scenario != "accepted random failure reconciliation" {
 					return
 				}
-				s.config.deps.GenerateToken = originalGenerator
+				s.config.Deps.GenerateToken = originalGenerator
 				if err := s.acceptHostedInvitationFor(t.Context(), identity, invitation.ID); err != nil {
 					t.Fatal(err)
 				}

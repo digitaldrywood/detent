@@ -492,7 +492,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			t.Log(previewLogs.String())
 		}
 	})
-	service := &Service{database: &database{postgres: repository}, echo: echo.New(), secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewTextHandler(&previewLogs, nil)), SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, Clock: func() time.Time { return now }}.normalized()}
+	service := &Service{database: &database{postgres: repository}, echo: echo.New(), secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewTextHandler(&previewLogs, nil)), SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, Clock: func() time.Time { return now }}.Normalized()}
 	service.echo.POST(hubapi.NativeBase+"/claims/preview", service.previewProviderCandidates, service.requireNativeScope(hubapi.APIScopeWorker))
 	service.echo.GET(hubapi.NativeBase+"/work-items/:item", service.getNativeIssue, service.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
 	if service.database.postgres == nil {

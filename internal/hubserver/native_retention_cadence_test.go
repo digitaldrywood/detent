@@ -33,7 +33,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(start.Add(-31 * 24 * time.Hour).UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-	f := newDefaultNativeFixture(t, Config{Clock: now, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	f := newDefaultNativeFixture(t, Config{Clock: now, Deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}}, WebhookMaintenanceInterval: 10 * time.Millisecond})
@@ -308,7 +308,7 @@ func TestNativeRetentionStageBudgets(t *testing.T) {
 				budget := 2 * time.Second
 				if test.injected {
 					budget = -time.Second
-					s.config.deps.RetentionTimeout = func(ctx context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+					s.config.Deps.RetentionTimeout = func(ctx context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
 						if duration != 2*time.Second {
 							t.Fatalf("stage budget=%v", duration)
 						}

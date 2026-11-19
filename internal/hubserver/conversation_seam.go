@@ -203,7 +203,7 @@ func conversationCheckMonthlyLease(ctx context.Context, reader tenantstore.Reade
 }
 
 func conversationWorkerAuthorityAt(now time.Time) ConversationWorkerAuthority {
-	return conversationFeatureWorkerAuthority{tenantRunnerAuthority{now: func() time.Time { return now }}}
+	return conversationFeatureWorkerAuthority{conversations.NewTenantWorkerAuthority(func() time.Time { return now })}
 }
 
 type conversationAttachmentRecord = conversations.ConversationAttachmentRecord
@@ -289,10 +289,6 @@ func conversationRecordToStore(p0 conversations.ConversationRecord) conversation
 
 func conversationStale(p0 string) error {
 	return hubapi.FromFeatureError(conversations.ConversationStale(p0))
-}
-
-func conversationWorkerAuthorityUnavailable() error {
-	return hubapi.FromFeatureError(conversations.ConversationWorkerAuthorityUnavailable())
 }
 
 func firstDispatchableState(p0 tracker.NativeProject) (string, bool) {

@@ -16,7 +16,7 @@ func gitHubWebhookRecordFixture(t *testing.T) (*Service, *time.Time, map[tracker
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
-	service := &Service{localOrganization: "org", notifications: newNotificationBroker(), database: &database{now: clock, hostedOrganization: "org"}, config: (Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: clock}).normalized()}
+	service := &Service{localOrganization: "org", notifications: newNotificationBroker(), database: &database{now: clock, hostedOrganization: "org"}, config: (Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: clock}).Normalized()}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org", Name: "Example", Slug: "example"})
 	items := make(map[tracker.ProjectID]tracker.NativeWorkItemID)
 	for _, project := range []tracker.ProjectID{"first", "second"} {

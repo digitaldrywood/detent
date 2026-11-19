@@ -45,15 +45,15 @@ func (s *Service) hostedSetCookie(c echo.Context, name, value, path string, expi
 }
 
 func (s *Service) newHostedTransaction(c echo.Context, organization, actor, session string) (hostedTransaction, error) {
-	token, err := s.config.deps.GenerateToken()
+	token, err := s.config.Deps.GenerateToken()
 	if err != nil {
 		return hostedTransaction{}, err
 	}
-	state, err := s.config.deps.GenerateToken()
+	state, err := s.config.Deps.GenerateToken()
 	if err != nil {
 		return hostedTransaction{}, err
 	}
-	verifier, err := s.config.deps.GenerateToken()
+	verifier, err := s.config.Deps.GenerateToken()
 	if err != nil {
 		return hostedTransaction{}, err
 	}

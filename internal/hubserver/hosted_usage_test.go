@@ -40,7 +40,7 @@ func usageTestPrices() UsageConfig {
 	return UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{
 		"gpt-6-astra":   {Input: 10, CachedInput: 1, Output: 40},
 		"claude-opus-5": {Input: 20, CachedInput: 2, Output: 100},
-	}}.normalized()
+	}}.Normalized()
 }
 
 // An empty window still answers the whole shape, with arrays rather than
@@ -752,7 +752,7 @@ func TestHostedUsageReportAggregatesStoredAttempts(t *testing.T) {
 	var wantTokens, wantCached, wantUncached, wantOutput int64
 	var wantSavings float64
 	for _, entry := range browserUsageEntries {
-		cost, _, found := prices.estimate(entry.Model, entry.Input, entry.Cached, entry.Output)
+		cost, _, found := prices.Estimate(entry.Model, entry.Input, entry.Cached, entry.Output)
 		if !found {
 			t.Fatalf("price table does not price %s", entry.Model)
 		}
@@ -761,7 +761,7 @@ func TestHostedUsageReportAggregatesStoredAttempts(t *testing.T) {
 		wantCached += entry.Cached * browserUsageDays
 		wantUncached += (entry.Input - entry.Cached) * browserUsageDays
 		wantOutput += entry.Output * browserUsageDays
-		wantSavings += prices.cacheSaving(entry.Model, entry.Input, entry.Cached) * browserUsageDays
+		wantSavings += prices.CacheSaving(entry.Model, entry.Input, entry.Cached) * browserUsageDays
 	}
 	// Money is compared within a rounding step: the report sums the stored
 	// rows one at a time, so the last decimal depends on the order.
@@ -869,7 +869,7 @@ func newUsageHostedFixture(t *testing.T, configure ...func(*Config)) usageHosted
 	prices := UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{
 		"gpt-6-astra":   {Input: 1.25, CachedInput: 0.125, Output: 10},
 		"claude-opus-5": {Input: 5, CachedInput: 0.5, Output: 25},
-	}}.normalized()
+	}}.Normalized()
 	f.service.config.Usage = &prices
 	f.seedUsage(t)
 	return f
@@ -911,7 +911,7 @@ func (f usageHostedFixture) seedUsage(t *testing.T) {
 	for day := range browserUsageDays {
 		stamp := now.AddDate(0, 0, -day)
 		for index, entry := range browserUsageEntries {
-			cost, _, found := prices.estimate(entry.Model, entry.Input, entry.Cached, entry.Output)
+			cost, _, found := prices.Estimate(entry.Model, entry.Input, entry.Cached, entry.Output)
 			if !found {
 				t.Fatalf("fixture price table does not price %s", entry.Model)
 			}
@@ -1104,7 +1104,7 @@ func TestRecordAttemptUsageKeepsCurrenciesApart(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 9, 10, 9, 10, 0, 0, time.UTC)
 	usd := usageTestPrices()
-	eur := UsageConfig{Currency: "EUR", Prices: map[string]UsagePrice{"gpt-6-astra": {Input: 10, CachedInput: 1, Output: 40}}}.normalized()
+	eur := UsageConfig{Currency: "EUR", Prices: map[string]UsagePrice{"gpt-6-astra": {Input: 10, CachedInput: 1, Output: 40}}}.Normalized()
 	clock := &leaseTestClock{value: at.Add(-time.Minute)}
 	service := newClockedPostgresNativeService(t, Config{Usage: &usd, Clock: clock.Now})
 	reports := []struct {

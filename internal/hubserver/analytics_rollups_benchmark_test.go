@@ -285,7 +285,7 @@ func benchmarkPostgresDiagnostics(b *testing.B) (context.Context, diagnosticsPos
 		b.Fatal(err)
 	}
 	details := &memoryRunDetails{}
-	service := &Service{config: (Config{TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, Clock: func() time.Time { return now }}).normalized()}
+	service := &Service{config: (Config{TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, Clock: func() time.Time { return now }}).Normalized()}
 	authority := &apikey.KeyAuthority{ID: "benchmark-key", Kind: "service", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "all"}}
 	if !authority.Valid() {
 		b.Fatal("invalid benchmark authority")

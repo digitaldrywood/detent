@@ -1610,20 +1610,7 @@ func (s *Service) workItemRecordReceipt(ctx context.Context, scope hubscope.Nati
 }
 
 func (s *Service) authorizeWorkItemRecordScope(ctx context.Context, reader accessstore.Reader, scope hubscope.NativeScope) error {
-	if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
-		return err
-	}
-	if scope.Credential.Hosted == nil {
-		return nil
-	}
-	member, err := reader.AuthorizeAccess(ctx, s.accessAuthority(scope, true), s.config.Clock())
-	if err != nil {
-		return err
-	}
-	if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole) != scope.Credential.HostedRole {
-		return auth.ErrHostedIdentity
-	}
-	return nil
+	return hubscope.AuthorizeWorkItem(ctx, reader, scope, s.authorizeAccessScope, func() time.Time { return s.config.Clock() })
 }
 
 func workItemMutationGrowth(plan hubrecords.WorkItemRecordPlan, valueRaw, eventRaw []byte, duplicates []workItemDuplicateLink) (workItemGrowth, error) {

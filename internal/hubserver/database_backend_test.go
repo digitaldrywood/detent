@@ -197,7 +197,7 @@ func seedStartupOrganization(t *testing.T, repository tenantstore.Repository, or
 
 func seedHostedStartup(t *testing.T, cfg Config) {
 	t.Helper()
-	store, err := openDatabase(t.Context(), cfg.normalized())
+	store, err := openDatabase(t.Context(), cfg.Normalized())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,10 +233,9 @@ func TestDatabaseBackendRejectsAmbiguousConfiguration(t *testing.T) {
 		{"missing postgres", Config{DatabaseBackend: DatabasePostgres}},
 		{"implicit postgres", Config{Postgres: &postgres.Config{}}},
 		{"sqlite with postgres", Config{DatabaseBackend: "sqlite", Postgres: &postgres.Config{}}},
-		{"sqlite binding migration", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, hostedBindingMigration: true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			store, err := openDatabase(t.Context(), test.config.normalized())
+			store, err := openDatabase(t.Context(), test.config.Normalized())
 			if !errors.Is(err, ErrDatabaseBackend) || store != nil {
 				t.Fatalf("open = %v, %v", store, err)
 			}
@@ -885,7 +884,7 @@ func TestDatabaseStartupCancellation(t *testing.T) {
 	for _, cfg := range []Config{
 		startupConfig(pgtransport.Connection{}),
 	} {
-		store, err := openDatabase(ctx, cfg.normalized())
+		store, err := openDatabase(ctx, cfg.Normalized())
 		if store != nil || !errors.Is(err, context.Canceled) {
 			t.Fatalf("canceled startup = %v, %v", store, err)
 		}

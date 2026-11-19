@@ -7,24 +7,16 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubconfig"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
-type DatabaseBackend string
+type DatabaseBackend = hubconfig.DatabaseBackend
 
-const (
-	DatabasePostgres DatabaseBackend = "postgres"
-)
+const DatabasePostgres = hubconfig.DatabasePostgres
 
-var ErrDatabaseBackend = errors.New("hub database backend configuration is invalid")
+var ErrDatabaseBackend = hubconfig.ErrDatabaseBackend
 var ErrPostgresServingUnavailable = errors.New("PostgreSQL Hub serving requires the remaining storage owners to be ported")
-
-func validateDatabaseBackend(cfg Config) error {
-	if cfg.DatabaseBackend != DatabasePostgres || cfg.Postgres == nil || cfg.hostedBindingMigration {
-		return ErrDatabaseBackend
-	}
-	return nil
-}
 
 func openPostgresDatabase(ctx context.Context, cfg postgres.Config) (*database, error) {
 	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")

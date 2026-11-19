@@ -45,13 +45,13 @@ func newOperatorSecurityFixture(t *testing.T, configure ...func(*Config)) operat
 	cfg.RunDetails = &memoryRunDetails{}
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.InitialAdminToken = []byte(testHubAdminToken)
-	store, err := openDatabase(t.Context(), cfg.normalized())
+	store, err := openDatabase(t.Context(), cfg.Normalized())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_security", "org_security_second"} {
 		if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			now := cfg.normalized().Clock().UTC().Truncate(time.Microsecond)
+			now := cfg.Normalized().Clock().UTC().Truncate(time.Microsecond)
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
 				return err
 			}
