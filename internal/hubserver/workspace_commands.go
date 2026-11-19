@@ -9,14 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/artifact"
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -286,91 +283,6 @@ func (s *Service) commandDeleteAction(ctx context.Context, scope hubscope.Native
 
 func (s *Service) readAttachment(ctx context.Context, scope hubscope.NativeScope, conversationID, id string) (conversationAttachmentRecord, []byte, error) {
 	return s.readAttachmentPG(ctx, scope, conversationID, id)
-}
-
-func (s *Service) readRecording(ctx context.Context, scope hubscope.NativeScope, workspaceID, id string) (terminalRecordingRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
-	service, err := s.requireWorkspaces()
-	if err != nil {
-		return terminalRecordingRecord{}, err
-	}
-	var row postgres.TerminalRecording
-	var recording terminalRecordingRecord
-	err = s.accessRead(ctx, scope.Organization, func(reader tenantstore.Reader) error {
-		if _, err := service.readRelayWorkspaceForActor(ctx, reader, scope, workspaceID); err != nil {
-			return err
-		}
-		owner, ok := reader.(postgres.RelayActionReader)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		var err error
-		row, err = owner.TerminalRecording(ctx, scope.Project, id)
-		if err != nil {
-			return err
-		}
-		if row.WorkspaceID != workspaceID {
-			return hubapi.NativeNotFound()
-		}
-		recording = terminalRecordingFromPostgres(row)
-		if !terminalRecordingReadable(scope, recording) {
-			return hubapi.NativeNotFound()
-		}
-		return nil
-	})
-	if err != nil {
-		return terminalRecordingRecord{}, hubapi.ProjectRecordError(err)
-	}
-	ref := attachment.ArchiveReference{Key: row.CastObjectKey, SHA256: row.CastSha256, CompressedSize: row.CastBytes, UncompressedSize: row.CastContentBytes, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
-	if ref.Validate(string(scope.Organization)) != nil || ref.UncompressedSize > workspacesession.MaxRecordingBytes {
-		return terminalRecordingRecord{}, artifact.ErrIntegrity
-	}
-	ref, err = s.relayArchiveReference(ctx, scope.Organization, ref)
-	if err != nil {
-		return terminalRecordingRecord{}, err
-	}
-	raw, err := hubcontent.ReadChangeContent(s.contentContext(ctx), string(scope.Organization), ref)
-	if err != nil {
-		return terminalRecordingRecord{}, err
-	}
-	recording.Cast = string(raw)
-	return recording, nil
-}
-func (s *Service) readRecordings(ctx context.Context, scope hubscope.NativeScope, workspaceID, relaySessionID string, limit int) ([]TerminalRecording, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
-	service, err := s.requireWorkspaces()
-	if err != nil {
-		return nil, err
-	}
-	var rows []postgres.TerminalRecording
-	err = s.accessRead(ctx, scope.Organization, func(reader tenantstore.Reader) error {
-		if _, err := service.readRelayWorkspaceForActor(ctx, reader, scope, workspaceID); err != nil {
-			return err
-		}
-		owner, ok := reader.(postgres.RelayActionReader)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		var err error
-		rows, err = owner.RecentTerminalRecordings(ctx, scope.Project, workspaceID, relaySessionID, terminalRecordingPage)
-		return err
-	})
-	if err != nil {
-		return nil, hubapi.ProjectRecordError(err)
-	}
-	result := []TerminalRecording{}
-	for _, row := range rows {
-		record := terminalRecordingFromPostgres(row)
-		if terminalRecordingReadable(scope, record) {
-			result = append(result, record.Resource())
-			if limit > 0 && len(result) >= limit {
-				break
-			}
-		}
-	}
-	return result, nil
 }
 
 // runner grants are required for headless execution too. A token retains the

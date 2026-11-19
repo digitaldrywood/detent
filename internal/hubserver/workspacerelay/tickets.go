@@ -1,4 +1,4 @@
-package hubserver
+package workspacerelay
 
 import (
 	"context"
@@ -38,8 +38,8 @@ import (
 // Only the digest is stored, for the same reason an API token's is: a database
 // read must not yield a usable credential.
 
-// workspaceRelayTicketResponse is what a mint answers with.
-type workspaceRelayTicketResponse struct {
+// TicketResponse is what a mint answers with.
+type TicketResponse struct {
 	Ticket    string `json:"ticket"`
 	ExpiresIn int    `json:"expires_in"`
 }
@@ -59,68 +59,68 @@ func newRelayTicket() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// relayPrincipal is who is on the person side of a relay. It is resolved from
+// Principal is who is on the person side of a relay. It is resolved from
 // a hosted session on a hosted hub and from an operator token elsewhere, so the
 // relay has one notion of "the person" whichever way the hub is deployed.
-type relayPrincipal struct {
-	credential hubapi.APICredential
+type Principal struct {
+	Credential hubapi.APICredential
 	// SessionID binds a ticket and a resumed stream. For a hosted session it
 	// is the provider's session id; for a token principal it is the token,
 	// which is the closest thing that credential has to a session.
-	sessionID     string
-	subject       string
-	principalID   string
-	supportReason string
+	SessionID     string
+	Subject       string
+	PrincipalID   string
+	SupportReason string
 }
 
 // relayPrincipalFor resolves the person behind a request. A hosted session is
 // preferred; a bearer token is accepted so a single-tenant hub and the tests
 // can use the relay without inventing a cookie.
-func (s *Service) relayPrincipalFor(c echo.Context) (relayPrincipal, error) {
-	return s.relayPrincipal(c.Request().Context(), c)
+func (w *HTTP) relayPrincipalFor(c echo.Context) (Principal, error) {
+	return w.ResolvePrincipal(c.Request().Context(), c)
 }
 
-// relayPrincipal is relayPrincipalFor on a caller's own context. The periodic
+// Principal is relayPrincipalFor on a caller's own context. The periodic
 // re-check runs on the connection's context rather than the original request's,
 // so it needs to say which one it means: a re-check that outlived the
 // connection it was checking would be checking nothing.
-func (s *Service) relayPrincipal(ctx context.Context, c echo.Context) (relayPrincipal, error) {
-	if s.config.Hosted != nil && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
+func (w *HTTP) ResolvePrincipal(ctx context.Context, c echo.Context) (Principal, error) {
+	if w.Hosted() && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
 		// hostedSession authenticates on the request's own context, which is
 		// the wrong one for a re-check that runs on a timer long after the
 		// upgrade: the cookie read and the authentication are therefore done
 		// here, on the caller's context.
-		cookie, err := c.Cookie(hostedCookie)
-		if err != nil || s.hostedSessions == nil {
-			return relayPrincipal{}, auth.ErrInvalidSession
-		}
-		session, err := s.hostedSessions.Authenticate(ctx, cookie.Value)
+		cookie, err := c.Cookie(w.CookieName)
 		if err != nil {
-			return relayPrincipal{}, auth.ErrInvalidSession
+			return Principal{}, auth.ErrInvalidSession
 		}
-		credential, _, err := s.hostedSessionCredential(ctx, session, apikey.HashToken(cookie.Value))
+		session, err := w.Authenticate(ctx, cookie.Value)
 		if err != nil {
-			return relayPrincipal{}, err
+			return Principal{}, auth.ErrInvalidSession
 		}
-		principal := relayPrincipal{
-			credential: credential, subject: credential.Hosted.Subject,
-			sessionID: credential.Hosted.SessionID, principalID: credential.ID,
+		credential, _, err := w.HostedSessionCredential(ctx, session, apikey.HashToken(cookie.Value))
+		if err != nil {
+			return Principal{}, err
+		}
+		principal := Principal{
+			Credential: credential, Subject: credential.Hosted.Subject,
+			SessionID: credential.Hosted.SessionID, PrincipalID: credential.ID,
 		}
 		if credential.Hosted.SupportActor != "" {
 			// A support actor's row carries the reason, because a surface
 			// never widens an audience silently.
-			principal.supportReason = credential.Hosted.SupportReason
-			principal.subject = credential.Hosted.SupportActor
+			principal.SupportReason = credential.Hosted.SupportReason
+			principal.Subject = credential.Hosted.SupportActor
 		}
 		return principal, nil
 	}
 	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
-		return relayPrincipal{}, hubapi.NativeNotFound()
+		return Principal{}, hubapi.NativeNotFound()
 	}
-	return relayPrincipal{
-		credential: credential, subject: credential.Name,
-		sessionID: credential.ID, principalID: credential.ID,
+	return Principal{
+		Credential: credential, Subject: credential.Name,
+		SessionID: credential.ID, PrincipalID: credential.ID,
 	}, nil
 }
 
@@ -128,7 +128,7 @@ func (s *Service) relayPrincipal(ctx context.Context, c echo.Context) (relayPrin
 // Origin on both, and the hub's public URL is the only one that may open a
 // relay: without this the ticket's CSRF protection would be complete and its
 // redemption would not be.
-func (s *Service) requireRelayOrigin(c echo.Context) error {
+func (w *HTTP) requireRelayOrigin(c echo.Context) error {
 	origin := strings.TrimSpace(c.Request().Header.Get("Origin"))
 	if origin == "" {
 		// A non-browser client sends no Origin. It also cannot be made to
@@ -136,10 +136,10 @@ func (s *Service) requireRelayOrigin(c echo.Context) error {
 		// against, so an absent header is not itself a failure.
 		return nil
 	}
-	if s.config.Hosted == nil || strings.TrimSpace(s.config.Hosted.PublicURL) == "" {
+	if !w.Hosted() || strings.TrimSpace(w.PublicURL()) == "" {
 		return nil
 	}
-	allowed, err := url.Parse(s.config.Hosted.PublicURL)
+	allowed, err := url.Parse(w.PublicURL())
 	if err != nil {
 		return fmt.Errorf("parse hub public url: %w", err)
 	}
@@ -155,33 +155,29 @@ func (s *Service) requireRelayOrigin(c echo.Context) error {
 // beyond the project read the relay upgrade checks, so it needs read rather
 // than write. The writes a relay can carry -- a git commit or push and a
 // terminal -- are refused per frame against the person's grant.
-func relayTicketRequest(c echo.Context) bool {
+func RelayTicketRequest(c echo.Context) bool {
 	return c.Request().Method == http.MethodPost && c.Path() == hubapi.NativeBase+"/workspaces/:workspace/relay-tickets"
 }
 
 // mintWorkspaceRelayTicket implements POST .../workspaces/:workspace/relay-tickets.
-func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
-	service, err := s.requireWorkspaces()
-	if err != nil {
-		return s.nativeAPIError(c, err)
+func (w *HTTP) MintWorkspaceRelayTicket(c echo.Context) error {
+	if err := w.requireRelayOrigin(c); err != nil {
+		return w.NativeAPIError(c, err)
 	}
-	if err := s.requireRelayOrigin(c); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	principal, err := s.relayPrincipalFor(c)
+	principal, err := w.relayPrincipalFor(c)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return w.NativeAPIError(c, err)
 	}
 	scope := hubscope.NativeRequestScope(c)
 	ctx := c.Request().Context()
 	ticket, err := newRelayTicket()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return w.NativeAPIError(c, err)
 	}
-	err = s.accessWrite(ctx, scope.Organization, func(writer tenantstore.Writer) error {
+	err = w.AccessWrite(ctx, scope.Organization, func(writer tenantstore.Writer) error {
 		current := scope
-		current.Credential = principal.credential
-		record, err := service.readRelayWorkspaceForActor(ctx, writer, current, c.Param("workspace"))
+		current.Credential = principal.Credential
+		record, err := w.ReadRelayWorkspaceForActor(ctx, writer, current, c.Param("workspace"))
 		if err != nil {
 			return err
 		}
@@ -192,14 +188,14 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		now := s.config.Clock().UTC()
-		_, err = owner.CreateRelayTicket(ctx, postgres.CreateRelayTicketInput{OrganizationID: scope.Organization, ProjectID: scope.Project, Digest: relayTicketDigest(ticket), WorkspaceID: record.ID, SessionID: principal.sessionID, PrincipalID: principal.principalID, Subject: principal.subject, SupportReason: principal.supportReason, CreatedAt: now, ExpiresAt: now.Add(workspacesession.TicketLifetime)})
+		now := w.now()
+		_, err = owner.CreateRelayTicket(ctx, postgres.CreateRelayTicketInput{OrganizationID: scope.Organization, ProjectID: scope.Project, Digest: relayTicketDigest(ticket), WorkspaceID: record.ID, SessionID: principal.SessionID, PrincipalID: principal.PrincipalID, Subject: principal.Subject, SupportReason: principal.SupportReason, CreatedAt: now, ExpiresAt: now.Add(workspacesession.TicketLifetime)})
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return w.NativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusCreated, workspaceRelayTicketResponse{
+	return c.JSON(http.StatusCreated, TicketResponse{
 		Ticket: ticket, ExpiresIn: int(workspacesession.TicketLifetime / time.Second),
 	})
 }
@@ -207,13 +203,11 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 // sweepRelayTickets drops spent and expired tickets. A ticket is worth 30
 // seconds, so the table is only ever a handful of rows; the sweep is here so
 // that stays true on a hub nobody restarts.
-func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time) error {
-	organization := tracker.OrganizationID(w.server.appOrganizationID())
-	w.relay.mu.Lock()
-	after := w.relay.ticketSweepAfter
-	w.relay.mu.Unlock()
+func (w *HTTP) SweepRelayTickets(ctx context.Context, now time.Time) error {
+	organization := tracker.OrganizationID(w.AppOrganizationID())
+	after := w.TicketCursor()
 	var page []postgres.RelayTicket
-	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+	err := w.Repository().ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.RelayActionReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -226,15 +220,13 @@ func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time)
 		return err
 	}
 	if len(page) == 0 {
-		w.relay.mu.Lock()
-		w.relay.ticketSweepAfter = ""
-		w.relay.mu.Unlock()
+		w.SetTicketCursor("")
 		return nil
 	}
 	cutoff := now.Add(-workspacesession.TicketLifetime)
 	for _, ticket := range page {
 		if !ticket.ExpiresAt.After(now) || ticket.RedeemedAt != nil && !ticket.RedeemedAt.After(cutoff) {
-			if err := w.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
+			if err := w.Repository().WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 				owner, ok := writer.(postgres.RelayActionWriter)
 				if !ok {
 					return hubapi.NativeWorkItemStorageUnavailable()
@@ -244,9 +236,7 @@ func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time)
 				return err
 			}
 		}
-		w.relay.mu.Lock()
-		w.relay.ticketSweepAfter = ticket.Digest
-		w.relay.mu.Unlock()
+		w.SetTicketCursor(ticket.Digest)
 	}
 	return nil
 }
