@@ -1,4 +1,4 @@
-package hubserver
+package coordinator
 
 import (
 	"context"
@@ -10,9 +10,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -24,15 +25,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func coordinatorRunnerTools() []runner.AgentTool {
+func RunnerTools() []runner.AgentTool {
 	return []runner.AgentTool{
-		coordinatorTool("get_runners", "Read runners assigned to this project, including selected isolation tier, backend tier support and current problems. Supply runner_id for one runner; otherwise returns a bounded page.", `{"type":"object","properties":{"runner_id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":50},"offset":{"type":"integer","minimum":0}},"additionalProperties":false}`),
-		coordinatorTool("convert_runner_scope", "Preview converting an existing runner to all current and future organization projects without reinstalling. Organization owner/admin only; requires user approval. Existing ranks, identity, provider logins and active sessions are kept; each new repository policy still needs approval.", `{"type":"object","required":["runner_id"],"properties":{"runner_id":{"type":"string"}},"additionalProperties":false}`),
-		coordinatorTool("set_runner_tier", "Preview changing a runner's access tier without re-enrollment. Organization owner/admin only. The user must approve this preview even when ordinary chat confirmation is disabled.", `{"type":"object","required":["runner_id","isolation_tier"],"properties":{"runner_id":{"type":"string"},"isolation_tier":{"type":"string","enum":["sandbox","native-trusted"]}},"additionalProperties":false}`),
+		Tool("get_runners", "Read runners assigned to this project, including selected isolation tier, backend tier support and current problems. Supply runner_id for one runner; otherwise returns a bounded page.", `{"type":"object","properties":{"runner_id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":50},"offset":{"type":"integer","minimum":0}},"additionalProperties":false}`),
+		Tool("convert_runner_scope", "Preview converting an existing runner to all current and future organization projects without reinstalling. Organization owner/admin only; requires user approval. Existing ranks, identity, provider logins and active sessions are kept; each new repository policy still needs approval.", `{"type":"object","required":["runner_id"],"properties":{"runner_id":{"type":"string"}},"additionalProperties":false}`),
+		Tool("set_runner_tier", "Preview changing a runner's access tier without re-enrollment. Organization owner/admin only. The user must approve this preview even when ordinary chat confirmation is disabled.", `{"type":"object","required":["runner_id","isolation_tier"],"properties":{"runner_id":{"type":"string"},"isolation_tier":{"type":"string","enum":["sandbox","native-trusted"]}},"additionalProperties":false}`),
 	}
 }
 
-type coordinatorRunnerArguments struct {
+type RunnerArguments struct {
 	RunnerID      string `json:"runner_id"`
 	IsolationTier string `json:"isolation_tier,omitempty"`
 	Limit         int    `json:"limit,omitempty"`
@@ -46,8 +47,8 @@ type coordinatorRunnerChange struct {
 	ExpectedRevision int64  `json:"expected_revision"`
 }
 
-func (s *Service) coordinatorRunner(ctx context.Context, scope hubscope.NativeScope, id string) (runnerauth.Runner, error) {
-	runners, err := s.coordinatorRunners(ctx, scope, coordinatorRunnerArguments{RunnerID: id})
+func (s RunnerDeps) Runner(ctx context.Context, scope hubscope.NativeScope, id string) (runnerauth.Runner, error) {
+	runners, err := s.Runners(ctx, scope, RunnerArguments{RunnerID: id})
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
@@ -57,19 +58,18 @@ func (s *Service) coordinatorRunner(ctx context.Context, scope hubscope.NativeSc
 	return runners[0], nil
 }
 
-func (s *Service) coordinatorRunners(ctx context.Context, scope hubscope.NativeScope, args coordinatorRunnerArguments) ([]runnerauth.Runner, error) {
+func (s RunnerDeps) Runners(ctx context.Context, scope hubscope.NativeScope, args RunnerArguments) ([]runnerauth.Runner, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
-	if !ok {
+	if !s.SnapshotAvailable {
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	runners := []runnerauth.Runner{}
-	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+	err := s.ReadSnapshot(ctx, scope.Organization, func(r tenantstore.Reader) error {
+		if err := s.Authorize(ctx, r, scope, false); err != nil {
 			return err
 		}
-		now := s.config.Clock()
+		now := s.Now()
 		var records []runnerstore.RoutingRecord
 		if args.RunnerID != "" {
 			reader, ok := r.(runnerstore.RoutingReader)
@@ -101,7 +101,7 @@ func (s *Service) coordinatorRunners(ctx context.Context, scope hubscope.NativeS
 			return err
 		}
 		for _, record := range records {
-			runner := runnerFromRoutingRecord(record, now, urgent)
+			runner := s.View(record, now, urgent)
 			if !runner.AllowsProject(scope.Project) {
 				return hubapi.NativeNotFound()
 			}
@@ -112,9 +112,9 @@ func (s *Service) coordinatorRunners(ctx context.Context, scope hubscope.NativeS
 	return runners, hubapi.ProjectRecordError(err)
 }
 
-func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
-	var args coordinatorRunnerArguments
-	if decodeCoordinatorArguments(call.Arguments, &args) != nil || args.Limit < 0 || args.Limit > 50 || args.Offset < 0 {
+func PreviewRunner(ctx context.Context, record conversations.ConversationRecord, call runner.AgentToolCall, deps RunnerPreviewDeps) (any, error) {
+	var args RunnerArguments
+	if DecodeArguments(call.Arguments, &args) != nil || args.Limit < 0 || args.Limit > 50 || args.Offset < 0 {
 		return nil, operatortool.ErrInvalidArguments
 	}
 	convert := call.Name == "convert_runner_scope"
@@ -122,7 +122,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 	if manage && (args.RunnerID == "" || (!convert && !slices.Contains([]string{isolation.Sandbox, isolation.NativeTrusted}, args.IsolationTier) || convert && args.IsolationTier != "") || args.Limit != 0 || args.Offset != 0) || !manage && args.IsolationTier != "" {
 		return nil, operatortool.ErrInvalidArguments
 	}
-	ctx, err := t.actionContext(ctx, record)
+	ctx, err := deps.ActionContext(ctx, record)
 	if err != nil {
 		return nil, err
 	}
@@ -134,8 +134,8 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 	if err != nil {
 		return nil, err
 	}
-	s := t.coordinator.server
-	scope, err := s.coordinatorScope(ctx, record.ProjectID, manage)
+	s := deps.Runners
+	scope, err := s.Scope(ctx, record.ProjectID, manage)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +143,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		scope.Project = record.ProjectID
 	}
 	if manage {
-		r, err := s.coordinatorRunner(ctx, scope, args.RunnerID)
+		r, err := s.Runner(ctx, scope, args.RunnerID)
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +160,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		if convert {
 			title = "Convert runner to all projects"
 			description = fmt.Sprintf("Convert %s to all organization projects without reinstalling or interrupting active work. Rank overrides and provider logins are kept. Additional repository policies require approval before work can run here.", r.DisplayName)
-			projects, err := t.readableProjects(ctx, record)
+			projects, err := deps.ReadableProjects(ctx, record)
 			if err != nil {
 				return nil, err
 			}
@@ -172,9 +172,9 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 			}
 			description = strings.Join(details, "\n")
 		}
-		return t.submitCoordinatorAction(ctx, record, call, chat.Action{Kind: chat.ActionKind(call.Name), Title: title, Description: description, ProjectID: string(record.ProjectID), Arguments: raw, Material: true})
+		return deps.Submit(ctx, record, call, chat.Action{Kind: chat.ActionKind(call.Name), Title: title, Description: description, ProjectID: string(record.ProjectID), Arguments: raw, Material: true})
 	}
-	runners, err := s.coordinatorRunners(ctx, scope, args)
+	runners, err := s.Runners(ctx, scope, args)
 	if err != nil {
 		return nil, err
 	}
@@ -183,19 +183,19 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		problems := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.Project) })
 		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "scope": r.Scope, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth, "last_heartbeat_at": r.LastHeartbeatAt})
 	}
-	return map[string]any{"runners": views, "observed_at": s.config.Clock().UTC()}, nil
+	return map[string]any{"runners": views, "observed_at": s.Now().UTC()}, nil
 }
 
-func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
-	scope, err := s.coordinatorScope(ctx, tracker.ProjectID(action.ProjectID), true)
+func (s RunnerDeps) Execute(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	scope, err := s.Scope(ctx, tracker.ProjectID(action.ProjectID), true)
 	if err != nil {
 		return chat.ActionExecution{}, err
 	}
 	var change coordinatorRunnerChange
-	if decodeCoordinatorArguments(action.Arguments, &change) != nil || change.RunnerID == "" || (string(action.Kind) == "convert_runner_scope" && (change.Scope != "organization" || change.IsolationTier != "") || string(action.Kind) == "set_runner_tier" && (!slices.Contains([]string{isolation.Sandbox, isolation.NativeTrusted}, change.IsolationTier) || change.Scope != "")) {
+	if DecodeArguments(action.Arguments, &change) != nil || change.RunnerID == "" || (string(action.Kind) == "convert_runner_scope" && (change.Scope != "organization" || change.IsolationTier != "") || string(action.Kind) == "set_runner_tier" && (!slices.Contains([]string{isolation.Sandbox, isolation.NativeTrusted}, change.IsolationTier) || change.Scope != "")) {
 		return chat.ActionExecution{}, operatortool.ErrInvalidArguments
 	}
-	r, err := s.coordinatorRunner(ctx, scope, change.RunnerID)
+	r, err := s.Runner(ctx, scope, change.RunnerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return chat.ActionExecution{}, hubapi.NativeNotFound()
@@ -204,13 +204,14 @@ func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action cha
 	}
 	routing := r.Routing
 	routing.ProjectRanks = r.ProjectRankOverrides
-	request := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: change.ExpectedRevision, Routing: routing}, IsolationTier: &change.IsolationTier}
+	request := runnerauth.RoutingChange{ExpectedRevision: change.ExpectedRevision, Routing: routing}
+	tier := &change.IsolationTier
 	if string(action.Kind) == "convert_runner_scope" {
-		request.IsolationTier = nil
+		tier = nil
 		request.Scope = "organization"
 		request.ProjectIDs = nil
 	}
-	if _, err := s.updateRunnerRoutingCommand(ctx, scope, r.RunnerID, request); err != nil {
+	if err := s.UpdateRouting(ctx, scope, r.RunnerID, request, tier); err != nil {
 		return chat.ActionExecution{}, err
 	}
 	if string(action.Kind) == "convert_runner_scope" {

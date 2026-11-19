@@ -1,14 +1,14 @@
-package hubserver
+package coordinator
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -19,17 +19,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func coordinatorSettingsNames() []string {
+func SettingsNames() []string {
 	return []string{operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerRouting, operatortool.UpdateProjectModelSelection, "bind_native_repository", "revoke_project_policy", "remove_project_secret", "save_onboarding"}
 }
 
-func coordinatorSettingsTool(name string) bool {
-	return slices.Contains(coordinatorSettingsNames(), name)
+func SettingsTool(name string) bool {
+	return slices.Contains(SettingsNames(), name)
 }
 
-func coordinatorSettingsTools() []runner.AgentTool {
+func SettingsTools() []runner.AgentTool {
 	tools := []runner.AgentTool{}
-	for _, name := range coordinatorSettingsNames() {
+	for _, name := range SettingsNames() {
 		definition, ok := operatortool.Lookup(name)
 		if !ok || definition.Annotations.ReadOnly {
 			continue
@@ -49,22 +49,22 @@ func coordinatorSettingsTools() []runner.AgentTool {
 		}
 		raw, err := json.Marshal(schema)
 		if err == nil {
-			tools = append(tools, coordinatorTool(name, definition.Description+" Prepare a confirmation card using the current viewer's authority. Read configuration-map and current settings first. The project and retry key are supplied by chat. Submission reads back the result; a preview has not executed.", string(raw)))
+			tools = append(tools, Tool(name, definition.Description+" Prepare a confirmation card using the current viewer's authority. Read configuration-map and current settings first. The project and retry key are supplied by chat. Submission reads back the result; a preview has not executed.", string(raw)))
 		}
 	}
 	return tools
 }
 
-func coordinatorSettingsRequirement(name, project string) operatortool.Requirement {
+func SettingsRequirement(name, project string, fleetRequirement func(string) operatortool.Requirement, projectScope func(string, bool) apikey.Scope) operatortool.Requirement {
 	if name == operatortool.UpdateRunnerCapacity || name == operatortool.UpdateRunnerRouting {
-		r := hubFleetRequirement(name)
+		r := fleetRequirement(name)
 		r.ProjectID = project
 		return r
 	}
-	return operatortool.Requirement{Scope: projectToolScope(name, false), ProjectID: project}
+	return operatortool.Requirement{Scope: projectScope(name, false), ProjectID: project}
 }
 
-func coordinatorSettingsRefusal(name string) error {
+func SettingsRefusal(name string) error {
 	permission, path := "project settings administration (organization owner or admin)", "Settings > Project"
 	if name == "save_onboarding" {
 		permission = "project write access"
@@ -75,7 +75,7 @@ func coordinatorSettingsRefusal(name string) error {
 	return fmt.Errorf("you don't have access to %s; ask an administrator at %s: %w", permission, path, operatortool.ErrAccessDenied)
 }
 
-func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversationRecord, name string, raw json.RawMessage) error {
+func (s SettingsDeps) CheckTarget(ctx context.Context, record conversations.ConversationRecord, name string, raw json.RawMessage) error {
 	var target struct {
 		ProjectID string          `json:"project_id"`
 		RunnerID  string          `json:"runner_id"`
@@ -87,22 +87,22 @@ func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversa
 	if name != operatortool.UpdateRunnerCapacity && name != operatortool.UpdateRunnerRouting {
 		return nil
 	}
-	credential, err := currentHubOperator(ctx)
+	credential, err := s.Operator(ctx)
 	if err != nil {
-		return coordinatorSettingsRefusal(name)
+		return SettingsRefusal(name)
 	}
-	r, err := s.coordinatorRunner(ctx, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential}, target.RunnerID)
+	r, err := s.Runner(ctx, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential}, target.RunnerID)
 	if err != nil || !r.AllowsProject(record.ProjectID) {
-		return coordinatorSettingsRefusal(name)
+		return SettingsRefusal(name)
 	}
 	if name == operatortool.UpdateRunnerRouting {
-		var change runnerRoutingRequest
-		if operatortool.DecodeArguments(target.Change, &change) != nil {
+		change, err := s.DecodeRouting(target.Change)
+		if err != nil {
 			return operatortool.ErrInvalidArguments
 		}
 		for _, project := range append(slices.Clone(r.ProjectIDs), change.ProjectIDs...) {
 			if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(project)}); err != nil {
-				return coordinatorSettingsRefusal(name)
+				return SettingsRefusal(name)
 			}
 		}
 		for _, project := range r.ProjectIDs {
@@ -124,16 +124,16 @@ func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversa
 	return nil
 }
 
-func (t *coordinatorToolset) settingsTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
-	ctx, err := t.actionContext(ctx, record)
+func PreviewSettings(ctx context.Context, record conversations.ConversationRecord, call runner.AgentToolCall, deps SettingsPreviewDeps) (any, error) {
+	ctx, err := deps.ActionContext(ctx, record)
 	if err != nil {
-		return nil, coordinatorSettingsRefusal(call.Name)
+		return nil, SettingsRefusal(call.Name)
 	}
-	ctx, err = operatortool.AuthorizeCurrent(ctx, coordinatorSettingsRequirement(call.Name, string(record.ProjectID)))
+	ctx, err = operatortool.AuthorizeCurrent(ctx, deps.Requirement(call.Name, string(record.ProjectID)))
 	if err != nil {
-		return nil, coordinatorSettingsRefusal(call.Name)
+		return nil, SettingsRefusal(call.Name)
 	}
-	s := t.coordinator.server
+	s := deps.Settings
 	var fields map[string]json.RawMessage
 	if len(call.Arguments) > hubapi.CoordinatorToolArgumentBytes || json.Unmarshal(call.Arguments, &fields) != nil || fields == nil {
 		return nil, operatortool.ErrInvalidArguments
@@ -143,8 +143,7 @@ func (t *coordinatorToolset) settingsTool(ctx context.Context, record conversati
 			return nil, operatortool.ErrInvalidArguments
 		}
 	}
-	digest := sha256.Sum256([]byte(t.state.users[len(t.state.users)-1].ID + ":" + call.Name + ":" + string(call.Arguments)))
-	requestID := "luna_" + hex.EncodeToString(digest[:])
+	requestID := ActionRequestID(deps.MessageID(), call)
 	fields["project_id"], err = json.Marshal(record.ProjectID)
 	if err != nil {
 		return nil, err
@@ -157,57 +156,53 @@ func (t *coordinatorToolset) settingsTool(ctx context.Context, record conversati
 	if err != nil {
 		return nil, err
 	}
-	if err := s.coordinatorSettingsTarget(ctx, record, call.Name, raw); err != nil {
+	if err := s.CheckTarget(ctx, record, call.Name, raw); err != nil {
 		return nil, err
 	}
 	action := chat.Action{Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), RequestID: requestID, Title: strings.ReplaceAll(call.Name, "_", " "), Arguments: raw, Material: true}
-	if hubFleetTool(call.Name) {
-		credential, err := currentHubOperator(ctx)
-		if err != nil || !s.hubFleetReadPermitted(call.Name, credential) {
-			return nil, coordinatorSettingsRefusal(call.Name)
+	if s.FleetTool(call.Name) {
+		credential, err := s.Operator(ctx)
+		if err != nil || !s.FleetPermitted(call.Name, credential) {
+			return nil, SettingsRefusal(call.Name)
 		}
-		proposal, err := (hubFleetExecutor{s}).proposal(ctx, call.Name, raw)
+		proposal, err := deps.PreviewFleet(ctx, call.Name, raw)
 		if err != nil {
 			return nil, err
 		}
 		action.IssueID, action.Identifier, action.CurrentState, action.MaterialChange = proposal.IssueID, proposal.Identifier, proposal.CurrentState, proposal.MaterialChange
-	} else if _, err := (hubProjectExecutor{s}).command(ctx, operatortool.Call{Name: call.Name, Arguments: raw}, projectCommandPreview); err != nil {
-		if errors.Is(projectToolError(err), operatortool.ErrAccessDenied) {
-			return nil, coordinatorSettingsRefusal(call.Name)
+	} else if _, err := deps.PreviewProject(ctx, operatortool.Call{Name: call.Name, Arguments: raw}); err != nil {
+		if errors.Is(deps.ProjectError(err), operatortool.ErrAccessDenied) {
+			return nil, SettingsRefusal(call.Name)
 		}
 		return nil, err
 	}
 	action.Description = "Confirm " + action.Title + ": " + string(call.Arguments)
-	return t.submitCoordinatorAction(ctx, record, call, action)
+	return deps.Submit(ctx, record, call, action)
 }
 
-func (s *Service) executeCoordinatorSettingsAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
-	record := conversationRecord{OrganizationID: tracker.OrganizationID(action.OrganizationID), ProjectID: tracker.ProjectID(action.ProjectID)}
+func (s SettingsDeps) Execute(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	record := conversations.ConversationRecord{OrganizationID: tracker.OrganizationID(action.OrganizationID), ProjectID: tracker.ProjectID(action.ProjectID)}
 	name := string(action.Kind)
-	if err := s.coordinatorSettingsTarget(ctx, record, name, action.Arguments); err != nil {
+	if err := s.CheckTarget(ctx, record, name, action.Arguments); err != nil {
 		return chat.ActionExecution{}, err
 	}
-	if !hubFleetTool(name) {
-		return (hubProjectExecutor{s}).ExecuteAction(ctx, action)
+	if !s.FleetTool(name) {
+		return s.ExecuteProject(ctx, action)
 	}
-	credential, err := currentHubOperator(ctx)
-	if err != nil || !s.hubFleetReadPermitted(name, credential) {
-		return chat.ActionExecution{}, coordinatorSettingsRefusal(name)
+	credential, err := s.Operator(ctx)
+	if err != nil || !s.FleetPermitted(name, credential) {
+		return chat.ActionExecution{}, SettingsRefusal(name)
 	}
-	result, err := (hubFleetExecutor{s}).ExecuteAction(ctx, action)
+	result, err := s.ExecuteFleet(ctx, action)
 	if err != nil {
 		return result, err
 	}
 	if name == operatortool.UpdateRunnerCapacity {
-		var args hubFleetRequest
-		if operatortool.DecodeArguments(action.Arguments, &args) != nil {
+		runnerID, backend, err := s.DecodeCapacity(action.Arguments)
+		if err != nil {
 			return result, operatortool.ErrInvalidArguments
 		}
-		var change runnerCapacityChange
-		if operatortool.DecodeArguments(args.Change, &change) != nil {
-			return result, operatortool.ErrInvalidArguments
-		}
-		view, readErr := s.readRunnerCapacity(ctx, hubscope.NativeScope{Organization: record.OrganizationID, Credential: credential}, args.RunnerID, change.Backend)
+		view, readErr := s.ReadCapacity(ctx, hubscope.NativeScope{Organization: record.OrganizationID, Credential: credential}, runnerID, backend)
 		if readErr != nil {
 			result.Message = "Capacity change accepted; current application evidence is unavailable. Read get_runner_capacity again."
 			return result, nil
@@ -218,7 +213,7 @@ func (s *Service) executeCoordinatorSettingsAction(ctx context.Context, action c
 		}
 		result.Message = "Capacity change accepted. Current configuration and application evidence: " + string(raw)
 	} else {
-		view, readErr := s.coordinatorProjectRunners(ctx, record, credential, true)
+		view, readErr := s.ReadProjectRunners(ctx, record, credential, true)
 		if readErr != nil {
 			result.Message = "Routing change accepted; current evidence is unavailable. Read get_project_runners again."
 			return result, nil

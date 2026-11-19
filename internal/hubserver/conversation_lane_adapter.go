@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/coordinator"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -517,4 +519,111 @@ func (t *coordinatorToolset) issueContextDeps() coordinator.IssueContextDeps {
 
 func (t *coordinatorToolset) workReadContext(ctx context.Context, record conversationRecord) (context.Context, hubscope.NativeScope, error) {
 	return t.issueContextDeps().WorkReadContext(ctx, record)
+}
+
+var coordinatorRunnerTools = coordinator.RunnerTools
+
+type coordinatorRunnerArguments = coordinator.RunnerArguments
+
+var coordinatorSettingsNames = coordinator.SettingsNames
+var coordinatorSettingsTool = coordinator.SettingsTool
+var coordinatorSettingsTools = coordinator.SettingsTools
+
+func (s *Service) coordinatorRunner(ctx context.Context, scope hubscope.NativeScope, id string) (runnerauth.Runner, error) {
+	return s.coordinatorRunnerDeps().Runner(ctx, scope, id)
+}
+
+func (s *Service) coordinatorRunners(ctx context.Context, scope hubscope.NativeScope, args coordinatorRunnerArguments) ([]runnerauth.Runner, error) {
+	return s.coordinatorRunnerDeps().Runners(ctx, scope, args)
+}
+
+func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewRunner(ctx, record, call, t.runnerPreviewDeps())
+}
+
+func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.coordinatorRunnerDeps().Execute(ctx, action)
+}
+
+func coordinatorSettingsRequirement(name, project string) operatortool.Requirement {
+	return coordinator.SettingsRequirement(name, project, hubFleetRequirement, projectToolScope)
+}
+
+func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversationRecord, name string, raw json.RawMessage) error {
+	return s.coordinatorSettingsDeps().CheckTarget(ctx, record, name, raw)
+}
+
+func (t *coordinatorToolset) settingsTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewSettings(ctx, record, call, t.settingsPreviewDeps())
+}
+
+func (s *Service) executeCoordinatorSettingsAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.coordinatorSettingsDeps().Execute(ctx, action)
+}
+
+func (s *Service) coordinatorRunnerDeps() coordinator.RunnerDeps {
+	repository, available := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	return coordinator.RunnerDeps{
+		SnapshotAvailable: available,
+		ReadSnapshot: func(ctx context.Context, org tracker.OrganizationID, read func(tenantstore.Reader) error) error {
+			return repository.ReadTenantSnapshot(ctx, org, corestore.Serving, read)
+		},
+		Authorize: s.authorizeAccessScope,
+		View:      runnerFromRoutingRecord,
+		Scope:     s.coordinatorScope,
+		Now:       s.config.Clock,
+		UpdateRouting: func(ctx context.Context, scope hubscope.NativeScope, id string, change runnerauth.RoutingChange, tier *string) error {
+			_, err := s.updateRunnerRoutingCommand(ctx, scope, id, runnerRoutingRequest{RoutingChange: change, IsolationTier: tier})
+			return err
+		},
+	}
+}
+
+func (t *coordinatorToolset) runnerPreviewDeps() coordinator.RunnerPreviewDeps {
+	return coordinator.RunnerPreviewDeps{
+		ProposalDeps:     t.proposalDeps(),
+		Runners:          t.coordinator.server.coordinatorRunnerDeps(),
+		ReadableProjects: t.readableProjects,
+	}
+}
+
+func (s *Service) coordinatorSettingsDeps() coordinator.SettingsDeps {
+	return coordinator.SettingsDeps{
+		Operator: currentHubOperator,
+		Runner:   s.coordinatorRunner,
+		DecodeRouting: func(raw json.RawMessage) (runnerauth.RoutingChange, error) {
+			var request runnerRoutingRequest
+			err := operatortool.DecodeArguments(raw, &request)
+			return request.RoutingChange, err
+		},
+		DecodeCapacity: func(raw json.RawMessage) (string, string, error) {
+			var args hubFleetRequest
+			if err := operatortool.DecodeArguments(raw, &args); err != nil {
+				return "", "", err
+			}
+			var change runnerCapacityChange
+			err := operatortool.DecodeArguments(args.Change, &change)
+			return args.RunnerID, change.Backend, err
+		},
+		FleetTool:          hubFleetTool,
+		FleetPermitted:     s.hubFleetReadPermitted,
+		ExecuteProject:     (hubProjectExecutor{s}).ExecuteAction,
+		ExecuteFleet:       (hubFleetExecutor{s}).ExecuteAction,
+		ReadCapacity:       s.readRunnerCapacity,
+		ReadProjectRunners: s.coordinatorProjectRunners,
+	}
+}
+
+func (t *coordinatorToolset) settingsPreviewDeps() coordinator.SettingsPreviewDeps {
+	s := t.coordinator.server
+	return coordinator.SettingsPreviewDeps{
+		ProposalDeps: t.proposalDeps(),
+		Settings:     s.coordinatorSettingsDeps(),
+		Requirement:  coordinatorSettingsRequirement,
+		PreviewFleet: (hubFleetExecutor{s}).proposal,
+		PreviewProject: func(ctx context.Context, call operatortool.Call) (json.RawMessage, error) {
+			return (hubProjectExecutor{s}).command(ctx, call, projectCommandPreview)
+		},
+		ProjectError: projectToolError,
+	}
 }
