@@ -2427,20 +2427,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/hubtest/pgwire/wire.go": {
-      "disposition": "target-adapter",
-      "families": [
-        "lifecycle"
-      ],
-      "inventory": {
-        "operations": {
-          "Repository:ExecContext": 1,
-          "Repository:QueryContext": 1,
-          "Repository:SQL": 2
-        },
-        "tables": []
-      }
-    },
     "internal/hubserver/integration/hubfixture/hub.go": {
       "disposition": "target-adapter",
       "families": [
