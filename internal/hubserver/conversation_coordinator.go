@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,10 +23,8 @@ import (
 // Coordinator limits. The durable store is the queue, so every limit here
 // bounds a single process rather than the amount of stored work.
 const (
-	coordinatorConcurrency        = 4
-	coordinatorTurnTimeout        = coordinator.TurnTimeout
-	coordinatorDeltaFlushInterval = 150 * time.Millisecond
-	coordinatorDeltaFlushBytes    = 2048
+	coordinatorConcurrency = 4
+	coordinatorTurnTimeout = coordinator.TurnTimeout
 
 	// coordinatorPendingMessages and coordinatorPendingRunes bound the
 	// prompt a single turn carries: the durable store may hold far more
@@ -307,30 +304,18 @@ func (c *conversationTurnCoordinator) appendPreparedMessage(ctx context.Context,
 	})
 }
 
-// coordinatorTurnState is the mutable state of one running turn. mu
-// serializes the delta buffer, the assistant message and tool messages
-// between the backend's update callback, the flush ticker and completion.
 type coordinatorTurnState struct {
+	output         coordinator.TurnOutput
 	coordinator    *conversationTurnCoordinator
 	conversationID string
 	organizationID tracker.OrganizationID
 	projectID      tracker.ProjectID
-	model          string
-	usage          runner.AgentTokenCounts
-	normalizeUsage func(runner.AgentTokenUsage) runner.AgentTokenUsage
-	mu             sync.Mutex
-	assistant      conversationMessageRecord
 	users          []conversationMessageRecord
-	buffered       strings.Builder
-	firstBuffered  time.Time
-	textBoundary   bool
-	threadID       string
 	// preferences are the conversation's turn preferences as they stood when
 	// the turn started.
 	preferences   conversation.Preferences
 	modelChoice   bool
 	budgetStopped bool
-	toolMessages  map[string]conversationMessageRecord
 }
 
 // runTurn marks pending messages as sending, streams one backend turn into
@@ -375,17 +360,20 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		conversationID: conversationID,
 		organizationID: started.OrganizationID,
 		projectID:      started.ProjectID,
-		assistant:      started.Assistant,
 		users:          started.Users,
-		threadID:       started.ThreadID,
 		preferences:    started.Preferences,
 		modelChoice:    started.ModelChoice,
-		toolMessages:   map[string]conversationMessageRecord{},
 	}
 	refusal := started.Refusal
-
 	if refusal != nil {
-		state.assistant.Text = refusal.Error()
+		started.Assistant.Text = refusal.Error()
+	}
+	state.output.Initialize(conversationID, started.ThreadID, started.Assistant, coordinator.TurnEventDeps{
+		Write:           c.write,
+		PrepareContents: c.service.PrepareConversationContents,
+		Logger:          c.logger,
+	})
+	if refusal != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), coordinatorWriteTimeout)
 		defer cancel()
 		return true, state.finish(ctx, conversation.DeliveryFailed, refusal, nil)
@@ -404,16 +392,15 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		IssueContext:      tools.issueContext,
 	}
 	prompt, runErr := promptDeps.Assemble(turnCtx, conversationID, started.Transcript, state.users)
-	request, backend, runErr := coordinator.TurnRequest(c.service.Config, c.server.hasLunaCoordinator(), state.modelChoice, state.preferences, state.threadID, prompt, runErr)
-	state.model = request.Model
+	request, backend, runErr := coordinator.TurnRequest(c.service.Config, c.server.hasLunaCoordinator(), state.modelChoice, state.preferences, started.ThreadID, prompt, runErr)
 	_, genkit := backend.(*genkitbackend.Backend)
-	state.normalizeUsage = runner.NewTokenUsageNormalizer(request.Resume.ThreadID != "" && !genkit)
+	state.output.ConfigureModel(request.Model, runner.NewTokenUsageNormalizer(request.Resume.ThreadID != "" && !genkit))
 	var result runner.AgentTurnResult
 	if runErr == nil {
 		// A turn that cannot read its attachments ends as failed through
 		// the same completion as a provider failure, so its messages and
 		// execution never stay in flight.
-		stopFlusher := state.startFlusher(turnCtx)
+		stopFlusher := startCoordinatorOutputFlusher(turnCtx, state.output.Flush)
 		result, runErr = c.callBackend(turnCtx, backend, request, state)
 		stopFlusher()
 	}
@@ -421,9 +408,9 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	// outcome rather than lose it.
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), coordinatorWriteTimeout)
 	defer cancelWrite()
-	state.flush(writeCtx)
+	state.output.Flush(writeCtx)
 	if result.ThreadID != "" {
-		state.observeThread(writeCtx, result.ThreadID)
+		state.output.ObserveThread(writeCtx, result.ThreadID)
 	}
 
 	c.mu.Lock()
@@ -435,12 +422,13 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	}
 	outcome := coordinatorOutcome(runErr, cancelled)
 	var usage *ConversationUsage
-	if state.usage.InputTokens > 0 || state.usage.OutputTokens > 0 {
+	assistant, model, tokens := state.output.Summary()
+	if tokens.InputTokens > 0 || tokens.OutputTokens > 0 {
 		provider := "codex"
 		if genkit {
 			provider = "openai"
 		}
-		usage = &ConversationUsage{OrganizationID: state.organizationID, ProjectID: state.projectID, ConversationID: conversationID, TurnID: state.assistant.ID, Provider: provider, Model: state.model, Tokens: state.usage, Outcome: outcome, OccurredAt: state.assistant.CreatedAt}
+		usage = &ConversationUsage{OrganizationID: state.organizationID, ProjectID: state.projectID, ConversationID: conversationID, TurnID: assistant.ID, Provider: provider, Model: model, Tokens: tokens, Outcome: outcome, OccurredAt: assistant.CreatedAt}
 	}
 	var durableUsage *ConversationUsage
 	if c.service.Config.UsageSink == c.server.database {
@@ -462,96 +450,19 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	return true, nil
 }
 
-// coordinatorAttachment is one text file a pending message carries, with its
-// bytes read from the store.
-func (s *coordinatorTurnState) handleUpdate(ctx context.Context, update runner.AgentUpdate) {
-	if model := strings.TrimSpace(update.Model); model != "" {
-		s.mu.Lock()
-		s.model = model
-		s.mu.Unlock()
-	}
-	if update.ThreadID != "" {
-		s.observeThread(ctx, update.ThreadID)
-	}
-	switch update.Type {
-	case runner.AgentUpdateMessageDelta:
-		s.bufferDelta(ctx, update.Delta)
-	case runner.AgentUpdateTokenUsage:
-		s.mu.Lock()
-		if s.normalizeUsage != nil {
-			update.Tokens = s.normalizeUsage(update.Tokens)
-		}
-		s.usage = runner.AgentTokenCounts{
-			InputTokens: update.Tokens.InputTokens, CachedInputTokens: update.Tokens.CachedInputTokens,
-			OutputTokens: update.Tokens.OutputTokens, ReasoningOutputTokens: update.Tokens.ReasoningOutputTokens,
-			TotalTokens: update.Tokens.TotalTokens,
-		}
-		s.mu.Unlock()
-	case runner.AgentUpdateToolStarted, runner.AgentUpdateToolCompleted:
-		s.endTextSegment(ctx)
-		s.recordTool(ctx, update)
-	}
-}
-
-// observeThread persists a provider thread id the first time it is seen or
-// when it changes.
-func (s *coordinatorTurnState) observeThread(ctx context.Context, threadID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if threadID == "" || threadID == s.threadID {
-		return
-	}
-	s.threadID = threadID
-	err := coordinator.PublishProviderThread(ctx, s.coordinator.write, s.conversationID, threadID)
-	if err != nil {
-		s.coordinator.logger.Warn("coordinator could not persist provider thread", "conversation_id", s.conversationID, "error", err)
-	}
-}
-
-func (s *coordinatorTurnState) bufferDelta(ctx context.Context, delta string) {
-	if delta == "" {
-		return
-	}
-	s.mu.Lock()
-	if s.buffered.Len() == 0 {
-		s.firstBuffered = time.Now()
-	}
-	if s.textBoundary {
-		if s.assistant.Text != "" {
-			s.buffered.WriteString("\n\n")
-		}
-		s.textBoundary = false
-	}
-	s.buffered.WriteString(delta)
-	due := s.buffered.Len() >= coordinatorDeltaFlushBytes || time.Since(s.firstBuffered) >= coordinatorDeltaFlushInterval
-	s.mu.Unlock()
-	if due {
-		s.flush(ctx)
-	}
-}
-
-func (s *coordinatorTurnState) endTextSegment(ctx context.Context) {
-	s.flush(ctx)
-	s.mu.Lock()
-	s.textBoundary = true
-	s.mu.Unlock()
-}
-
-// startFlusher writes buffered deltas at the coalescing interval. The
-// returned function stops it and waits for it to exit.
-func (s *coordinatorTurnState) startFlusher(ctx context.Context) func() {
+func startCoordinatorOutputFlusher(ctx context.Context, flush func(context.Context)) func() {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(coordinatorDeltaFlushInterval)
+		ticker := time.NewTicker(coordinator.DeltaFlushInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-stop:
 				return
 			case <-ticker.C:
-				s.flush(ctx)
+				flush(ctx)
 			}
 		}
 	}()
@@ -559,37 +470,4 @@ func (s *coordinatorTurnState) startFlusher(ctx context.Context) func() {
 		close(stop)
 		<-done
 	}
-}
-
-// flush stores the buffered text as one delta event.
-func (s *coordinatorTurnState) flush(ctx context.Context) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.buffered.Len() == 0 {
-		return
-	}
-	text := s.buffered.String()
-	s.buffered.Reset()
-	updated, err := coordinator.PublishDelta(ctx, s.coordinator.write, s.conversationID, s.assistant, text)
-	if err == nil {
-		s.assistant = updated
-	}
-	if err != nil {
-		// Keep the text so the completion write carries it.
-		s.assistant.Text += text
-		s.coordinator.logger.Warn("coordinator could not persist delta", "conversation_id", s.conversationID, "error", err)
-	}
-}
-
-// recordTool appends a system tool message when a tool starts and updates
-// it with the outcome when it completes.
-func (s *coordinatorTurnState) recordTool(ctx context.Context, update runner.AgentUpdate) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	deps := coordinator.TurnEventDeps{
-		Write:           s.coordinator.write,
-		PrepareContents: s.coordinator.service.PrepareConversationContents,
-		Logger:          s.coordinator.logger,
-	}
-	deps.PublishToolUpdate(ctx, s.conversationID, s.threadID, s.toolMessages, update)
 }

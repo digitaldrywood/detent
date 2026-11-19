@@ -1017,7 +1017,7 @@ var errCoordinatorRevision = coordinator.ErrRevision
 var errCoordinatorLinked = coordinator.ErrLinked
 
 func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend runner.AgentBackend, request runner.AgentTurnRequest, state *coordinatorTurnState) (runner.AgentTurnResult, error) {
-	return coordinator.CallBackend(ctx, backend, request, c.stop, state.handleUpdate, func() ([]runner.AgentTool, runner.AgentToolHandler) {
+	return coordinator.CallBackend(ctx, backend, request, c.stop, state.output.HandleUpdate, func() ([]runner.AgentTool, runner.AgentToolHandler) {
 		toolset := newCoordinatorToolset(c, state)
 		return toolset.tools(), toolset.handle
 	})
@@ -1242,7 +1242,7 @@ func (t *coordinatorToolset) toolDeps() coordinator.ToolDeps {
 	deps := coordinator.ToolDeps{
 		ConversationID: t.state.conversationID,
 		Logger:         t.coordinator.logger,
-		EndSegment:     t.state.endTextSegment,
+		EndSegment:     t.state.output.EndTextSegment,
 		ReadConversation: func(ctx context.Context) (conversationRecord, error) {
 			return t.coordinator.readConversation(ctx, nil, t.state.conversationID)
 		},
@@ -1298,17 +1298,14 @@ func (t *coordinatorToolset) workToolDeps() coordinator.WorkToolDeps {
 }
 
 func (t *coordinatorToolset) publishIssueProposal(ctx context.Context, id string, message conversationMessageRecord) error {
-	t.state.mu.Lock()
-	defer t.state.mu.Unlock()
-	message.ThreadID = t.state.threadID
-	return t.coordinator.appendPreparedMessage(ctx, id, message)
+	return t.state.output.AppendThreadMessage(ctx, id, message, t.coordinator.appendPreparedMessage)
 }
 func (t *coordinatorToolset) projectAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, requireConfirmation ...bool) (any, error) {
 	return t.projectActionDeps().Preview(ctx, record, call, requireConfirmation...)
 }
 
 func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, action chat.Action) (any, error) {
-	return coordinator.SubmitAction(ctx, record, call, action, t.proposalDeps().MessageID, t.state.model, t.coordinator.appendPreparedMessage)
+	return coordinator.SubmitAction(ctx, record, call, action, t.proposalDeps().MessageID, t.state.output.Model(), t.coordinator.appendPreparedMessage)
 }
 
 func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
@@ -1526,8 +1523,6 @@ func (c *conversationTurnCoordinator) turnAdmissionDeps() coordinator.TurnAdmiss
 }
 
 func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.Delivery, runErr error, usage *ConversationUsage) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	deps := coordinator.TurnFinishDeps{
 		PrepareContents: s.coordinator.service.PrepareConversationContents,
 		PrepareUsage: func(ctx context.Context, usage ConversationUsage) (func(context.Context, tenantstore.Writer) error, error) {
@@ -1541,5 +1536,5 @@ func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.
 		},
 		Write: s.coordinator.write,
 	}
-	return deps.Finish(ctx, s.conversationID, s.threadID, &s.assistant, s.users, s.budgetStopped, outcome, runErr, usage)
+	return s.output.Finish(ctx, deps, s.users, s.budgetStopped, outcome, runErr, usage)
 }
