@@ -64,6 +64,11 @@ func workspaceIssueKey(issue Issue) string {
 	return key
 }
 
+func (a AttemptWorkspace) permitsCheckout(key string) bool {
+	owner, _ := splitCheckoutIssueKey(key)
+	return owner == "" || owner == a.Key()
+}
+
 func (a AttemptWorkspace) PrepareScratch(root string) (string, error) {
 	key := a.Key()
 	if key == "" {

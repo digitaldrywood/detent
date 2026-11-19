@@ -1019,6 +1019,9 @@ func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 		return Info{}, errors.New("workspace requires an exact attempt")
 	}
 	key := workspaceIssueKey(issue)
+	if !issue.AttemptWorkspace.permitsCheckout(key) {
+		return Info{}, ErrMissingWorkspace
+	}
 	path, err := l.workspacePathForIssue(issue, key)
 	if err != nil {
 		return Info{}, err
@@ -1072,6 +1075,9 @@ func (l *LocalGit) BranchHold(ctx context.Context, issue Issue) (BranchHold, boo
 }
 
 func (l *LocalGit) normalizeInfo(info Info, issue Issue) (Info, error) {
+	if !issue.AttemptWorkspace.permitsCheckout(info.Key) || !issue.AttemptWorkspace.permitsCheckout(filepath.Base(info.Path)) {
+		return Info{}, ErrMissingWorkspace
+	}
 	if issue.AttemptWorkspace != (AttemptWorkspace{}) {
 		expected, err := l.infoForIssue(issue)
 		if err != nil {
