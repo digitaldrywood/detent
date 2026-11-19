@@ -21,12 +21,12 @@ import (
 )
 
 type HTTPDeps struct {
+	ReadOperatorWorkspace   func(context.Context, hubscope.NativeScope, string) (workspacehub.Record, error)
 	Relay                   *Relay
 	AccessRead              func(context.Context, tracker.OrganizationID, func(tenantstore.Reader) error) error
 	AccessWrite             func(context.Context, tracker.OrganizationID, func(tenantstore.Writer) error) error
 	AuthInput               func(hubscope.NativeScope) hubauth.Input
 	AuthorizeAccessScope    func(context.Context, accessstore.Reader, hubscope.NativeScope, bool) error
-	AuthorizeSubject        func(context.Context, tenantstore.Reader, hubscope.NativeScope, string) error
 	NativeAPIError          func(echo.Context, error, ...any) error
 	Repository              func() tenantstore.Repository
 	Clock                   func() time.Time
@@ -58,7 +58,4 @@ type HTTP struct {
 
 func (w *HTTP) now() time.Time { return w.Clock().UTC() }
 
-type WorkerIdentity struct {
-	LeaseID      tracker.LeaseID      `json:"lease_id"`
-	FencingToken tracker.FencingToken `json:"fencing_token,string"`
-}
+type WorkerIdentity = workspacehub.WorkerIdentity

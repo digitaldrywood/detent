@@ -98,7 +98,7 @@ func (w *workspaceService) newLifecycle() *workspacehub.Service {
 		PrepareIssueClose: func(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, item string, now time.Time) (func(context.Context, tenantstore.Writer) error, error) {
 			scope := hubscope.NativeScope{Organization: organization, Project: project, SourceActor: &tracker.Actor{Kind: "system", PrincipalID: "workspace_service"}}
 			plan, err := w.server.prepareWorkspaceIssueClose(ctx, scope, item, now)
-			return plan.write, err
+			return plan.Write, err
 		},
 		Committed: func(ctx context.Context, record workspacehub.Record) { w.committed(ctx, workspaceRecord(record)) },
 	})

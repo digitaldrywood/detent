@@ -1,4 +1,4 @@
-package hubserver
+package workspacehub
 
 import (
 	"context"
@@ -24,8 +24,8 @@ import (
 // actor needs write on the project; terminal in requires also needs the
 // grant's runners flag.
 
-// workspaceRequest is the body of POST /workspaces.
-type workspaceRequest struct {
+// Request is the body of POST /workspaces.
+type Request struct {
 	tracker.Mutation
 	// WorkItemID and AttemptID name what to open; at least one is required,
 	// and naming both is only allowed when they agree. Ref narrows what the
@@ -39,8 +39,8 @@ type workspaceRequest struct {
 	Requires   []string `json:"requires,omitempty"`
 }
 
-// workspaceListResponse is the listing shape.
-type workspaceListResponse struct {
+// ListResponse is the listing shape.
+type ListResponse struct {
 	ChangeSequence int64                      `json:"change_sequence"`
 	Workspaces     []workspacesession.Session `json:"workspaces"`
 }
@@ -55,27 +55,20 @@ const workspaceListLimit = 100
 const maxWorkspaceRefBytes = 512
 
 // workspaces returns the service, or the refusal a hub without one gives.
-func (s *Service) requireWorkspaces() (*workspaceService, error) {
-	if s.workspaces == nil {
-		return nil, hubapi.WorkspaceUnavailable()
-	}
-	return s.workspaces, nil
-}
-
 // createWorkspace implements POST {nativeBase}/workspaces.
-func (s *Service) createWorkspace(c echo.Context) error {
-	var request workspaceRequest
+func (o *Operations) Create(c echo.Context) error {
+	var request Request
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return o.InvalidAPIRequest(c, err)
 	}
-	value, err := s.commandCreateWorkspace(c.Request().Context(), hubscope.NativeRequestScope(c), request)
+	value, err := o.CreateRecord(c.Request().Context(), hubscope.NativeRequestScope(c), request)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return o.NativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusCreated, value)
 }
 
-func (w *workspaceService) workspaceCreationSubject(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request workspaceRequest) (corestore.WorkItem, bool, error) {
+func (o *Operations) workspaceCreationSubject(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request Request) (corestore.WorkItem, bool, error) {
 	item := request.WorkItemID
 	running := false
 	if request.AttemptID != "" {
@@ -117,13 +110,13 @@ func (w *workspaceService) workspaceCreationSubject(ctx context.Context, r tenan
 			}
 		}
 	}
-	if err := w.authorizeWorkspaceCreationRequires(ctx, r, scope, request.Requires); err != nil {
+	if err := o.authorizeWorkspaceCreationRequires(ctx, r, scope, request.Requires); err != nil {
 		return subject, false, err
 	}
 	return subject, running, nil
 }
 
-func (w *workspaceService) authorizeWorkspaceCreationRequires(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, requires []string) error {
+func (o *Operations) authorizeWorkspaceCreationRequires(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, requires []string) error {
 	terminal := false
 	for _, name := range requires {
 		terminal = terminal || name == workspacesession.CapabilityTerminal
@@ -131,7 +124,7 @@ func (w *workspaceService) authorizeWorkspaceCreationRequires(ctx context.Contex
 	if !terminal {
 		return nil
 	}
-	if !w.config.Terminal.Enabled {
+	if !o.Config().Terminal.Enabled {
 		return &hubapi.NativeError{Code: "forbidden", Message: "Terminals are turned off for this organization", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	if scope.Credential.Hosted == nil {
@@ -144,42 +137,42 @@ func (w *workspaceService) authorizeWorkspaceCreationRequires(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	if w.config.Terminal.Isolation == workspacesession.IsolationUser && scope.Credential.HostedRole != "owner" && scope.Credential.HostedRole != "admin" {
+	if o.Config().Terminal.Isolation == workspacesession.IsolationUser && scope.Credential.HostedRole != "owner" && scope.Credential.HostedRole != "admin" {
 		return &hubapi.NativeError{Code: "forbidden", Message: "This organization runs terminals as the runner's own user, which only an owner or admin may open", Status: http.StatusForbidden, PublicMessage: true}
 	}
-	if scope.Credential.Hosted.SupportReason != "" && w.config.Terminal.Isolation != workspacesession.IsolationContainer {
+	if scope.Credential.Hosted.SupportReason != "" && o.Config().Terminal.Isolation != workspacesession.IsolationContainer {
 		return &hubapi.NativeError{Code: "forbidden", Message: "A support session may open a terminal only at container isolation", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	return nil
 }
 
 // listWorkspaces implements GET {nativeBase}/workspaces.
-func (s *Service) listWorkspaces(c echo.Context) error {
+func (o *Operations) List(c echo.Context) error {
 	if err := hubapi.ValidateNativeQuery(c.QueryParams(), "work_item", "state"); err != nil {
-		return s.nativeAPIError(c, err)
+		return o.NativeAPIError(c, err)
 	}
-	value, err := s.readWorkspaces(c.Request().Context(), hubscope.NativeRequestScope(c), c.QueryParam("work_item"), c.QueryParam("state"), workspaceListLimit)
+	value, err := o.ReadRecords(c.Request().Context(), hubscope.NativeRequestScope(c), c.QueryParam("work_item"), c.QueryParam("state"), workspaceListLimit)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return o.NativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, value)
 }
 
 // getWorkspace implements GET {nativeBase}/workspaces/:workspace.
-func (s *Service) getWorkspace(c echo.Context) error {
-	value, err := s.readWorkspace(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("workspace"))
+func (o *Operations) Get(c echo.Context) error {
+	value, err := o.ReadRecord(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("workspace"))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return o.NativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, value)
 }
 
 // deleteWorkspace implements DELETE {nativeBase}/workspaces/:workspace. It
 // closes the workspace; closing one never deletes the attempt's artifacts.
-func (s *Service) deleteWorkspace(c echo.Context) error {
-	_, err := s.commandCloseWorkspace(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("workspace"))
+func (o *Operations) Delete(c echo.Context) error {
+	_, err := o.CloseRecord(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("workspace"))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return o.NativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -194,48 +187,48 @@ func (s *Service) deleteWorkspace(c echo.Context) error {
 // to "the person who ran the session" in so many words, and the absence of that
 // clause here is the contract, not an omission. A surface never widens an
 // audience on its own.
-func workspaceAuditReadable(scope hubscope.NativeScope, _ workspaceRecord) bool {
+func workspaceAuditReadable(scope hubscope.NativeScope, _ Record) bool {
 	return scope.Credential.HostedRole == "owner" || scope.Credential.HostedRole == "admin"
 }
 
-func normalizeWorkspaceRequest(request workspaceRequest) (workspaceRequest, error) {
+func normalizeWorkspaceRequest(request Request) (Request, error) {
 	requires, err := workspacesession.NormalizeRequires(request.Requires)
 	if err != nil {
-		return workspaceRequest{}, hubapi.NativeInvalid(err.Error())
+		return Request{}, hubapi.NativeInvalid(err.Error())
 	}
-	request.Requires = relayedRequires(requires)
+	request.Requires = RelayedRequires(requires)
 	if len(request.Ref) > maxWorkspaceRefBytes {
-		return workspaceRequest{}, hubapi.NativePublicInvalid("ref is too long")
+		return Request{}, hubapi.NativePublicInvalid("ref is too long")
 	}
 	if request.WorkItemID == "" && request.AttemptID == "" {
-		return workspaceRequest{}, hubapi.NativePublicInvalid("A work item or an attempt is required")
+		return Request{}, hubapi.NativePublicInvalid("A work item or an attempt is required")
 	}
 	if request.AttemptID != "" && !hubapi.ValidID(request.AttemptID, "attempt") {
-		return workspaceRequest{}, hubapi.NativePublicInvalid("attempt_id must be a typed attempt identifier")
+		return Request{}, hubapi.NativePublicInvalid("attempt_id must be a typed attempt identifier")
 	}
 	return request, nil
 }
 
-func (s *Service) commandCloseWorkspace(ctx context.Context, scope hubscope.NativeScope, id string) (json.RawMessage, error) {
-	service, err := s.requireWorkspaces()
+func (o *Operations) CloseRecord(ctx context.Context, scope hubscope.NativeScope, id string) (json.RawMessage, error) {
+	err := o.RequireWorkspaces()
 	if err != nil {
 		return nil, err
 	}
-	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+	if o.Repository() == nil || o.AccessRepository() == nil {
 		return nil, hubapi.WorkspaceUnavailable()
 	}
-	ctx = allowWorkspaceLabel(ctx)
+	ctx = AllowLabel(ctx)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		if err := o.RecheckProjectRecordMutation(ctx, scope); err != nil {
 			return nil, err
 		}
 		var current postgres.WorkspaceSession
 		var dispatchItem string
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-			if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
+		err = o.Repository().ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := o.AuthorizeWorkItemRecordScope(ctx, r, scope); err != nil {
 				return err
 			}
 			owner, ok := r.(postgres.WorkspaceReader)
@@ -247,7 +240,7 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope hubscope.Nati
 			if err != nil {
 				return hubapi.ProjectRecordError(err)
 			}
-			if err := workspaceReadableSubject(ctx, r, scope, current.SubjectWorkItemID); err != nil {
+			if err := ReadableSubject(ctx, r, scope, current.SubjectWorkItemID); err != nil {
 				return hubapi.ProjectRecordError(err)
 			}
 			if workspacesession.Terminal(current.State) {
@@ -271,23 +264,23 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope hubscope.Nati
 		if workspacesession.Terminal(current.State) {
 			return json.RawMessage(`{"deleted":true}`), nil
 		}
-		now := s.config.Clock().UTC().Truncate(time.Microsecond)
-		closure, err := s.prepareWorkspaceIssueClose(ctx, scope, dispatchItem, now)
+		now := o.Clock().UTC().Truncate(time.Microsecond)
+		closure, err := o.PrepareIssueClose(ctx, scope, dispatchItem, now)
 		if err != nil {
 			return nil, err
 		}
-		authority, err := s.beginProjectRecordAuthority(ctx, scope)
+		authority, err := o.BeginProjectRecordAuthority(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		err = o.Repository().WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.LockAccessOrganization(ctx); err != nil {
 				return err
 			}
 			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
-			if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
+			if err := o.AuthorizeWorkItemRecordScope(ctx, w, scope); err != nil {
 				return err
 			}
 			owner, ok := w.(postgres.WorkspaceWriter)
@@ -301,7 +294,7 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope hubscope.Nati
 			if row.Revision != current.Revision || row.LeaseID != current.LeaseID || row.FencingToken != current.FencingToken || row.RunnerID != current.RunnerID {
 				return corestore.ErrSerializationFailure
 			}
-			if err := workspaceReadableSubject(ctx, w, scope, row.SubjectWorkItemID); err != nil {
+			if err := ReadableSubject(ctx, w, scope, row.SubjectWorkItemID); err != nil {
 				return hubapi.ProjectRecordError(err)
 			}
 			item, err := owner.WorkspaceDispatchItem(ctx, scope.Project, id)
@@ -314,7 +307,7 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope hubscope.Nati
 			if dispatchItem != "" && (err != nil || item.ClosedAt != nil || string(item.WorkItemID) != dispatchItem) {
 				return corestore.ErrSerializationFailure
 			}
-			if err := closure.write(ctx, w); err != nil {
+			if err := closure.Write(ctx, w); err != nil {
 				return err
 			}
 			if dispatchItem != "" {
@@ -337,7 +330,7 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope hubscope.Nati
 					return err
 				}
 			}
-			return s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), http.StatusNoContent)
+			return o.RecordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), http.StatusNoContent)
 		})
 		err = errors.Join(err, hubrecords.ReleaseWorkItemAuthority(authority))
 		if errors.Is(err, corestore.ErrSerializationFailure) {
@@ -346,12 +339,12 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope hubscope.Nati
 		if err != nil {
 			return nil, hubapi.ProjectRecordError(err)
 		}
-		service.committed(ctx, workspaceRecord{ID: id, OrganizationID: scope.Organization, ProjectID: scope.Project, State: workspacesession.StateClosed, Reason: workspacesession.ReasonClosedByActor, RunnerID: current.RunnerID, MachineID: tracker.MachineID(current.MachineID), LeaseID: tracker.LeaseID(current.LeaseID), FencingToken: tracker.FencingToken(current.FencingToken)})
+		o.Committed(ctx, Record{ID: id, OrganizationID: scope.Organization, ProjectID: scope.Project, State: workspacesession.StateClosed, Reason: workspacesession.ReasonClosedByActor, RunnerID: current.RunnerID, MachineID: tracker.MachineID(current.MachineID), LeaseID: tracker.LeaseID(current.LeaseID), FencingToken: tracker.FencingToken(current.FencingToken)})
 		return json.RawMessage(`{"deleted":true}`), nil
 	}
 }
 
-func workspaceReadableSubject(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id string) error {
+func ReadableSubject(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id string) error {
 	row, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(id))
 	if err != nil {
 		return err
@@ -362,9 +355,9 @@ func workspaceReadableSubject(ctx context.Context, r tenantstore.Reader, scope h
 	return nil
 }
 
-func (w *workspaceService) presentWorkspaceRecord(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, row postgres.WorkspaceSession) (workspacesession.Session, error) {
-	record := workspaceTenantRecord(row)
-	resource := record.resource()
+func (o *Operations) PresentRecord(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, row postgres.WorkspaceSession) (workspacesession.Session, error) {
+	record := sessionRecord(row)
+	resource := record.Resource()
 	if !workspaceAuditReadable(scope, record) {
 		return resource, nil
 	}
@@ -382,10 +375,10 @@ func (w *workspaceService) presentWorkspaceRecord(ctx context.Context, r tenants
 	return resource, nil
 }
 
-func (s *Service) readWorkspaces(ctx context.Context, scope hubscope.NativeScope, item, state string, limit int) (json.RawMessage, error) {
+func (o *Operations) ReadRecords(ctx context.Context, scope hubscope.NativeScope, item, state string, limit int) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	service, err := s.requireWorkspaces()
+	err := o.RequireWorkspaces()
 	if err != nil {
 		return nil, err
 	}
@@ -393,13 +386,13 @@ func (s *Service) readWorkspaces(ctx context.Context, scope hubscope.NativeScope
 	if state != "" && !workspacesession.ValidState(state) {
 		return nil, hubapi.NativePublicInvalid("state names no workspace state")
 	}
-	response := workspaceListResponse{Workspaces: make([]workspacesession.Session, 0)}
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	response := ListResponse{Workspaces: make([]workspacesession.Session, 0)}
+	repository, ok := o.Repository().(tenantstore.SnapshotRepository)
 	if !ok {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+		if err := o.AuthorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
 		project, err := r.Project(ctx, scope.Project)
@@ -415,7 +408,7 @@ func (s *Service) readWorkspaces(ctx context.Context, scope hubscope.NativeScope
 			return err
 		}
 		if item != "" {
-			if err := workspaceReadableSubject(ctx, r, scope, item); err != nil {
+			if err := ReadableSubject(ctx, r, scope, item); err != nil {
 				return err
 			}
 		}
@@ -429,13 +422,13 @@ func (s *Service) readWorkspaces(ctx context.Context, scope hubscope.NativeScope
 		}
 		for _, row := range rows {
 			if item == "" {
-				if err := workspaceReadableSubject(ctx, r, scope, row.SubjectWorkItemID); errors.Is(err, corestore.ErrNotFound) {
+				if err := ReadableSubject(ctx, r, scope, row.SubjectWorkItemID); errors.Is(err, corestore.ErrNotFound) {
 					continue
 				} else if err != nil {
 					return err
 				}
 			}
-			resource, err := service.presentWorkspaceRecord(ctx, r, scope, row)
+			resource, err := o.PresentRecord(ctx, r, scope, row)
 			if err != nil {
 				return err
 			}
@@ -449,17 +442,17 @@ func (s *Service) readWorkspaces(ctx context.Context, scope hubscope.NativeScope
 	return json.Marshal(response)
 }
 
-func (s *Service) readWorkspace(ctx context.Context, scope hubscope.NativeScope, id string) (json.RawMessage, error) {
+func (o *Operations) ReadRecord(ctx context.Context, scope hubscope.NativeScope, id string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	service, err := s.requireWorkspaces()
+	err := o.RequireWorkspaces()
 	if err != nil {
 		return nil, err
 	}
 	var resource workspacesession.Session
 	var watermark int64
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+	err = o.Repository().ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := o.AuthorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
 		project, err := r.Project(ctx, scope.Project)
@@ -477,14 +470,14 @@ func (s *Service) readWorkspace(ctx context.Context, scope hubscope.NativeScope,
 		if err != nil {
 			return err
 		}
-		if err := workspaceReadableSubject(ctx, r, scope, row.SubjectWorkItemID); err != nil {
+		if err := ReadableSubject(ctx, r, scope, row.SubjectWorkItemID); err != nil {
 			return err
 		}
 		watermark, err = r.ProjectEventSequence(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		resource, err = service.presentWorkspaceRecord(ctx, r, scope, row)
+		resource, err = o.PresentRecord(ctx, r, scope, row)
 		return err
 	})
 	if err != nil {
@@ -494,4 +487,8 @@ func (s *Service) readWorkspace(ctx context.Context, scope hubscope.NativeScope,
 		workspacesession.Session
 		ChangeSequence int64 `json:"change_sequence"`
 	}{resource, watermark})
+}
+
+func sessionRecord(row postgres.WorkspaceSession) Record {
+	return TenantRecord(Row(row))
 }
