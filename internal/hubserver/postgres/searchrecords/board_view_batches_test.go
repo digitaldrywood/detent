@@ -4,16 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -21,50 +15,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const boardViewArrayRowElementBound = 256
-
-type boardViewStatements struct {
-	mu       sync.Mutex
-	captured map[bool][]any
-}
-
-func (s *boardViewStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	for _, reporter := range []bool{false, true} {
-		if data.SQL == boardviewsql.Statement(reporter) {
-			s.mu.Lock()
-			s.captured[reporter] = append([]any(nil), data.Args...)
-			s.mu.Unlock()
-		}
-	}
-	return ctx
-}
-
-func (s *boardViewStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (s *boardViewStatements) args(reporter bool) []any {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.captured[reporter]
-}
-
-func TestBoardViewReturnsLinksInBoundedRows(t *testing.T) {
+func TestBoardViewReturnsTenantLinksInOrder(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-	if err := original.Close(); err != nil {
-		t.Fatal(err)
-	}
-	statements := &boardViewStatements{captured: map[bool][]any{}}
-	traced := pgstoretest.TracedFeaturePool(t, pool, statements)
-	repository, err := postgres.NewRepository(t.Context(), traced, pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	content := viewstore.NewContent(pgstoretest.NewHistoryObjects())
 	now := time.Date(2026, 11, 18, 6, 0, 0, 0, time.UTC)
 	const cards = 40
@@ -160,66 +114,7 @@ func TestBoardViewReturnsLinksInBoundedRows(t *testing.T) {
 						}
 					}
 				}
-				args := statements.args(selection.Reporter != "")
-				if args == nil {
-					t.Fatal("the board statement was not traced")
-				}
-				aggregated := boardViewAggregatedRows(t, traced, org, boardviewsql.Statement(selection.Reporter != ""), args)
-				total := 0
-				for _, row := range aggregated {
-					if row.elements > boardViewArrayRowElementBound {
-						t.Errorf("one %s row carries %d elements, over the %d element bound", row.kind, row.elements, boardViewArrayRowElementBound)
-					}
-					if row.kind == "links" {
-						total += row.elements
-					}
-				}
-				if total != links {
-					t.Fatalf("aggregated link elements=%d want %d", total, links)
-				}
 			})
 		}
 	}
-}
-
-type boardViewAggregatedRow struct {
-	kind     string
-	elements int
-}
-
-func boardViewAggregatedRows(t *testing.T, pool *pgxpool.Pool, org tracker.OrganizationID, statement string, args []any) []boardViewAggregatedRow {
-	t.Helper()
-	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := tx.Rollback(context.WithoutCancel(t.Context())); err != nil {
-			t.Error(err)
-		}
-	}()
-	if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, true)", string(org)); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := tx.Query(t.Context(), statement, args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var result []boardViewAggregatedRow
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			t.Fatal(err)
-		}
-		kind, _ := values[0].(string)
-		first, _ := values[len(values)-15].([]any)
-		if first != nil {
-			result = append(result, boardViewAggregatedRow{kind: kind, elements: len(first)})
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return result
 }

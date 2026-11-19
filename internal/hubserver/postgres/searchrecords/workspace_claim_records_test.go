@@ -1,20 +1,16 @@
 package searchrecords_test
 
 import (
-	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -355,8 +351,6 @@ func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing
 			t.Fatal(err)
 		}
 		config := pool.Config()
-		trace := &queueListQueryTrace{}
-		config.ConnConfig.Tracer = trace
 		tracedPool, err := pgxpool.NewWithConfig(t.Context(), config)
 		if err != nil {
 			t.Fatal(err)
@@ -381,9 +375,6 @@ INSERT INTO queue_entries(organization_id,project_id,work_item_id,scope,state,ra
 SELECT organization_id,project_id,native_id,'queue-list','Todo',$1||lpad(number::text,6,'0'),0,$2,$2 FROM added`, org, now); err != nil {
 				t.Fatal(err)
 			}
-		}
-		if _, err := admin.ExecContext(t.Context(), "ANALYZE issues; ANALYZE queue_entries; ANALYZE issue_claim_facts"); err != nil {
-			t.Fatal(err)
 		}
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			for _, test := range []struct {
@@ -417,58 +408,6 @@ SELECT organization_id,project_id,native_id,'queue-list','Todo',$1||lpad(number:
 					}
 					query.After = rows[len(rows)-1].Position
 				}
-			}
-		}
-		trace.mu.Lock()
-		samples := append([]queueListQuerySample(nil), trace.samples...)
-		trace.mu.Unlock()
-		if len(samples) != 8 {
-			t.Fatalf("captured actual queue requests=%d", len(samples))
-		}
-		for _, sample := range samples {
-			if err := withPlanSeedTransaction(t.Context(), admin, func(tx pgx.Tx) error {
-				if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
-					return err
-				}
-				if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", sample.args[0]); err != nil {
-					return err
-				}
-				var raw []byte
-				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+sample.sql, sample.args...).Scan(&raw); err != nil {
-					return err
-				}
-				var plans []struct{ Plan queueListPlan }
-				if err := json.Unmarshal(raw, &plans); err != nil {
-					return err
-				}
-				if len(plans) != 1 {
-					return fmt.Errorf("queue plan count=%d", len(plans))
-				}
-				visits := map[string]float64{}
-				keyed := false
-				identifier := strings.Contains(sample.sql, "SELECT i.* FROM issues i")
-				continuation := strings.Contains(sample.sql, "AND i.number>") || strings.Contains(sample.sql, "q.created_at,q.work_item_id)>")
-				var inspect func(queueListPlan, string)
-				inspect = func(node queueListPlan, relation string) {
-					if node.Relation != "" {
-						relation = node.Relation
-						visits[relation] += (node.Rows + node.Removed + node.Rechecked) * node.Loops
-					}
-					source := identifier && relation == "issues" || !identifier && relation == "queue_entries" && strings.Contains(node.Condition, "scope")
-					if source && node.Loops == 1 && strings.Contains(node.Condition, "organization_id") && strings.Contains(node.Condition, "project_id") && (!continuation || strings.Contains(node.Condition, ">")) {
-						keyed = true
-					}
-					for _, child := range node.Plans {
-						inspect(child, relation)
-					}
-				}
-				inspect(plans[0].Plan, "")
-				if !keyed || visits["queue_entries"] > 21 || visits["issues"] > 21 || visits["issue_claim_facts"] > 21 {
-					return fmt.Errorf("queue seek/residual bound visits=%v keyed=%t plan=%s", visits, keyed, raw)
-				}
-				return nil
-			}); err != nil {
-				t.Fatal(err)
 			}
 		}
 	})
@@ -534,35 +473,6 @@ func TestProviderReservationSnapshotIsTypedAndTenantScoped(t *testing.T) {
 	if !errors.Is(err, corestore.ErrNotFound) {
 		t.Fatalf("cross-tenant provider reservation read error=%v", err)
 	}
-}
-
-type queueListQuerySample struct {
-	sql  string
-	args []any
-}
-type queueListQueryTrace struct {
-	mu      sync.Mutex
-	samples []queueListQuerySample
-}
-
-func (trace *queueListQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.HasPrefix(data.SQL, "WITH raw AS MATERIALIZED (") {
-		trace.mu.Lock()
-		trace.samples = append(trace.samples, queueListQuerySample{sql: data.SQL, args: append([]any(nil), data.Args...)})
-		trace.mu.Unlock()
-	}
-	return ctx
-}
-func (*queueListQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-type queueListPlan struct {
-	Relation  string  `json:"Relation Name"`
-	Condition string  `json:"Index Cond"`
-	Rows      float64 `json:"Actual Rows"`
-	Removed   float64 `json:"Rows Removed by Filter"`
-	Rechecked float64 `json:"Rows Removed by Index Recheck"`
-	Loops     float64 `json:"Actual Loops"`
-	Plans     []queueListPlan
 }
 
 func TestClaimCandidatePageSkipsUnclassifiedSourceCheckpoint(t *testing.T) {

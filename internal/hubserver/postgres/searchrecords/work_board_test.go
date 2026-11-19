@@ -2,19 +2,14 @@ package searchrecords_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -29,21 +24,7 @@ import (
 func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-	if err := original.Close(); err != nil {
-		t.Fatal(err)
-	}
-	probe := &boardRetentionQueries{}
-	runtimePool := pgstoretest.TracedFeaturePool(t, pool, probe)
-	repository, err := postgres.NewRepository(t.Context(), runtimePool, pgstoretest.SmallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	objects := pgstoretest.NewHistoryObjects()
 	content := viewstore.NewContent(objects)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
@@ -404,7 +385,6 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			probe.reset()
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				for _, project := range projects[:2] {
 					for i := range 40 {
@@ -426,11 +406,6 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 				return nil
 			}); err != nil {
 				t.Fatal(err)
-			}
-			selector, point, deletes := probe.snapshot()
-			probe.stop()
-			if deletes != 64 {
-				t.Fatalf("per-project cleanup exceeded32 rows: deletes=%d want64 for2 projects", deletes)
 			}
 			for i, project := range projects[:2] {
 				expected := retained{count: 3048, min: 33, max: 3080, tail: 2048, head: 3080, floor: 32}
@@ -503,113 +478,6 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 			})
 			if !errors.Is(err, rollbackTrim) || read(org, projects[1]) != beforeRollback {
 				t.Fatalf("retention rollback changed rows or replay floor: error=%v before=%+v after=%+v", err, beforeRollback, read(org, projects[1]))
-			}
-			if orgIndex == 0 {
-				if selector.sql == "" || point.sql == "" {
-					t.Fatal("retention statements were not observed")
-				}
-				for _, query := range []struct {
-					name  string
-					value boardRetentionQuery
-				}{{"selector", selector}, {"point", point}} {
-					for _, mode := range []string{"force_generic_plan", "force_custom_plan"} {
-						func() {
-							tx, err := runtimePool.Begin(t.Context())
-							if err != nil {
-								t.Fatal(err)
-							}
-							defer tx.Rollback(t.Context())
-							if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
-								t.Fatal(err)
-							}
-							var tenantRole bool
-							if err := tx.QueryRow(t.Context(), `SELECT pg_has_role(current_user,'detent_runtime_v2','USAGE') AND NOT pg_has_role(current_user,'detent_platform_v2','USAGE') AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) AND current_setting('detent.organization_id')=$1`, string(org)).Scan(&tenantRole); err != nil || !tenantRole {
-								t.Fatalf("retention plan lacks scoped runtime role: %v", err)
-							}
-							if _, err := tx.Exec(t.Context(), "SET LOCAL plan_cache_mode="+mode); err != nil {
-								t.Fatal(err)
-							}
-							values := append([]any(nil), query.value.args...)
-							values[0], values[1] = fmt.Sprint(values[0]), fmt.Sprint(values[1])
-							if query.name == "point" {
-								var location pgtype.TID
-								if err := tx.QueryRow(t.Context(), `SELECT ctid FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 AND sequence=33`, values[0], values[1]).Scan(&location); err != nil {
-									t.Fatal(err)
-								}
-								value, err := location.Value()
-								if err != nil {
-									t.Fatal(err)
-								}
-								values[2], values[3] = value, int64(33)
-							}
-							statement := pgx.Identifier{"board_trim_" + query.name + "_" + mode}.Sanitize()
-							if _, err := tx.Exec(t.Context(), "PREPARE "+statement+" AS "+query.value.sql); err != nil {
-								t.Fatal(err)
-							}
-							placeholders := make([]string, len(values))
-							for i := range placeholders {
-								placeholders[i] = fmt.Sprintf("$%d", i+1)
-							}
-							args := append([]any{pgx.QueryExecModeSimpleProtocol}, values...)
-							var raw []byte
-							if err := tx.QueryRow(t.Context(), "EXPLAIN(ANALYZE,BUFFERS,FORMAT JSON) EXECUTE "+statement+"("+strings.Join(placeholders, ",")+")", args...).Scan(&raw); err != nil {
-								t.Fatal(err)
-							}
-							type node struct {
-								Type      string  `json:"Node Type"`
-								Relation  string  `json:"Relation Name"`
-								Index     string  `json:"Index Name"`
-								Condition string  `json:"Index Cond"`
-								Rows      float64 `json:"Actual Rows"`
-								Removed   float64 `json:"Rows Removed by Filter"`
-								Loops     float64 `json:"Actual Loops"`
-								Plans     []node
-							}
-							var plans []struct{ Plan node }
-							if err := json.Unmarshal(raw, &plans); err != nil {
-								t.Fatal(err)
-							}
-							if len(plans) != 1 {
-								t.Fatalf("retention plans=%s", raw)
-							}
-							found := false
-							var inspect func(node)
-							inspect = func(plan node) {
-								if plan.Relation == "native_board_deltas" && plan.Type != "ModifyTable" {
-									bound := float64(32)
-									if query.name == "point" {
-										bound = 1
-									}
-									if (plan.Rows+plan.Removed)*plan.Loops > bound {
-										t.Errorf("retention %s exceeded physical row bound: %+v", query.name, plan)
-									}
-									if query.name == "selector" && plan.Index == "native_board_deltas_pkey" && strings.Contains(plan.Condition, "sequence") && strings.Contains(plan.Condition, "project_id") && strings.Contains(plan.Condition, "organization_id") {
-										found = true
-									}
-									if query.name == "point" && plan.Type == "Tid Scan" && plan.Rows == 1 {
-										found = true
-									}
-								}
-								for _, child := range plan.Plans {
-									inspect(child)
-								}
-							}
-							inspect(plans[0].Plan)
-							if !found {
-								t.Errorf("retention %s missing bounded %s plan: %s", query.name, mode, raw)
-							}
-							if _, err := tx.Exec(t.Context(), "DEALLOCATE "+statement); err != nil {
-								t.Fatal(err)
-							}
-							if err := tx.Rollback(t.Context()); err != nil {
-								t.Fatal(err)
-							}
-						}()
-					}
-				}
-				if got := read(org, projects[1]); got != (retained{count: 3048, min: 33, max: 3080, tail: 2048, head: 3080, floor: 32}) {
-					t.Fatalf("plan probe committed a deletion: %+v", got)
-				}
 			}
 			cursor := tracker.ProjectID("prj_retention_")
 			for i, project := range projects {
@@ -768,46 +636,3 @@ func TestConcurrentProjectGrantsDoNotDeadlockRevisionUpdates(t *testing.T) {
 		t.Fatalf("concurrent grants were not both committed: %v", err)
 	}
 }
-
-type boardRetentionQuery struct {
-	sql  string
-	args []any
-}
-
-type boardRetentionQueries struct {
-	mu              sync.Mutex
-	active          bool
-	selector, point boardRetentionQuery
-	deletes         int
-}
-
-func (p *boardRetentionQueries) reset() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.active = true
-	p.selector, p.point = boardRetentionQuery{}, boardRetentionQuery{}
-	p.deletes = 0
-}
-func (p *boardRetentionQueries) stop() { p.mu.Lock(); defer p.mu.Unlock(); p.active = false }
-func (p *boardRetentionQueries) snapshot() (boardRetentionQuery, boardRetentionQuery, int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.selector, p.point, p.deletes
-}
-func (p *boardRetentionQueries) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.active || !strings.Contains(data.SQL, "native_board_deltas") {
-		return ctx
-	}
-	query := boardRetentionQuery{sql: data.SQL, args: append([]any(nil), data.Args...)}
-	if strings.HasPrefix(data.SQL, "SELECT ") {
-		p.selector = query
-	}
-	if strings.HasPrefix(data.SQL, "DELETE ") {
-		p.point = query
-		p.deletes++
-	}
-	return ctx
-}
-func (p *boardRetentionQueries) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}

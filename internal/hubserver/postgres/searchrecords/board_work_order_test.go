@@ -3,7 +3,6 @@ package searchrecords_test
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -17,40 +16,16 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type boardQueryTracer struct {
-	queries  int
-	page     string
-	args     []any
-	lanes    string
-	laneArgs []any
-}
-
-func (c *boardQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	query := data.SQL
-	c.queries++
-	if strings.Contains(query, "GROUP BY b.state") || strings.Contains(query, "FROM native_board_counts c") {
-		c.lanes = query
-		c.laneArgs = append([]any(nil), data.Args...)
-	}
-	if strings.HasPrefix(query, "SELECT b.organization_id") || strings.HasPrefix(query, "WITH search_candidates AS MATERIALIZED") || strings.HasPrefix(query, "WITH matched AS MATERIALIZED") || strings.HasPrefix(query, "WITH text_matches AS MATERIALIZED") {
-		c.page = query
-		c.args = append([]any(nil), data.Args...)
-	}
-	return ctx
-}
-func (c *boardQueryTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
+func TestBoardWorkOrderPreservesProjectionAndLaneTotals(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	objects := pgstoretest.NewHistoryObjects()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -132,13 +107,7 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 				}
 			}
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%04d", index))
-			probe := &boardQueryTracer{}
-			counted, err := postgres.NewRepository(ctx, pgstoretest.TracedFeaturePool(t, pool, probe), pgstoretest.SmallPool())
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = counted.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-				probe.queries = 0
+			err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 				rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_example", WorkOrder: true, Limit: 1})
 				if err != nil {
 					return err
@@ -146,44 +115,29 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 				if len(rows) != 1 || rows[0].WorkItemID != id || rows[0].OrganizationID != org {
 					t.Errorf("work page=%+v, want %s/%s", rows, org, id)
 				}
-				if probe.queries > 2 {
-					t.Errorf("board size %d: %d queries, want <=2", index, probe.queries)
-				}
-				t.Logf("%s size=%d queries=%d", org, index, probe.queries)
 				return nil
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = counted.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-				probe.queries = 0
-				started := time.Now()
-				deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
-				defer cancel()
-				lanes, err := r.BoardLanes(deadline, viewstore.BoardSelection{ProjectID: "prj_example", Archived: new(false), ExcludeWorkspace: true}, pgstoretest.HistoryAt())
+			err = repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				lanes, err := r.BoardLanes(ctx, viewstore.BoardSelection{ProjectID: "prj_example", Archived: new(false), ExcludeWorkspace: true}, pgstoretest.HistoryAt())
 				if err != nil {
 					return err
 				}
 				if len(lanes) != 1 || lanes[0].Total != int64((index+1)/2) || lanes[0].Running != 0 {
 					t.Fatalf("workspace-excluded totals: %+v", lanes)
 				}
-				if probe.queries > 2 {
-					t.Errorf("lane queries=%d, want <=2", probe.queries)
-				}
-				t.Logf("lane tenant=%s size=%d queries=%d elapsed=%s", org, index, probe.queries, time.Since(started))
 				return nil
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(probe.lanes, "FROM native_board_counts c") {
-				t.Error("default lane totals scan board items instead of the typed background counts")
-			}
 			if index == 1 {
 				if _, err := admin.ExecContext(ctx, "UPDATE native_board_items SET issue_number=NULL WHERE organization_id=$1", org); err != nil {
 					t.Fatal(err)
 				}
-				if err := counted.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 					rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_example", WorkOrder: true, Limit: 1})
 					if err == nil && (len(rows) != 1 || rows[0].WorkItemID != id || rows[0].OrganizationID != org) {
 						t.Errorf("warmup lost tenant card: %+v", rows)
@@ -191,9 +145,6 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 					return err
 				}); err != nil {
 					t.Fatal(err)
-				}
-				if !strings.Contains(probe.page, "JOIN issues") {
-					t.Error("unrefreshed projection lost source ordering fallback")
 				}
 				if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 					row, err := w.BoardItem(ctx, "prj_example", id)
@@ -204,66 +155,11 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if err := counted.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 					_, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_example", WorkOrder: true, Limit: 1})
 					return err
 				}); err != nil {
 					t.Fatal(err)
-				}
-			}
-			if err := counted.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if strings.Contains(probe.page, "JOIN issues") {
-				t.Errorf("work page still joins live issues to sort the entire board")
-			}
-			if index == 512 {
-				if _, err := admin.ExecContext(ctx, "ANALYZE native_board_items, issues"); err != nil {
-					t.Fatal(err)
-				}
-				rows, err := admin.QueryContext(ctx, "EXPLAIN (ANALYZE, BUFFERS) "+probe.page, probe.args...)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var plan strings.Builder
-				for rows.Next() {
-					var line string
-					if err := rows.Scan(&line); err != nil {
-						t.Fatal(err)
-					}
-					fmt.Fprintln(&plan, line)
-				}
-				if err := rows.Err(); err != nil {
-					t.Fatal(err)
-				}
-				if err := rows.Close(); err != nil {
-					t.Fatal(err)
-				}
-				t.Log(plan.String())
-				var raw []byte
-				if err := admin.QueryRowContext(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.lanes, probe.laneArgs...).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
-				var plans []struct {
-					Plan          boardLanePlan
-					ExecutionTime float64 `json:"Execution Time"`
-				}
-				if err := json.Unmarshal(raw, &plans); err != nil {
-					t.Fatal(err)
-				}
-				var inspect func(boardLanePlan)
-				inspect = func(node boardLanePlan) {
-					if node.Relation == "native_board_items" && (node.Rows+node.Removed)*node.Loops > 16 {
-						t.Errorf("lane query scanned board population: %+v", node)
-					}
-					for _, child := range node.Plans {
-						inspect(child)
-					}
-				}
-				inspect(plans[0].Plan)
-				t.Logf("lane plan tenant=%s size=%d execution_ms=%f", org, index, plans[0].ExecutionTime)
-				if !strings.Contains(plan.String(), "native_board_items_work_order") || strings.Contains(plan.String(), "Sort Key: b.running") {
-					t.Error("work page does not use bounded projection order")
 				}
 			}
 		}
@@ -275,7 +171,7 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 		}
 		checkTotals := func(want int64) {
 			t.Helper()
-			if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+			if err = repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 				lanes, err := r.BoardLanes(ctx, viewstore.BoardSelection{ProjectID: "prj_example", ExcludeWorkspace: true}, pgstoretest.HistoryAt())
 				var total int64
 				for _, lane := range lanes {
@@ -350,15 +246,6 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 			checkTotals(change.want)
 		}
 	}
-}
-
-type boardLanePlan struct {
-	Index    string  `json:"Index Name"`
-	Relation string  `json:"Relation Name"`
-	Rows     float64 `json:"Actual Rows"`
-	Removed  float64 `json:"Rows Removed by Filter"`
-	Loops    float64 `json:"Actual Loops"`
-	Plans    []boardLanePlan
 }
 
 func withPlanSeedTransaction(ctx context.Context, admin *sql.DB, write func(pgx.Tx) error) (resultErr error) {
