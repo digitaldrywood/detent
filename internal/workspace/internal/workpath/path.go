@@ -3,6 +3,7 @@ package workpath
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -124,4 +125,47 @@ func ExpandPath(path string) (string, error) {
 		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
 	}
 	return path, nil
+}
+
+func AttemptKey(organization, project, attempt string) string {
+	id, typed := strings.CutPrefix(attempt, "attempt_")
+	if !typed || len(id) != 32 {
+		return ""
+	}
+	if _, err := hex.DecodeString(id); err != nil {
+		return ""
+	}
+	scope := attemptScope(organization, project)
+	if scope == "" {
+		return ""
+	}
+	return "attempt-" + scope + "-" + strings.ToLower(id)
+}
+
+func attemptScope(organization, project string) string {
+	if organization == "" || project == "" {
+		return ""
+	}
+	ids, _ := json.Marshal([2]string{organization, project})
+	digest := sha256.Sum256(ids)
+	return hex.EncodeToString(digest[:16])
+}
+
+func SplitCheckoutIssueKey(key string) (scope, issueKey string) {
+	owner, issue, ok := strings.Cut(key, "--")
+	if !ok || issue == "" {
+		return "", key
+	}
+	owner, ok = strings.CutPrefix(owner, "attempt-")
+	if !ok {
+		return "", key
+	}
+	scope, attempt, ok := strings.Cut(owner, "-")
+	if !ok || len(scope) != 32 || len(attempt) != 32 {
+		return "", key
+	}
+	if _, err := hex.DecodeString(scope + attempt); err != nil {
+		return "", key
+	}
+	return "attempt-" + owner, issue
 }

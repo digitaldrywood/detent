@@ -3,9 +3,9 @@ package runner
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -33,26 +33,8 @@ func preserveWorkspace(ctx context.Context, backend workspace.Backend, issue wor
 
 func (req RunRequest) workspaceTarget(ctx context.Context, project string) (workspace.Issue, bool) {
 	issue := workspaceIssue(project, req.Issue)
-	attempt := req.AttemptWorkspace
-	if bound := workspace.AttemptWorkspaceFromContext(ctx); bound != (workspace.AttemptWorkspace{}) {
-		if attempt != (workspace.AttemptWorkspace{}) && attempt != bound {
-			return issue, false
-		}
-		attempt = bound
-	}
-	if execution, ok := req.Execution.(interface {
-		AttemptWorkspace() workspace.AttemptWorkspace
-	}); ok {
-		bound := execution.AttemptWorkspace()
-		if attempt != (workspace.AttemptWorkspace{}) && attempt != bound {
-			return issue, false
-		}
-		attempt = bound
-	}
+	owner, _ := req.Execution.(runworkspace.AttemptOwner)
+	attempt, known := runworkspace.ResolveAttempt(ctx, req.AttemptWorkspace, owner, req.Issue)
 	issue.AttemptWorkspace = attempt
-	org, projectID := req.Issue.Metadata["hub_organization_id"], req.Issue.Metadata["hub_project_id"]
-	if attempt == (workspace.AttemptWorkspace{}) {
-		return issue, org == "" && projectID == "" && !strings.HasPrefix(req.Issue.ID, "wi_")
-	}
-	return issue, attempt.Key() != "" && (org == "" || org == attempt.Organization) && (projectID == "" || projectID == attempt.Project)
+	return issue, known
 }
