@@ -41,10 +41,10 @@ type WorkflowTransition struct {
 	attempt      *leasestore.Attempt
 	cancellation LeaseCancellation
 	linked       *eventstore.LinkedSource
-	request      tracker.Transition
+	Request      tracker.Transition
 	stopState    string
 	dependencies bool
-	outbound     *projectstore.GitHubOutbound
+	Outbound     *projectstore.GitHubOutbound
 }
 
 type ReviewWorkflow struct {
@@ -342,13 +342,13 @@ func (s *Workflow) prepareChangeWorkflowRoute(ctx context.Context, scope hubscop
 	} else {
 		issue.ClosedAt = nil
 	}
-	p.request = tracker.Transition{State: target, ExpectedRevision: tracker.Revision(row.Revision), Reason: "user_requested"}
+	p.Request = tracker.Transition{State: target, ExpectedRevision: tracker.Revision(row.Revision), Reason: "user_requested"}
 	var workflowLabel string
-	p.policy, p.policyFound, err = s.deps.ValidateTenantTransitionIssueContract(ctx, scope, &issue, &project, previous, p.request, &p.stopState, &workflowLabel)
+	p.policy, p.policyFound, err = s.deps.ValidateTenantTransitionIssueContract(ctx, scope, &issue, &project, previous, p.Request, &p.stopState, &workflowLabel)
 	if err != nil {
 		return nil, err
 	}
-	p.request.WorkflowLabel = workflowLabel
+	p.Request.WorkflowLabel = workflowLabel
 	if issue.Profile == "github_compatible" && workflowLabel != "" {
 		repository, _, sourceErr := s.deps.CutoverSourceReference(sourceIssue)
 		if sourceErr == nil && project.Settings.RepositoryEnabled && strings.EqualFold(repository, strings.TrimSpace(project.Settings.Repository)) {
@@ -359,7 +359,7 @@ func (s *Workflow) prepareChangeWorkflowRoute(ctx context.Context, scope hubscop
 			if err != nil {
 				return nil, err
 			}
-			p.outbound, err = s.deps.PrepareCompatibilityWorkflowLabel(ctx, scope, sourceIssue, project, workflowLabel, "change-workflow:"+key, now)
+			p.Outbound, err = s.deps.PrepareCompatibilityWorkflowLabel(ctx, scope, sourceIssue, project, workflowLabel, "change-workflow:"+key, now)
 			if err != nil {
 				return nil, err
 			}
@@ -510,7 +510,7 @@ func (s *Workflow) LockChangeWorkflowTransition(ctx context.Context, w tenantsto
 		return false, err
 	}
 	if err == nil {
-		if err := s.deps.SettleLease(ctx, w, scope, lease, p.request, p.cancellation, p.stopState, s.deps.Clock); err != nil {
+		if err := s.deps.SettleLease(ctx, w, scope, lease, p.Request, p.cancellation, p.stopState, s.deps.Clock); err != nil {
 			return false, err
 		}
 	}
@@ -546,12 +546,12 @@ func (s *Workflow) ApplyChangeWorkflowTransition(ctx context.Context, w tenantst
 	if _, err := w.AppendEvent(ctx, p.Event); err != nil {
 		return err
 	}
-	if p.outbound != nil {
+	if p.Outbound != nil {
 		owner, ok := w.(projectstore.GitHubOutboxWriter)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.EnqueueGitHubOutbound(ctx, *p.outbound)
+		return owner.EnqueueGitHubOutbound(ctx, *p.Outbound)
 	}
 	return nil
 }
