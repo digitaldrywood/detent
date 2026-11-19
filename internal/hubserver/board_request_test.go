@@ -191,6 +191,7 @@ func TestBoardRequestPreservesPageContract(t *testing.T) {
 	service := newPostgresNativeService(t, Config{RunDetails: details})
 	repository := service.config.TenantRepository
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		details.beforeRead = nil
 		fixture := newNativeFixture(t, service, org, "Example")
 		service.localOrganization = string(org)
 		scope := hubscope.NativeScope{Organization: org, Project: fixture.project.ID, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
