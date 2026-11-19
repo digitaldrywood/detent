@@ -10,6 +10,8 @@ import (
 )
 
 type EventProjection struct {
+	ActivityStage           string
+	ActivityNoChangeStatus  string
 	ProcessEvidenceStatus   string
 	ProcessPeakMemoryBytes  int64
 	ProcessUserCPUSeconds   float64
@@ -46,6 +48,7 @@ func ProjectEvent(event tracker.CollaborationEvent) *EventProjection {
 		out.ReworkClass, out.ReworkKind = class.Name, class.Kind
 	}
 	if run := event.Data.Run; run != nil {
+		out.ActivityStage, out.ActivityNoChangeStatus = activityFacts(*run)
 		out.PhaseTimingStatus = "partial"
 		out.RunSequence, out.RunStatus = run.Sequence, "running"
 		if event.Type == "run.finished" {
@@ -121,4 +124,39 @@ func failureText(data tracker.NativeRunData, status string) string {
 		return "attempt failed: recorded error unavailable"
 	}
 	return ""
+}
+
+func activityFacts(run tracker.NativeRunData) (stage, noChangeStatus string) {
+	runtime := run.Runtime
+	if runtime != nil {
+		stage = runtime.Phase
+		if stage == "" || stage == "completed" {
+			stage = ""
+			for i := len(runtime.Phases) - 1; i >= 0; i-- {
+				if name := runtime.Phases[i].Name; name != "" && name != "completed" {
+					stage = name
+					break
+				}
+			}
+		}
+	}
+	if failure := run.TerminalFailure; failure != nil && failure.Stage != "" {
+		stage = failure.Stage
+	}
+	if stage == "" {
+		stage = "unknown"
+	}
+	final := run.Finalization
+	switch {
+	case final != nil && final.NoChange != nil && final.NoChange.VerifiedSHA != "" && !final.Changed:
+		if runtime != nil && runtime.Completion != nil {
+			if runtime.Completion.AcceptanceRecorded {
+				return stage, "accepted"
+			}
+			return stage, "unaccepted"
+		}
+	case final != nil && final.Changed, runtime != nil && runtime.Landing != nil && runtime.Landing.Landed:
+		return stage, "not_applicable"
+	}
+	return stage, "unknown"
 }

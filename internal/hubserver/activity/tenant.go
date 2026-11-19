@@ -38,37 +38,12 @@ func (s *Service) Read(ctx context.Context, caller Caller, request operatortool.
 	}
 	var snapshot activitystore.Snapshot
 	read := func(r tenantstore.Reader) error {
-		access, ok := r.(accessstore.ProjectAccessPageReader)
-		if !ok {
-			return s.deps.MissingParticipants
-		}
-		projects, err := access.ProjectAccessPage(ctx, hubauth.ProjectFilter(credential, tracker.ProjectID(request.ProjectID), "", 100))
+		projects, partial, err := s.readableProjects(ctx, caller, r, request.ProjectID)
 		if err != nil {
 			return err
 		}
-		if len(projects) > 100 {
-			out.Partial = true
-			out.IssuesPartial = true
-			projects = projects[:100]
-		}
-		for _, project := range projects {
-			if request.ProjectID != "" && request.ProjectID != string(project.ProjectID) {
-				continue
-			}
-			if credential.EntryKey == nil && credential.HostedKeyKind == "service" {
-				err := caller.Scope.ForProject(project.ProjectID).Authorize(ctx, r, false)
-				if errors.Is(err, accessstore.ErrDenied) || caller.IsNotFound != nil && caller.IsNotFound(err) {
-					continue
-				}
-				if err != nil {
-					return err
-				}
-			}
-			filter.Projects = append(filter.Projects, project.ProjectID)
-		}
-		if request.ProjectID != "" && len(filter.Projects) == 0 {
-			return operatortool.ErrAccessDenied
-		}
+		filter.Projects = projects
+		out.Partial, out.IssuesPartial = partial, partial
 		reader, ok := r.(activitystore.Reader)
 		if !ok {
 			return errors.New("activity reader unavailable")
@@ -76,13 +51,7 @@ func (s *Service) Read(ctx context.Context, caller Caller, request operatortool.
 		snapshot, err = reader.ActivitySnapshot(ctx, filter)
 		return err
 	}
-	var err error
-	if repository, ok := s.deps.Repository.(tenantstore.SnapshotRepository); ok {
-		err = repository.ReadTenantSnapshot(ctx, tracker.OrganizationID(out.OrganizationID), corestore.Serving, read)
-	} else {
-		err = s.deps.Repository.ReadTenant(ctx, tracker.OrganizationID(out.OrganizationID), corestore.Serving, read)
-	}
-	if err != nil {
+	if err := s.readSnapshot(ctx, tracker.OrganizationID(out.OrganizationID), read); err != nil {
 		return out, err
 	}
 	out.Partial = out.Partial || snapshot.Partial || snapshot.DurationsPartial
@@ -303,4 +272,45 @@ func (s *Service) Read(ctx context.Context, caller Caller, request operatortool.
 			return out, s.deps.Unavailable
 		}
 	}
+}
+
+func (s *Service) readableProjects(ctx context.Context, caller Caller, reader tenantstore.Reader, projectID string) ([]tracker.ProjectID, bool, error) {
+	access, ok := reader.(accessstore.ProjectAccessPageReader)
+	if !ok {
+		return nil, false, s.deps.MissingParticipants
+	}
+	credential := caller.Credential
+	projects, err := access.ProjectAccessPage(ctx, hubauth.ProjectFilter(credential, tracker.ProjectID(projectID), "", 100))
+	if err != nil {
+		return nil, false, err
+	}
+	partial := len(projects) > 100
+	projects = projects[:min(len(projects), 100)]
+	visible := make([]tracker.ProjectID, 0, len(projects))
+	for _, project := range projects {
+		if projectID != "" && projectID != string(project.ProjectID) {
+			continue
+		}
+		if credential.EntryKey == nil && credential.HostedKeyKind == "service" {
+			err := caller.Scope.ForProject(project.ProjectID).Authorize(ctx, reader, false)
+			if errors.Is(err, accessstore.ErrDenied) || caller.IsNotFound != nil && caller.IsNotFound(err) {
+				continue
+			}
+			if err != nil {
+				return nil, false, err
+			}
+		}
+		visible = append(visible, project.ProjectID)
+	}
+	if projectID != "" && len(visible) == 0 {
+		return nil, false, operatortool.ErrAccessDenied
+	}
+	return visible, partial, nil
+}
+
+func (s *Service) readSnapshot(ctx context.Context, organization tracker.OrganizationID, read func(tenantstore.Reader) error) error {
+	if repository, ok := s.deps.Repository.(tenantstore.SnapshotRepository); ok {
+		return repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, read)
+	}
+	return s.deps.Repository.ReadTenant(ctx, organization, corestore.Serving, read)
 }
