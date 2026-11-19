@@ -44,7 +44,6 @@ type ReviewDeps struct {
 	Validator                           ValidatorDeps
 	AttachmentReferences                changefiles.AttachmentReferences
 	PrepareRepairs                      func(context.Context, hubscope.NativeScope, tracker.NativeWorkItemID, []failureattribution.Evidence, string, time.Time) (*PreparedRepairs, error)
-	ChangeReviewContentFields           func(tracker.ReviewChange) []changefiles.ContentField
 }
 
 type Review struct {

@@ -58,7 +58,7 @@ func (s *Review) ReviewChangeRecordCommand(ctx context.Context, scope hubscope.N
 	if err != nil {
 		return nil, err
 	}
-	submittedContent := s.deps.ChangeReviewContentFields(request)
+	submittedContent := changefiles.ReviewContentFields(request)
 	for _, result := range []**gate.ValidatorResult{&request.Validator, &request.ImplementationReview} {
 		if *result != nil {
 			normalized := **result
@@ -282,7 +282,7 @@ prepareReview:
 					return corestore.ErrRevisionConflict
 				}
 			}
-			if err := changefiles.BindRecordContent(ctx, w, scope, item, s.deps.ChangeReviewContentFields(request), nil, "", s.deps.AttachmentReferences); err != nil {
+			if err := changefiles.BindRecordContent(ctx, w, scope, item, changefiles.ReviewContentFields(request), nil, "", s.deps.AttachmentReferences); err != nil {
 				return err
 			}
 			if prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {

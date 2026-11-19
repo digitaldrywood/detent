@@ -53,7 +53,6 @@ type RecordMutationsDeps struct {
 	HasPlans                          func() bool
 	RequireCollaboration              func(context.Context, tenantstore.Reader, time.Time) error
 	AttachmentReferences              changefiles.AttachmentReferences
-	ChangeReviewContentFields         func(tracker.ReviewChange) []changefiles.ContentField
 }
 
 type RecordMutations struct {
