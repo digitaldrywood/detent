@@ -33,6 +33,74 @@ func (s *session) AuditReviewCandidates(ctx context.Context, project tracker.Pro
 	return result, mapError(ctx, rows.Err())
 }
 
+func (s *session) PriorAuditEvidence(ctx context.Context, query eventstore.PriorAuditQuery) (eventstore.PriorAuditSnapshot, error) {
+	var result eventstore.PriorAuditSnapshot
+	if s.organization == "" || query.Project == "" || query.ChangeID == "" || query.VersionID == "" || query.Repository == "" || query.ThroughReviewSequence < 0 {
+		return result, corestore.ErrNotFound
+	}
+	version := &result.Version
+	version.OrganizationID, version.ChangeID, version.Repository = s.organization, query.ChangeID, query.Repository
+	err := s.db.QueryRow(ctx, `SELECT prior.id,prior.number,prior.base_sha,prior.head_sha
+FROM change_versions requested
+JOIN LATERAL (
+ SELECT id,number,base_sha,head_sha,project_id,repository FROM change_versions
+ WHERE organization_id=requested.organization_id AND change_id=requested.change_id AND number<requested.number
+ ORDER BY number DESC LIMIT 1
+) prior ON prior.project_id=requested.project_id AND prior.repository=requested.repository
+WHERE requested.organization_id=$1 AND requested.project_id=$2 AND requested.change_id=$3
+ AND requested.id=$4 AND requested.repository=$5`,
+		s.organization, query.Project, query.ChangeID, query.VersionID, query.Repository,
+	).Scan(&version.ID, &version.Number, &version.BaseSHA, &version.HeadSHA)
+	if err != nil {
+		return result, mapError(ctx, err)
+	}
+	if err := s.priorAuditReviews(ctx, query, &result); err != nil {
+		return result, err
+	}
+	if result.Review.Sequence == 0 {
+		return result, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT id,change_id,review_sequence,audit_session_id,finding_id,status,actor_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes
+FROM runner_audit_dispositions WHERE organization_id=$1 AND project_id=$2 AND change_id=$3 AND review_sequence=$4 ORDER BY id LIMIT 201`,
+		s.organization, query.Project, query.ChangeID, result.Review.Sequence)
+	if err != nil {
+		return result, mapError(ctx, err)
+	}
+	result.Dispositions, err = s.scanAuditDispositions(ctx, query.Project, rows)
+	return result, err
+}
+
+func (s *session) priorAuditReviews(ctx context.Context, query eventstore.PriorAuditQuery, result *eventstore.PriorAuditSnapshot) error {
+	const pageSize = 16
+	rows, err := s.db.Query(ctx, `SELECT sequence,version_id,kind,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,
+ review_kind,review_landing,review_session_known,review_session_id,review_session_machine
+FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND version_id=$3 AND sequence<=$4 AND kind='review'
+ORDER BY sequence DESC LIMIT $5`, s.organization, query.ChangeID, result.Version.ID, query.ThroughReviewSequence, pageSize+1)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	defer rows.Close()
+	var lastSequence int64
+	for examined := 0; rows.Next(); examined++ {
+		if result.Review.Sequence != 0 || examined == pageSize {
+			result.NextBeforeReviewSequence = lastSequence
+			rows.Close()
+			return mapError(ctx, rows.Err())
+		}
+		row := eventstore.Evidence{OrganizationID: s.organization, ChangeID: query.ChangeID}
+		err := rows.Scan(&row.Sequence, &row.VersionID, &row.Kind, &row.CreatedAt, &row.PayloadObjectKey, &row.PayloadSHA256, &row.PayloadBytes, &row.PayloadContentBytes,
+			&row.ReviewKind, &row.ReviewLanding, &row.ReviewSessionKnown, &row.ReviewSessionID, &row.ReviewSessionMachine)
+		if err != nil {
+			return mapError(ctx, err)
+		}
+		lastSequence = row.Sequence
+		if row.ReviewKind == "security_audit" || row.ReviewKind == "" || !row.ReviewSessionKnown {
+			result.Review = row
+		}
+	}
+	return mapError(ctx, rows.Err())
+}
+
 func (s *session) CreateAuditDisposition(ctx context.Context, row eventstore.AuditDisposition) (eventstore.AuditDisposition, error) {
 	if err := s.checkOrganization(row.Organization); err != nil {
 		return row, err
@@ -80,6 +148,10 @@ func (s *session) AuditDispositions(ctx context.Context, project tracker.Project
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
+	return s.scanAuditDispositions(ctx, project, rows)
+}
+
+func (s *session) scanAuditDispositions(ctx context.Context, project tracker.ProjectID, rows pgx.Rows) ([]eventstore.AuditDisposition, error) {
 	defer rows.Close()
 	var result []eventstore.AuditDisposition
 	for rows.Next() {
