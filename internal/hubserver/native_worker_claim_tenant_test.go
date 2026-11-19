@@ -99,10 +99,6 @@ func (r nativePreviewCountingReader) LandingCapacityUsage(ctx context.Context, p
 	return r.Reader.LandingCapacityUsage(ctx, project, now)
 }
 
-func (r nativePreviewCountingReader) WorkItemBlockerFacts(ctx context.Context, project tracker.ProjectID, ids []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
-	return r.Reader.(tenantstore.WorkItemBlockerBatchReader).WorkItemBlockerFacts(ctx, project, ids)
-}
-
 func (r nativePreviewCountingReader) ClaimAuditDispositionRows(ctx context.Context, project tracker.ProjectID, ids []int64) (map[int64][]eventstore.AuditDisposition, error) {
 	return r.Reader.(tenantstore.ClaimAuditDispositionRowsReader).ClaimAuditDispositionRows(ctx, project, ids)
 }

@@ -176,17 +176,6 @@ func (s *Service) nativeRelationshipLink(relation corestore.Relationship) tracke
 	return link
 }
 
-func readNativeClaimBlockerFacts(ctx context.Context, r tenantstore.Reader, project tracker.ProjectID, ids []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	batch, ok := r.(tenantstore.WorkItemBlockerBatchReader)
-	if !ok {
-		return nil, hubapi.NativeWorkItemStorageUnavailable()
-	}
-	return batch.WorkItemBlockerFacts(ctx, project, ids)
-}
-
 func (s *Service) visibleNativeClaimBlockers(ctx context.Context, scope hubscope.NativeScope, facts []tenantstore.WorkItemRelationshipFact) (map[tracker.NativeWorkItemID][]tracker.NativeDependency, error) {
 	projects := map[tracker.ProjectID]bool{}
 	for _, fact := range facts {
