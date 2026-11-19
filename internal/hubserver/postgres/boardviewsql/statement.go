@@ -154,8 +154,8 @@ func CompletionCountsSQL(project, audience, excludeWorkspace, at string) string 
  count(*) FILTER (WHERE b.state='Cancelled') AS cancelled_7d
  FROM native_board_items b
  WHERE b.organization_id=$1 AND b.project_id=` + project + ` AND b.page_ready AND b.terminal AND b.state IN ('Done','Cancelled')
- AND coalesce(b.closed_at,'-infinity'::timestamptz)>=` + clock + `-interval '168 hours'
- AND coalesce(b.closed_at,'-infinity'::timestamptz)<=` + clock + `
+ AND b.closed_at>=` + clock + `-interval '168 hours'
+ AND b.closed_at<=` + clock + `
  AND (NOT ` + excludeWorkspace + `::boolean OR NOT 'detent:workspace'=ANY(coalesce(b.page_labels,'{}')))
  AND (` + audience + `::text='' OR b.actor_principal_id=` + audience + ` AND EXISTS(SELECT 1 FROM issues i
   WHERE i.organization_id=$1 AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND i.actor_principal_id=` + audience + ` OFFSET 0))

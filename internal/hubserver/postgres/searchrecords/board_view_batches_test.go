@@ -2,12 +2,14 @@ package searchrecords_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -116,5 +118,72 @@ func TestBoardViewReturnsTenantLinksInOrder(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBoardCompletionCountsReadsOnlyRecentClosures(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	asOf := time.Date(2026, 11, 19, 20, 0, 0, 0, time.UTC)
+	_, err := admin.ExecContext(ctx, `INSERT INTO native_board_items(
+ organization_id,project_id,work_item_id,source_revision,source_event_sequence,source_project_revision,
+ state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,identifier,closed_at,
+ execution_fence,actor_principal_id,issue_type,verification_state,created_at,updated_at,payload_object_key,
+ payload_sha256,payload_bytes,payload_content_bytes,page_ready,list_ready)
+SELECT p.organization_id,p.id,p.id||'_'||n,1,1,1,
+ CASE WHEN n%2=0 THEN 'Cancelled' ELSE 'Done' END,false,true,false,false,1,1,true,p.id||'_'||n,
+ CASE n
+  WHEN 1 THEN $1::timestamptz-interval '5 minutes'
+  WHEN 2 THEN $1::timestamptz-interval '1 hour'
+  WHEN 3 THEN $1::timestamptz-interval '6 hours'
+  WHEN 4 THEN $1::timestamptz-interval '24 hours'
+  WHEN 5 THEN $1::timestamptz-interval '168 hours'
+  WHEN 6 THEN $1::timestamptz+interval '1 microsecond'
+  WHEN 7 THEN NULL
+  ELSE $1::timestamptz-n*interval '7 days'
+ END,
+ 0,'example','change_request','',$1,$1,'example','example',1,1,true,true
+FROM projects p CROSS JOIN generate_series(1,5000) n
+WHERE p.organization_id IN ('org_first','org_second') AND p.id IN ('prj_shared','prj_other')`, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, "ANALYZE native_board_items"); err != nil {
+		t.Fatal(err)
+	}
+
+	statement := pgstoretest.ReportStatement{
+		Query: `SELECT shipped_1h,shipped_24h,shipped_7d,cancelled_1h,cancelled_24h,cancelled_7d
+FROM (` + boardviewsql.CompletionCountsSQL("$2", "$3", "$4", "$5") + `) windows
+WHERE kind='total' AND archive_scope='all'`,
+		Args: []any{"org_first", "prj_shared", "", true, asOf},
+	}
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "NOSUPERUSER NOBYPASSRLS")
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
+	tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
+	var got [6]int
+	if err := tx.QueryRow(ctx, statement.Query, statement.Args...).Scan(&got[0], &got[1], &got[2], &got[3], &got[4], &got[5]); err != nil {
+		t.Fatal(err)
+	}
+	if want := [6]int{1, 2, 3, 1, 2, 2}; got != want {
+		t.Errorf("shipped and cancelled windows = %v, want %v", got, want)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := pgstoretest.ExplainReportPlan(ctx, admin, "org_first", statement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plans []struct{ Plan pgstoretest.SearchPlanNode }
+	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+		t.Fatalf("decode window access plan (%d plans): %v", len(plans), err)
+	}
+	t.Logf("completion window plan: %s", raw)
+	if visited := plans[0].Plan.RelationWork("native_board_items"); visited != 5 {
+		t.Fatalf("visited %.0f board items, want exactly the five closures in the requested window", visited)
 	}
 }
