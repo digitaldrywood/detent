@@ -204,3 +204,101 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 		t.Fatalf("page reads bypassed PostgreSQL read-only guard: writes=%d queries=%d transactions=%d", writes(), guard.queries.Load(), guard.transactions.Load())
 	}
 }
+
+func TestNativeWorkListRunnerPaging(t *testing.T) {
+	for _, query := range []string{"archived=all", "state=Todo"} {
+		t.Run(query, func(t *testing.T) {
+			f := newPostgresDefaultNativeFixture(t, Config{})
+			other := newNativeFixture(t, f.service, "org_first_second", "Other project")
+			f.service.localOrganization = string(other.project.OrganizationID)
+			foreign := other.create(t, "other issue")
+			otherRunner := prepareRunner(t, other, "read")
+			otherRunner.enroll(t)
+			if err := f.service.refreshBoardRecord(t.Context(), other.project.OrganizationID, viewstore.BoardCandidate{ProjectID: other.project.ID, WorkItemID: foreign.WorkItemID}, f.service.config.Clock()); err != nil {
+				t.Fatal(err)
+			}
+			f.service.localOrganization = string(f.project.OrganizationID)
+			runner := prepareRunner(t, f, "read")
+			runner.enroll(t)
+			token := runner.redemption.Credential
+			if query == "state=Todo" {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "earlier-done"}, Title: "Earlier completed item", Body: issueContractTestSections, State: "Done"})
+				requireNativeStatus(t, response, http.StatusOK)
+			}
+			var items []tracker.NativeIssue
+			for index := range 4 {
+				items = append(items, f.create(t, fmt.Sprintf("paging item %d", index)))
+			}
+			drainTestNativeBoard(t, f.service)
+			read := func(params string) tracker.NativeIssuePage {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+query+params, token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page tracker.NativeIssuePage
+				decodeHubResponse(t, response, &page)
+				return page
+			}
+			probe := read("&limit=1")
+			if len(probe.Items) != 1 || probe.NextCursor == "" {
+				t.Fatal("one-item lookup did not return the first match")
+			}
+			limit := "&limit=1"
+			if query == "archived=all" {
+				limit = "&limit=2"
+			}
+			page := read(limit + "&cursor=")
+			if len(page.Items) == 0 || page.NextCursor == "" {
+				t.Fatalf("first page has %d items, cursor %q", len(page.Items), page.NextCursor)
+			}
+			f.service.localOrganization = string(other.project.OrganizationID)
+			path := other.base + "/work-items?" + query + "&limit=1"
+			response := performHubAPIRequest(t, f.service, http.MethodGet, path+"&cursor=", otherRunner.redemption.Credential, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var otherPage tracker.NativeIssuePage
+			decodeHubResponse(t, response, &otherPage)
+			if len(otherPage.Items) != 1 || otherPage.Items[0].WorkItemID != foreign.WorkItemID {
+				t.Fatalf("second organization returned %v", otherPage.Items)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, path+"&cursor="+url.QueryEscape(page.NextCursor), otherRunner.redemption.Credential, nil)
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			f.service.localOrganization = string(f.project.OrganizationID)
+			var seen []tracker.NativeWorkItemID
+			for _, item := range page.Items {
+				seen = append(seen, item.WorkItemID)
+			}
+			var want []tracker.NativeWorkItemID
+			for _, item := range items {
+				want = append(want, item.WorkItemID)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "activity-" + string(item.WorkItemID)}, Body: "Updated during paging"})
+				requireNativeStatus(t, response, http.StatusOK)
+			}
+			if query == "state=Todo" {
+				moved := items[1]
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(moved.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "move-during-paging"}, ExpectedRevision: readWorkItem(t, f, moved.WorkItemID, "").Revision, State: "Done", Reason: "user_requested"})
+				requireNativeStatus(t, response, http.StatusOK)
+				want = slices.Delete(want, 1, 2)
+				f.create(t, "created after page one")
+			}
+			drainTestNativeBoard(t, f.service)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+query+"&limit=1&cursor="+url.QueryEscape(probe.NextCursor), token, nil)
+			if failure := requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request"); failure.Message != "Work list order changed; restart the query" {
+				t.Fatalf("unexpected display cursor error: %v", failure.Message)
+			}
+			for pages := 1; page.NextCursor != ""; pages++ {
+				if pages > len(items) {
+					t.Fatal("cursor did not reach the end of the original items")
+				}
+				page = read(limit + "&cursor=" + url.QueryEscape(page.NextCursor))
+				if len(page.Items) == 0 {
+					t.Fatal("expected the next matching item")
+				}
+				for _, item := range page.Items {
+					seen = append(seen, item.WorkItemID)
+				}
+			}
+			if !slices.Equal(seen, want) {
+				t.Fatalf("read %v, want %v", seen, want)
+			}
+		})
+	}
+}
