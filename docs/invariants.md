@@ -118,62 +118,21 @@ columns are typed, never JSON.
 
 ## INV-19 — No flaky tests
 
-A test that both passes and fails on the same commit is a defect, reported at
-High. Its owner fixes the cause or deletes the test. An intermittent failure is
-not "cannot reproduce": diagnose it from the failing run's evidence (logs,
-captured snapshots and artifacts) or by repeating it under CI load, then fix
-the product or test cause.
-
-A flake is never accommodated: no added retries, sleeps or fixed waits, longer
-timeouts, skips, `fixme` or expected-failure marks, or quarantine. A test's own
-waits and timeouts never grow to hide a flake; a suite's overall execution
-budget may be sized from measured runtime. CI keeps Playwright's
-`failOnFlakyTests` on with at most one retry, so a test that only passes on
-retry still fails the run and is reported.
+A test that both passes and fails on the same commit is a High defect. Its owner diagnoses it from the failing run's evidence, then fixes the cause or deletes the test. A flake is never accommodated: no added retries, sleeps, longer timeouts, skips, expected-failure marks or quarantine.
 
 ## INV-20 — SQL never reads or writes inside stored JSON
 
-Hub and store SQL never use JSON functions or operators over stored data:
-`json`, `jsonb`, `json_extract`, `->`, `->>`, `json_each`, `json_tree`, `json_set`, `json_insert`,
-`json_replace`, `json_patch`, `json_remove`, `json_object`, `json_array`,
-`json_group_*`, `json_valid`, `json_type` or `json_array_length`. This includes
-constructing JSON from stored columns. Every field SQL filters, joins, orders,
-aggregates, projects or updates is a typed column.
+Hub and store SQL never use JSON functions or operators over stored data, including building JSON from stored columns. Every field SQL filters, joins, orders, aggregates, projects or updates is a typed column.
 
-Hub rows hold typed columns only. Audit, history and runtime payloads (attempt
-detail, run events, checkpoints, evidence, conversation streams and similar
-records kept for audit or history) are written compressed to object storage at
-write time, and the row keeps only a typed reference to the object. JSON and
-other payload blobs are never stored inline in Hub rows, and no derived table
-copies them. Existing inline payload columns are migration debt to move to object
-storage; no change may add one, and a change that touches one moves it.
-
-Current page content may be projected into typed `page_read_model` tables so
-page handlers do not fetch objects. These tables retain only the current page,
-record the source revision and generation, source time and projection time,
-and are rebuilt asynchronously through `hubmaintenance`. Project pages declare
-project scope and use the tenant and project keys; work-item pages also carry
-the work-item key. Their typed `body`
-column is current display text, never a serialized history payload. JSON and
-other serialized payload columns remain prohibited; the frozen legacy payload
-list does not expand for read models.
+Hub rows hold typed columns only. Audit, history and runtime payloads are written to object storage at write time, and the row keeps a typed reference. Typed read-model tables may hold current page content for display, never serialized history. Existing JSON queries and inline payload columns are migration debt that only shrinks: no change adds one, and a change that touches one moves it.
 
 ## INV-21 — Designs hold at ten thousand tenants and runners
 
-Every design is judged at 10,000 tenants and 10,000 runners, with up to 1,000
-runners, 100 projects and 1,000,000 attempts of history in one tenant. A choice
-that only works at today's size is a defect.
+Every design is judged at 10,000 tenants and 10,000 runners, with up to 1,000 runners, 100 projects and 1,000,000 attempts of history in one tenant. A choice that only works at today's size is a defect.
 
-Work per request is bounded by the size of that request. Work per periodic tick
-is bounded by a fixed budget and resumes on the next tick. For a fixed request size or tick budget, the number of items processed does not grow with total tenant count, runner count, item count or history. No request or background job
-holds a lock, connection or transaction shared by other requests across
-per-item network calls or a walk over many objects; such work takes the shared
-resource per item, briefly. Each heartbeat, poll, retry and reconnect processes a bounded number of items:
-heartbeats, polls, retries and reconnects use capped jittered intervals, and the
-control plane applies per-tenant and per-runner admission limits, so one tenant
-or a synchronized fleet cannot starve the others.
+Request work is bounded by the request and periodic work by a fixed per-tick budget; neither grows with tenants, runners, items or history. Shared locks, connections and transactions are never held across per-item network calls or object walks. Fleet traffic is jittered and admission is limited per tenant and per runner, so one tenant or a synchronized fleet cannot starve the others.
 
-A Change that adds or modifies a hot path, a shared lock or a periodic job states its cost at this scale in its description, for example "per heartbeat: one row read and one row written, no history reads". Review rejects unbounded scans or fan-out over history or the fleet.
+A Change that adds or modifies a hot path, a shared lock or a periodic job states its cost at this scale in its description.
 
 ## INV-22 — Tests never use production credentials or systems
 
@@ -183,17 +142,6 @@ Code under test that reads a credential from the environment has it cleared in `
 
 ## INV-23 — The tenant is never a process
 
-The tenant is an attribute of a request, a job and a row, never of a process,
-binary, physical connection pool, timer or configuration file. One Hub process
-serves many organizations: no change starts a process per tenant, creates or
-closes a physical pool when an organization is added or removed, runs a timer
-or idle goroutine per tenant, or keeps a configuration file per tenant. The
-tenant scope is built once from the verified request or the scheduler's
-selected tenant, passed explicitly and rechecked where writes commit and
-results are published; it is never read from process-wide configuration.
-Background work is one shared scheduler per process with bounded pages,
-workers and deadlines, and its cost is stated at INV-21 scale. The only
-dedicated placement is a shard assignment Cory approves, with a recorded
-reason, using the same shard machinery. This invariant incorporates
-[the multi-tenancy architecture](architecture/multi-tenancy.md) as normative;
-where they differ, this section wins.
+The tenant is an attribute of a request, a job and a row, never of a process, binary, physical connection pool, timer, idle goroutine or configuration file. One Hub process serves many organizations. The tenant scope is built once from the verified request or the scheduler's selected tenant, passed explicitly and rechecked where writes commit; it is never read from process-wide state. Background work is one shared, bounded scheduler per process. The only dedicated placement is a shard assignment Cory approves, with a recorded reason.
+
+This invariant incorporates [the multi-tenancy architecture](architecture/multi-tenancy.md) as normative; where they differ, this section wins.

@@ -56,6 +56,18 @@ a test, and that no Go test skips itself as flaky.
 
 ### INV-20
 
+The JSON functions and operators the rule covers: `json`, `jsonb`, `json_extract`, `->`, `->>`, `json_each`, `json_tree`, `json_set`, `json_insert`, `json_replace`, `json_patch`, `json_remove`, `json_object`, `json_array`, `json_group_*`, `json_valid`, `json_type` and `json_array_length`.
+
+Current page content may be projected into typed `page_read_model` tables so
+page handlers do not fetch objects. These tables retain only the current page,
+record the source revision and generation, source time and projection time,
+and are rebuilt asynchronously through `hubmaintenance`. Project pages declare
+project scope and use the tenant and project keys; work-item pages also carry
+the work-item key. Their typed `body`
+column is current display text, never a serialized history payload. JSON and
+other serialized payload columns remain prohibited; the frozen legacy payload
+list does not expand for read models.
+
 Review enforces payload placement in object storage. `TestINV20NoSQLOverJSON` in `internal/hubserver` scans non-test
 Go files in Hub and store (including generated SQL), and `db/queries` SQL sources.
 Per-file function counts must equal `testdata/inv20_json_sql_baseline.txt`;

@@ -103,7 +103,7 @@ Detent's self-protection mechanisms (brakes, breakers, leases, parks, recovery s
 
 ## Repository invariants
 
-Follow [docs/invariants.md](docs/invariants.md). Start with its headings and read the sections governing the touched behavior and their linked prerequisites; do not load the whole file into context. Only a change to an invariant's rule edits `docs/invariants.md`. Name affected INV IDs in the Change description; per-change rationale and evidence go there or in issue comments. The rules agents trip on most:
+Follow [docs/invariants.md](docs/invariants.md). It is short; read it whole. Only a change to an invariant's rule edits `docs/invariants.md`. Name affected INV IDs in the Change description; per-change rationale and evidence go there or in issue comments. The rules agents trip on most:
 
 - [INV-16](docs/invariants.md#inv-16--the-hub-carries-execution-context-and-git-carries-source): the Hub carries issue direction, phase receipts, verdicts and findings. Git carries source commits. Keep human discussion and final outcomes in the tracker. Never pass execution state through repository notes or machine issue-comment streams.
 - [INV-17](docs/invariants.md#inv-17--hub-owned-assignment-and-retained-item-worktrees): the Hub owns assignment and execution authority. The runner keeps the item’s worktree across phases and retries under its lease. Each completed phase pushes ordinary commits and records commit-bound receipts in the Hub. After lease loss, resume from the last pushed phase commit at the first phase without a valid receipt. Keep unrelated jobs independent of machine-local state. Never discover configuration by scanning the machine or route by where earlier work ran.
