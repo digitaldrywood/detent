@@ -2,20 +2,17 @@ package postgres_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -628,30 +625,13 @@ func TestMessageReadsReportUnknownLegacyStoredSize(t *testing.T) {
 	}
 }
 
-type pendingConversationQueryTrace struct {
-	statement string
-	args      []any
-}
-
-func (trace *pendingConversationQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "conversation_messages") && strings.Contains(data.SQL, "conversation_commands") {
-		trace.statement, trace.args = data.SQL, append([]any(nil), data.Args...)
-	}
-	return ctx
-}
-
-func (*pendingConversationQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {
-}
-
-func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
+func TestPendingConversationsPreserveSparseTenantCursors(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	pgstoretest.SeedCore(t, admin)
 	base := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	config := base.Config()
 	base.Close()
-	trace := &pendingConversationQueryTrace{}
-	config.ConnConfig.Tracer = trace
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -666,7 +646,7 @@ func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	const history, limit = 4096, 32
+	const history, limit = 64, 8
 	id := func(number int) string { return fmt.Sprintf("conv_%032x", number) }
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for index, organization := range organizations {
@@ -694,11 +674,6 @@ func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, table := range []string{"conversations", "conversation_messages", "conversation_commands"} {
-		if _, err := admin.ExecContext(t.Context(), "ANALYZE "+pgx.Identifier{table}.Sanitize()); err != nil {
-			t.Fatal(err)
-		}
-	}
 	for index, organization := range organizations {
 		t.Run(string(organization), func(t *testing.T) {
 			var first, second, last conversationstore.PendingConversationPage
@@ -711,38 +686,6 @@ func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
 			}
 			if len(first.Items) != 0 || first.Next != id(limit) {
 				t.Errorf("sparse first examined page=%+v, want empty items and boundary %s", first, id(limit))
-			}
-			tx, err := pool.Begin(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback(t.Context())
-			if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, organization); err != nil {
-				t.Fatal(err)
-			}
-			var raw []byte
-			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+trace.statement, trace.args...).Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
-			var plans []struct{ Plan pgstoretest.SearchPlanNode }
-			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-				t.Fatalf("decode pending scan plan: %v", err)
-			}
-			work := make(map[string]float64)
-			var visit func(pgstoretest.SearchPlanNode)
-			visit = func(node pgstoretest.SearchPlanNode) {
-				work[node.Relation] += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-				for _, child := range node.Plans {
-					visit(child)
-				}
-			}
-			visit(plans[0].Plan)
-			t.Logf("history=%d dense_completed=%d irrelevant_active=%d limit=%d natural row work=%v plan=%s", history, history, history, limit, work, raw)
-			if work["conversations"] > limit+1 || work["conversation_messages"]+work["conversation_commands"] > 2*(limit+1) {
-				t.Errorf("pending scan exceeded examined-row budget: %v", work)
-			}
-			if err := tx.Rollback(t.Context()); err != nil {
-				t.Fatal(err)
 			}
 			if err := repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
 				var err error

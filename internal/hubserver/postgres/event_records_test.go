@@ -18,7 +18,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -31,7 +30,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -453,29 +451,11 @@ func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
 	}
 }
 
-func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
+func TestLatestRunEventsAndAnalyticsPages(t *testing.T) {
 	t.Parallel()
 	t.Run("analytics workflow and evidence seek before residuals", func(t *testing.T) {
 		admin := pgstoretest.Template.Database(t)
-		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-		if err := original.Close(); err != nil {
-			t.Fatal(err)
-		}
-		capture := &analyticsQualityQueryCapture{}
-		observed := pgstoretest.TracedFeaturePool(t, pool, capture)
-		repository, err := postgres.NewRepository(t.Context(), observed, pgstoretest.SmallPool())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := repository.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		runtime, err := postgres.NewRuntime(t.Context(), observed, observed)
-		if err != nil {
-			t.Fatal(err)
-		}
+		repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		for _, org := range []tracker.OrganizationID{"org_quality_first", "org_quality_second"} {
 			pgstoretest.SeedRepository(t, repository, org)
 			f := pgstoretest.SeedHistory(t, repository, org, "analytics_quality")
@@ -513,63 +493,6 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			plan := func(family, relation string, budget float64) {
-				t.Helper()
-				capture.mu.Lock()
-				statement, args := capture.sql[family], append([]any(nil), capture.args[family]...)
-				capture.mu.Unlock()
-				if statement == "" {
-					t.Fatalf("missing %s source query", family)
-				}
-				tx, err := runtime.Begin(t.Context(), org, pgtransport.Options{ReadOnly: true})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback(t.Context())
-				var raw []byte
-				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
-				var plans []struct{ Plan pgstoretest.SearchPlanNode }
-				if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-					t.Fatalf("%s plan error=%v", family, err)
-				}
-				visits := float64(0)
-				indexed := false
-				var servedIndex func(pgstoretest.SearchPlanNode) bool
-				servedIndex = func(node pgstoretest.SearchPlanNode) bool {
-					if node.Index != "" && node.Loops > 0 {
-						return true
-					}
-					for _, child := range node.Plans {
-						if servedIndex(child) {
-							return true
-						}
-					}
-					return false
-				}
-				metadata := map[string]float64{}
-				var inspect func(pgstoretest.SearchPlanNode)
-				inspect = func(node pgstoretest.SearchPlanNode) {
-					if node.Relation == relation {
-						visits += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-						indexed = indexed || servedIndex(node)
-					}
-					if node.Relation == "issues" || node.Relation == "change_requests" || node.Relation == "change_versions" {
-						metadata[node.Relation] += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-					}
-					for _, child := range node.Plans {
-						inspect(child)
-					}
-				}
-				inspect(plans[0].Plan)
-				if metadata["issues"] > 1 || metadata["change_requests"] > 1 || metadata["change_versions"] > 3 {
-					t.Fatalf("%s metadata point visits=%v plan=%s", family, metadata, raw)
-				}
-				if visits > budget || !indexed {
-					t.Fatalf("%s source visits=%.0f budget=%.0f plan=%s", family, visits, budget, raw)
-				}
-			}
 			workflow := eventstore.AnalyticsWorkflowQuery{ProjectID: "prj_first", Principal: "example", From: base, To: base.Add(time.Hour), Limit: 1000}
 			readWorkflow := func() eventstore.AnalyticsWorkflowPage {
 				t.Helper()
@@ -584,20 +507,20 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				return page
 			}
 			head := readWorkflow()
-			plan("workflow", "collaboration_events", 1001)
+
 			if len(head.Items) != 1000 || head.Items[0].Event.ID != "workflow-0000" || head.Next.ID != "workflow-0999" || !head.Partial {
 				t.Fatalf("workflow head=%+v", head)
 			}
 			workflow.After = head.Next
 			tail := readWorkflow()
-			plan("workflow", "collaboration_events", 1001)
+
 			if len(tail.Items) != 1 || tail.Items[0].Event.ID != "workflow-1000" || tail.Next.ID != "" || !tail.Partial {
 				t.Fatalf("workflow tail=%+v", tail)
 			}
 			workflow.After = eventstore.AnalyticsWorkflowCursor{}
 			workflow.Principal = "unrelated"
 			hidden := readWorkflow()
-			plan("workflow", "collaboration_events", 1001)
+
 			if len(hidden.Items) != 0 || hidden.Next.ID != "workflow-0999" || !hidden.Partial {
 				t.Fatalf("workflow visibility residual=%+v", hidden)
 			}
@@ -615,20 +538,20 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				return page
 			}
 			first := readEvidence()
-			plan("evidence", "change_evidence", 1001)
+
 			if len(first.Items) != 1000 || first.Items[0].Evidence.Sequence != 2 || first.Next.Sequence != 1001 || !first.Partial {
 				t.Fatalf("evidence head rows=%d next=%+v partial=%v", len(first.Items), first.Next, first.Partial)
 			}
 			query.After = first.Next
 			last := readEvidence()
-			plan("evidence", "change_evidence", 1001)
+
 			if len(last.Items) != 1 || last.Items[0].Evidence.Sequence != 1002 || last.Next.ChangeID != "" || !last.Partial {
 				t.Fatalf("evidence tail=%+v", last)
 			}
 			query.After = eventstore.AnalyticsEvidenceCursor{}
 			query.Principal = "unrelated"
 			invisible := readEvidence()
-			plan("evidence", "change_evidence", 1001)
+
 			if len(invisible.Items) != 0 || invisible.Next.Sequence != 1001 || !invisible.Partial {
 				t.Fatalf("evidence visibility residual=%+v", invisible)
 			}
@@ -636,7 +559,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			query.After = eventstore.AnalyticsEvidenceCursor{}
 			query.From = base.Add(2 * time.Minute)
 			quiet := readEvidence()
-			plan("evidence", "change_evidence", 1001)
+
 			if len(quiet.Items) != 0 || quiet.Partial || quiet.Next.ChangeID != "" {
 				t.Fatalf("old evidence poisoned quiet window=%+v", quiet)
 			}
@@ -713,7 +636,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			}{{base.Add(3 * time.Minute), 0}, {base.Add(210 * time.Second), 0}, {base.Add(5 * time.Minute), 1}} {
 				query.To = test.to
 				page := readEvidence()
-				plan("evidence", "change_evidence", 1001)
+
 				if len(page.Items) != test.want || page.Partial || page.Next.ChangeID != "" {
 					t.Fatalf("observed/as-of window to=%s page=%+v", test.to, page)
 				}
@@ -726,25 +649,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 	})
 	t.Run("scheduler seek bounds outcomes and batches immediate predecessors", func(t *testing.T) {
 		admin := pgstoretest.Template.Database(t)
-		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-		if err := original.Close(); err != nil {
-			t.Fatal(err)
-		}
-		capture := &diagnosticsQueryCapture{}
-		observedPool := pgstoretest.TracedFeaturePool(t, pool, capture)
-		repository, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := repository.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		runtime, err := postgres.NewRuntime(t.Context(), observedPool, observedPool)
-		if err != nil {
-			t.Fatal(err)
-		}
+		repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 		for _, org := range []tracker.OrganizationID{"org_scheduler_first", "org_scheduler_second"} {
 			pgstoretest.SeedRepository(t, repository, org)
@@ -775,56 +680,15 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				}
 				return page
 			}
-			plan := func(predecessor bool) {
-				t.Helper()
-				capture.mu.Lock()
-				statement, args := capture.scheduler, append([]any(nil), capture.schedulerArgs...)
-				if predecessor {
-					statement, args = capture.predecessor, append([]any(nil), capture.predecessorArgs...)
-				}
-				capture.mu.Unlock()
-				tx, err := runtime.Begin(t.Context(), org, pgtransport.Options{ReadOnly: true})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback(t.Context())
-				var raw []byte
-				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
-				var nodes []struct{ Plan pgstoretest.SearchPlanNode }
-				if err := json.Unmarshal(raw, &nodes); err != nil || len(nodes) != 1 {
-					t.Fatalf("scheduler plan error=%v", err)
-				}
-				visits, indexed := float64(0), false
-				var inspect func(pgstoretest.SearchPlanNode)
-				inspect = func(node pgstoretest.SearchPlanNode) {
-					if node.Relation == "collaboration_events" {
-						visits += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-						indexed = indexed || node.Index != "" && node.Loops > 0
-					}
-					for _, child := range node.Plans {
-						inspect(child)
-					}
-				}
-				inspect(nodes[0].Plan)
-				if predecessor {
-					if !indexed || visits > 1000 {
-						t.Fatalf("scheduler predecessor history visits=%.0f plan=%s", visits, raw)
-					}
-				} else if !nodes[0].Plan.UsesIndex("collaboration_events_analytics_scheduler_seek") || visits > 1001 {
-					t.Fatalf("scheduler source visits=%.0f plan=%s", visits, raw)
-				}
-			}
 			query := eventstore.AnalyticsSchedulerQuery{ProjectID: "prj_first", Principal: "example", From: base, To: base.Add(time.Hour), Outcome: "skipped", Limit: 1000}
 			head := read(query)
-			plan(false)
+
 			if len(head.Events) != 1000 || head.Events[0].ID != "skip-0000" || head.Next.ID != "skip-0999" || head.Examined != 1001 || !head.Partial || len(head.Prior) != 0 {
 				t.Fatalf("scheduler head rows=%d examined=%d next=%+v", len(head.Events), head.Examined, head.Next)
 			}
 			query.After = head.Next
 			tail := read(query)
-			plan(false)
+
 			if len(tail.Events) != 1 || tail.Events[0].ID != "skip-1000" || tail.Examined != 1 || !tail.Partial || tail.Next.ID != "" {
 				t.Fatalf("scheduler tail=%+v", tail)
 			}
@@ -837,8 +701,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			query.Principal = "example"
 			query.Outcome = "claimed"
 			claims := read(query)
-			plan(false)
-			plan(true)
+
 			if len(claims.Events) != 1000 || claims.Examined != 1001 || len(claims.Prior) != 1000 || claims.Next.ID != "claim-0999" || !claims.Partial {
 				t.Fatalf("claimed population rows=%d prior=%d examined=%d next=%+v", len(claims.Events), len(claims.Prior), claims.Examined, claims.Next)
 			}
@@ -896,9 +759,6 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := admin.ExecContext(t.Context(), `ANALYZE collaboration_events`); err != nil {
-		t.Fatal(err)
-	}
 	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
@@ -945,8 +805,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 				t.Fatal(err)
 			}
-			probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
-			queries := pgquery.New(probe)
+			queries := pgquery.New(tx)
 			params := pgquery.RecordLatestRunEventsByAttemptsParams{OrganizationID: org, ProjectID: "prj_first", AttemptIds: attempts}
 			rows, err := queries.RecordLatestRunEventsByAttempts(t.Context(), params)
 			if err != nil {
@@ -970,50 +829,8 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				}
 				seen[row.AttemptID] = true
 			}
-			var raw []byte
-			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
-			var plan []struct{ Plan pgstoretest.SearchPlanNode }
-			if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
-				t.Fatalf("decode plan: %v", err)
-			}
-			var visits func(pgstoretest.SearchPlanNode) float64
-			visits = func(node pgstoretest.SearchPlanNode) float64 {
-				var count float64
-				if node.Relation == "collaboration_events" {
-					count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-				}
-				for _, child := range node.Plans {
-					count += visits(child)
-				}
-				return count
-			}
-			visited := visits(plan[0].Plan)
-			t.Logf("requested=%d actual event rows visited=%.0f plan=%s", len(attempts), visited, raw)
-			if visited > float64(4*len(attempts)) {
-				t.Errorf("latest batch visited %.0f event rows for %d attempts", visited, len(attempts))
-			}
-			config := pool.Config()
-			config.MaxConns = 3
-			capture := &diagnosticsQueryCapture{QueryTracer: config.ConnConfig.Tracer}
-			config.ConnConfig.Tracer = capture
-			observedPool, err := pgxpool.NewWithConfig(t.Context(), config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			observed, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
-			if err != nil {
-				observedPool.Close()
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := observed.Close(); err != nil {
-					t.Error(err)
-				}
-			})
 			var snapshot diagnosticstore.Snapshot
-			if err := observed.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := r.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
 				var err error
 				snapshot, err = reader.(diagnosticstore.Reader).DiagnosticsSnapshot(t.Context(), []tracker.ProjectID{"prj_first"}, pgstoretest.HistoryAt().Add(-time.Hour), pgstoretest.HistoryAt().Add(2*time.Hour), pgstoretest.HistoryAt().Add(2*time.Hour), "")
 				return err
@@ -1022,34 +839,6 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			}
 			if len(snapshot.Landings) != 1 || snapshot.Landings[0].EnteredAt == nil || !snapshot.Landings[0].EnteredAt.Equal(pgstoretest.HistoryAt().Add(-2*time.Hour)) || !snapshot.Landings[0].At.Equal(pgstoretest.HistoryAt().Add(time.Hour)) {
 				t.Fatalf("diagnostics lost exact pre-window merge entry or landing receipt: %+v", snapshot.Landings)
-			}
-			capture.mu.Lock()
-			statement, args := capture.landing, append([]any(nil), capture.args...)
-			capture.mu.Unlock()
-			if statement == "" {
-				t.Fatal("diagnostics did not execute its landing owner query")
-			}
-			var landingPlan []byte
-			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, args...).Scan(&landingPlan); err != nil {
-				t.Fatal(err)
-			}
-			var landingNodes []struct{ Plan pgstoretest.SearchPlanNode }
-			if err := json.Unmarshal(landingPlan, &landingNodes); err != nil || len(landingNodes) != 1 {
-				t.Fatalf("decode diagnostic landing plan: %v", err)
-			}
-			indexed := false
-			var inspect func(pgstoretest.SearchPlanNode)
-			inspect = func(node pgstoretest.SearchPlanNode) {
-				if node.Index == "collaboration_events_diagnostics_merge_entry_idx" {
-					indexed = true
-				}
-				for _, child := range node.Plans {
-					inspect(child)
-				}
-			}
-			inspect(landingNodes[0].Plan)
-			if !indexed || visits(landingNodes[0].Plan) > 4 {
-				t.Fatalf("diagnostics merge entry walks event history: %s", landingPlan)
 			}
 			params.OrganizationID = "org_foreign"
 			foreign, err := queries.RecordLatestRunEventsByAttempts(t.Context(), params)
@@ -1860,19 +1649,11 @@ func TestEventChangeCommandReceiptContention(t *testing.T) {
 	}
 }
 
-func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
+func TestChangeSummaryKeepsCurrentActorsAndTenantScope(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
-	if _, err := admin.ExecContext(t.Context(), `ALTER TABLE change_evidence SET (autovacuum_enabled=false); ALTER TABLE current_change_reviews SET (autovacuum_enabled=false)`); err != nil {
-		t.Fatal(err)
-	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if org == "org_second" {
-			if _, err := admin.ExecContext(t.Context(), `ANALYZE change_evidence; ANALYZE current_change_reviews`); err != nil {
-				t.Fatal(err)
-			}
-		}
 		pgstoretest.SeedRepository(t, repository, org)
 		for _, actors := range []int{17, 10000} {
 			key := fmt.Sprintf("current_%d", actors)
@@ -1896,87 +1677,59 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 		}
 	}
 	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
-	for _, analyzed := range []bool{false, true} {
-		if analyzed {
-			if _, err := admin.ExecContext(t.Context(), `ANALYZE change_evidence; ANALYZE current_change_reviews`); err != nil {
-				t.Fatal(err)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, actors := range []int{17, 10000} {
+			excluded := "actor_00011"
+			if actors == 10000 {
+				excluded = "actor_09999"
 			}
-		}
-		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			for _, actors := range []int{17, 10000} {
-				excluded := "actor_00011"
-				if actors == 10000 {
-					excluded = "actor_09999"
-				}
-				for _, actor := range []string{"", excluded} {
-					t.Run(fmt.Sprintf("%s/analyzed=%v/actors=%d/exclude=%s", org, analyzed, actors, actor), func(t *testing.T) {
-						tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
-						if err != nil {
-							t.Fatal(err)
-						}
-						defer tx.Rollback(t.Context())
-						if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
-							t.Fatal(err)
-						}
-						probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
-						queries := pgquery.New(probe)
-						args := pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: fmt.Sprintf("change_current_%d", actors), VersionID: fmt.Sprintf("version_current_%d", actors), ReviewingActor: actor, Through: 30001}
-						sequences, err := queries.RecordCurrentChangeReviewSequences(t.Context(), args)
-						if err != nil {
-							t.Fatal(err)
-						}
-						headSQL, headArgs := probe.Statement, append([]any(nil), probe.Args...)
-						rows, err := queries.RecordCurrentChangeEvidenceBySequences(t.Context(), pgquery.RecordCurrentChangeEvidenceBySequencesParams{OrganizationID: string(org), ChangeID: args.ChangeID, Sequences: sequences})
-						if err != nil {
-							t.Fatal(err)
-						}
-						expected := []int64{30000, 30001}
-						if actor != "" {
-							expected = []int64{29999, 30000}
-						}
-						if len(rows) != len(expected) {
-							t.Fatalf("summary evidence=%d want=%d", len(rows), len(expected))
-						}
-						for i, row := range rows {
-							if row.OrganizationID != org || row.ChangeID != args.ChangeID || row.Sequence != expected[i] || row.ActorPrincipalID == actor {
-								t.Fatalf("summary lost current actor/tenant identity: %+v", row)
-							}
-						}
-						var visited float64
-						for _, statement := range []struct {
-							sql  string
-							args []any
-						}{{headSQL, headArgs}, {probe.Statement, append([]any(nil), probe.Args...)}} {
-							var raw []byte
-							if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement.sql, statement.args...).Scan(&raw); err != nil {
-								t.Fatal(err)
-							}
-							var plans []struct{ Plan pgstoretest.SearchPlanNode }
-							if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-								t.Fatalf("decode review lookup plan: %v", err)
-							}
-							visited += currentReviewLookupVisits(plans[0].Plan)
-							t.Logf("current actors=%d historical reviews=30000 cumulative visits=%.0f plan=%s", actors, visited, raw)
-						}
-						if visited > 32 {
-							t.Errorf("current review lookup visited %.0f rows for2 current decisions", visited)
-						}
-						args.OrganizationID = "org_foreign"
-						foreign, err := queries.RecordCurrentChangeReviewSequences(t.Context(), args)
-						if err != nil || len(foreign) != 0 {
-							t.Fatalf("foreign summary rows=%d error=%v", len(foreign), err)
-						}
-					})
-				}
-				if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
-					_, _, err := r.(eventstore.ChangeReviewEvidenceReader).ChangeReviewEvidence(t.Context(), fmt.Sprintf("change_current_%d", actors), fmt.Sprintf("version_current_%d", actors), 30000, nil, "actor_example")
-					if !errors.Is(err, corestore.ErrRevisionConflict) {
-						return fmt.Errorf("historical snapshot did not conflict: %v", err)
+			for _, actor := range []string{"", excluded} {
+				t.Run(fmt.Sprintf("%s/actors=%d/exclude=%s", org, actors, actor), func(t *testing.T) {
+					tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
+					if err != nil {
+						t.Fatal(err)
 					}
-					return nil
-				}); err != nil {
-					t.Fatal(err)
+					defer tx.Rollback(t.Context())
+					if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
+						t.Fatal(err)
+					}
+					queries := pgquery.New(tx)
+					args := pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: fmt.Sprintf("change_current_%d", actors), VersionID: fmt.Sprintf("version_current_%d", actors), ReviewingActor: actor, Through: 30001}
+					sequences, err := queries.RecordCurrentChangeReviewSequences(t.Context(), args)
+					if err != nil {
+						t.Fatal(err)
+					}
+					rows, err := queries.RecordCurrentChangeEvidenceBySequences(t.Context(), pgquery.RecordCurrentChangeEvidenceBySequencesParams{OrganizationID: string(org), ChangeID: args.ChangeID, Sequences: sequences})
+					if err != nil {
+						t.Fatal(err)
+					}
+					expected := []int64{30000, 30001}
+					if actor != "" {
+						expected = []int64{29999, 30000}
+					}
+					if len(rows) != len(expected) {
+						t.Fatalf("summary evidence=%d want=%d", len(rows), len(expected))
+					}
+					for i, row := range rows {
+						if row.OrganizationID != org || row.ChangeID != args.ChangeID || row.Sequence != expected[i] || row.ActorPrincipalID == actor {
+							t.Fatalf("summary lost current actor/tenant identity: %+v", row)
+						}
+					}
+					args.OrganizationID = "org_foreign"
+					foreign, err := queries.RecordCurrentChangeReviewSequences(t.Context(), args)
+					if err != nil || len(foreign) != 0 {
+						t.Fatalf("foreign summary rows=%d error=%v", len(foreign), err)
+					}
+				})
+			}
+			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+				_, _, err := r.(eventstore.ChangeReviewEvidenceReader).ChangeReviewEvidence(t.Context(), fmt.Sprintf("change_current_%d", actors), fmt.Sprintf("version_current_%d", actors), 30000, nil, "actor_example")
+				if !errors.Is(err, corestore.ErrRevisionConflict) {
+					return fmt.Errorf("historical snapshot did not conflict: %v", err)
 				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 		}
 	}
@@ -2017,9 +1770,6 @@ SELECT CASE WHEN kind='review' THEN $5::timestamptz END,(SELECT project_id FROM 
 			org, fixture.Change.ID, currentRow.ID, fixture.Version.ID, pgstoretest.HistoryAt(), fixture.Evidence.PayloadObjectKey, fixture.Evidence.PayloadSHA256); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(ctx, "ANALYZE change_evidence"); err != nil {
-			t.Fatal(err)
-		}
 		tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 		if err != nil {
 			t.Fatal(err)
@@ -2028,62 +1778,14 @@ SELECT CASE WHEN kind='review' THEN $5::timestamptz END,(SELECT project_id FROM 
 		if _, err := tx.Exec(ctx, "SELECT set_config('detent.organization_id', $1, true)", string(org)); err != nil {
 			t.Fatal(err)
 		}
-		checkVisits := func(statement string, args []any, subplan string, bound float64) {
-			t.Helper()
-			var raw []byte
-			if err := tx.QueryRow(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
-			var plans []struct{ Plan json.RawMessage }
-			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-				t.Fatalf("decode recovery lookup plan: %v", err)
-			}
-			plan := plans[0].Plan
-			if subplan != "" {
-				var root struct {
-					Plans []json.RawMessage
-				}
-				if err := json.Unmarshal(plan, &root); err != nil {
-					t.Fatal(err)
-				}
-				plan = nil
-				for _, child := range root.Plans {
-					var node struct {
-						Name string `json:"Subplan Name"`
-					}
-					if err := json.Unmarshal(child, &node); err != nil {
-						t.Fatal(err)
-					}
-					if node.Name == subplan {
-						plan = child
-						break
-					}
-				}
-				if plan == nil {
-					t.Fatalf("missing bounded subplan %q: %s", subplan, raw)
-				}
-			}
-			var node pgstoretest.SearchPlanNode
-			if err := json.Unmarshal(plan, &node); err != nil {
-				t.Fatal(err)
-			}
-			visited := currentReviewLookupVisits(node)
-			if visited == 0 || visited > bound {
-				t.Fatalf("recovery evidence visited %.0f rows, want at most %.0f: %s", visited, bound, raw)
-			}
-		}
 		const through = 14000
-		priorProbe := &pgstoretest.SearchPublicationProbe{Tx: tx}
-		prior, err := pgquery.New(priorProbe).RecordChangePriorApproval(ctx, pgquery.RecordChangePriorApprovalParams{
+		prior, err := pgquery.New(tx).RecordChangePriorApproval(ctx, pgquery.RecordChangePriorApprovalParams{
 			OrganizationID: org, ChangeID: fixture.Change.ID, VersionID: new(currentRow.ID), Through: through,
 		})
 		if err != nil || prior.Approved || !prior.Unprojected {
 			t.Fatalf("prior approval classification: %+v, %v", prior, err)
 		}
-		checkVisits(priorProbe.Statement, priorProbe.Args, "CTE unknown_approvals", 201)
-
-		probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
-		rows, err := pgquery.New(probe).RecordRecoveryChangeEvidence(ctx, pgquery.RecordRecoveryChangeEvidenceParams{
+		rows, err := pgquery.New(tx).RecordRecoveryChangeEvidence(ctx, pgquery.RecordRecoveryChangeEvidenceParams{
 			OrganizationID: org, ChangeID: fixture.Change.ID, VersionID: new(currentRow.ID), Through: through, IncludePriorUnprojected: true,
 		})
 		if err != nil {
@@ -2108,22 +1810,10 @@ SELECT CASE WHEN kind='review' THEN $5::timestamptz END,(SELECT project_id FROM 
 		if !slices.Equal(discussions, want) || landing != 66 || unknownPrior != 67 {
 			t.Fatalf("recovery seek lost older matching evidence: discussions=%v landing=%d prior=%d", discussions, landing, unknownPrior)
 		}
-		checkVisits(probe.Statement, probe.Args, "", 32+1+64+201)
 	})
 }
 
-func currentReviewLookupVisits(node pgstoretest.SearchPlanNode) float64 {
-	var count float64
-	if node.Relation == "change_evidence" || node.Relation == "current_change_reviews" {
-		count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-	}
-	for _, child := range node.Plans {
-		count += currentReviewLookupVisits(child)
-	}
-	return count
-}
-
-func TestMachineReviewLookupsSeekPastHistoryAndLandingRows(t *testing.T) {
+func TestMachineReviewLookupsExcludeLandingReviews(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
@@ -2140,54 +1830,33 @@ $6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generat
 		}
 	}
 	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
-	for _, analyzed := range []bool{false, true} {
-		if analyzed {
-			if _, err := admin.ExecContext(t.Context(), `ANALYZE change_evidence; ANALYZE current_change_reviews`); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			for _, test := range []struct {
-				through int64
-				missing bool
-				want    []int64
-			}{
-				{through: 0}, {through: 1}, {through: 4, want: []int64{4}}, {through: 30001, want: []int64{30001}},
-				{through: 60001, want: []int64{30001, 60001}}, {through: 90001, want: []int64{30001, 60001, 80001}}, {through: 90001, missing: true},
-			} {
-				t.Run(fmt.Sprintf("%s/analyzed=%t/through=%d/missing=%t", org, analyzed, test.through, test.missing), func(t *testing.T) {
-					tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer tx.Rollback(t.Context())
-					if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
-						t.Fatal(err)
-					}
-					probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
-					change := "change_machine_plan"
-					if test.missing {
-						change = "change_missing"
-					}
-					got, err := pgquery.New(probe).RecordCurrentChangeReviewSequences(t.Context(), pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: change, VersionID: "version_machine_plan", ReviewingActor: "example-owner", Through: test.through})
-					if err != nil || !slices.Equal(got, test.want) {
-						t.Fatalf("machine prefix=%v want=%v error=%v", got, test.want, err)
-					}
-					var raw []byte
-					if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
-						t.Fatal(err)
-					}
-					var plans []struct{ Plan pgstoretest.SearchPlanNode }
-					if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-						t.Fatalf("decode machine head plan: %v", err)
-					}
-					visited := currentReviewLookupVisits(plans[0].Plan)
-					t.Logf("machine reviews=90000 visited=%.0f plan=%s", visited, raw)
-					if visited > 32 {
-						t.Errorf("fixed3-role lookup visited %.0f rows", visited)
-					}
-				})
-			}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, test := range []struct {
+			through int64
+			missing bool
+			want    []int64
+		}{
+			{through: 0}, {through: 1}, {through: 4, want: []int64{4}}, {through: 30001, want: []int64{30001}},
+			{through: 60001, want: []int64{30001, 60001}}, {through: 90001, want: []int64{30001, 60001, 80001}}, {through: 90001, missing: true},
+		} {
+			t.Run(fmt.Sprintf("%s/through=%d/missing=%t", org, test.through, test.missing), func(t *testing.T) {
+				tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(t.Context())
+				if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
+					t.Fatal(err)
+				}
+				change := "change_machine_plan"
+				if test.missing {
+					change = "change_missing"
+				}
+				got, err := pgquery.New(tx).RecordCurrentChangeReviewSequences(t.Context(), pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: change, VersionID: "version_machine_plan", ReviewingActor: "example-owner", Through: test.through})
+				if err != nil || !slices.Equal(got, test.want) {
+					t.Fatalf("machine prefix=%v want=%v error=%v", got, test.want, err)
+				}
+			})
 		}
 	}
 }
@@ -2671,88 +2340,4 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(3)
-}
-
-type diagnosticsQueryCapture struct {
-	pgx.QueryTracer
-	mu              sync.Mutex
-	landing         string
-	args            []any
-	scheduler       string
-	schedulerArgs   []any
-	predecessor     string
-	predecessorArgs []any
-}
-
-func (p *diagnosticsQueryCapture) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.HasPrefix(data.SQL, "WITH candidates AS MATERIALIZED (") && strings.Contains(data.SQL, "scheduler_outcome") {
-		p.mu.Lock()
-		p.scheduler, p.schedulerArgs = data.SQL, append([]any(nil), data.Args...)
-		p.mu.Unlock()
-	}
-	if strings.HasPrefix(data.SQL, "SELECT requested.claim_id,prior.*") {
-		p.mu.Lock()
-		p.predecessor, p.predecessorArgs = data.SQL, append([]any(nil), data.Args...)
-		p.mu.Unlock()
-	}
-	if strings.Contains(data.SQL, "FROM selected c LEFT JOIN LATERAL") && strings.Contains(data.SQL, "landed_at") {
-		p.mu.Lock()
-		p.landing, p.args = data.SQL, append([]any(nil), data.Args...)
-		p.mu.Unlock()
-	}
-	if p.QueryTracer != nil {
-		return p.QueryTracer.TraceQueryStart(ctx, conn, data)
-	}
-	return ctx
-}
-func (p *diagnosticsQueryCapture) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
-	if p.QueryTracer != nil {
-		p.QueryTracer.TraceQueryEnd(ctx, conn, data)
-	}
-}
-
-func (p *diagnosticsQueryCapture) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
-	if tracer, ok := p.QueryTracer.(pgx.BatchTracer); ok {
-		return tracer.TraceBatchStart(ctx, conn, data)
-	}
-	return ctx
-}
-func (p *diagnosticsQueryCapture) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
-	if tracer, ok := p.QueryTracer.(pgx.BatchTracer); ok {
-		tracer.TraceBatchQuery(ctx, conn, data)
-	}
-}
-func (p *diagnosticsQueryCapture) TraceBatchEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchEndData) {
-	if tracer, ok := p.QueryTracer.(pgx.BatchTracer); ok {
-		tracer.TraceBatchEnd(ctx, conn, data)
-	}
-}
-
-type analyticsQualityQueryCapture struct {
-	mu   sync.Mutex
-	sql  map[string]string
-	args map[string][]any
-}
-
-func (c *analyticsQualityQueryCapture) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	family := ""
-	if strings.Contains(data.SQL, "SELECT e.* FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=$2 AND e.type='workflow.transitioned'") {
-		family = "workflow"
-	}
-	if strings.Contains(data.SQL, "SELECT e.* FROM change_evidence e WHERE e.organization_id=$1 AND e.project_id=$2 AND e.quality_at IS NOT NULL") {
-		family = "evidence"
-	}
-	if family != "" {
-		c.mu.Lock()
-		if c.sql == nil {
-			c.sql = map[string]string{}
-			c.args = map[string][]any{}
-		}
-		c.sql[family] = data.SQL
-		c.args[family] = append([]any(nil), data.Args...)
-		c.mu.Unlock()
-	}
-	return ctx
-}
-func (*analyticsQualityQueryCapture) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {
 }

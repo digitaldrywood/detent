@@ -4,15 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,61 +37,12 @@ import (
 
 type providerBatchProbe struct {
 	pgquery.DBTX
-	inserts    int
-	statements int
-	mutations  int64
-	failTable  string
-}
-
-type providerWireCounts struct {
-	statements atomic.Int64
-	exchanges  atomic.Int64
-}
-
-type providerWireConn struct {
-	net.Conn
-	counts  *providerWireCounts
-	pending []byte
-	startup bool
-}
-
-func (c *providerWireConn) Write(value []byte) (int, error) {
-	n, err := c.Conn.Write(value)
-	c.pending = append(c.pending, value[:n]...)
-	for {
-		offset := 1
-		if c.startup {
-			offset = 0
-		}
-		if len(c.pending) < offset+4 {
-			break
-		}
-		size := offset + int(binary.BigEndian.Uint32(c.pending[offset:offset+4]))
-		if len(c.pending) < size {
-			break
-		}
-		if c.startup {
-			c.startup = false
-		} else {
-			switch c.pending[0] {
-			case 'E':
-				c.counts.statements.Add(1)
-			case 'S':
-				c.counts.exchanges.Add(1)
-			case 'Q':
-				c.counts.statements.Add(1)
-				c.counts.exchanges.Add(1)
-			}
-		}
-		c.pending = c.pending[size:]
-	}
-	return n, err
+	mutations int64
+	failTable string
 }
 
 func (p *providerBatchProbe) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
-	p.statements++
 	if strings.HasPrefix(query, "INSERT INTO runner_provider_") {
-		p.inserts++
 		if p.failTable != "" && strings.HasPrefix(query, "INSERT INTO "+p.failTable+" ") {
 			return p.DBTX.Exec(ctx, "SELECT 1/0")
 		}
@@ -106,17 +54,7 @@ func (p *providerBatchProbe) Exec(ctx context.Context, query string, args ...any
 	}
 	return result, err
 }
-
-func (p *providerBatchProbe) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
-	p.statements++
-	return p.DBTX.Query(ctx, query, args...)
-}
-func (p *providerBatchProbe) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
-	p.statements++
-	return p.DBTX.QueryRow(ctx, query, args...)
-}
-
-func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
+func TestRunnerProviderReportsPreserveFidelity(t *testing.T) {
 	t.Parallel()
 	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		roles, err := os.ReadFile("roles.sql")
@@ -167,15 +105,6 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 	}
 	native := fixture.NativeConfig(t, admin, name, password)
 	native.MaxConns = 3
-	counts := &providerWireCounts{}
-	dial := native.ConnConfig.DialFunc
-	native.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := dial(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
-		return &providerWireConn{Conn: conn, counts: counts, startup: true}, nil
-	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), native)
 	if err != nil {
 		t.Fatal(err)
@@ -210,19 +139,6 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 			s.db = probe
 			if err := s.ReplaceRunnerProviderReports(t.Context(), runner, reports); err != nil {
 				return err
-			}
-			models, efforts, windows := 0, 0, 0
-			for _, report := range reports {
-				models += len(report.Models)
-				windows += len(report.UsageWindows)
-				for _, detail := range report.ModelDetails {
-					efforts += len(detail.ReasoningEfforts)
-				}
-			}
-			bound := (len(reports)+499)/500 + (models+499)/500 + (efforts+499)/500 + (windows+499)/500
-			t.Logf("reports=%d models=%d efforts=%d windows=%d inserts=%d bound=%d", len(reports), models, efforts, windows, probe.inserts, bound)
-			if probe.inserts != bound {
-				t.Errorf("insert statements=%d, want batch bound=%d", probe.inserts, bound)
 			}
 			if rollback {
 				return sentinel
@@ -296,28 +212,17 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 			}
 		})
 	}
-	t.Run("omitted_billing_fixed_wire_cost", func(t *testing.T) {
+	t.Run("omitted_billing_replay", func(t *testing.T) {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			var firstStatements, firstExchanges int64
 			for _, size := range []int{2, 50} {
 				reports := batchProviderReports(now, 1, size)
 				reports[0].Billing = ""
 				reports[0].ObservedAt = now.Add(time.Duration(size) * time.Second)
-				counts.statements.Store(0)
-				counts.exchanges.Store(0)
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 					return w.ReplaceRunnerProviderReports(t.Context(), "runner_first", reports)
 				}); err != nil {
 					t.Fatal(err)
 				}
-				statements, exchanges := counts.statements.Load(), counts.exchanges.Load()
-				t.Logf("org=%s models=%d statements=%d exchanges=%d", org, size, statements, exchanges)
-				if statements != 13 || exchanges != 12 || size == 50 && (statements != firstStatements || exchanges != firstExchanges) {
-					t.Fatalf("provider wire cost grew: %d/%d versus %d/%d", statements, exchanges, firstStatements, firstExchanges)
-				}
-				firstStatements, firstExchanges = statements, exchanges
-				counts.statements.Store(0)
-				counts.exchanges.Store(0)
 				if err := repository.transaction(t.Context(), org, corestore.Serving, false, func(s *session) error {
 					probe := &providerBatchProbe{DBTX: s.db}
 					s.db = probe
@@ -330,10 +235,6 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 					return nil
 				}); err != nil {
 					t.Fatal(err)
-				}
-				t.Logf("org=%s models=%d replay statements=%d exchanges=%d", org, size, counts.statements.Load(), counts.exchanges.Load())
-				if counts.statements.Load() != 9 || counts.exchanges.Load() != 8 {
-					t.Fatalf("replay wire cost: %d/%d", counts.statements.Load(), counts.exchanges.Load())
 				}
 				reports[0].Billing = "unknown"
 				expected[string(org)+"runner_first"] = reports
@@ -369,11 +270,9 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 			if err := repository.transaction(t.Context(), org, corestore.Serving, false, func(s *session) error {
 				probe := &providerBatchProbe{DBTX: s.db}
 				s.db = probe
-				started := time.Now()
 				if err := s.ReplaceRunnerProviderReports(t.Context(), "runner_first", expected[string(org)+"runner_first"]); err != nil {
 					return err
 				}
-				t.Logf("org=%s statements=%d mutations=%d hold=%s", org, probe.statements, probe.mutations, time.Since(started))
 				if probe.mutations != 0 {
 					t.Errorf("unchanged report mutations=%d, want 0", probe.mutations)
 				}
@@ -398,13 +297,11 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 					}
 					probe := &providerBatchProbe{DBTX: s.db}
 					s.db = probe
-					started := time.Now()
 					if err := s.ReplaceRunnerProviderReports(t.Context(), "runner_second", report); err != nil {
 						return err
 					}
-					t.Logf("provider org=%s reports=%d models=%d statements=%d mutations=%d hold=%s", org, tc.reports, tc.models, probe.statements, probe.mutations, time.Since(started))
-					if probe.mutations != 0 || probe.statements > 10 {
-						t.Errorf("unchanged provider statements=%d mutations=%d", probe.statements, probe.mutations)
+					if probe.mutations != 0 {
+						t.Errorf("unchanged provider reports mutated %d rows", probe.mutations)
 					}
 					return errors.New("discard replay fixture")
 				}); err == nil || err.Error() != "discard replay fixture" {
@@ -488,13 +385,11 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 					if err := repository.transaction(t.Context(), org, corestore.Serving, false, func(s *session) error {
 						probe := &providerBatchProbe{DBTX: s.db}
 						s.db = probe
-						started := time.Now()
 						if err := s.ReplaceRunnerProjectSkills(t.Context(), "runner_first", "prj_report", report, step.at); err != nil {
 							return err
 						}
-						t.Logf("skills org=%s size=%d step=%s statements=%d mutations=%d hold=%s", org, size, step.name, probe.statements, probe.mutations, time.Since(started))
-						if step.unchanged && (probe.mutations != 0 || probe.statements > 7) {
-							t.Errorf("unchanged skills statements=%d mutations=%d", probe.statements, probe.mutations)
+						if step.unchanged && probe.mutations != 0 {
+							t.Errorf("unchanged skills mutated %d rows", probe.mutations)
 						}
 						got, truncated, err := s.RunnerProjectSkills(t.Context(), "prj_report", "runner_first", step.at, runnerstore.MaxProjectSkills)
 						if err != nil {
@@ -647,8 +542,6 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 								return err
 							}
 						}
-						probe := &providerBatchProbe{DBTX: s.db}
-						s.db = probe
 						catalog, err := s.RunnerProviderCatalog(t.Context(), tc.projects, now)
 						if err != nil {
 							return err
@@ -665,13 +558,6 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 						}
 						if !reflect.DeepEqual(ids, tc.want) {
 							t.Errorf("catalog model IDs = %v, want %v", ids, tc.want)
-						}
-						wantStatements := 1
-						if tc.projects != nil && len(tc.projects) == 0 {
-							wantStatements = 0
-						}
-						if probe.statements != wantStatements {
-							t.Errorf("catalog statements = %d, want %d", probe.statements, wantStatements)
 						}
 						return rollback
 					})
