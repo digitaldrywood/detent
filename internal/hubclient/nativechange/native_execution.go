@@ -102,6 +102,11 @@ type nativeExecution struct {
 	recoveredSource *tracker.NativeChangeReference
 	mergeResolution bool
 	releaseDelivery *tracker.ReleaseDeliveryStatus
+
+	workerLaunchMu      sync.Mutex
+	worker              *tracker.NativeAttemptWorker
+	workerExited        bool
+	workerBootstrapping bool
 }
 
 func (e *nativeExecution) BindReviewHandoff(done <-chan struct{}) {
@@ -329,6 +334,26 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 		}
 	}()
 	e.mu.Lock()
+	if e.workerBootstrapping {
+		e.mu.Unlock()
+		if err := e.validateProviderStart(identity); err != nil {
+			return err
+		}
+		e.mu.Lock()
+		if e.workerBootstrapping {
+			e.data.Identity = &identity
+			e.role = identity.Role
+			e.workerBootstrapping = false
+			if e.data.Runtime != nil && e.data.Runtime.WorkerLaunch != nil {
+				runtime, launch := *e.data.Runtime, *e.data.Runtime.WorkerLaunch
+				launch.Bootstrap = false
+				runtime.WorkerLaunch = &launch
+				e.data.Runtime = &runtime
+			}
+			e.mu.Unlock()
+			return nil
+		}
+	}
 	if e.data.Identity != nil && e.data.Sequence > 0 {
 		if e.reconnecting {
 			e.mu.Unlock()
@@ -903,6 +928,10 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 }
 
 func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, immediate ...bool) error {
+	return e.appendEvent(ctx, kind, outcome, checkpoint, nil, len(immediate) != 0)
+}
+
+func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, worker *tracker.NativeAttemptWorker, immediate bool) error {
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
@@ -937,8 +966,8 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 		}
 	}
 	data.Handoff = checkpoint
-	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
-	if len(immediate) == 0 && e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 && !e.runtimeHeartbeatDue(data.Runtime) {
+	event := tracker.NativeRunEvent{Worker: worker, Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
+	if !immediate && e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 && !e.runtimeHeartbeatDue(data.Runtime) {
 		encoded, err := json.Marshal(event)
 		if err != nil {
 			return err

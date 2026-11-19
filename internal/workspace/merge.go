@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -523,6 +525,15 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
 	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
+	var releaseValidation io.WriteCloser
+	if process != nil && runtime.GOOS != "windows" && cmd.Err == nil {
+		cmd.Args = append([]string{"sh", "-c", `IFS= read -r permission && [ "$permission" = go ] || exit 1; exec "$@"`, "sh", cmd.Path}, cmd.Args[1:]...)
+		cmd.Path = "/bin/sh"
+		releaseValidation, err = cmd.StdinPipe()
+		if err != nil {
+			return result, fmt.Errorf("open validation launch pipe: %w", err)
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
@@ -531,6 +542,12 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		identity, registrationErr := procgroup.Inspect(cmd)
 		if registrationErr == nil {
 			registrationErr = process.Started(ctx, identity)
+		}
+		if releaseValidation != nil {
+			if registrationErr == nil {
+				_, registrationErr = io.WriteString(releaseValidation, "go\n")
+			}
+			registrationErr = errors.Join(registrationErr, releaseValidation.Close())
 		}
 		if registrationErr != nil {
 			return result, errors.Join(fmt.Errorf("register host validation process: %w", registrationErr), cmd.Cancel(), cmd.Wait())

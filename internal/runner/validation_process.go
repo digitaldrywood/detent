@@ -8,12 +8,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/procstart"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-type hostValidationStore interface {
+type workerRegistrationStore interface {
 	StartSession(context.Context, store.SessionStart) (int64, error)
 	FinishSession(context.Context, int64, store.SessionFinish) error
 	UpdateSessionWorkerProcess(context.Context, int64, store.WorkerProcessRegistration) error
@@ -21,7 +22,7 @@ type hostValidationStore interface {
 }
 
 type hostValidationProcess struct {
-	store     hostValidationStore
+	store     workerRegistrationStore
 	sessionID int64
 	root      string
 	scratch   string
@@ -31,7 +32,7 @@ func (r *Runner) withValidationProcessOwner(ctx context.Context, issue connector
 	if toolcache.ManagedBuildFromContext(ctx) == "" {
 		return ctx
 	}
-	owner, ok := r.store.(hostValidationStore)
+	owner, ok := r.store.(workerRegistrationStore)
 	if !ok {
 		return ctx
 	}
@@ -59,8 +60,12 @@ func (r *Runner) withValidationProcessOwner(ctx context.Context, issue connector
 }
 
 func (p *hostValidationProcess) Started(ctx context.Context, identity procgroup.Identity) error {
+	key, err := procstart.Identity(identity.PID)
+	if err != nil {
+		return err
+	}
 	return p.store.UpdateSessionWorkerProcess(ctx, p.sessionID, store.WorkerProcessRegistration{
-		WorkerProcessIdentity: store.WorkerProcessIdentity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt},
+		WorkerProcessIdentity: store.WorkerProcessIdentity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt, StartKey: key},
 		CleanupRoot:           p.root, CleanupPath: p.scratch,
 	})
 }

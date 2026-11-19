@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,7 +16,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/procstart"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
@@ -149,7 +152,13 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	if err != nil {
 		return result, r.hostFailure("local", err)
 	}
-	scratch, err = os.MkdirTemp(scratchRoot, "execution-")
+	workerExecution, fenced := request.Execution.(runnerpkg.AttemptWorkerExecution)
+	if fenced {
+		request.AttemptWorkspace = workerExecution.AttemptWorkspace()
+		scratch, err = request.AttemptWorkspace.PrepareScratch(scratchRoot)
+	} else {
+		scratch, err = os.MkdirTemp(scratchRoot, "execution-")
+	}
 	if err != nil {
 		return result, r.hostFailure("local", err)
 	}
@@ -217,6 +226,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	}()
 	var closeOnce sync.Once
 	var closeErr error
+	var retireWorker func(context.Context) error
 	ownedArtifact := artifact
 	closeWorker := func(closeCtx context.Context) error {
 		closeOnce.Do(func() {
@@ -252,6 +262,13 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		if err := workspace.CleanupOwnedPath(scratchRoot, scratch); err != nil {
 			return err
 		}
+		if retireWorker != nil {
+			retireCtx, cancel := context.WithTimeout(closeCtx, 10*time.Second)
+			defer cancel()
+			if err := retireWorker(retireCtx); err != nil {
+				return err
+			}
+		}
 		return errors.Join(ownedArtifact.Release(), releaseCache())
 	}
 	var workerOwner runnerpkg.WorkerLifetimeExecution
@@ -266,6 +283,46 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	if childCloseErr != nil || identityErr != nil {
 		return result, r.hostFailure("local", errors.Join(childCloseErr, identityErr))
 	}
+	launch := &tracker.NativeWorkerLaunch{ExecutionVersion: ownedArtifact.Status.LatestVersion, ExecutionCommit: ownedArtifact.Status.LatestCommit,
+		ExecutionSHA256: ownedArtifact.Status.BinarySHA256, ControlVersion: ownedArtifact.Status.CurrentVersion,
+		PolicyID: boot.Policy.ID, PolicyRevision: boot.Policy.SourceRevision, Protocol: runnerpkg.SSHProtocolVersion, SelectedAt: selectedAt,
+		PID: identity.PID, GroupID: identity.GroupID, ProcessStart: identity.StartedAt}
+	observation := tracker.NativeRuntimeObservation{WorkerLaunch: launch, LocalAttemptID: request.WorkAttemptID, Generation: request.Generation, Phase: phase, HeartbeatAt: time.Now().UTC()}
+	if fenced {
+		startKey, err := procstart.Identity(identity.PID)
+		if err != nil {
+			return result, r.hostFailure("local", fmt.Errorf("inspect worker birth identity: %w", err))
+		}
+		if identity.PID > math.MaxInt32 || identity.GroupID > math.MaxInt32 {
+			return result, r.hostFailure("local", errors.New("execution worker process identity exceeds Hub bounds"))
+		}
+		worker := tracker.NativeAttemptWorker{PID: int32(identity.PID), PGID: int32(identity.GroupID), StartedAt: identity.StartedAt.UTC().Truncate(time.Microsecond), StartKey: startKey}
+		primary, err := workerExecution.RegisterAttemptWorker(ctx, worker, observation)
+		if err != nil {
+			return result, fmt.Errorf("register execution worker: %w", err)
+		}
+		if primary {
+			retireWorker = func(context.Context) error {
+				workerExecution.AttemptWorkerExited(worker)
+				return nil
+			}
+		} else {
+			retireWorker, err = callbacks.RegisterOverlappingWorker(ctx, request, store.WorkerProcessRegistration{
+				WorkerProcessIdentity: store.WorkerProcessIdentity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt, StartKey: worker.StartKey},
+				CleanupRoot:           scratchRoot, CleanupPath: scratch,
+			})
+			if err != nil {
+				return result, fmt.Errorf("register overlapping execution worker: %w", err)
+			}
+		}
+	} else if runtime, ok := request.Execution.(runnerpkg.RuntimeExecution); ok {
+		if err := runtime.ObserveRuntime(ctx, observation); err != nil {
+			return result, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return result, context.Cause(ctx)
+	}
 	if request.DeferExecutionFinish {
 		owner, ok := request.Execution.(runnerpkg.WorkerLifetimeExecution)
 		if !ok {
@@ -279,17 +336,11 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		}
 		workerOwner = owner
 	}
-	if runtime, ok := request.Execution.(runnerpkg.RuntimeExecution); ok {
-		launch := &tracker.NativeWorkerLaunch{ExecutionVersion: ownedArtifact.Status.LatestVersion, ExecutionCommit: ownedArtifact.Status.LatestCommit,
-			ExecutionSHA256: ownedArtifact.Status.BinarySHA256, ControlVersion: ownedArtifact.Status.CurrentVersion,
-			PolicyID: boot.Policy.ID, PolicyRevision: boot.Policy.SourceRevision, Protocol: runnerpkg.SSHProtocolVersion, SelectedAt: selectedAt,
-			PID: identity.PID, GroupID: identity.GroupID, ProcessStart: identity.StartedAt}
-		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{WorkerLaunch: launch, LocalAttemptID: request.WorkAttemptID, Generation: request.Generation, Phase: phase, HeartbeatAt: selectedAt}); err != nil {
-			return result, err
-		}
-	}
 	r.logger.Info("execution worker selected", "issue", request.Issue.Identifier, "execution_version", ownedArtifact.Status.LatestVersion,
 		"control_version", ownedArtifact.Status.CurrentVersion, "policy_id", boot.Policy.ID, "pid", identity.PID, "pgid", identity.GroupID)
+	if err := ctx.Err(); err != nil {
+		return result, context.Cause(ctx)
+	}
 	var response runnerpkg.SSHRunResponse
 	err = peer.Call(ctx, "run", &response, boot)
 	if err != nil {

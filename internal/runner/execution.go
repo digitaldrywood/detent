@@ -52,6 +52,12 @@ type WorkerLifetimeExecution interface {
 	CloseWorkers(context.Context) error
 }
 
+type AttemptWorkerExecution interface {
+	AttemptWorkspace() workspace.AttemptWorkspace
+	RegisterAttemptWorker(context.Context, tracker.NativeAttemptWorker, tracker.NativeRuntimeObservation) (bool, error)
+	AttemptWorkerExited(tracker.NativeAttemptWorker)
+}
+
 type NativeValidation struct {
 	NoChange             *tracker.NativeNoChangeCompletion
 	SecurityAudit        *NativeSecurityAuditEvidence

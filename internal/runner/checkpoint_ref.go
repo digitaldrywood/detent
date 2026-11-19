@@ -241,6 +241,9 @@ func sameMachineWorkspaceRetained(backend workspace.Backend, recovery tracker.Na
 	if !ok {
 		return false
 	}
+	if current := issue.AttemptWorkspace.Attempt; current != "" && current != previous.AttemptID {
+		return false
+	}
 	_, err := local.Existing(issue)
 	return err == nil
 }

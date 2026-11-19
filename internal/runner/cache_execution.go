@@ -20,6 +20,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (result RunResult, err
 		ctx = context.Background()
 	}
 	ctx = bindSessionExecution(ctx, r.store, req.Execution)
+	ctx = workspace.WithAttemptWorkspace(ctx, req.AttemptWorkspace)
 	ctx = gobudget.WithContext(ctx, r.currentGoBudget())
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withCacheWaitObserver(ctx, req)

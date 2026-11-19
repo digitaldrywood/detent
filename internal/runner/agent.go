@@ -1645,7 +1645,11 @@ func recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace wo
 	if local, ok := runWorkspace.(interface {
 		Existing(workspace.Issue) (workspace.Info, error)
 	}); ok {
-		if existing, existingErr := local.Existing(*workspaceIssue); existingErr == nil {
+		sourceIssue := *workspaceIssue
+		if sourceIssue.RecoveryAttemptWorkspace.Key() != "" {
+			sourceIssue.AttemptWorkspace = sourceIssue.RecoveryAttemptWorkspace
+		}
+		if existing, existingErr := local.Existing(sourceIssue); existingErr == nil {
 			source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 				return workspace.CaptureChangeSource(ctx, existing.Path, base, head)
 			})
@@ -1838,8 +1842,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	req.workspaceBackend = runWorkspace
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	workspaceIssue.AttemptWorkspace = req.AttemptWorkspace
 	if req.Execution != nil {
-		workspaceIssue.ReleaseDelivery = req.Execution.Recovery().Issue.ReleaseDelivery
+		recovery := req.Execution.Recovery()
+		workspaceIssue.ReleaseDelivery = recovery.Issue.ReleaseDelivery
+		if previous := recovery.SourceAttempt(); previous != nil && req.AttemptWorkspace.Key() != "" {
+			workspaceIssue.RecoveryAttemptWorkspace = req.AttemptWorkspace
+			workspaceIssue.RecoveryAttemptWorkspace.Attempt = previous.AttemptID
+		}
 	}
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
@@ -3787,6 +3797,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	}
 
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	workspaceIssue.AttemptWorkspace = workspace.AttemptWorkspaceFromContext(ctx)
 	if req.NativeVersion != nil {
 		if _, ok := runWorkspace.(workspace.HeadProvider); !ok {
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires immutable head verification", ErrValidatorInfrastructure)

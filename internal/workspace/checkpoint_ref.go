@@ -153,7 +153,15 @@ func (l *LocalGit) bindCheckpointBranch(issue Issue, info Info, checkpoint *Chec
 	}
 	if checkpoint.Transaction.Branch != info.Branch {
 		pattern := `^detent/[a-z0-9_.-]+-` + regexp.QuoteMeta(strings.ToLower(SafeKey(issue.Identifier))) + `-[a-f0-9]{12}$`
-		if nativeProjectID(issue) == "" || !l.autoBranch || issue.WorkspaceSession || issue.Landing != nil || strings.TrimSpace(issue.BranchName) != "" || !regexp.MustCompile(pattern).MatchString(checkpoint.Transaction.Branch) {
+		source := issue
+		source.AttemptWorkspace = issue.RecoveryAttemptWorkspace
+		sourceInfo, err := l.infoForIssue(source)
+		if err != nil {
+			return err
+		}
+		legacy := nativeProjectID(issue) != "" && regexp.MustCompile(pattern).MatchString(checkpoint.Transaction.Branch)
+		canonical := source.AttemptWorkspace.Key() != "" && sourceInfo.Branch == checkpoint.Transaction.Branch
+		if !l.autoBranch || issue.WorkspaceSession || issue.Landing != nil || strings.TrimSpace(issue.BranchName) != "" || !legacy && !canonical {
 			return fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
 		}
 	}

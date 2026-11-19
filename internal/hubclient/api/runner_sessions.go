@@ -61,7 +61,7 @@ func (m acknowledgedSessionMetadata) matches(request runnersession.Mutation, aut
 		return (provider.ThreadID == "" || provider.ThreadID == m.provider.ThreadID) && (provider.SessionID == "" || provider.SessionID == m.provider.SessionID)
 	}
 	if worker := request.Worker; worker != nil && request.Provider == nil && m.worker != nil && m.processKey == request.ProcessKey {
-		return worker.PID == m.worker.PID && worker.GroupID == m.worker.GroupID && worker.StartedAt.Equal(m.worker.StartedAt) && worker.CleanupRoot == m.worker.CleanupRoot && worker.CleanupPath == m.worker.CleanupPath
+		return worker.PID == m.worker.PID && worker.GroupID == m.worker.GroupID && worker.StartKey == m.worker.StartKey && worker.StartedAt.Equal(m.worker.StartedAt) && worker.CleanupRoot == m.worker.CleanupRoot && worker.CleanupPath == m.worker.CleanupPath
 	}
 	return false
 }

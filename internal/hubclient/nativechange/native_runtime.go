@@ -97,7 +97,7 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	}
 	e.data.Runtime = &observation
 	e.runtimeDirty = true
-	if e.data.Identity == nil || !publish {
+	if e.data.Identity == nil || e.workerBootstrapping || !publish {
 		return nil
 	}
 	return e.append(ctx, "run.observed", "", nil)
@@ -134,7 +134,7 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 		identity.Role, identity.Backend, identity.Model = reservation.Role, reservation.Backend, reservation.Model
 	}
 	e.mu.Lock()
-	if e.data.Identity != nil {
+	if e.data.Identity != nil && !e.workerBootstrapping {
 		identity = *e.data.Identity
 	}
 	e.mu.Unlock()
@@ -176,7 +176,7 @@ func (e *nativeExecution) FlushRuntime(ctx context.Context) error {
 	if err := e.flushObservations(ctx); err != nil {
 		return err
 	}
-	if !e.runtimeDirty || e.data.Identity == nil {
+	if !e.runtimeDirty || e.data.Identity == nil || e.workerBootstrapping {
 		return nil
 	}
 	return e.append(ctx, "run.observed", "", nil, true)

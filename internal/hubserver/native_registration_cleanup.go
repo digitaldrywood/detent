@@ -140,6 +140,15 @@ func preserveTenantRunCleanup(previous *tracker.NativeRunData, current *tracker.
 	if current.Identity != nil && previous.Identity != nil {
 		identityMatches = *current.Identity == *previous.Identity
 	}
+	bootstrapping := previous.Runtime != nil && previous.Runtime.WorkerLaunch != nil && previous.Runtime.WorkerLaunch.Bootstrap
+	if current.Runtime != nil && current.Runtime.WorkerLaunch != nil {
+		if current.Runtime.WorkerLaunch.Bootstrap && !bootstrapping {
+			return leasestore.ErrAttemptConflict
+		}
+		if bootstrapping && !current.Runtime.WorkerLaunch.Bootstrap && current.Sequence == previous.Sequence+1 {
+			identityMatches = workerBootstrapIdentityMatches(previous.Identity, current.Identity)
+		}
+	}
 	if current.AttemptID != previous.AttemptID || current.RunID != previous.RunID || current.LeaseID != previous.LeaseID || current.FencingToken != previous.FencingToken || current.Sequence != previous.Sequence && current.Sequence != previous.Sequence+1 || !identityMatches {
 		return leasestore.ErrAttemptConflict
 	}
@@ -163,6 +172,16 @@ func preserveTenantRunCleanup(previous *tracker.NativeRunData, current *tracker.
 	runtime.WorkerLaunch = &launch
 	current.Runtime = &runtime
 	return nil
+}
+
+func workerBootstrapIdentityMatches(expected, actual *tracker.NativeExecutionIdentity) bool {
+	if expected == nil || actual == nil {
+		return false
+	}
+	if *expected == tracker.WorkerBootstrapIdentity() {
+		return true
+	}
+	return expected.Role == actual.Role && expected.Backend == actual.Backend && expected.Model == actual.Model
 }
 
 func nativeTerminationData(data tracker.NativeRunData) bool {

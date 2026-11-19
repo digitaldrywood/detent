@@ -36,9 +36,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/procstart"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
@@ -65,12 +68,18 @@ func TestLocalWorkerProcess(t *testing.T) {
 			os.Exit(0)
 		}
 		ready, finished := make(chan struct{}), make(chan struct{})
+		var lifecycle sync.Once
 		var peer *runnerpkg.SSHPeer
 		sources := &runnerpkg.SSHExecutionSources{}
 		peer = runnerpkg.NewSSHPeer(context.Background(), os.Stdin, os.Stdout, func(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 			<-ready
 			if strings.HasPrefix(method, "source.") {
 				return sources.Handle(ctx, method, args)
+			}
+			var started bool
+			lifecycle.Do(func() { started = true })
+			if !started {
+				return nil, errors.New("fixture worker already started")
 			}
 			defer close(finished)
 			var boot sshBootstrap
@@ -104,6 +113,7 @@ func TestLocalWorkerProcess(t *testing.T) {
 		})
 		close(ready)
 		<-peer.Context().Done()
+		lifecycle.Do(func() { close(finished) })
 		<-finished
 	default:
 		os.Exit(2)
@@ -237,6 +247,11 @@ func localWorkerHub(t *testing.T, observe ...func(*http.Request)) (*hubclient.Sc
 
 func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.OrganizationID, tracker.ProjectID, string, config.Workflow), observe ...func(*http.Request)) (*hubclient.Scheduler, *clihangNativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
 	t.Helper()
+	return localWorkerHubWithTransport(t, expose, nil, observe...)
+}
+
+func localWorkerHubWithTransport(t *testing.T, expose func(http.Handler, tracker.OrganizationID, tracker.ProjectID, string, config.Workflow), intercept func(http.Handler, *http.Request) (*http.Response, error), observe ...func(*http.Request)) (*hubclient.Scheduler, *clihangNativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
+	t.Helper()
 	const adminToken = "fixture-admin"
 	var contentMu sync.Mutex
 	contentObjects := make(map[string][]byte)
@@ -271,6 +286,9 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 	httpClient := &http.Client{Transport: workerHubTransport(func(request *http.Request) (*http.Response, error) {
 		for _, observer := range observe {
 			observer(request)
+		}
+		if intercept != nil {
+			return intercept(service.Handler(), request)
 		}
 		recorder := httptest.NewRecorder()
 		service.Handler().ServeHTTP(recorder, request)
@@ -401,7 +419,8 @@ func testLocalWorkerScenario(t *testing.T, scenario string) {
 		}
 	}
 	publish("1.0.0")
-	built, err := buildRunner(workflow, "local", t.TempDir(), globalconfig.Memory{}, gobudget.Budget{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), serviceapi.Connection{})
+	workerClient, _ := scheduler.NativeClient("local")
+	built, err := buildRunner(workflow, "local", t.TempDir(), globalconfig.Memory{}, gobudget.Budget{}, newHubBudgetSessionStore(workerClient, "local"), slog.New(slog.NewTextHandler(io.Discard, nil)), serviceapi.Connection{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -707,4 +726,265 @@ func testLocalWorkerScenario(t *testing.T, scenario string) {
 	if alive, err := procgroup.Alive(revoked.identity); err != nil || alive {
 		t.Fatalf("revoked worker survived cleanup: %t %v", alive, err)
 	}
+}
+
+type launchReply struct {
+	io.ReadCloser
+	atClose func()
+}
+
+func (r launchReply) Close() error {
+	r.atClose()
+	return r.ReadCloser.Close()
+}
+
+func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
+	defer cancel()
+	var events []tracker.NativeRunEvent
+	var registration runnersession.Mutation
+	var acked int
+	var inventory func() []runnerauth.AttemptWorker
+	var mu sync.Mutex
+	sent := make(chan struct{}, 2)
+	intercept := func(handler http.Handler, request *http.Request) (*http.Response, error) {
+		var event tracker.NativeRunEvent
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
+			raw, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			request.Body = io.NopCloser(bytes.NewReader(raw))
+			if err := json.Unmarshal(raw, &event); err != nil {
+				return nil, err
+			}
+		}
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/runner-sessions") {
+			raw, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			request.Body = io.NopCloser(bytes.NewReader(raw))
+			var mutation runnersession.Mutation
+			if err := json.Unmarshal(raw, &mutation); err != nil {
+				return nil, err
+			}
+			if mutation.Worker != nil {
+				mu.Lock()
+				registration = mutation
+				mu.Unlock()
+			}
+		}
+		if event.Worker != nil {
+			mu.Lock()
+			events = append(events, event)
+			n := len(events)
+			mu.Unlock()
+			switch scenario {
+			case "before_registration":
+				cancel()
+				return nil, io.ErrUnexpectedEOF
+			case "unreachable":
+				return nil, io.ErrUnexpectedEOF
+			case "after_commit_before_reply", "after_ack_before_release", "lost_reply":
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, request)
+				resp := recorder.Result()
+				if resp.StatusCode != http.StatusOK {
+					return resp, nil
+				}
+				mu.Lock()
+				acked++
+				mu.Unlock()
+				switch scenario {
+				case "after_commit_before_reply":
+					cancel()
+					return nil, errors.Join(io.ErrUnexpectedEOF, resp.Body.Close())
+				case "after_ack_before_release":
+					resp.Body = launchReply{ReadCloser: resp.Body, atClose: cancel}
+				case "lost_reply":
+					if n == 1 {
+						return nil, errors.Join(io.ErrUnexpectedEOF, resp.Body.Close())
+					}
+				}
+				return resp, nil
+			}
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if event.Type != "" {
+			t.Logf("%s sequence=%d launch=%t retirement=%t status=%d", event.Type, event.Data.Sequence, event.Worker != nil, event.WorkerCleanup != nil, recorder.Code)
+		}
+		return recorder.Result(), nil
+	}
+	scheduler, native, _, workflow, create, _ := localWorkerHubWithTransport(t, func(handler http.Handler, organization tracker.OrganizationID, project tracker.ProjectID, token string, _ config.Workflow) {
+		inventory = func() []runnerauth.AttemptWorker {
+			path := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/%s/heartbeat?attempt_worker_after=", organization, project, clihangBinding(organization).MachineID)
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}")).WithContext(context.WithoutCancel(ctx))
+			request.Header.Set("Authorization", "Bearer "+token)
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			var response runnerauth.AttemptWorkerInventory
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || recorder.Code != http.StatusOK || response.Page == nil {
+				t.Fatalf("read typed inventory: status=%d error=%v", recorder.Code, err)
+			}
+			return response.Page.Workers
+		}
+	}, intercept)
+	workspaceRoot := t.TempDir()
+	workflow.Config.Workspace.Root = workspaceRoot
+	artifacts, publish, _ := localWorkerArtifacts(t)
+	publish("1.0.0")
+	t.Setenv("GOCOVERDIR", t.TempDir())
+	artifact, err := artifacts.Acquire(ctx, workerProtocolPreflight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := artifact.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	workerClient, _ := scheduler.NativeClient("local")
+	built, err := buildRunner(workflow, "local", t.TempDir(), globalconfig.Memory{}, gobudget.Budget{}, newHubBudgetSessionStore(workerClient, "local"), slog.New(slog.NewTextHandler(io.Discard, nil)), serviceapi.Connection{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := built.(*sshRunner)
+	run.artifacts = artifacts
+	issue := create("Check launch acknowledgement")
+	for _, candidate := range testLocalWorkerCandidates(t, ctx, scheduler, workflow) {
+		if candidate.ID == issue.ID {
+			claim, err := scheduler.AdoptClaim(ctx, candidate, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue = claim.Issue
+			break
+		}
+	}
+	execution := scheduler.RunExecution(issue.ID)
+	if execution == nil {
+		t.Fatal("fixture did not claim issue")
+	}
+	t.Cleanup(func() { _ = scheduler.ReleaseClaim(context.WithoutCancel(ctx), issue.ID, "completed") })
+	request := runnerpkg.RunRequest{
+		ProjectID: "local", Issue: issue, Policy: workflow.Config.Policy, Execution: execution,
+		Mode: runnerpkg.RunModeImplement, WorkAttemptID: 1, Generation: 1, DeferExecutionFinish: true,
+		ProgressProbe: func(context.Context) (string, error) {
+			sent <- struct{}{}
+			return "continue", nil
+		},
+	}
+	outcome, runErr := run.Run(ctx, request)
+	if scenario == "second_launch" || scenario == "overlapping" {
+		if runErr != nil || outcome.FinalState != runnerpkg.FinalStateCompleted || len(sent) != 1 {
+			t.Fatalf("first launch: outcome=%s error=%v releases=%d", outcome.FinalState, runErr, len(sent))
+		}
+		before := inventory()
+		if len(before) != 1 || before[0].Worker != *events[0].Worker {
+			t.Fatalf("primary inventory before continuation: %+v", before)
+		}
+		if scenario == "second_launch" {
+			if err := execution.(runnerpkg.WorkerLifetimeExecution).CloseWorkers(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		request.Mode = runnerpkg.RunModeMerge
+		second, err := run.Run(ctx, request)
+		if err != nil || second.FinalState != runnerpkg.FinalStateCompleted || len(sent) != 2 {
+			t.Fatalf("continued launch: outcome=%s error=%v releases=%d", second.FinalState, err, len(sent))
+		}
+		after := inventory()
+		if len(after) != 1 {
+			t.Fatalf("continued inventory: %+v", after)
+		}
+		if scenario == "second_launch" {
+			if len(events) != 2 || events[1].Type != "run.observed" || events[1].Data.Sequence <= events[0].Data.Sequence ||
+				events[1].Data.AttemptID != events[0].Data.AttemptID || events[1].Data.FencingToken != events[0].Data.FencingToken ||
+				after[0].Worker == before[0].Worker || after[0].Worker != *events[1].Worker {
+				t.Fatalf("second launch failed to replace a retired worker: %+v", after)
+			}
+			return
+		}
+		sessionWorker := registration.Worker
+		if len(events) != 1 || after[0] != before[0] || sessionWorker == nil || registration.SessionID <= 0 ||
+			registration.LeaseID != events[0].Data.LeaseID || registration.FencingToken != events[0].Data.FencingToken ||
+			sessionWorker.PID == int(before[0].Worker.PID) || filepath.Dir(filepath.Dir(sessionWorker.CleanupPath)) != bestEffortTestPath(t, workspaceRoot) {
+			t.Fatalf("overlap lost primary ownership or fenced session registration: owners=%+v session=%+v", after, sessionWorker)
+		}
+		var snapshot runnersession.Snapshot
+		path := fmt.Sprintf("%s/runner-sessions/%d", workerClient.Scope(), registration.SessionID)
+		err = workerClient.Transport().Request(ctx, http.MethodGet, path, nil, &snapshot)
+		if err != nil || snapshot.Worker == nil || *snapshot.Worker != *sessionWorker {
+			t.Fatalf("overlapping worker was not durable on its session: %+v %v", snapshot.Worker, err)
+		}
+		if matches, err := procstart.Matches(sessionWorker.PID, sessionWorker.StartKey); err != nil || !matches {
+			t.Fatalf("session birth identity mismatch: %t %v", matches, err)
+		}
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) == 0 || events[0].Type != "run.started" || events[0].Data.Sequence != 1 || !events[0].Worker.Valid() {
+		t.Fatalf("first event did not register the birth identity: %+v, execution error %v", events, runErr)
+	}
+	key := events[0].Worker.StartKey
+	if !strings.HasPrefix(key, runtime.GOOS+":") {
+		t.Fatalf("first event start key %q does not come from procstart", key)
+	}
+	if scenario == "lost_reply" {
+		if runErr != nil || outcome.FinalState != runnerpkg.FinalStateCompleted || len(sent) != 1 || len(events) != 2 || acked != 2 {
+			t.Fatalf("replayed launch: outcome=%s error=%v releases=%d writes=%d accepted=%d", outcome.FinalState, runErr, len(sent), len(events), acked)
+		}
+		first, _ := json.Marshal(events[0])
+		replay, _ := json.Marshal(events[1])
+		if !bytes.Equal(first, replay) {
+			t.Fatal("launch retry changed the fenced event")
+		}
+	} else {
+		if runErr == nil || len(sent) != 0 {
+			t.Fatalf("bootstrap released without permission: error=%v releases=%d", runErr, len(sent))
+		}
+		if alive, err := procgroup.Alive(procgroup.Identity{PID: int(events[0].Worker.PID), GroupID: int(events[0].Worker.PGID), StartedAt: events[0].Worker.StartedAt}); err != nil || alive {
+			t.Fatalf("unreleased bootstrap survived EOF: alive=%t error=%v", alive, err)
+		}
+	}
+	attempts, err := native.Attempts(context.WithoutCancel(ctx), tracker.NativeWorkItemID(issue.ID), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := len(attempts.Items) == 1 && attempts.Items[0].Runtime != nil && attempts.Items[0].Runtime.WorkerLaunch != nil
+	if want := scenario != "before_registration" && scenario != "unreachable"; registered != want {
+		t.Fatalf("durable launch present=%t want=%t", registered, want)
+	}
+	workers := inventory()
+	if registered && (len(workers) != 1 || workers[0].Worker != *events[0].Worker) || !registered && len(workers) != 0 {
+		t.Fatalf("typed worker inventory after launch: %+v", workers)
+	}
+	roots, err := os.ReadDir(workspaceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 1 || !strings.HasSuffix(roots[0].Name(), "-execution") {
+		t.Fatalf("workspace root contains more than private bootstrap staging: %v", roots)
+	}
+}
+
+func testLocalWorkerCandidates(t *testing.T, ctx context.Context, scheduler *hubclient.Scheduler, workflow config.Workflow) []connector.Issue {
+	t.Helper()
+	candidates, err := scheduler.FetchCandidateIssues(ctx, orchestrator.SchedulingRequest{Policy: workflow.Config.Policy, ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return candidates
+}
+
+func bestEffortTestPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }

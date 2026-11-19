@@ -24,6 +24,7 @@ func NewExecution(host executioncontract.ExecutionHost, view executioncontract.E
 		}
 		execution.usageStartedAt = attempt.StartedAt
 		execution.role = attempt.Identity.Role
+		execution.workerBootstrapping = attempt.Runtime != nil && attempt.Runtime.WorkerLaunch != nil && attempt.Runtime.WorkerLaunch.Bootstrap
 		execution.reconnecting = true
 		if attempt.Checkpoint != nil {
 			execution.worktreeState = attempt.Checkpoint.WorktreeState

@@ -627,6 +627,7 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
+	AttemptWorkspace  workspace.AttemptWorkspace               `json:",omitzero"`
 	PrepareRun        func(context.Context, *RunRequest) error `json:"-"`
 	ProgressDecision  progresscheck.Record                     `json:",omitzero"`
 	workspacePrepared bool

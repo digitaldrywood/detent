@@ -22,14 +22,15 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 	t.Parallel()
 	const limit = 64 * 1024
 	for _, test := range []struct {
-		name               string
-		output             string
-		command            string
-		exit               int
-		truncated          bool
-		reservationFailure bool
-		selection          *ReviewOutputRange
-		wantDiagnostics    []string
+		name                string
+		output              string
+		command             string
+		exit                int
+		truncated           bool
+		reservationFailure  bool
+		registrationFailure bool
+		selection           *ReviewOutputRange
+		wantDiagnostics     []string
 	}{
 		{
 			name: "separated failures survive both limits",
@@ -52,6 +53,7 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 			wantDiagnostics: []string{"panic: example failure", "TOKEN=[redacted]"},
 		},
 		{name: "reservation failure prevents command", command: "touch should-not-run", reservationFailure: true},
+		{name: "registration failure prevents command", command: "touch should-not-run", registrationFailure: true, exit: -1},
 		{name: "bounded source capture before host completion", output: strings.Repeat("a", 2*1024*1024), command: "cat output.txt", selection: &ReviewOutputRange{Offset: 1024 * 1024, Length: 1}, truncated: true},
 		{name: "paged failure retains diagnostics", output: strings.Repeat("a", 2*1024*1024), command: "cat output.txt; echo source-failure >&2; exit 7", exit: 7, selection: &ReviewOutputRange{Offset: 1024 * 1024, Length: 1}, truncated: true},
 		{name: "paged diagnostics are bounded", output: strings.Repeat("a", 2*1024*1024), command: "echo source-failure >&2; cat output.txt >&2; exit 7", exit: 7, selection: &ReviewOutputRange{Offset: 1024 * 1024, Length: 1}, truncated: true},
@@ -176,7 +178,10 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 							t.Fatalf("invalid process identity: %+v", identity)
 						}
 						registered = true
-						return nil
+						if test.registrationFailure {
+							return reservationErr
+						}
+						return os.WriteFile(filepath.Join(scratch, "registered"), nil, 0o600)
 					},
 					finished: func(result gate.CommandResult, cleanupErr error) error {
 						finished = true
@@ -203,6 +208,9 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 				ctx = WithReviewOutputRange(ctx, *test.selection)
 			}
 			command := `test -f "$TMPDIR/reserved" || exit 91; ` + test.command
+			if !test.registrationFailure {
+				command = `test -f "$TMPDIR/registered" || exit 92; ` + command
+			}
 			receipt, err := backend.RunReviewCommand(ctx, info, issue, command)
 			if test.reservationFailure {
 				if !errors.Is(err, reservationErr) || !reserved || registered || finished {
@@ -210,6 +218,15 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 				}
 				if _, err := os.Stat(filepath.Join(info.Path, "should-not-run")); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("command ran without reservation: %v", err)
+				}
+				return
+			}
+			if test.registrationFailure {
+				if !errors.Is(err, reservationErr) || !reserved || !registered || !finished {
+					t.Fatalf("registration failure execution: err=%v reserved=%t registered=%t finished=%t", err, reserved, registered, finished)
+				}
+				if _, err := os.Stat(filepath.Join(info.Path, "should-not-run")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("command ran without registration: %v", err)
 				}
 				return
 			}
