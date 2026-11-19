@@ -246,5 +246,31 @@ func TestAttemptWorkerInventory(t *testing.T) {
 			t.Fatal(err)
 		}
 		expect(read("runner", "", newLease.AcquiredAt), live, runnerauth.AttemptLeaseLive)
+
+		if err := write(func(w tenantstore.Writer) error {
+			return w.(leasestore.AttemptWorkerCleanupWriter).AcknowledgeAttemptWorker(ctx, leasestore.AttemptWorkerCleanup{
+				ProjectID: project, WorkItemID: "wi_3", AttemptID: live.ID, RunnerID: "runner", MachineID: "machine_1", Fence: live.Fence, Worker: *live.Worker,
+			})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, at := range []time.Time{liveLease.AcquiredAt, liveLease.ExpiresAt} {
+			page := read("runner", "", at)
+			if len(page.Workers) != 0 || len(page.PendingTerminations) != 0 || page.Next != live.ID {
+				t.Fatalf("unreleased retired worker page = %+v", page)
+			}
+		}
+		if err := write(func(w tenantstore.Writer) error {
+			_, err := w.Release(ctx, live.Fence, "released")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		page := read("runner", "", now)
+		want := runnerauth.AttemptTermination{WorkItemID: "wi_3", AttemptID: live.ID, LeaseID: tracker.LeaseID(live.Fence.LeaseID), FencingToken: tracker.FencingToken(live.Fence.FencingToken)}
+		if len(page.Workers) != 0 || len(page.PendingTerminations) != 1 || page.PendingTerminations[0] != want || page.Next != live.ID {
+			t.Fatalf("released termination page = %+v", page)
+		}
+		expect(read("runner", page.Next, now), legacy, runnerauth.AttemptLeaseLive)
 	}
 }

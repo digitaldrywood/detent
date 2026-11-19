@@ -34,14 +34,15 @@ func (q *Queries) RemoveRunnerIdentity(ctx context.Context, arg RemoveRunnerIden
 
 const runnerAttemptWorkers = `-- name: RunnerAttemptWorkers :many
 WITH page AS MATERIALIZED (
- SELECT n.id,n.issue_id,n.lease_id,n.fencing_token,n.worker_pid,n.worker_pgid,n.worker_started_at,n.worker_start_key
+ SELECT n.id,n.issue_id,n.lease_id,n.fencing_token,n.worker_pid,n.worker_pgid,n.worker_started_at,n.worker_start_key,n.worker_retired_at
  FROM native_attempts n
  WHERE n.organization_id=$2 AND n.project_id=$3 AND n.worker_runner_id=$4
- AND n.worker_pid IS NOT NULL AND n.worker_retired_at IS NULL AND n.id>$5
+ AND n.worker_pid IS NOT NULL AND (n.worker_retired_at IS NULL OR (n.cleanup_acknowledged_at IS NULL AND n.status IN ('running','interrupted','cancelled')))
+ AND n.id>$5
  ORDER BY n.id LIMIT $6
 )
 SELECT page.id,i.native_id AS work_item_id,page.lease_id,page.fencing_token,l.machine_id,l.expires_at,
- page.worker_pid,page.worker_pgid,page.worker_started_at,page.worker_start_key,
+ page.worker_pid,page.worker_pgid,page.worker_started_at,page.worker_start_key,page.worker_retired_at,l.released_at,
  CASE WHEN l.released_at IS NULL AND l.expires_at>$1::timestamptz THEN 'live'
  WHEN EXISTS (SELECT 1 FROM leases newer WHERE newer.organization_id=l.organization_id AND newer.issue_id=l.issue_id AND newer.fencing_token>l.fencing_token) THEN 'replaced'
  WHEN l.released_at IS NULL OR l.release_reason='expired' THEN 'expired'
@@ -73,6 +74,8 @@ type RunnerAttemptWorkersRow struct {
 	WorkerPgid      pgtype.Int4
 	WorkerStartedAt *time.Time
 	WorkerStartKey  *string
+	WorkerRetiredAt *time.Time
+	ReleasedAt      *time.Time
 	LeaseState      string
 }
 
@@ -103,6 +106,8 @@ func (q *Queries) RunnerAttemptWorkers(ctx context.Context, arg RunnerAttemptWor
 			&i.WorkerPgid,
 			&i.WorkerStartedAt,
 			&i.WorkerStartKey,
+			&i.WorkerRetiredAt,
+			&i.ReleasedAt,
 			&i.LeaseState,
 		); err != nil {
 			return nil, err

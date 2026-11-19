@@ -29,7 +29,19 @@ func Read(ctx context.Context, queries *pgquery.Queries, organization tracker.Or
 		rows = rows[:limit]
 	}
 	for _, row := range rows {
-		if row.MachineID != string(machine) || !row.WorkerPid.Valid || !row.WorkerPgid.Valid || row.WorkerStartedAt == nil || row.WorkerStartKey == nil {
+		if row.MachineID != string(machine) {
+			return runnerauth.AttemptWorkerPage{}, corestore.ErrTenantMismatch
+		}
+		if row.WorkerRetiredAt != nil {
+			if row.ReleasedAt != nil {
+				page.PendingTerminations = append(page.PendingTerminations, runnerauth.AttemptTermination{
+					WorkItemID: tracker.NativeWorkItemID(row.WorkItemID), AttemptID: row.ID,
+					LeaseID: tracker.LeaseID(row.LeaseID), FencingToken: tracker.FencingToken(row.FencingToken),
+				})
+			}
+			continue
+		}
+		if !row.WorkerPid.Valid || !row.WorkerPgid.Valid || row.WorkerStartedAt == nil || row.WorkerStartKey == nil {
 			return runnerauth.AttemptWorkerPage{}, corestore.ErrTenantMismatch
 		}
 		page.Workers = append(page.Workers, runnerauth.AttemptWorker{

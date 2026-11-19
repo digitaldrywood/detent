@@ -12222,6 +12222,7 @@
     "internal/hubserver/postgres/migrations/20261119062927_attempt_worker_retirement.sql": {
       "disposition": "target-schema",
       "families": [
+        "access",
         "lease"
       ],
       "inventory": {
@@ -12229,7 +12230,8 @@
           "SQL": 1
         },
         "tables": [
-          "hub/native_attempts"
+          "hub/native_attempts",
+          "hub/organizations"
         ]
       }
     },

@@ -36,7 +36,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 		sameRunner, advanced                                                 bool
 		hosted                                                               bool
 		replacement, stopped, acknowledged                                   bool
-		worker, retired                                                      bool
+		worker, retired, restart                                             bool
 	}{
 		{name: "transfer retains a nondispatchable lane and human label", held: true, released: true, status: http.StatusOK},
 		{name: "transfer and duplicate request", released: true, status: http.StatusOK},
@@ -49,6 +49,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 		{name: "cancel explicit routing", released: true, cancel: true, status: http.StatusOK},
 		{name: "concurrent transfer revisions", released: true, concurrent: true, status: http.StatusOK},
 		{name: "released historical running attempt", historical: true, released: true, status: http.StatusOK},
+		{name: "restart discovers retired worker termination and transfers source", worker: true, retired: true, running: true, released: true, restart: true, status: http.StatusOK},
 		{name: "worker receipt before checkpoint and release", worker: true, retired: true, running: true, released: true, status: http.StatusUnprocessableEntity},
 		{name: "worker without receipt before checkpoint and release", worker: true, running: true, released: true, status: http.StatusUnprocessableEntity},
 		{name: "worker retired and attempt cleanup acknowledged", worker: true, retired: true, stopped: true, running: true, acknowledged: true, status: http.StatusOK},
@@ -226,6 +227,50 @@ func TestNativeSourceTransfer(t *testing.T) {
 				failure.Data.TerminalFailure = &tracker.NativeTerminalFailure{ObservedAt: clock.Now(), Stage: "pre_provider", Attribution: "issue", ErrorClass: "source_recovery", Error: "native checkpoint requires recovery"}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, failure), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/release", a.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			}
+			if test.restart {
+				request := sourceTransferRequest{Mutation: tracker.Mutation{IdempotencyKey: "before-termination"}, ExpectedRevision: f.issue.Revision, VersionID: version.ID, DestinationRunnerID: b.binding.RunnerID}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/source-recovery", testHubAdminToken, request), http.StatusUnprocessableEntity)
+				if err := f.service.Close(); err != nil {
+					t.Fatal(err)
+				}
+				f.service = reopenNativeAttemptService(t, f.service)
+				read := func(owner runnerFixture) runnerauth.AttemptWorkerPage {
+					t.Helper()
+					path := f.base + "/machines/" + string(owner.binding.MachineID) + "/heartbeat?attempt_worker_after="
+					response := performHubAPIRequest(t, f.service, http.MethodPost, path, owner.redemption.Credential, struct{}{})
+					requireNativeStatus(t, response, http.StatusOK)
+					var inventory runnerauth.AttemptWorkerInventory
+					decodeHubResponse(t, response, &inventory)
+					if inventory.RunnerID != owner.binding.RunnerID || inventory.Page == nil || len(inventory.Page.Workers) != 0 || inventory.Page.Next != "" {
+						t.Fatalf("unexpected process inventory after retirement: %+v", inventory)
+					}
+					return *inventory.Page
+				}
+				if page := read(b); len(page.PendingTerminations) != 0 {
+					t.Fatalf("foreign termination: %+v", page)
+				}
+				var pending runnerauth.AttemptTermination
+				for range 2 {
+					page := read(a)
+					if len(page.PendingTerminations) != 1 {
+						t.Fatalf("missing termination after restart: %+v", page)
+					}
+					pending = page.PendingTerminations[0]
+					if pending.AttemptID != event.Data.AttemptID || pending.WorkItemID != f.issue.WorkItemID || pending.LeaseID != lease.ID || pending.FencingToken != lease.FencingToken {
+						t.Fatalf("termination fence changed: %+v", pending)
+					}
+				}
+				path := f.base + "/work-items/" + string(pending.WorkItemID)
+				response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts/"+pending.AttemptID, a.redemption.Credential, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var attempt tracker.NativeAttempt
+				decodeHubResponse(t, response, &attempt)
+				ack := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "restart-termination"}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: pending.AttemptID, LeaseID: pending.LeaseID, FencingToken: pending.FencingToken, RunID: attempt.RunID, Identity: attempt.Identity, PolicyID: attempt.PolicyID, Sequence: attempt.Sequence + 1, Outcome: "cancelled"}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", a.redemption.Credential, ack), http.StatusOK)
+				if page := read(a); len(page.PendingTerminations) != 0 {
+					t.Fatalf("acknowledged termination still visible: %+v", page)
+				}
 			}
 			if test.acknowledged {
 				var nextSequence int64

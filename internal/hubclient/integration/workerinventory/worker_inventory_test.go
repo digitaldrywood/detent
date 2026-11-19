@@ -48,7 +48,7 @@ func TestAttemptWorkerPageIsFreshAndWithinResponseBudget(t *testing.T) {
 			ProjectID: project, WorkItemID: tracker.NativeWorkItemID("wi_" + strings.Repeat("b", 32)),
 			AttemptID: fmt.Sprintf("attempt_%032x", i), LeaseID: tracker.LeaseID("lease_" + strings.Repeat("c", 32)),
 			MachineID: file.Identity.MachineID, FencingToken: 1<<63 - 1, LeaseState: runnerauth.AttemptLeaseFinished, ExpiresAt: file.Identity.ExpiresAt,
-			Worker: tracker.NativeAttemptWorker{PID: 1<<31 - 1, PGID: 1<<31 - 1, StartedAt: file.Identity.ExpiresAt, StartKey: strings.Repeat("\x01", tracker.MaxAttemptWorkerStartKeyBytes)},
+			Worker: tracker.NativeAttemptWorker{PID: 1<<31 - 1, PGID: 1<<31 - 1, StartedAt: time.Date(2026, 11, 19, 12, 0, 0, 123456000, time.UTC), StartKey: strings.Repeat("\x01", tracker.MaxAttemptWorkerStartKeyBytes)},
 		}
 	}
 	page.Next = page.Workers[len(page.Workers)-1].AttemptID
