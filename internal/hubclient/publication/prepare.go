@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+var ErrSourceChanged = errors.New("PR publication source, current version or review requirements changed; reconcile the current Change before retrying")
+
 type Authority interface {
 	Authorize(context.Context) error
 	ExecutionError(context.Context, error) error
@@ -81,7 +83,7 @@ func Prepare(ctx context.Context, host Authority, executionState State, change *
 				return err
 			}
 			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != executionState.Repository || current.Summary.Status == "stale_policy" && !reconcileStale || current.Change.CurrentLanding() != nil {
-				return errors.New("PR publication source, current version or review requirements changed; reconcile the current Change before retrying")
+				return ErrSourceChanged
 			}
 			// Inherited effects need restored source proof. Effects started by
 			// this execution already passed publication authorization.

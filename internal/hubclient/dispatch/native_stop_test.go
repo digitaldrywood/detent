@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/stoptest"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -596,15 +597,7 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					pending := false
 					if strings.HasSuffix(point, "pending") && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
-						var event tracker.NativeRunEvent
-						content, err := io.ReadAll(request.Body)
-						if err != nil {
-							return nil, err
-						}
-						request.Body = io.NopCloser(strings.NewReader(string(content)))
-						if err := json.Unmarshal(content, &event); err != nil {
-							return nil, err
-						}
+						event := stoptest.ReadEvent(t, request)
 						kind := "git_push"
 						if point == "PR pending" {
 							kind = "pr_create"
@@ -686,15 +679,7 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					termination := false
 					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
-						content, err := io.ReadAll(request.Body)
-						if err != nil {
-							return nil, err
-						}
-						request.Body = io.NopCloser(strings.NewReader(string(content)))
-						var event tracker.NativeRunEvent
-						if err := json.Unmarshal(content, &event); err != nil {
-							return nil, err
-						}
+						event := stoptest.ReadEvent(t, request)
 						termination = event.Type == "run.finished" && event.Data.Outcome == "cancelled"
 					}
 					response, err := transport.RoundTrip(request)
@@ -770,4 +755,21 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStoppedPublicationReconciliation(t *testing.T) {
+	stoptest.PublicationMatrix(t, func(t *testing.T, head string) stoptest.PublicationFixture {
+		h := newNativeChangeHub(t, true)
+		h.descriptor.Gates.GitHubPullRequest = true
+		h.repolicy(t)
+		issue := h.createInProgress(t, "Stop after publication")
+		h.claim(t, issue.ID)
+		e := h.scheduler.RunExecution(issue.ID).(fixtureLifecycle)
+		return stoptest.PublicationFixture{PublicationExecution: e, Repository: nativeChangeRepository, Diff: nativeChangeDiff(head, "README.md"), Transport: fixtureClient(h.native.Transport()).requests,
+			Release: func() error { return h.scheduler.ReleaseClaim(t.Context(), issue.ID, runner.FinalStateOperatorStopped) },
+			Attempt: func() (tracker.NativeAttempt, error) {
+				return h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), e.CompletionData().AttemptID)
+			},
+		}
+	})
 }

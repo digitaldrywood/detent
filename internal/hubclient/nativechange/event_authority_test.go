@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/stoptest"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -626,4 +627,20 @@ func TestReleaseStoppedClaimWithPendingCheckpoint(t *testing.T) {
 	if err != nil || checkpoints != 1 || len(recovery.Attempts) != 1 || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Checkpoint != nil {
 		t.Fatalf("checkpoint POSTs=%d attempts=%+v error=%v", checkpoints, recovery.Attempts, err)
 	}
+}
+
+func TestStoppedGateReconciliation(t *testing.T) {
+	stoptest.GateMatrix(t, func(t *testing.T) stoptest.GateFixture {
+		h := newNativeChangeHub(t, true)
+		issue := h.createInProgress(t, "Stop after validation")
+		h.claim(t, issue.ID)
+		e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+		return stoptest.GateFixture{GateExecution: e, Scope: h.native.Scope(), Transport: fixtureClient(h.native.Transport()).requests,
+			Observe: func(ctx context.Context) error { return e.append(ctx, "run.observed", "", nil) },
+			Release: func(reason string) error { return h.scheduler.ReleaseClaim(t.Context(), issue.ID, reason) },
+			Attempt: func() (tracker.NativeAttempt, error) {
+				return h.admin.NativeAttempt(t.Context(), e.claim.lease.WorkItemID, e.data.AttemptID)
+			},
+		}
+	})
 }

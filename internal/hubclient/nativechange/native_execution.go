@@ -91,6 +91,7 @@ type nativeExecution struct {
 	finalizationSource       *tracker.NativeChangeReference
 	finalizationAttempt      string
 	completionOutageDeadline time.Time
+	operatorStopRequested    bool
 	preparedOutcome          string
 	preparedMessage          string
 	preparedDisposition      *tracker.NativeDisposition
@@ -796,19 +797,21 @@ const terminalWorkerCloseTimeout = 10 * time.Second
 
 func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (err error) {
 	caller := ctx
-	ctx = api.WithMutationAuthority(ctx, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error {
-		cause := e.mutationError(caller)
-		if reason == runner.FinalStateOperatorStopped {
-			cause = errors.Join(cause, runner.ErrOperatorStopped)
-		}
-		return cause
-	})
 	defer func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		e.observeCompletionOutage(ctx, err)
 	}()
 	e.mu.Lock()
+	e.operatorStopRequested = e.operatorStopRequested || reason == runner.FinalStateOperatorStopped
+	operatorStop := e.operatorStopRequested
+	ctx = api.WithMutationAuthority(ctx, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error {
+		cause := e.mutationError(caller)
+		if operatorStop {
+			cause = errors.Join(cause, runner.ErrOperatorStopped)
+		}
+		return cause
+	})
 	localAttemptStarted := e.data.Runtime != nil && e.data.Runtime.LocalAttemptID > 0 && e.data.Runtime.Generation > 0
 	if e.data.Runtime == nil {
 		e.diagnosticMu.Lock()
@@ -834,17 +837,17 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	interrupted := e.data.Outcome == "interrupted"
 	expectedState := e.Recovery().Issue.State
 	publicationUnavailable := outcome == "succeeded" && !e.settled && e.change != nil && e.change.Error != ""
-	var gateCause error
-	if e.hasPendingGate() {
-		gateCause = e.mutationError(ctx)
+	var stopCause error
+	if e.data.Identity != nil && (operatorStop || e.hasPendingReceipt()) {
+		stopCause = e.mutationError(ctx)
 	}
 	e.mu.Unlock()
 	var finishErr error
 	var rejection *nativeCompletionRejection
 	var releasedAttempt *tracker.NativeAttempt
 	expired := outcome != "" && !finished && e.leaseValidity() <= 0
-	if errors.Is(gateCause, runner.ErrOperatorStopped) {
-		finishErr = gateCause
+	if errors.Is(stopCause, runner.ErrOperatorStopped) {
+		finishErr = stopCause
 	} else if outcome != "" && !finished && !expired {
 		if publicationUnavailable && expectedState != "" {
 			issue, err := e.claim.source.NativeClient().Issue(ctx, e.claim.lease.WorkItemID)
@@ -881,6 +884,9 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 		}
 		var conflict *APIError
 		var contestedSequence int64
+		var interruption tracker.NativeRunEvent
+		var uncertainWrites int
+		var deliveryErr error
 		for {
 			path, err := nativeItemPath(e.claim.lease.WorkItemID)
 			if err != nil {
@@ -907,35 +913,38 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 			if conflict != nil && attempt.Sequence < contestedSequence {
 				return conflict
 			}
-			if errors.Is(finishErr, runner.ErrOperatorStopped) && !errors.Is(finishErr, runner.ErrExecutionAuthorityUnavailable) && (e.pendingReceipt == nil || e.hasPendingGate()) {
-				if attempt.Outcome == "" {
-					if e.hasPendingGate() {
-						if err := e.reconcileStoppedGate(ctx, &attempt); err != nil {
-							return err
-						}
-					}
-					data := attempt.NativeRunData
-					data.Sequence++
-					data.Outcome = "interrupted"
-					data.Handoff = nil
-					if data.Runtime != nil {
-						data.Runtime.Phase = "completed"
-					}
-					event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":interrupted:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
-					authorize := func(ctx context.Context) error { return e.authorizeEvent(ctx, true) }
-					if err := e.claim.source.NativeClient().AppendExecutionEvent(ctx, e.claim.lease.WorkItemID, event, authorize); err != nil {
-						if e.hasPendingGate() && conflict == nil && errors.As(err, &conflict) && conflict.Status == http.StatusConflict && conflict.Code == "run_sequence_conflict" {
-							contestedSequence = data.Sequence
-							continue
-						}
-						return e.executionError(ctx, err)
-					}
-					attempt.NativeRunData = data
-				}
-				e.data, e.pending, e.pendingReceipt, e.observations = attempt.NativeRunData, nil, nil, nil
-				finishErr = nil
+			if !errors.Is(finishErr, runner.ErrOperatorStopped) || errors.Is(finishErr, runner.ErrExecutionAuthorityUnavailable) {
+				return finishErr
 			}
-			return finishErr
+			if attempt.Outcome == "" {
+				if interruption.Data.Sequence != attempt.Sequence+1 {
+					if err := e.reconcileStoppedReceipt(ctx, &attempt); err != nil {
+						return err
+					}
+					interruption = interruptedEvent(attempt.NativeRunData)
+					uncertainWrites = 0
+				}
+				if uncertainWrites == 2 {
+					return deliveryErr
+				}
+				authorize := func(ctx context.Context) error { return e.authorizeEvent(ctx, true) }
+				if err := e.claim.source.NativeClient().AppendExecutionEvent(ctx, e.claim.lease.WorkItemID, interruption, authorize); err != nil {
+					if nativeTransportUnavailable(err) && ctx.Err() == nil {
+						uncertainWrites++
+						deliveryErr = err
+						continue
+					}
+					if e.hasPendingReceipt() && conflict == nil && errors.As(err, &conflict) && conflict.Status == http.StatusConflict && conflict.Code == "run_sequence_conflict" {
+						contestedSequence = interruption.Data.Sequence
+						continue
+					}
+					return e.executionError(ctx, err)
+				}
+				attempt.NativeRunData = interruption.Data
+			}
+			e.data, e.pending, e.pendingReceipt, e.observations = attempt.NativeRunData, nil, nil, nil
+			finishErr = nil
+			return nil
 		}
 	}(); err != nil {
 		return err
@@ -969,7 +978,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
 		finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
 		finalization.VersionError == "" && finalization.Error == ""
-	retain := reason != runner.FinalStateOperatorStopped && data.Identity != nil && rejection == nil && e.scheduler.client.Enrolled() && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
+	retain := !operatorStop && data.Identity != nil && rejection == nil && e.scheduler.client.Enrolled() && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
 	if !retain {
 		if err := e.claim.source.NativeClient().ReleaseTerminal(ctx, e.claim.lease, "released"); err != nil && !claimLost(err) {
 			return errors.Join(finishErr, err)
@@ -1048,6 +1057,9 @@ func (e *nativeExecution) postCheckpointDiff(ctx context.Context, sequence int64
 	}
 	if e.generationDiff == nil || e.generationDiff.Generation.Seq != sequence {
 		if err := e.captureDiff(ctx); err != nil {
+			if receipt != nil {
+				return errors.Join(e.mutationError(ctx), err)
+			}
 			return err
 		}
 		request := *e.lastDiff

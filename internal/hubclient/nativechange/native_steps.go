@@ -52,7 +52,7 @@ func (e *nativeExecution) recordStep(ctx context.Context, receipt tracker.Native
 		e.data.Runtime = &runtime
 	}
 	checkpoint := e.data.Handoff
-	if receipt.Step == "agent_turn" || receipt.Step == "commit" {
+	if receipt.Step == "agent_turn" || receipt.Step == "commit" || checkpoint == nil && retention != nil {
 		checkpoint = &receipt.Source
 	}
 	return e.appendEvent(ctx, "run.checkpointed", "", checkpoint, retention)

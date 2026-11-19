@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
+	"github.com/digitaldrywood/detent/internal/hubclient/publication"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -110,24 +111,42 @@ func (e *nativeExecution) retryStoppedReceipt(ctx context.Context, observation *
 	return e.flush(ctx)
 }
 
-func (e *nativeExecution) hasPendingGate() bool {
-	return e.pending != nil && e.pending.Type == "run.checkpointed" && e.pendingReceipt != nil && e.pendingReceipt.verifyPublication == nil
+func (e *nativeExecution) hasPendingReceipt() bool {
+	return e.pending != nil && e.pending.Type == "run.checkpointed" && e.pendingReceipt != nil
 }
 
-func (e *nativeExecution) reconcileStoppedGate(ctx context.Context, attempt *tracker.NativeAttempt) error {
-	gate := e.pending
-	if !checkpoint.SameRun(gate.Data, attempt.NativeRunData) {
+func (e *nativeExecution) reconcileStoppedReceipt(ctx context.Context, attempt *tracker.NativeAttempt) error {
+	if !e.hasPendingReceipt() {
+		return nil
+	}
+	event := e.pending
+	if !checkpoint.SameRun(event.Data, attempt.NativeRunData) {
 		return runner.ErrExecutionAuthorityUnavailable
 	}
-	if attempt.Sequence == gate.Data.Sequence && reflect.DeepEqual(attempt.Steps, gate.Data.Steps) && reflect.DeepEqual(attempt.Handoff, gate.Data.Handoff) {
+	if attempt.Sequence == event.Data.Sequence && reflect.DeepEqual(attempt.Steps, event.Data.Steps) && reflect.DeepEqual(attempt.Handoff, event.Data.Handoff) {
 		return nil
 	}
 	if err := e.flush(ctx); err != nil {
-		if errors.Is(err, runner.ErrOperatorStopped) && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && ctx.Err() == nil {
+		if ctx.Err() != nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || nativeAuthorityLost(err) || nativeTransportUnavailable(err) {
+			return err
+		}
+		if errors.Is(err, runner.ErrOperatorStopped) || errors.Is(err, publication.ErrSourceChanged) {
 			return nil
 		}
 		return err
 	}
-	attempt.NativeRunData = gate.Data
+	attempt.NativeRunData = event.Data
 	return nil
+}
+
+func interruptedEvent(data tracker.NativeRunData) tracker.NativeRunEvent {
+	data.Sequence++
+	data.Outcome = "interrupted"
+	data.Handoff = nil
+	if data.Runtime != nil {
+		runtime := *data.Runtime
+		runtime.Phase = "completed"
+		data.Runtime = &runtime
+	}
+	return tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":interrupted:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
 }
