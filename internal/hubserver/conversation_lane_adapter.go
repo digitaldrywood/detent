@@ -5,6 +5,11 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -19,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations/contentrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -719,4 +725,151 @@ func (s *Service) catalogExecutionDeps() coordinator.CatalogExecutionDeps {
 		Catalog:        s.coordinatorCatalog,
 		Execute:        (hostedOperatorExecutor{service: s}).Execute,
 	}
+}
+
+func (s *Service) attachmentQuotaLimit(ctx context.Context, r tenantstore.Reader) (int64, error) {
+	return s.attachmentRecords().AttachmentQuotaLimit(ctx, r)
+}
+
+func (s *Service) attachmentWriteAuthority(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, evidence *attachment.EvidenceRequest) (corestore.WorkItem, error) {
+	return s.attachmentRecords().AttachmentWriteAuthority(ctx, w, scope, evidence)
+}
+
+func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
+	return s.attachmentRecords().PrepareCloudAttachmentTenant(c, input)
+}
+
+func (s *Service) prepareEvidenceComment(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, body string, offset int64) (hubrecords.AttachmentEvidencePublication, error) {
+	return s.attachmentRecords().PrepareEvidenceComment(ctx, scope, item, body, offset)
+}
+
+func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, version eventstore.CollaborationVersion, body string, offset int64) (hubrecords.AttachmentEvidencePublication, error) {
+	return s.attachmentRecords().PrepareEvidenceCommentRecord(ctx, scope, row, version, body, offset)
+}
+
+func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
+	return s.attachmentRecords().RecordCloudAttachmentTenant(c, input)
+}
+
+func (s *Service) readAttachmentRecordTenant(ctx context.Context, scope hubscope.NativeScope, id string) (attachment.Metadata, error) {
+	return s.attachmentRecords().ReadAttachmentRecordTenant(ctx, scope, id)
+}
+
+func (s *Service) readAttachmentRecordWith(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id string, metadata *attachment.Metadata) error {
+	return s.attachmentRecords().ReadAttachmentRecordWith(ctx, r, scope, id, metadata)
+}
+
+func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan) (hubrecords.WorkItemAttachmentReferences, error) {
+	return s.attachmentRecords().PrepareWorkItemAttachmentReferences(ctx, scope, plan)
+}
+
+func (s *Service) authorizeWorkerItemFence(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, row corestore.WorkItem, command tracker.Mutation) error {
+	return s.attachmentRecords().AuthorizeWorkerItemFence(ctx, w, scope, row, command)
+}
+
+func (s *Service) authorizeAttachmentCommentLease(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, row corestore.WorkItem, command tracker.Mutation) error {
+	return s.attachmentRecords().AuthorizeAttachmentCommentLease(ctx, w, scope, row, command)
+}
+
+func (s *Service) referenceCloudAttachmentTenant(ctx context.Context, scope hubscope.NativeScope, id string, input attachment.SourceReference, fence tracker.Mutation) error {
+	return s.attachmentRecords().ReferenceCloudAttachmentTenant(ctx, scope, id, input, fence)
+}
+
+func (s *Service) deleteCloudAttachmentTenant(ctx context.Context, scope hubscope.NativeScope, id string) error {
+	return s.attachmentRecords().DeleteCloudAttachmentTenant(ctx, scope, id)
+}
+
+func (s *Service) finishCloudAttachmentDeletionTenant(c echo.Context) error {
+	return s.attachmentRecords().FinishCloudAttachmentDeletionTenant(c)
+}
+
+func (s *Service) expiredCloudAttachmentsTenant(c echo.Context) error {
+	return s.attachmentRecords().ExpiredCloudAttachmentsTenant(c)
+}
+
+func (s *Service) artifactReadGrantTenant(ctx context.Context, scope hubscope.NativeScope, item, artifactID string, revision int64, now time.Time) (result artifact.Grant, err error) {
+	return s.artifactRecords().ArtifactReadGrantTenant(ctx, scope, item, artifactID, revision, now)
+}
+
+func (s *Service) readArtifactGrantTenant(ctx context.Context, scope hubscope.NativeScope, service string, request artifact.ReadAuthorization) (grant artifactstore.ReadGrant, owner tracker.Actor, err error) {
+	return s.artifactRecords().ReadArtifactGrantTenant(ctx, scope, service, request)
+}
+
+func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope hubscope.NativeScope, reservation artifact.Reservation) error {
+	return s.artifactRecords().AuthorizeArtifactUploadTenant(ctx, scope, reservation)
+}
+
+func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope hubscope.NativeScope, reference artifact.Reference) error {
+	return s.artifactRecords().PublishArtifactReceiptTenant(ctx, scope, reference)
+}
+
+func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope hubscope.NativeScope, record conversationRecord, preferences conversation.Preferences) (conversationPreferenceIssue, error) {
+	return s.preferenceIssueDeps().PrepareConversationPreferenceIssue(ctx, scope, record, preferences)
+}
+
+type conversationPreferenceIssue = contentrecords.PreparedPreferenceIssue
+
+var contentWriting = contentrecords.SetArchiveWriting
+
+func (s *Service) attachmentRecords() contentrecords.AttachmentRecords {
+	return contentrecords.NewAttachmentRecords(contentrecords.AttachmentRecordDeps{
+		Now:                   s.config.Clock,
+		ReadTenant:            s.readConversationTenantWorkload,
+		WriteTenant:           s.writeConversationTenantWorkload,
+		Authorize:             s.authorizeAccessScope,
+		CheckEvidence:         s.checkAttachmentEvidence,
+		APIError:              s.nativeAPIError,
+		SharedClaims:          hostedSharedClaims,
+		Plans:                 s.database.plansService,
+		Charge:                s.database.chargeAttachmentAPIMutationsPostgres,
+		LeaseMatches:          runnerIdentityMatchesHeldLease,
+		RequireReporterTriage: requireReporterTriage,
+		EscapeEvidenceCaption: escapeEvidenceCaption,
+		ReadWorkItem:          s.readWorkItemRecord,
+		Hydrate:               s.hydrateWorkItemRecord,
+		HydrateCanonical:      s.hydrateCanonicalWorkItemRecord,
+		PrepareFields:         s.prepareWorkItemFields,
+		Receipt:               s.workItemRecordReceipt,
+		Details:               s.runDetailStore,
+	})
+}
+
+func (s *Service) artifactRecords() contentrecords.ArtifactRecords {
+	return contentrecords.NewArtifactRecords(contentrecords.ArtifactRecordDeps{
+		StorageAvailable:       s.config.TenantRepository != nil,
+		Now:                    s.config.Clock,
+		ReadTenant:             s.readConversationTenantWorkload,
+		WriteTenant:            s.writeConversationTenantWorkload,
+		WebSession:             s.WebSession,
+		HostedMutationIdentity: s.hostedMutationIdentity,
+		RefuseStaffSession: func(session auth.Session) bool {
+			return s.config.Hosted.SharedEntry == nil && hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) && (session.Identity == nil || session.Identity.SupportActor == "")
+		},
+		Authorize:      s.authorizeAccessScope,
+		LeasePolicy:    s.dependencyReasonPolicy,
+		AuthorizeLease: s.authorizeDependencyReasonLease,
+		Charge:         s.applyRunnerTenantUsage,
+	})
+}
+
+func (s *Service) preferenceIssueDeps() contentrecords.PreferenceIssueDeps {
+	return contentrecords.PreferenceIssueDeps{
+		LoadPlan: s.loadWorkItemPlan,
+		Authorize: func(ctx context.Context, scope hubscope.NativeScope) error {
+			return s.readConversationTenant(ctx, scope.Organization, func(reader tenantstore.Reader) error {
+				return s.authorizeWorkItemRecordScope(ctx, reader, scope)
+			})
+		},
+		Now:           s.config.Clock,
+		PrepareFields: s.prepareWorkItemFields,
+		Details:       s.runDetailStore,
+	}
+}
+
+func (s *Service) readConversationTenantWorkload(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return s.config.TenantRepository.ReadTenant(ctx, org, workload, read)
+}
+
+func (s *Service) writeConversationTenantWorkload(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return s.config.TenantRepository.WriteTenant(ctx, org, workload, write)
 }

@@ -1,4 +1,4 @@
-package hubserver
+package contentrecords
 
 import (
 	"context"
@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 
 	"github.com/labstack/echo/v4"
 
@@ -44,14 +46,14 @@ func attachmentUploadIdentity(input attachment.UploadRequest) any {
 		Evidence *attachment.EvidenceRequest
 	}{metadata, input.Evidence}
 }
-func (s *Service) attachmentQuotaLimit(ctx context.Context, r tenantstore.Reader) (int64, error) {
-	if s.database.plansService().Plans() == nil {
+func (s AttachmentRecords) AttachmentQuotaLimit(ctx context.Context, r tenantstore.Reader) (int64, error) {
+	if s.deps.Plans().Plans() == nil {
 		return math.MaxInt64, nil
 	}
-	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", s.config.Clock())); err != nil {
+	if err := hubapi.FromFeatureError(s.deps.Plans().RequireFeatureRecord(ctx, r, "collaboration", s.deps.Now())); err != nil {
 		return 0, err
 	}
-	entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.Clock()))
+	entitlement, err := hubapi.FeatureResult(s.deps.Plans().EntitlementRecord(ctx, r, s.deps.Now()))
 	if err != nil {
 		return 0, err
 	}
@@ -60,8 +62,8 @@ func (s *Service) attachmentQuotaLimit(ctx context.Context, r tenantstore.Reader
 	}
 	return math.MaxInt64, nil
 }
-func (s *Service) attachmentWriteAuthority(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, evidence *attachment.EvidenceRequest) (corestore.WorkItem, error) {
-	if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+func (s AttachmentRecords) AttachmentWriteAuthority(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, evidence *attachment.EvidenceRequest) (corestore.WorkItem, error) {
+	if err := s.deps.Authorize(ctx, w, scope, true); err != nil {
 		return corestore.WorkItem{}, err
 	}
 	project, err := w.Project(ctx, scope.Project)
@@ -82,7 +84,7 @@ func (s *Service) attachmentWriteAuthority(ctx context.Context, w tenantstore.Wr
 	if err != nil {
 		return corestore.WorkItem{}, err
 	}
-	now := s.config.Clock().UTC()
+	now := s.deps.Now().UTC()
 	if credential.OrganizationID != scope.Organization || credential.Kind != "service" || credential.Scope != string(hubapi.APIScopeWorker) || !credential.Valid(scope.Credential.Hash, now) || identity.OrganizationID != scope.Organization || identity.RunnerID != scope.Credential.Runner.RunnerID || identity.TokenID != credential.ID || identity.RemovedAt != nil || identity.State == "disabled" || !identity.ExpiresAt.After(now) {
 		return corestore.WorkItem{}, hubscope.RunnerUnauthorized()
 	}
@@ -119,8 +121,8 @@ func (s *Service) attachmentWriteAuthority(ctx context.Context, w tenantstore.Wr
 	if err != nil {
 		return item, err
 	}
-	now = s.config.Clock().UTC()
-	if !credential.Valid(scope.Credential.Hash, now) || item.Archived || lease.OrganizationID != scope.Organization || lease.IssueID != item.ID || lease.FencingToken != int64(evidence.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || !runnerIdentityMatchesHeldLease(owner, scope.Organization, identity.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) {
+	now = s.deps.Now().UTC()
+	if !credential.Valid(scope.Credential.Hash, now) || item.Archived || lease.OrganizationID != scope.Organization || lease.IssueID != item.ID || lease.FencingToken != int64(evidence.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || !s.deps.LeaseMatches(owner, scope.Organization, identity.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) {
 		return item, hubapi.NativeStaleExecution("Evidence producer lease is no longer current")
 	}
 	attempt, err := w.Attempt(ctx, evidence.AttemptID)
@@ -132,39 +134,39 @@ func (s *Service) attachmentWriteAuthority(ctx context.Context, w tenantstore.Wr
 	}
 	return item, nil
 }
-func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
+func (s AttachmentRecords) PrepareCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
-		return s.nativeAPIError(c, err)
+	if err := s.deps.CheckEvidence(c, input.Evidence); err != nil {
+		return s.deps.APIError(c, err)
 	}
 	input.ID = conversation.NewAttachmentID()
 	if input.Validate() != nil || strings.TrimSpace(input.RequestID) == "" || len(input.RequestID) > 128 || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil || input.Evidence != nil && input.Evidence.IdempotencyKey != input.RequestID {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attachment upload"))
+		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid attachment upload"))
 	}
 	scope := hubscope.NativeRequestScope(c)
 	scope.Action = operatortool.UploadAttachment
 	operation := "attachment.prepare " + string(scope.Project)
 	hash, err := hubapi.CommandHash(attachmentUploadIdentity(input))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.APIError(c, err)
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(s.deps.Details())
 	for {
-		receipt, found, err := s.workItemRecordReceipt(ctx, scope, operation, input.RequestID, hash)
+		receipt, found, err := s.deps.Receipt(ctx, scope, operation, input.RequestID, hash)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.APIError(c, err)
 		}
 		if found {
 			raw, err := content.Receipt(ctx, receipt)
 			if err != nil {
-				return s.nativeAPIError(c, err)
+				return s.deps.APIError(c, err)
 			}
 			var metadata attachment.Metadata
 			if json.Unmarshal(raw, &metadata) != nil || metadata.Validate() != nil {
-				return s.nativeAPIError(c, eventstore.ErrInvalidRecord)
+				return s.deps.APIError(c, eventstore.ErrInvalidRecord)
 			}
-			err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			err = s.deps.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				stored, err := r.Attachment(ctx, scope.Project, metadata.ID)
 				if errors.Is(err, corestore.ErrNotFound) {
 					return nil
@@ -178,7 +180,7 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 				return nil
 			})
 			if err != nil {
-				return s.nativeAPIError(c, err)
+				return s.deps.APIError(c, err)
 			}
 			return c.JSONBlob(http.StatusOK, raw)
 		}
@@ -187,20 +189,20 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 		if scope.Credential.HostedRole == "reporter" {
 			metadata.Uploader = scope.Actor().PrincipalID
 		}
-		metadata.CreatedAt = s.config.Clock().UTC().Truncate(time.Microsecond)
+		metadata.CreatedAt = s.deps.Now().UTC().Truncate(time.Microsecond)
 		raw, err := json.Marshal(metadata)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.APIError(c, err)
 		}
 		prepared, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: input.RequestID, RequestHash: hash}, raw)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.APIError(c, err)
 		}
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		err = s.deps.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
-			if _, err := s.attachmentWriteAuthority(ctx, w, scope, input.Evidence); err != nil {
+			if _, err := s.AttachmentWriteAuthority(ctx, w, scope, input.Evidence); err != nil {
 				return err
 			}
 			if previous, err := w.Receipt(ctx, scope.Credential.ID, operation, input.RequestID); err == nil {
@@ -212,7 +214,7 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 				return err
 			}
 			{
-				limit, err := s.attachmentQuotaLimit(ctx, w)
+				limit, err := s.AttachmentQuotaLimit(ctx, w)
 				if err != nil {
 					return err
 				}
@@ -227,7 +229,7 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 					return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
 				}
 			}
-			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, scope.Organization, "attachment/"+scope.Credential.ID+"/"+operation+"/"+input.RequestID, s.config.Clock(), "mutation"); err != nil {
+			if err := s.deps.Charge(ctx, w, scope.Organization, "attachment/"+scope.Credential.ID+"/"+operation+"/"+input.RequestID, s.deps.Now(), "mutation"); err != nil {
 				return err
 			}
 			_, err := w.PutReceipt(ctx, prepared)
@@ -237,40 +239,40 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 			continue
 		}
 		if err != nil {
-			return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
+			return s.deps.APIError(c, hubapi.ProjectRecordError(err))
 		}
 		return c.JSONBlob(http.StatusOK, raw)
 	}
 }
 
-func (s *Service) prepareAttachmentEvidencePublication(ctx context.Context, scope hubscope.NativeScope, input *attachment.EvidenceRequest, metadata attachment.Metadata) (hubrecords.AttachmentEvidencePublication, error) {
+func (s AttachmentRecords) prepareAttachmentEvidencePublication(ctx context.Context, scope hubscope.NativeScope, input *attachment.EvidenceRequest, metadata attachment.Metadata) (hubrecords.AttachmentEvidencePublication, error) {
 	result := hubrecords.AttachmentEvidencePublication{}
 	if input == nil {
 		return result, nil
 	}
-	return s.prepareEvidenceComment(ctx, scope, input.WorkItemID, escapeEvidenceCaption(input.Caption)+"\n\n"+metadata.Markdown(string(scope.Organization)), 0)
+	return s.PrepareEvidenceComment(ctx, scope, input.WorkItemID, s.deps.EscapeEvidenceCaption(input.Caption)+"\n\n"+metadata.Markdown(string(scope.Organization)), 0)
 }
 
-func (s *Service) prepareEvidenceComment(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, body string, offset int64) (hubrecords.AttachmentEvidencePublication, error) {
+func (s AttachmentRecords) PrepareEvidenceComment(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, body string, offset int64) (hubrecords.AttachmentEvidencePublication, error) {
 	result := hubrecords.AttachmentEvidencePublication{}
-	row, version, err := s.readWorkItemRecord(ctx, scope, string(item))
+	row, version, err := s.deps.ReadWorkItem(ctx, scope, string(item))
 	if err != nil {
 		return result, err
 	}
-	return s.prepareEvidenceCommentRecord(ctx, scope, row, version, body, offset)
+	return s.PrepareEvidenceCommentRecord(ctx, scope, row, version, body, offset)
 }
 
-func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, version eventstore.CollaborationVersion, body string, offset int64) (hubrecords.AttachmentEvidencePublication, error) {
+func (s AttachmentRecords) PrepareEvidenceCommentRecord(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, version eventstore.CollaborationVersion, body string, offset int64) (hubrecords.AttachmentEvidencePublication, error) {
 	result := hubrecords.AttachmentEvidencePublication{}
-	issue, err := s.hydrateCanonicalWorkItemRecord(ctx, row, version)
+	issue, err := s.deps.HydrateCanonical(ctx, row, version)
 	if err != nil {
 		return result, err
 	}
 	row.EventSequence += offset
-	at := s.config.Clock().UTC().Truncate(time.Microsecond)
+	at := s.deps.Now().UTC().Truncate(time.Microsecond)
 	comment := tracker.NativeComment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, ID: hubapi.NewID("cmt"), Revision: 1, Sequence: row.EventSequence + 1, Body: body, Actor: scope.Actor(), CreatedAt: at, UpdatedAt: at}
 	result.Plan = hubrecords.WorkItemRecordPlan{Current: row, Issue: issue, Comment: comment, Create: true, EventType: "comment.created"}
-	result.Fields, err = s.prepareWorkItemFields(ctx, scope.Organization, result.Plan)
+	result.Fields, err = s.deps.PrepareFields(ctx, scope.Organization, result.Plan)
 	if err != nil {
 		return result, err
 	}
@@ -278,7 +280,7 @@ func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubsco
 	if err != nil {
 		return result, err
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(s.deps.Details())
 	result.Version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, RecordID: comment.ID, Revision: 1}, raw)
 	if err != nil {
 		return result, err
@@ -304,14 +306,14 @@ func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubsco
 	result.Bytes = int64(len(comment.Body) + len(raw) + len(dataRaw) + len(actorRaw))
 	return result, err
 }
-func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
+func (s AttachmentRecords) RecordCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	if input.Validate() != nil || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil || input.Evidence != nil && (input.RequestID == "" || input.Evidence.IdempotencyKey != input.RequestID) {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attachment metadata"))
+		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid attachment metadata"))
 	}
-	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
-		return s.nativeAPIError(c, err)
+	if err := s.deps.CheckEvidence(c, input.Evidence); err != nil {
+		return s.deps.APIError(c, err)
 	}
 	scope := hubscope.NativeRequestScope(c)
 	scope.Action = operatortool.UploadAttachment
@@ -326,18 +328,18 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 	}
 	hash, err := hubapi.CommandHash(identity)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.APIError(c, err)
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(s.deps.Details())
 	for {
-		receipt, found, err := s.workItemRecordReceipt(ctx, scope, operation, key, hash)
+		receipt, found, err := s.deps.Receipt(ctx, scope, operation, key, hash)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.APIError(c, err)
 		}
 		if found {
 			raw, err := content.Receipt(ctx, receipt)
 			if err != nil {
-				return s.nativeAPIError(c, err)
+				return s.deps.APIError(c, err)
 			}
 			return c.JSONBlob(http.StatusCreated, raw)
 		}
@@ -345,32 +347,32 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 		if input.RequestID != "" {
 			prepareHash, err := hubapi.CommandHash(attachmentUploadIdentity(input))
 			if err != nil {
-				return s.nativeAPIError(c, err)
+				return s.deps.APIError(c, err)
 			}
-			prepared, found, err := s.workItemRecordReceipt(ctx, scope, "attachment.prepare "+string(scope.Project), input.RequestID, prepareHash)
+			prepared, found, err := s.deps.Receipt(ctx, scope, "attachment.prepare "+string(scope.Project), input.RequestID, prepareHash)
 			if err != nil {
-				return s.nativeAPIError(c, err)
+				return s.deps.APIError(c, err)
 			}
 			if !found {
-				return s.nativeAPIError(c, hubapi.NativePublicInvalid("Attachment preparation receipt is required"))
+				return s.deps.APIError(c, hubapi.NativePublicInvalid("Attachment preparation receipt is required"))
 			}
 			raw, err := content.Receipt(ctx, prepared)
 			if err != nil {
-				return s.nativeAPIError(c, err)
+				return s.deps.APIError(c, err)
 			}
 			if json.Unmarshal(raw, &metadata) != nil || !reflect.DeepEqual(metadata, input.Metadata) {
-				return s.nativeAPIError(c, hubapi.NativeConflict(0))
+				return s.deps.APIError(c, hubapi.NativeConflict(0))
 			}
 		} else {
 			metadata.ProjectID, metadata.Uploader = string(scope.Project), scope.Credential.ID
 			if scope.Credential.HostedRole == "reporter" {
 				metadata.Uploader = scope.Actor().PrincipalID
 			}
-			metadata.CreatedAt = s.config.Clock().UTC().Truncate(time.Microsecond)
+			metadata.CreatedAt = s.deps.Now().UTC().Truncate(time.Microsecond)
 		}
 		publication, err := s.prepareAttachmentEvidencePublication(ctx, scope, input.Evidence, metadata)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.APIError(c, err)
 		}
 		record := attachmentstore.Record{OrganizationID: scope.Organization, Metadata: metadata, Kind: "attachment"}
 		if input.Evidence != nil {
@@ -381,17 +383,17 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 		}
 		raw, err := json.Marshal(record.Metadata)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.APIError(c, err)
 		}
 		preparedReceipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: key, RequestHash: hash}, raw)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.deps.APIError(c, err)
 		}
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		err = s.deps.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
-			row, err := s.attachmentWriteAuthority(ctx, w, scope, input.Evidence)
+			row, err := s.AttachmentWriteAuthority(ctx, w, scope, input.Evidence)
 			if err != nil {
 				return err
 			}
@@ -407,7 +409,7 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 				return corestore.ErrSerializationFailure
 			}
 			{
-				limit, err := s.attachmentQuotaLimit(ctx, w)
+				limit, err := s.AttachmentQuotaLimit(ctx, w)
 				if err != nil {
 					return err
 				}
@@ -422,7 +424,7 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 					return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 				}
 			}
-			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, scope.Organization, "attachment/"+scope.Credential.ID+"/"+operation+"/"+key, s.config.Clock(), "record", "mutation"); err != nil {
+			if err := s.deps.Charge(ctx, w, scope.Organization, "attachment/"+scope.Credential.ID+"/"+operation+"/"+key, s.deps.Now(), "record", "mutation"); err != nil {
 				return err
 			}
 			if input.Evidence != nil {
@@ -451,20 +453,20 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 			continue
 		}
 		if err != nil {
-			return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
+			return s.deps.APIError(c, hubapi.ProjectRecordError(err))
 		}
 		return c.JSONBlob(http.StatusCreated, raw)
 	}
 }
 
-func (s *Service) readAttachmentRecordTenant(ctx context.Context, scope hubscope.NativeScope, id string) (attachment.Metadata, error) {
+func (s AttachmentRecords) ReadAttachmentRecordTenant(ctx context.Context, scope hubscope.NativeScope, id string) (attachment.Metadata, error) {
 	var metadata attachment.Metadata
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return s.readAttachmentRecordWith(ctx, r, scope, id, &metadata) })
+	err := s.deps.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return s.ReadAttachmentRecordWith(ctx, r, scope, id, &metadata) })
 	return metadata, err
 }
 
-func (s *Service) readAttachmentRecordWith(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id string, metadata *attachment.Metadata) error {
-	if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+func (s AttachmentRecords) ReadAttachmentRecordWith(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id string, metadata *attachment.Metadata) error {
+	if err := s.deps.Authorize(ctx, r, scope, false); err != nil {
 		return err
 	}
 	record, err := r.Attachment(ctx, scope.Project, id)
@@ -549,7 +551,7 @@ func (s *Service) readAttachmentRecordWith(ctx context.Context, r tenantstore.Re
 	return nil
 }
 
-func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan) (hubrecords.WorkItemAttachmentReferences, error) {
+func (s AttachmentRecords) PrepareWorkItemAttachmentReferences(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan) (hubrecords.WorkItemAttachmentReferences, error) {
 	result := hubrecords.WorkItemAttachmentReferences{}
 	if plan.Existing {
 		return result, nil
@@ -562,7 +564,7 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 		body string
 		ids  *[]string
 	}{{plan.PreviousContent, &result.Previous}, {body, &result.Current}} {
-		references, err := cloudContentAttachmentReferences(source.body, scope)
+		references, err := conversations.CloudContentAttachmentReferences(source.body, scope)
 		if err != nil {
 			return result, err
 		}
@@ -584,7 +586,7 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 		if metadata, ok := readable[id]; ok {
 			return metadata, true, nil
 		}
-		metadata, err := s.readAttachmentRecordTenant(ctx, scope, id)
+		metadata, err := s.ReadAttachmentRecordTenant(ctx, scope, id)
 		var failure *hubapi.NativeError
 		if errors.Is(err, corestore.ErrNotFound) || errors.As(err, &failure) && failure.Status == http.StatusNotFound {
 			return attachment.Metadata{}, false, nil
@@ -596,9 +598,10 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 		return metadata, true, nil
 	}
 	if plan.Project.Settings.RequireVisualAttachments && !scope.ImportedContent && body != plan.PreviousContent {
-		fields := []cloudContentField{{"body", plan.Comment.Body}}
+		type contentField struct{ name, value string }
+		fields := []contentField{{"body", plan.Comment.Body}}
 		if plan.Comment.ID == "" {
-			fields = []cloudContentField{{"title", plan.Issue.Title}, {"body", plan.Issue.Body}}
+			fields = []contentField{{"title", plan.Issue.Title}, {"body", plan.Issue.Body}}
 		}
 		resolve := func(id string) (attachment.Metadata, error) {
 			metadata, _, err := read(id)
@@ -636,12 +639,12 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 	return result, nil
 }
 
-func (s *Service) authorizeWorkerItemFence(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, row corestore.WorkItem, command tracker.Mutation) error {
+func (s AttachmentRecords) AuthorizeWorkerItemFence(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, row corestore.WorkItem, command tracker.Mutation) error {
 	if command.LeaseID != "" || command.FencingToken != 0 {
 		if command.LeaseID == "" || command.FencingToken <= 0 {
 			return tracker.ErrStaleFencingToken
 		}
-		return s.authorizeAttachmentCommentLease(ctx, w, scope, row, command)
+		return s.AuthorizeAttachmentCommentLease(ctx, w, scope, row, command)
 	}
 	current, err := w.LockWorkItem(ctx, scope.Project, row.NativeID)
 	if err != nil {
@@ -667,7 +670,7 @@ func (s *Service) authorizeWorkerItemFence(ctx context.Context, w tenantstore.Wr
 	return nil
 }
 
-func (s *Service) authorizeAttachmentCommentLease(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, row corestore.WorkItem, command tracker.Mutation) error {
+func (s AttachmentRecords) AuthorizeAttachmentCommentLease(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, row corestore.WorkItem, command tracker.Mutation) error {
 	current, err := w.LockWorkItem(ctx, scope.Project, row.NativeID)
 	if err != nil {
 		return err
@@ -691,11 +694,11 @@ func (s *Service) authorizeAttachmentCommentLease(ctx context.Context, w tenants
 	if err != nil {
 		return err
 	}
-	now := s.config.Clock().UTC()
+	now := s.deps.Now().UTC()
 	if lease.OrganizationID != scope.Organization || lease.IssueID != row.ID || lease.FencingToken != int64(command.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
 		return tracker.ErrStaleFencingToken
 	}
-	if credential.OrganizationID != scope.Organization || credential.Kind != "service" || credential.Scope != string(hubapi.APIScopeWorker) || !credential.Valid(scope.Credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, scope.Organization, scope.Credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
+	if credential.OrganizationID != scope.Organization || credential.Kind != "service" || credential.Scope != string(hubapi.APIScopeWorker) || !credential.Valid(scope.Credential.Hash, now) || !s.deps.LeaseMatches(identity, scope.Organization, scope.Credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
 		return hubscope.RunnerUnauthorized()
 	}
 	allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
@@ -708,26 +711,26 @@ func (s *Service) authorizeAttachmentCommentLease(ctx context.Context, w tenants
 	return nil
 }
 
-func (s *Service) referenceCloudAttachmentTenant(ctx context.Context, scope hubscope.NativeScope, id string, input attachment.SourceReference, fence tracker.Mutation) error {
+func (s AttachmentRecords) ReferenceCloudAttachmentTenant(ctx context.Context, scope hubscope.NativeScope, id string, input attachment.SourceReference, fence tracker.Mutation) error {
 	scope.Action = operatortool.ReferenceAttachment
-	row, version, err := s.readWorkItemRecord(ctx, scope, input.WorkItemID)
+	row, version, err := s.deps.ReadWorkItem(ctx, scope, input.WorkItemID)
 	if err != nil {
 		return err
 	}
-	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
+	issue, err := s.deps.Hydrate(ctx, row, version)
 	if err != nil {
 		return err
 	}
 	if input.CommentID == "" {
-		if err := requireReporterTriage(scope, issue); err != nil {
+		if err := s.deps.RequireReporterTriage(scope, issue); err != nil {
 			return err
 		}
 	}
-	if _, err := s.readAttachmentRecordTenant(ctx, scope, id); err != nil {
+	if _, err := s.ReadAttachmentRecordTenant(ctx, scope, id); err != nil {
 		return err
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+	return s.deps.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.deps.Authorize(ctx, w, scope, true); err != nil {
 			return err
 		}
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
@@ -744,7 +747,7 @@ func (s *Service) referenceCloudAttachmentTenant(ctx context.Context, scope hubs
 			return hubapi.NativeNotFound()
 		}
 		if scope.Credential.Scope == hubapi.APIScopeWorker {
-			if err := s.authorizeWorkerItemFence(ctx, w, scope, current, fence); err != nil {
+			if err := s.AuthorizeWorkerItemFence(ctx, w, scope, current, fence); err != nil {
 				return err
 			}
 		}
@@ -752,62 +755,62 @@ func (s *Service) referenceCloudAttachmentTenant(ctx context.Context, scope hubs
 	})
 }
 
-func (s *Service) deleteCloudAttachmentTenant(ctx context.Context, scope hubscope.NativeScope, id string) error {
+func (s AttachmentRecords) DeleteCloudAttachmentTenant(ctx context.Context, scope hubscope.NativeScope, id string) error {
 	scope.Action = operatortool.DeleteAttachment
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err := s.deps.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		if _, err := s.attachmentWriteAuthority(ctx, w, scope, nil); err != nil {
+		if _, err := s.AttachmentWriteAuthority(ctx, w, scope, nil); err != nil {
 			return err
 		}
 		owner, ok := w.(attachmentstore.DeletionWriter)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.DeleteAttachment(ctx, scope.Project, id, s.config.Clock().UTC())
+		return owner.DeleteAttachment(ctx, scope.Project, id, s.deps.Now().UTC())
 	})
 	return hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) finishCloudAttachmentDeletionTenant(c echo.Context) error {
-	claims, ok := hostedSharedClaims(c)
+func (s AttachmentRecords) FinishCloudAttachmentDeletionTenant(c echo.Context) error {
+	claims, ok := s.deps.SharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService || claims.Audience == "" {
-		return s.nativeAPIError(c, hubapi.NativeNotFound())
+		return s.deps.APIError(c, hubapi.NativeNotFound())
 	}
 	var input struct {
 		ID string `json:"id"`
 	}
 	if err := c.Bind(&input); err != nil || conversation.ValidateAttachmentID(input.ID) != nil {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid attachment id"))
+		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid attachment id"))
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	err := s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(claims.Audience), corestore.Serving, func(w tenantstore.Writer) error {
+	err := s.deps.WriteTenant(ctx, tracker.OrganizationID(claims.Audience), corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(attachmentstore.DeletionWriter)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.FinishAttachmentDeletion(ctx, input.ID, s.config.Clock().UTC())
+		return owner.FinishAttachmentDeletion(ctx, input.ID, s.deps.Now().UTC())
 	})
 	if err != nil {
-		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
+		return s.deps.APIError(c, hubapi.ProjectRecordError(err))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) expiredCloudAttachmentsTenant(c echo.Context) error {
-	claims, ok := hostedSharedClaims(c)
+func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
+	claims, ok := s.deps.SharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService || claims.Audience == "" {
-		return s.nativeAPIError(c, hubapi.NativeNotFound())
+		return s.deps.APIError(c, hubapi.NativeNotFound())
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	organization := tracker.OrganizationID(claims.Audience)
-	now := s.config.Clock().UTC()
+	now := s.deps.Now().UTC()
 	cutoff := now.Add(-attachment.OrphanTTL)
 	var candidates []attachmentstore.Record
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+	err := s.deps.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		owner, ok := r.(attachmentstore.ExpiryReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -817,14 +820,14 @@ func (s *Service) expiredCloudAttachmentsTenant(c echo.Context) error {
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
+		return s.deps.APIError(c, hubapi.ProjectRecordError(err))
 	}
 	items := []attachment.Metadata{}
 	for _, candidate := range candidates {
 		metadata := candidate.Metadata
 		if metadata.DeletedAt == nil {
 			expired := false
-			err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+			err = s.deps.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 				project := tracker.ProjectID(metadata.ProjectID)
 				owner, ok := w.(attachmentstore.ExpiryWriter)
 				if !ok {
@@ -835,7 +838,7 @@ func (s *Service) expiredCloudAttachmentsTenant(c echo.Context) error {
 				return err
 			})
 			if err != nil {
-				return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
+				return s.deps.APIError(c, hubapi.ProjectRecordError(err))
 			}
 			if !expired {
 				continue

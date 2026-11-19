@@ -1,4 +1,4 @@
-package hubserver
+package contentrecords
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 )
 
-func contentWriting(ctx context.Context, writing bool) {
+func SetArchiveWriting(ctx context.Context, writing bool) {
 	if content, ok := ctx.Value(hubcontent.ChangeContentKey{}).(*hubcontent.ChangeContent); ok {
 		content.Mu.Lock()
 		content.Writing = writing
