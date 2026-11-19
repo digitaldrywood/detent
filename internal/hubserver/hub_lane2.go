@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
@@ -523,4 +524,40 @@ func (s *Service) checkRunnerAdmission(ctx context.Context, writer billingstore.
 
 func (s *Service) runnerUsageEntitlement(ctx context.Context, r billingstore.Reader, now time.Time) (hostedplans.HostedEntitlement, error) {
 	return hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, now))
+}
+
+func nativeClaimAnswerRequired(plan hubrecords.NativeClaimPlan) bool {
+	return claimapi.NativeClaimAnswerRequired(plan)
+}
+
+func nativeClaimDispatchSatisfied(plan hubrecords.NativeClaimPlan) bool {
+	return claimapi.NativeClaimDispatchSatisfied(plan)
+}
+
+func readRunnerRecoveryEligibility(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID) (bool, bool, error) {
+	return claimapi.ReadRunnerRecoveryEligibility(ctx, reader, scope, item)
+}
+
+func (s *Service) runnerAttemptFactsDeps() claimapi.AttemptFactsDeps {
+	return claimapi.AttemptFactsDeps{
+		ReadAttempt:    s.readNativeAttemptRunTenant,
+		ReadCheckpoint: s.readNativeAttemptCheckpointTenant,
+		AttemptStatus:  nativeRunAttemptStatus,
+	}
+}
+
+func nativeAttemptClaimDisposition(data tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint, project tracker.ProjectID) string {
+	return claimapi.NativeAttemptClaimDisposition(data, checkpoint, project)
+}
+
+func attemptClaimFacts(attempt leasestore.Attempt, disposition string, unresolvedOnly bool) leasestore.AttemptClaimFacts {
+	return claimapi.AttemptClaimFacts(attempt, disposition, unresolvedOnly)
+}
+
+func (s *Service) prepareAttemptClaimFacts(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot) (leasestore.AttemptClaimFacts, error) {
+	return s.runnerAttemptFactsDeps().PrepareAttemptClaimFacts(ctx, snapshot)
+}
+
+func answeredClaimKind(data tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint) string {
+	return claimapi.AnsweredClaimKind(data, checkpoint)
 }
