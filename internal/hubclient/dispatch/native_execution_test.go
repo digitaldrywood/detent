@@ -667,7 +667,7 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				descriptor := clientTestPolicy()
-				var offline atomic.Bool
+				var offline, acknowledgeRenewal atomic.Bool
 				var budgetWait atomic.Bool
 				var budgetReads, budgetRenewals atomic.Int32
 				var finished tracker.NativeRunEvent
@@ -689,11 +689,11 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					if strings.HasSuffix(request.URL.Path, "/renew") {
 						if budgetWait.Load() {
 							budgetRenewals.Add(1)
-							if name == "budget wait" {
-								lease := tracker.NativeLease{ID: "lease", FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), RenewedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
-								body, err := json.Marshal(lease)
-								return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, err
-							}
+						}
+						if name == "budget wait" || acknowledgeRenewal.Swap(false) {
+							lease := tracker.NativeLease{ID: "lease", FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), RenewedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+							body, err := json.Marshal(lease)
+							return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, err
 						}
 						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: request}, nil
 					}
@@ -883,42 +883,39 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					return
 				}
 				time.Sleep(30 * time.Second)
-				if strings.HasPrefix(name, "renewal outage") {
+				if strings.HasPrefix(name, "renewal outage") || renew {
 					offline.Store(true)
-					_, err := scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
-					if err == nil || errors.Is(err, orchestrator.ErrSchedulingClaimLost) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-						t.Fatalf("transient renewal revoked current lease: %v", err)
-					}
-					if err := execution.Validate(guarded); err != nil || guarded.Err() != nil {
-						t.Fatalf("outage ended valid worker: %v", err)
-					}
-				}
-				if renew {
-					scheduler.mu.Lock()
 					claim := scheduler.nativeClaims[id]
-					claim.deadline = time.Now().Add(time.Minute)
-					scheduler.nativeClaims[id] = claim
-					scheduler.mu.Unlock()
+					if _, err := scheduler.renewNativeClaim(t.Context(), id, claim, 0); !api.NativeTransportUnavailable(err) {
+						t.Fatalf("renewal outage = %v", err)
+					}
+					time.Sleep(30*time.Second - time.Nanosecond)
+					synctest.Wait()
+					if guarded.Err() != nil {
+						t.Fatalf("valid lease cancelled before expiry: %v", context.Cause(guarded))
+					}
+					if renew {
+						offline.Store(false)
+						acknowledgeRenewal.Store(true)
+						scheduler.mu.Lock()
+						scheduler.nativeHeartbeats[native.ProjectID()] = time.Now()
+						scheduler.mu.Unlock()
+						if err := scheduler.RenewExecution(guarded, claim.lease, 0); err != nil {
+							t.Fatal(err)
+						}
+						time.Sleep(time.Second)
+						synctest.Wait()
+						if guarded.Err() != nil {
+							t.Fatalf("acknowledged renewal lost at old deadline: %v", context.Cause(guarded))
+						}
+						time.Sleep(55 * time.Second)
+					} else {
+						time.Sleep(time.Nanosecond)
+					}
+				} else {
+					time.Sleep(25 * time.Second)
 				}
-				time.Sleep(25 * time.Second)
 				synctest.Wait()
-				if renew {
-					if guarded.Err() != nil {
-						t.Fatal("renewed owner stopped at old deadline")
-					}
-					time.Sleep(30 * time.Second)
-					synctest.Wait()
-				}
-				if strings.HasPrefix(name, "renewal outage") {
-					time.Sleep(4 * time.Minute)
-					synctest.Wait()
-					if guarded.Err() != nil {
-						t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
-					}
-					offline.Store(false)
-					time.Sleep(30 * time.Second)
-					synctest.Wait()
-				}
 				if !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
 					t.Fatalf("expiry cause = %v", context.Cause(guarded))
 				}
