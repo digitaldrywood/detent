@@ -1149,16 +1149,23 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 
 func TestNativeClaimRefusesWorkBlockedByHiddenDependency(t *testing.T) {
 	t.Parallel()
-	for _, hidden := range []bool{true, false} {
-		t.Run(fmt.Sprintf("hidden=%t", hidden), func(t *testing.T) {
+	for _, test := range []struct {
+		name, runnerScope string
+		crossProject      bool
+	}{
+		{"hidden=true", "projects", true},
+		{"hidden=false", "projects", false},
+		{"organization runner", "organization", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}), "", "hidden-blocker-claim")
 			owner := f
-			if hidden {
+			if test.crossProject {
 				owner = newNativeFixture(t, f.service, f.project.OrganizationID, "private-blocker")
 			}
-			r := prepareRunnerForScope(t, f, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r := prepareRunnerForScope(t, f, test.runnerScope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			r.reportCapacity(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
@@ -1166,8 +1173,11 @@ func TestNativeClaimRefusesWorkBlockedByHiddenDependency(t *testing.T) {
 			blocker := owner.create(t, "blocker")
 			request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "blocker"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/dependencies", testHubAdminToken, request), http.StatusOK)
+			hidden := test.crossProject && test.runnerScope == "projects"
 			if hidden {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, owner.base+"/work-items/"+string(blocker.WorkItemID), r.redemption.Credential, nil), http.StatusNotFound)
+			} else if test.crossProject {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, owner.base+"/work-items/"+string(blocker.WorkItemID), r.redemption.Credential, nil), http.StatusOK)
 			}
 			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "work", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			refused := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
@@ -1197,6 +1207,16 @@ func TestNativeClaimRefusesWorkBlockedByHiddenDependency(t *testing.T) {
 			decodeHubResponse(t, claimed, &lease)
 			if lease.WorkItemID != issue.WorkItemID {
 				t.Fatalf("claimed %s, want %s", lease.WorkItemID, issue.WorkItemID)
+			}
+			if lease.NativeClaimDependencyFacts == nil || !lease.DependencyReady {
+				t.Fatal("claim did not report dependency readiness")
+			}
+			if hidden {
+				if len(lease.Blockers) != 0 {
+					t.Fatalf("claim exposed hidden blockers: %+v", lease.Blockers)
+				}
+			} else if len(lease.Blockers) != 1 || lease.Blockers[0].ID != blocker.WorkItemID || lease.Blockers[0].State != "Done" || !lease.Blockers[0].Terminal {
+				t.Fatalf("claim blockers = %+v, want completed blocker %s", lease.Blockers, blocker.WorkItemID)
 			}
 		})
 	}

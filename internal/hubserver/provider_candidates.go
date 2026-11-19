@@ -49,6 +49,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	}
 	var candidates []claimstore.Candidate
 	var plans []hubrecords.NativeClaimPlan
+	var blockerFacts []tenantstore.WorkItemRelationshipFact
 	var projectPolicy policystore.Revision
 	var identity runnerstore.Identity
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
@@ -157,8 +158,17 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 				plans = append(plans, plan)
 			}
 		}
-		return nil
+		ids := make([]tracker.NativeWorkItemID, 0, len(plans))
+		for _, plan := range plans {
+			ids = append(ids, plan.Candidate.WorkItemID)
+		}
+		blockerFacts, err = readNativeClaimBlockerFacts(ctx, r, scope.Project, ids)
+		return err
 	})
+	if err != nil {
+		return tracker.NativeCapacityPage{}, err
+	}
+	blockers, err := s.visibleNativeClaimBlockers(ctx, scope, blockerFacts)
 	if err != nil {
 		return tracker.NativeCapacityPage{}, err
 	}
@@ -237,7 +247,17 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 				continue
 			}
 		}
-		page.Items = append(page.Items, s.nativeIssueResponse(plan.Issue))
+		issue := plan.Issue
+		issue.Blockers = blockers[issue.WorkItemID]
+		if issue.Blockers == nil {
+			issue.Blockers = []tracker.NativeDependency{}
+		}
+		issue.Dependencies = make([]tracker.NativeWorkItemID, 0, len(issue.Blockers))
+		for _, blocker := range issue.Blockers {
+			issue.Dependencies = append(issue.Dependencies, blocker.ID)
+		}
+		issue.DependencyReady = nativeClaimDependenciesReady(issue.Blockers)
+		page.Items = append(page.Items, s.nativeIssueResponse(issue))
 	}
 	if len(candidates) == limit {
 		page.Next = tracker.WorkItemID(candidates[len(candidates)-1].ID)
