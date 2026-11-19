@@ -3615,7 +3615,12 @@
           "session.AuditReviewCandidates:SQL": 1,
           "session.CreateAuditDisposition:Exec": 2,
           "session.CreateAuditDisposition:QueryRow": 3,
-          "session.CreateAuditDisposition:SQL": 5
+          "session.CreateAuditDisposition:SQL": 5,
+          "session.PriorAuditEvidence:Query": 1,
+          "session.PriorAuditEvidence:QueryRow": 1,
+          "session.PriorAuditEvidence:SQL": 2,
+          "session.priorAuditReviews:Query": 1,
+          "session.priorAuditReviews:SQL": 1
         },
         "tables": [
           "hub/change_evidence",
