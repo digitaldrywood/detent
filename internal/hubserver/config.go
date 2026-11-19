@@ -112,6 +112,14 @@ func WithDeps(cfg Config, deps hubdeps.Deps) Config {
 	return cfg
 }
 
+func (c *Config) Deps() *hubdeps.Deps {
+	return &c.deps
+}
+
+func (c Config) Normalized() Config {
+	return c.normalized()
+}
+
 func (c Config) normalized() Config {
 	c.deps = c.deps.WithDefaults()
 	if c.RunDetails == nil && c.Hosted != nil && c.Hosted.SharedEntry != nil {

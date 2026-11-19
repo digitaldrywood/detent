@@ -52,7 +52,7 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		member := auth.Membership{ID: "membership_" + string(org), UserID: "user_example", OrganizationID: "provider_" + string(org), Status: "active"}
 		member.Role.Slug = "admin"
 		provider.members[member.ID] = member
-		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), Provider: provider, SharedEntry: &hostedplans.HostedSharedEntry{}}, SecretKeys: secretTestKeys(t, "1", "1"), Clock: func() time.Time { return now }, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken, NewTokenID: func() string { return "key_example" }}}}
+		service := &Service{config: WithDeps(Config{AccessRepository: repository, TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), Provider: provider, SharedEntry: &hostedplans.HostedSharedEntry{}}, SecretKeys: secretTestKeys(t, "1", "1"), Clock: func() time.Time { return now }}, hubdeps.Deps{GenerateToken: apikey.GenerateToken, NewTokenID: func() string { return "key_example" }})}
 		identity := &auth.HostedIdentity{Subject: member.UserID, OrganizationID: member.OrganizationID, SessionID: "session_example", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 		provider.sessions[identity.SessionID] = *identity
 		if err := service.storeHostedMember(t.Context(), auth.Identity{Subject: member.UserID, Email: "member@example.com", EmailVerified: true}, member, ""); err != nil {
@@ -204,7 +204,7 @@ func TestAccessInvitationLifecycleIsTenantScoped(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed lifecycle tenant %s: %v cause=%v", org, err, errors.Unwrap(err))
 		}
-		services[org] = &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), Provider: provider, SharedEntry: &hostedplans.HostedSharedEntry{}}, Clock: func() time.Time { return now }, deps: hubdeps.Deps{GenerateToken: func() (string, error) { return "generated_example_token", nil }}}}
+		services[org] = &Service{config: WithDeps(Config{AccessRepository: repository, TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), Provider: provider, SharedEntry: &hostedplans.HostedSharedEntry{}}, Clock: func() time.Time { return now }}, hubdeps.Deps{GenerateToken: func() (string, error) { return "generated_example_token", nil }})}
 		credentials[org] = hubapi.APICredential{ID: "admin_key", Hash: "hash_" + string(org), Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: identity, HostedRole: "admin", HostedMembership: membershipID, HostedPrincipal: "admin_key"}
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
