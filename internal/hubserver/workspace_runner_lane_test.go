@@ -12,9 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -235,38 +235,6 @@ func receiveType(t *testing.T, client *relayClient, kind string) workspacesessio
 	return workspacesession.Frame{}
 }
 
-func readCounter(t *testing.T, path string) int {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return -1
-	}
-	value, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return -1
-	}
-	return value
-}
-
-func awaitCounter(t *testing.T, path string) {
-	t.Helper()
-	testenv.WaitUntil(t, t.Context(), func() error {
-		if readCounter(t, path) <= 0 {
-			return errors.New("the shell never started writing its counter")
-		}
-		return nil
-	})
-}
-
-func requireCounterStopped(t *testing.T, path string) {
-	t.Helper()
-	before := readCounter(t, path)
-	time.Sleep(time.Second)
-	if after := readCounter(t, path); after != before {
-		t.Fatalf("the shell is still running after the session ended: counter %d -> %d", before, after)
-	}
-}
-
 func terminalAvailable() bool {
 	if !workspaceterminal.Supported {
 		return false
@@ -275,18 +243,40 @@ func terminalAvailable() bool {
 	return err == nil
 }
 
-// startCounter opens a terminal through the relay and leaves a shell loop
-// writing an increasing counter outside the worktree, so the test can tell
-// whether the PTY outlived the session.
-func startCounter(t *testing.T, person *relayClient) string {
+func startWorkspaceShell(t *testing.T, person *relayClient) *os.Process {
 	t.Helper()
-	counter := filepath.Join(t.TempDir(), "counter")
 	person.send(terminalOpenFrame())
 	opened := receiveType(t, person, workspacesession.TypeTerminalOpened)
-	command := fmt.Sprintf("i=0; while :; do i=$((i+1)); echo $i > %s; sleep 0.1; done\n", counter)
-	person.send(terminalFrameOf(t, workspacesession.TypeTerminalInput, opened.Stream, workspacesession.TerminalInput{Data: command}))
-	awaitCounter(t, counter)
-	return counter
+	var shell workspacesession.TerminalOpened
+	if err := json.Unmarshal(opened.Payload, &shell); err != nil {
+		t.Fatal(err)
+	}
+	if shell.PID <= 0 {
+		t.Fatalf("terminal opened without a shell process: %+v", shell)
+	}
+	process, err := os.FindProcess(shell.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = process.Release() })
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("terminal shell was not running: %v", err)
+	}
+	return process
+}
+
+func requireWorkspaceShellExited(t *testing.T, process *os.Process) {
+	t.Helper()
+	testenv.WaitUntil(t, t.Context(), func() error {
+		err := process.Signal(syscall.Signal(0))
+		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("check shell process %d: %w", process.Pid, err)
+		}
+		return fmt.Errorf("terminal shell process %d is still running", process.Pid)
+	})
 }
 
 func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
@@ -333,9 +323,9 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 		t.Fatalf("git status head = %q, want %q", status.HeadSHA, head)
 	}
 
-	var counter string
+	var shell *os.Process
 	if terminalAvailable() {
-		counter = startCounter(t, person)
+		shell = startWorkspaceShell(t, person)
 	}
 
 	result, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
@@ -347,8 +337,8 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 		t.Fatalf("expired leases = %d, error=%v", count, err)
 	}
 	f.awaitLaneIdle(t)
-	if counter != "" {
-		requireCounterStopped(t, counter)
+	if shell != nil {
+		requireWorkspaceShellExited(t, shell)
 	}
 	if _, err := os.Stat(ready.WorktreePath); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("the session worktree %s remains after lease loss: %v", ready.WorktreePath, err)
@@ -365,15 +355,15 @@ func TestWorkspaceLaneUnbindsWhenTheWorkspaceIsClosed(t *testing.T) {
 	id := f.open(t, "close-subject", []string{workspacesession.CapabilityFiles})
 	ready := f.awaitReady(t, id)
 	person := f.dialPerson(t, id)
-	var counter string
+	var shell *os.Process
 	if terminalAvailable() {
-		counter = startCounter(t, person)
+		shell = startWorkspaceShell(t, person)
 	}
 
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/workspaces/"+id, f.token, nil), http.StatusNoContent)
 	f.awaitLaneIdle(t)
-	if counter != "" {
-		requireCounterStopped(t, counter)
+	if shell != nil {
+		requireWorkspaceShellExited(t, shell)
 	}
 	if closed := f.read(t, id); closed.State != workspacesession.StateClosed {
 		t.Fatalf("workspace = %+v, want closed", closed)
