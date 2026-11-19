@@ -8,14 +8,17 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/artifact/cataloghub"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -98,4 +101,24 @@ type ContentSettingsHTTP struct{ deps ContentSettingsHTTPDeps }
 
 func NewContentSettingsHTTP(deps ContentSettingsHTTPDeps) ContentSettingsHTTP {
 	return ContentSettingsHTTP{deps: deps}
+}
+
+type ArtifactCatalogHTTPDeps struct {
+	StorageAvailable bool
+	Hosted           bool
+	Now              func() time.Time
+	Organization     func() tracker.OrganizationID
+	APIError         func(echo.Context, error, ...any) error
+	InvalidRequest   func(echo.Context, error) error
+	Authenticate     func(echo.Context) (hubapi.APICredential, int, error)
+	Authorize        func(context.Context, accessstore.Reader, hubscope.NativeScope, bool) error
+	NewCatalog       func(cataloghub.PolicyResolver, cataloghub.Options) (*cataloghub.Catalog, error)
+	Plans            func() *hostedplans.Service
+	WriteCatalog     func(context.Context, tracker.OrganizationID, func(postgres.ArtifactCatalogWriter) error) error
+}
+
+type ArtifactCatalogHTTP struct{ deps ArtifactCatalogHTTPDeps }
+
+func NewArtifactCatalogHTTP(deps ArtifactCatalogHTTPDeps) ArtifactCatalogHTTP {
+	return ArtifactCatalogHTTP{deps: deps}
 }

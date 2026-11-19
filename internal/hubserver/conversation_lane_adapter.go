@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/artifact/cataloghub"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -14,7 +15,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/threads"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
 )
@@ -387,4 +391,44 @@ func (s *Service) readConversationTenant(ctx context.Context, org tracker.Organi
 
 func (s *Service) writeConversationTenant(ctx context.Context, org tracker.OrganizationID, write func(tenantstore.Writer) error) error {
 	return s.config.TenantRepository.WriteTenant(ctx, org, corestore.Serving, write)
+}
+
+func (s *Service) registerArtifactCatalogRoutes(e *echo.Echo) {
+	e.POST(hubapi.NativeBase+"/artifact-services/:service/catalog", s.artifactCatalog)
+	e.POST("/api/v2/organizations/:organization/artifact-services/:service/catalog", s.artifactCatalog)
+	e.PUT(hubapi.NativeBase+"/artifact-services/:service/catalog-policy", s.setArtifactCatalogPolicy, s.requireOnboardingAdmin())
+}
+
+func (s *Service) artifactCatalog(c echo.Context) error {
+	return s.artifactCatalogHTTP().ArtifactCatalog(c)
+}
+
+func (s *Service) setArtifactCatalogPolicy(c echo.Context) error {
+	return s.artifactCatalogHTTP().SetArtifactCatalogPolicy(c)
+}
+
+var resolveConversationWorkItems = conversations.ResolveConversationWorkItems
+
+func (s *Service) executeThreadTool(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	return threads.NewHTTP(s.threadHTTPDeps()).ExecuteTool(ctx, call, escapeCoordinatorData)
+}
+
+func (s *Service) artifactCatalogHTTP() conversations.ArtifactCatalogHTTP {
+	return conversations.NewArtifactCatalogHTTP(conversations.ArtifactCatalogHTTPDeps{
+		StorageAvailable: s.database.postgres != nil,
+		Hosted:           s.config.Hosted != nil,
+		Now:              s.config.Clock,
+		Organization:     s.artifactCatalogOrganization,
+		APIError:         s.nativeAPIError,
+		InvalidRequest:   s.invalidAPIRequest,
+		Authenticate:     s.authenticateAPIRequest,
+		Authorize:        s.authorizeAccessScope,
+		NewCatalog: func(policy cataloghub.PolicyResolver, options cataloghub.Options) (*cataloghub.Catalog, error) {
+			return cataloghub.New(s.database.postgres, policy, options)
+		},
+		Plans: s.database.plansService,
+		WriteCatalog: func(ctx context.Context, org tracker.OrganizationID, write func(postgres.ArtifactCatalogWriter) error) error {
+			return s.database.postgres.WriteArtifactCatalog(ctx, org, corestore.Serving, write)
+		},
+	})
 }
