@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type healthSubject = healthsignals.Subject
@@ -42,9 +41,6 @@ const (
 	healthBaselineSamples = healthsignals.BaselineSamples
 )
 
-func scopeHealthEvidence(e healthEvidence, p tracker.ProjectID) healthEvidence {
-	return healthsignals.ScopeEvidence(e, p)
-}
 func newHealthFinding(signal, class, kind, id, summary, action string, projects []string, evidence healthEvidence) healthFinding {
 	return healthsignals.NewFinding(signal, class, kind, id, summary, action, projects, evidence)
 }
