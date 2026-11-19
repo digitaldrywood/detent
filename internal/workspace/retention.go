@@ -158,7 +158,8 @@ func (l *LocalGit) sweepLanding(ctx context.Context, root *os.Root, request Rete
 		if filepath.Dir(path) == l.root {
 			key = strings.TrimPrefix(key, "landing-")
 		}
-		if active[checkoutIssueKey(key)] {
+		scope, issueKey := splitCheckoutIssueKey(key)
+		if scope != "" || active[issueKey] {
 			continue
 		}
 		relative, err := filepath.Rel(l.root, path)

@@ -154,7 +154,15 @@ func (e *sshNativeExecution) FinishLandingBatch(ctx context.Context) error {
 
 func (e *sshNativeExecution) LandBatch(ctx context.Context, lander workspace.BatchLander, request workspace.LandRequest) (workspace.LandResult, error) {
 	e.sources.mu.Lock()
-	e.sources.landingAudit = request.Options.SecurityAudit
+	if audit := request.Options.SecurityAudit; audit != nil {
+		attempt := workspace.AttemptWorkspaceFromContext(ctx)
+		owner := workspace.ValidationProcessOwnerFromContext(ctx)
+		e.sources.landingAudit = func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
+			ctx = workspace.WithAttemptWorkspace(ctx, attempt)
+			ctx = workspace.WithValidationProcessOwner(ctx, owner)
+			return audit(ctx, diff)
+		}
+	}
 	e.sources.landingBatch = func(ctx context.Context, requests []workspace.LandRequest) []sshLandingOutcome {
 		for i := range requests {
 			requests[i].Validate = func(ctx context.Context) error { return e.peer.Call(ctx, "landing.validate", nil, i) }

@@ -148,8 +148,8 @@ func (l *LocalGit) CleanupIssues(ctx context.Context, cursor string, limit int) 
 			continue
 		}
 		inventory.records = append(inventory.records, record)
-		if record.Identifier != "" {
-			issues = append(issues, record.issue())
+		if issue := record.issue(); issue.Identifier != "" && issue.cleanupScope == "" {
+			issues = append(issues, issue)
 		}
 	}
 	if batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch); ok {
@@ -342,9 +342,10 @@ func (l *LocalGit) validOwnershipRecord(ctx context.Context, relativePath string
 }
 
 func (record cleanupOwnershipRecord) issue() Issue {
-	issue := Issue{ProjectID: record.ProjectID, ID: record.IssueID, Identifier: record.Identifier, WorkspaceSession: record.WorkspaceSession}
+	scope, checkoutKey := splitCheckoutIssueKey(record.Key)
+	issue := Issue{ProjectID: record.ProjectID, ID: record.IssueID, Identifier: record.Identifier, WorkspaceSession: record.WorkspaceSession, cleanupScope: scope}
 	for _, key := range []string{issueKey(issue), legacyIssueKey(issue)} {
-		if version, ok := strings.CutPrefix(checkoutIssueKey(record.Key), key+"-review-"); ok && version != "" {
+		if version, ok := strings.CutPrefix(checkoutKey, key+"-review-"); ok && version != "" {
 			issue.ReviewVersionID = version
 			break
 		}
@@ -371,6 +372,10 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 		}
 		if _, active := activeKeys[record.Key]; active || nativeOwnershipActive(record, activeIssues) {
 			result.ActiveSkipped++
+			continue
+		}
+		if scope, _ := splitCheckoutIssueKey(record.Key); scope != "" {
+			result.PreservedSkipped++
 			continue
 		}
 		removed, reconcileErr := l.reconcileWorkspace(ctx, record, inventory.recorded[record.Path], &result)
@@ -534,14 +539,22 @@ func (l *LocalGit) inferNativeOwnership(record *cleanupOwnershipRecord) {
 }
 
 func issueOwnsKey(issue Issue, key string) bool {
-	key = checkoutIssueKey(key)
+	scope, key := splitCheckoutIssueKey(key)
+	expected := issue.cleanupScope
+	if expected == "" {
+		expected = issue.AttemptWorkspace.scope()
+	}
+	if scope != expected {
+		return false
+	}
 	return issueKey(issue) == key || nativeProjectID(issue) != "" && legacyIssueKey(issue) == key
 }
 
 func nativeOwnershipActive(record cleanupOwnershipRecord, issues []Issue) bool {
-	review := record.issue().ReviewVersionID != ""
+	owner := record.issue()
+	review := owner.ReviewVersionID != ""
 	for _, issue := range issues {
-		if (!review || issue.CleanupInUse) && nativeProjectID(issue) != "" && (record.IssueID == "" || record.IssueID == issue.ID) && record.Identifier == issue.Identifier {
+		if owner.cleanupScope == issue.AttemptWorkspace.scope() && (!review || issue.CleanupInUse) && nativeProjectID(issue) != "" && (record.IssueID == "" || record.IssueID == issue.ID) && record.Identifier == issue.Identifier {
 			return true
 		}
 	}

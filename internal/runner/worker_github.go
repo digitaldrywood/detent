@@ -657,7 +657,10 @@ func (r *Runner) agentPreflightError(preflightErr, cleanupErr error) error {
 
 func prepareAgentProcessRequest(ctx context.Context, process AgentProcessRequest, policy workerGitHubPolicy) (AgentProcessRequest, func() error, error) {
 	tempDir, err := workspace.PrepareWorkerScratch(ctx, process.Workspace)
-	owner := workspace.ValidationProcessOwnerFromContext(ctx)
+	var owner workspace.ValidationProcessOwner
+	if workspace.AttemptWorkspaceFromContext(ctx).Key() == "" {
+		owner = workspace.ValidationProcessOwnerFromContext(ctx)
+	}
 	var reservation workspace.ValidationProcess
 	cleanup := func() error {
 		cleanupCtx := context.WithoutCancel(ctx)

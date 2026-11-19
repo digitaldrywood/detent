@@ -26,6 +26,7 @@ type SSHRunRequest struct {
 	Callbacks       []string
 	Recovery        *tracker.NativeRecovery
 	Native          bool
+	AttemptWorker   bool
 	Capacity        *providercapacity.Reservation
 	Sources         *SSHExecutionSources `json:"-"`
 }
@@ -64,6 +65,7 @@ func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 		recovery := request.Execution.Recovery()
 		wire.Recovery = &recovery
 		_, wire.Native = request.Execution.(ArtifactSourceExecution)
+		_, wire.AttemptWorker = request.Execution.(AttemptWorkerExecution)
 		if source, ok := request.Execution.(ToolExecution); ok {
 			wire.ExecutionTools, _ = source.AgentTools()
 		}

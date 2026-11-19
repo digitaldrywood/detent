@@ -755,3 +755,21 @@ func (b *progressCitationBackend) RunTurnWithTools(ctx context.Context, req Agen
 	}
 	return b.RunTurn(ctx, req, update)
 }
+
+func TestReview1973ProgressRequiresWorkerReceipt(t *testing.T) {
+	backend := &progressPolicyBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: "{}"}}}}
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "example-model", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}}, AgentBackend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := &review1973ProgressExecution{}
+	_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example-issue", IsolationPolicy: &isolation.Policy{Tier: isolation.NativeTrusted}}, Mode: RunModeImplement, Execution: execution}, progresscheck.Request{ProjectID: "example-project", IssueID: "example-issue", PolicyID: "policy", EvidenceRevision: "revision", AvailableSteps: []string{RunModeImplement}, Attempts: []progresscheck.Attempt{{ID: "failed-attempt", Outcome: "failed"}}})
+	if !errors.Is(err, ErrExecutionAuthorityUnavailable) || backend.calls != 0 || execution.started {
+		t.Fatalf("progress ran without a worker receipt: error=%v calls=%d started=%t", err, backend.calls, execution.started)
+	}
+}
+
+type review1973ProgressExecution struct {
+	progressReadExecution
+	AttemptWorkerExecution
+}

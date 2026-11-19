@@ -144,6 +144,49 @@ func (l *LocalGit) deleteCheckpointRef(ctx context.Context, issue Issue) {
 	}
 }
 
+var ErrLocalCheckpointChanged = errors.New("local_checkpoint_changed")
+
+func (l *LocalGit) verifiedLocalCheckpointHead(ctx context.Context, target Info, issue Issue) (string, error) {
+	checkpoint := issue.LocalCheckpoint
+	if checkpoint == nil {
+		return "", nil
+	}
+	exists, _, err := pathExists(target.Path)
+	if err != nil {
+		return "", err
+	}
+	prior := target
+	if !exists {
+		source := issue
+		source.AttemptWorkspace = issue.RecoveryAttemptWorkspace
+		prior, err = l.Existing(source)
+		if err != nil {
+			return "", errors.Join(ErrLocalCheckpointChanged, err)
+		}
+	}
+	if err := l.verifyLocalCheckpoint(ctx, prior, issue); err != nil {
+		return "", err
+	}
+	return checkpoint.HeadSHA, nil
+}
+
+func (l *LocalGit) verifyLocalCheckpoint(ctx context.Context, info Info, issue Issue) error {
+	checkpoint := issue.LocalCheckpoint
+	if !validLandingHead(checkpoint.HeadSHA) || checkpoint.WorkspaceDigest == "" || !l.isSourceWorktree(ctx, info.Path) {
+		return ErrLocalCheckpointChanged
+	}
+	matches, _, err := l.workspaceOnExpectedBranch(ctx, info.Path, info.Branch)
+	if err != nil || !matches {
+		return errors.Join(ErrLocalCheckpointChanged, err)
+	}
+	observed, err := l.RecoveryState(ctx, info, issue)
+	if err != nil || observed.HeadSHA != checkpoint.HeadSHA || observed.WorkspaceFingerprint != checkpoint.WorkspaceDigest ||
+		len(observed.TrackedPaths) != 0 || len(observed.UntrackedPaths) != 0 {
+		return errors.Join(ErrLocalCheckpointChanged, err)
+	}
+	return nil
+}
+
 func (l *LocalGit) bindCheckpointBranch(issue Issue, info Info, checkpoint *CheckpointRef) error {
 	if checkpoint.Transaction == nil {
 		return nil
@@ -160,8 +203,12 @@ func (l *LocalGit) bindCheckpointBranch(issue Issue, info Info, checkpoint *Chec
 			return err
 		}
 		legacy := nativeProjectID(issue) != "" && regexp.MustCompile(pattern).MatchString(checkpoint.Transaction.Branch)
+		if issue.AttemptWorkspace.Key() != "" && info.PublicationBranch != "" {
+			legacy = info.PublicationBranch == checkpoint.Transaction.Branch
+		}
 		canonical := source.AttemptWorkspace.Key() != "" && sourceInfo.Branch == checkpoint.Transaction.Branch
-		if !l.autoBranch || issue.WorkspaceSession || issue.Landing != nil || strings.TrimSpace(issue.BranchName) != "" || !legacy && !canonical {
+		if !l.autoBranch || issue.WorkspaceSession || issue.Landing != nil ||
+			issue.AttemptWorkspace.Key() == "" && strings.TrimSpace(issue.BranchName) != "" || !legacy && !canonical {
 			return fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
 		}
 	}

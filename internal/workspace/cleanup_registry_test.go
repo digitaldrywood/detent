@@ -492,3 +492,48 @@ func TestLocalGitReconcilePreservesManualWorktrees(t *testing.T) {
 		})
 	}
 }
+
+func TestReview1973CleanupPreservesOtherOrganization(t *testing.T) {
+	source := initSourceRepo(t)
+	publishCleanupSource(t, source)
+	backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return nil, nil }
+	issue := Issue{ID: "wi_example", Identifier: "prj_example#1", Terminal: true,
+		AttemptWorkspace: AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}}
+	review := issue
+	review.ReviewVersionID = "version_example"
+	first, err := backend.Create(t.Context(), review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.AttemptWorkspace.Organization = "org_second"
+	second, err := backend.Create(t.Context(), review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unscoped := issue
+	unscoped.AttemptWorkspace = AttemptWorkspace{}
+	if _, err := backend.CleanupIssue(t.Context(), unscoped); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.ReconcileResiduals(t.Context(), []Issue{unscoped}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{first.Path, second.Path} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("unscoped cleanup touched %s: %v", path, err)
+		}
+	}
+	if _, err := backend.CleanupIssue(t.Context(), issue); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first.Path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("owned review remains: %v", err)
+	}
+	if _, err := os.Stat(second.Path); err != nil {
+		t.Fatalf("other organization lost its review checkout: %v", err)
+	}
+}

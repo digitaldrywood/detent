@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -85,8 +86,16 @@ func TestSSHNativeLandingBatch(t *testing.T) {
 		if bound.LandingBatch != nil || !remoteExecution.BatchLandingEnabled() {
 			t.Fatal("batch did not survive SSH bootstrap")
 		}
+		attempt := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", i+1)}
+		ctx := workspace.WithAttemptWorkspace(t.Context(), attempt)
+		ctx = workspace.WithValidationProcessOwner(ctx, func(context.Context, workspace.Info, workspace.Issue, string) (workspace.ValidationProcess, error) {
+			return nil, nil
+		})
 		go func() {
-			result, err := remoteExecution.LandBatch(t.Context(), lander, workspace.LandRequest{Info: workspace.Info{Path: "remote"}, Options: workspace.LandOptions{Native: true, HeadSHA: head, Repository: target.Repository, Method: "squash", SecurityAuditRequired: target.SecurityAudit, SecurityAudit: func(_ context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
+			result, err := remoteExecution.LandBatch(ctx, lander, workspace.LandRequest{Info: workspace.Info{Path: "remote"}, Options: workspace.LandOptions{Native: true, HeadSHA: head, Repository: target.Repository, Method: "squash", SecurityAuditRequired: target.SecurityAudit, SecurityAudit: func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
+				if workspace.AttemptWorkspaceFromContext(ctx) != attempt || workspace.ValidationProcessOwnerFromContext(ctx) == nil {
+					return nil, errors.New("audit lost the member's process registration scope")
+				}
 				if diff.HeadSHA != head {
 					return nil, errors.New("audit went to another runner")
 				}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type DependencyReasonGenerator func(context.Context, string) (string, error)
@@ -112,7 +113,11 @@ func (r *Runner) installDependencyReasonGenerator(ctx context.Context, req RunRe
 	if !ok {
 		return ctx
 	}
+	attempt := workspace.AttemptWorkspaceFromContext(ctx)
+	owner := workspace.ValidationProcessOwnerFromContext(ctx)
 	generate := func(ctx context.Context, prompt string) (string, error) {
+		ctx = workspace.WithAttemptWorkspace(ctx, attempt)
+		ctx = workspace.WithValidationProcessOwner(ctx, owner)
 		workflow, runtime, _, _ := r.runtimeSnapshot()
 		role := runtime.effectiveRunRole(runRole(req.Mode, req.Issue))
 		selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
@@ -121,7 +126,9 @@ func (r *Runner) installDependencyReasonGenerator(ctx context.Context, req RunRe
 		}
 		modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 		request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort, MaxDuration: durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS), MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval, processRSS: r.processRSS}
-		return r.dependencyReasonGenerator(backend, request, req.Execution, backendConfig.Kind)(ctx, prompt)
+		launch, finish := (AgentProcessRequest{}).OwnProviderLaunch(ctx)
+		result, err := r.dependencyReasonGenerator(backend, request, req.Execution, backendConfig.Kind)(launch, prompt)
+		return result, finish(err)
 	}
 	source.SetDependencyReasonGenerator(generate)
 	return WithDependencyReasonGenerator(ctx, generate)

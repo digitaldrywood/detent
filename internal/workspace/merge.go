@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
@@ -64,7 +62,7 @@ func (l *LocalGit) PrepareMerge(
 			abortRebaseIfInProgress(ctx, normalized.Path),
 		)
 	}
-	branch := strings.TrimSpace(normalized.Branch)
+	branch := strings.TrimSpace(normalized.PublishBranch())
 	if branch == "" {
 		return MergePrepareResult{}, errors.New("workspace branch is required for merge fast-path push")
 	}
@@ -343,7 +341,7 @@ func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Is
 	if currentHead != head || currentBase != base || currentRemote != remoteHead {
 		return MergePrepareResult{}, fmt.Errorf("%w: local head, target base, or remote branch changed during merge-fallback validation", ErrMergeResolutionInvalid)
 	}
-	if _, err := runGitAt(ctx, info.Path, "push", remote, head+":refs/heads/"+info.Branch); err != nil {
+	if _, err := runGitAt(ctx, info.Path, "push", remote, head+":refs/heads/"+info.PublishBranch()); err != nil {
 		return MergePrepareResult{}, fmt.Errorf("push validated merge resolution: %w", err)
 	}
 	return MergePrepareResult{Status: MergePrepareStatusClean, HeadSHA: head, HeadChanged: remoteHead != head, Validated: strings.TrimSpace(opts.ValidationCommand) != ""}, nil
@@ -395,7 +393,7 @@ func (l *LocalGit) resolvedMergeHeads(ctx context.Context, info Info, issue Issu
 		}
 		return "", "", "", fmt.Errorf("merge resolution does not contain the current target branch: %w", err)
 	}
-	remoteHead, exists, err := remoteBranchHead(ctx, info.Path, remote, info.Branch)
+	remoteHead, exists, err := remoteBranchHead(ctx, info.Path, remote, info.PublishBranch())
 	if err != nil {
 		return "", "", "", err
 	}
@@ -445,6 +443,10 @@ func ValidationProcessOwnerFromContext(ctx context.Context) ValidationProcessOwn
 func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
 	result.Command = command
 	result.ExitCode = -1
+	owner := ValidationProcessOwnerFromContext(ctx)
+	if owner == nil && (issue.AttemptWorkspace.Key() != "" || AttemptWorkspaceFromContext(ctx).Key() != "") {
+		return result, errors.New("native host validation requires a fenced session owner")
+	}
 	ctx, release, err := toolcache.UseFromContext(ctx)
 	if err != nil {
 		return result, err
@@ -488,7 +490,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 			resultErr = errors.Join(resultErr, process.Finished(cleanupCtx, result, cleanupErr))
 		}
 	}()
-	if owner := ValidationProcessOwnerFromContext(ctx); owner != nil {
+	if owner != nil {
 		process, err = owner(ctx, info, issue, scratch)
 		if err != nil {
 			return result, fmt.Errorf("reserve host validation process: %w", err)
@@ -516,7 +518,6 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
 	started := time.Now()
 	result.StartedAt = started.UTC()
-	result.Execution = "executed"
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	source := reviewOutputCapture{Selection: selection}
@@ -525,35 +526,19 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
 	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
-	var releaseValidation io.WriteCloser
-	if process != nil && runtime.GOOS != "windows" && cmd.Err == nil {
-		cmd.Args = append([]string{"sh", "-c", `IFS= read -r permission && [ "$permission" = go ] || exit 1; exec "$@"`, "sh", cmd.Path}, cmd.Args[1:]...)
-		cmd.Path = "/bin/sh"
-		releaseValidation, err = cmd.StdinPipe()
-		if err != nil {
-			return result, fmt.Errorf("open validation launch pipe: %w", err)
+	if process != nil {
+		launchCtx := procgroup.WithStartAcknowledgement(ctx, func(identity procgroup.Identity) error {
+			return process.Started(ctx, identity)
+		})
+		if err := procgroup.StartAuthorized(launchCtx, cmd); err != nil {
+			return result, fmt.Errorf("register host validation process: %w", err)
 		}
-	}
-	if err := cmd.Start(); err != nil {
+	} else if err := procgroup.Start(cmd); err != nil {
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
 	startedCommand = true
-	if process != nil {
-		identity, registrationErr := procgroup.Inspect(cmd)
-		if registrationErr == nil {
-			registrationErr = process.Started(ctx, identity)
-		}
-		if releaseValidation != nil {
-			if registrationErr == nil {
-				_, registrationErr = io.WriteString(releaseValidation, "go\n")
-			}
-			registrationErr = errors.Join(registrationErr, releaseValidation.Close())
-		}
-		if registrationErr != nil {
-			return result, errors.Join(fmt.Errorf("register host validation process: %w", registrationErr), cmd.Cancel(), cmd.Wait())
-		}
-	}
-	err = cmd.Wait()
+	result.Execution = "executed"
+	err = procgroup.Wait(cmd)
 	if issue.hookOwner != nil && errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
 		err = nil
 	}

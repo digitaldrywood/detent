@@ -54,6 +54,7 @@ type WorkerLifetimeExecution interface {
 
 type AttemptWorkerExecution interface {
 	AttemptWorkspace() workspace.AttemptWorkspace
+	NoteAttemptWorkerPreparation(tracker.NativeRuntimeObservation)
 	RegisterAttemptWorker(context.Context, tracker.NativeAttemptWorker, tracker.NativeRuntimeObservation) (bool, error)
 	AttemptWorkerExited(tracker.NativeAttemptWorker)
 }

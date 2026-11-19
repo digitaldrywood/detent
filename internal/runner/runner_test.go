@@ -8785,3 +8785,22 @@ func (e *testProviderResponseError) NativeTerminalFailure() tracker.NativeTermin
 	code := -32602
 	return tracker.NativeTerminalFailure{Provider: "codex", Operation: e.operation, RPCCode: &code}
 }
+
+func TestReview1973BootstrapValidationOwner(t *testing.T) {
+	ctx := workspace.WithAttemptWorkspace(t.Context(), workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"})
+	issue := connector.Issue{ID: "example-issue"}
+	owner := &scratchReapSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 1}}
+	r := &Runner{projectID: "example-project", store: owner}
+	validation := workspace.ValidationProcessOwnerFromContext(r.withValidationProcessOwner(ctx, issue, 1))
+	if validation == nil {
+		t.Fatal("bootstrap with a session owner and without a cache has no validation owner")
+	}
+	if _, err := validation(ctx, workspace.Info{Path: "checkout"}, workspace.Issue{}, "scratch"); err != nil || len(owner.workerProcesses) != 1 {
+		t.Fatalf("validation scratch reservation=%+v error=%v", owner.workerProcesses, err)
+	}
+	r.store = nil
+	validation = workspace.ValidationProcessOwnerFromContext(r.withValidationProcessOwner(ctx, issue, 1))
+	if _, err := validation(ctx, workspace.Info{Path: "checkout"}, workspace.Issue{}, "scratch"); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("validation without a session owner: %v", err)
+	}
+}

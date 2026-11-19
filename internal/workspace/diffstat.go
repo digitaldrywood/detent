@@ -237,7 +237,7 @@ func (l *LocalGit) DeliverableState(ctx context.Context, info Info, issue Issue)
 	if err != nil {
 		return DeliverableState{}, err
 	}
-	state, err := gitDeliveryState(ctx, normalized.Path, normalized.Branch, issue.BaseRef)
+	state, err := gitDeliveryState(ctx, normalized.Path, normalized.PublishBranch(), issue.BaseRef)
 	if err != nil {
 		return DeliverableState{}, err
 	}

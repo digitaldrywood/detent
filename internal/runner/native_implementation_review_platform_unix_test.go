@@ -3,10 +3,12 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,6 +18,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/procstart"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -345,4 +350,60 @@ func writeRunnerFiles(t *testing.T, root string, files map[string]string) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestReview1973ProviderGroupRequiresSessionAcknowledgement(t *testing.T) {
+	ctx := workspace.WithAttemptWorkspace(t.Context(), workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"})
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "read -r release")
+	procgroup.Configure(ctx, cmd)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := procgroup.Start(cmd); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = stdin.Close()
+		_ = procgroup.Wait(cmd)
+	}()
+	identity, err := procgroup.Inspect(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"validator", "audit"} {
+		t.Run(role, func(t *testing.T) {
+			writeErr := errors.New("worker registration unavailable")
+			owner := &review1973ProviderProcessStore{writeErr: writeErr}
+			runner := &Runner{store: owner}
+			worker := &sessionWorkerRegistration{sessionID: 1, cleanupRoot: "checkout"}
+			start := runner.acknowledgeProviderProcess(ctx, worker, "")
+			if err := start(ctx, identity, "scratch"); !errors.Is(err, writeErr) {
+				t.Errorf("unacknowledged process registration returned %v", err)
+			}
+			if matches, err := procstart.Matches(identity.PID, owner.registered.StartKey); err != nil || !matches {
+				t.Errorf("worker birth key does not match the blocked group: %v %v", matches, err)
+			}
+			owner.writeErr = nil
+			if err := start(ctx, identity, "scratch"); err != nil || owner.writes != 2 {
+				t.Fatalf("registration retry: writes=%d error=%v", owner.writes, err)
+			}
+			if err := runner.persistSessionWorkerProcess(ctx, worker, identity, "scratch"); err != nil || owner.writes != 2 {
+				t.Fatalf("launch telemetry repeated an acknowledged registration: writes=%d error=%v", owner.writes, err)
+			}
+		})
+	}
+}
+
+type review1973ProviderProcessStore struct {
+	SessionStore
+	writeErr   error
+	registered store.WorkerProcessRegistration
+	writes     int
+}
+
+func (s *review1973ProviderProcessStore) UpdateSessionWorkerProcess(_ context.Context, _ int64, registration store.WorkerProcessRegistration) error {
+	s.registered = registration
+	s.writes++
+	return s.writeErr
 }

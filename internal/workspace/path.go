@@ -34,15 +34,34 @@ type AttemptWorkspace struct {
 
 func (a AttemptWorkspace) Key() string {
 	id, typed := strings.CutPrefix(a.Attempt, "attempt_")
-	if a.Organization == "" || a.Project == "" || !typed || len(id) != 32 {
+	if !typed || len(id) != 32 {
 		return ""
 	}
 	if _, err := hex.DecodeString(id); err != nil {
 		return ""
 	}
+	scope := a.scope()
+	if scope == "" {
+		return ""
+	}
+	return "attempt-" + scope + "-" + strings.ToLower(id)
+}
+
+func (a AttemptWorkspace) scope() string {
+	if a.Organization == "" || a.Project == "" {
+		return ""
+	}
 	ids, _ := json.Marshal([2]string{a.Organization, a.Project})
 	digest := sha256.Sum256(ids)
-	return "attempt-" + hex.EncodeToString(digest[:16]) + "-" + strings.ToLower(id)
+	return hex.EncodeToString(digest[:16])
+}
+
+func workspaceIssueKey(issue Issue) string {
+	key := issueKey(issue)
+	if attempt := issue.AttemptWorkspace.Key(); attempt != "" {
+		return attempt + "--" + key
+	}
+	return key
 }
 
 func (a AttemptWorkspace) PrepareScratch(root string) (string, error) {
@@ -71,21 +90,21 @@ func AttemptWorkspaceFromContext(ctx context.Context) AttemptWorkspace {
 	return attempt
 }
 
-func checkoutIssueKey(key string) string {
+func splitCheckoutIssueKey(key string) (scope, issueKey string) {
 	owner, issue, ok := strings.Cut(key, "--")
 	if !ok || issue == "" {
-		return key
+		return "", key
 	}
 	owner, ok = strings.CutPrefix(owner, "attempt-")
 	if !ok {
-		return key
+		return "", key
 	}
 	scope, attempt, ok := strings.Cut(owner, "-")
 	if !ok || len(scope) != 32 || len(attempt) != 32 {
-		return key
+		return "", key
 	}
 	if _, err := hex.DecodeString(scope + attempt); err != nil {
-		return key
+		return "", key
 	}
-	return issue
+	return scope, issue
 }

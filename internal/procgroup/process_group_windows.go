@@ -36,6 +36,19 @@ func Start(cmd *exec.Cmd) error {
 	return startWindows(cmd, windows.AssignProcessToJobObject, resumeWindowsProcess)
 }
 
+func startAcknowledged(cmd *exec.Cmd, acknowledge func(Identity) error) error {
+	return startWindows(cmd, windows.AssignProcessToJobObject, func(pid int) error {
+		identity, err := Inspect(cmd)
+		if err != nil {
+			return err
+		}
+		if err := acknowledge(identity); err != nil {
+			return fmt.Errorf("acknowledge worker launch: %w", err)
+		}
+		return resumeWindowsProcess(pid)
+	})
+}
+
 func Wait(cmd *exec.Cmd) error {
 	groupID := GroupID(cmd)
 	return errors.Join(cmd.Wait(), Cleanup(groupID))
@@ -70,23 +83,25 @@ func startWindows(cmd *exec.Cmd, assign func(windows.Handle, windows.Handle) err
 	}
 	if err == nil {
 		windowsJobs.byPID[cmd.Process.Pid] = windowsJob{job: job, process: process}
-		err = resume(cmd.Process.Pid)
-	}
-	if err != nil {
-		delete(windowsJobs.byPID, cmd.Process.Pid)
 	}
 	windowsJobs.Unlock()
-	if err != nil {
-		killErr := cmd.Process.Kill()
-		jobCloseErr := windows.CloseHandle(job)
-		_ = cmd.Wait()
-		var closeErr error
-		if process != 0 {
-			closeErr = windows.CloseHandle(process)
+	if err == nil {
+		if err = resume(cmd.Process.Pid); err == nil {
+			return nil
 		}
-		return errors.Join(fmt.Errorf("start worker job: %w", err), killErr, jobCloseErr, closeErr)
+		killErr := TerminateTree(cmd, cmd.Process.Pid)
+		cleanupErr := Cleanup(cmd.Process.Pid)
+		_ = cmd.Wait()
+		return errors.Join(fmt.Errorf("start worker job: %w", err), killErr, cleanupErr)
 	}
-	return nil
+	killErr := cmd.Process.Kill()
+	jobCloseErr := windows.CloseHandle(job)
+	_ = cmd.Wait()
+	var closeErr error
+	if process != 0 {
+		closeErr = windows.CloseHandle(process)
+	}
+	return errors.Join(fmt.Errorf("start worker job: %w", err), killErr, jobCloseErr, closeErr)
 }
 
 func resumeWindowsProcess(pid int) error {

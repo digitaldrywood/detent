@@ -97,7 +97,7 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 	}()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inputReader, outputWriter, stderrWriter
 	procgroup.Configure(ctx, cmd)
-	if err := procgroup.Start(cmd); err != nil {
+	if err := procgroup.StartAuthorized(ctx, cmd); err != nil {
 		return result, &infrastructureError{err: fmt.Errorf("start OpenCode RPC: %w", err), startup: true}
 	}
 	groupID := procgroup.GroupID(cmd)

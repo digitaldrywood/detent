@@ -106,6 +106,7 @@ type nativeExecution struct {
 	workerLaunchMu      sync.Mutex
 	worker              *tracker.NativeAttemptWorker
 	workerExited        bool
+	workerFromRecovery  bool
 	workerBootstrapping bool
 }
 

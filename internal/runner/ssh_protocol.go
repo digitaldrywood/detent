@@ -23,7 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-const SSHProtocolVersion = 7
+const SSHProtocolVersion = 8
 
 // SSHPeer multiplexes worker callbacks and their replies over the authenticated
 // SSH channel. Neither endpoint needs a listening socket or an on-disk request.

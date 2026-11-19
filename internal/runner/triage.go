@@ -114,9 +114,11 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	var output strings.Builder
 	turnCount := 0
 	removeWorkspace = false
+	worker := &sessionWorkerRegistration{sessionID: sessionID, cleanupRoot: r.securityAuditRoot}
 	turn, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
-		reserveScratch: r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, path),
-		Workspace:      path, Prompt: triageInstructions + "\n\nEvidence:\n" + req.TriageContext,
+		acknowledgeProcess: r.acknowledgeProviderProcess(sessionCtx, worker, path),
+		reserveScratch:     r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, path),
+		Workspace:          path, Prompt: triageInstructions + "\n\nEvidence:\n" + req.TriageContext,
 		ToolInstructions: triageInstructions, ReadOnly: true, Model: model, ModelProvider: provider,
 		ServiceTier: tier, ReasoningEffort: effort, MaxTurns: 1, TurnTimeout: 2 * time.Minute, MaxDuration: 2 * time.Minute,
 		Environment: environment, MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval,
@@ -130,7 +132,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
 			return ErrSecurityAuditToolUse
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, path); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, path); err != nil {
 			return err
 		}
 		r.persistSessionProviderIdentity(updateCtx, sessionID, update)

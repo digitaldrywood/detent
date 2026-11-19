@@ -63,3 +63,7 @@ func Terminate(_ context.Context, identity Identity, _ time.Duration) (Terminati
 	}
 	return "", errors.New("validated worker process termination is unsupported on this platform")
 }
+
+func startAcknowledged(*exec.Cmd, func(Identity) error) error {
+	return errors.New("acknowledged process launch is unavailable on this platform")
+}

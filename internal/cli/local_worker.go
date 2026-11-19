@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/procstart"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -61,7 +62,45 @@ func (r *sshRunner) runLocalWorker(ctx context.Context, request runnerpkg.RunReq
 	return r.runLocalWorkerLaunch(ctx, request, nil)
 }
 
+func prepareAcknowledgedWorker(parentCtx, launchCtx context.Context, peer *runnerpkg.SSHPeer, request *runnerpkg.RunRequest, boot *sshBootstrap, closeWorker func() error) (bool, error) {
+	prepare := request.PrepareRun
+	request.PrepareRun = nil
+	progressRan := false
+	initialWorkspace := request.AttemptWorkspace
+	ctx := runnerpkg.WithWorkerProgressCheck(parentCtx, func(checkCtx context.Context, evidence progresscheck.Request) (progresscheck.Decision, error) {
+		if progressRan || !boot.Run.AttemptWorker || launchCtx.Err() != nil {
+			return progresscheck.Decision{}, runnerpkg.ErrExecutionAuthorityUnavailable
+		}
+		progressRan = true
+		probe := *boot
+		probe.Progress = &evidence
+		var decision progresscheck.Decision
+		requestCtx, cancel := context.WithCancelCause(checkCtx)
+		defer cancel(nil)
+		stop := context.AfterFunc(launchCtx, func() { cancel(context.Cause(launchCtx)) })
+		err := peer.Call(requestCtx, "run.progress", &decision, probe)
+		stop()
+		return decision, errors.Join(err, closeWorker())
+	})
+	if err := prepare(ctx, request); err != nil {
+		return false, err
+	}
+	current, ok := request.Execution.(runnerpkg.AttemptWorkerExecution)
+	if !ok {
+		return false, runnerpkg.ErrExecutionAuthorityUnavailable
+	}
+	if progressRan || current.AttemptWorkspace() != initialWorkspace {
+		return true, closeWorker()
+	}
+	if err := launchCtx.Err(); err != nil {
+		return false, context.Cause(launchCtx)
+	}
+	boot.Run = runnerpkg.NewSSHRunRequest(*request)
+	return false, nil
+}
+
 func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.RunRequest, captured *localWorkerLaunch) (result runnerpkg.RunResult, runErr error) {
+	parentCtx := ctx
 	phase := "implementation"
 	switch request.Mode {
 	case runnerpkg.RunModePlan:
@@ -86,8 +125,12 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 			runErr = errors.Join(runErr, execution.PrepareFinish(finishCtx, "failed", result.FinalMessage, &failure))
 		}
 	}()
-	if runtime, ok := request.Execution.(runnerpkg.RuntimeExecution); ok {
-		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: request.WorkAttemptID, Generation: request.Generation, Phase: phase, HeartbeatAt: time.Now().UTC()}); err != nil {
+	workerExecution, fenced := request.Execution.(runnerpkg.AttemptWorkerExecution)
+	preparation := tracker.NativeRuntimeObservation{LocalAttemptID: request.WorkAttemptID, Generation: request.Generation, Phase: phase, HeartbeatAt: time.Now().UTC()}
+	if fenced {
+		workerExecution.NoteAttemptWorkerPreparation(preparation)
+	} else if runtime, ok := request.Execution.(runnerpkg.RuntimeExecution); ok {
+		if err := runtime.ObserveRuntime(ctx, preparation); err != nil {
 			return result, err
 		}
 	}
@@ -152,7 +195,6 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	if err != nil {
 		return result, r.hostFailure("local", err)
 	}
-	workerExecution, fenced := request.Execution.(runnerpkg.AttemptWorkerExecution)
 	if fenced {
 		request.AttemptWorkspace = workerExecution.AttemptWorkspace()
 		scratch, err = request.AttemptWorkspace.PrepareScratch(scratchRoot)
@@ -272,10 +314,11 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		return errors.Join(ownedArtifact.Release(), releaseCache())
 	}
 	var workerOwner runnerpkg.WorkerLifetimeExecution
+	workerClosed := false
 	defer func() {
 		if workerOwner != nil && runErr != nil {
 			runErr = errors.Join(runErr, workerOwner.CloseWorkers(context.WithoutCancel(ctx)))
-		} else if workerOwner == nil {
+		} else if workerOwner == nil && !workerClosed {
 			runErr = errors.Join(runErr, closeWorker(context.WithoutCancel(ctx)))
 		}
 	}()
@@ -322,6 +365,27 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	}
 	if err := ctx.Err(); err != nil {
 		return result, context.Cause(ctx)
+	}
+	if request.PrepareRun != nil {
+		closePreparationWorker := func() error {
+			if workerClosed {
+				return nil
+			}
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			err := closeWorker(closeCtx)
+			workerClosed = err == nil
+			return err
+		}
+		relaunch, err := prepareAcknowledgedWorker(parentCtx, ctx, peer, &request, &boot, closePreparationWorker)
+		if err != nil {
+			responseReceived = true
+			return result, err
+		}
+		if relaunch {
+			responseReceived = true
+			return r.runLocalWorkerLaunch(parentCtx, request, captured)
+		}
 	}
 	if request.DeferExecutionFinish {
 		owner, ok := request.Execution.(runnerpkg.WorkerLifetimeExecution)

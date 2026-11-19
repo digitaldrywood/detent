@@ -239,23 +239,25 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		removeAuditWorkspace = false
 		turns++
 		execution.WorkerProcess = procgroup.Identity{}
+		worker := &sessionWorkerRegistration{sessionID: sessionID, cleanupRoot: r.securityAuditRoot}
 		currentTurn, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(cacheCtx, backend, AgentTurnRequest{
-			Workspace:        auditWorkspace,
-			Prompt:           prompt,
-			Resume:           resume,
-			ToolInstructions: securityaudit.ToolInstructions(),
-			ReadOnly:         true,
-			Model:            selectedModel,
-			ModelProvider:    modelProvider,
-			ServiceTier:      serviceTier,
-			ReasoningEffort:  effort,
-			TurnTimeout:      durationFromMillis(auditConfig.TurnTimeoutMS),
-			MaxDuration:      durationFromMillis(auditConfig.TurnTimeoutMS),
-			Environment:      baseEnvironment,
-			MaxRSSBytes:      r.maxAgentRSSBytes,
-			RSSPollInterval:  r.rssPollInterval,
-			processRSS:       r.processRSS,
-			reserveScratch:   r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, auditWorkspace),
+			acknowledgeProcess: r.acknowledgeProviderProcess(cacheCtx, worker, auditWorkspace),
+			Workspace:          auditWorkspace,
+			Prompt:             prompt,
+			Resume:             resume,
+			ToolInstructions:   securityaudit.ToolInstructions(),
+			ReadOnly:           true,
+			Model:              selectedModel,
+			ModelProvider:      modelProvider,
+			ServiceTier:        serviceTier,
+			ReasoningEffort:    effort,
+			TurnTimeout:        durationFromMillis(auditConfig.TurnTimeoutMS),
+			MaxDuration:        durationFromMillis(auditConfig.TurnTimeoutMS),
+			Environment:        baseEnvironment,
+			MaxRSSBytes:        r.maxAgentRSSBytes,
+			RSSPollInterval:    r.rssPollInterval,
+			processRSS:         r.processRSS,
+			reserveScratch:     r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, auditWorkspace),
 		}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 			r.providerUsage.ObserveUpdate(runtimeIdentity.BackendID, update)
 			if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
@@ -264,7 +266,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			if update.WorkerProcess.PID > 0 {
 				execution.WorkerProcess = update.WorkerProcess
 			}
-			if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, auditWorkspace); err != nil {
+			if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, auditWorkspace); err != nil {
 				return err
 			}
 			r.persistSessionProviderIdentity(updateCtx, sessionID, update)
