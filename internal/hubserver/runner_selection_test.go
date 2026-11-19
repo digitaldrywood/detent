@@ -46,7 +46,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		{"invalid contract yields to ready project", 1, false, "missing", "", false},
 		{"invalid contract yields to next candidate", 1, true, "missing", "", false},
 		{"provider page beyond project quota", 50, true, "missing", "", true},
-		{"equal rank quota waits for better priority", claimPreparationLimit/2 + 1, true, "priority quota", "", false},
+		{"equal rank pending scan waits for better priority", claimPreparationLimit/2 + 1, true, "priority scan", "", false},
 		{"higher project pending scan beats lower project in progress", claimPreparationLimit/2 + 1, true, "rank quota", "", false},
 		{"lower project pending scan yields to higher project todo", claimPreparationLimit/2 + 1, false, "lower rank quota", "", false},
 		{"provider page hydration exhaustion", 99, true, "hydration", "", true},
@@ -137,7 +137,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			if _, err := usagePostgresAdmin(t, preferred.service).ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=CASE WHEN id=$1 THEN 1 ELSE 2 END WHERE organization_id=$2", preferred.project.ID, preferred.project.OrganizationID); err != nil {
 				t.Fatal(err)
 			}
-			if scenario.contract == "priority quota" {
+			if scenario.contract == "priority scan" {
 				if _, err := usagePostgresAdmin(t, preferred.service).ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=1 WHERE organization_id=$1", preferred.project.OrganizationID); err != nil {
 					t.Fatal(err)
 				}
@@ -217,7 +217,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 					preferredIssue = setSelectionFixtureState(t, preferred, preferredIssue.WorkItemID, "In Progress")
 				}
 			}
-			if scenario.contract == "priority quota" {
+			if scenario.contract == "priority scan" {
 				if _, err := usagePostgresAdmin(t, preferred.service).ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=CASE WHEN project_id=$1 THEN 0 ELSE 3 END", preferred.project.ID); err != nil {
 					t.Fatal(err)
 				}
