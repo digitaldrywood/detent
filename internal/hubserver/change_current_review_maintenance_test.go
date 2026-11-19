@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -18,36 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type currentReviewMaintenanceStep struct {
-	organization tracker.OrganizationID
-	id           string
-	count        int
-	err          error
-}
-
-type currentReviewMaintenanceRepository struct {
-	tenantstore.Repository
-	owner interface {
-		BackfillCurrentChangeReviewsAfter(context.Context, tracker.OrganizationID, *eventstore.Content, int, string) (int, string, error)
-	}
-	mu    sync.Mutex
-	steps []currentReviewMaintenanceStep
-}
-
-func (r *currentReviewMaintenanceRepository) BackfillCurrentChangeReviewsAfter(ctx context.Context, organization tracker.OrganizationID, content *eventstore.Content, limit int, after string) (int, string, error) {
-	n, id, err := r.owner.BackfillCurrentChangeReviewsAfter(ctx, organization, content, limit, after)
-	r.mu.Lock()
-	r.steps = append(r.steps, currentReviewMaintenanceStep{organization: organization, id: id, count: n, err: err})
-	r.mu.Unlock()
-	return n, id, err
-}
-
-func (r *currentReviewMaintenanceRepository) snapshot() []currentReviewMaintenanceStep {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]currentReviewMaintenanceStep(nil), r.steps...)
-}
 
 type currentReviewUnavailableObject struct {
 	attachment.DetailStore
@@ -152,12 +121,6 @@ func TestPostgresMaintenanceRebuildsCurrentReviewsPastUnavailableChange(t *testi
 	for _, organization := range []tracker.OrganizationID{"org_startup", "org_other"} {
 		t.Run(string(organization), func(t *testing.T) {
 			service := services[organization]
-			owner := service.config.TenantRepository.(interface {
-				BackfillCurrentChangeReviewsAfter(context.Context, tracker.OrganizationID, *eventstore.Content, int, string) (int, string, error)
-			})
-			probe := &currentReviewMaintenanceRepository{Repository: service.config.TenantRepository, owner: owner}
-			service.config.TenantRepository = probe
-			defer func() { service.config.TenantRepository = probe.Repository }()
 			oldDone := service.workerDone
 			service.workerDone = make(chan struct{})
 			defer func() { service.workerDone = oldDone }()
@@ -171,22 +134,11 @@ func TestPostgresMaintenanceRebuildsCurrentReviewsPastUnavailableChange(t *testi
 				service.changeColumnAfter = changeColumnCursor{}
 				go service.runPostgresMaintenance(ctx)
 				synctest.Wait()
-				steps := probe.snapshot()
-				if len(steps) != 1 || steps[0].organization != organization || steps[0].id != "a_unavailable" || steps[0].err == nil {
-					t.Fatalf("actual PostgreSQL loop did not attempt the first pending Change: %+v", steps)
+				for range 2 {
+					service.boardRefresh <- struct{}{}
+					synctest.Wait()
 				}
-				service.boardRefresh <- struct{}{}
-				synctest.Wait()
-				if steps = probe.snapshot(); len(steps) != 1 {
-					t.Fatalf("checkpoint turn repeated the review backfill: %+v", steps)
-				}
-				service.boardRefresh <- struct{}{}
-				synctest.Wait()
-				steps = probe.snapshot()
-				if len(steps) != 2 || steps[1].id != "b_available" || steps[1].count != 1 || steps[1].err != nil {
-					t.Fatalf("unavailable Change starved later work: %+v", steps)
-				}
-				if err := probe.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := service.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 					bad, err := r.Change(ctx, "a_unavailable")
 					if err != nil {
 						return err

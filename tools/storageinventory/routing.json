@@ -2076,7 +2076,7 @@
         "tables": []
       }
     },
-    "internal/hubserver/conversation_issue_split.go": {
+    "internal/hubserver/coordinator/issue_split.go": {
       "disposition": "serving",
       "families": [
         "conversation",
@@ -2085,7 +2085,7 @@
       ],
       "inventory": {
         "operations": {
-          "Service.executeCoordinatorIssueSplit:SQL": 1
+          "IssueCommandDeps.ExecuteSplit:SQL": 1
         },
         "tables": []
       }
