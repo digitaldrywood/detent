@@ -131,7 +131,38 @@ func TestReviewPriorAuditAuthorization(t *testing.T) {
 	second := hubfixture.SeedLeasedRunners(t, hubfixture.OpenStartupOn(t, first.Admin, config), "org_other")
 	const project tracker.ProjectID = "prj_runner"
 	const change = "change_example"
-	const otherChange = "change_other_item"
+	check := func(t *testing.T, hub *hubfixture.Hub, org tracker.OrganizationID, token string, status int, want *securityaudit.Disposition) {
+		t.Helper()
+		base := hubfixture.ProjectBase(org, project) + "/security-audits/"
+		query := url.Values{"repository": {hubfixture.ChangeInput().Repository}, "pull_request": {"0"}}
+		for _, route := range []struct{ name, path string }{
+			{"change", priorAuditPath(org, project, change)},
+			{"source", base + "evidence?" + query.Encode()},
+			{"session", base + "70/dispositions"},
+		} {
+			t.Run(route.name, func(t *testing.T) {
+				response := hub.Request(t, http.MethodGet, route.path, token, nil)
+				hubfixture.RequireStatus(t, response, status)
+				if want == nil {
+					return
+				}
+				var dispositions []securityaudit.Disposition
+				if route.name == "session" {
+					hubfixture.Decode(t, response, &dispositions)
+				} else {
+					var evidence securityaudit.Evidence
+					hubfixture.Decode(t, response, &evidence)
+					if evidence.Run.ID != 70 || len(evidence.Run.Findings) != 1 {
+						t.Fatalf("unexpected audit run: %+v", evidence.Run)
+					}
+					dispositions = evidence.Dispositions
+				}
+				if !reflect.DeepEqual(dispositions, []securityaudit.Disposition{*want}) {
+					t.Fatalf("unexpected dispositions: %+v", dispositions)
+				}
+			})
+		}
+	}
 	for _, fixture := range []struct {
 		runners  hubfixture.LeasedRunners
 		evidence string
@@ -140,22 +171,32 @@ func TestReviewPriorAuditAuthorization(t *testing.T) {
 		scope := hubfixture.Native{Hub: f.Hub, Project: tracker.NativeProject{OrganizationID: f.Organization, ID: project}}
 		want := seedPriorAuditEvidenceForItem(t, scope, f.Leases[0].WorkItemID, change, fixture.evidence, false)
 		t.Run(string(f.Organization)+"/current item", func(t *testing.T) {
-			response := f.Hub.Request(t, http.MethodGet, priorAuditPath(f.Organization, project, change), f.Tokens[0], nil)
-			hubfixture.RequireStatus(t, response, http.StatusOK)
-			var got securityaudit.Evidence
-			hubfixture.Decode(t, response, &got)
-			if got.Run.ID != 70 || len(got.Run.Findings) != 1 || !reflect.DeepEqual(got.Dispositions, []securityaudit.Disposition{want}) {
-				t.Fatalf("unexpected prior audit evidence: %+v", got)
+			check(t, f.Hub, f.Organization, f.Tokens[0], http.StatusOK, &want)
+		})
+		t.Run(string(f.Organization)+"/operator", func(t *testing.T) {
+			operator := hubtest.Credential(t, f.Hub.Repository, f.Organization, hubtest.CredentialOptions{Scope: "operator", KeyScope: "read", Projects: []tracker.ProjectID{project}})
+			check(t, f.Hub, f.Organization, operator.Token, http.StatusOK, &want)
+		})
+		t.Run(string(f.Organization)+"/human", func(t *testing.T) {
+			hosted := hubfixture.Hosted{Hub: f.Hub, Provider: f.Hub.Config.Hosted.Provider.(*hubfixture.HostedProvider), Project: project}
+			user := hosted.User(t, "audit_reader", "member", "reader@example.test", "read", "")
+			var member hubtest.SeededMember
+			if err := f.Hub.Repository.ReadTenant(t.Context(), f.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				member.Member, err = r.AccessMember(t.Context(), user.Identity.Subject)
+				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
+			personal := hubtest.Credential(t, f.Hub.Repository, f.Organization, hubtest.CredentialOptions{Member: &member, Projects: []tracker.ProjectID{project}, KeyScope: "read"})
+			check(t, f.Hub, f.Organization, personal.Token, http.StatusOK, &want)
 		})
 		t.Run(string(f.Organization)+"/other item", func(t *testing.T) {
-			response := f.Hub.Request(t, http.MethodGet, priorAuditPath(f.Organization, project, change), f.Tokens[1], nil)
-			hubfixture.RequireStatus(t, response, http.StatusNotFound)
+			check(t, f.Hub, f.Organization, f.Tokens[1], http.StatusNotFound, nil)
 		})
 	}
 	t.Run("other tenant", func(t *testing.T) {
-		response := first.Hub.Request(t, http.MethodGet, priorAuditPath(second.Organization, project, change), first.Tokens[0], nil)
-		hubfixture.RequireStatus(t, response, http.StatusNotFound)
+		check(t, first.Hub, second.Organization, first.Tokens[0], http.StatusNotFound, nil)
 	})
 	t.Run("expired lease", func(t *testing.T) {
 		lease := first.Leases[0]
@@ -163,8 +204,7 @@ func TestReviewPriorAuditAuthorization(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		response := first.Hub.Request(t, http.MethodGet, priorAuditPath(first.Organization, project, change), first.Tokens[0], nil)
-		hubfixture.RequireStatus(t, response, http.StatusNotFound)
+		check(t, first.Hub, first.Organization, first.Tokens[0], http.StatusNotFound, nil)
 	})
 	t.Run("released lease", func(t *testing.T) {
 		lease := second.Leases[0]
@@ -174,25 +214,24 @@ func TestReviewPriorAuditAuthorization(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		response := second.Hub.Request(t, http.MethodGet, priorAuditPath(second.Organization, project, change), second.Tokens[0], nil)
-		hubfixture.RequireStatus(t, response, http.StatusNotFound)
+		check(t, second.Hub, second.Organization, second.Tokens[0], http.StatusNotFound, nil)
 	})
 	t.Run("revoked credential", func(t *testing.T) {
-		scope := hubfixture.Native{Hub: first.Hub, Project: tracker.NativeProject{OrganizationID: first.Organization, ID: project}}
-		seedPriorAuditEvidenceForItem(t, scope, first.Leases[1].WorkItemID, otherChange, "Other item disposition", false)
-		path := priorAuditPath(first.Organization, project, otherChange)
-		token := first.Tokens[1]
-		hubfixture.RequireStatus(t, first.Hub.Request(t, http.MethodGet, path, token, nil), http.StatusOK)
+		f := hubfixture.NewLeasedRunners(t)
+		scope := hubfixture.Native{Hub: f.Hub, Project: tracker.NativeProject{OrganizationID: f.Organization, ID: project}}
+		want := seedPriorAuditEvidenceForItem(t, scope, f.Leases[0].WorkItemID, change, "Current item disposition", false)
+		token := f.Tokens[0]
+		check(t, f.Hub, f.Organization, token, http.StatusOK, &want)
 		credential, err := scope.Credential(t, token)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := first.Hub.Repository.WriteTenant(t.Context(), first.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.RevokeAccessCredential(t.Context(), credential.ID, first.Hub.Now())
+		if err := f.Hub.Repository.WriteTenant(t.Context(), f.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.RevokeAccessCredential(t.Context(), credential.ID, f.Hub.Now())
 		}); err != nil {
 			t.Fatal(err)
 		}
-		hubfixture.RequireStatus(t, first.Hub.Request(t, http.MethodGet, path, token, nil), http.StatusUnauthorized)
+		check(t, f.Hub, f.Organization, token, http.StatusUnauthorized, nil)
 	})
 }
 
