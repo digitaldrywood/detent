@@ -617,12 +617,7 @@ func (s *coordinatorTurnState) flush(ctx context.Context) {
 	}
 	text := s.buffered.String()
 	s.buffered.Reset()
-	updated := s.assistant
-	err := s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx tenantstore.Writer, _ *conversationRecord, now time.Time) error {
-		return s.coordinator.appendDelta(ctx, tx, &updated, text, now)
-	}, func(ctx context.Context, p *conversationPublicationPlan) error {
-		return p.AppendDelta(ctx, s.assistant, text)
-	})
+	updated, err := coordinator.PublishDelta(ctx, s.coordinator.write, s.conversationID, s.assistant, text)
 	if err == nil {
 		s.assistant = updated
 	}
@@ -638,48 +633,10 @@ func (s *coordinatorTurnState) flush(ctx context.Context) {
 func (s *coordinatorTurnState) recordTool(ctx context.Context, update runner.AgentUpdate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	summary := coordinatorToolSummary(update)
-	data, err := json.Marshal(map[string]string{"tool": update.Tool, "item_id": update.ItemID, "status": update.Status})
-	if err != nil {
-		return
+	deps := coordinator.TurnEventDeps{
+		Write:           s.coordinator.write,
+		PrepareContents: s.coordinator.service.PrepareConversationContents,
+		Logger:          s.coordinator.logger,
 	}
-	prepared, err := s.coordinator.service.PrepareConversationContents(ctx, s.conversationID, conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: summary, Data: data, Delivery: conversation.DeliveryCompleted})
-	if err != nil {
-		s.coordinator.logger.Warn("publish tool content", "error", err)
-		return
-	}
-	ctx = prepared
-	existing, known := s.toolMessages[update.ItemID]
-	var message conversationMessageRecord
-	err = s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
-		if known && update.ItemID != "" {
-			existing.Text = summary
-			existing.Data = data
-			if err := s.coordinator.updateMessage(ctx, tx, existing, now); err != nil {
-				return err
-			}
-			s.toolMessages[update.ItemID] = existing
-			return nil
-		}
-		if err := s.coordinator.appendMessage(ctx, tx, record, &message, now); err != nil {
-			return err
-		}
-		if update.ItemID != "" {
-			s.toolMessages[update.ItemID] = message
-		}
-		return nil
-	}, func(ctx context.Context, p *conversationPublicationPlan) error {
-		if known && update.ItemID != "" {
-			updated := existing
-			updated.Text, updated.Data = summary, data
-			return p.UpdateMessage(ctx, updated)
-		}
-		if message.ID == "" {
-			message = conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: summary, Data: data, Delivery: conversation.DeliveryCompleted, ThreadID: s.threadID, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
-		}
-		return p.AppendMessage(ctx, &message)
-	})
-	if err != nil {
-		s.coordinator.logger.Warn("coordinator could not persist tool message", "conversation_id", s.conversationID, "error", err)
-	}
+	deps.PublishToolUpdate(ctx, s.conversationID, s.threadID, s.toolMessages, update)
 }

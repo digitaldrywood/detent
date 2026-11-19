@@ -893,16 +893,8 @@ func (c *conversationTurnCoordinator) appendMessage(ctx context.Context, w tenan
 	return coordinator.AppendMessage(ctx, w, record, message, now)
 }
 
-func (c *conversationTurnCoordinator) updateMessage(ctx context.Context, w tenantstore.Writer, message conversationMessageRecord, now time.Time) error {
-	return coordinator.UpdateMessage(ctx, w, message, now)
-}
-
 func (c *conversationTurnCoordinator) saveConversation(ctx context.Context, w tenantstore.Writer, record *conversationRecord, now time.Time) error {
 	return coordinator.SaveConversation(ctx, w, record, now)
-}
-
-func (c *conversationTurnCoordinator) appendDelta(ctx context.Context, w tenantstore.Writer, message *conversationMessageRecord, text string, now time.Time) error {
-	return coordinator.AppendDelta(ctx, w, message, text, now)
 }
 
 func (c *conversationTurnCoordinator) coordinatorMessages(ctx context.Context, filter conversationstore.MessageFilter) ([]conversationMessageRecord, error) {
@@ -1033,7 +1025,6 @@ func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend r
 }
 
 var coordinatorOutcome = coordinator.Outcome
-var coordinatorToolSummary = coordinator.ToolSummary
 
 const coordinatorInstructions = coordinator.Instructions
 
