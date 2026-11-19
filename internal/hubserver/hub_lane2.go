@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -250,4 +251,63 @@ func appendRunnerAdmissionDecisions(ctx context.Context, w tenantstore.Writer, i
 
 func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.NativeScope, view runnerauth.ProjectConfiguration, receivedAt time.Time, writer runnerstore.Writer) error {
 	return runnerfleet.StoreRunnerProjectObservationTenant(ctx, pruneExpiredProjectDiagnostics, projectConfigurationDigest, scope, view, receivedAt, writer)
+}
+
+func (s *Service) runnerDiffDeps() executionapi.DiffDeps {
+	return executionapi.DiffDeps{
+		Repository:     s.config.TenantRepository,
+		Now:            s.config.Clock,
+		HTTPError:      s.nativeAPIError,
+		InvalidRequest: s.invalidAPIRequest,
+		Details:        s.runDetailStore,
+		Unavailable:    nativeUnavailable,
+		ArchiveJSON:    nativeArchiveJSON,
+		HostedShared:   s.hostedShared,
+		QuotaLimit:     s.attachmentQuotaLimit,
+		ServiceClaims:  hostedSharedClaims,
+	}
+}
+
+func (s *Service) checkAttemptDiff(c echo.Context) error {
+	return s.runnerDiffDeps().CheckAttemptDiff(c)
+}
+
+func (s *Service) postAttemptDiff(c echo.Context) error {
+	return s.runnerDiffDeps().PostAttemptDiff(c)
+}
+
+func (s *Service) getAttemptDiff(c echo.Context) error {
+	return s.runnerDiffDeps().GetAttemptDiff(c)
+}
+
+func (s *Service) readAttemptDiff(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+	return s.runnerDiffDeps().ReadAttemptDiff(ctx, scope, item, attemptID, source, seq)
+}
+
+func (s *Service) getWorkItemDiff(c echo.Context) error {
+	return s.runnerDiffDeps().GetWorkItemDiff(c)
+}
+
+func (s *Service) readWorkItemDiff(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
+	return s.runnerDiffDeps().ReadWorkItemDiff(ctx, scope, item, source)
+}
+
+func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest, checkOnly bool) (tracker.AttemptDiffReceipt, error) {
+	return s.runnerDiffDeps().PostAttemptDiffTenant(ctx, scope, attemptID, request, checkOnly)
+}
+
+func (s *Service) readAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+	return s.runnerDiffDeps().ReadAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
+}
+
+func (s *Service) readWorkItemDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
+	return s.runnerDiffDeps().ReadWorkItemDiffTenant(ctx, scope, item, source)
+}
+
+func (s *Service) attemptDiffBodyExists(c echo.Context) error {
+	return s.runnerDiffDeps().AttemptDiffBodyExists(c)
+}
+
+func (s *Service) manifestDiffBodyExists(ctx context.Context, key string) (bool, error) {
+	return s.runnerDiffDeps().ManifestDiffBodyExists(ctx, key)
 }

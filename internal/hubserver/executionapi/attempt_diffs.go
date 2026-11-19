@@ -1,39 +1,42 @@
-package hubserver
+package executionapi
 
 import (
 	"context"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Stored attempt diffs. A diff write names its
-// producer and is fenced by the producer's lease, not by the subject
-// attempt's: while an attempt runs its own lease is the producer, and after it
-// finishes only a workspace lease on that attempt may write. Workspace sessions
-// are not built, so the attempt-producer path is the only one
-// implemented and every other producer is refused with stale_execution rather
-// than guessed at.
-//
-// The producer is validated the way appendNativeRunEvent validates a run
-// event: the lease is the current one, its policy is approved and pinned, and
-// it belongs to the authenticated runner.
+type DiffDeps struct {
+	Repository     tenantstore.Repository
+	Now            func() time.Time
+	HTTPError      func(echo.Context, error, ...any) error
+	InvalidRequest func(echo.Context, error) error
+	Details        func() attachment.DetailStore
+	Unavailable    func(string) error
+	ArchiveJSON    func(echo.Context, int, any) error
+	HostedShared   func() bool
+	QuotaLimit     func(context.Context, tenantstore.Reader) (int64, error)
+	ServiceClaims  func(echo.Context) (cloudassert.Claims, bool)
+}
 
-// attemptDiffStaleGeneration reports a post whose generation is at or below
-// the stored one. It is a conflict, not a validation failure: the producer is
-// current, the diff it carries is not.
 func attemptDiffStaleGeneration(message string) error {
 	return &hubapi.NativeError{Code: "stale_generation", Message: message, Status: http.StatusConflict}
 }
 
 // attemptDiffTooLarge reports a diff whose patches exceed tracker.MaxDiffBytes.
 // The producer answers it by re-posting the same file list without patches.
+
 func attemptDiffTooLarge(limit int64) error {
 	return &hubapi.NativeError{
 		Code: "diff_too_large", Message: "Diff patches exceed the stored diff limit", Status: http.StatusRequestEntityTooLarge,
@@ -85,34 +88,35 @@ func diffPostedBytes(files []tracker.AttemptDiffFile) int64 {
 // postAttemptDiff stores one generation of an attempt's diff. It is a worker
 // endpoint fenced by the producer's lease, not by the request's idempotency
 // key: the generation is the record, and a replay of a stored seq is refused.
-func (s *Service) checkAttemptDiff(c echo.Context) error {
+
+func (d DiffDeps) CheckAttemptDiff(c echo.Context) error {
 	c.Set("attempt_diff_check", true)
-	return s.postAttemptDiff(c)
+	return d.PostAttemptDiff(c)
 }
 
-func (s *Service) postAttemptDiff(c echo.Context) error {
+func (d DiffDeps) PostAttemptDiff(c echo.Context) error {
 	var request tracker.AttemptDiffRequest
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return d.InvalidRequest(c, err)
 	}
 	attemptID := c.Param("attempt")
 	if !hubapi.ValidID(attemptID, "attempt") {
-		return s.nativeAPIError(c, hubapi.NativeNotFound())
+		return d.HTTPError(c, hubapi.NativeNotFound())
 	}
 	if err := tracker.ValidateDiffGeneration(request.Generation); err != nil {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid(err.Error()))
+		return d.HTTPError(c, hubapi.NativePublicInvalid(err.Error()))
 	}
 	if request.Generation.Source != request.Producer.Kind {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Generation source and producer kind must agree"))
+		return d.HTTPError(c, hubapi.NativePublicInvalid("Generation source and producer kind must agree"))
 	}
 	if len(request.BaseSHA) > tracker.MaxDiffSHABytes || len(request.HeadSHA) > tracker.MaxDiffSHABytes {
-		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Commit identities are bounded to "+strconv.Itoa(tracker.MaxDiffSHABytes)+" bytes"))
+		return d.HTTPError(c, hubapi.NativePublicInvalid("Commit identities are bounded to "+strconv.Itoa(tracker.MaxDiffSHABytes)+" bytes"))
 	}
 	scope := hubscope.NativeRequestScope(c)
 	ctx := c.Request().Context()
-	receipt, err := s.postAttemptDiffTenant(ctx, scope, attemptID, request, c.Get("attempt_diff_check") == true)
+	receipt, err := d.PostAttemptDiffTenant(ctx, scope, attemptID, request, c.Get("attempt_diff_check") == true)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	if c.Get("attempt_diff_check") == true {
 		return c.NoContent(http.StatusNoContent)
@@ -124,20 +128,21 @@ func (s *Service) postAttemptDiff(c echo.Context) error {
 // generation named by ?at=<seq>. It follows the issue's read rule: the
 // attempt's work item is resolved in the caller's scope, so a reader that
 // cannot see the issue cannot see its diff.
-func (s *Service) getAttemptDiff(c echo.Context) error {
+
+func (d DiffDeps) GetAttemptDiff(c echo.Context) error {
 
 	attemptID := c.Param("attempt")
 	if !hubapi.ValidID(attemptID, "attempt") {
-		return s.nativeAPIError(c, hubapi.NativeNotFound())
+		return d.HTTPError(c, hubapi.NativeNotFound())
 	}
 	if err := hubapi.ValidateNativeQuery(c.QueryParams(), "at", "source"); err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	var seq int64
 	if raw := strings.TrimSpace(c.QueryParam("at")); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || parsed <= 0 {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("at must be a positive generation sequence"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("at must be a positive generation sequence"))
 		}
 		seq = parsed
 	}
@@ -147,24 +152,24 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 	source := tracker.DiffSourceAttempt
 	if raw := strings.TrimSpace(c.QueryParam("source")); raw != "" {
 		if raw != tracker.DiffSourceAttempt && raw != tracker.DiffSourceWorkspace {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("source must be attempt or workspace"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("source must be attempt or workspace"))
 		}
 		source = raw
 	}
-	result, err := s.readAttemptDiff(c.Request().Context(), hubscope.NativeRequestScope(c), "", attemptID, source, seq)
+	result, err := d.ReadAttemptDiff(c.Request().Context(), hubscope.NativeRequestScope(c), "", attemptID, source, seq)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
-	return nativeArchiveJSON(c, http.StatusOK, result)
+	return d.ArchiveJSON(c, http.StatusOK, result)
 }
 
-func (s *Service) readAttemptDiff(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
-	if s.config.TenantRepository == nil {
-		return tracker.AttemptDiff{}, nativeUnavailable("Attempt diff storage is unavailable")
+func (d DiffDeps) ReadAttemptDiff(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+	if d.Repository == nil {
+		return tracker.AttemptDiff{}, d.Unavailable("Attempt diff storage is unavailable")
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	return s.readAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
+	return d.ReadAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
 }
 
 // getWorkItemDiff reads the latest stored diff on one issue, or reports that
@@ -173,29 +178,30 @@ func (s *Service) readAttemptDiff(ctx context.Context, scope hubscope.NativeScop
 // same 404 it would get for the issue itself, and an issue the reader can see
 // answers 200 with `{"diff": null}` rather than a 404 the client would have to
 // tell apart from a permission failure.
-func (s *Service) getWorkItemDiff(c echo.Context) error {
+
+func (d DiffDeps) GetWorkItemDiff(c echo.Context) error {
 	if err := hubapi.ValidateNativeQuery(c.QueryParams(), "source"); err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
 	source := tracker.DiffSourceAttempt
 	if raw := strings.TrimSpace(c.QueryParam("source")); raw != "" {
 		if raw != tracker.DiffSourceAttempt && raw != tracker.DiffSourceWorkspace {
-			return s.nativeAPIError(c, hubapi.NativePublicInvalid("source must be attempt or workspace"))
+			return d.HTTPError(c, hubapi.NativePublicInvalid("source must be attempt or workspace"))
 		}
 		source = raw
 	}
-	result, err := s.readWorkItemDiff(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), source)
+	result, err := d.ReadWorkItemDiff(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), source)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return d.HTTPError(c, err)
 	}
-	return nativeArchiveJSON(c, http.StatusOK, result)
+	return d.ArchiveJSON(c, http.StatusOK, result)
 }
 
-func (s *Service) readWorkItemDiff(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
-	if s.config.TenantRepository == nil {
-		return tracker.WorkItemDiff{}, nativeUnavailable("Attempt diff storage is unavailable")
+func (d DiffDeps) ReadWorkItemDiff(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
+	if d.Repository == nil {
+		return tracker.WorkItemDiff{}, d.Unavailable("Attempt diff storage is unavailable")
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	return s.readWorkItemDiffTenant(ctx, scope, item, source)
+	return d.ReadWorkItemDiffTenant(ctx, scope, item, source)
 }
