@@ -1,4 +1,4 @@
-package hubserver
+package reports
 
 import (
 	"testing"
@@ -7,7 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 )
 
-func TestDailySummaryReportsValidateUsage(t *testing.T) {
+func TestPostgresReportUsageRowsCurrency(t *testing.T) {
 	t.Parallel()
 	period := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -15,7 +15,7 @@ func TestDailySummaryReportsValidateUsage(t *testing.T) {
 		wantError      bool
 	}{{"usd", "usd", false}, {"other currency", "eur", true}} {
 		t.Run(test.name, func(t *testing.T) {
-			err := dailySummaryReports{}.ValidateUsage([]reportstore.UsageFact{{ProjectID: "example", WorkItemID: "shipped", AttemptID: "attempt_shipped", Period: period, Cost: 3, Currency: test.currency}})
+			_, err := PostgresReportUsageRows([]reportstore.UsageFact{{ProjectID: "example", WorkItemID: "shipped", AttemptID: "attempt_shipped", Period: period, Cost: 3, Currency: test.currency}})
 			if (err != nil) != test.wantError {
 				t.Fatalf("error=%v", err)
 			}

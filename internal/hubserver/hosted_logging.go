@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -86,12 +87,7 @@ func hostedTimingAttr(attr slog.Attr) bool {
 }
 
 func hostedLogText(value string) string {
-	return healthEmailPrivateText.ReplaceAllStringFunc(strings.Join(strings.Fields(value), " "), func(match string) string {
-		if healthEmailSubjectID.MatchString(match) || uuid.Validate(match) == nil {
-			return match
-		}
-		return "[redacted]"
-	})
+	return healthsignals.LogText(value)
 }
 
 func hostedLogAttr(attr slog.Attr) (slog.Attr, bool) {

@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/dailysummary"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -55,9 +56,11 @@ func (s *Service) dailySummaryService() *dailysummary.Service {
 		Organization:     s.accessOrganization,
 		HostedPath:       s.hostedPath,
 		IssuePath:        hubrecords.IssueBrowserPath,
-		RenderText:       healthEmailText,
-		Reports:          dailySummaryReports{},
-		WorkItems:        dailySummaryWorkItems{service: s},
+		RenderText: func(value string) string {
+			return healthsignals.EmailText(failureFirstLine(value), maxFailureExampleLength)
+		},
+		Reports:   dailySummaryReports{},
+		WorkItems: dailySummaryWorkItems{service: s},
 	}
 	if s.config.Hosted != nil {
 		deps.PublicURL = s.config.Hosted.PublicURL
