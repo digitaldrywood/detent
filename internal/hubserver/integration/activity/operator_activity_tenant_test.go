@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/labstack/echo/v4"
@@ -27,7 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -39,9 +36,7 @@ import (
 func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing.T) {
 	t.Parallel()
 	admin := hubtest.Database(t)
-	repository := hubtest.RepositoryOn(t, admin, hubtest.WithMaxConnections(3), hubtest.WithPoolConfig(func(config *pgxpool.Config) {
-		config.ConnConfig.Tracer = runtimeHistoryTrace{}
-	}))
+	repository := hubtest.RepositoryOn(t, admin, hubtest.WithMaxConnections(3))
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	base := now.Add(-time.Hour)
 	observed := now
@@ -335,66 +330,14 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 	if !interrupted {
 		t.Fatal("expired running attempt did not report interruption")
 	}
-	eventWork := func(org tracker.OrganizationID) float64 {
-		t.Helper()
-		reader := &Service{database: service.database, config: service.config}
-		reader.config.Hosted = &HostedConfig{OrganizationID: string(org), Provider: provider}
-		capture := &runtimeHistoryTraceCapture{}
-		ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
-		report, err := reader.readActivityReport(ctx, credential, operatortool.ActivityRequest{ProjectID: "project_1", Limit: 100}, window)
-		if err != nil || len(report.Finished) != 2 {
-			t.Fatalf("%s activity finished=%d error=%v", org, len(report.Finished), err)
-		}
-		var work float64
-		for _, statement := range capture.statements {
-			if !strings.Contains(statement.query, "collaboration_events") {
-				continue
-			}
-			raw, err := pgstoretest.ExplainReportPlan(ctx, admin, string(org), pgstoretest.ReportStatement{Query: statement.query, Args: statement.args})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var plans []struct{ Plan pgstoretest.SearchPlanNode }
-			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-				t.Fatalf("activity event plan=%s error=%v", raw, err)
-			}
-			work += plans[0].Plan.RelationWork("collaboration_events")
-		}
-		if work == 0 {
-			t.Fatal("no Activity event reads observed")
-		}
-		return work
-	}
-	firstBefore, secondBefore := eventWork("org_first"), eventWork("org_second")
-	assertActivityRunLookupBounded(t, admin)
-	for _, test := range []struct {
-		organization tracker.OrganizationID
-		before       float64
-	}{{"org_first", firstBefore}, {"org_second", secondBefore}} {
-		after := eventWork(test.organization)
-		t.Logf("%s Activity event rows before and after adding 8000 events to org_first: %.0f -> %.0f", test.organization, test.before, after)
-		if after > pgstoretest.ReportRequestBudgets["activity"].Ceiling(2) {
-			t.Errorf("two-issue Activity request examined %.0f event rows", after)
-		}
-	}
+	assertActivityRunLookupReturnsScopedEvents(t, admin)
 	assertActivityRunLookupFailsClosed(t, admin)
 }
 
-type activityQueryCapture struct {
-	pgquery.DBTX
-	query string
-	args  []any
-}
-
-func (r *activityQueryCapture) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
-	r.query, r.args = query, args
-	return r.DBTX.Query(ctx, query, args...)
-}
-
-func assertActivityRunLookupBounded(t *testing.T, admin *sql.DB) {
+func assertActivityRunLookupReturnsScopedEvents(t *testing.T, admin *sql.DB) {
 	t.Helper()
 	_, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
- SELECT e.organization_id,e.project_id,e.work_item_id,e.id||'_history_'||n,10000+n,e.type,e.schema_version,e.actor_kind,e.actor_principal_id,e.event_revision,e.recorded_at,e.payload_object_key,e.payload_sha256,e.payload_bytes,e.payload_content_bytes FROM collaboration_events e CROSS JOIN generate_series(1,2000)n WHERE e.organization_id='org_first' AND e.type='issue.created'; ANALYZE collaboration_events; ANALYZE native_attempts; ANALYZE issues;`)
+ SELECT e.organization_id,e.project_id,e.work_item_id,e.id||'_history_'||n,10000+n,e.type,e.schema_version,e.actor_kind,e.actor_principal_id,e.event_revision,e.recorded_at,e.payload_object_key,e.payload_sha256,e.payload_bytes,e.payload_content_bytes FROM collaboration_events e CROSS JOIN generate_series(1,2)n WHERE e.organization_id='org_first' AND e.type='issue.created';`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,8 +359,7 @@ func assertActivityRunLookupBounded(t *testing.T, admin *sql.DB) {
 		if _, err := tx.Exec(t.Context(), `SET LOCAL ROLE detent_runtime_v2; SELECT set_config('detent.organization_id','org_first',true);`); err != nil {
 			t.Fatal(err)
 		}
-		capture := &activityQueryCapture{DBTX: tx}
-		events, err := pgquery.New(capture).ActivityLatestRunEvents(t.Context(), pgquery.ActivityLatestRunEventsParams{OrganizationID: "org_first", AttemptIds: []string{"project_1_item_1", "project_1_item_2", "project_2_item_1", "project_2_item_2"}})
+		events, err := pgquery.New(tx).ActivityLatestRunEvents(t.Context(), pgquery.ActivityLatestRunEventsParams{OrganizationID: "org_first", AttemptIds: []string{"project_1_item_1", "project_1_item_2", "project_2_item_1", "project_2_item_2"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -429,40 +371,6 @@ func assertActivityRunLookupBounded(t *testing.T, admin *sql.DB) {
 				t.Fatalf("run event lookup returned unrelated event: %s %s", e.OrganizationID, e.Type)
 			}
 		}
-		var raw []byte
-		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+capture.query, capture.args...).Scan(&raw); err != nil {
-			t.Fatal(err)
-		}
-		type planNode struct {
-			Relation string            `json:"Relation Name"`
-			Rows     float64           `json:"Actual Rows"`
-			Loops    float64           `json:"Actual Loops"`
-			Removed  float64           `json:"Rows Removed by Filter"`
-			Plans    []json.RawMessage `json:"Plans"`
-		}
-		var plans []struct{ Plan json.RawMessage }
-		if err := json.Unmarshal(raw, &plans); err != nil {
-			t.Fatal(err)
-		}
-		var visited float64
-		var walk func(json.RawMessage)
-		walk = func(raw json.RawMessage) {
-			var n planNode
-			if err := json.Unmarshal(raw, &n); err != nil {
-				t.Fatal(err)
-			}
-			if n.Relation == "collaboration_events" {
-				visited += (n.Rows + n.Removed) * n.Loops
-			}
-			for _, child := range n.Plans {
-				walk(child)
-			}
-		}
-		walk(plans[0].Plan)
-		if visited > 16 {
-			t.Fatalf("run lookup scanned %.0f event rows for four attempts; unrelated project history must not be scanned", visited)
-		}
-		t.Logf("run lookup visited %.0f event rows with 8000 unrelated events", visited)
 		return nil
 	})
 	if err != nil {

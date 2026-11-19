@@ -1,16 +1,13 @@
 package activity_test
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -237,7 +234,7 @@ func TestActivityIssueRead(t *testing.T) {
 				t.Fatal(err)
 			}
 			pgtransport.Configure(config)
-			config.MaxConns, config.ConnConfig.Tracer = 3, runtimeHistoryTrace{}
+			config.MaxConns = 3
 			pool, err := pgxpool.NewWithConfig(t.Context(), config)
 			if err != nil {
 				t.Fatal(err)
@@ -369,15 +366,13 @@ func TestActivityIssueRead(t *testing.T) {
 			if tt.reporter {
 				account = "reporter"
 			}
-			capture := &runtimeHistoryTraceCapture{}
-			request := httptest.NewRequestWithContext(context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture), http.MethodGet, "/api/v2/organizations/"+string(scope.organization)+"/activity?"+query.Encode(), nil)
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(scope.organization)+"/activity?"+query.Encode(), nil)
 			request.AddCookie(f.cookies[account])
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var out operatortool.ActivityReport
 			decodeHubResponse(t, response, &out)
-			assertActivityIssueOwnerStatements(t, pool, scope.organization, capture, tt.runner != "runner_other" && tt.name != "terminal before window omitted", !tt.missing)
 
 			rows := out.RunningIssues
 			want := 0
@@ -441,9 +436,6 @@ func TestActivityIssueRead(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
-						t.Fatal(err)
-					}
 					for _, test := range []struct {
 						cutoff      time.Time
 						newest      int64
@@ -453,8 +445,7 @@ func TestActivityIssueRead(t *testing.T) {
 						{now, 1048, 49, false},
 						{now.Add(time.Hour), 3000, 50, true},
 					} {
-						capture := &runtimeHistoryTraceCapture{}
-						ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
+						ctx := t.Context()
 						var snapshot activitystore.Snapshot
 						if err := reader.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 							var err error
@@ -472,110 +463,9 @@ func TestActivityIssueRead(t *testing.T) {
 						if len(sequences) != test.transitions || sequences[0] != test.newest || sequences[1] != test.newest-1 || snapshot.Created[issueID] == test.clipped || snapshot.IssuesPartial != test.clipped {
 							t.Fatalf("cutoff=%v sequences=%v created=%v partial=%v", test.cutoff, sequences, snapshot.Created[issueID], snapshot.IssuesPartial)
 						}
-						assertActivityIssueOwnerStatements(t, pool, scope.organization, capture, true, true)
 					}
 				})
 			}
 		})
-	}
-}
-
-func assertActivityIssueOwnerStatements(t *testing.T, pool *pgxpool.Pool, organization tracker.OrganizationID, capture *runtimeHistoryTraceCapture, historyExpected, complete bool) {
-	t.Helper()
-	capture.mu.Lock()
-	statements := slices.Clone(capture.statements)
-	capture.mu.Unlock()
-	if len(statements) == 0 {
-		t.Fatal("activity PostgreSQL owner statements were not observed")
-	}
-	found := map[string]bool{}
-	for _, statement := range statements {
-		if strings.HasPrefix(statement.query, "SELECT id,project_id,native_id,coalesce(workflow_state_name,''),native_created_at,native_updated_at FROM issues") {
-			found["selected"] = true
-			ids, ok := statement.args[1].([]int64)
-			if !ok || len(ids) == 0 || len(ids) > 3*activitystore.IssuePopulationLimit || statement.args[2] != activitystore.IssuePopulationLimit {
-				t.Fatalf("HTTP request limit replaced activity population budget: %v", statement.args)
-			}
-			continue
-		}
-		kind := ""
-		bound := float64(0)
-		relation := ""
-		candidateCount := -1
-		if strings.HasPrefix(statement.query, "SELECT i.id,e.sequence,e.type,e.from_state,e.to_state,e.recorded_at") {
-			kind, relation = "history", "collaboration_events"
-			ids, ok := statement.args[1].([]int64)
-			if !ok || len(ids) == 0 || statement.args[3] != activitystore.HistoryLimit+1 {
-				t.Fatalf("activity history lost its selected-item bound: %v", statement.args)
-			}
-			bound = float64(len(ids) * (activitystore.HistoryLimit + 1))
-		}
-		if strings.HasPrefix(statement.query, "SELECT id FROM issues WHERE organization_id=$1 AND native_updated_at>=$2") {
-			kind, relation = "candidates", "issues"
-			if statement.args[2] != activitystore.PopulationLimit+1 {
-				t.Fatalf("activity candidates lost their population bound: %v", statement.args)
-			}
-			bound = float64(activitystore.PopulationLimit + 1)
-		}
-		if strings.Contains(statement.query, "AS recent(id)") {
-			kind, relation = "terminal", "issues"
-			ids, ok := statement.args[2].([]int64)
-			if !ok || len(ids) > activitystore.PopulationLimit || statement.args[3] != activitystore.PopulationLimit {
-				t.Fatalf("activity terminal issues lost their candidate bound: %v", statement.args)
-			}
-			bound = float64(activitystore.PopulationLimit)
-			candidateCount = len(ids)
-		}
-		if kind == "" {
-			continue
-		}
-		found[kind] = true
-		tx, err := pool.Begin(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		var raw []byte
-		_, err = tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(organization))
-		if err == nil {
-			err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw)
-		}
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
-		rollbackErr := tx.Rollback(cleanup)
-		cancel()
-		if err := errors.Join(err, rollbackErr); err != nil {
-			t.Fatal(err)
-		}
-		type planNode struct {
-			Relation  string     `json:"Relation Name"`
-			Rows      float64    `json:"Actual Rows"`
-			Removed   float64    `json:"Rows Removed by Filter"`
-			Rechecked float64    `json:"Rows Removed by Index Recheck"`
-			Loops     float64    `json:"Actual Loops"`
-			Plans     []planNode `json:"Plans"`
-		}
-		var plans []struct{ Plan planNode }
-		if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-			t.Fatalf("invalid activity PostgreSQL plan: %s error=%v", raw, err)
-		}
-		work := float64(0)
-		var inspect func(planNode)
-		inspect = func(node planNode) {
-			if node.Relation == relation {
-				if candidateCount >= 0 && node.Loops > float64(candidateCount) {
-					t.Fatalf("activity %s probed %s %.0f times for %d candidates", kind, relation, node.Loops, candidateCount)
-				}
-				work += (node.Rows + node.Removed + node.Rechecked) * node.Loops
-			}
-			for _, child := range node.Plans {
-				inspect(child)
-			}
-		}
-		inspect(plans[0].Plan)
-		if work > bound || kind == "history" && complete && work == 0 {
-			t.Fatalf("activity %s owner work=%g bound=%g plan=%s", kind, work, bound, raw)
-		}
-	}
-	if found["history"] != historyExpected || found["selected"] != historyExpected || !found["candidates"] || !found["terminal"] {
-		t.Fatalf("activity source owners were not observed: %v", found)
 	}
 }

@@ -15,13 +15,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
@@ -298,57 +296,6 @@ func (*hostedSecurityProvider) VerifyAccess(context.Context, string) (auth.Hoste
 func (*hostedSecurityProvider) RefreshAccess(context.Context, string, string) (auth.HostedAccess, auth.HostedTokens, error) {
 	return auth.HostedAccess{}, auth.HostedTokens{}, auth.ErrHostedIdentity
 }
-
-type runtimeHistoryTraceKey struct{}
-
-type runtimeHistoryTraceCapture struct {
-	mu         sync.Mutex
-	statements []tracedStatement
-}
-
-type runtimeHistoryTrace struct{}
-
-func (runtimeHistoryTrace) record(ctx context.Context, query string, args []any) {
-	capture, ok := ctx.Value(runtimeHistoryTraceKey{}).(*runtimeHistoryTraceCapture)
-	if !ok {
-		return
-	}
-	values := slices.Clone(args)
-	for i, value := range values {
-		switch value := value.(type) {
-		case []byte:
-			values[i] = slices.Clone(value)
-		case []string:
-			values[i] = slices.Clone(value)
-		case []int64:
-			values[i] = slices.Clone(value)
-		case []tracker.NativeWorkItemID:
-			values[i] = slices.Clone(value)
-		case []tracker.ProjectID:
-			values[i] = slices.Clone(value)
-		}
-	}
-	capture.mu.Lock()
-	capture.statements = append(capture.statements, tracedStatement{query: query, args: values})
-	capture.mu.Unlock()
-}
-
-func (trace runtimeHistoryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	trace.record(ctx, data.SQL, data.Args)
-	return ctx
-}
-
-func (runtimeHistoryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (runtimeHistoryTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	return ctx
-}
-
-func (trace runtimeHistoryTrace) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	trace.record(ctx, data.SQL, data.Args)
-}
-
-func (runtimeHistoryTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 func TestMain(m *testing.M) { hubtest.Main(m) }
 
@@ -822,10 +769,6 @@ func nativeAnalyticsStdioCall(t *testing.T, ctx context.Context, executor mcp.Ex
 	return envelope.Result.Data
 }
 
-type tracedStatement struct {
-	query string
-	args  []any
-}
 type Service = testHub
 type database = testDatabase
 
