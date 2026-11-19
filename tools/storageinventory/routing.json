@@ -20720,7 +20720,7 @@
         "tables": []
       }
     },
-    "internal/hubserver/postgres/migrations/20261119202527_attempt_progress_verdict.sql": {
+    "internal/hubserver/postgres/migrations/20261119222049_attempt_progress_verdict.sql": {
       "disposition": "target-schema",
       "families": [
         "lease"
