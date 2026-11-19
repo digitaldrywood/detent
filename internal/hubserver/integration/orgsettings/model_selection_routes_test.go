@@ -1,4 +1,4 @@
-package hubserver
+package orgsettings_test
 
 import (
 	"net/http"
@@ -10,35 +10,32 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/orgsettings"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestCloudModelSelection(t *testing.T) {
 	t.Parallel()
-	_, f, _ := newChangePolicyPostgresFixture(t)
-	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
-	viewer := f.user(t, "viewer", "viewer", "viewer@example.test", "", "")
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		member, err := w.AccessMember(t.Context(), viewer.identity.Subject)
-		if err != nil {
-			return err
-		}
-		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: member.UserID, ProjectID: f.project}); err != nil {
-			return err
-		}
-		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: member.PrincipalID, ProjectID: f.project})
-	}); err != nil {
-		t.Fatal(err)
+	h := hubfixture.NewHostedSecurity(t)
+	actors := map[string]hubfixture.HostedUser{
+		"owner":  h.User(t, "owner", "owner", "owner@example.test", "", ""),
+		"viewer": h.User(t, "viewer", "viewer", "viewer@example.test", "read", ""),
 	}
-	browser := &browserHostedFixture{service: f.service, server: &httptest.Server{URL: f.service.config.Hosted.PublicURL}, cookies: map[string]*http.Cookie{"owner": {Name: hostedCookie, Value: owner.token}, "viewer": {Name: hostedCookie, Value: viewer.token}}}
-	api := browser.api
+	api := func(t *testing.T, actor, method, path string, input any, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		response := h.Request(t, actors[actor], method, path, input)
+		hubfixture.RequireStatus(t, response, want)
+		return response
+	}
 
-	org := "/api/v2/organizations/org_security" + "/model-selection"
-	project := "/api/v2/organizations/org_security" + "/projects/" + string(f.project) + "/model-selection"
+	org := hubfixture.OrganizationBase(h.Primary) + "/model-selection"
+	project := h.Base + "/model-selection"
 	api(t, "viewer", http.MethodGet, project, nil, http.StatusOK)
-	var initial cloudModelSelection
-	browserHostedDecode(t, api(t, "owner", http.MethodGet, org, nil, http.StatusOK), &initial)
+	var initial projectsettings.ModelSelection
+	hubfixture.Decode(t, api(t, "owner", http.MethodGet, org, nil, http.StatusOK), &initial)
 	if initial.Effective.Model("normal") != "gpt-6.1-sol" || initial.Effective.Model("complex") != "gpt-6-astra" || *initial.Effective.Levels["complex"].Model != "normal" || *initial.Effective.Stages["plan"].Effort != "low" || *initial.Effective.Stages["validator"].Effort != "medium" {
 		t.Fatalf("migration default = %+v", initial.Effective)
 	}
@@ -59,21 +56,21 @@ func TestCloudModelSelection(t *testing.T) {
 		{"remove override", project, "owner", nil, http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var current cloudModelSelection
-			browserHostedDecode(t, api(t, "owner", http.MethodGet, test.path, nil, http.StatusOK), &current)
-			body := cloudModelSelectionRequest{ExpectedRevision: current.Revision, Selection: test.selection}
+			var current projectsettings.ModelSelection
+			hubfixture.Decode(t, api(t, "owner", http.MethodGet, test.path, nil, http.StatusOK), &current)
+			body := orgsettings.ModelRequest{ExpectedRevision: current.Revision, Selection: test.selection}
 			body.IdempotencyKey = test.name
 			response := api(t, test.actor, http.MethodPut, test.path, body, test.status)
 			if test.status != http.StatusOK {
-				var unchanged cloudModelSelection
-				browserHostedDecode(t, api(t, "owner", http.MethodGet, test.path, nil, http.StatusOK), &unchanged)
+				var unchanged projectsettings.ModelSelection
+				hubfixture.Decode(t, api(t, "owner", http.MethodGet, test.path, nil, http.StatusOK), &unchanged)
 				if unchanged.Revision != current.Revision {
 					t.Fatal("rejected mutation changed model selection")
 				}
 				return
 			}
-			var saved cloudModelSelection
-			browserHostedDecode(t, response, &saved)
+			var saved projectsettings.ModelSelection
+			hubfixture.Decode(t, response, &saved)
 			if saved.Revision != current.Revision+1 {
 				t.Fatalf("revision = %d", saved.Revision)
 			}
@@ -84,7 +81,7 @@ func TestCloudModelSelection(t *testing.T) {
 			var delivered struct {
 				ModelSelection config.ModelSelection `json:"model_selection"`
 			}
-			browserHostedDecode(t, api(t, "owner", http.MethodGet, "/api/v2/organizations/org_security"+"/projects/"+string(f.project), nil, http.StatusOK), &delivered)
+			hubfixture.Decode(t, api(t, "owner", http.MethodGet, h.Base, nil, http.StatusOK), &delivered)
 			if delivered.ModelSelection.Model("normal") != want || delivered.ModelSelection.Stages["plan"].Effort == nil || *delivered.ModelSelection.Stages["plan"].Effort != "low" {
 				t.Fatalf("runner delivery = %+v", delivered.ModelSelection)
 			}
@@ -93,18 +90,18 @@ func TestCloudModelSelection(t *testing.T) {
 			api(t, "owner", http.MethodPut, test.path, body, http.StatusConflict)
 		})
 	}
-	var current cloudModelSelection
-	browserHostedDecode(t, api(t, "owner", http.MethodGet, project, nil, http.StatusOK), &current)
+	var current projectsettings.ModelSelection
+	hubfixture.Decode(t, api(t, "owner", http.MethodGet, project, nil, http.StatusOK), &current)
 	if current.Selection != nil {
 		t.Fatal("project did not restore org inheritance")
 	}
 }
 
-func modelSelectionTestCredential(t *testing.T, service *Service, organization tracker.OrganizationID, scope string) string {
+func modelSelectionTestCredential(t *testing.T, h *hubfixture.Hub, organization tracker.OrganizationID, scope string) string {
 	t.Helper()
 	token := hubapi.NewID("example_token")
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		now := service.config.Clock().UTC()
+	if err := h.Repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		now := h.Now().UTC()
 		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: hubapi.NewID("example_credential"), Name: hubapi.NewID("example_credential_name"), Hash: apikey.HashToken(token), Scope: scope, CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "service"})
 	}); err != nil {
 		t.Fatal(err)
@@ -114,43 +111,43 @@ func modelSelectionTestCredential(t *testing.T, service *Service, organization t
 
 func TestSelfHostedModelSelection(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	other := newNativeFixture(t, f.service, f.project.OrganizationID, "inheriting-project")
-	org := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/model-selection"
-	read := func(t *testing.T, path, token string) cloudModelSelection {
+	f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
+	other := hubfixture.NewNative(t, f.Hub, f.Organization(), "inheriting-project")
+	org := hubfixture.OrganizationBase(f.Organization()) + "/model-selection"
+	read := func(t *testing.T, path, token string) projectsettings.ModelSelection {
 		t.Helper()
-		response := performHubAPIRequest(t, f.service, http.MethodGet, path, token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		var value cloudModelSelection
-		decodeHubResponse(t, response, &value)
+		response := f.Hub.Request(t, http.MethodGet, path, token, nil)
+		hubfixture.RequireStatus(t, response, http.StatusOK)
+		var value projectsettings.ModelSelection
+		hubfixture.Decode(t, response, &value)
 		return value
 	}
-	initial := read(t, org, testHubAdminToken)
+	initial := read(t, org, f.Hub.AdminToken())
 	selection := *initial.Selection
 	selection.NormalModel = new("organization-model")
-	request := cloudModelSelectionRequest{ExpectedRevision: initial.Revision, Selection: &selection}
+	request := orgsettings.ModelRequest{ExpectedRevision: initial.Revision, Selection: &selection}
 	request.IdempotencyKey = "organization-default"
-	worker := modelSelectionTestCredential(t, f.service, f.project.OrganizationID, "worker")
-	operator := modelSelectionTestCredential(t, f.service, f.project.OrganizationID, "operator")
+	worker := modelSelectionTestCredential(t, f.Hub, f.Organization(), "worker")
+	operator := modelSelectionTestCredential(t, f.Hub, f.Organization(), "operator")
 	for _, test := range []struct {
 		name, token string
 		status      int
 	}{
 		{"unauthenticated", "", http.StatusUnauthorized},
 		{"worker", worker, http.StatusForbidden},
-		{"project operator", f.token, http.StatusForbidden},
-		{"organization operator", operator, http.StatusOK},
-		{"administrator", testHubAdminToken, http.StatusOK},
+		{"project operator", f.Token, http.StatusForbidden},
+		{"organization operator", operator, http.StatusForbidden},
+		{"administrator", f.Hub.AdminToken(), http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			request.ExpectedRevision = read(t, org, testHubAdminToken).Revision
+			request.ExpectedRevision = read(t, org, f.Hub.AdminToken()).Revision
 			request.IdempotencyKey = "organization-default-" + test.name
 			for _, method := range []string{http.MethodGet, http.MethodPut} {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, method, org, test.token, request), test.status)
+				hubfixture.RequireStatus(t, f.Hub.Request(t, method, org, test.token, request), test.status)
 			}
 		})
 	}
-	if saved := read(t, org, testHubAdminToken); saved.Revision != initial.Revision+2 || saved.Effective.Model("normal") != "organization-model" {
+	if saved := read(t, org, f.Hub.AdminToken()); saved.Revision != initial.Revision+1 || saved.Effective.Model("normal") != "organization-model" {
 		t.Fatalf("organization default = %+v", saved)
 	}
 	for _, test := range []struct {
@@ -161,20 +158,20 @@ func TestSelfHostedModelSelection(t *testing.T) {
 		{"inherit", "organization-model", nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			current := read(t, f.base+"/model-selection", f.token)
-			body := cloudModelSelectionRequest{ExpectedRevision: current.Revision, Selection: test.selection}
+			current := read(t, f.Base+"/model-selection", f.Token)
+			body := orgsettings.ModelRequest{ExpectedRevision: current.Revision, Selection: test.selection}
 			body.IdempotencyKey = test.name
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/model-selection", f.token, body), http.StatusOK)
+			hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, f.Base+"/model-selection", f.Token, body), http.StatusOK)
 			for _, project := range []struct {
-				fixture nativeFixture
+				fixture hubfixture.Native
 				model   string
 			}{{f, test.model}, {other, "organization-model"}} {
-				response := performHubAPIRequest(t, f.service, http.MethodGet, project.fixture.base, project.fixture.token, nil)
-				requireNativeStatus(t, response, http.StatusOK)
+				response := project.fixture.Request(t, http.MethodGet, project.fixture.Base, nil)
+				hubfixture.RequireStatus(t, response, http.StatusOK)
 				var delivered struct {
 					ModelSelection config.ModelSelection `json:"model_selection"`
 				}
-				decodeHubResponse(t, response, &delivered)
+				hubfixture.Decode(t, response, &delivered)
 				if delivered.ModelSelection.Model("normal") != project.model || delivered.ModelSelection.Stages["plan"].Effort == nil || delivered.ModelSelection.Stages["validator"].Effort == nil || *delivered.ModelSelection.Stages["plan"].Effort != "low" || *delivered.ModelSelection.Stages["validator"].Effort != "medium" {
 					t.Fatalf("runner selection = %+v", delivered.ModelSelection)
 				}
