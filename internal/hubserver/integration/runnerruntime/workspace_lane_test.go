@@ -228,23 +228,33 @@ func (f *workspaceLaneFixture) awaitLaneIdle(t *testing.T) {
 	})
 }
 
-func (f *workspaceLaneFixture) dialPerson(t *testing.T, id string) *workspaceLaneClient {
+func (f *workspaceLaneFixture) dialPerson(t *testing.T, id string) *workspaceRelayClient {
 	t.Helper()
-	response := f.Hub.Request(t, http.MethodPost, f.Base+"/workspaces/"+id+"/relay-tickets", f.Token, map[string]any{})
+	return dialWorkspacePerson(t, f.Native, f.server, id)
+}
+
+func dialWorkspacePerson(t *testing.T, project hubfixture.Native, server *httptest.Server, id string) *workspaceRelayClient {
+	t.Helper()
+	response := project.Request(t, http.MethodPost, project.Base+"/workspaces/"+id+"/relay-tickets", map[string]any{})
 	hubfixture.RequireStatus(t, response, http.StatusCreated)
 	var minted workspacerelay.TicketResponse
 	hubfixture.Decode(t, response, &minted)
-	url := "ws" + strings.TrimPrefix(f.server.URL, "http") + f.Base + "/workspaces/" + id + "/relay?ticket=" + minted.Ticket
-	socket, upgrade, err := websocket.Dial(testenv.WaitContext(t, t.Context()), url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + f.Token}}})
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + project.Base + "/workspaces/" + id + "/relay?ticket=" + minted.Ticket
+	return dialWorkspaceSocket(t, url, http.Header{"Authorization": {"Bearer " + project.Token}})
+}
+
+func dialWorkspaceSocket(t *testing.T, url string, headers http.Header) *workspaceRelayClient {
+	t.Helper()
+	socket, upgrade, err := websocket.Dial(testenv.WaitContext(t, t.Context()), url, &websocket.DialOptions{HTTPHeader: headers})
 	if upgrade != nil && upgrade.Body != nil {
 		_ = upgrade.Body.Close()
 	}
 	if err != nil {
-		t.Fatalf("dial person relay: %v", err)
+		t.Fatalf("dial relay: %v", err)
 	}
 	socket.SetReadLimit(workspacerelay.ReadLimit)
 	t.Cleanup(func() { _ = socket.Close(websocket.StatusNormalClosure, "test over") })
-	return &workspaceLaneClient{t: t, socket: socket}
+	return &workspaceRelayClient{t: t, socket: socket}
 }
 
 func laneFrame(t *testing.T, channel, kind, stream string, payload any) workspacesession.Frame {
@@ -256,12 +266,40 @@ func laneFrame(t *testing.T, channel, kind, stream string, payload any) workspac
 	return workspacesession.Frame{Channel: channel, Type: kind, Stream: stream, Payload: encoded}
 }
 
-type workspaceLaneClient struct {
-	t      *testing.T
-	socket *websocket.Conn
+type workspaceRelayClient struct {
+	t       *testing.T
+	socket  *websocket.Conn
+	pending <-chan workspaceRelayMessage
 }
 
-func (c *workspaceLaneClient) send(frame workspacesession.Frame) {
+type workspaceRelayMessage struct {
+	kind websocket.MessageType
+	data []byte
+	err  error
+}
+
+func (c *workspaceRelayClient) read(ctx context.Context) workspaceRelayMessage {
+	kind, data, err := c.socket.Read(ctx)
+	return workspaceRelayMessage{kind: kind, data: data, err: err}
+}
+
+func (c *workspaceRelayClient) awaitServing() {
+	c.t.Helper()
+	ctx := testenv.WaitContext(c.t, c.t.Context())
+	read := make(chan workspaceRelayMessage, 1)
+	done := make(chan struct{})
+	c.t.Cleanup(func() { <-done })
+	go func() {
+		defer close(done)
+		read <- c.read(ctx)
+	}()
+	c.pending = read
+	if err := c.socket.Ping(ctx); err != nil {
+		c.t.Fatalf("relay did not start reading frames: %v", err)
+	}
+}
+
+func (c *workspaceRelayClient) send(frame workspacesession.Frame) {
 	c.t.Helper()
 	encoded, err := json.Marshal(frame)
 	if err != nil {
@@ -273,24 +311,29 @@ func (c *workspaceLaneClient) send(frame workspacesession.Frame) {
 	}
 }
 
-func (c *workspaceLaneClient) receive() workspacesession.Frame {
+func (c *workspaceRelayClient) receive() workspacesession.Frame {
 	c.t.Helper()
-	ctx := testenv.WaitContext(c.t, c.t.Context())
-	kind, data, err := c.socket.Read(ctx)
-	if err != nil {
-		c.t.Fatalf("read frame: %v", err)
+	v := workspaceRelayMessage{}
+	if c.pending == nil {
+		v = c.read(testenv.WaitContext(c.t, c.t.Context()))
+	} else {
+		v = <-c.pending
+		c.pending = nil
 	}
-	if kind != websocket.MessageText {
-		c.t.Fatalf("frame message type = %v, want text", kind)
+	if v.err != nil {
+		c.t.Fatalf("read frame: %v", v.err)
+	}
+	if v.kind != websocket.MessageText {
+		c.t.Fatalf("frame message type = %v, want text", v.kind)
 	}
 	var frame workspacesession.Frame
-	if err := json.Unmarshal(data, &frame); err != nil {
-		c.t.Fatalf("decode frame %q: %v", data, err)
+	if err := json.Unmarshal(v.data, &frame); err != nil {
+		c.t.Fatalf("decode frame %q: %v", v.data, err)
 	}
 	return frame
 }
 
-func receiveType(t *testing.T, client *workspaceLaneClient, kind string) workspacesession.Frame {
+func receiveType(t *testing.T, client *workspaceRelayClient, kind string) workspacesession.Frame {
 	t.Helper()
 	for range 64 {
 		frame := client.receive()
@@ -313,7 +356,7 @@ func terminalAvailable() bool {
 	return err == nil
 }
 
-func startWorkspaceShell(t *testing.T, person *workspaceLaneClient) *os.Process {
+func startWorkspaceShell(t *testing.T, person *workspaceRelayClient) *os.Process {
 	t.Helper()
 	person.send(laneFrame(t, workspacesession.ChannelTerminal, workspacesession.TypeOpen, "", workspacesession.TerminalOpen{Cols: 80, Rows: 24}))
 	opened := receiveType(t, person, workspacesession.TypeTerminalOpened)
