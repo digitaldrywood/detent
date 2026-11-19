@@ -52,7 +52,7 @@ export function SourceRecoveryControls(props: {
       <h2 className="font-medium">Source recovery</h2>
       <p className="break-all text-muted-foreground">Source runner: {source.source_runner_name || source.source_runner_id || source.source_machine_id || "Unknown"}</p>
       <p>Checkpoint: {source.available ? "Verified retained source" : "Source capture required"}{source.head_sha !== "" ? ` · ${source.head_sha.slice(0, 12)}` : ""}</p>
-      <p>Execution: {source.quiesced ? "Stopped and lease released" : "Active or not confirmed stopped"}</p>
+      <p>Execution: {source.quiesced ? "Attempt finished and lease released" : "Transfer conditions unmet"}</p>
       <p className="text-muted-foreground">{source.reason}</p>
       {props.canManage && source.available && source.quiesced ? (
         <>

@@ -197,7 +197,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 		}
 	}
 	view := sourceRecoveryView{Destinations: []sourceRecoveryRunner{}, WorkItemID: snapshot.item.NativeID, Revision: tracker.Revision(snapshot.item.Revision)}
-	interrupted := false
+	releaseFailure, interrupted := false, false
 	if snapshot.attemptFound {
 		run, err := s.readNativeAttemptRunTenant(ctx, snapshot.attempt)
 		if err != nil {
@@ -218,9 +218,10 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 			view.HeadSHA = checkpoint.HeadSHA
 		}
 		attempt := snapshot.attempt.Attempt
-		unacknowledged := run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release" && attempt.CleanupAcknowledgedAt == nil
+		releaseFailure = run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release"
+		unacknowledged := releaseFailure && attempt.CleanupAcknowledgedAt == nil
 		interrupted = snapshot.attempt.Lease.ReleasedAt != nil && unacknowledged
-		view.Quiesced = snapshot.attempt.Lease.ReleasedAt != nil && !unacknowledged && attempt.SourceExecutionFinished()
+		view.Quiesced = snapshot.attempt.Lease.ReleasedAt != nil && !unacknowledged
 	}
 	if snapshot.version != nil {
 		row := *snapshot.version
@@ -239,7 +240,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 	if snapshot.item.RecoveryVersionID == view.VersionID {
 		view.DestinationRunnerID = snapshot.item.RecoveryRunnerID
 	}
-	view.Quiesced = view.Quiesced && !snapshot.unreleasedLease && !issue.Archived && !issue.Terminal
+	view.Quiesced = view.Quiesced && snapshot.attempt.Attempt.SourceExecutionFinished(view.Available && !releaseFailure) && !snapshot.unreleasedLease && !issue.Archived && !issue.Terminal
 	switch {
 	case issue.Archived || issue.Terminal:
 		view.Reason = "Restore or explicitly reopen this work item before changing recovery ownership"

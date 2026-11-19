@@ -188,8 +188,8 @@ type Attempt struct {
 	UpdatedAt                 time.Time
 }
 
-func (a Attempt) SourceExecutionFinished() bool {
-	return !a.WorkerOutstanding && (a.Status == "succeeded" || a.Status == "failed" || a.Status == "cancelled")
+func (a Attempt) SourceExecutionFinished(verifiedPublishedSource bool) bool {
+	return (!a.WorkerOutstanding || verifiedPublishedSource) && (a.Status == "succeeded" || a.Status == "failed" || a.Status == "cancelled")
 }
 
 type AttemptCursor struct {

@@ -65,7 +65,8 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope hubscop
 	if err != nil {
 		return nil, err
 	}
-	if run.Sequence != snapshot.Attempt.Sequence || run.ClaimReleasedAt == nil || run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release" && run.CleanupAcknowledgedAt == nil {
+	releaseFailure := run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release"
+	if run.Sequence != snapshot.Attempt.Sequence || run.ClaimReleasedAt == nil || releaseFailure && run.CleanupAcknowledgedAt == nil {
 		return nil, sourceRecoveryRefusal("Source execution has no acknowledged release")
 	}
 	approval, pinned, err := s.readTenantProjectPolicyRevision(ctx, scope.Organization, scope.Project)
@@ -147,7 +148,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope hubscop
 		if attempt.Sequence != snapshot.Attempt.Sequence || attempt.PayloadObjectKey != snapshot.Attempt.PayloadObjectKey || attempt.LeaseID != snapshot.Attempt.LeaseID || attempt.FencingToken != snapshot.Attempt.FencingToken {
 			return hubapi.NativeConflict(view.Revision - 1)
 		}
-		if !attempt.SourceExecutionFinished() {
+		if !attempt.SourceExecutionFinished(view.Available && !releaseFailure) {
 			return sourceRecoveryRefusal("Source execution must be terminal with all registered workers retired")
 		}
 		locker, ok := w.(leasestore.UnreleasedIssueLeaseLocker)
