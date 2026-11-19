@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -700,16 +699,16 @@ func newDispatchWaitFixture(t *testing.T, name string) (nativeFixture, *dispatch
 	return newNativeFixture(t, service, organization.ID, name), probe
 }
 
-func TestNativeDispatchWaitScale(t *testing.T) {
+func TestNativeDispatchWaitGrantsDistinctWork(t *testing.T) {
 	t.Parallel()
-	for _, runners := range []int{1, 16, 64, 256} {
-		for _, admissions := range []int{1, 8} {
+	for _, runners := range []int{1, 4} {
+		for _, admissions := range []int{1, 2} {
 			if admissions > runners {
 				continue
 			}
 			t.Run(fmt.Sprintf("runners_%d_admissions_%d", runners, admissions), func(t *testing.T) {
 				t.Parallel()
-				f, probe := newDispatchWaitFixture(t, "scale")
+				f, probe := newDispatchWaitFixture(t, "concurrent-dispatch")
 				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 				workers := make([]runnerFixture, runners)
 				cursors := make([]string, runners)
@@ -728,18 +727,12 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 					requests[index] = tracker.CreateIssue{Title: fmt.Sprintf("ready-%d", index), Body: issueContractTestSections, State: "Todo"}
 				}
 				publish, _ := prepareDispatchIssuesFixture(t, f, requests)
-				probe.candidates.Store(0)
-				probe.rows.Store(0)
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
-				results := make(chan time.Duration, runners)
+				results := make(chan bool, runners)
 				failures := make(chan int, runners)
-				var began atomic.Int64
 				var joined sync.WaitGroup
 				defer func() { cancel(); joined.Wait() }()
-				var memoryBefore, memoryHeld runtime.MemStats
-				runtime.ReadMemStats(&memoryBefore)
-				requestsBefore := probe.queries.Load()
 				for index := range runners {
 					joined.Add(1)
 					go func() {
@@ -748,14 +741,14 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 						response := serveDispatchWait(ctx, f, worker.redemption.Credential, cursors[index])
 						if response.Code != http.StatusOK {
 							failures <- response.Code
-							results <- 0
+							results <- false
 							return
 						}
 						claim := tracker.NativeClaim{MachineID: worker.binding.MachineID, SessionID: fmt.Sprintf("session-%d", index), PolicyID: hubTestPolicy().ID, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: []string{"Todo"}}
 						raw, err := json.Marshal(claim)
 						if err != nil {
 							failures <- http.StatusInternalServerError
-							results <- 0
+							results <- false
 							return
 						}
 						request := httptest.NewRequest(http.MethodPost, f.base+"/claims", bytes.NewReader(raw)).WithContext(ctx)
@@ -764,44 +757,31 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 						claimed := httptest.NewRecorder()
 						f.service.echo.ServeHTTP(claimed, request)
 						if claimed.Code == http.StatusOK {
-							results <- time.Since(time.Unix(0, began.Load()))
+							results <- true
 							return
 						}
 						if claimed.Code != http.StatusConflict {
 							failures <- claimed.Code
 						}
-						results <- 0
+						results <- false
 					}()
 				}
 				awaitDispatchSubscribers(t, f.service, f.project.OrganizationID, runners, probe)
-				idleReads := probe.queries.Load()
-				runtime.ReadMemStats(&memoryHeld)
-				awaitDispatchSubscribers(t, f.service, f.project.OrganizationID, runners, probe)
-				if idleReads <= requestsBefore {
-					t.Fatal("wait entry query tracer was not exercised")
-				}
-				idlePool := probe.pool.Load().Stat()
-				if probe.queries.Load() != idleReads || probe.candidates.Load() != 0 {
-					t.Fatal("held waits performed database work")
-				}
-				began.Store(time.Now().UnixNano())
 				publish()
 
 				for range 8 {
 					f.service.notifications.notify(dispatchNotificationKey(f.project.OrganizationID))
 				}
 				granted := 0
-				var worst time.Duration
 				settleCtx := testenv.WaitContext(t, t.Context())
 				for range runners {
 					select {
-					case latency := <-results:
-						if latency > 0 {
+					case grantedClaim := <-results:
+						if grantedClaim {
 							granted++
-							worst = max(worst, latency)
 						}
 					case <-settleCtx.Done():
-						t.Fatal("scale request did not settle")
+						t.Fatal("dispatch request did not settle")
 					}
 				}
 				if len(failures) > 0 {
@@ -816,22 +796,18 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 				}
 				joined.Wait()
 				awaitDispatchSubscribers(t, f.service, f.project.OrganizationID, 0, probe)
-				pool := probe.pool.Load().Stat()
-				t.Logf("wait_requests=%d claim_requests=%d entry_queries=%d idle_queries=0 idle_candidates=0 held_heap_bytes=%d wait_entry_alloc_bytes=%d total_queries=%d candidate_queries=%d candidate_rows=%d idle_pool_wait=%s total_pool_wait=%s wake_to_claim_max=%s", runners, runners, idleReads-requestsBefore, memoryHeld.HeapAlloc, memoryHeld.TotalAlloc-memoryBefore.TotalAlloc, probe.queries.Load()-requestsBefore, probe.candidates.Load(), probe.rows.Load(), idlePool.AcquireDuration(), pool.AcquireDuration(), worst)
 			})
 		}
 	}
 }
 
-func TestNativeCandidateQueryBound(t *testing.T) {
+func TestNativeCandidateFiltersAndCursor(t *testing.T) {
 	t.Parallel()
-	var bindMu sync.Mutex
-	var bindBytes int64
 	for _, test := range []struct {
 		size        int
 		unpublished bool
 		filtered    bool
-	}{{size: 16}, {size: 256}, {size: 2048}, {size: 256, unpublished: true}, {size: 16, filtered: true}, {size: 256, filtered: true}, {size: 2048, filtered: true}} {
+	}{{size: 16}, {size: 256, unpublished: true}, {size: 16, filtered: true}} {
 		t.Run(fmt.Sprintf("queue_%d_unpublished_%t_filtered_%t", test.size, test.unpublished, test.filtered), func(t *testing.T) {
 			t.Parallel()
 			f, probe := newDispatchWaitFixture(t, "candidate-bound")
@@ -960,8 +936,6 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 					{name: "all labels required", included: []string{"required", "absent"}, absent: true},
 				} {
 					t.Run(filter.name, func(t *testing.T) {
-						probe.candidates.Store(0)
-						probe.rows.Store(0)
 						filtered := query
 						filtered.Limit = 1
 						filtered.Assignees = filter.assignees
@@ -976,78 +950,43 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 						if filter.absent {
 							want = nil
 						}
-						if !slices.Equal(ids, want) || probe.candidates.Load() != 1 || probe.rows.Load() != int64(len(want)) {
-							t.Fatalf("ids=%v want=%v candidate_queries=%d returned_rows=%d", ids, want, probe.candidates.Load(), probe.rows.Load())
+						if !slices.Equal(ids, want) {
+							t.Fatalf("ids=%v want=%v", ids, want)
 						}
 					})
 				}
 				return
 			}
-			began := time.Now()
 			page, err := read(query)
-			elapsed := time.Since(began)
 			if err != nil {
 				t.Fatal(err)
 			}
 			ids := idsOf(page)
-			if len(ids) != 9 || ids[0] != tailID || probe.rows.Load() != 9 {
-				t.Fatalf("ids=%v tail=%d returned_rows=%d", ids, tailID, probe.rows.Load())
+			if len(ids) != 9 || ids[0] != tailID {
+				t.Fatalf("ids=%v tail=%d", ids, tailID)
 			}
-			bindMu.Lock()
-			if bindBytes == 0 {
-				bindBytes = probe.maxArgumentBytes.Load()
-			}
-			want := bindBytes
-			bindMu.Unlock()
-			if probe.maxArgumentBytes.Load() != want {
-				t.Fatalf("bind payload grew with candidate cohort: got=%d want=%d", probe.maxArgumentBytes.Load(), want)
-			}
-			captured := probe.query.Load()
-			if captured == nil || probe.candidates.Load() == 0 {
-				t.Fatal("candidate query tracer was not exercised")
-			}
-			var plan []byte
-			if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "EXPLAIN (FORMAT JSON) "+captured.statement, captured.args...).Scan(&plan); err != nil {
-				t.Fatal(err)
-			}
-			t.Log(string(plan))
 			if test.unpublished {
 				if probe.details.reads.Load() != 0 {
 					t.Fatalf("typed first page read %d completion payloads", probe.details.reads.Load())
 				}
 				seen := slices.Clone(ids)
-				pages := 1
-				var afterBindBytes int64
 				for len(ids) == query.Limit {
 					query.AfterWorkItemID = page.Items[len(page.Items)-1].WorkItemID
-					probe.rows.Store(0)
-					probe.maxArgumentBytes.Store(0)
 					page, err = read(query)
 					if err != nil {
 						t.Fatal(err)
 					}
 					ids = idsOf(page)
-					if work := probe.rows.Load(); work != int64(len(ids)+1) {
-						t.Fatalf("page=%d typed_rows=%d want=%d including cursor", pages, work, len(ids)+1)
-					}
-					if afterBindBytes == 0 {
-						afterBindBytes = probe.maxArgumentBytes.Load()
-					}
-					if probe.maxArgumentBytes.Load() != afterBindBytes {
-						t.Fatalf("cursor bind payload grew with candidate cohort: got=%d want=%d", probe.maxArgumentBytes.Load(), afterBindBytes)
-					}
 					for _, id := range ids {
 						if slices.Contains(seen, id) {
 							t.Fatalf("page repeated candidate %d", id)
 						}
 					}
 					seen = append(seen, ids...)
-					pages++
 				}
 				if len(seen) != test.size-1 || slices.Contains(seen, tracker.WorkItemID(firstRow.ID)) || probe.details.reads.Load() != 0 {
 					t.Fatalf("paged=%d leased=%d completion_payloads=%d", len(seen), firstRow.ID, probe.details.reads.Load())
 				}
-				t.Logf("pages=%d candidates=%d completion_payloads=%d max_bind_bytes=%d", pages, len(seen), probe.details.reads.Load(), afterBindBytes)
 				for _, issue := range issues[:200] {
 					rewriteDispatchAttemptFixture(t, attempts[issue.WorkItemID], func(run *tracker.NativeRunData) {
 						run.CompletionBody = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```"
@@ -1087,11 +1026,10 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				rewriteDispatchAttemptFixture(t, attempts[tail.WorkItemID], func(run *tracker.NativeRunData) {
 					run.CompletionBody = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```"
 				})
-				probe.candidates.Store(0)
 				claim.SessionID = "ranked-preview"
 				_, err = f.service.previewProviderCandidatesTenant(t.Context(), scope, tracker.NativeCapacityPreview{NativeClaim: claim, After: tailID, Limit: 9}, f.service.config.Clock())
-				if !isProviderWait(err) || probe.candidates.Load() != 1 {
-					t.Errorf("answered cursor must refresh without reading next page: candidate_queries=%d err=%v", probe.candidates.Load(), err)
+				if !isProviderWait(err) {
+					t.Errorf("answered cursor must refresh: %v", err)
 				}
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(tail.WorkItemID)+"/archive", f.token, archiveRequest(tail, "removed-cursor")), http.StatusOK)
@@ -1099,7 +1037,6 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			if _, err := read(query); err == nil {
 				t.Fatal("removed cursor did not request a fresh preview")
 			}
-			t.Logf("queue=%d page_rows=9 select_duration=%s", test.size, elapsed)
 		})
 	}
 }

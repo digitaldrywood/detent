@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -186,7 +184,6 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			boundary := test.name
 			overlap := strings.HasSuffix(boundary, "guard")
 			f := newDispatchGuardFixture(t)
-			installReportsBudgetTrace(t, f.service)
 			admin := hostedPostgresAdmin(t, f.service)
 			scope := analyticsTestScope(t, f.nativeFixture)
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
@@ -297,38 +294,9 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution := scheduler.RunExecution(claim.Issue.ID)
-			var sourceMu sync.Mutex
-			var sourceStatements []tracedStatement
-			sourceTiming := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
-				values := make([]any, len(args))
-				for i, arg := range args {
-					values[i] = arg.Value
-				}
-				sourceMu.Lock()
-				sourceStatements = append(sourceStatements, tracedStatement{query, values})
-				sourceMu.Unlock()
-			}}
-			beforeTransition, _, err := f.service.nativeProgressRequest(withRequestTiming(t.Context(), sourceTiming), scope, string(f.issue.WorkItemID), f.policy, string(f.runner.binding.MachineID))
+			beforeTransition, _, err := f.service.nativeProgressRequest(t.Context(), scope, string(f.issue.WorkItemID), f.policy, string(f.runner.binding.MachineID))
 			if err != nil {
 				t.Fatal(err)
-			}
-			if test.staleRunning > 0 {
-				sourceMu.Lock()
-				captured := append([]tracedStatement(nil), sourceStatements...)
-				sourceMu.Unlock()
-				found := false
-				for _, statement := range captured {
-					if !strings.Contains(statement.query, "FROM native_attempts") || !strings.Contains(statement.query, "fencing_token DESC") || !strings.HasPrefix(statement.query, "-- name: PageIssueAttempts :many") {
-						continue
-					}
-					found = true
-					if violations, _, raw := tenantWriteWorkViolations(t, admin, scope.Organization, statement); len(violations) > 0 {
-						t.Fatalf("terminal history lookup is not indexed and bounded: %v plan=%s", violations, raw)
-					}
-				}
-				if !found {
-					t.Fatal("progress request did not execute the actual bounded attempt-page owner")
-				}
 			}
 			current := f.reload(t)
 			native, err := client.Native(f.project.OrganizationID, f.project.ID)

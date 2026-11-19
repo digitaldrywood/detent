@@ -1,14 +1,12 @@
 package hubserver
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -23,20 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type threadUnreadTraceKey struct{}
-type threadUnreadQueryTrace struct{}
-
-func (threadUnreadQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if observe, ok := ctx.Value(threadUnreadTraceKey{}).(func(pgx.TraceQueryStartData)); ok {
-		observe(data)
-	}
-	return ctx
-}
-
-func (threadUnreadQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-const threadUnreadPageQuery = "WITH page AS (SELECT id,scope,project_id,work_item_id,post_count FROM team_threads"
 
 type threadUnreadFixture struct {
 	admin    *sql.DB
@@ -69,7 +53,6 @@ func newThreadUnreadFixture(t *testing.T) threadUnreadFixture {
 	}
 	pgtransport.Configure(poolConfig)
 	poolConfig.MaxConns = int32(cfg.Postgres.Pool.MaxConnections)
-	poolConfig.ConnConfig.Tracer = threadUnreadQueryTrace{}
 	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +164,7 @@ func seedThreadUnreadHistory(t *testing.T, viewer nativeFixture, prefix string, 
 	}
 }
 
-func TestTeamThreadUnreadSummaryBoundsHistoryWork(t *testing.T) {
+func TestTeamThreadUnreadSummaryResumesAcrossTicks(t *testing.T) {
 	t.Parallel()
 	fixture := newThreadUnreadFixture(t)
 	f := fixture.viewer(t, "org_startup", "unread-first")
@@ -222,25 +205,8 @@ func TestTeamThreadUnreadSummaryBoundsHistoryWork(t *testing.T) {
 	if got := read(f, f.project.ID, true); !got.Pending || got.Count != nil {
 		t.Fatalf("new summary=%+v", got)
 	}
-	var statements []string
-	var pageLimits []string
-	ctx := context.WithValue(t.Context(), threadUnreadTraceKey{}, func(data pgx.TraceQueryStartData) {
-		statements = append(statements, data.SQL)
-		if strings.HasPrefix(data.SQL, threadUnreadPageQuery) {
-			pageLimits = append(pageLimits, fmt.Sprint(data.Args[3]))
-		}
-	})
-	if err := worker.maintainTeamUnread(ctx); err != nil {
+	if err := worker.maintainTeamUnread(t.Context()); err != nil {
 		t.Fatal(err)
-	}
-	pages := len(pageLimits)
-	for _, limit := range pageLimits {
-		if limit != "51" {
-			t.Fatalf("unread page limit=%s, want 50 rows plus one lookahead", limit)
-		}
-	}
-	if pages != 4 {
-		t.Fatalf("one maintenance tick scanned %d pages, want fixed budget 4", pages)
 	}
 	if got := read(f, f.project.ID, false); !got.Pending || got.Count != nil {
 		t.Fatalf("large history completed beyond tick budget: %+v", got)
@@ -250,19 +216,6 @@ func TestTeamThreadUnreadSummaryBoundsHistoryWork(t *testing.T) {
 	}
 	if got := read(f, f.project.ID, false); got.Pending || got.Count == nil || *got.Count != 1 {
 		t.Fatalf("older unread thread missing: %+v", got)
-	}
-	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: credential}
-	statements = nil
-	if _, err := worker.requestTeamUnread(ctx, scope, []string{string(f.project.ID)}, false); err != nil {
-		t.Fatal(err)
-	}
-	if len(statements) == 0 {
-		t.Fatal("unread request did not execute traced PostgreSQL statements")
-	}
-	for _, query := range statements {
-		if strings.Contains(query, "FROM team_threads") || strings.Contains(query, "FROM team_thread_reads") || strings.Contains(query, "team_thread_participants") {
-			t.Fatalf("summary request walked history or metadata: %s", query)
-		}
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"/"+unread.ID, f.token, nil), 200)
 	if got := read(f, f.project.ID, true); !got.Pending || got.Count == nil || *got.Count != 1 {

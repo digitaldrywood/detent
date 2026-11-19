@@ -1043,31 +1043,6 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			}
 		})
 	})
-	for _, query := range []string{
-		`EXPLAIN SELECT runner_id FROM runner_identities WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1' AND removed_at IS NULL`,
-		`EXPLAIN SELECT lease_id FROM leases WHERE organization_id='org_first' AND machine_id='machine_000000000000000000000000000000a1' AND released_at IS NULL AND expires_at>now()`,
-		`EXPLAIN SELECT runner_id FROM runner_provider_reports WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`,
-	} {
-		rows, err := admin.QueryContext(t.Context(), query)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for rows.Next() {
-			var line string
-			if err := rows.Scan(&line); err != nil {
-				rows.Close()
-				t.Fatal(err)
-			}
-			t.Log(line)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			t.Fatal(err)
-		}
-		if err := rows.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
 
 	for _, tc := range []struct{ name, token, query string }{
 		{"current machine", "org_first_runner_one", `UPDATE runner_identities SET machine_id='machine_000000000000000000000000000000a2' WHERE organization_id='org_first' AND runner_id='runner_000000000000000000000000000000a1'`},

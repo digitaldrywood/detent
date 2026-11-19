@@ -113,7 +113,7 @@ func TestPostgresAttachmentExpiryPreservesReferencesAndTenantQuota(t *testing.T)
 				t.Fatalf("first batch exceeded 100 referenced candidates: %d deletions", len(expired))
 			}
 			referenced := false
-			service.config.TenantRepository = &attachmentReadCounter{Repository: repository, beforeWrite: func() error {
+			service.config.TenantRepository = &attachmentWriteProbe{Repository: repository, beforeWrite: func() error {
 				if referenced {
 					return nil
 				}

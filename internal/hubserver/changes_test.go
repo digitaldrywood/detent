@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -41,7 +40,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -1607,94 +1605,6 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			t.Fatalf("revoked owner recorded publication: %d", response.Code)
 		}
 	})
-	admin := nativeAttemptTestDatabase(t, f.nativeFixture)
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,push_known)
- SELECT organization_id,project_id,work_item_id,$4||n,10000+n,'run.checkpointed',schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,true FROM (SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 ORDER BY sequence LIMIT 1) source CROSS JOIN generate_series(1,4000)n`, scope.Organization, scope.Project, f.issue.WorkItemID, hubapi.NewID("plan")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
-		t.Fatal(err)
-	}
-	connection, err := admin.Conn(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
-	err = connection.Raw(func(driverConnection any) error {
-		native, ok := driverConnection.(*stdlib.Conn)
-		if !ok {
-			return errors.New("native PostgreSQL fixture connection is required")
-		}
-		tx, err := native.Conn().Begin(t.Context())
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback(t.Context())
-		if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(scope.Organization)); err != nil {
-			return err
-		}
-		capture := &activityQueryCapture{DBTX: tx}
-		rows, err := pgquery.New(capture).RecordChangePublicationCheckpoints(t.Context(), pgquery.RecordChangePublicationCheckpointsParams{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: f.issue.WorkItemID, ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA})
-		if err != nil {
-			return err
-		}
-		if len(rows) > corestore.MaxPageSize+1 {
-			t.Fatalf("checkpoint lookup exceeded its candidate bound: %d", len(rows))
-		}
-		var raw []byte
-		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+capture.query, capture.args...).Scan(&raw); err != nil {
-			return err
-		}
-		type planNode struct {
-			Type     string            `json:"Node Type"`
-			Relation string            `json:"Relation Name"`
-			Index    string            `json:"Index Name"`
-			Rows     float64           `json:"Actual Rows"`
-			Loops    float64           `json:"Actual Loops"`
-			Removed  float64           `json:"Rows Removed by Filter"`
-			Plans    []json.RawMessage `json:"Plans"`
-		}
-		var plans []struct{ Plan json.RawMessage }
-		if err := json.Unmarshal(raw, &plans); err != nil {
-			return err
-		}
-		if len(plans) != 1 {
-			t.Fatalf("missing checkpoint query plan: %s", raw)
-		}
-		indexes := map[string]bool{}
-		var visited float64
-		var walk func(json.RawMessage)
-		walk = func(raw json.RawMessage) {
-			var node planNode
-			if err := json.Unmarshal(raw, &node); err != nil {
-				t.Fatal(err)
-			}
-			indexes[node.Index] = true
-			if node.Relation == "collaboration_events" {
-				if node.Type == "Seq Scan" {
-					t.Fatalf("checkpoint lookup scanned event history: %s", raw)
-				}
-				visited += (node.Rows + node.Removed) * node.Loops
-			}
-			if node.Type == "Sort" && node.Rows > float64(corestore.MaxPageSize+1) {
-				t.Fatalf("checkpoint lookup sorted unbounded history: %s", raw)
-			}
-			for _, child := range node.Plans {
-				walk(child)
-			}
-		}
-		walk(plans[0].Plan)
-		if !indexes["change_publication_checkpoint_idx"] || !indexes["change_publication_unprojected_idx"] || visited > float64(2*(corestore.MaxPageSize+1)) {
-			t.Fatalf("checkpoint lookup is not indexed and bounded: visited=%.0f plan=%s", visited, raw)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {

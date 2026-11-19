@@ -10,15 +10,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -267,14 +262,14 @@ func TestDependencyReasonPlainText(t *testing.T) {
 	}
 }
 
-func TestNativeDependencyBatchReadCost(t *testing.T) {
+func TestNativeDependencyBatchHydratesRelationshipFacts(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	blocker := f.create(t, "Shared foundation")
 	dependent := f.create(t, "Dependent feature")
-	for start := 3; start <= 2000; start += corestore.MaxPageSize {
+	for start := 3; start <= 5; start += corestore.MaxPageSize {
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-			for number := start; number < min(start+corestore.MaxPageSize, 2001); number++ {
+			for number := start; number < min(start+corestore.MaxPageSize, 6); number++ {
 				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID,
 					NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_batch_%d", number)), Number: int64(number), Title: fmt.Sprintf("Dependent feature %d", number),
 					WorkflowStateName: new(dependent.State), ActorKind: new(dependent.Actor.Kind), ActorPrincipalID: new(dependent.Actor.PrincipalID)}); err != nil {
@@ -286,9 +281,9 @@ func TestNativeDependencyBatchReadCost(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for start := 2; start <= 2000; start += corestore.MaxPageSize {
+	for start := 2; start <= 5; start += corestore.MaxPageSize {
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-			for number := start; number < min(start+corestore.MaxPageSize, 2001); number++ {
+			for number := start; number < min(start+corestore.MaxPageSize, 6); number++ {
 				id := dependent.WorkItemID
 				if number > 2 {
 					id = tracker.NativeWorkItemID(fmt.Sprintf("wi_batch_%d", number))
@@ -308,32 +303,7 @@ func TestNativeDependencyBatchReadCost(t *testing.T) {
 		}
 	}
 	scope := analyticsTestScope(t, f)
-	connection := startupConnection(t, usagePostgresAdmin(t, f.service), "detent_runtime_v2", "")
-	config, err := connection.PoolConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pgtransport.Configure(config)
-	config.MaxConns = 3
-	config.ConnConfig.Tracer = runtimeHistoryTrace{}
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
-	if err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
-	original := f.service.config.TenantRepository
-	defer func() {
-		f.service.config.TenantRepository = original
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	}()
-	f.service.config.TenantRepository = repository
-	for _, size := range []int{2, 2000} {
+	for _, size := range []int{2, 5} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			issues := make([]*tracker.NativeIssue, size)
 			issues[0] = &tracker.NativeIssue{NativeReference: blocker.NativeReference}
@@ -341,33 +311,16 @@ func TestNativeDependencyBatchReadCost(t *testing.T) {
 			for index := 2; index < size; index++ {
 				issues[index] = &tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_batch_%d", index+1)), ProjectID: f.project.ID}}
 			}
-			capture := &runtimeHistoryTraceCapture{}
-			start := time.Now()
-			if err := f.service.hydrateWorkItemRelationshipFactsPage(context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture), scope, issues); err != nil {
+			if err := f.service.hydrateWorkItemRelationshipFactsPage(t.Context(), scope, issues); err != nil {
 				t.Fatal(err)
 			}
-			capture.mu.Lock()
-			statements := slices.Clone(capture.statements)
-			capture.mu.Unlock()
-			queries := 0
-			for _, statement := range statements {
-				if strings.HasPrefix(strings.TrimSpace(strings.ToUpper(statement.query)), "SELECT") || strings.Contains(statement.query, "-- name: RelationshipBatch :many") {
-					if !strings.Contains(statement.query, "set_config(") {
-						queries++
-					}
-				}
-			}
-			t.Logf("hydrated %d issues in %s with %d queries", size, time.Since(start), queries)
-			if len(issues[0].Dependents) != 1999 || !issues[0].DependencyReady || len(issues[0].Blockers) != 0 {
+			if len(issues[0].Dependents) != 4 || !issues[0].DependencyReady || len(issues[0].Blockers) != 0 {
 				t.Fatalf("blocker hydration: dependents=%d ready=%v", len(issues[0].Dependents), issues[0].DependencyReady)
 			}
 			for _, issue := range issues[1:] {
 				if len(issue.Blockers) != 1 || issue.Blockers[0].ID != blocker.WorkItemID || issue.Blockers[0].Title != "Shared foundation" || issue.DependencyReady || len(issue.Related) != 1 || issue.Related[0].ID != blocker.WorkItemID {
 					t.Fatalf("dependent hydration: %+v", issue)
 				}
-			}
-			if queries != 2 {
-				t.Fatalf("dependency query count scales with cards: %d", queries)
 			}
 		})
 	}

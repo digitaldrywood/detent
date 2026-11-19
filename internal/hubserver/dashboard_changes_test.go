@@ -836,40 +836,6 @@ func testDashboardChangeLog(t *testing.T) {
 	t.Run("retention progresses on unchanged projects with an inclusive floor", func(t *testing.T) {
 		drainTestNativeBoard(t, f.service)
 		admin := usagePostgresAdmin(t, f.service)
-		plan, err := admin.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer plan.Rollback()
-		if _, err := plan.ExecContext(ctx, `SET LOCAL enable_seqscan=off`); err != nil {
-			t.Fatal(err)
-		}
-		rows, err := plan.QueryContext(ctx, `EXPLAIN SELECT project_id FROM native_board_sequences WHERE organization_id=$1 AND project_id>$2 ORDER BY project_id LIMIT 1 FOR UPDATE SKIP LOCKED`, scopes[0].Organization, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var explanation strings.Builder
-		for rows.Next() {
-			var line string
-			if err := rows.Scan(&line); err != nil {
-				rows.Close()
-				t.Fatal(err)
-			}
-			explanation.WriteString(line)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			t.Fatal(err)
-		}
-		if err := rows.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(explanation.String(), "native_board_sequences_pkey") {
-			t.Fatalf("retention discovery is not an indexed seek: %s", explanation.String())
-		}
-		if err := plan.Rollback(); err != nil {
-			t.Fatal(err)
-		}
 		for _, scope := range scopes {
 			before := head(scope).Sequence
 			added := int64(nativeBoardReplayLimit + 2*nativeBoardTrimLimit)

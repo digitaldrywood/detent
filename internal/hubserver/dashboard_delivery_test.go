@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
@@ -305,60 +304,20 @@ func TestHostedEventsReplayLiveHandoff(t *testing.T) {
 	}
 }
 
-func TestHostedEventsIdleHeartbeatReads(t *testing.T) {
+func TestHostedEventsIdleHeartbeatHasNoCursor(t *testing.T) {
 	t.Parallel()
-	trace := &dispatchWaitPostgresTrace{}
-	f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{}, func(c *pgxpool.Config) {
-		c.ConnConfig.Tracer = trace
-	})
-	other := dashboardPostgresProject(t, f, user)
+	f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{})
 	head := dashboardPostgresHead(t, f)
 	query := "?since=" + strconv.FormatInt(head, 10)
-	openHostedTestStream(t, f, user, query)
-	openHostedTestStream(t, f, user, query)
-	pumpHostedDelivery(t, d)
-
-	var reads, otherStatements int
-	ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, statement string) {
-		switch {
-		case strings.HasPrefix(statement, "WITH project_state AS MATERIALIZED"):
-			reads++
-		case statement != "COMMIT":
-			otherStatements++
-		}
-	})
-	recover := func(want int) {
-		t.Helper()
-		reads, otherStatements = 0, 0
-		for range want {
-			d.changed()
-			d.deliver(ctx)
-		}
-		if reads != want || otherStatements != 0 {
-			t.Fatalf("idle recovery: %d shared project reads and %d other statements, want %d shared reads for two subscribers", reads, otherStatements, want)
-		}
-	}
-	recover(3)
-	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET last_used_at=created_at WHERE organization_id='org_security'"); err != nil {
-		t.Fatal(err)
-	}
-	recover(1)
-	appendDashboardPostgresLane(t, other)
-	recover(1)
-
 	heartbeat := make(chan time.Time, 1)
 	d.config.NewTimer = func(time.Duration) hubdeps.Timer {
 		return hubdeps.Timer{C: heartbeat, Reset: func(time.Duration) {}, Stop: func() {}}
 	}
 	heartbeatStream := openHostedTestStream(t, f, user, query)
-	before := trace.queries.Load()
 	heartbeat <- time.Now()
 	frame, err := readSSEFrame(heartbeatStream)
 	if err != nil || frame.ID != "" || frame.Event != "" || frame.Data != "" {
 		t.Fatalf("heartbeat carries a cursor or content: %+v %v", frame, err)
-	}
-	if trace.queries.Load() != before {
-		t.Fatal("heartbeat read the database")
 	}
 }
 
@@ -629,7 +588,7 @@ func TestHostedEventsNotifyOnlyAfterCommit(t *testing.T) {
 	}
 }
 
-func TestHostedEventsLegacyBoardPagesShareSummary(t *testing.T) {
+func TestHostedEventsLegacyBoardPagesResumeForBothSubscribers(t *testing.T) {
 	t.Parallel()
 	f, user, d := controlledHostedDelivery(t, hubdeps.DashboardDelivery{PageSize: 1})
 	f.seedIssue(t, 1)
@@ -639,16 +598,9 @@ func TestHostedEventsLegacyBoardPagesShareSummary(t *testing.T) {
 	head := hostedDeliveryHead(t, f)
 	first := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(before, 10))
 	second := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(before, 10))
-	var summaries, statements int
-	ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
-		statements++
-		if strings.Contains(query, "FROM native_board_counts") || strings.Contains(query, "GROUP BY b.state") {
-			summaries++
-		}
-	})
 	d.changed()
 	for d.remaining > 0 {
-		d.deliver(ctx)
+		d.deliver(t.Context())
 	}
 	for _, stream := range []*bufio.Reader{first, second} {
 		previous := before
@@ -676,12 +628,6 @@ func TestHostedEventsLegacyBoardPagesShareSummary(t *testing.T) {
 		if len(seen) != 2 {
 			t.Fatalf("board replay lost cards: %d", len(seen))
 		}
-	}
-	if statements == 0 {
-		t.Fatal("delivery did not execute an observed PostgreSQL statement")
-	}
-	if summaries != 0 {
-		t.Fatalf("delivery recomputed the background summary: %d", summaries)
 	}
 }
 

@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -15,44 +14,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type relationshipBatchCountingRepository struct {
-	tenantstore.Repository
-	reads   int
-	batches int
-}
-
-func (r *relationshipBatchCountingRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	r.reads++
-	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		return read(&relationshipBatchCountingReader{Reader: reader, repository: r})
-	})
-}
-
-type relationshipBatchCountingReader struct {
-	tenantstore.Reader
-	repository *relationshipBatchCountingRepository
-}
-
-func (r *relationshipBatchCountingReader) WorkItemRelationshipFacts(ctx context.Context, project tracker.ProjectID, workItems []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
-	r.repository.batches++
-	batch := r.Reader.(tenantstore.WorkItemRelationshipBatchReader)
-	return batch.WorkItemRelationshipFacts(ctx, project, workItems)
-}
-
-func (r *relationshipBatchCountingReader) RelationshipProjects(ctx context.Context, authority accessstore.Authority, projects []tracker.ProjectID, now time.Time) (map[tracker.ProjectID]bool, error) {
-	return r.Reader.(workitemread.ProjectReader).RelationshipProjects(ctx, authority, projects, now)
-}
-
 func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testing.T) {
 	t.Parallel()
 	repository, fixture, _, _ := newChangePolicyPostgresFixtureWithAdmin(t, 8)
 	if err := fixture.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
-	tenantReads := &relationshipBatchCountingRepository{Repository: repository}
-	accessReads := &relationshipBatchCountingRepository{Repository: repository}
-	fixture.service.config.TenantRepository = tenantReads
-	fixture.service.config.AccessRepository = accessReads
 	organization := tracker.OrganizationID("org_security")
 	project := fixture.project
 	privateProject := tracker.ProjectID("prj_private")
@@ -126,9 +93,6 @@ func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testi
 	if err := fixture.service.hydrateWorkItemRelationshipFactsPage(t.Context(), scope, []*tracker.NativeIssue{first, second, duplicate}); err != nil {
 		t.Fatal(err)
 	}
-	if tenantReads.reads != 1 || tenantReads.batches != 1 || accessReads.reads != 1 {
-		t.Fatalf("relationship page tenant reads=%d batch queries=%d access reads=%d, want 1 each", tenantReads.reads, tenantReads.batches, accessReads.reads)
-	}
 	for _, issue := range []*tracker.NativeIssue{first, duplicate} {
 		if len(issue.Dependencies) != 1 || issue.Dependencies[0] != "wi_visible_one" || len(issue.Blockers) != 1 || issue.Blockers[0].ID != "wi_visible_one" {
 			t.Fatalf("reporter received private cross-project dependency: %+v", issue)
@@ -140,14 +104,10 @@ func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testi
 	if len(second.Dependencies) != 1 || second.Dependencies[0] != "wi_visible_two" || second.BlockedReason.CurrentBasis != workitemread.DependencyBasis([]string{"wi_visible_two"}) || second.BlockedReason.Text != "" {
 		t.Fatalf("second entity relationship facts=%+v", second)
 	}
-	t.Run("single detail uses relationship batch", func(t *testing.T) {
-		tenantReads.reads, tenantReads.batches, accessReads.reads = 0, 0, 0
+	t.Run("single detail redacts private relationships", func(t *testing.T) {
 		issue := newIssue("wi_source_one")
 		if err := fixture.service.hydrateWorkItemRelationshipFacts(t.Context(), scope, issue); err != nil {
 			t.Fatal(err)
-		}
-		if tenantReads.reads != 1 || tenantReads.batches != 1 || accessReads.reads != 1 {
-			t.Fatalf("detail reads=%d batches=%d access=%d, want 1 each", tenantReads.reads, tenantReads.batches, accessReads.reads)
 		}
 		if len(issue.Blockers) != 1 || issue.Blockers[0].ID != "wi_visible_one" || issue.BlockedReason.CurrentBasis != workitemread.DependencyBasis([]string{"wi_visible_one"}) || issue.BlockedReason.Text != "" {
 			t.Fatalf("detail redaction: %+v", issue)

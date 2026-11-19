@@ -13,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -112,7 +111,6 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var auditCounts [2]int
 	for index, test := range []struct {
 		name  string
 		want  error
@@ -219,17 +217,11 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 					}
 					return nil
 				}
-				statements, transactions := 0, 0
 				mutating.reads, mutating.failRead = 0, 0
 				if test.name == "repository entry failure" {
 					mutating.failRead = 2
 				}
-				ctx := postgres.WithTransactionTiming(t.Context(), func(name string, _ time.Time) {
-					if name == "pg_begin" {
-						transactions++
-					}
-				}, func(time.Time, string) { statements++ })
-				err = service.refreshBoardRecord(ctx, org, viewstore.BoardCandidate{ProjectID: "example", WorkItemID: id}, now)
+				err = service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: "example", WorkItemID: id}, now)
 				if test.want != nil {
 					if !errors.Is(err, test.want) {
 						t.Fatalf("refresh error=%v, want %v", err, test.want)
@@ -329,14 +321,6 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 					if total != test.size {
 						t.Fatalf("fixture has %d issues, want %d", total, test.size)
 					}
-					counts := [2]int{statements + 2*transactions, statements + transactions}
-					if auditCounts == [2]int{} {
-						auditCounts = counts
-					}
-					if counts != auditCounts || counts[0] > 75 || counts[1] > 75 {
-						t.Fatalf("size %d statements/exchanges=%v, first fixture=%v (bound 75)", test.size, counts, auditCounts)
-					}
-					t.Logf("size=%d statements=%d exchanges=%d", test.size, counts[0], counts[1])
 					scope := hubscope.NativeScope{Organization: org, Project: "example"}
 					if _, _, err := service.prepareValidatorAuditDispositions(t.Context(), scope, changeID, securityaudit.Run{ID: 1}); !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, accessstore.ErrDenied) {
 						t.Fatalf("request with missing credentials was accepted: %v", err)

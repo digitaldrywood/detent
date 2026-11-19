@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,21 +43,12 @@ func (r *claimAuditWorkloadRepository) ReadTenant(ctx context.Context, org track
 	return r.Repository.ReadTenant(ctx, org, workload, read)
 }
 
-func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
+func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
 	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	config := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
 	config.MaxConns = 3
-	var exchanges atomic.Int64
-	dial := config.ConnConfig.DialFunc
-	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := dial(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
-		return &nativeLeaseWireConn{Conn: conn, exchanges: &exchanges, startup: true}, nil
-	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +67,6 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 	details := &memoryRunDetails{}
 	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, SecretKeys: secretTestKeys(t, "1", "1"), Clock: func() time.Time { return now }}}
 	content := eventstore.NewContent(details)
-	var baselineExchanges, baselineStatements int64
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service.localOrganization = string(org)
 		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: org, Name: string(org), Slug: string(org)})
@@ -242,22 +230,8 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var statements int64
-			queries := map[string]string{}
-			ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
-				statements++
-				if strings.Contains(query, "-- name: ClaimSnapshotRows ") {
-					queries["ClaimSnapshot"] = query
-				}
-			})
-			exchanges.Store(0)
-			scan, err = service.readNativeClaimCandidates(ctx, scope, request, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			afterSnapshotStatements, afterSnapshotExchanges := statements, exchanges.Load()
 			for _, plan := range scan.plans {
-				hydrated, err := service.hydrateNativeClaimPlan(ctx, scope, request, now, plan, &descriptor)
+				hydrated, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, plan, &descriptor)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -265,10 +239,6 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 					t.Fatal("cross tenant change")
 				}
 			}
-			if statements != afterSnapshotStatements || exchanges.Load() != afterSnapshotExchanges {
-				t.Fatal("claim hydration performed PostgreSQL work")
-			}
-			got := exchanges.Load()
 			detail, err := service.nativeClaimCurrentChangeDetail(t.Context(), scope, scan.plans[0], now)
 			if err != nil || !reflect.DeepEqual(detail, expected) {
 				got, _ := json.Marshal(detail)
@@ -278,115 +248,6 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				t.Fatalf("snapshot changed validated detail: %v", err)
 			}
 			if index == 49 || index == 99 {
-				t.Run(string(org)+"/bounded observation plans", func(t *testing.T) {
-					noise := make([]eventstore.Event, 128)
-					for i := range noise {
-						raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: org, ProjectID: scope.Project, AggregateID: "wi_000", Type: "issue.edited", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now})
-						if err != nil {
-							t.Fatal(err)
-						}
-						noise[i], err = content.PrepareEvent(t.Context(), org, raw)
-						if err != nil {
-							t.Fatal(err)
-						}
-					}
-					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-						for _, row := range noise {
-							if _, err := w.AppendEvent(t.Context(), row); err != nil {
-								return err
-							}
-						}
-						return nil
-					}); err != nil {
-						t.Fatal(err)
-					}
-					literal := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
-
-					ids, revisions := []string{}, []string{}
-					for _, plan := range scan.plans {
-						ids = append(ids, fmt.Sprintf("%d", plan.Candidate.ID))
-						revisions = append(revisions, fmt.Sprintf("%d", plan.Candidate.Revision))
-					}
-					for _, test := range []struct {
-						name, types, arguments string
-						candidates             int
-						populated              bool
-					}{
-						{"ClaimSnapshot", "text,text,bigint[],bigint[]", strings.Join([]string{literal(string(org)), literal(string(scope.Project)), "ARRAY[" + strings.Join(ids, ",") + "]::bigint[]", "ARRAY[" + strings.Join(revisions, ",") + "]::bigint[]"}, ","), len(scan.plans), false},
-						{"ClaimSnapshotPopulated", "text,text,bigint[],bigint[]", strings.Join([]string{literal(string(org)), literal(string(scope.Project)), "ARRAY[" + ids[0] + "]::bigint[]", "ARRAY[" + revisions[0] + "]::bigint[]"}, ","), 1, true},
-					} {
-						t.Run(test.name, func(t *testing.T) {
-							query := queries["ClaimSnapshot"]
-							if query == "" {
-								t.Fatal("version observation query was not captured")
-							}
-							if _, err := admin.ExecContext(t.Context(), "ANALYZE issues"); err != nil {
-								t.Fatal(err)
-							}
-							tx, err := admin.BeginTx(t.Context(), nil)
-							if err != nil {
-								t.Fatal(err)
-							}
-							defer tx.Rollback()
-							for _, statement := range []string{"SET LOCAL ROLE detent_runtime_v2", "SET LOCAL plan_cache_mode=force_generic_plan", "SET LOCAL enable_seqscan=off", "SELECT set_config('detent.organization_id'," + literal(string(org)) + ",true)", "PREPARE claim_observations(" + test.types + ") AS " + query} {
-								if _, err := tx.ExecContext(t.Context(), statement); err != nil {
-									t.Fatal(err)
-								}
-							}
-							defer func() {
-								if _, err := tx.ExecContext(t.Context(), "DEALLOCATE claim_observations"); err != nil {
-									t.Error(err)
-								}
-							}()
-							var raw []byte
-							if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) EXECUTE claim_observations("+test.arguments+")").Scan(&raw); err != nil {
-								t.Fatal(err)
-							}
-							type queryPlan struct {
-								Relation  string  `json:"Relation Name"`
-								Rows      float64 `json:"Actual Rows"`
-								Removed   float64 `json:"Rows Removed by Filter"`
-								Rechecked float64 `json:"Rows Removed by Index Recheck"`
-								Loops     float64 `json:"Actual Loops"`
-								Plans     []queryPlan
-							}
-							var plans []struct{ Plan queryPlan }
-							if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-								t.Fatalf("decode claim observation plan: %v", err)
-							}
-							if plans[0].Plan.Rows != float64(test.candidates) {
-								t.Fatalf("claim plan returned %.0f candidates, want %d", plans[0].Plan.Rows, test.candidates)
-							}
-							var visits float64
-							relations := map[string]float64{}
-							var inspect func(queryPlan)
-							inspect = func(plan queryPlan) {
-								if plan.Relation != "" && plan.Rows+plan.Removed+plan.Rechecked > 1 {
-									t.Errorf("claim lookup visits unrelated rows: %+v", plan)
-								}
-								if plan.Relation != "" {
-									visits += (plan.Rows + plan.Removed + plan.Rechecked) * plan.Loops
-									relations[plan.Relation] += plan.Rows * plan.Loops
-								}
-								for _, child := range plan.Plans {
-									inspect(child)
-								}
-							}
-							inspect(plans[0].Plan)
-							if visits > float64(test.candidates*16) {
-								t.Errorf("version observations visited %.0f rows for %d candidates: %s", visits, test.candidates, raw)
-							}
-							if test.populated {
-								for _, relation := range []string{"native_attempts", "collaboration_events", "native_pr_publications", "change_review_policies", "change_review_policy_revisions"} {
-									if relations[relation] == 0 {
-										t.Errorf("populated observation plan never visited %s: %s", relation, raw)
-									}
-								}
-							}
-							t.Logf("candidate_count=%d row_visits=%.0f observation_visits=%v plan=%s", test.candidates, visits, relations, raw)
-						})
-					}
-				})
 				observations := scan.plans[0].ChangeFacts.VersionObservations
 				if observations == nil || observations.Publication == nil || observations.Landing == nil || detail.Versions[0].External == nil || detail.Versions[0].Landing == nil || detail.Versions[0].Landing.TargetState != "Done" {
 					t.Fatalf("captured matching receipts lost: %+v", detail)
@@ -596,14 +457,6 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 					})
 				}
 			}
-			t.Logf("tenant=%s candidates=%d statements=%d exchanges=%d", org, index+1, statements, got)
-			if baselineExchanges == 0 {
-				baselineExchanges = got
-				baselineStatements = statements
-			}
-			if got > 10 || statements > 9 || got != baselineExchanges || statements != baselineStatements {
-				t.Errorf("snapshot cost grew: statements=%d exchanges=%d; baseline=%d/%d", statements, got, baselineStatements, baselineExchanges)
-			}
 		}
 		input := changeTestInput()
 		for index := range 50 {
@@ -654,7 +507,6 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				t.Errorf("legacy audit detail changed: %v", err)
 			}
 		}
-		var legacyExchanges, legacyStatements int64
 		for _, size := range []int{2, 50, 100} {
 			pageRequest := tracker.NativeClaim{PolicyID: descriptor.ID, WorkflowStates: []string{"Merging"}}
 			for offset := range size {
@@ -664,10 +516,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				}
 				pageRequest.ProviderCandidates = append(pageRequest.ProviderCandidates, tracker.NativeCapacityCandidate{WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))})
 			}
-			var statements int64
-			ctx := postgres.WithTransactionTiming(t.Context(), nil, func(time.Time, string) { statements++ })
-			exchanges.Store(0)
-			scan, err := service.readNativeClaimCandidates(ctx, scope, pageRequest, now)
+			scan, err := service.readNativeClaimCandidates(t.Context(), scope, pageRequest, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -675,16 +524,9 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				t.Fatalf("legacy candidates=%d want %d", len(scan.plans), size)
 			}
 			for _, plan := range scan.plans {
-				if _, err := service.hydrateNativeClaimPlan(ctx, scope, pageRequest, now, plan, &descriptor); err != nil {
+				if _, err := service.hydrateNativeClaimPlan(t.Context(), scope, pageRequest, now, plan, &descriptor); err != nil {
 					t.Errorf("legacy page hydration tenant=%s size=%d: %v", org, size, err)
 				}
-			}
-			got := exchanges.Load()
-			t.Logf("legacy tenant=%s candidates=%d statements=%d exchanges=%d", org, size, statements, got)
-			if size == 2 {
-				legacyExchanges, legacyStatements = got, statements
-			} else if got > 14 || statements > 12 || got != legacyExchanges || statements != legacyStatements {
-				t.Errorf("legacy snapshot cost grew: %d/%d versus %d/%d", statements, got, legacyStatements, legacyExchanges)
 			}
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,9 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/multitracer"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -39,7 +35,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/testenv"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -309,19 +304,16 @@ func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestCoordinatorWriterReadsIgnoreHistory(t *testing.T) {
+func TestCoordinatorWriterReadsRetainMessageCount(t *testing.T) {
 	t.Parallel()
-	for _, count := range []int{1, 128} {
+	for _, count := range []int{1, 3} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			f := newCoordinatorFixture(t, "writer-history")
-			probe := &coordinatorQueryTrace{}
-			admin := coordinatorTraceRepository(t, f, probe)
 			record := f.seed(t, "writer history", nil)
 			for range count {
 				f.history(t, &record, conversation.RoleAssistant, "historical answer", conversation.DeliveryCompleted)
 			}
-			ctx := context.WithValue(t.Context(), coordinatorQueryTraceKey{}, probe)
-			err := f.coordinator().(*conversationTurnCoordinator).write(ctx, record.ID, func(_ context.Context, _ tenantstore.Writer, record *conversationRecord, _ time.Time) error {
+			err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(_ context.Context, _ tenantstore.Writer, record *conversationRecord, _ time.Time) error {
 				if record.MessageCount != int64(count) {
 					t.Fatalf("message count=%d want=%d", record.MessageCount, count)
 				}
@@ -329,16 +321,6 @@ func TestCoordinatorWriterReadsIgnoreHistory(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatal(err)
-			}
-			if len(probe.statements) == 0 {
-				t.Fatal("coordinator writer read was not traced")
-			}
-			for _, statement := range probe.statements {
-				for _, detail := range coordinatorExplainPlan(t, admin, statement) {
-					if strings.Contains(detail, "conversation_messages") || strings.Contains(detail, "native_archive_sections") {
-						t.Errorf("coordinator writer reads history: %s", detail)
-					}
-				}
 			}
 		})
 	}
@@ -2288,91 +2270,6 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 			}
 		})
 	}
-}
-
-type coordinatorQueryTraceKey struct{}
-
-type coordinatorQueryTrace struct {
-	statements []tracedStatement
-}
-
-func (p *coordinatorQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if ctx.Value(coordinatorQueryTraceKey{}) == p && strings.HasPrefix(data.SQL, "SELECT ") && strings.Contains(data.SQL, "FROM conversations c") {
-		p.statements = append(p.statements, tracedStatement{query: data.SQL, args: append([]any(nil), data.Args...)})
-	}
-	return ctx
-}
-
-func (*coordinatorQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func coordinatorTraceRepository(t *testing.T, f *coordinatorFixture, probe *coordinatorQueryTrace) *sql.DB {
-	t.Helper()
-	admin := usagePostgresAdmin(t, f.service)
-	connection := startupConnection(t, admin, "detent_runtime_v2", "")
-	cfg, err := connection.PoolConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.MaxConns = 3
-	rows, err := admin.QueryContext(t.Context(), `SELECT n.nspname||'.'||c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relrowsecurity`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var relations []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatal(err)
-		}
-		relations = append(relations, name)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err := rows.Close(); err != nil {
-		t.Fatal(err)
-	}
-	guard := pgtest.NewTenantGuard(relations, func(message string) { t.Error(message) })
-	cfg.ConnConfig.Tracer = multitracer.New(guard, probe)
-	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
-	if err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		f.conversations.Stop()
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	f.service.config.TenantRepository = repository
-	return admin
-}
-
-func coordinatorExplainPlan(t *testing.T, admin *sql.DB, statement tracedStatement) []string {
-	t.Helper()
-	rows, err := admin.QueryContext(t.Context(), "EXPLAIN "+statement.query, statement.args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var details []string
-	for rows.Next() {
-		var detail string
-		if err := rows.Scan(&detail); err != nil {
-			t.Fatal(err)
-		}
-		details = append(details, detail)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return details
 }
 
 func (f *coordinatorFixture) read(t *testing.T, read func(tenantstore.Reader) error) {

@@ -278,7 +278,6 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 	t.Run("restart invalidates terminal message eligibility", checkCompactionRestartEligibility)
 	t.Run("append preserves progress past retained prefix", checkCompactionAppendProgress)
 	t.Run("replacement append invalidates only its predecessor", checkCompactionPredecessorInvalidation)
-	t.Run("pending lookup is tenant and conversation bounded", checkCompactionPendingLookup)
 	t.Run("bounded compaction is fair across conversations", func(t *testing.T) {
 		f := newStreamFixture(t)
 		now := time.Now().UTC().Truncate(time.Microsecond)

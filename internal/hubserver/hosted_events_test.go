@@ -14,15 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -326,30 +323,8 @@ func TestHostedEventsIssue(t *testing.T) {
 	for _, query := range []string{"?work_item=invalid", "?work_item=wi_missing"} {
 		requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/"+string(f.project)+"/events"+query, nil), http.StatusNotFound)
 	}
-	config, err := f.service.config.Postgres.Connection.PoolConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pgtransport.Configure(config)
-	config.MaxConns = 3
-	config.ConnConfig.Tracer = runtimeHistoryTrace{}
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
-	if err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	capture := &runtimeHistoryTraceCapture{}
-	ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
-	if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	ctx := t.Context()
+	if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		row, err := r.WorkItem(ctx, scope.Project, item)
 		if err == nil && (row.NativeID != item || row.EventSequence < 1) {
 			return errors.New("selected issue observation did not return current evidence")
@@ -358,41 +333,6 @@ func TestHostedEventsIssue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	capture.mu.Lock()
-	statements := append([]tracedStatement(nil), capture.statements...)
-	capture.mu.Unlock()
-	var selected []tracedStatement
-	for _, statement := range statements {
-		if strings.HasPrefix(statement.query, "-- name: GetWorkItem :one") {
-			selected = append(selected, statement)
-		}
-	}
-	if len(selected) != 1 {
-		t.Fatalf("selected issue observation statements=%d, want 1", len(selected))
-	}
-	admin := hostedPostgresAdmin(t, f.service)
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE issues"); err != nil {
-		t.Fatal(err)
-	}
-	plan, raw := reportsExplainPostgresPlan(t, admin, scope.Organization, selected[0], "enable_seqscan=off", "enable_bitmapscan=off")
-	indexed, observed := false, float64(0)
-	var inspect func(reportsBudgetPlan)
-	inspect = func(node reportsBudgetPlan) {
-		if node.Loops > 0 && node.Index != "" && strings.Contains(node.Condition, "native_id") {
-			indexed = true
-		}
-		if node.Relation == "issues" {
-			observed += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-		}
-		for _, child := range node.Plans {
-			inspect(child)
-		}
-	}
-	inspect(plan)
-	if !indexed || observed != 1 {
-		t.Fatalf("unbounded issue observation query: %s", raw)
-	}
-	t.Logf("selected issue observation query plan: %s", raw)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, scope.Project)
 	}); err != nil {

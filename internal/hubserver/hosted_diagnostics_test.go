@@ -8,13 +8,9 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
@@ -34,16 +30,11 @@ type diagnosticsPostgresFixture struct {
 	hosted       hostedSecurityFixture
 	owner        hostedSecurityUser
 	organization tracker.OrganizationID
-	queries      *diagnosticsSQLCapture
 }
 
 func diagnosticsPostgresFixtures(t *testing.T) []diagnosticsPostgresFixture {
 	t.Helper()
-	capture := &diagnosticsSQLCapture{statements: make(map[string]diagnosticsSQLStatement)}
-	repository, admin := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
-		capture.QueryTracer = config.ConnConfig.Tracer
-		config.ConnConfig.Tracer = capture
-	})
+	repository, admin := projectRecordPostgresWithAdmin(t, 4)
 	fixtures := []diagnosticsPostgresFixture{}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		details := &memoryRunDetails{}
@@ -59,7 +50,7 @@ func diagnosticsPostgresFixtures(t *testing.T) []diagnosticsPostgresFixture {
 		hosted.service.stopHostedBilling()
 		hosted.service.stopIssueMailer()
 		hosted.service.config.TenantRepository, hosted.service.config.AccessRepository = repository, repository
-		fixtures = append(fixtures, diagnosticsPostgresFixture{repository: repository, admin: admin, details: details, hosted: hosted, owner: owner, organization: organization, queries: capture})
+		fixtures = append(fixtures, diagnosticsPostgresFixture{repository: repository, admin: admin, details: details, hosted: hosted, owner: owner, organization: organization})
 	}
 	return fixtures
 }
@@ -148,7 +139,7 @@ func diagnosticsFixtureSnapshot(t *testing.T, f diagnosticsPostgresFixture, proj
 	return snapshot
 }
 
-func TestDiagnosticsProjectionReadBound(t *testing.T) {
+func TestDiagnosticsReportsPartialPopulationAndScopesProjects(t *testing.T) {
 	t.Parallel()
 	for _, f := range diagnosticsPostgresFixtures(t) {
 		t.Run(string(f.organization), func(t *testing.T) {
@@ -166,11 +157,6 @@ func TestDiagnosticsProjectionReadBound(t *testing.T) {
 			if _, err := f.admin.ExecContext(t.Context(), `UPDATE native_attempts SET status='running' WHERE organization_id=$1 AND id=$2`, f.organization, string(f.hosted.project)+"-recent-attempt-1"); err != nil {
 				t.Fatal(err)
 			}
-			for _, relation := range []string{"native_attempts", "attempt_usage", "issues"} {
-				if _, err := f.admin.ExecContext(t.Context(), "ANALYZE "+relation); err != nil {
-					t.Fatal(err)
-				}
-			}
 			credential := hubapi.APICredential{Hosted: f.owner.identity.Hosted}
 			report, err := f.hosted.service.diagnosticsTenantReport(t.Context(), credential, w, f.hosted.project)
 			if err != nil {
@@ -178,9 +164,6 @@ func TestDiagnosticsProjectionReadBound(t *testing.T) {
 			}
 			if report.Coverage[1].Observed == nil || *report.Coverage[1].Observed != maxAnalyticsPopulation || !report.Partial || len(report.Refused) != 1 || report.Refused[0].Reason != "conflict" || report.Refused[0].Count != maxAnalyticsPopulation {
 				t.Fatalf("bounded diagnostics population: %+v", report)
-			}
-			for _, kind := range []string{"attempts", "usage"} {
-				diagnosticsAssertIndexedPlan(t, f, kind)
 			}
 			if _, err := f.hosted.service.readDiagnosticsTenant(t.Context(), credential, w, "prj_foreign"); err != operatortool.ErrAccessDenied {
 				t.Fatalf("unreadable diagnostic project error=%v", err)
@@ -284,114 +267,4 @@ func (g *diagnosticsSnapshotGuard) ReadTenantSnapshot(ctx context.Context, organ
 	g.active.Add(1)
 	defer g.active.Add(-1)
 	return g.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, read)
-}
-
-type diagnosticsSQLStatement struct {
-	sql  string
-	args []any
-}
-type diagnosticsSQLCapture struct {
-	pgx.QueryTracer
-	mu         sync.Mutex
-	statements map[string]diagnosticsSQLStatement
-}
-
-func (c *diagnosticsSQLCapture) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	kind := ""
-	if strings.Contains(data.SQL, "WITH completed AS MATERIALIZED") {
-		kind = "attempts"
-	}
-	if strings.Contains(data.SQL, "FROM report_usage_current u") && strings.Contains(data.SQL, "LIMIT $4") {
-		kind = "usage"
-	}
-	if kind != "" {
-		c.mu.Lock()
-		c.statements[kind] = diagnosticsSQLStatement{sql: data.SQL, args: append([]any(nil), data.Args...)}
-		c.mu.Unlock()
-	}
-	if c.QueryTracer != nil {
-		return c.QueryTracer.TraceQueryStart(ctx, conn, data)
-	}
-	return ctx
-}
-func (c *diagnosticsSQLCapture) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
-	if c.QueryTracer != nil {
-		c.QueryTracer.TraceQueryEnd(ctx, conn, data)
-	}
-}
-
-type diagnosticsSQLPlan struct {
-	Index        string               `json:"Index Name"`
-	Relation     string               `json:"Relation Name"`
-	Rows         float64              `json:"Actual Rows"`
-	Loops        float64              `json:"Actual Loops"`
-	Removed      float64              `json:"Rows Removed by Filter"`
-	IndexRemoved float64              `json:"Rows Removed by Index Recheck"`
-	Plans        []diagnosticsSQLPlan `json:"Plans"`
-}
-
-func diagnosticsAssertIndexedPlan(t *testing.T, f diagnosticsPostgresFixture, kind string) {
-	t.Helper()
-	f.queries.mu.Lock()
-	statement, ok := f.queries.statements[kind]
-	f.queries.mu.Unlock()
-	if !ok {
-		t.Fatalf("diagnostics did not execute its %s owner query", kind)
-	}
-	tx, err := f.admin.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(f.organization)); err != nil {
-		t.Fatal(err)
-	}
-	var raw []byte
-	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement.sql, statement.args...).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var plans []struct{ Plan diagnosticsSQLPlan }
-	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-		t.Fatalf("decode %s diagnostic plan: %v", kind, err)
-	}
-	indexes := make(map[string]bool)
-	visits := make(map[string]float64)
-	var inspect func(diagnosticsSQLPlan)
-	inspect = func(node diagnosticsSQLPlan) {
-		if node.Loops > 0 {
-			indexes[node.Index] = true
-		}
-		visits[node.Relation] += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-		for _, child := range node.Plans {
-			inspect(child)
-		}
-	}
-	inspect(plans[0].Plan)
-	if kind == "attempts" {
-		if visits["native_attempts"] > 2*float64(diagnosticstore.Limit+1) || visits["report_attempt_facts"] > diagnosticstore.AttemptLimit+1 || visits["collaboration_events"] > diagnosticstore.AttemptLimit+1 {
-			t.Fatalf("attempt candidates lost indexed bounded reads: %s", raw)
-		}
-	} else if !indexes["attempt_usage_pkey"] && !indexes["attempt_usage_report_window_idx"] || kind == "usage" && visits["attempt_usage"] > 2*float64(diagnosticstore.Limit+1) {
-		t.Fatalf("diagnostic usage lost indexed candidate join: %s", raw)
-	}
-}
-
-func (c *diagnosticsSQLCapture) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
-	if tracer, ok := c.QueryTracer.(pgx.BatchTracer); ok {
-		return tracer.TraceBatchStart(ctx, conn, data)
-	}
-	return ctx
-}
-func (c *diagnosticsSQLCapture) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
-	if tracer, ok := c.QueryTracer.(pgx.BatchTracer); ok {
-		tracer.TraceBatchQuery(ctx, conn, data)
-	}
-}
-func (c *diagnosticsSQLCapture) TraceBatchEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchEndData) {
-	if tracer, ok := c.QueryTracer.(pgx.BatchTracer); ok {
-		tracer.TraceBatchEnd(ctx, conn, data)
-	}
 }

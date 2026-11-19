@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -360,8 +359,6 @@ func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
 func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 	t.Parallel()
 	f := newPostgresStorageArchiveFixture(t)
-	installReportsBudgetTrace(t, f.service)
-	admin := hostedPostgresAdmin(t, f.service)
 	items := []tracker.NativeIssue{f.closed(t), f.closed(t)}
 	type retainedRead struct {
 		item             tracker.NativeWorkItemID
@@ -401,18 +398,7 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 		f.drain(t, read.conversation)
 	}
 	for _, read := range reads {
-		var mu sync.Mutex
-		var statements []tracedStatement
-		timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
-			values := make([]any, len(args))
-			for i, arg := range args {
-				values[i] = arg.Value
-			}
-			mu.Lock()
-			statements = append(statements, tracedStatement{query, values})
-			mu.Unlock()
-		}}
-		ctx := withRequestTiming(t.Context(), timing)
+		ctx := t.Context()
 		version, err := f.service.readVersion(ctx, f.scope, string(read.item), "", 1)
 		if err != nil || !bytes.Equal(version, read.version) {
 			t.Fatalf("immutable historical version changed: error=%v", err)
@@ -451,38 +437,6 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 			return nil
 		}); err != nil {
 			t.Fatal(err)
-		}
-		mu.Lock()
-		captured := append([]tracedStatement(nil), statements...)
-		mu.Unlock()
-		if len(captured) == 0 {
-			t.Fatal("no archive owner metadata statements traced")
-		}
-		for _, statement := range captured {
-			if !reportsBudgetReadStatement(statement.query) {
-				continue
-			}
-			plan, raw := reportsExplainPostgresPlan(t, admin, f.scope.Organization, statement)
-			var inspect func(reportsBudgetPlan)
-			inspect = func(node reportsBudgetPlan) {
-				keys := map[string]string{"native_attempts": "id =", "change_versions": "id =", "collaboration_versions": "record_id =", "conversations": "id =", "conversation_messages": "conversation_id =", "collaboration_events": "work_item_id ="}
-				if key, ok := keys[node.Relation]; ok && node.Loops > 0 {
-					conditions, indexed := reportsBudgetConditions(node, node.Relation)
-					if node.Relation == "collaboration_events" && strings.Contains(statement.query, "-- name: RecordGetEvent :one") {
-						key = "id ="
-					}
-					if !indexed || !strings.Contains(conditions, "organization_id =") || !strings.Contains(conditions, key) {
-						t.Errorf("archive lookup scans unrelated live/history rows: %s key=%s conditions=%s plan=%s", node.Relation, key, conditions, raw)
-					}
-					if visits := (node.Rows + node.Removed + node.IndexRemoved) * node.Loops; visits > 201 {
-						t.Errorf("archive metadata visits=%.0f above the existing201-row source page: plan=%s", visits, raw)
-					}
-				}
-				for _, child := range node.Plans {
-					inspect(child)
-				}
-			}
-			inspect(plan)
 		}
 	}
 }

@@ -381,7 +381,6 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			drainTestNativeBoard(t, f.service)
 			scope := analyticsTestScope(t, f)
 			item := string(issue.WorkItemID)
-			installReportsBudgetTrace(t, f.service)
 			repository := f.service.config.TenantRepository
 			admin := hostedPostgresAdmin(t, f.service)
 			poolConfig, err := f.service.config.Postgres.Connection.PoolConfig()

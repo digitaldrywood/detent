@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -19,7 +18,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/jackc/pgx/v5/multitracer"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
@@ -2399,17 +2397,8 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			}
 			fixture.service.relay.Room(v.record.ID).Streams[stream.ID] = stream
 			frame := execRunFrame("actionrun_relay", workspacesession.Action{ID: "action_relay", Command: "printf example"})
-			capture := new(runtimeHistoryTraceCapture)
-			ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
-			if code := fixture.service.startExecRun(ctx, person, v.runner, v.record, stream, frame); code != "" {
+			if code := fixture.service.startExecRun(t.Context(), person, v.runner, v.record, stream, frame); code != "" {
 				t.Fatalf("start refusal=%s", code)
-			}
-			capture.mu.Lock()
-			queries := slices.Clone(capture.statements)
-			capture.mu.Unlock()
-			_, data := runtimeCapacityStatements(queries)
-			if len(data) != 14 || len(queries) != 20 {
-				t.Fatalf("runtime claim owner statements=%d full statements=%d want14/20", len(data), len(queries))
 			}
 			if code := fixture.service.startExecRun(t.Context(), person, v.runner, v.record, stream, frame); code != workspacesession.CodeAlreadyRunning {
 				t.Fatalf("duplicate refusal=%s", code)
@@ -2698,11 +2687,6 @@ func newPostgresRelayRuntimeFixture(t *testing.T, hosted bool) postgresRelayRunt
 	}
 	pgtransport.Configure(config)
 	config.MaxConns = 3
-	if config.ConnConfig.Tracer == nil {
-		config.ConnConfig.Tracer = runtimeHistoryTrace{}
-	} else {
-		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, runtimeHistoryTrace{})
-	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)

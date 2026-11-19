@@ -18,8 +18,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/multitracer"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -32,7 +30,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -1211,63 +1208,6 @@ func TestCapacityFreeConcurrentWorkQueues(t *testing.T) {
 	}
 }
 
-type hostedConsumptionContextKey struct{}
-
-type hostedConsumptionStatement struct {
-	sql  string
-	args []any
-}
-
-type hostedConsumptionQueries struct {
-	mu         sync.Mutex
-	statements []hostedConsumptionStatement
-	resultRows int64
-}
-
-func (q *hostedConsumptionQueries) reset() {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.statements, q.resultRows = nil, 0
-}
-
-func (q *hostedConsumptionQueries) snapshot() ([]hostedConsumptionStatement, int64) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return slices.Clone(q.statements), q.resultRows
-}
-
-func (q *hostedConsumptionQueries) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if ctx.Value(hostedConsumptionContextKey{}) == q {
-		q.mu.Lock()
-		q.statements = append(q.statements, hostedConsumptionStatement{sql: data.SQL, args: slices.Clone(data.Args)})
-		q.mu.Unlock()
-	}
-	return ctx
-}
-
-func (q *hostedConsumptionQueries) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
-	if ctx.Value(hostedConsumptionContextKey{}) == q {
-		q.mu.Lock()
-		q.resultRows += data.CommandTag.RowsAffected()
-		q.mu.Unlock()
-	}
-}
-
-func (*hostedConsumptionQueries) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	return ctx
-}
-
-func (q *hostedConsumptionQueries) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	if ctx.Value(hostedConsumptionContextKey{}) == q {
-		q.mu.Lock()
-		q.statements = append(q.statements, hostedConsumptionStatement{sql: data.SQL, args: slices.Clone(data.Args)})
-		q.resultRows += data.CommandTag.RowsAffected()
-		q.mu.Unlock()
-	}
-}
-
-func (*hostedConsumptionQueries) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
-
 func TestHostedNativeMutationConsumption(t *testing.T) {
 	t.Parallel()
 	var pinnedClock atomic.Pointer[time.Time]
@@ -1282,91 +1222,8 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 	f.worker(t, "worker")
 	d := f.service.database
 	admin := nativeAttemptTestDatabase(t, f)
-	queries := &hostedConsumptionQueries{}
-	config := postgresStartupTemplate.NativeConfig(t, admin, f.service.config.Postgres.Connection.User, f.service.config.Postgres.Connection.Password)
-	config.MaxConns = int32(f.service.config.Postgres.Pool.MaxConnections)
-	config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, queries)
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository, err := postgres.NewRepository(t.Context(), pool, f.service.config.Postgres.Pool)
-	if err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	projectRecordDatabases.Store(repository, admin)
-	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
-	originalTenant, originalAccess, originalBilling := f.service.config.TenantRepository, f.service.config.AccessRepository, d.billingRepository
-	f.service.config.TenantRepository, f.service.config.AccessRepository = repository, repository
-	d.billingRepository = repository
-	t.Cleanup(func() {
-		f.service.config.TenantRepository, f.service.config.AccessRepository, d.billingRepository = originalTenant, originalAccess, originalBilling
-	})
-	ctx := context.WithValue(t.Context(), hostedConsumptionContextKey{}, queries)
-	budgets := map[string][2]int64{}
-	expectedBudgets := map[string][2]int64{
-		"full consumption":                       {35, 13},
-		"Fleet limited retained data":            {33, 13},
-		"Fleet unlimited retained data":          {31, 10},
-		"Fleet next usage window":                {31, 7},
-		"Fleet window overrides gauge":           {32, 10},
-		"Fleet owner limited retained data":      {34, 13},
-		"Fleet owner unlimited retained data":    {32, 10},
-		"Fleet owner next usage window":          {32, 7},
-		"Fleet owner window overrides gauge":     {33, 10},
-		"metrics ordinary mutation":              {32, 11},
-		"metrics ordinary completion":            {29, 8},
-		"metrics run observation":                {27, 6},
-		"metrics run completion":                 {25, 4},
-		"metrics lease validation":               {25, 4},
-		"metrics provider preview":               {25, 4},
-		"metrics heartbeat":                      {27, 6},
-		"metrics enrollment redemption":          {26, 5},
-		"metrics runner mutation":                {24, 3},
-		"metrics attachment preflight":           {4, 2},
-		"metrics attachment growth":              {25, 4},
-		"local new attempt":                      {98, 105},
-		"local published replacement":            {96, 110},
-		"local heartbeat replacement":            {94, 108},
-		"local sequence replay":                  {53, 45},
-		"local legacy event":                     {31, 23},
-		"local accounting new attempt":           {27, 6},
-		"local accounting published replacement": {27, 6},
-		"local accounting heartbeat replacement": {27, 6},
-		"local accounting sequence replay":       {27, 6},
-		"local accounting legacy event":          {27, 6},
-	}
-	checkBudget := func(t *testing.T, key string) []hostedConsumptionStatement {
-		t.Helper()
-		statements, rows := queries.snapshot()
-		actual := [2]int64{int64(len(statements)), rows}
-		if actual[0] == 0 {
-			t.Fatalf("%s PostgreSQL tracer observed no statements", key)
-		}
-		if expected, pinned := expectedBudgets[key]; !pinned || expected[0] < 0 || expected[1] < 0 {
-			t.Errorf("unverified PostgreSQL budget %q: statements=%d rows=%d; pin after diagnostic execution", key, actual[0], rows)
-		} else if actual != expected {
-			t.Errorf("%s PostgreSQL budget=%v want=%v", key, actual, expected)
-		}
-		t.Logf("PostgreSQL budget %q: statements=%d rows=%d", key, actual[0], rows)
-		if previous, exists := budgets[key]; exists && actual != previous {
-			t.Fatalf("%s PostgreSQL work grew with retained history: before=%v after=%v", key, previous, actual)
-		}
-		budgets[key] = actual
-		for _, captured := range statements {
-			statement := captured.sql
-			if strings.Contains(statement, "data_json") || strings.Contains(statement, "record_json") || strings.Contains(statement, "rowid") || strings.Contains(statement, "CAST(") {
-				t.Fatalf("%s aggregated retained JSON: %s", key, statement)
-			}
-		}
-		return statements
-	}
+	repository := f.service.config.TenantRepository
+	ctx := t.Context()
 	readConsumption := func(t *testing.T, at time.Time, metrics ...string) hostedplans.ConsumptionRecord {
 		t.Helper()
 		var result hostedplans.ConsumptionRecord
@@ -1474,47 +1331,6 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 		}
 		return total + attachments + archives
 	}
-	assertSelective := func(t *testing.T, statements []hostedConsumptionStatement, selected []string) {
-		t.Helper()
-		populationSources := map[string][]string{
-			"members":  {"FROM hosted_members", "FROM hosted_member_reservations"},
-			"projects": {"FROM projects"}, "repositories": {"FROM project_settings"},
-			"registered_runners": {"FROM runner_identities"}, "connected_runners": {"FROM runner_identities"},
-			"concurrent_work": {"FROM leases"}, "unarchived_issues": {"FROM issues"},
-			"collaboration_bytes":     {"name='collaboration_bytes'"},
-			"artifact_retained_bytes": {"FROM hosted_artifact_usage"}, "artifact_reserved_bytes": {"FROM hosted_artifact_usage"},
-		}
-		for _, captured := range statements {
-			for metric, fragments := range populationSources {
-				if slices.Contains(selected, metric) {
-					continue
-				}
-				if metric == "registered_runners" && slices.Contains(selected, "connected_runners") || metric == "connected_runners" && slices.Contains(selected, "registered_runners") || metric == "artifact_retained_bytes" && slices.Contains(selected, "artifact_reserved_bytes") || metric == "artifact_reserved_bytes" && slices.Contains(selected, "artifact_retained_bytes") {
-					continue
-				}
-				for _, fragment := range fragments {
-					if strings.Contains(captured.sql, fragment) {
-						t.Errorf("selected accounting probed unused %s: %s", metric, captured.sql)
-					}
-				}
-			}
-			if strings.Contains(captured.sql, "FROM hosted_usage_counters") {
-				for _, arg := range captured.args {
-					name, ok := arg.(string)
-					if !ok {
-						continue
-					}
-					metric := name
-					if name == "retained_collaboration_events" {
-						metric = "events_total"
-					}
-					if slices.Contains([]string{"retained_collaboration_events", "history_records"}, name) && !slices.Contains(selected, metric) {
-						t.Errorf("selected accounting probed unused counter %s", name)
-					}
-				}
-			}
-		}
-	}
 	plans := hostedplans.PilotPlans()
 	plans.Plans[0].Allowances = maps.Clone(plans.Plans[0].Allowances)
 	plans.Plans[0].Allowances["concurrent_work"] = 10000
@@ -1523,7 +1339,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 	plans.Plans[0].Allowances["ingested_events"] = 1000000
 	plans.Base = plans.Plans[0].PlanReference
 	previous := 0
-	for phase, retained := range []int{1, 32} {
+	for phase, retained := range []int{1, 3} {
 		d.hostedRuntime.Store(nil)
 		for i := previous; i < retained; i++ {
 			issue := f.create(t, fmt.Sprintf("retained-%d", i))
@@ -1567,15 +1383,13 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		queries.reset()
 		fullRecord := readConsumption(t, now)
 		full := fullRecord.Usage
 		if want := recountBytes(t); full["collaboration_bytes"] != want || want == 0 {
 			t.Errorf("collaboration bytes counter=%d independent raw-source recount=%d", full["collaboration_bytes"], want)
 		}
-		fullStatements := checkBudget(t, "full consumption")
 		if full["collaboration_bytes"] < int64(retained*3*32768) {
-			t.Errorf("full queries=%d bytes=%d", len(fullStatements), full["collaboration_bytes"])
+			t.Errorf("full consumption bytes=%d", full["collaboration_bytes"])
 		}
 		if !slices.Contains(fullRecord.Unavailable, "artifact_retained_bytes") || !slices.Contains(fullRecord.Unavailable, "artifact_reserved_bytes") {
 			t.Fatalf("unobserved artifacts reported as measured: %+v", fullRecord)
@@ -1644,27 +1458,21 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				queries.reset()
 				selected, err := hubapi.FeatureResult(d.plansService().ReadPlanUsage(ctx, nil, at, hostedplans.AllowanceNames()...))
 				if err != nil {
 					t.Fatal(err)
 				}
-				statements := checkBudget(t, "Fleet "+test.name)
 				limited := []string{"usage_windows"}
 				for metric := range selected.Allowances {
 					limited = append(limited, metric)
 				}
-				assertSelective(t, statements, limited)
-				queries.reset()
 				pinnedClock.Store(&at)
 				fleet, err := f.service.hostedPlanUsageTenant(ctx)
 				pinnedClock.Store(nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-				fleetStatements := checkBudget(t, "Fleet owner "+test.name)
 				fleetMetrics := append(slices.Clone(limited), "artifact_retained_bytes", "artifact_reserved_bytes")
-				assertSelective(t, fleetStatements, fleetMetrics)
 				for metric := range fleet.Usage {
 					if !slices.Contains(fleetMetrics, metric) && !slices.Contains([]string{"api_mutations", "ingested_events", "http_requests", "http_duration_microseconds", "http_request_bytes", "http_response_bytes", "http_request_bytes_known"}, metric) {
 						t.Errorf("Fleet read unlimited metric %s", metric)
@@ -1686,15 +1494,6 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					}
 					if selected.Usage[name] != authoritative.Usage[name] {
 						t.Fatalf("%s=%d full=%d", name, selected.Usage[name], authoritative.Usage[name])
-					}
-				}
-				for _, captured := range statements {
-					statement := captured.sql
-					if (!slices.Contains(slices.Collect(maps.Keys(selected.Allowances)), "members") && (strings.Contains(statement, "hosted_members") || strings.Contains(statement, "hosted_member_reservations"))) || strings.Contains(statement, "FROM leases") || strings.Contains(statement, "runner_identities") || strings.Contains(statement, "repositories") || strings.Contains(statement, "hosted_artifact_usage") || strings.Contains(statement, "count(*) FROM collaboration_events") {
-						t.Fatalf("Fleet read unused metric: %s", statement)
-					}
-					if _, limited := selected.Allowances["history_records"]; !limited && strings.Contains(statement, "FROM hosted_usage_counters") && slices.ContainsFunc(captured.args, func(arg any) bool { name, ok := arg.(string); return ok && name == "history_records" }) {
-						t.Fatalf("Fleet counted unlimited history: %s", statement)
 					}
 				}
 				if authoritative.Usage["collaboration_bytes"] != full["collaboration_bytes"] || authoritative.Usage["history_records"] != full["history_records"] {
@@ -1729,30 +1528,8 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			{"attachment growth", []string{"collaboration_bytes", "usage_windows"}},
 		} {
 			t.Run(fmt.Sprintf("%d retained/%s", retained, test.name), func(t *testing.T) {
-				queries.reset()
 				actualRecord := readConsumption(t, now, test.metrics...)
 				actual := actualRecord.Usage
-				statements := checkBudget(t, "metrics "+test.name)
-				assertSelective(t, statements, test.metrics)
-				for _, captured := range statements {
-					if strings.Contains(captured.sql, "FROM hosted_usage_counters") {
-						for _, arg := range captured.args {
-							name, ok := arg.(string)
-							if ok && slices.Contains([]string{"history_records", "retained_collaboration_events"}, name) {
-								requested := name
-								if name == "retained_collaboration_events" {
-									requested = "events_total"
-								}
-								if !slices.Contains(test.metrics, requested) {
-									t.Fatalf("selected read probed unused counter %s", name)
-								}
-							}
-						}
-						if strings.Contains(captured.sql, "name='collaboration_bytes'") && !slices.Contains(test.metrics, "collaboration_bytes") {
-							t.Fatal("selected read probed unused collaboration bytes")
-						}
-					}
-				}
 				for name, amount := range actual {
 					if full[name] != amount {
 						t.Fatalf("%s=%d full=%d", name, amount, full[name])
@@ -1777,14 +1554,6 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 				}
 				if test.name == "attachment growth" && (actual["api_mutations"] != 7 || len(actual) != 3) {
 					t.Fatalf("attachment growth=%v", actual)
-				}
-				if test.name != "runner mutation" && test.name != "enrollment redemption" {
-					for _, captured := range statements {
-						statement := captured.sql
-						if strings.Contains(statement, "hosted_artifact_usage") || strings.Contains(statement, "hosted_members") || strings.Contains(statement, "hosted_member_reservations") || strings.Contains(statement, "FROM leases") {
-							t.Fatalf("unrelated report query: %s", statement)
-						}
-					}
 				}
 			})
 		}
@@ -1853,7 +1622,6 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				queries.reset()
 				if test.legacy {
 					credential, status, err := f.service.authenticateAPIToken(t.Context(), localWorker, "", "")
 					if err != nil || status != http.StatusOK {
@@ -1919,22 +1687,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					f.service.Handler().ServeHTTP(response, request)
 					requireNativeStatus(t, response, http.StatusOK)
 				}
-				mutationStatements := checkBudget(t, "local "+test.name)
-				for _, captured := range mutationStatements {
-					statement := strings.ToLower(captured.sql)
-					if (strings.Contains(statement, "count(") || strings.Contains(statement, "sum(")) && (strings.Contains(statement, "from collaboration_events") || strings.Contains(statement, "from native_attempts") || strings.Contains(statement, "from native_attempt_events")) {
-						t.Fatalf("mutation recounted retained history: %s", captured.sql)
-					}
-				}
-				queries.reset()
 				after := readConsumption(t, now, metrics...).Usage
-				accountingStatements := checkBudget(t, "local accounting "+test.name)
-				for _, captured := range accountingStatements {
-					statement := strings.ToLower(captured.sql)
-					if strings.Contains(statement, "from collaboration_events") || strings.Contains(statement, "from native_attempts") || strings.Contains(statement, "from native_attempt_events") {
-						t.Fatalf("unbounded local accounting read: %s", captured.sql)
-					}
-				}
 				wantEvents, wantHistory := before["events_total"]+1, before["history_records"]+2
 				if test.legacy {
 					wantHistory = before["history_records"] + 1

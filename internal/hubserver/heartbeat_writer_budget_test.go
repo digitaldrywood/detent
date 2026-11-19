@@ -21,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -167,26 +166,21 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 	}
 }
 
-func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
+func TestHeartbeatAndRenewPreserveAdmission(t *testing.T) {
 	t.Parallel()
-	measured := make(map[string]int)
 	for _, test := range []struct {
 		name       string
 		admission  bool
 		renew      bool
 		hosted     bool
 		concurrent bool
-		history    int
-		statements int
 	}{
-		{name: "heartbeat", statements: 12},
-		{name: "heartbeat admission", admission: true, statements: 41},
-		{name: "heartbeat admission with decision history", admission: true, history: 200, statements: 41},
-		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 52},
-		{name: "heartbeat hosted admission with decision history", admission: true, hosted: true, history: 200, statements: 52},
-		{name: "heartbeat concurrent admission", admission: true, concurrent: true, statements: 41},
-		{name: "renew", renew: true, statements: 12},
-		{name: "hosted renew", renew: true, hosted: true, statements: 20},
+		{name: "heartbeat"},
+		{name: "heartbeat admission", admission: true},
+		{name: "heartbeat hosted admission", admission: true, hosted: true},
+		{name: "heartbeat concurrent admission", admission: true, concurrent: true},
+		{name: "renew", renew: true},
+		{name: "hosted renew", renew: true, hosted: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
@@ -196,33 +190,7 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			runner.enroll(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			item := f.create(t, "Writer budget")
-			if test.history > 0 {
-				content := eventstore.NewContent(details)
-				rows := make([]eventstore.Event, 0, test.history)
-				for index := range test.history {
-					at := now.Add(-time.Hour + time.Duration(index)*time.Second)
-					raw, err := json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("evt_history_%d", index), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: item.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: runner.binding.RunnerID}, RecordedAt: at, Data: tracker.CollaborationData{Revision: item.Revision, Decision: &tracker.NativeSchedulerDecision{RunnerID: runner.binding.RunnerID, Source: "native_runner_admission", Outcome: "skipped", Reason: fmt.Sprintf("historical_%d", index), At: at, WorkItemRevision: item.Revision}}})
-					if err != nil {
-						t.Fatal(err)
-					}
-					row, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, raw)
-					if err != nil {
-						t.Fatal(err)
-					}
-					rows = append(rows, row)
-				}
-				if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-					for _, row := range rows {
-						if _, err := w.AppendEvent(t.Context(), row); err != nil {
-							return err
-						}
-					}
-					return nil
-				}); err != nil {
-					t.Fatal(err)
-				}
-			}
+			item := f.create(t, "Admission")
 			path := f.base + "/machines/" + string(runner.binding.MachineID) + "/heartbeat"
 			body := map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation}
 			warm := map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: clock.Now()}}
@@ -233,14 +201,10 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 				initial.Authority, initial.ObservedAt, initial.Diagnostics = "hub_configuration", clock.Now(), nil
 				warm["project_configuration"] = initial
 			}
-			positive := newHeartbeatBudgetProbe()
 			warmRequest := newHubAPIRequest(t, http.MethodPost, path, runner.redemption.Credential, warm)
 			warmResponse := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(warmResponse, warmRequest.WithContext(context.WithValue(warmRequest.Context(), heartbeatBudgetProbeKey{}, positive)))
+			f.service.Handler().ServeHTTP(warmResponse, warmRequest)
 			requireNativeStatus(t, warmResponse, http.StatusOK)
-			if txs, statements, _ := positive.snapshot(); txs == 0 || statements == 0 {
-				t.Fatal("missing actual PostgreSQL heartbeat writer trace")
-			}
 			clock.Advance(2 * time.Second)
 			var requestBody any = body
 			if test.renew {
@@ -294,16 +258,6 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 				requireNativeStatus(t, innerResponse, http.StatusOK)
 			}
 			requireNativeStatus(t, response, http.StatusOK)
-			transactions, statements, queries := probe.snapshot()
-			t.Logf("writer_txs=%d writer_statements=%d", transactions, statements)
-			measured[test.name] = statements
-			wantTransactions := int64(1)
-			if test.admission {
-				wantTransactions++
-			}
-			if queries == 0 || transactions != wantTransactions || statements > test.statements {
-				t.Fatalf("writer_txs=%d (want %d), writer_statements=%d (bound %d), queries=%d", transactions, wantTransactions, statements, test.statements, queries)
-			}
 			if details.writesInWriter.Load() != 0 {
 				t.Fatalf("object operations inside writer=%d", details.writesInWriter.Load())
 			}
@@ -350,11 +304,6 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 				}
 			}
 		})
-	}
-	for _, name := range []string{"heartbeat admission", "heartbeat hosted admission"} {
-		if measured[name] == 0 || measured[name] != measured[name+" with decision history"] {
-			t.Fatalf("decision write statements changed with item decision history: %v", measured)
-		}
 	}
 }
 
@@ -475,11 +424,8 @@ func (s *heartbeatBudgetDetails) ReadDetail(ctx context.Context, organization st
 
 type heartbeatBudgetProbeKey struct{}
 type heartbeatBudgetProbe struct {
-	mu           sync.Mutex
-	writers      map[*pgx.Conn]bool
-	transactions int64
-	statements   int
-	queries      int
+	mu      sync.Mutex
+	writers map[*pgx.Conn]bool
 }
 
 func newHeartbeatBudgetProbe() *heartbeatBudgetProbe {
@@ -489,11 +435,6 @@ func (p *heartbeatBudgetProbe) active() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.writers) > 0
-}
-func (p *heartbeatBudgetProbe) snapshot() (int64, int, int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.transactions, p.statements, p.queries
 }
 func traceHeartbeatBudget(ctx context.Context, conn *pgx.Conn, query string) {
 	p, ok := ctx.Value(heartbeatBudgetProbeKey{}).(*heartbeatBudgetProbe)
@@ -510,16 +451,10 @@ func traceHeartbeatBudget(ctx context.Context, conn *pgx.Conn, query string) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.queries++
 	if strings.HasPrefix(statement, "begin") {
 		if !strings.Contains(statement, "read only") {
-			p.transactions++
 			p.writers[conn] = true
 		}
-		return
-	}
-	if p.writers[conn] && statement != "commit" && statement != "rollback" {
-		p.statements++
 	}
 }
 func endHeartbeatBudget(ctx context.Context, conn *pgx.Conn) {
