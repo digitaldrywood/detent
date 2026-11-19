@@ -459,7 +459,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 
 	itemsPath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/work-items"
 	recoveryBody := "## Acceptance criteria\n" + strings.Repeat("Recovery fragment. ", 7000) + "\n## Must not break\nKeep tenant isolation.\n## How we know it worked\nRecovery loads.\n"
-	createResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, ownerToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue-create"}, Title: "Example issue", Body: recoveryBody, State: "Todo"})
+	createResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, ownerToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue-create"}, Title: "Recover archived checkpoints", Body: recoveryBody, State: "Todo"})
 	requireNativeStatus(t, createResponse, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, createResponse, &issue)
@@ -489,12 +489,12 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 	if len(page.Items) != 1 || page.Items[0].WorkItemID != issue.WorkItemID {
 		t.Fatalf("PostgreSQL issue list = %+v, created %+v", page.Items, issue)
 	}
-	reporterCreateResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, reporterToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-issue-create"}, Title: "Reporter issue", Body: reporterBugSections, Type: "bug", State: "Triage"})
+	reporterCreateResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, reporterToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-issue-create"}, Title: "Settings changes disappear", Body: reporterBugSections, Type: "bug", State: "Triage"})
 	requireNativeStatus(t, reporterCreateResponse, http.StatusOK)
 	var reporterIssue tracker.NativeIssue
 	decodeHubResponse(t, reporterCreateResponse, &reporterIssue)
 	secondBody := "## Acceptance criteria\nThe second work item remains isolated.\n## Must not break\nDo not expose the first work item.\n## How we know it worked\nSource recovery returns the second ID.\n"
-	secondIssueResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, ownerToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "second-issue-create"}, Title: "Example second issue", Body: secondBody, State: "Todo"})
+	secondIssueResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, ownerToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "second-issue-create"}, Title: "Isolate integration credentials", Body: secondBody, State: "Todo"})
 	requireNativeStatus(t, secondIssueResponse, http.StatusOK)
 	var secondIssue tracker.NativeIssue
 	decodeHubResponse(t, secondIssueResponse, &secondIssue)
@@ -923,10 +923,10 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 			if err != nil {
 				return err
 			}
-			if !slices.ContainsFunc(page.Items, func(edge corestore.Relationship) bool {
+			if slices.ContainsFunc(page.Items, func(edge corestore.Relationship) bool {
 				return string(edge.RelatedWorkItemID) == retained.DefectIssueID && edge.Type == "dependency" && edge.Direction == "blocked_by"
 			}) {
-				return errors.New("originating issue lost its system defect dependency")
+				return errors.New("diagnostic progress incident blocked its originating issue")
 			}
 			return nil
 		}); err != nil {
