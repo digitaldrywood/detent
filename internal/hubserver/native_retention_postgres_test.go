@@ -311,7 +311,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_duplicate_challenges IN SHARE MODE"); err != nil {
 					t.Fatal(err)
 				}
-				service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}.WithDefaults()}}
+				service := &Service{config: WithDeps(Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}}, hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}.WithDefaults())}
 				retained := make(chan error, 1)
 				workers.Go(func() { retained <- service.expireNativeRecords(ctx, now.Add(2*time.Hour)) })
 				testenv.WaitUntil(t, testenv.WaitContext(t, ctx), func() error {
@@ -562,22 +562,21 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				var stages atomic.Int64
 				var wrongBudget atomic.Bool
 				schedulerDone := make(chan struct{})
-				service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, RunDetails: objects, Logger: discardLogger(), WebhookMaintenanceInterval: time.Millisecond,
+				service := &Service{config: WithDeps(Config{TenantRepository: repository, AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, RunDetails: objects, Logger: discardLogger(), WebhookMaintenanceInterval: time.Millisecond,
 					Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() },
-					deps: hubdeps.Deps{RetentionTimeout: func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
-						if budget != backgroundStorageBudget {
-							wrongBudget.Store(true)
-						}
-						if stages.Add(1) == 7 {
-							return context.WithDeadline(ctx, time.Now().Add(-time.Second))
-						}
-						return context.WithTimeout(ctx, budget)
-					}, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
-						defer close(schedulerDone)
-						<-ctx.Done()
-						return ctx.Err()
-					}}.WithDefaults(),
-				}, database: &database{postgres: repository}, workerDone: make(chan struct{}), boardRefresh: make(chan struct{}, 1), requestMetrics: &tenantRequestMetrics{Repository: repository, Organization: org}}
+				}, hubdeps.Deps{RetentionTimeout: func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+					if budget != backgroundStorageBudget {
+						wrongBudget.Store(true)
+					}
+					if stages.Add(1) == 7 {
+						return context.WithDeadline(ctx, time.Now().Add(-time.Second))
+					}
+					return context.WithTimeout(ctx, budget)
+				}, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+					defer close(schedulerDone)
+					<-ctx.Done()
+					return ctx.Err()
+				}}.WithDefaults()), database: &database{postgres: repository}, workerDone: make(chan struct{}), boardRefresh: make(chan struct{}, 1), requestMetrics: &tenantRequestMetrics{Repository: repository, Organization: org}}
 				ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 				defer func() { cancel(); <-service.workerDone; <-schedulerDone }()
 				go service.runPostgresMaintenance(ctx)

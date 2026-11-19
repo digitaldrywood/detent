@@ -16,7 +16,7 @@ import (
 const identityRefreshDuration = 2 * time.Second
 
 func (s *Service) searchRefreshTimer() hubdeps.Timer {
-	return s.config.deps.NewMaintenanceTimer(searchRefreshOffset(s.config.WebhookMaintenanceInterval, s.config.deps.Jitter()))
+	return s.config.Deps().NewMaintenanceTimer(searchRefreshOffset(s.config.WebhookMaintenanceInterval, s.config.Deps().Jitter()))
 }
 
 func searchRefreshOffset(interval time.Duration, jitter float64) time.Duration {
@@ -24,7 +24,7 @@ func searchRefreshOffset(interval time.Duration, jitter float64) time.Duration {
 }
 
 func (s *Service) maintainNativeSearch(ctx context.Context) {
-	identity, cancelIdentity := s.config.deps.SearchRefreshTimeout(s.runDetailContext(ctx), identityRefreshDuration)
+	identity, cancelIdentity := s.config.Deps().SearchRefreshTimeout(s.runDetailContext(ctx), identityRefreshDuration)
 	defer cancelIdentity()
 	if _, err := s.refreshNativeIdentity(identity); err != nil && identity.Err() == nil {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped origin identities", "error", err)

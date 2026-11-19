@@ -239,11 +239,11 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 	service := &Service{
 		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
 		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
-		config: Config{
-			Logger: discardLogger(), Clock: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
+		config: WithDeps(Config{
+			Logger: discardLogger(), Clock: time.Now,
 			TenantRepository: repository, AccessRepository: repository, RunDetails: details,
 			NativeRunEvents: participant, SecretKeys: keys,
-		},
+		}, hubdeps.Deps{GenerateToken: apikey.GenerateToken}),
 	}
 	wrapped := &attemptSnapshotRepository{Repository: repository, SnapshotRepository: repository}
 	service.config.TenantRepository = wrapped
@@ -514,14 +514,14 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 	service := &Service{
 		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
 		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
-		config: Config{
-			Logger: discardLogger(), Clock: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
+		config: WithDeps(Config{
+			Logger: discardLogger(), Clock: time.Now,
 			TenantRepository: repository, AccessRepository: repository, RunDetails: details,
 			NativeRunEvents: participant, SecretKeys: keys,
-		},
+		}, hubdeps.Deps{GenerateToken: apikey.GenerateToken}),
 	}
 	service.config.DatabaseBackend = DatabasePostgres
-	service.config = service.config.normalized()
+	service.config = service.config.Normalized()
 	service.ready.Store(true)
 	service.registerNativeRoutes(service.echo)
 	wrapped := &attemptSnapshotRepository{Repository: repository, SnapshotRepository: repository}

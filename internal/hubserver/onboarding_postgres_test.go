@@ -34,7 +34,7 @@ func TestPostgresOnboardingPreservesImportedProgressAndRetries(t *testing.T) {
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.Postgres.Pool = postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1}
-	cfg.deps.RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	cfg.Deps().RunMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return nil
 	}

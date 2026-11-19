@@ -34,7 +34,7 @@ import (
 
 func TestNativeRetention(t *testing.T) {
 	t.Run("claim reviews retain each reviewer across historical backfill", func(t *testing.T) {
-		f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}}))
+		f := newChangeFixture(t, newClockedPostgresNativeService(t, WithDeps(Config{}, hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout})))
 		first := f.publish(t, "first", "", true)
 		second := f.publish(t, "second", first.ID, true)
 		content := eventstore.NewContent(f.service.runDetailStore())
@@ -122,7 +122,7 @@ func TestNativeRetention(t *testing.T) {
 	})
 
 	t.Run("claim facts resume from durable unknown rows", func(t *testing.T) {
-		f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}}))
+		f := newChangeFixture(t, newClockedPostgresNativeService(t, WithDeps(Config{}, hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout})))
 		version := f.publish(t, "bounded projection", "", true)
 		const budget = corestore.MaxPageSize
 		reviews := make([]tracker.ChangeReview, 0, budget*3+2)
@@ -215,7 +215,7 @@ func TestNativeRetention(t *testing.T) {
 
 	t.Run("command receipts and storage accounting", func(t *testing.T) {
 		now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
-		f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}})
+		f := newDefaultNativeFixture(t, WithDeps(Config{Clock: func() time.Time { return now }}, hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}))
 		issue := f.create(t, "receipts")
 		credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 		if err != nil {
@@ -285,7 +285,7 @@ func TestNativeRetention(t *testing.T) {
 	})
 	t.Run("duplicate challenges", func(t *testing.T) {
 		now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
-		f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}})
+		f := newDefaultNativeFixture(t, WithDeps(Config{Clock: func() time.Time { return now }}, hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}))
 		other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-challenges")
 		live := make(map[tracker.ProjectID]string)
 		for _, project := range []tracker.NativeProject{f.project, other.project} {
@@ -337,7 +337,7 @@ func TestNativeRetention(t *testing.T) {
 	})
 	t.Run("hourly host history", func(t *testing.T) {
 		now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
-		f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}})
+		f := newDefaultNativeFixture(t, WithDeps(Config{Clock: func() time.Time { return now }}, hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}))
 		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 		r.enroll(t)
 		for offset := 0; offset < 744; offset += 24 {

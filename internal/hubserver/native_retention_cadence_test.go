@@ -32,10 +32,10 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(start.Add(-31 * 24 * time.Hour).UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-	f := newDefaultNativeFixture(t, Config{Clock: now, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	f := newDefaultNativeFixture(t, WithDeps(Config{Clock: now, WebhookMaintenanceInterval: 10 * time.Millisecond}, hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return ctx.Err()
-	}}, WebhookMaintenanceInterval: 10 * time.Millisecond})
+	}}))
 	s := f.service
 	issue := f.create(t, "closed issue")
 	response := performHubAPIRequest(t, s, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", testHubAdminToken, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "close-cadence-issue"}, ExpectedRevision: issue.Revision, State: "Done", Reason: "user_requested"})
