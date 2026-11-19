@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -492,9 +493,14 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 		noProduct      bool
 		blocked        bool
 		staleRevision  bool
+		cleanupReplay  string
 		evidenceChange string
 	}{
 		{name: "decision comment does not create new evidence"},
+		{name: "publication replays after removing completed incident dependency", cleanupReplay: "unchanged"},
+		{name: "cleanup replay rejects new human evidence", cleanupReplay: "human"},
+		{name: "cleanup replay rejects changed source", cleanupReplay: "source"},
+		{name: "cleanup replay rejects stale and replaced lease", cleanupReplay: "lease"},
 		{name: "successful empty landing checks and replays decision", emptyLanding: true},
 		{name: "decision without diagnosis is refused on publication", legacy: true},
 		{name: "succeeded without change is checked", success: true},
@@ -519,6 +525,9 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed",
 				TerminalFailure: &tracker.NativeTerminalFailure{Error: "422: landing requires security audit evidence for its exact base and head", ErrorClass: "publication", Stage: "publication", ObservedAt: f.now},
 			}}
+			if test.cleanupReplay != "" {
+				event.Data.TerminalFailure = &tracker.NativeTerminalFailure{Stage: "implement", Attribution: "instance", ErrorClass: "protocol", Error: "Backend protocol unavailable", ObservedAt: f.now}
+			}
 			if test.emptyLanding {
 				event.Data.Outcome = "succeeded"
 				event.Data.TerminalFailure = nil
@@ -536,6 +545,48 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				}
 			}
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+			var incident tracker.NativeIssue
+			const defectKey = "backend-protocol"
+			if test.cleanupReplay != "" {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), scope.Project)
+					if err != nil {
+						return err
+					}
+					project.States = append(project.States, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				incidentScope := scope
+				actor := scope.Actor()
+				actor.Kind, actor.Agent = "machine", "progress-check"
+				incidentScope.SourceActor = &actor
+				raw, err := f.service.createNativeIssueCommand(t.Context(), incidentScope, tracker.CreateIssue{
+					Mutation: tracker.Mutation{IdempotencyKey: "legacy-incident"}, Title: "Backend protocol unavailable", Body: issueContractTestSections, State: "Backlog",
+					Provenance: &tracker.Provenance{Provider: "progress-check", ExternalID: defectKey},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(raw, &incident); err != nil || incident.WorkItemID == "" {
+					t.Fatalf("legacy incident ID=%s: %v", incident.WorkItemID, err)
+				}
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.SetRelationship(t.Context(), corestore.Relationship{
+						OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: f.issue.WorkItemID,
+						RelatedProjectID: scope.Project, RelatedWorkItemID: incident.WorkItemID, Type: "dependency", Provenance: "progress_check",
+					}, "add", f.now)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				for _, state := range []string{"Todo", "Done"} {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(incident.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "legacy-incident-" + state}, ExpectedRevision: incident.Revision, State: state, Reason: "user_requested"})
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &incident)
+				}
+			}
 			if test.success {
 				checkpoint := event
 				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", hubapi.NewID("checkpoint"), ""
@@ -546,9 +597,12 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
 			f.release(t)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
-			requireNativeStatus(t, response, http.StatusOK)
-			decodeHubResponse(t, response, &f.lease)
+			claim := func() {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &f.lease)
+			}
+			claim()
 			params := url.Values{"policy": {f.policy}, "instance": {string(f.lease.MachineID)}}
 			read := func() nativeProgressView {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/progress?"+params.Encode(), f.worker, nil)
@@ -584,7 +638,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				}
 			}
 			view := read()
-			if len(view.Request.Attempts) != 1 || view.Request.Attempts[0].ID != f.attempt || (!test.success && !test.emptyLanding && view.Request.Attempts[0].FailureClass != "publication") {
+			if len(view.Request.Attempts) != 1 || view.Request.Attempts[0].ID != f.attempt || (!test.success && !test.emptyLanding && view.Request.Attempts[0].FailureClass != event.Data.TerminalFailure.ErrorClass) {
 				t.Fatalf("request attempts=%+v", view.Request.Attempts)
 			}
 			if test.emptyLanding && (view.Request.Attempts[0].Outcome != "success" || view.Request.Attempts[0].LandingRefusal != "nothing_to_land") {
@@ -595,6 +649,13 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, RequestID: id, PolicyID: f.policy, Instance: string(f.lease.MachineID), Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: f.attempt + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Produce audit evidence on the current source", Evidence: []string{f.attempt}}}
+			if test.cleanupReplay != "" {
+				doneID := string(incident.WorkItemID) + ":done"
+				if view.Request.Attempts[0].Attribution != "instance" || view.Record != nil || !slices.ContainsFunc(view.Request.Receipts, func(receipt progresscheck.Receipt) bool { return receipt.ID == doneID }) {
+					t.Fatalf("expected a fresh progress request with the completed incident receipt, got %+v", view)
+				}
+				input.Decision = progresscheck.Decision{Outcome: progresscheck.SystemDefect, Diagnosis: f.attempt + ": backend protocol remains unavailable after the incident was closed", Reason: "The runner could not start implementation", Evidence: []string{f.attempt, doneID}, DefectKey: defectKey, DefectTitle: incident.Title, DefectBody: incident.Body}
+			}
 			if test.legacy {
 				input.Decision.Diagnosis, input.Decision.Instruction, input.Decision.Convergence = "", "", ""
 			}
@@ -634,7 +695,10 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			if test.released {
 				f.release(t)
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/progress", f.worker, input)
+			post := func(input progresscheck.Publication) *httptest.ResponseRecorder {
+				return performHubAPIRequest(t, f.service, http.MethodPost, path+"/progress", f.worker, input)
+			}
+			response := post(input)
 			if test.changed || test.released || test.staleRevision || test.legacy {
 				if response.Code == http.StatusOK {
 					t.Fatal("stale evidence or released authority published decision")
@@ -649,11 +713,29 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				return
 			}
 			requireNativeStatus(t, response, http.StatusOK)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/progress", f.worker, input), http.StatusOK)
-			replay := read()
-			replayID, err := replay.Request.ID()
-			if err != nil || replayID != id || replay.Record == nil {
-				t.Fatalf("decision self-invalidated: id=%s want=%s record=%+v err=%v", replayID, id, replay.Record, err)
+			second := post(input)
+			requireNativeStatus(t, second, http.StatusOK)
+			if test.cleanupReplay != "" {
+				var first, replay progresscheck.Record
+				decodeHubResponse(t, response, &first)
+				decodeHubResponse(t, second, &replay)
+				if first.DefectIssueID != string(incident.WorkItemID) || first.CommentID == "" || !reflect.DeepEqual(first, replay) {
+					t.Fatalf("replay=%+v, want original incident and comment from %+v", replay, first)
+				}
+				item := f.reload(t)
+				if len(item.Dependencies) != 0 {
+					t.Fatalf("replay left product dependencies %v", item.Dependencies)
+				}
+				var count int
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE organization_id=$1 AND actor_id=$2 AND operation=$3", scope.Organization, nativeProgressReceiptActor, nativeProgressReceiptOperation(scope, string(f.issue.WorkItemID))).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("publication count=%d, want 1: %v", count, err)
+				}
+			} else {
+				replay := read()
+				replayID, err := replay.Request.ID()
+				if err != nil || replayID != id || replay.Record == nil {
+					t.Fatalf("decision self-invalidated: id=%s want=%s record=%+v err=%v", replayID, id, replay.Record, err)
+				}
 			}
 			comments := 0
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -669,6 +751,31 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			}
 			if comments != wantComments {
 				t.Fatalf("replay created %d comments", comments)
+			}
+			switch test.cleanupReplay {
+			case "unchanged":
+				changed := input
+				changed.Decision.Reason = "Different publication"
+				requireNativeError(t, post(changed), http.StatusConflict, "revision_conflict")
+			case "human":
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "new-evidence-after-cleanup"}, Body: "New failure details from the operator"}), http.StatusOK)
+				requireNativeError(t, post(input), http.StatusConflict, "revision_conflict")
+			case "source":
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes", testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "new-change-after-cleanup"}, Title: "Updated source"})
+				requireNativeStatus(t, response, http.StatusOK)
+				var change tracker.ChangeRequest
+				decodeHubResponse(t, response, &change)
+				version := changeTestInput()
+				bundle := changeTestSource(t, &version)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes/"+change.ID+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "new-version-after-cleanup"}, ChangeVersionInput: version, SourceBundle: bundle}), http.StatusOK)
+				requireNativeError(t, post(input), http.StatusConflict, "revision_conflict")
+			case "lease":
+				f.release(t)
+				requireNativeError(t, post(input), http.StatusConflict, "stale_fencing_token")
+				claim()
+				requireNativeError(t, post(input), http.StatusConflict, "stale_fencing_token")
+				input.LeaseID, input.FencingToken = f.lease.ID, f.lease.FencingToken
+				requireNativeError(t, post(input), http.StatusConflict, "revision_conflict")
 			}
 		})
 	}
