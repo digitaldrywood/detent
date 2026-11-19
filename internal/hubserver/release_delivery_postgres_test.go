@@ -153,43 +153,6 @@ func newReleaseTenantFixtureFor(t *testing.T, repo tenantstore.Repository, f hos
 
 func TestReleaseAssociationPostgres(t *testing.T) {
 	t.Parallel()
-	f := newReleaseTenantFixture(t)
-	path := f.f.base + "/work-items/" + string(f.delivery.WorkItemID) + "/release-pick"
-	first := f.f.request(t, f.owner, http.MethodPost, path, f.request)
-	requireNativeStatus(t, first, http.StatusOK)
-	var delivery tracker.ReleaseDelivery
-	decodeHubResponse(t, first, &delivery)
-	if delivery.ChangeID == "" || delivery.ReleasePickInput != f.request.ReleasePickInput {
-		t.Fatalf("delivery = %+v", delivery)
-	}
-	replay := f.f.request(t, f.owner, http.MethodPost, path, f.request)
-	requireNativeStatus(t, replay, http.StatusOK)
-	if replay.Body.String() != first.Body.String() {
-		t.Fatal("replay changed delivery")
-	}
-	same := f.request
-	same.IdempotencyKey = "same-delivery"
-	replay = f.f.request(t, f.owner, http.MethodPost, path, same)
-	requireNativeStatus(t, replay, http.StatusOK)
-	var repeated tracker.ReleaseDelivery
-	decodeHubResponse(t, replay, &repeated)
-	if repeated != delivery {
-		t.Fatal("same association changed delivery")
-	}
-	var issue tracker.NativeIssue
-	decodeHubResponse(t, f.f.request(t, f.owner, http.MethodGet, strings.TrimSuffix(path, "/release-pick"), nil), &issue)
-	if issue.Revision != f.delivery.Revision+1 {
-		t.Fatalf("revision = %d", issue.Revision)
-	}
-	var changes []tracker.ChangeRequest
-	decodeHubResponse(t, f.f.request(t, f.owner, http.MethodGet, strings.TrimSuffix(path, "/release-pick")+"/changes", nil), &changes)
-	if len(changes) != 1 || changes[0].ID != delivery.ChangeID {
-		t.Fatalf("changes = %+v", changes)
-	}
-	f.verifier.status = func(input tracker.ReleasePickInput) (tracker.ReleaseDeliveryStatus, error) {
-		return tracker.ReleaseDeliveryStatus{ReleasePickInput: input, ReleaseHeadSHA: input.HeadSHA}, nil
-	}
-	requireNativeStatus(t, f.f.request(t, f.owner, http.MethodGet, path, nil), http.StatusOK)
 	for _, test := range []struct {
 		name               string
 		scan, driftAtClaim bool

@@ -34,14 +34,11 @@ func TestReleaseAssociation(t *testing.T) {
 	h := hubfixture.OpenHosted(t, cfg)
 	t.Run("refresh and replay", func(t *testing.T) {
 		f := seedReleaseAssociation(t, h, verification, "refresh")
-		response := h.Request(t, f.owner, http.MethodPost, f.path+"/release-pick", f.request)
-		hubfixture.RequireStatus(t, response, http.StatusOK)
-		var first tracker.ReleaseDelivery
-		hubfixture.Decode(t, response, &first)
+		first := f.associateAndCheckStatus(t)
 		refresh := f.refresh(f.delivery.Revision + 1)
 		hubfixture.RequireStatus(t, h.Request(t, f.owner, http.MethodPost, f.path+"/release-pick", refresh), http.StatusUnprocessableEntity)
 		f.seedAudit(t)
-		response = h.Request(t, f.owner, http.MethodPost, f.path+"/release-pick", refresh)
+		response := h.Request(t, f.owner, http.MethodPost, f.path+"/release-pick", refresh)
 		hubfixture.RequireStatus(t, response, http.StatusOK)
 		var updated tracker.ReleaseDelivery
 		hubfixture.Decode(t, response, &updated)
@@ -51,11 +48,7 @@ func TestReleaseAssociation(t *testing.T) {
 		if issue := f.readIssue(t); issue.Revision != f.delivery.Revision+2 {
 			t.Fatalf("refreshed issue revision = %d", issue.Revision)
 		}
-		changesResponse := h.Request(t, f.owner, http.MethodGet, f.path+"/changes", nil)
-		hubfixture.RequireStatus(t, changesResponse, http.StatusOK)
-		var changes []tracker.ChangeRequest
-		hubfixture.Decode(t, changesResponse, &changes)
-		if len(changes) != 1 || changes[0].Revision != 2 || changes[0].CurrentVersion != "" {
+		if changes := f.readChanges(t); len(changes) != 1 || changes[0].Revision != 2 || changes[0].CurrentVersion != "" {
 			t.Fatalf("refreshed changes = %+v", changes)
 		}
 		replay := h.Request(t, f.owner, http.MethodPost, f.path+"/release-pick", refresh)
@@ -157,6 +150,14 @@ func (v releasePickVerification) VerifyReleasePick(ctx context.Context, input tr
 
 func (v releasePickVerification) VerifyReleasePickRefresh(ctx context.Context, _, input tracker.ReleasePickInput) error {
 	return v.VerifyReleasePick(ctx, input)
+}
+
+func (v releasePickVerification) ReleaseDeliveryStatus(_ context.Context, input tracker.ReleasePickInput) (tracker.ReleaseDeliveryStatus, error) {
+	verifier := v[input.SourceChangeID]
+	if verifier == nil || input != verifier.input {
+		return tracker.ReleaseDeliveryStatus{}, githubcontract.ErrReleasePickMismatch
+	}
+	return tracker.ReleaseDeliveryStatus{ReleasePickInput: input, ReleaseHeadSHA: input.HeadSHA}, nil
 }
 
 type releaseRefreshDispatches map[tracker.ProjectID]string
@@ -268,6 +269,46 @@ func (f releaseAssociationFixture) refresh(revision tracker.Revision) tracker.As
 	return request
 }
 
+func (f releaseAssociationFixture) associateAndCheckStatus(t *testing.T) tracker.ReleaseDelivery {
+	t.Helper()
+	path := f.path + "/release-pick"
+	first := f.hub.Request(t, f.owner, http.MethodPost, path, f.request)
+	hubfixture.RequireStatus(t, first, http.StatusOK)
+	var delivery tracker.ReleaseDelivery
+	hubfixture.Decode(t, first, &delivery)
+	if delivery.ChangeID == "" || delivery.ReleasePickInput != f.request.ReleasePickInput {
+		t.Fatalf("delivery = %+v", delivery)
+	}
+	replay := f.hub.Request(t, f.owner, http.MethodPost, path, f.request)
+	hubfixture.RequireStatus(t, replay, http.StatusOK)
+	if replay.Body.String() != first.Body.String() {
+		t.Fatal("replay changed delivery")
+	}
+	same := f.request
+	same.IdempotencyKey += "-same-pick"
+	replay = f.hub.Request(t, f.owner, http.MethodPost, path, same)
+	hubfixture.RequireStatus(t, replay, http.StatusOK)
+	var repeated tracker.ReleaseDelivery
+	hubfixture.Decode(t, replay, &repeated)
+	if repeated != delivery {
+		t.Fatalf("same pick returned a different delivery: %+v", repeated)
+	}
+	if issue := f.readIssue(t); issue.Revision != f.delivery.Revision+1 {
+		t.Fatalf("associated issue revision = %d", issue.Revision)
+	}
+	if changes := f.readChanges(t); len(changes) != 1 || changes[0].ID != delivery.ChangeID {
+		t.Fatalf("associated changes = %+v", changes)
+	}
+	statusResponse := f.hub.Request(t, f.owner, http.MethodGet, path, nil)
+	hubfixture.RequireStatus(t, statusResponse, http.StatusOK)
+	var status tracker.ReleaseDeliveryStatus
+	hubfixture.Decode(t, statusResponse, &status)
+	if status.ReleasePickInput != f.request.ReleasePickInput || status.ReleaseHeadSHA != f.request.HeadSHA {
+		t.Fatalf("release status = %+v", status)
+	}
+	return delivery
+}
+
 func (f releaseAssociationFixture) readIssue(t *testing.T) tracker.NativeIssue {
 	t.Helper()
 	response := f.hub.Request(t, f.owner, http.MethodGet, f.path, nil)
@@ -275,6 +316,15 @@ func (f releaseAssociationFixture) readIssue(t *testing.T) tracker.NativeIssue {
 	var issue tracker.NativeIssue
 	hubfixture.Decode(t, response, &issue)
 	return issue
+}
+
+func (f releaseAssociationFixture) readChanges(t *testing.T) []tracker.ChangeRequest {
+	t.Helper()
+	response := f.hub.Request(t, f.owner, http.MethodGet, f.path+"/changes", nil)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
+	var changes []tracker.ChangeRequest
+	hubfixture.Decode(t, response, &changes)
+	return changes
 }
 
 func (f releaseAssociationFixture) seedAudit(t *testing.T) {
