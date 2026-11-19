@@ -18322,12 +18322,14 @@
       ],
       "inventory": {
         "operations": {
+          "insertReportEventProjection:SQL": 1,
+          "selectReportEventProjection:SQL": 1,
           "session.putReportEscapeProjection:Exec": 2,
           "session.putReportEscapeProjection:QueryRow": 2,
           "session.putReportEscapeProjection:SQL": 4,
           "session.putReportEventProjection:Exec": 2,
           "session.putReportEventProjection:QueryRow": 1,
-          "session.putReportEventProjection:SQL": 3
+          "session.putReportEventProjection:SQL": 1
         },
         "tables": [
           "hub/change_evidence",
@@ -18785,7 +18787,7 @@
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
           "runnerEventSession.AppendEvent:QueryRow": 1,
-          "runnerEventSession.AppendEvent:SQL": 3,
+          "runnerEventSession.AppendEvent:SQL": 1,
           "runnerEventSession.PutReceipt:QueryRow": 2,
           "runnerEventSession.PutReceipt:SQL": 2
         },
