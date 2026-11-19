@@ -362,7 +362,7 @@ func NativeExecutionDisplayIdentity(execution *tracker.NativeExecutionIdentity, 
 
 func (d AttemptDeps) GetNativeAttempt(c echo.Context) error {
 	if c.QueryParam("view") == "cleanup" {
-		result, err := d.readNativeCleanupAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"))
+		result, err := d.ReadNativeCleanupAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"))
 		if err != nil {
 			return d.HTTPError(c, err)
 		}
@@ -375,7 +375,7 @@ func (d AttemptDeps) GetNativeAttempt(c echo.Context) error {
 	return d.ArchiveJSON(c, http.StatusOK, result)
 }
 
-func (d AttemptDeps) readNativeCleanupAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
+func (d AttemptDeps) ReadNativeCleanupAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
 	if !scope.Credential.Runner.Valid() {
 		return tracker.NativeAttempt{}, hubapi.NativeNotFound()
 	}

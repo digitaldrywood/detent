@@ -233,7 +233,7 @@ func (d SessionDeps) RunnerSessionFenceHeld(ctx context.Context, r tenantstore.R
 	return attempt, item, current, nil
 }
 
-func runnerSessionProcessAuthority(key string) string {
+func RunnerSessionProcessAuthority(key string) string {
 	if key == "" {
 		return ""
 	}
@@ -271,7 +271,7 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 		snapshot.Start, snapshot.Identity = *request.Start, request.Start.RuntimeIdentity
 		snapshot.Resume = store.SessionResumeState{ResumedFromSessionID: request.Start.ResumedFromSessionID, OrphanRecoveryOutcome: request.Start.OrphanRecoveryOutcome, OrphanRecoveryFallbackReason: request.Start.OrphanRecoveryFallbackReason}
 		snapshot.Provider = store.SessionProviderIdentity{ThreadID: request.Start.ProviderThreadID, SessionID: request.Start.ProviderSessionID}
-		snapshot.Authority = runnerSessionProcessAuthority(request.ProcessKey)
+		snapshot.Authority = RunnerSessionProcessAuthority(request.ProcessKey)
 
 	}
 	command := eventstore.RunCommand{Project: scope.Project, WorkItem: tracker.NativeWorkItemID(record.IssueID), LeaseID: string(request.LeaseID), SessionID: request.SessionID}
@@ -367,7 +367,7 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 	if request.Resume != nil {
 		snapshot.Resume = *request.Resume
 	}
-	if (request.Worker != nil || request.Reaped != nil) && (snapshot.Authority == "" || subtle.ConstantTimeCompare([]byte(snapshot.Authority), []byte(runnerSessionProcessAuthority(request.ProcessKey))) != 1) {
+	if (request.Worker != nil || request.Reaped != nil) && (snapshot.Authority == "" || subtle.ConstantTimeCompare([]byte(snapshot.Authority), []byte(RunnerSessionProcessAuthority(request.ProcessKey))) != 1) {
 		return d.HTTPError(c, hubscope.RunnerUnauthorized())
 	}
 	request.ProcessKey = ""

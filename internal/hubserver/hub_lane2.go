@@ -1259,3 +1259,11 @@ func readNativeRunReplaySnapshot(ctx context.Context, r tenantstore.Reader, scop
 	}
 	return &nativeRunReplaySnapshot{rows: result.Rows, attempts: result.Attempts}, nil
 }
+
+func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
+	return s.runnerAttemptDeps().ReadNativeCleanupAttempt(ctx, scope, item, id)
+}
+
+func runnerSessionProcessAuthority(key string) string {
+	return executionapi.RunnerSessionProcessAuthority(key)
+}
