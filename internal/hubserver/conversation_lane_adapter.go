@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/credits"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/sprites"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
@@ -1521,4 +1523,45 @@ func withCoordinatorAgent(ctx context.Context, agent string) context.Context {
 		})
 	}
 	return coordinator.WithAgent(ctx, agent)
+}
+
+var errCoordinatorNothingPending = coordinator.ErrNothingPending
+
+func (c *conversationTurnCoordinator) turnAdmissionDeps() coordinator.TurnAdmissionDeps {
+	s := c.server
+	return coordinator.TurnAdmissionDeps{
+		RequireExecution: func(ctx context.Context, r tenantstore.Reader, now time.Time) error {
+			return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "native_execution", now))
+		},
+		HasLuna:    s.hasLunaCoordinator,
+		CreditMode: func() string { return s.database.aiCreditMode },
+		IncludedCredits: func(ctx context.Context, r tenantstore.Reader, now time.Time) (int64, error) {
+			included, err := s.database.includedAICreditsFromReader(ctx, r, now)
+			if err != nil {
+				return 0, err
+			}
+			return included.remaining(), nil
+		},
+		ModelChoice: c.modelChoiceGranted,
+		Models:      c.modelChoices,
+	}
+}
+
+func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.Delivery, runErr error, usage *ConversationUsage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	deps := coordinator.TurnFinishDeps{
+		PrepareContents: s.coordinator.service.PrepareConversationContents,
+		PrepareUsage: func(ctx context.Context, usage ConversationUsage) (func(context.Context, tenantstore.Writer) error, error) {
+			prepared, err := hubapi.FeatureResult(s.coordinator.server.database.creditsService().PrepareUsage(ctx, credits.Usage(usage)))
+			if err != nil {
+				return nil, err
+			}
+			return func(ctx context.Context, writer tenantstore.Writer) error {
+				return hubapi.FromFeatureError(s.coordinator.server.database.creditsService().WriteUsage(ctx, writer, prepared))
+			}, nil
+		},
+		Write: s.coordinator.write,
+	}
+	return deps.Finish(ctx, s.conversationID, s.threadID, &s.assistant, s.users, s.budgetStopped, outcome, runErr, usage)
 }
