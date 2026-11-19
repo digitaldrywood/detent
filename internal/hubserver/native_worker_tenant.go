@@ -636,11 +636,11 @@ func (s *Service) respondNativeLeaseTenant(c echo.Context, scope hubscope.Native
 		if details.WorkItemID == "" {
 			return corestore.ErrNotFound
 		}
-		counts, err := r.ClaimOpenBlockerCounts(ctx, tenantstore.ClaimBlockerQuery{Project: scope.Project, WorkItems: []tracker.NativeWorkItemID{details.WorkItemID}, CredentialID: scope.Credential.ID, Now: s.config.Clock(), SampleLimit: nativeClaimBlockerLimit + 1})
+		counts, err := r.ClaimOpenBlockerCounts(ctx, tenantstore.ClaimBlockerQuery{Project: scope.Project, WorkItems: []tracker.NativeWorkItemID{details.WorkItemID}, CredentialID: scope.Credential.ID, Now: s.config.Clock(), SampleLimit: hubrecords.NativeClaimBlockerLimit + 1})
 		if err != nil {
 			return err
 		}
-		summary := summarizeNativeClaimBlockers(counts[details.WorkItemID])
+		summary := hubrecords.SummarizeNativeClaimBlockers(counts[details.WorkItemID])
 		details.DependencyFacts = &summary
 		return nil
 	})
@@ -660,6 +660,6 @@ func (s *Service) writeNativeLeaseResponse(c echo.Context, lease leasestore.Leas
 		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt}
 	return c.JSON(http.StatusOK, struct {
 		tracker.NativeLease
-		*nativeClaimBlockerSummary
+		*hubrecords.NativeClaimBlockerSummary
 	}{response, details.DependencyFacts})
 }

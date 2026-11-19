@@ -164,7 +164,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			ids = append(ids, plan.Candidate.WorkItemID)
 		}
 		if len(ids) > 0 {
-			openBlockers, err = r.ClaimOpenBlockerCounts(ctx, tenantstore.ClaimBlockerQuery{Project: scope.Project, WorkItems: ids, CredentialID: scope.Credential.ID, Now: now, SampleLimit: nativeClaimBlockerLimit + 1})
+			openBlockers, err = r.ClaimOpenBlockerCounts(ctx, tenantstore.ClaimBlockerQuery{Project: scope.Project, WorkItems: ids, CredentialID: scope.Credential.ID, Now: now, SampleLimit: hubrecords.NativeClaimBlockerLimit + 1})
 			return err
 		}
 		return nil
@@ -249,7 +249,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			}
 		}
 		issue := plan.Issue
-		summary := summarizeNativeClaimBlockers(openBlockers[issue.WorkItemID])
+		summary := hubrecords.SummarizeNativeClaimBlockers(openBlockers[issue.WorkItemID])
 		issue.Blockers = nil
 		issue.Dependencies = []tracker.NativeWorkItemID{}
 		issue.DependencyReady = summary.DependencyReady
