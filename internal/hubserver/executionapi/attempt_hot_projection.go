@@ -1,15 +1,17 @@
-package hubserver
+package executionapi
 
 import (
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reports"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func attemptFailureSummary(data tracker.NativeRunData, status string) *leasestore.AttemptFailure {
-	example, class := failureFromAttempt(data, status)
+func AttemptFailureSummary(data tracker.NativeRunData, status string) *leasestore.AttemptFailure {
+	example, class := reports.FailureFromAttempt(data, status)
 	summary := &leasestore.AttemptFailure{}
 	if example = hubapi.BoundedFailureText(strings.ReplaceAll(example, "\x00", "\uFFFD"), leasestore.MaxAttemptFailureExampleBytes); example == "" {
 		return summary
@@ -21,7 +23,7 @@ func attemptFailureSummary(data tracker.NativeRunData, status string) *leasestor
 	return summary
 }
 
-func applyHealthAttemptData(a *healthRateAttempt, data tracker.NativeRunData) {
+func ApplyHealthAttemptData(a *healthsignals.RateAttempt, data tracker.NativeRunData) {
 	a.Session = data.SessionID
 	if data.TerminalFailure != nil {
 		a.Stage = data.TerminalFailure.Stage
@@ -36,10 +38,10 @@ func applyHealthAttemptData(a *healthRateAttempt, data tracker.NativeRunData) {
 	if data.Runtime != nil {
 		projected.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: data.Runtime.HeartbeatAt, Landing: data.Runtime.Landing}
 	}
-	text, _ := failureFromAttempt(projected, a.Status)
-	a.Recovery = healthRecoveryReason(text)
+	text, _ := reports.FailureFromAttempt(projected, a.Status)
+	a.Recovery = healthsignals.New(healthsignals.Deps{NormalizeFailureSignature: reports.NormalizeFailureSignature}).RecoveryReason(text)
 	if text != "" && a.Recovery == "" {
-		a.Signature = normalizeFailureSignature(text)
+		a.Signature = reports.NormalizeFailureSignature(text)
 	}
 	if r := data.Runtime; r != nil {
 		a.Heartbeat = r.HeartbeatAt

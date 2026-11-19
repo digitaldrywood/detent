@@ -1249,3 +1249,24 @@ func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenan
 func decodeRunHistory(ctx context.Context, q hubapi.NativeQueryer, raw string, result *tracker.CollaborationData) error {
 	return executionapi.DecodeRunHistory(ctx, q, raw, result)
 }
+
+func attemptFailureSummary(data tracker.NativeRunData, status string) *leasestore.AttemptFailure {
+	return executionapi.AttemptFailureSummary(data, status)
+}
+
+func applyHealthAttemptData(a *healthRateAttempt, data tracker.NativeRunData) {
+	executionapi.ApplyHealthAttemptData(a, data)
+}
+
+type nativeRunReplaySnapshot struct {
+	rows     []eventstore.Event
+	attempts []leasestore.Attempt
+}
+
+func readNativeRunReplaySnapshot(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, events []tracker.NativeRunEvent) (*nativeRunReplaySnapshot, error) {
+	result, err := executionapi.ReadNativeRunReplaySnapshot(nativeAttemptHistoryID, ctx, r, scope, item, events)
+	if err != nil {
+		return nil, err
+	}
+	return &nativeRunReplaySnapshot{rows: result.Rows, attempts: result.Attempts}, nil
+}
