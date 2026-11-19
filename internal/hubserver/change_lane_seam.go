@@ -71,6 +71,7 @@ func (s *Service) changeAuditEvidence() *releaseaudits.ChangeEvidence {
 		NativeAPIError:                func(c echo.Context, err error) error { return s.nativeAPIError(c, err) },
 		InvalidAPIRequest:             s.invalidAPIRequest,
 		RunnerSessionFence:            s.runnerSessionFence,
+		RecoverAuditHold:              s.recoverRecordedAuditHold,
 		ValidateNativeDetailReference: validateNativeDetailReference,
 	})
 }

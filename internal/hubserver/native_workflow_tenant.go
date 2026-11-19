@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/releaseaudits"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -51,12 +52,13 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 	return s.prepareOrTransitionNativeIssue(ctx, scope, item, request, stop, conversationID, nil)
 }
 
-type nativeClaimRecoveryWrite struct {
+type nativeRecordedRecoveryWrite struct {
 	recovery *leasestore.RecordedRecovery
+	audit    *releaseaudits.AuditHoldClearance
 	write    func(context.Context, tenantstore.Writer) error
 }
 
-func (s *Service) prepareOrTransitionNativeIssue(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments, conversationID string, claim *nativeClaimRecoveryWrite) (json.RawMessage, error) {
+func (s *Service) prepareOrTransitionNativeIssue(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments, conversationID string, claim *nativeRecordedRecoveryWrite) (json.RawMessage, error) {
 	batchRouting := scope.IntegrationOwned && scope.IntegrationRepository != "" && scope.GitHubIntakeRevision != nil && scope.GitHubIntakeRevision.BatchID != "" && scope.GitHubIntakeRevision.Revision > 0 && scope.Credential.Scope == hubapi.APIScopeAdmin && scope.Credential.Runner.RunnerID == "" && request.Reason == "user_requested" && request.State != "Cancelled" && stop == nil
 	if batchRouting {
 		batch, err := s.loadGitHubBatchRecord(ctx, scope)
@@ -90,8 +92,9 @@ func (s *Service) prepareOrTransitionNativeIssue(ctx context.Context, scope hubs
 		}
 	}
 	human := (scope.Credential.Scope == hubapi.APIScopeOperator || scope.Credential.Scope == hubapi.APIScopeAdmin) && scope.Credential.Runner.RunnerID == "" && scope.Actor().Kind == "human" || batchRouting
+	auditRecovery := claim != nil && claim.audit != nil
 	recordedRecovery := !human && request.Reason == "dependency_ready"
-	if !human && (conversationID != "" || scope.Credential.Scope != hubapi.APIScopeWorker || scope.Credential.Runner.RunnerID == "" || scope.Credential.Runner.OrganizationID != scope.Organization || scope.Credential.EntryKey != nil) {
+	if !human && !auditRecovery && (conversationID != "" || scope.Credential.Scope != hubapi.APIScopeWorker || scope.Credential.Runner.RunnerID == "" || scope.Credential.Runner.OrganizationID != scope.Organization || scope.Credential.EntryKey != nil) {
 		return nil, hubscope.RunnerUnauthorized()
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.ExpectedRevision <= 0 || !human && (request.LeaseID == "" || request.FencingToken <= 0) {
@@ -561,7 +564,13 @@ func (s *Service) prepareOrTransitionNativeIssue(ctx context.Context, scope hubs
 					}
 				}
 			} else if recordedRecovery {
-				if err := s.authorizeRecordedRecoveryTenant(ctx, w, scope, *recovery); err != nil {
+				var err error
+				if auditRecovery {
+					err = s.authorizeRecordedRecoveryState(ctx, w, scope, *recovery, claim.audit)
+				} else {
+					err = s.authorizeRecordedRecoveryTenant(ctx, w, scope, *recovery)
+				}
+				if err != nil {
 					return err
 				}
 			} else {

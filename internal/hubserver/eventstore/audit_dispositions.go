@@ -31,6 +31,10 @@ type AuditDispositionWriter interface {
 	CreateAuditDisposition(context.Context, AuditDisposition) (AuditDisposition, error)
 }
 
+type LatestAuditReviewReader interface {
+	LatestAuditReviewSequence(context.Context, string, string) (int64, error)
+}
+
 type PriorAuditQuery struct {
 	Project               tracker.ProjectID
 	ChangeID              string
