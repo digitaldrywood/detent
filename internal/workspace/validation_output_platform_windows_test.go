@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestReview1973WindowsHostValidationWaitsForAcknowledgement(t *testing.T) {
@@ -21,7 +22,7 @@ func TestReview1973WindowsHostValidationWaitsForAcknowledgement(t *testing.T) {
 			name = "denied"
 		}
 		t.Run(name, func(t *testing.T) {
-			backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: initSourceRepo(t), AutoBranch: true})
+			backend, err := NewLocalGit(LocalGitOptions{Root: testenv.TempDir(t), SourceRoot: initSourceRepo(t), AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
