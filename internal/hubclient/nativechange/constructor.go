@@ -39,7 +39,7 @@ func NewRecoveredExecution(host executioncontract.ExecutionHost, ctx context.Con
 	execution := &nativeExecution{
 		publication: state.Publication, observations: state.Observations,
 		scheduler: s, claim: claim, data: state.Data, pending: state.Pending, rejected: state.Rejected,
-		lastDiff: state.Diff, generationDiff: state.GenerationDiff, storedSeq: state.StoredSeq,
+		lastDiff: state.Diff, storedSeq: state.StoredSeq,
 		worktreeState: state.WorktreeState, worktreeHead: state.WorktreeHead,
 		sourceRequired: state.SourceRequired, retainedSource: state.RetainedSource,
 		recoveredSource: state.RecoveredSource, mergeResolution: state.MergeResolution,
@@ -47,9 +47,6 @@ func NewRecoveredExecution(host executioncontract.ExecutionHost, ctx context.Con
 		preparedOutcome: state.PreparedOutcome,
 		preparedMessage: state.PreparedMessage, preparedDisposition: state.PreparedDisposition,
 		preparedFailure: state.Data.TerminalFailure,
-	}
-	if execution.generationDiff == nil && state.Diff != nil && state.StoredSeq > 0 && state.Diff.Generation.Seq == state.StoredSeq {
-		execution.generationDiff = state.Diff
 	}
 	if state.PreparedFailure != nil {
 		execution.preparedFailure = state.PreparedFailure

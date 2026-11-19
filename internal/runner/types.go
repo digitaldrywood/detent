@@ -629,7 +629,6 @@ func (e *agentDurationLimitError) Is(target error) bool {
 type RunRequest struct {
 	PrepareRun        func(context.Context, *RunRequest) error `json:"-"`
 	ProgressDecision  progresscheck.Record                     `json:",omitzero"`
-	observeIdentity   func(context.Context, agentidentity.Identity) error
 	workspacePrepared bool
 	workspaceBackend  workspace.Backend
 	LandingBatch      *workspace.LandingBatchTicket `json:"-"`

@@ -63,14 +63,13 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	if _, err := e.claim.source.NativeClient().ValidateLease(ctx, e.claim.lease); err != nil {
 		return err
 	}
-	stored := e.diffForSequence(finish)
-	if stored == nil && e.lastDiff == nil {
+	if e.lastDiff == nil {
 		return errors.New("the run's final attempt diff is unavailable")
 	}
-	if e.storedSeq != finish || stored == nil {
+	if e.storedSeq != finish {
 		return errors.New("the hub has not stored the run's final attempt diff")
 	}
-	diff := *stored
+	diff := *e.lastDiff
 	if e.worktreeHead != "" && diff.HeadSHA != e.worktreeHead {
 		return errors.New("the attempt diff does not match the final checkpoint head")
 	}

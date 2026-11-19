@@ -15,7 +15,6 @@ type State struct {
 	Rejected                 *tracker.NativeRunEvent        `json:"rejected,omitempty"`
 	Pending                  *tracker.NativeRunEvent        `json:"pending,omitempty"`
 	Diff                     *tracker.AttemptDiffRequest    `json:"diff,omitempty"`
-	GenerationDiff           *tracker.AttemptDiffRequest    `json:"generation_diff,omitempty"`
 	StoredSeq                int64                          `json:"stored_seq"`
 	WorktreeState            string                         `json:"worktree_state"`
 	WorktreeHead             string                         `json:"worktree_head"`

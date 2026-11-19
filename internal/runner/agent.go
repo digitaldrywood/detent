@@ -30,10 +30,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
-	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
-	"github.com/digitaldrywood/detent/internal/runnersession"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -71,6 +69,10 @@ type SessionStore interface {
 	StartSession(context.Context, store.SessionStart) (int64, error)
 	FinishSession(context.Context, int64, store.SessionFinish) error
 	RecordUsageEvent(context.Context, store.UsageEvent) (int64, error)
+}
+
+type sessionIdentityStore interface {
+	UpdateSessionIdentity(context.Context, int64, agentidentity.Identity) error
 }
 
 type sessionProviderStore interface {
@@ -1292,11 +1294,6 @@ func (r *Runner) runAgentTurn(
 	usageReport := &turnUsageReporter{startedAt: r.now(), sourceID: "session_" + strconv.FormatInt(detentSessionID, 10)}
 	activityProfile := runRequest.activityProfile
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
-	observeIdentity := runRequest.observeIdentity
-	if observeIdentity == nil {
-		observeIdentity = r.sessionIdentityObserver(detentSessionID, initialIdentity)
-	}
-	observeProcess := r.workerProcessObserver(detentSessionID, info.Path)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		r.providerUsage.ObserveUpdate(initialIdentity.BackendID, update)
@@ -1322,7 +1319,7 @@ func (r *Runner) runAgentTurn(
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
 			}
 		}
-		if err := observeProcess(updateCtx, update, update.workerScratchPath); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update, info.Path, update.workerScratchPath); err != nil {
 			return err
 		}
 		r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
@@ -1334,7 +1331,7 @@ func (r *Runner) runAgentTurn(
 				providerResume.SessionID = strings.TrimSpace(update.ProviderSessionID)
 			}
 		}
-		if err := publishAgentActivity(updateCtx, runRequest, detentSessionID, update, eventAt); err != nil {
+		if err := publishAgentActivity(runRequest, detentSessionID, update, eventAt); err != nil {
 			return err
 		}
 		previousIdentity := result.RuntimeIdentity
@@ -1344,11 +1341,13 @@ func (r *Runner) runAgentTurn(
 				return err
 			}
 		}
-		if err := observeIdentity(updateCtx, result.RuntimeIdentity); err != nil {
-			return err
-		}
-		if result.RuntimeIdentity.HasRuntimeValues() && !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
-			r.logRuntimeIdentity(runRequest, detentSessionID, update, previousIdentity, result.RuntimeIdentity)
+		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
+			if err := r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity); err != nil {
+				return err
+			}
+			if result.RuntimeIdentity.HasRuntimeValues() {
+				r.logRuntimeIdentity(runRequest, detentSessionID, update, previousIdentity, result.RuntimeIdentity)
+			}
 		}
 		progress.apply(update, eventAt)
 		if targetRefObserver != nil && update.Type == AgentUpdateToolCompleted && failedAgentToolStatus(update.Status) {
@@ -2566,7 +2565,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnRequest.ToolInstructions = admissionToolInstructions
 		}
 	}
-	req.observeIdentity = r.sessionIdentityObserver(sessionID, runtimeIdentity)
 	runWithCheckpoint := func(request AgentTurnRequest, runReq RunRequest, identity agentidentity.Identity, costOffsetUSD float64) agentTurnExecution {
 		return r.runCheckpointedTurn(ctx, sessionCtx, checkpoint, workflow.Config.Agent, backend, request, runReq, func(turnCtx context.Context, request AgentTurnRequest, runReq RunRequest) agentTurnExecution {
 			execution := r.runAgentTurn(turnCtx, backend, request, runReq, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, targetRefObserver, runStartedAt, sessionID, identity, budgetProjection, costOffsetUSD, sessionModel, backendConfig.Kind)
@@ -4018,7 +4016,6 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	checkStartedAttrs = append(checkStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_check_started", checkStartedAttrs...)
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
-	observeIdentity := r.sessionIdentityObserver(sessionID, runtimeIdentity)
 	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0, "", 0)
 	eventAt := r.now()
 	progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: runtimeIdentity}, eventAt)
@@ -4034,7 +4031,6 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		effort = resolvedSelection.Effort
 	}
 	stopCompute := r.meterCompute(runReq.WorkerHost)
-	observeProcess := r.workerProcessObserver(sessionID, info.Path)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		ReadOnly:            req.NativeVersion != nil,
 		SupplementalTools:   req.NativeVersion != nil,
@@ -4070,11 +4066,11 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
 		r.logAgentUpdate(runReq, sessionID, update)
-		if err := observeProcess(updateCtx, update, update.workerScratchPath); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, info.Path, update.workerScratchPath); err != nil {
 			return err
 		}
 		r.persistSessionProviderIdentity(updateCtx, sessionID, update)
-		if err := publishAgentActivity(updateCtx, runReq, sessionID, update, eventAt); err != nil {
+		if err := publishAgentActivity(runReq, sessionID, update, eventAt); err != nil {
 			return err
 		}
 		if update.Type == AgentUpdateMessageDelta {
@@ -4090,11 +4086,13 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 				return err
 			}
 		}
-		if err := observeIdentity(updateCtx, runResult.RuntimeIdentity); err != nil {
-			return err
-		}
-		if runResult.RuntimeIdentity.HasRuntimeValues() && !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
-			r.logRuntimeIdentity(runReq, sessionID, update, previousIdentity, runResult.RuntimeIdentity)
+		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
+			if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+				return err
+			}
+			if runResult.RuntimeIdentity.HasRuntimeValues() {
+				r.logRuntimeIdentity(runReq, sessionID, update, previousIdentity, runResult.RuntimeIdentity)
+			}
 		}
 		progress.apply(update, eventAt)
 		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
@@ -4582,15 +4580,27 @@ func (r *Runner) persistSessionProviderIdentity(ctx context.Context, sessionID i
 	}
 }
 
-func (r *Runner) workerProcessObserver(sessionID int64, cleanupRoot string) func(context.Context, AgentUpdate, string) error {
-	var worker runnersession.WorkerObservation
-	owner, ok := r.store.(sessionWorkerProcessStore)
-	return func(ctx context.Context, update AgentUpdate, path string) error {
-		if !ok {
-			return nil
-		}
-		return worker.Report(ctx, sessionID, store.WorkerProcessIdentity(update.WorkerProcess), cleanupRoot, path, owner.UpdateSessionWorkerProcess)
+func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int64, update AgentUpdate, cleanupRoot string, cleanupPath string) error {
+	identity := update.WorkerProcess
+	if sessionID <= 0 || identity.PID <= 0 || identity.StartedAt.IsZero() {
+		return nil
 	}
+	processStore, ok := r.store.(sessionWorkerProcessStore)
+	if !ok {
+		return nil
+	}
+	if err := processStore.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessRegistration{
+		WorkerProcessIdentity: store.WorkerProcessIdentity{
+			PID:       identity.PID,
+			GroupID:   identity.GroupID,
+			StartedAt: identity.StartedAt,
+		},
+		CleanupRoot: strings.TrimSpace(cleanupRoot),
+		CleanupPath: strings.TrimSpace(cleanupPath),
+	}); err != nil {
+		return fmt.Errorf("update agent session worker process: %w", err)
+	}
+	return nil
 }
 
 func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, issue connector.Issue, reason string) error {
@@ -4790,9 +4800,18 @@ func (r *Runner) updateSessionResumeState(ctx context.Context, sessionID int64, 
 	})
 }
 
-func (r *Runner) sessionIdentityObserver(sessionID int64, initial agentidentity.Identity) func(context.Context, agentidentity.Identity) error {
-	writer, _ := r.store.(runnersession.IdentityWriter)
-	return runnersession.ObserveIdentity(writer, sessionID, initial)
+func (r *Runner) persistSessionIdentity(ctx context.Context, sessionID int64, identity agentidentity.Identity) error {
+	if sessionID <= 0 || identity.IsZero() {
+		return nil
+	}
+	identityStore, ok := r.store.(sessionIdentityStore)
+	if !ok {
+		return nil
+	}
+	if err := identityStore.UpdateSessionIdentity(ctx, sessionID, identity); err != nil {
+		return fmt.Errorf("update agent session identity: %w", err)
+	}
+	return nil
 }
 
 func (r *Runner) finishSession(
@@ -6138,7 +6157,7 @@ func (r *Runner) publishRunUpdate(
 	detentSessionID int64,
 ) error {
 	if runtime, ok := req.Execution.(RuntimeExecution); ok {
-		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}); err != nil && !transport.DeferObservation(ctx, err) {
+		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}); err != nil {
 			return err
 		}
 	}
@@ -6175,10 +6194,10 @@ func (r *Runner) publishRunUpdate(
 			usage.DiffStats = diffStats
 		}
 	}
-	return transport.ObservationError(ctx, req.OnUsageUpdate(usage))
+	return req.OnUsageUpdate(usage)
 }
 
-func publishAgentActivity(ctx context.Context, req RunRequest, detentSessionID int64, update AgentUpdate, at time.Time) error {
+func publishAgentActivity(req RunRequest, detentSessionID int64, update AgentUpdate, at time.Time) error {
 	if req.OnActivityUpdate == nil {
 		return nil
 	}
@@ -6188,7 +6207,7 @@ func publishAgentActivity(ctx context.Context, req RunRequest, detentSessionID i
 			content = message
 		}
 	}
-	err := req.OnActivityUpdate(AgentActivityUpdate{
+	return req.OnActivityUpdate(AgentActivityUpdate{
 		At:                at.UTC(),
 		DetentSessionID:   detentSessionID,
 		ProviderSessionID: strings.TrimSpace(update.ThreadID),
@@ -6201,7 +6220,6 @@ func publishAgentActivity(ctx context.Context, req RunRequest, detentSessionID i
 		Model:             strings.TrimSpace(update.Model),
 		TotalTokens:       update.Tokens.TotalTokens,
 	})
-	return transport.ObservationError(ctx, err)
 }
 
 func failedAgentToolStatus(status string) bool {

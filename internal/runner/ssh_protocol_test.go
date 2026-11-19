@@ -23,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -54,12 +53,6 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 		{"acceptance rejection", acceptanceRejectionError{}, nil, acceptanceFailure},
 		{"wrapped acceptance rejection", fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, acceptanceRejectionError{}), ErrValidatorInfrastructure, acceptanceFailure},
 		{"cancelled", context.Canceled, context.Canceled, nil},
-		{"worker cancellation source", errors.Join(NewCancellationCause(ErrExecutionAuthorityUnavailable, "runner.agent_backend"), context.Canceled), ErrExecutionAuthorityUnavailable, func(err error) bool {
-			var cause *CancellationCause
-			return errors.As(preserveCancellation(context.Background(), err, "orchestrator.parent_context"), &cause) && cause.Source == "runner.agent_backend" && cause.Reason == "execution_authority_unavailable"
-		}},
-		{"unavailable observation", transport.ErrUnavailable, transport.ErrUnavailable, func(err error) bool { return transport.DeferObservation(t.Context(), err) }},
-		{"rejected observation", errors.Join(transport.ErrUnavailable, transport.ErrRejected), transport.ErrRejected, func(err error) bool { return !transport.DeferObservation(t.Context(), err) }},
 		{"artifact quota", artifact.ErrQuota, artifact.ErrQuota, nil},
 		{"artifact storage", artifact.ErrStorage, artifact.ErrStorage, nil},
 		{"GitHub quota authority", &github.StatusError{StatusCode: 429, Err: github.ErrRateLimited, CredentialIdentity: "local-credential", RateLimitKind: "secondary_throttled", RetryAfter: 120 * time.Second, ObservedAt: time.Date(2026, 10, 1, 21, 42, 42, 0, time.UTC)}, github.ErrRateLimited, func(err error) bool {

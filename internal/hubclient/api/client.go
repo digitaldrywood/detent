@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
-	"github.com/digitaldrywood/detent/internal/hubclient/transport"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -28,7 +27,7 @@ const maxResponseBytes = 1 << 20
 
 var (
 	ErrNoClaimableWork = errors.New("no Hub work is claimable")
-	ErrUnavailable     = transport.ErrUnavailable
+	ErrUnavailable     = errors.New("hub unavailable")
 )
 
 type responseSizeError struct {
@@ -135,13 +134,6 @@ type APIError struct {
 	retryAfter      time.Time
 }
 
-func (e *APIError) Unwrap() error {
-	if e != nil && e.Status >= 400 && e.Status < 500 {
-		return transport.ErrRejected
-	}
-	return nil
-}
-
 func (e *APIError) Error() string {
 	if e == nil {
 		return "Hub request failed"
@@ -210,7 +202,9 @@ func New(config Config) (*Client, error) {
 			return nil, errors.New("runner identity belongs to a different Hub")
 		}
 		client.runner = NewRunnerState(config.IdentityFile)
-		client.httpClient = clientWithoutRedirects(httpClient)
+		transport := *httpClient
+		transport.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client.httpClient = &transport
 	}
 	return client, nil
 }
@@ -315,19 +309,6 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	if input != nil && !streaming {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	var authorize func(context.Context) error
-	switch input.(type) {
-	case runnersession.Mutation:
-		authorize = nativeEffectError
-	case tracker.NativeRunEvent:
-		authorize, _ = ctx.Value(executionEventAuthorityKey{}).(func(context.Context) error)
-	}
-	if authorize != nil {
-		httpClient = clientWithoutRedirects(httpClient)
-		if err := authorize(ctx); err != nil {
-			return err
-		}
-	}
 	response, err := httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
@@ -410,12 +391,6 @@ func (c *Client) bearerToken(ctx context.Context) (string, error) {
 		return "", errors.New("hub token is unavailable")
 	}
 	return "Bearer " + token, nil
-}
-
-func clientWithoutRedirects(client *http.Client) *http.Client {
-	copied := *client
-	copied.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &copied
 }
 
 // clientWithTimeout returns an HTTP client whose own Timeout cannot cut a

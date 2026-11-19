@@ -29,12 +29,6 @@ func (c *NativeClient) FencedMutation(ctx context.Context, id tracker.NativeWork
 
 type nativeMutationAuthorityKey struct{}
 
-type executionEventAuthorityKey struct{}
-
-func (c *NativeClient) AppendExecutionEvent(ctx context.Context, id tracker.NativeWorkItemID, event tracker.NativeRunEvent, authorize func(context.Context) error) error {
-	return c.AppendEvent(context.WithValue(ctx, executionEventAuthorityKey{}, authorize), id, event)
-}
-
 type nativeMutationAuthority struct {
 	scope        string
 	lease        tracker.NativeLease
@@ -50,7 +44,7 @@ func nativeEffectError(ctx context.Context) error {
 		return nil
 	}
 	cause := authority.cancellation()
-	if errors.Is(cause, runner.ErrOperatorStopped) || errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) {
+	if errors.Is(cause, runner.ErrOperatorStopped) {
 		return cause
 	}
 	return nil
