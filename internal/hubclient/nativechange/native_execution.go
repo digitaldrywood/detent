@@ -1115,8 +1115,8 @@ func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string,
 	if receipt != nil && len(prior) != 0 {
 		if errors.Is(e.mutationError(ctx), runner.ErrOperatorStopped) {
 			data.Sequence = prior[0].Data.Sequence - 1
-		} else if err := e.flushObservations(ctx); err != nil {
-			return err
+		} else {
+			receipt.observation = observationBatch(prior)
 		}
 		prior = nil
 	}

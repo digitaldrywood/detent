@@ -319,6 +319,85 @@ func TestStoppedReceiptAfterUnacknowledgedObservation(t *testing.T) {
 	}
 }
 
+func TestStoppedReceiptAfterBufferedObservation(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		committed    bool
+		wantSequence int64
+	}{
+		{"Hub committed", true, 3},
+		{"never arrived", false, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var attempt tracker.NativeAttempt
+			var observations, checkpoints int
+			var checkpoint tracker.NativeRunEvent
+			e := replayExecution(t, func(r *http.Request) (int, string, error) {
+				switch {
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/attempts/"):
+					body, err := json.Marshal(attempt)
+					return 200, string(body), err
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/events"):
+					var event tracker.NativeRunEvent
+					if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+						t.Fatal(err)
+					}
+					switch event.Type {
+					case "run.observed":
+						observations++
+						if event.Data.Sequence != 2 || len(event.PriorEvents) != 1 || event.PriorEvents[0].Data.Sequence != 1 {
+							t.Fatalf("unexpected observation batch: %+v", event)
+						}
+						if test.committed {
+							attempt.NativeRunData = event.Data
+						}
+						return 0, "", ErrUnavailable
+					case "run.checkpointed":
+						checkpoints++
+						checkpoint = event
+					default:
+						t.Fatalf("unexpected event %q", event.Type)
+					}
+				}
+				return 200, "{}", nil
+			})
+			attempt.NativeRunData = e.data
+			e.claim.lease.RunDetailBatching = true
+			worker, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			ctx := api.WithMutationAuthority(worker, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(worker) })
+			for range 2 {
+				if err := e.append(ctx, "run.observed", "", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if observations != 0 {
+				t.Fatalf("observation POSTs before RecordStep = %d", observations)
+			}
+			head := nativeChangeFixtureHead("a")
+			gateResult := gate.CommandResult{Command: "make check", HeadSHA: head, ExitCode: 1}
+			err := e.RecordStep(ctx, tracker.NativeStepReceipt{Step: "validation", Source: tracker.NativeCheckpoint{HeadSHA: head, WorkspaceDigest: strings.Repeat("d", 64)}, Validation: &gateResult})
+			if !nativeTransportUnavailable(err) || observations != 1 || checkpoints != 0 {
+				t.Fatalf("RecordStep: observation POSTs=%d checkpoint POSTs=%d error=%v", observations, checkpoints, err)
+			}
+			cancel(runner.ErrOperatorStopped)
+			cleanup := context.WithoutCancel(ctx)
+			for range 2 {
+				if err := e.flush(cleanup); err != nil {
+					t.Fatalf("stopped flush: checkpoint POSTs=%d error=%v", checkpoints, err)
+				}
+			}
+			if observations != 1 || checkpoints != 1 || checkpoint.Data.Sequence != test.wantSequence || len(checkpoint.PriorEvents) != 0 {
+				t.Fatalf("observation POSTs=%d checkpoint POSTs=%d sequence=%d prior=%d", observations, checkpoints, checkpoint.Data.Sequence, len(checkpoint.PriorEvents))
+			}
+			steps := checkpoint.Data.Steps
+			if len(steps) != 1 || steps[0].Step != "validation" || steps[0].Validation == nil || steps[0].Validation.HeadSHA != head || steps[0].Validation.ExitCode != 1 || steps[0].Validation.Command != gateResult.Command {
+				t.Fatalf("checkpoint lost gate result: %+v", steps)
+			}
+		})
+	}
+}
+
 func TestStoppedGateRequiresVerifiedWorkspace(t *testing.T) {
 	for _, stage := range []string{"no live source", "different workspace digest", "missing gate digest", "files change before receipt", "base changes before receipt"} {
 		t.Run(stage, func(t *testing.T) {

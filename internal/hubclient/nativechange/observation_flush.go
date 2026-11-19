@@ -18,11 +18,15 @@ func (e *nativeExecution) flushObservations(ctx context.Context) error {
 	if len(e.observations) == 0 {
 		return nil
 	}
-	last := len(e.observations) - 1
-	event := e.observations[last]
-	event.PriorEvents = slices.Clone(e.observations[:last])
-	e.pending = &event
+	e.pending = observationBatch(e.observations)
 	return e.flush(ctx)
+}
+
+func observationBatch(events []tracker.NativeRunEvent) *tracker.NativeRunEvent {
+	last := len(events) - 1
+	event := events[last]
+	event.PriorEvents = slices.Clone(events[:last])
+	return &event
 }
 
 func (e *nativeExecution) receiptAttempt(ctx context.Context) (tracker.NativeAttempt, error) {
