@@ -42,7 +42,7 @@ Nothing else is normative. Other reference pages under `docs/` describe the prod
 ## Code conventions
 
 - English for code, comments, documentation, errors, tests, commits and examples.
-- Go 1.26, idiomatic and standard-library first. Feature-packaged code under `internal/`. Constructor dependency injection, not global state or wire/fx. Interfaces and factories only at backend or plugin boundaries where they remove real coupling.
+- Go 1.27, idiomatic and standard-library first. Feature-packaged code under `internal/`. Constructor dependency injection, not global state or wire/fx. Interfaces and factories only at backend or plugin boundaries where they remove real coupling.
 - Keep packages small and focused on one feature. A large package is a design smell: it couples unrelated code, reruns every test on any change and defeats incremental validation. When a package grows or its tests get slow, split it into feature packages with narrow interfaces. Never shard test runs or add parallel runners to hide a slow package.
 - Echo for HTTP, PostgreSQL with sqlc and goose migrations, Templ + HTMX + Tailwind v4 for server-rendered UI, Air for hot reload, golangci-lint v2.
 - Prefer self-documenting code. Add no code comments and no lint or security suppression comments unless explicitly asked.

@@ -17,7 +17,7 @@ requests.
 
 ## Setup
 
-You need Go 1.26, Git, and Node 24 with npm.
+You need Go 1.27.3, Git, and Node 24 with npm.
 
 ```sh
 git clone https://github.com/digitaldrywood/detent.git
