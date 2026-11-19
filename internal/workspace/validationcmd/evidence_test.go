@@ -1,4 +1,4 @@
-package workspace
+package validationcmd
 
 import (
 	"io/fs"

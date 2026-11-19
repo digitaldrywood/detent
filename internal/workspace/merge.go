@@ -3,7 +3,6 @@ package workspace
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -554,9 +553,10 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	if native {
 		evidenceCtx = procgroup.WithCommandOwner(ctx, ownAttemptCommand)
 	}
-	result.Evidence = reviewCommandEvidence(evidenceCtx, cmd, command)
+	inputs := validationInputs(cmd)
+	result.Evidence = inputs.Evidence(evidenceCtx, command)
 	if !result.Evidence.Environment.Known() {
-		result.Evidence = validationEnvironment(evidenceCtx, cmd)
+		result.Evidence = inputs.Environment(evidenceCtx)
 	}
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
 	started := time.Now()
@@ -613,27 +613,6 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	}
 	result.ExitCode = 0
 	return result, nil
-}
-
-func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.CommandEvidence {
-	evidence := &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
-	probe := validationProbe(ctx, command, "go env -json")
-	if probe == nil {
-		return evidence
-	}
-	var observed struct {
-		OS           string `json:"GOHOSTOS"`
-		Architecture string `json:"GOHOSTARCH"`
-		Version      string `json:"GOVERSION"`
-	}
-	output, err := commandshell.CommandOutput(ctx, probe, false)
-	if err == nil && json.Unmarshal(output, &observed) == nil {
-		environment := gate.CheckEnvironment{OS: observed.OS, Architecture: observed.Architecture, GoVersion: observed.Version}
-		if environment.Valid() {
-			evidence.Environment = environment
-		}
-	}
-	return evidence
 }
 
 // mergeRemoteAncestor applies the checkpoint path's no-dropped-commits rule.

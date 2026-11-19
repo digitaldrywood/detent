@@ -1,14 +1,28 @@
 //go:build !windows
 
-package workspace
+package validationcmd_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/gotestreceipt"
+	"github.com/digitaldrywood/detent/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
+	"github.com/digitaldrywood/detent/internal/workspace/internal/gitfixture"
 )
+
+func TestMain(m *testing.M) {
+	if gotestreceipt.IsWrapperInvocation(os.Args[0]) {
+		os.Exit(gotestreceipt.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
+	hookproc.ReapProcessScanner = func(context.Context, string) ([]int, error) { return nil, nil }
+	os.Exit(gitfixture.RunTests(m))
+}
 
 func TestLocalGitVersionReceiptsDoNotBindShellStartup(t *testing.T) {
 
@@ -21,14 +35,14 @@ func TestLocalGitVersionReceiptsDoNotBindShellStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("BASH_ENV", startup)
-	source := initSourceRepo(t)
-	options := LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true}
+	source := gitfixture.SourceRepo(t)
+	options := workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true}
 	options.Hooks.Shell = bash
-	backend, err := NewLocalGit(options)
+	backend, err := workspace.NewLocalGit(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue := Issue{Identifier: "shell-startup"}
+	issue := workspace.Issue{Identifier: "shell-startup"}
 	info, err := backend.Create(t.Context(), issue)
 	if err != nil {
 		t.Fatal(err)
@@ -63,11 +77,17 @@ func TestLocalGitReviewCommandRerunsExternalRuntimeInputs(t *testing.T) {
 	if err := os.WriteFile(fixture, []byte("ready"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source := initSourceRepo(t)
+	source := gitfixture.SourceRepo(t)
 	for name, content := range map[string]string{
 		"go.mod": "module example.test/runtime\n\ngo 1.26.0\n",
 		"runtime_test.go": `package runtimefixture
-import ("os"; "testing")
+import ("os"; "testing"
+
+ "github.com/digitaldrywood/detent/internal/workspace"
+ "github.com/digitaldrywood/detent/internal/workspace/internal/gitfixture"
+ "github.com/digitaldrywood/detent/internal/gotestreceipt"
+ "github.com/digitaldrywood/detent/internal/workspace/hookproc"
+ "context")
 func TestExternalFixture(t *testing.T) {
  data, err := os.ReadFile(os.Getenv("DETENT_RUNTIME_FIXTURE"))
  if err != nil || string(data) != "ready" { t.Fatalf("external fixture unavailable: %v", err) }
@@ -78,13 +98,13 @@ func TestExternalFixture(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	runGit(t, source, "add", "go.mod", "runtime_test.go")
-	runGit(t, source, "commit", "-m", "external runtime input fixture")
-	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	gitfixture.Git(t, source, "add", "go.mod", "runtime_test.go")
+	gitfixture.Git(t, source, "commit", "-m", "external runtime input fixture")
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue := Issue{Identifier: "runtime-input"}
+	issue := workspace.Issue{Identifier: "runtime-input"}
 	info, err := backend.Create(t.Context(), issue)
 	if err != nil {
 		t.Fatal(err)

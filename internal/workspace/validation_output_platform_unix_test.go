@@ -314,6 +314,7 @@ func TestIndependentValidationProbeBeforeReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	issue.PullRequestHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+	backend.ReviewCommandEvidence(t.Context(), info, issue, "go version")
 	denied := errors.New("session write unavailable")
 	process := validationProcessFixture{started: func(procgroup.Identity) error { return denied }, finished: func(gate.CommandResult, error) error { return nil }}
 	ctx := WithValidationProcessOwner(WithAttemptWorkspace(t.Context(), issue.AttemptWorkspace), func(context.Context, Info, Issue, string) (ValidationProcess, error) { return process, nil })
