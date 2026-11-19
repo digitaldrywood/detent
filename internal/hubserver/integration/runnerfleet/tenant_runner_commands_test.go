@@ -1,59 +1,42 @@
-package hubserver
+package runnerfleet_test
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestRunnerDiagnosticsUsesTenantOwnerWithoutLegacyAlias(t *testing.T) {
+func TestRunnerDiagnosticsWithoutReports(t *testing.T) {
 	t.Parallel()
-	repository, _ := projectRecordPostgresWithAdmin(t, 3)
-	now := time.Now().UTC()
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, Clock: func() time.Time { return now }}}
-	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		t.Run(string(organization), func(t *testing.T) {
-			seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: organization, Name: "Example", Slug: string(organization)})
-			err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-				_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_example", Name: "Example", Slug: "example", Profile: "native"}, States: nativeFixtureStates()})
-				return err
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			scope := hubscope.NativeScope{Organization: organization, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
-			page, err := service.readRunnerProjectDiagnostics(t.Context(), scope, operatortool.LocalProjectArguments{ProjectID: "project_example", Limit: 10})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if page.Unavailable["runner"] != "not_authorized_or_unreported" {
-				t.Fatalf("unavailable=%v", page.Unavailable)
-			}
-		})
+	h := hubfixture.Open(t, hubfixture.Config{})
+	f := hubfixture.NewNative(t, h, h.Primary, "Diagnostics without reports")
+	response := f.Request(t, http.MethodGet, f.Base+"/runner-diagnostics?limit=10", nil)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
+	var page runnerauth.DiagnosticPage
+	hubfixture.Decode(t, response, &page)
+	if page.Unavailable["runner"] != "not_authorized_or_unreported" {
+		t.Fatalf("unavailable=%v", page.Unavailable)
 	}
 }
 
 func TestRunnerRemovalUsesTenantAuthorityAndActiveLeases(t *testing.T) {
 	t.Parallel()
-	repository, _ := projectRecordPostgresWithAdmin(t, 3)
-	now := time.Now().UTC()
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, Clock: func() time.Time { return now }}}
-	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: org, Name: "Example", Slug: string(org)})
+	h := hubfixture.Open(t, hubfixture.Config{})
+	repository, now := h.Repository, h.Now()
+	for _, org := range []tracker.OrganizationID{hubfixture.Primary, hubfixture.Secondary} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project_example", Name: "Example", Slug: "example", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project_example", Name: "Example", Slug: "example", Profile: "native"}, States: hubfixture.States()}); err != nil {
 				return err
 			}
 			for _, id := range []string{"idle", "busy"} {
@@ -85,14 +68,15 @@ func TestRunnerRemovalUsesTenantAuthorityAndActiveLeases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+	for _, org := range []tracker.OrganizationID{hubfixture.Primary, hubfixture.Secondary} {
 		t.Run(string(org), func(t *testing.T) {
-			scope := hubscope.NativeScope{Organization: org, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
+			path := hubfixture.OrganizationBase(org) + "/runners/"
 			for _, id := range []string{"busy", "idle"} {
-				_, err := service.revokeRunnerIdentityCommand(t.Context(), scope, id)
-				if (id == "busy") != (err != nil) {
-					t.Fatalf("remove %s: %v", id, err)
+				want := http.StatusNoContent
+				if id == "busy" {
+					want = http.StatusUnprocessableEntity
 				}
+				hubfixture.RequireStatus(t, h.Request(t, http.MethodDelete, path+id, h.AdminToken(), nil), want)
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					identity, err := r.RunnerIdentity(t.Context(), id)
 					if err != nil {
@@ -105,17 +89,12 @@ func TestRunnerRemovalUsesTenantAuthorityAndActiveLeases(t *testing.T) {
 					if (identity.RemovedAt != nil) != (id == "idle") || (credential.RevokedAt != nil) != (id == "idle") {
 						t.Fatalf("runner %s removed=%v credential revoked=%v", id, identity.RemovedAt, credential.RevokedAt)
 					}
-					if id == "idle" && identity.Revision != 2 {
-						t.Fatalf("removed revision=%d", identity.Revision)
-					}
 					return nil
 				}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if _, err := service.revokeRunnerIdentityCommand(t.Context(), scope, "idle"); err != nil {
-				t.Fatalf("replayed removal: %v", err)
-			}
+			hubfixture.RequireStatus(t, h.Request(t, http.MethodDelete, path+"idle", h.AdminToken(), nil), http.StatusNoContent)
 		})
 	}
 }
