@@ -1652,18 +1652,13 @@ func recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace wo
 	if !ok || !workspaceIssue.NativeRework && !nativeLanding && !sourceRecovery && req.Execution.Recovery().SourceVersionID == "" && req.Execution.Recovery().Change == nil {
 		return nil
 	}
-	sourceIssue := *workspaceIssue
-	if sourceIssue.RecoveryAttemptWorkspace.Key() != "" {
-		sourceIssue.AttemptWorkspace = sourceIssue.RecoveryAttemptWorkspace
-	}
 	if local, ok := runWorkspace.(interface {
-		Existing(workspace.Issue) (workspace.Info, error)
-	}); ok && sourceIssue.AttemptWorkspace.Key() != "" {
-		if existing, existingErr := local.Existing(sourceIssue); existingErr == nil {
-			source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-				return workspace.CaptureChangeSource(ctx, existing.Path, base, head)
-			})
-		}
+		CaptureRecoveryChangeSource(context.Context, workspace.Issue, string, string) (tracker.ChangeSourceCapture, error)
+	}); ok && workspaceIssue.AttemptWorkspace.Key() != "" {
+		issue := *workspaceIssue
+		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+			return local.CaptureRecoveryChangeSource(ctx, issue, base, head)
+		})
 	}
 
 	recovered, err := source.RecoverChangeSource(ctx)
