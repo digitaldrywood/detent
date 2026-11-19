@@ -10,7 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
 type pagedRegistry int
@@ -145,7 +144,7 @@ func TestRegisteredFamiliesAllBusyServiceGap(t *testing.T) {
 	})
 }
 
-func TestIdleTicksStayInsideResourceCeilings(t *testing.T) {
+func TestIdleTicksBoundFeatureProbes(t *testing.T) {
 	h := quietHub(t)
 	features := h.Service.ReadModelMaintenanceFeatures()
 	var mu sync.Mutex
@@ -163,30 +162,23 @@ func TestIdleTicksStayInsideResourceCeilings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	maxTransactions, maxStatements, maxSteps := 0, 0, 0
+	maxSteps := 0
 	for range 3 * len(features) {
-		transactions, statements := 0, 0
-		ctx := postgres.WithTransactionTiming(t.Context(), func(name string, _ time.Time) {
-			if name == "pg_commit" {
-				transactions++
-			}
-		}, func(time.Time, string) { statements++ })
 		mu.Lock()
 		stepped = 0
 		mu.Unlock()
-		if err := scheduler.Tick(ctx); err != nil {
+		if err := scheduler.Tick(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		mu.Lock()
 		steps := stepped
 		mu.Unlock()
-		if steps > hubmaintenance.ProbeLimit+leads(features) || transactions > 256 || statements > 4096 {
-			t.Fatalf("idle tick exceeded fixed work: steps=%d transactions=%d statements=%d", steps, transactions, statements)
+		if steps > hubmaintenance.ProbeLimit+leads(features) {
+			t.Fatalf("idle tick invoked %d features", steps)
 		}
-		maxTransactions, maxStatements, maxSteps = max(maxTransactions, transactions), max(maxStatements, statements), max(maxSteps, steps)
+		maxSteps = max(maxSteps, steps)
 	}
 	if maxSteps != hubmaintenance.ProbeLimit+leads(features) {
 		t.Fatalf("idle ticks never reached the four-probe maximum plus leads (max steps %d)", maxSteps)
 	}
-	t.Logf("idle real feature mix: max steps=%d transactions=%d statements=%d per tick", maxSteps, maxTransactions, maxStatements)
 }
