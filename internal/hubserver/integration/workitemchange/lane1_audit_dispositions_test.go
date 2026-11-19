@@ -1,4 +1,4 @@
-package hubserver
+package workitemchange_test
 
 import (
 	"context"
@@ -11,14 +11,19 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/validation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/releaseaudits"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -30,7 +35,20 @@ import (
 
 func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 	t.Parallel()
-	f := newRunnerPGFixture(t, func(p *policy.Descriptor) { p.Gates.SecurityAudit = true })
+	f := hubfixture.NewLeasedRunners(t, func(p *policy.Descriptor) { p.Gates.SecurityAudit = true })
+	hosted := f.Hub.Config.Hosted
+	authority := hubauth.New(hubauth.Deps{
+		Repository: f.Hub.Repository, AccessRepository: f.Hub.Repository, Organization: f.Organization, Now: f.Hub.Config.Clock,
+		Hosted: &hubauth.Hosted{OrganizationID: hosted.OrganizationID}, Memberships: hosted.Provider.Memberships, Classify: hubscope.OperatorAuthorizationError,
+	})
+	auditEvidence := releaseaudits.NewChangeEvidence(releaseaudits.ChangeEvidenceDeps{
+		Repository:     f.Hub.Repository,
+		RunDetailStore: func() attachment.DetailStore { return f.Hub.Config.RunDetails },
+		AuthorizeAccessScope: func(ctx context.Context, r accessstore.Reader, scope hubscope.NativeScope, write bool) error {
+			return hubapi.FromFeatureError(authority.Authorize(ctx, r, hubauth.Input{Organization: scope.Organization, Project: scope.Project, Credential: hubscope.AuthCredential(scope.Credential)}, write))
+		},
+	})
+	keepRejection := func(err error, _, _ string) error { return err }
 	for _, role := range []string{"operator", "admin"} {
 		token := "example-disposition-" + role
 		credential := hubapi.APICredential{ID: "disposition_" + role, Hash: apikey.HashToken(token), Scope: hubapi.APIScope(role)}
@@ -38,11 +56,11 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if role == "admin" {
 			hostedRole, permission = "admin", "admin"
 		}
-		membership, err := f.service.config.Hosted.Provider.CreateMembership(t.Context(), credential.ID, "provider_org_startup", hostedRole)
+		membership, err := hosted.Provider.CreateMembership(t.Context(), credential.ID, "provider_org_startup", hostedRole)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.Hub.Repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			now := time.Now().UTC()
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: credential.ID, Hash: credential.Hash, Fingerprint: hubapi.TokenFingerprint(credential.Hash), Name: "Example disposition " + role, Scope: "operator", NativeOnly: true, Kind: "personal", UserID: credential.ID, MembershipID: membership.ID, KeyScope: permission, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
@@ -58,8 +76,8 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for index, lease := range f.leases {
-		native, ctx := f.client(t, index)
+	for index, lease := range f.Leases {
+		native, ctx := f.Client(t, index)
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		sessionID, err := api.NewRunnerSessions(native).StartSession(ctx, store.SessionStart{IssueID: string(lease.WorkItemID), StartedAt: now, AgentRole: "security_audit", Model: "example-model"})
 		if err != nil {
@@ -72,13 +90,13 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		content := eventstore.NewContent(f.service.runDetailStore())
+		content := eventstore.NewContent(f.Hub.Config.RunDetails)
 		changeRow, err := content.PrepareChange(ctx, "org_startup", changeRaw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		version := tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, CreatedAt: now, ChangeVersionInput: tracker.ChangeVersionInput{Repository: key.Repository, BaseSHA: key.BaseSHA, HeadSHA: key.HeadSHA, AttemptID: f.data[index].AttemptID, PolicyID: f.policy.PolicyID}}
-		version.Policy, err = content.ProjectPolicy(ctx, f.policy)
+		version := tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, CreatedAt: now, ChangeVersionInput: tracker.ChangeVersionInput{Repository: key.Repository, BaseSHA: key.BaseSHA, HeadSHA: key.HeadSHA, AttemptID: f.Data[index].AttemptID, PolicyID: f.Policy.PolicyID}}
+		version.Policy, err = content.ProjectPolicy(ctx, f.Policy)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +125,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.Hub.Repository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.CreateChange(ctx, changeRow); err != nil {
 				return err
 			}
@@ -156,8 +174,8 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 				host := &auditDispositionVersionAuthority{}
 				change := &runner.NativeChange{ChangeID: changeID, VersionID: versionID}
 				prepared, err := validation.PrepareVersion(ctx, native, host, validation.VersionState{Change: change, Diff: &tracker.AttemptDiffRequest{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}, Lease: lease}, "security_audit")
-				if err != nil || prepared.Version != nil || change.Reviewed || (change.SecurityAudit == nil) != want || host.actions != map[bool]int{true: 0, false: 1}[want] {
-					t.Fatalf("audit consumer: prepared=%+v change=%+v actions=%d cleared=%t error=%v", prepared, change, host.actions, want, err)
+				if err != nil || prepared.Version != nil || change.Reviewed || (change.SecurityAudit == nil) != want || host.humanAction == want {
+					t.Fatalf("audit consumer: prepared=%+v change=%+v human action=%t cleared=%t error=%v", prepared, change, host.humanAction, want, err)
 				}
 			}
 		}
@@ -165,7 +183,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		reviewRevision := func() int64 {
 			t.Helper()
 			var revision int64
-			if err := f.service.config.TenantRepository.ReadTenant(ctx, "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.Hub.Repository.ReadTenant(ctx, "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 				row, err := r.Change(ctx, changeID)
 				revision = row.ReviewEvidenceRevision
 				return err
@@ -180,10 +198,10 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			name, token string
 			status      int
 		}{
-			{"unrelated events-capable runner", f.tokens[1-index], http.StatusConflict},
+			{"unrelated events-capable runner", f.Tokens[1-index], http.StatusConflict},
 			{"project writer", "example-disposition-operator", http.StatusForbidden},
 		} {
-			otherActor := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", actor.token, command)
+			otherActor := f.Hub.Request(t, http.MethodPost, native.Scope()+"/security-audits/dispositions", actor.token, command)
 			if otherActor.Code != actor.status {
 				t.Errorf("%s disposition status = %d, want %d: %s", actor.name, otherActor.Code, actor.status, otherActor.Body.String())
 			}
@@ -199,7 +217,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			t.Fatalf("audit disposition did not invalidate review snapshot: got %d, want %d", got, beforeDisposition+1)
 		}
 		assertGate(index == 0)
-		restarted, restartedCtx := f.client(t, index)
+		restarted, restartedCtx := f.Client(t, index)
 		evidence, err := restarted.AuditEvidence(restartedCtx, key)
 		if err != nil || evidence.Run.ID != sessionID || len(evidence.Dispositions) != 1 || evidence.Dispositions[0].Evidence != disposition.Evidence {
 			t.Fatalf("restart lost audit disposition: %+v %v", evidence, err)
@@ -208,14 +226,14 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			t.Errorf("disposition has actor identity instead of trusted project owner: %q", disposition.ServiceIdentity)
 		}
 		scope := hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner"}
-		if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.Hub.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			credential, err := r.AccessCredential(ctx, "credential_"+strconv.Itoa(index+1))
 			scope.Credential = hubapi.APICredential{ID: credential.ID, Hash: credential.Hash, Scope: hubapi.APIScope(credential.Scope)}
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
-		values, receipts, err := f.service.prepareValidatorAuditDispositions(ctx, scope, changeID, run)
+		values, receipts, err := auditEvidence.PrepareValidatorAuditDispositions(ctx, scope, changeID, run)
 		if err != nil || len(values) != 1 {
 			t.Fatalf("trusted owner preparation: %+v %v", values, err)
 		}
@@ -223,32 +241,32 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if evaluation.Allowed != (index == 0) {
 			t.Fatalf("exact-source disposition did not clear finding: %+v", evaluation)
 		}
-		if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.Hub.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if receipts[0].ActorID != scope.Credential.ID {
 				t.Fatalf("actor attribution lost: %+v", receipts[0])
 			}
-			return lockValidatorAuditDispositions(ctx, r, scope, run.ID, receipts)
+			return releaseaudits.LockValidatorAuditDispositions(ctx, r, scope, run.ID, receipts)
 		}); err != nil {
 			t.Fatal(err)
 		}
-		descriptor := hubTestPolicy()
+		descriptor := hubfixture.Policy()
 		descriptor.Gates.SecurityAudit = true
 		validationVersion := version
 		validationVersion.Policy = descriptor.WithID()
 		validationChange := change
 		validationChange.CurrentVersion = versionID
 		validationReview := tracker.ReviewChange{Decision: "approved", Mutation: tracker.Mutation{FencingToken: lease.FencingToken}, SecurityAudit: &tracker.SecurityAuditReview{VersionID: versionID, SessionID: sessionID, DiffDigest: strings.Repeat("d", 64), Verdict: gate.ValidatorVerdictPass, Run: run}}
-		validationEvidence := validatorReviewEvidence{issue: tracker.NativeIssue{}, sourceSession: sessionID + 100, sourceMachine: "example_source", current: f.data[index], auditDispositions: values, auditDispositionRows: receipts}
-		if _, err := validateValidatorReviewEvidence(scope, validationChange, validationVersion, validationReview, validationEvidence); (err == nil) != (index == 0) {
+		validationEvidence := changerules.ValidatorReviewEvidence{SourceSession: sessionID + 100, SourceMachine: "example_source", Current: f.Data[index], AuditDispositions: values}
+		if _, err := changerules.ValidateValidatorReviewEvidence(scope, validationChange, validationVersion, validationReview, validationEvidence, keepRejection); (err == nil) != (index == 0) {
 			t.Fatalf("authoritative exact-source clearing rejected: %v", err)
 		}
-		validationEvidence.auditDispositions = nil
-		if _, err := validateValidatorReviewEvidence(scope, validationChange, validationVersion, validationReview, validationEvidence); err == nil {
+		validationEvidence.AuditDispositions = nil
+		if _, err := changerules.ValidateValidatorReviewEvidence(scope, validationChange, validationVersion, validationReview, validationEvidence, keepRejection); err == nil {
 			t.Fatal("authoritative validator accepted unresolved finding")
 		}
 		wrongSource := run
 		wrongSource.HeadSHA = strings.Repeat("f", 40)
-		if _, _, err := f.service.prepareValidatorAuditDispositions(ctx, scope, changeID, wrongSource); err == nil {
+		if _, _, err := auditEvidence.PrepareValidatorAuditDispositions(ctx, scope, changeID, wrongSource); err == nil {
 			t.Fatal("wrong source inherited a disposition")
 		}
 		forged := values[0]
@@ -267,7 +285,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			if err := f.Hub.Repository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 				if _, err := w.CreateVersion(ctx, row); err != nil {
 					return err
 				}
@@ -293,7 +311,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(ctx, newer); return err }); err != nil {
+		if err := f.Hub.Repository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(ctx, newer); return err }); err != nil {
 			t.Fatal(err)
 		}
 		replay, err := restarted.RecordAuditDisposition(restartedCtx, command)
@@ -303,7 +321,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if got := reviewRevision(); got != beforeDisposition+1 {
 			t.Fatalf("audit receipt replay changed review snapshot: got %d, want %d", got, beforeDisposition+1)
 		}
-		other := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", f.tokens[1-index], command)
+		other := f.Hub.Request(t, http.MethodPost, native.Scope()+"/security-audits/dispositions", f.Tokens[1-index], command)
 		if other.Code == http.StatusOK {
 			t.Fatal("another actor inherited committed receipt")
 		}
@@ -318,7 +336,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			if err := f.Hub.Repository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 				_, err := w.AppendEvidence(ctx, reviewRow)
 				return err
 			}); err != nil {
@@ -326,24 +344,24 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			}
 			adminCommand := command
 			adminCommand.RequestID = "admin-disposition"
-			response := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", "example-disposition-admin", adminCommand)
-			requireNativeStatus(t, response, http.StatusOK)
-			nextPolicy, err := content.PrepareProjectPolicy(ctx, "org_startup", hubTestPolicy().WithID())
+			response := f.Hub.Request(t, http.MethodPost, native.Scope()+"/security-audits/dispositions", "example-disposition-admin", adminCommand)
+			hubfixture.RequireStatus(t, response, http.StatusOK)
+			nextPolicy, err := content.PrepareProjectPolicy(ctx, "org_startup", hubfixture.Policy().WithID())
 			if err != nil {
 				t.Fatal(err)
 			}
 			nextPolicy.ProjectID, nextPolicy.ApprovedAt, nextPolicy.ApprovedBy = "prj_runner", now, "example_admin"
-			if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-				return w.ApproveProjectPolicy(ctx, nextPolicy, f.policy.PolicyID)
+			if err := f.Hub.Repository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				return w.ApproveProjectPolicy(ctx, nextPolicy, f.Policy.PolicyID)
 			}); err != nil {
 				t.Fatal(err)
 			}
 			priorRevision := reviewRevision()
-			for _, token := range []string{f.tokens[index], "example-disposition-admin"} {
+			for _, token := range []string{f.Tokens[index], "example-disposition-admin"} {
 				stale := command
 				stale.RequestID = "stale-policy"
-				response := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", token, stale)
-				requireNativeStatus(t, response, http.StatusConflict)
+				response := f.Hub.Request(t, http.MethodPost, native.Scope()+"/security-audits/dispositions", token, stale)
+				hubfixture.RequireStatus(t, response, http.StatusConflict)
 			}
 			if reviewRevision() != priorRevision {
 				t.Fatal("stale policy disposition changed review evidence")
@@ -351,13 +369,13 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		}
 		changed := command
 		changed.Evidence = "Changed payload"
-		response := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", f.tokens[index], changed)
-		requireNativeStatus(t, response, http.StatusConflict)
+		response := f.Hub.Request(t, http.MethodPost, native.Scope()+"/security-audits/dispositions", f.Tokens[index], changed)
+		hubfixture.RequireStatus(t, response, http.StatusConflict)
 		key.HeadSHA = strings.Repeat("f", 40)
 		if _, err := native.RecordAuditDisposition(ctx, securityaudit.DispositionCommand{Key: key, FindingID: "finding_example", Evidence: "Wrong source", Confirm: true}); err == nil {
 			t.Fatal("unrecorded audit source accepted a disposition")
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.Hub.Repository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			return w.(accessstore.Writer).DeleteAccessTokenGrant(ctx, scope.Credential.ID, "prj_runner")
 		}); err != nil {
 			t.Fatal(err)
@@ -365,16 +383,15 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if _, err := restarted.RecordAuditDisposition(restartedCtx, command); err == nil {
 			t.Fatal("revoked current grant replayed a receipt")
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.Hub.Repository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			return w.CreateAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: scope.Credential.ID, ProjectID: "prj_runner"})
 		}); err != nil {
 			t.Fatal(err)
 		}
-
 	}
 }
 
-type auditDispositionVersionAuthority struct{ actions int }
+type auditDispositionVersionAuthority struct{ humanAction bool }
 
 func (*auditDispositionVersionAuthority) Retain(context.Context, tracker.AttemptDiffRequest) error {
 	return nil
@@ -382,5 +399,5 @@ func (*auditDispositionVersionAuthority) Retain(context.Context, tracker.Attempt
 func (*auditDispositionVersionAuthority) Retained() *tracker.ChangeSourceCapture { return nil }
 func (*auditDispositionVersionAuthority) SetDiscussion([]tracker.NativeComment)  {}
 func (h *auditDispositionVersionAuthority) ApplyAuditHumanAction(*tracker.SecurityAuditReview) {
-	h.actions++
+	h.humanAction = true
 }
