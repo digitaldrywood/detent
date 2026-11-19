@@ -30,3 +30,22 @@ type AuditDispositionWriter interface {
 	AuditDispositionReader
 	CreateAuditDisposition(context.Context, AuditDisposition) (AuditDisposition, error)
 }
+
+type PriorAuditQuery struct {
+	Project               tracker.ProjectID
+	ChangeID              string
+	VersionID             string
+	Repository            string
+	ThroughReviewSequence int64
+}
+
+type PriorAuditSnapshot struct {
+	Version                  Version
+	Review                   Evidence
+	Dispositions             []AuditDisposition
+	NextBeforeReviewSequence int64
+}
+
+type PriorAuditReader interface {
+	PriorAuditEvidence(context.Context, PriorAuditQuery) (PriorAuditSnapshot, error)
+}

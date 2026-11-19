@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -105,6 +106,9 @@ func (s *ChangeEvidence) GetAuditDispositions(c echo.Context) error {
 }
 
 func (s *ChangeEvidence) GetAuditEvidence(c echo.Context) error {
+	if c.QueryParam("change_id") != "" || c.QueryParam("version_id") != "" || c.QueryParam("before_review_sequence") != "" {
+		return s.getPriorAuditEvidence(c)
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := hubscope.NativeRequestScope(c)
@@ -154,6 +158,111 @@ func (s *ChangeEvidence) GetAuditEvidence(c echo.Context) error {
 		return c.JSON(http.StatusOK, securityaudit.Evidence{Run: run, Dispositions: dispositions})
 	}
 	return s.deps.NativeAPIError(c, hubapi.NativeNotFound())
+}
+
+type priorAuditEvidence struct {
+	VersionID                string                      `json:"version_id"`
+	VersionNumber            int64                       `json:"version_number"`
+	ReviewSequence           int64                       `json:"review_sequence,omitempty"`
+	Landing                  bool                        `json:"landing,omitempty"`
+	Run                      *securityaudit.Run          `json:"run,omitempty"`
+	Dispositions             []securityaudit.Disposition `json:"dispositions"`
+	NextBeforeReviewSequence int64                       `json:"next_before_review_sequence,omitempty"`
+}
+
+func (s *ChangeEvidence) getPriorAuditEvidence(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
+	defer cancel()
+	scope := hubscope.NativeRequestScope(c)
+	query := eventstore.PriorAuditQuery{
+		Project: scope.Project, ChangeID: c.QueryParam("change_id"), VersionID: c.QueryParam("version_id"),
+		Repository: c.QueryParam("repository"), ThroughReviewSequence: math.MaxInt64,
+	}
+	if query.ChangeID == "" || query.VersionID == "" || query.Repository == "" {
+		return s.deps.NativeAPIError(c, hubapi.NativePublicInvalid("change, version and repository are required"))
+	}
+	if cursor := c.QueryParam("before_review_sequence"); cursor != "" {
+		before, err := strconv.ParseInt(cursor, 10, 64)
+		if err != nil || before < 1 {
+			return s.deps.NativeAPIError(c, hubapi.NativePublicInvalid("invalid review cursor"))
+		}
+		query.ThroughReviewSequence = before - 1
+	}
+	var snapshot eventstore.PriorAuditSnapshot
+	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.deps.AuthorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		if err := s.authorizeAuditChange(ctx, r, scope, query.ChangeID); err != nil {
+			return err
+		}
+		reader, ok := r.(eventstore.PriorAuditReader)
+		if !ok {
+			return hubapi.NativeRunEventStorageUnavailable()
+		}
+		var err error
+		snapshot, err = reader.PriorAuditEvidence(ctx, query)
+		return err
+	})
+	if err != nil {
+		return s.deps.NativeAPIError(c, err)
+	}
+	value, err := s.readPriorAuditEvidence(ctx, scope, snapshot)
+	if err != nil {
+		return s.deps.NativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, value)
+}
+
+func (s *ChangeEvidence) readPriorAuditEvidence(ctx context.Context, scope hubscope.NativeScope, snapshot eventstore.PriorAuditSnapshot) (priorAuditEvidence, error) {
+	version, review := snapshot.Version, snapshot.Review
+	value := priorAuditEvidence{VersionID: version.ID, VersionNumber: version.Number, ReviewSequence: review.Sequence, NextBeforeReviewSequence: snapshot.NextBeforeReviewSequence, Dispositions: []securityaudit.Disposition{}}
+	if review.Sequence == 0 {
+		return value, nil
+	}
+	raw, err := eventstore.NewContent(s.deps.RunDetailStore()).Evidence(ctx, review)
+	if err != nil {
+		return value, err
+	}
+	var decoded tracker.ChangeReview
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return value, err
+	}
+	audit := decoded.SecurityAudit
+	if audit == nil || audit.Run.ID < 1 || audit.RunOmitted {
+		return value, nil
+	}
+	run := audit.Run
+	if decoded.VersionID != version.ID || audit.SessionID != run.ID ||
+		run.ProjectID != string(scope.Project) || run.Repository != version.Repository || !priorAuditSourceMatches(version, *audit) {
+		return value, corestore.ErrRevisionConflict
+	}
+	value.Run, value.Landing = &run, audit.Landing
+	findings := make(map[string]struct{}, len(run.Findings))
+	for _, finding := range run.Findings {
+		findings[finding.ID] = struct{}{}
+	}
+	for _, receipt := range snapshot.Dispositions {
+		d := receipt.Disposition
+		if _, found := findings[d.FindingID]; !found || d.AuditRunID != run.ID {
+			continue
+		}
+		entry, err := s.readAuditDisposition(ctx, scope, receipt)
+		if err != nil {
+			return value, err
+		}
+		value.Dispositions = append(value.Dispositions, entry)
+	}
+	return value, nil
+}
+
+func priorAuditSourceMatches(version eventstore.Version, audit tracker.SecurityAuditReview) bool {
+	if audit.Landing {
+		return audit.VersionID == version.ID && audit.Run.BaseSHA != audit.Run.HeadSHA &&
+			changerequest.ValidHash(audit.Run.BaseSHA, len(version.BaseSHA)) && changerequest.ValidHash(audit.Run.HeadSHA, len(version.HeadSHA))
+	}
+	return (audit.VersionID == "" || audit.VersionID == version.ID) &&
+		audit.Run.BaseSHA == version.BaseSHA && audit.Run.HeadSHA == version.HeadSHA
 }
 
 func (s *ChangeEvidence) readAuditDisposition(ctx context.Context, scope hubscope.NativeScope, row eventstore.AuditDisposition) (securityaudit.Disposition, error) {
