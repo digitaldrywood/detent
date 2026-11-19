@@ -25,7 +25,7 @@ func (s *session) ActivityHourly(ctx context.Context, filter activitystore.Hourl
 	filter.From, filter.To = hourlyTimeBoundary(filter.From), hourlyTimeBoundary(filter.To)
 	population, err := s.queries.ActivityHourlyWindowPopulation(ctx, pgquery.ActivityHourlyWindowPopulationParams{
 		OrganizationID: s.organization, ProjectID: filter.Project, WindowFrom: filter.From, WindowTo: filter.To,
-		PopulationLimit: hourlyAttemptLimit + 1, LandingLimit: hourlyLandingLimit + 1,
+		PopulationLimit: hourlyAttemptLimit + 1, LandingLimit: hourlyLandingLimit + 1, Principal: filter.Principal,
 	})
 	if err != nil {
 		return out, fmt.Errorf("read hourly activity population: %w", mapError(ctx, err))
@@ -33,6 +33,10 @@ func (s *session) ActivityHourly(ctx context.Context, filter activitystore.Hourl
 	if population.Attempts > hourlyAttemptLimit || population.Landings > hourlyLandingLimit {
 		return out, corestore.ErrInvalidPage
 	}
+	if population.Undated > hourlyLandingLimit && !population.UndatedLandingHistory {
+		return out, corestore.ErrInvalidPage
+	}
+	out.UndatedLandingHistory = population.UndatedLandingHistory
 	if population.Attempts > 0 {
 		if err := s.readHourlyOutcomes(ctx, filter, &out); err != nil {
 			return out, err

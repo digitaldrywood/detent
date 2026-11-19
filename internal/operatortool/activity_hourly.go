@@ -31,6 +31,7 @@ type ActivityHour struct {
 	PendingVerdicts       int64                    `json:"pending_verdicts"`
 	UnavailableVerdicts   int64                    `json:"unavailable_verdicts"`
 	VerifiedLandings      int64                    `json:"verified_landings"`
+	UnverifiedLandings    int64                    `json:"unverified_landings"`
 	AcceptedNoChange      int64                    `json:"accepted_no_change"`
 	UnknownNoChange       int64                    `json:"unknown_no_change"`
 	LandingHistory        []ActivityLandingHistory `json:"landing_history"`
@@ -52,14 +53,15 @@ type ActivityLandingReference struct {
 }
 
 type ActivityHourlyReport struct {
-	OrganizationID     string                     `json:"organization_id"`
-	ProjectID          string                     `json:"project_id"`
-	ObservedAt         time.Time                  `json:"observed_at"`
-	Window             AnalyticsWindow            `json:"window"`
-	Hours              []ActivityHour             `json:"hours"`
-	AttemptsPerLanding *float64                   `json:"attempts_per_landing"`
-	Attempts           []ActivityAttemptReference `json:"attempts"`
-	Landings           []ActivityLandingReference `json:"landings"`
-	MoreAttempts       bool                       `json:"more_attempts"`
-	MoreLandings       bool                       `json:"more_landings"`
+	UndatedLandingHistory bool                       `json:"undated_landing_history"`
+	OrganizationID        string                     `json:"organization_id"`
+	ProjectID             string                     `json:"project_id"`
+	ObservedAt            time.Time                  `json:"observed_at"`
+	Window                AnalyticsWindow            `json:"window"`
+	Hours                 []ActivityHour             `json:"hours"`
+	AttemptsPerLanding    *float64                   `json:"attempts_per_landing"`
+	Attempts              []ActivityAttemptReference `json:"attempts"`
+	Landings              []ActivityLandingReference `json:"landings"`
+	MoreAttempts          bool                       `json:"more_attempts"`
+	MoreLandings          bool                       `json:"more_landings"`
 }

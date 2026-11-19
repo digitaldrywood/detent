@@ -12,10 +12,15 @@ CREATE INDEX CONCURRENTLY native_attempts_activity_hourly_finished
 DROP INDEX CONCURRENTLY IF EXISTS landing_receipt_hourly_version;
 CREATE INDEX CONCURRENTLY landing_receipt_hourly_version
     ON change_landing_receipts (organization_id, version_id, merge_sha, base_ref, fencing_token, attempt_id);
+DROP INDEX CONCURRENTLY IF EXISTS change_versions_activity_undated;
+CREATE INDEX CONCURRENTLY change_versions_activity_undated
+    ON change_versions (organization_id, project_id, created_at DESC, id DESC)
+    WHERE NOT landing_history_known;
 RESET lock_timeout;
 
 -- +goose Down
 SET lock_timeout = '5s';
+DROP INDEX CONCURRENTLY IF EXISTS change_versions_activity_undated;
 DROP INDEX CONCURRENTLY IF EXISTS landing_receipt_hourly_version;
 DROP INDEX CONCURRENTLY IF EXISTS native_attempts_activity_hourly_finished;
 ALTER TABLE report_event_facts

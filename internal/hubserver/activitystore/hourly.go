@@ -37,9 +37,10 @@ type LandingCohort struct {
 }
 
 type HourlyFacts struct {
-	Outcomes []HourlyOutcome
-	Landings []LandingCohort
-	Attempts []AttemptReference
+	UndatedLandingHistory bool
+	Outcomes              []HourlyOutcome
+	Landings              []LandingCohort
+	Attempts              []AttemptReference
 }
 
 type HourlyReader interface {
