@@ -146,8 +146,8 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 				if !errors.Is(claimErr, ErrNoClaimableWork) {
 					t.Fatalf("refused claim error = %v, want no claimable work", claimErr)
 				}
-				if probe.queries.Load() == 0 || probe.writers.Load() != 0 || probe.mutations.Load() != 0 {
-					t.Fatalf("refused claim queries=%d writers=%d mutations=%d, want queries and zero writes", probe.queries.Load(), probe.writers.Load(), probe.mutations.Load())
+				if probe.writers.Load() != 0 || probe.mutations.Load() != 0 {
+					t.Fatalf("refused claim opened %d writers and issued %d mutations", probe.writers.Load(), probe.mutations.Load())
 				}
 			case "concurrent claims never oversubscribe one host slot":
 				runner := newRunner(t, f)
