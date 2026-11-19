@@ -1020,3 +1020,61 @@ func (s *Service) issueCommandDeps() coordinator.IssueCommandDeps {
 		WakeSpriteRunners:  s.wakeSpriteRunnersAfter,
 	}
 }
+
+func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID string, fn func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error, preparations ...func(context.Context, *conversationPublicationPlan) error) error {
+	return c.turnWriteDeps().Write(ctx, conversationID, fn, preparations...)
+}
+
+var coordinatorHandles = coordinator.Handles
+var errCoordinatorRevision = coordinator.ErrRevision
+var errCoordinatorLinked = coordinator.ErrLinked
+
+func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend runner.AgentBackend, request runner.AgentTurnRequest, state *coordinatorTurnState) (runner.AgentTurnResult, error) {
+	return coordinator.CallBackend(ctx, backend, request, c.stop, state.handleUpdate, func() ([]runner.AgentTool, runner.AgentToolHandler) {
+		toolset := newCoordinatorToolset(c, state)
+		return toolset.tools(), toolset.handle
+	})
+}
+
+var coordinatorOutcome = coordinator.Outcome
+var coordinatorToolSummary = coordinator.ToolSummary
+
+const coordinatorToolSummaryRunes = coordinator.ToolSummaryRunes
+
+const coordinatorInstructions = coordinator.Instructions
+
+type coordinatorAttachment = coordinator.TextAttachment
+
+var coordinatorSkillsPrompt = coordinator.SkillsPrompt
+var appendCoordinatorData = coordinator.AppendData
+var coordinatorAttachmentBlock = coordinator.AttachmentBlock
+var coordinatorPrompt = coordinator.Prompt
+
+func (c *conversationTurnCoordinator) coordinatorAttachments(ctx context.Context, pending []conversationMessageRecord) ([]coordinatorAttachment, error) {
+	return coordinator.ReadTextAttachments(ctx, pending, c.attachmentContent)
+}
+
+func (c *conversationTurnCoordinator) turnWriteDeps() coordinator.TurnWriteDeps {
+	return coordinator.TurnWriteDeps{
+		Service:     c.service,
+		Now:         func() time.Time { return c.server.config.Clock() },
+		WriteTenant: c.server.writeConversationTenant,
+	}
+}
+
+func (s *Service) coordinatorProposalAgent(ctx context.Context, action chat.Action) (string, error) {
+	return s.readCoordinatorProposalAgent(ctx, action)
+}
+
+func (s *Service) readCoordinatorProposalAgent(ctx context.Context, action chat.Action) (agent string, err error) {
+	agent = coordinator.AgentName
+	err = s.readConversationTenant(ctx, tracker.OrganizationID(action.OrganizationID), func(r tenantstore.Reader) error {
+		agent, err = coordinator.ProposalAgent(ctx, r, action)
+		return err
+	})
+	return agent, err
+}
+
+const coordinatorAgentName = coordinator.AgentName
+
+var coordinatorAgent = coordinator.Agent
