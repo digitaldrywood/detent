@@ -52,7 +52,7 @@ func (s *Service) readHourly(ctx context.Context, caller Caller, request operato
 func hourlyReport(organization tracker.OrganizationID, project tracker.ProjectID, observed time.Time, window operatortool.AnalyticsWindow, limit int, facts activitystore.HourlyFacts) operatortool.ActivityHourlyReport {
 	out := operatortool.ActivityHourlyReport{OrganizationID: string(organization), ProjectID: string(project), ObservedAt: observed, Window: window,
 		Hours: []operatortool.ActivityHour{}, Attempts: []operatortool.ActivityAttemptReference{}, Landings: []operatortool.ActivityLandingReference{},
-		MoreAttempts: len(facts.Attempts) > limit, MoreLandings: len(facts.Landings) > limit}
+		MoreAttempts: len(facts.Attempts) > limit, UndatedLandingHistory: facts.UndatedLandingHistory}
 	first := window.From.Truncate(time.Hour)
 	for hour := first; hour.Before(window.To); hour = hour.Add(time.Hour) {
 		out.Hours = append(out.Hours, operatortool.ActivityHour{Hour: hour, Outcomes: []operatortool.ActivityHourlyOutcome{}, LandingHistory: []operatortool.ActivityLandingHistory{}})
@@ -74,9 +74,16 @@ func hourlyReport(organization tracker.OrganizationID, project tracker.ProjectID
 		}
 	}
 	histories := make(map[time.Time]map[operatortool.ActivityLandingHistory]int64)
+	var verified []activitystore.LandingCohort
 	for _, landing := range facts.Landings {
 		bucket := landing.LandedAt.UTC().Truncate(time.Hour)
-		out.Hours[int(bucket.Sub(first)/time.Hour)].VerifiedLandings++
+		hour := &out.Hours[int(bucket.Sub(first)/time.Hour)]
+		if landing.AttemptID == "" {
+			hour.UnverifiedLandings++
+			continue
+		}
+		hour.VerifiedLandings++
+		verified = append(verified, landing)
 		if histories[bucket] == nil {
 			histories[bucket] = make(map[operatortool.ActivityLandingHistory]int64)
 		}
@@ -92,14 +99,15 @@ func hourlyReport(organization tracker.OrganizationID, project tracker.ProjectID
 			return cmp.Or(cmp.Compare(a.LinkedAttempts, b.LinkedAttempts), cmp.Compare(a.HistoryCoverage, b.HistoryCoverage))
 		})
 	}
-	if len(facts.Landings) > 0 {
-		ratio := float64(attempts) / float64(len(facts.Landings))
+	out.MoreLandings = len(verified) > limit
+	if len(verified) > 0 {
+		ratio := float64(attempts) / float64(len(verified))
 		out.AttemptsPerLanding = &ratio
 	}
 	for _, a := range facts.Attempts[:min(limit, len(facts.Attempts))] {
 		out.Attempts = append(out.Attempts, operatortool.ActivityAttemptReference{AttemptID: a.ID, WorkItemID: a.WorkItemID, FinishedAt: a.FinishedAt.UTC()})
 	}
-	for _, landing := range facts.Landings[:min(limit, len(facts.Landings))] {
+	for _, landing := range verified[:min(limit, len(verified))] {
 		out.Landings = append(out.Landings, operatortool.ActivityLandingReference{LandingID: landing.ID, ChangeID: landing.ChangeID, LandingAttemptID: landing.AttemptID, LandedAt: landing.LandedAt.UTC(), LinkedAttempts: landing.LinkedAttempts, HistoryCoverage: landing.HistoryCoverage})
 	}
 	return out

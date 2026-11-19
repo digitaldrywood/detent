@@ -81,34 +81,47 @@ WITH landing_versions AS MATERIALIZED (
    AND v.landed_at>=$5::timestamptz AND v.landed_at<$6::timestamptz
  ORDER BY v.landed_at DESC,v.change_id DESC,v.id DESC LIMIT $7
 )
-SELECT v.id,v.change_id,proof.attempt_id,v.landed_at,
+SELECT v.id,v.change_id,coalesce(proof.attempt_id,'')::text AS attempt_id,v.landed_at,
        least(cohort.observed,$1::bigint-1)::bigint AS linked_attempts,
-       CASE WHEN cohort.observed>=$1::bigint OR cohort.terminal<cohort.observed
-            OR (prior.fencing_token IS NULL AND NOT EXISTS (
+       CASE WHEN proof.attempt_id IS NULL THEN 'unknown'
+            WHEN cohort.observed>=$1::bigint OR cohort.terminal<cohort.observed
+            OR (prior.fencing_token IS NULL AND (prior.oldest_examined IS NOT NULL OR NOT EXISTS (
              SELECT 1 FROM collaboration_events e WHERE e.organization_id=v.organization_id AND e.project_id=v.project_id
                AND e.work_item_id=i.native_id AND e.type='issue.created' AND e.recorded_at<=v.landed_at
-            )) THEN 'partial' ELSE 'complete' END::text AS history_coverage
+            ))) THEN 'partial' ELSE 'complete' END::text AS history_coverage
 FROM landing_versions v
-CROSS JOIN LATERAL (
+JOIN change_requests c ON c.organization_id=v.organization_id AND c.project_id=v.project_id AND c.id=v.change_id
+JOIN work_item_identities i ON i.organization_id=v.organization_id AND i.project_id=v.project_id AND i.native_id=c.work_item_id
+LEFT JOIN LATERAL (
  SELECT r.attempt_id,r.issue_id,r.fencing_token,r.repository_identity
  FROM change_landing_receipts r
  WHERE r.organization_id=v.organization_id AND r.version_id=v.id AND r.project_id=v.project_id AND r.change_id=v.change_id
    AND r.merge_sha=v.landed_merge_sha AND r.base_ref=v.landed_base_ref
  ORDER BY r.fencing_token,r.attempt_id LIMIT 1
-) proof
-JOIN work_item_identities i ON i.organization_id=v.organization_id AND i.project_id=v.project_id AND i.id=proof.issue_id
+) proof ON true
 LEFT JOIN LATERAL (
- SELECT r.fencing_token FROM change_landing_receipts r
- WHERE r.organization_id=v.organization_id AND r.project_id=v.project_id AND r.issue_id=proof.issue_id
-   AND r.repository_identity=proof.repository_identity AND r.fencing_token<proof.fencing_token
- ORDER BY r.fencing_token DESC,r.attempt_id DESC LIMIT 1
+ SELECT max(r.fencing_token) FILTER (WHERE pv.id IS NOT NULL AND NOT EXISTS (
+   SELECT 1 FROM change_landing_receipts first
+   WHERE first.organization_id=v.organization_id AND first.version_id=r.version_id
+     AND first.merge_sha=r.merge_sha AND first.base_ref=r.base_ref AND first.fencing_token<r.fencing_token
+ )) AS fencing_token,CASE WHEN count(*)>=$1::bigint THEN min(r.fencing_token) END AS oldest_examined
+ FROM (
+  SELECT candidate.version_id,candidate.change_id,candidate.fencing_token,candidate.merge_sha,candidate.base_ref
+  FROM change_landing_receipts candidate
+  WHERE candidate.organization_id=v.organization_id AND candidate.project_id=v.project_id AND candidate.issue_id=proof.issue_id
+    AND candidate.repository_identity=proof.repository_identity AND candidate.fencing_token<proof.fencing_token
+  ORDER BY candidate.fencing_token DESC,candidate.attempt_id DESC LIMIT $1
+ ) r
+ LEFT JOIN change_versions pv ON pv.organization_id=v.organization_id AND pv.project_id=v.project_id
+   AND pv.id=r.version_id AND pv.change_id=r.change_id AND pv.landing_history_known
+   AND pv.landed_at<=v.landed_at AND pv.landed_merge_sha=r.merge_sha AND pv.landed_base_ref=r.base_ref
 ) prior ON true
 CROSS JOIN LATERAL (
- SELECT count(*) AS observed,count(ref.outcome_event_id) AS terminal
+ SELECT count(*) AS observed,count(ref.outcome_event_id) FILTER (WHERE a.status<>'running') AS terminal
  FROM (
-  SELECT a.id,a.organization_id FROM native_attempts a
+  SELECT a.id,a.organization_id,a.status FROM native_attempts a
   WHERE a.organization_id=v.organization_id AND a.project_id=v.project_id AND a.issue_id=proof.issue_id
-    AND a.fencing_token>coalesce(prior.fencing_token,0) AND a.fencing_token<=proof.fencing_token
+    AND a.fencing_token>coalesce(prior.fencing_token,prior.oldest_examined-1,0) AND a.fencing_token<=proof.fencing_token
   ORDER BY a.fencing_token DESC LIMIT $1
  ) a
  LEFT JOIN report_attempt_facts ref ON ref.organization_id=a.organization_id AND ref.attempt_id=a.id
@@ -176,14 +189,14 @@ func (q *Queries) ActivityHourlyLandings(ctx context.Context, arg ActivityHourly
 const activityHourlyOutcomes = `-- name: ActivityHourlyOutcomes :many
 WITH attempts AS MATERIALIZED (
  SELECT a.organization_id,a.id,a.issue_id,a.project_id,a.status,a.started_at,a.updated_at,
-        a.verdict_attempted_step,a.verdict_outcome,a.verdict_success,a.verdict_reason,a.verdict_next_step,a.verdict_disposition
+        a.verdict_outcome,a.verdict_success,a.verdict_reason,a.verdict_next_step,a.verdict_disposition
  FROM native_attempts a
  WHERE a.organization_id=$2 AND a.project_id=$3 AND a.status<>'running'
    AND a.updated_at>=$4::timestamptz AND a.updated_at<$5::timestamptz
  ORDER BY a.updated_at DESC,a.id DESC LIMIT $6
 ), facts AS (
  SELECT date_trunc('hour',a.updated_at,'UTC')::timestamptz AS hour,
-        coalesce(nullif(nullif(f.activity_stage,''),'unknown'),nullif(a.verdict_attempted_step,''),'unknown')::text AS ending_stage,
+        coalesce(nullif(f.activity_stage,''),'unknown')::text AS ending_stage,
         a.status AS outcome,
         coalesce(nullif(f.failure_kind,''),nullif(f.failure_class,''),CASE WHEN a.status='succeeded' THEN 'not_applicable' ELSE 'unknown' END)::text AS failure_reason,
         coalesce(nullif(a.verdict_outcome,''),'unavailable')::text AS verdict,a.verdict_success,coalesce(nullif(a.verdict_reason,''),'unknown')::text AS reason,
@@ -203,7 +216,7 @@ WITH attempts AS MATERIALIZED (
 SELECT hour,ending_stage,outcome,failure_reason,verdict,verdict_success,reason,next_step,disposition,
        count(*) AS attempts,coalesce(sum(elapsed),0)::double precision AS elapsed,
        count(*) FILTER (WHERE no_change_status='accepted') AS accepted_no_change,
-       count(*) FILTER (WHERE outcome='succeeded' AND no_change_status='unknown') AS unknown_no_change
+       count(*) FILTER (WHERE no_change_status='unknown') AS unknown_no_change
 FROM facts
 GROUP BY hour,ending_stage,outcome,failure_reason,verdict,verdict_success,reason,next_step,disposition
 ORDER BY hour,ending_stage,outcome,failure_reason,verdict,verdict_success,reason,next_step,disposition
@@ -279,6 +292,12 @@ func (q *Queries) ActivityHourlyOutcomes(ctx context.Context, arg ActivityHourly
 }
 
 const activityHourlyWindowPopulation = `-- name: ActivityHourlyWindowPopulation :one
+WITH undated AS MATERIALIZED (
+ SELECT v.organization_id,v.project_id,v.change_id FROM change_versions v
+ WHERE v.organization_id=$1 AND v.project_id=$2 AND NOT v.landing_history_known
+   AND v.created_at<$4::timestamptz
+ ORDER BY v.created_at DESC,v.id DESC LIMIT $6
+)
 SELECT (
  SELECT count(*) FROM (
   SELECT 1 FROM native_attempts a
@@ -293,7 +312,13 @@ SELECT (
     AND v.landed_at>=$3::timestamptz AND v.landed_at<$4::timestamptz
   ORDER BY v.landed_at DESC,v.change_id DESC,v.id DESC LIMIT $6
  ) landings
-) AS landings
+) AS landings, (SELECT count(*) FROM undated) AS undated, EXISTS (
+ SELECT 1 FROM undated v
+ JOIN change_requests c ON c.organization_id=v.organization_id AND c.project_id=v.project_id AND c.id=v.change_id
+ WHERE $7::text='' OR EXISTS (
+  SELECT 1 FROM issues owned WHERE owned.organization_id=c.organization_id AND owned.project_id=c.project_id AND owned.native_id=c.work_item_id AND owned.actor_principal_id=$7
+ )
+) AS undated_landing_history
 `
 
 type ActivityHourlyWindowPopulationParams struct {
@@ -303,11 +328,14 @@ type ActivityHourlyWindowPopulationParams struct {
 	WindowTo        time.Time
 	PopulationLimit int32
 	LandingLimit    int32
+	Principal       string
 }
 
 type ActivityHourlyWindowPopulationRow struct {
-	Attempts int64
-	Landings int64
+	Attempts              int64
+	Landings              int64
+	Undated               int64
+	UndatedLandingHistory bool
 }
 
 func (q *Queries) ActivityHourlyWindowPopulation(ctx context.Context, arg ActivityHourlyWindowPopulationParams) (ActivityHourlyWindowPopulationRow, error) {
@@ -318,9 +346,15 @@ func (q *Queries) ActivityHourlyWindowPopulation(ctx context.Context, arg Activi
 		arg.WindowTo,
 		arg.PopulationLimit,
 		arg.LandingLimit,
+		arg.Principal,
 	)
 	var i ActivityHourlyWindowPopulationRow
-	err := row.Scan(&i.Attempts, &i.Landings)
+	err := row.Scan(
+		&i.Attempts,
+		&i.Landings,
+		&i.Undated,
+		&i.UndatedLandingHistory,
+	)
 	return i, err
 }
 

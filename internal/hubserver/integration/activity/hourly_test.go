@@ -41,9 +41,9 @@ func TestHourlyActivity(t *testing.T) {
 	early := f.storeAttempt(t, issue, "before_window", "failed", from.Add(-2*time.Minute), from.Add(-time.Minute), runtime, true)
 	f.storeAttempt(t, issue, "at_lower_bound", "failed", from.Add(-time.Minute), from, runtime, true)
 	landed := f.storeAttempt(t, issue, "at_hour_boundary", "succeeded", from.Add(58*time.Minute), from.Add(time.Hour), runtime, true)
-	f.storeAttempt(t, issue, "at_upper_bound", "cancelled", to.Add(-time.Minute), to, runtime, true)
+	later := f.storeAttempt(t, issue, "at_upper_bound", "cancelled", to.Add(-time.Minute), to, runtime, true)
 
-	land := func(change string, source, settlement activityFixtureAttempt, at time.Time, replay bool) {
+	land := func(change string, source, settlement activityFixtureAttempt, at time.Time, receipts ...activityFixtureAttempt) {
 		t.Helper()
 		prep := eventstore.NewContent(f.service.runDetailStore())
 		if err := f.repository.WriteTenant(t.Context(), f.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -71,23 +71,21 @@ func TestHourlyActivity(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if _, err := w.CreateVersion(t.Context(), version); err != nil {
+			version.LandingHistoryKnown = !at.IsZero()
+			if _, err := w.CreateVersion(t.Context(), version); err != nil || at.IsZero() {
 				return err
 			}
-			value := tracker.NativeLandingReceipt{ChangeID: change, VersionID: version.ID, HeadSHA: sha, BaseRef: "main", MergeSHA: merge, Landed: true, ObservedAt: at}
-			proof, err := prep.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: f.organization, AttemptID: settlement.attempt.ID, VersionID: version.ID, Repository: version.Repository, BaseRef: value.BaseRef}, value)
-			if err != nil {
-				return err
-			}
-			if _, err := w.CreateLandingReceipt(t.Context(), proof); err != nil {
-				return err
-			}
-			if replay {
+			for _, attempt := range receipts {
+				value := tracker.NativeLandingReceipt{ChangeID: change, VersionID: version.ID, HeadSHA: sha, BaseRef: "main", MergeSHA: merge, Landed: true, ObservedAt: at}
+				proof, err := prep.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: f.organization, AttemptID: attempt.attempt.ID, VersionID: version.ID, Repository: version.Repository, BaseRef: value.BaseRef}, value)
+				if err != nil {
+					return err
+				}
 				if _, err := w.CreateLandingReceipt(t.Context(), proof); err != nil {
 					return err
 				}
 			}
-			frozen, err := prep.PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: f.organization, ProjectID: issue.ProjectID, WorkItemID: settlement.issue.NativeID, ChangeID: change, VersionID: version.ID}, tracker.ChangeLanding{VersionID: version.ID, LandedAt: at, HeadSHA: sha, MergeSHA: merge, BaseRef: value.BaseRef, Method: "merge", Actor: tracker.Actor{Kind: "human", PrincipalID: "user_browser_owner"}})
+			frozen, err := prep.PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: f.organization, ProjectID: issue.ProjectID, WorkItemID: settlement.issue.NativeID, ChangeID: change, VersionID: version.ID}, tracker.ChangeLanding{VersionID: version.ID, LandedAt: at, HeadSHA: sha, MergeSHA: merge, BaseRef: "main", Method: "merge", Actor: tracker.Actor{Kind: "human", PrincipalID: "user_browser_owner"}})
 			if err != nil {
 				return err
 			}
@@ -96,10 +94,14 @@ func TestHourlyActivity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	land("hourly_landed", early, landed, from.Add(time.Hour), true)
+	land("hourly_landed", early, landed, from.Add(time.Hour), landed, landed, later)
 	missing := newIssue("Example missing history")
 	missingLanding := f.storeAttempt(t, missing, "without_run_history", "succeeded", from.Add(70*time.Minute), from.Add(72*time.Minute), nil, false)
-	land("hourly_missing", missingLanding, missingLanding, from.Add(72*time.Minute), false)
+	land("hourly_missing", missingLanding, missingLanding, from.Add(72*time.Minute), missingLanding)
+	land("hourly_unverified", missingLanding, missingLanding, from.Add(75*time.Minute))
+	land("hourly_undated", missingLanding, missingLanding, time.Time{})
+	active := newIssue("Example occupied slot")
+	f.storeAttempt(t, active, "still_running", "running", from.Add(time.Minute), from.Add(30*time.Minute), runtime, true)
 	noChange := newIssue("Example accepted no-change")
 	acceptedAt := from.Add(32 * time.Minute)
 	accepted := &tracker.NativeRuntimeObservation{Phase: "completed", Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: true, ObservedAt: acceptedAt}}
@@ -153,8 +155,9 @@ func TestHourlyActivity(t *testing.T) {
 	t.Run("verified landings, earlier attempts and history coverage", func(t *testing.T) {
 		report := read(t, f.project, "viewer", from, to, http.StatusOK)
 		var hours []struct {
-			VerifiedLandings int64 `json:"verified_landings"`
-			LandingHistory   []struct {
+			VerifiedLandings   int64 `json:"verified_landings"`
+			UnverifiedLandings int64 `json:"unverified_landings"`
+			LandingHistory     []struct {
 				LinkedAttempts  int64  `json:"linked_attempts"`
 				HistoryCoverage string `json:"history_coverage"`
 				Landings        int64  `json:"landings"`
@@ -173,10 +176,10 @@ func TestHourlyActivity(t *testing.T) {
 		if len(ids) != 1 || ids[0].LandingID != "version_hourly_missing" || ids[0].LandingAttemptID != "without_run_history" || string(report["more_landings"]) != "true" {
 			t.Fatalf("landing drill-down = %s", report["landings"])
 		}
-		if len(hours) != 2 || hours[0].VerifiedLandings != 0 || hours[1].VerifiedLandings != 2 || len(hours[1].LandingHistory) != 2 ||
+		if len(hours) != 2 || hours[0].VerifiedLandings != 0 || hours[1].VerifiedLandings != 2 || hours[1].UnverifiedLandings != 1 || len(hours[1].LandingHistory) != 2 ||
 			hours[1].LandingHistory[0].LinkedAttempts != 1 || hours[1].LandingHistory[0].HistoryCoverage != "partial" || hours[1].LandingHistory[0].Landings != 1 ||
 			hours[1].LandingHistory[1].LinkedAttempts != 3 || hours[1].LandingHistory[1].HistoryCoverage != "complete" || hours[1].LandingHistory[1].Landings != 1 ||
-			string(report["attempts_per_landing"]) != "2.5" {
+			string(report["attempts_per_landing"]) != "2.5" || string(report["undated_landing_history"]) != "true" {
 			t.Fatalf("landing histories = %s", report["hours"])
 		}
 	})
@@ -184,12 +187,13 @@ func TestHourlyActivity(t *testing.T) {
 		report := read(t, f.project, "viewer", from, to, http.StatusOK)
 		var hours []struct {
 			AcceptedNoChange    int64 `json:"accepted_no_change"`
+			UnknownNoChange     int64 `json:"unknown_no_change"`
 			UnavailableVerdicts int64 `json:"unavailable_verdicts"`
 		}
 		if err := json.Unmarshal(report["hours"], &hours); err != nil {
 			t.Fatal(err)
 		}
-		if len(hours) != 2 || hours[0].AcceptedNoChange != 1 || hours[1].AcceptedNoChange != 0 || hours[0].UnavailableVerdicts != 3 || hours[1].UnavailableVerdicts != 2 {
+		if len(hours) != 2 || hours[0].AcceptedNoChange != 1 || hours[1].AcceptedNoChange != 0 || hours[0].UnknownNoChange != 1 || hours[1].UnknownNoChange != 2 || hours[0].UnavailableVerdicts != 3 || hours[1].UnavailableVerdicts != 2 {
 			t.Fatalf("no-change and unavailable counts = %s", report["hours"])
 		}
 	})
@@ -246,7 +250,7 @@ func TestHourlyActivity(t *testing.T) {
 		}
 	})
 	t.Run("typed verdict and pending", func(t *testing.T) {
-		if _, err := f.admin.ExecContext(t.Context(), `UPDATE native_attempts SET verdict_outcome='pending' WHERE organization_id=$1 AND id='without_run_history'`, f.organization); err != nil {
+		if _, err := f.admin.ExecContext(t.Context(), `UPDATE native_attempts SET verdict_outcome='pending',verdict_attempted_step='implementation' WHERE organization_id=$1 AND id='without_run_history'`, f.organization); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.admin.ExecContext(t.Context(), `UPDATE native_attempts SET verdict_outcome='reroute',verdict_success=false,verdict_reason='Acceptance receipt missing',verdict_next_step='acceptance',verdict_attempted_step='implementation' WHERE organization_id=$1 AND id='at_lower_bound'`, f.organization); err != nil {
@@ -264,8 +268,32 @@ func TestHourlyActivity(t *testing.T) {
 				found = true
 			}
 		}
-		if !found || hours[0].UnavailableVerdicts != 2 || hours[1].PendingVerdicts != 1 || hours[1].UnavailableVerdicts != 1 {
+		foundUnknownStage := false
+		for _, outcome := range hours[1].Outcomes {
+			if outcome.Verdict == "pending" && outcome.EndingStage == "unknown" {
+				foundUnknownStage = true
+			}
+		}
+		if !found || !foundUnknownStage || hours[0].UnavailableVerdicts != 2 || hours[1].PendingVerdicts != 1 || hours[1].UnavailableVerdicts != 1 {
 			t.Fatalf("verdicts = %s", report["hours"])
+		}
+	})
+
+	t.Run("an earlier receipt replay does not cut off the next landing cohort", func(t *testing.T) {
+		nextAt := to.Add(time.Minute)
+		next := f.storeAttempt(t, issue, "next_landing", "succeeded", to, nextAt, runtime, true)
+		land("hourly_next", next, next, nextAt, next)
+		if err := f.repository.ReadTenantSnapshot(t.Context(), f.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			report, err := r.(activitystore.HourlyReader).ActivityHourly(t.Context(), activitystore.HourlyFilter{Project: issue.ProjectID, From: nextAt, To: nextAt.Add(time.Second), Limit: 1})
+			if err != nil {
+				return err
+			}
+			if len(report.Landings) != 1 || report.Landings[0].LinkedAttempts != 2 || report.Landings[0].HistoryCoverage != "complete" {
+				t.Fatalf("next landing after receipt replay = %+v", report.Landings)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
 		}
 	})
 

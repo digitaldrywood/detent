@@ -132,7 +132,7 @@ func activityFacts(run tracker.NativeRunData) (stage, noChangeStatus string) {
 		stage = runtime.Phase
 		if stage == "" || stage == "completed" {
 			stage = ""
-			for i := len(runtime.Phases) - 1; i >= 0; i-- {
+			for i := len(runtime.Phases) - 1; runtime.PhasesDropped == 0 && i >= 0; i-- {
 				if name := runtime.Phases[i].Name; name != "" && name != "completed" {
 					stage = name
 					break

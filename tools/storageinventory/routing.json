@@ -12301,6 +12301,7 @@
         },
         "tables": [
           "hub/change_landing_receipts",
+          "hub/change_versions",
           "hub/native_attempts"
         ]
       }
