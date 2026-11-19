@@ -17,13 +17,13 @@ func (s *Service) githubOutboundService() *githuboutbound.Service {
 	return githuboutbound.New(githuboutbound.Deps{
 		Repository: s.config.TenantRepository, Organization: organization,
 		Details: s.runDetailStore(), Backend: s.config.OutboxBackend, Now: s.config.Clock,
-		Jitter: s.config.deps.Jitter, NewLeaseID: s.config.deps.NewLeaseID, Logger: s.config.Logger,
+		Jitter: s.config.Deps().Jitter, NewLeaseID: s.config.Deps().NewLeaseID, Logger: s.config.Logger,
 		OutboxPollInterval: s.config.OutboxPollInterval, OutboxProcessingTimeout: s.config.OutboxProcessingTimeout,
 		OutboxBaseBackoff: s.config.OutboxBaseBackoff, OutboxMaxBackoff: s.config.OutboxMaxBackoff,
 		Disabled: ErrOutboxDisabled, Unavailable: hubapi.ErrPostgresFeatureUnavailable,
 		SplitRepository: splitRepositoryFullName, Process: s.ProcessOutbox,
 		NewTimer: func(delay time.Duration) githuboutbound.Timer {
-			timer := s.config.deps.NewOutboxTimer(delay)
+			timer := s.config.Deps().NewOutboxTimer(delay)
 			return githuboutbound.Timer{Ticks: timer.C, Reset: timer.Reset, Stop: timer.Stop}
 		},
 	})
