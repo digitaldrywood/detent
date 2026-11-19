@@ -111,12 +111,6 @@
       "TestLocalGitNativeReworkOwnsPausedRebase",
       "TestGitMetadataWritableRootsForLinkedWorktree"
     ],
-    "./internal/store": [
-      "TestTimeoutWorkAttemptsProcessEvidence",
-      "TestStartupTimeoutWorkAttemptsScope",
-      "TestLegacyHumanQuestionReceiptsReadable",
-      "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
-    ],
     "./internal/release": [
       "TestMandatoryEvidence"
     ],
@@ -152,7 +146,6 @@
     "./internal/cli": [
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
       "TestPrepareWorkerCodexHomeExistingInstructions",
-      "TestDoctorInvariantEvidence",
       "TestDoctorRespectsProjectCIPolicy",
       "TestDoctorLocalGateCommitStatusProducer",
       "TestINV12DoctorNativeCaches",
@@ -161,6 +154,9 @@
       "TestSSHLocalTargetIntegration",
       "TestSSHServiceProxyKeepsCentralAuthority",
       "TestSSHProbeRequiresProvidedScratch"
+    ],
+    "./internal/cli/doctor": [
+      "TestDoctorInvariants"
     ],
     "./internal/connector/github": [
       "TestPullRequestMergeTimeSurvivesLaterActivity"
@@ -195,6 +191,9 @@
     "./internal/hubserver": [
       "TestPostgresEntryKeyMoveItem",
       "TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays",
+      "TestNativeClaimsEventsAndRestartWithoutGitHub",
+      "TestExpiredLeaseCancellationWithoutRunEvent",
+      "TestNativeMachineDefectOccurrences",
       "TestClaimCandidatesRequireUnansweredWorkItem",
       "TestNativeDerivedHoldDispatchEquivalence",
       "TestNativeRecordedDependencyUsesCurrentEdges",
@@ -208,13 +207,8 @@
       "TestINV20HubTableLifecycles",
       "TestTableLifecycleViolations"
     ],
-    "./internal/web": [
-      "TestOperationsWorkpadHumanAction"
-    ],
     "./internal/web/templates": [
-      "TestINV13BoardCardContent",
-      "TestINV13SheetObservations",
-      "TestBoardCardSignalBudget"
+      "TestINV13BoardCardContent"
     ],
     "./internal/codex": [
       "TestAppServerMarksOnlyConversationTurns"
