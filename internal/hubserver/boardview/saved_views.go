@@ -1,28 +1,20 @@
-package hubserver
+package boardview
 
 import (
 	"encoding/json"
 	"slices"
 	"time"
 	"unicode/utf8"
-
-	"github.com/labstack/echo/v4"
 )
 
-const (
-	maxSavedWorkViewBytes            = 16 << 10
-	maxSavedWorkViewsPerOwner        = 50
-	maxSavedWorkViewsPerOrganization = 200
-	maxSavedWorkViewsPageSize        = 25
-	maxSavedWorkViewsPageBytes       = 256 << 10
-)
+const MaxSavedViewBytes = 16 << 10
 
-type savedWorkViewsPage struct {
-	Views      []savedWorkView `json:"views"`
-	NextCursor string          `json:"next_cursor,omitempty"`
+type SavedViewPage struct {
+	Views      []SavedView `json:"views"`
+	NextCursor string      `json:"next_cursor,omitempty"`
 }
 
-type savedWorkState struct {
+type SavedViewState struct {
 	View            string   `json:"view"`
 	Tab             string   `json:"tab"`
 	Q               string   `json:"q"`
@@ -41,7 +33,7 @@ type savedWorkState struct {
 	Collapsed       []string `json:"collapsed"`
 }
 
-type savedWorkView struct {
+type SavedView struct {
 	CanEdit    bool           `json:"can_edit"`
 	ID         string         `json:"id"`
 	OwnerID    string         `json:"owner_id"`
@@ -50,18 +42,14 @@ type savedWorkView struct {
 	ProjectID  *string        `json:"project_id"`
 	ProjectIDs []string       `json:"project_ids"`
 	Favorite   bool           `json:"favorite"`
-	State      savedWorkState `json:"state"`
+	State      SavedViewState `json:"state"`
 }
 
-func (s *Service) savedWorkViews(c echo.Context) error {
-	return s.savedWorkViewsRecord(c)
-}
-
-func (s savedWorkState) values() map[string][]string {
+func (s SavedViewState) values() map[string][]string {
 	return map[string][]string{"state": s.State, "type": s.Type, "label": s.Label, "assignee": s.Assignee, "priority": s.Priority, "lanes": s.Lanes, "collapsed": s.Collapsed}
 }
 
-func validSavedWorkView(v savedWorkView) bool {
+func ValidSavedView(v SavedView) bool {
 	s := v.State
 	for _, bound := range []string{s.CompletedFrom, s.CompletedTo} {
 		if bound != "" {
@@ -99,5 +87,5 @@ func validSavedWorkView(v savedWorkView) bool {
 		return false
 	}
 	encoded, err := json.Marshal(v)
-	return err == nil && len(encoded) <= maxSavedWorkViewBytes
+	return err == nil && len(encoded) <= MaxSavedViewBytes
 }

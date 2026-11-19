@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -383,5 +385,58 @@ func TestBoardSearchReturnsHTTPAndMCPMatches(t *testing.T) {
 			}
 
 		})
+	}
+}
+
+type postgresWorkViewFixture struct {
+	hostedSecurityFixture
+	repository tenantstore.Repository
+	admin      *sql.DB
+}
+
+func newPostgresWorkViewFixture(t *testing.T) postgresWorkViewFixture {
+	t.Helper()
+	repository, admin := hubPostgresRepository(t, 4)
+	fixture, _ := newChangePolicyPostgresTenantFixture(t, repository, "org_security", &memoryRunDetails{})
+	fixture.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{fixture.service}, chat.WithClock(fixture.service.config.Clock))
+	if err := fixture.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	fixture.service.config.SecretKeys = secretTestKeys(t, "1", "1")
+	envelope, err := fixture.service.config.SecretKeys.Seal([]byte(strings.Repeat("k", 32)), accessstore.SecretAAD("org_security", "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := fixture.service.config.Clock()
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_security", Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: "org_security", Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return postgresWorkViewFixture{hostedSecurityFixture: fixture, repository: repository, admin: admin}
+}
+
+func (f postgresWorkViewFixture) user(t *testing.T, name, role, email, grant, supportActor string) hostedSecurityUser {
+	t.Helper()
+	user := f.hostedSecurityFixture.user(t, name, role, email, "", supportActor)
+	if grant != "" {
+		f.grant(t, user, grant == "write", false)
+	}
+	return user
+}
+
+func (f postgresWorkViewFixture) grant(t *testing.T, user hostedSecurityUser, write, runner bool) {
+	t.Helper()
+	if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), user.identity.Subject)
+		if err != nil {
+			return err
+		}
+		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: member.UserID, ProjectID: f.project, CanWrite: write, ManageRunner: runner}); err != nil {
+			return err
+		}
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: member.PrincipalID, ProjectID: f.project})
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
