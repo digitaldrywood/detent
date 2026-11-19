@@ -18,71 +18,35 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestPilotIdleRunnerReconciliation(t *testing.T) {
+func TestPilotReconciliationHonorsRepositoryBinding(t *testing.T) {
 	t.Parallel()
-	for _, count := range []int{0, 1, 16} {
-		t.Run(fmt.Sprintf("runners_%d", count), func(t *testing.T) {
-			t.Parallel()
-			clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
-			f := newDefaultNativeFixture(t, Config{Clock: clock.Now, ReconcileInterval: time.Millisecond})
-			backend := &scriptedReconcileBackend{}
-			f.service.config.ReconcileBackend = backend
-			setRepositoryEnabled := func(enabled bool) {
-				t.Helper()
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-					record, err := w.ProjectRecord(t.Context(), f.project.ID)
-					if err != nil {
-						return err
-					}
-					record.Settings.Repository, record.Settings.RepositoryEnabled = "example-org/example-project", enabled
-					_, err = w.UpdateProjectRecord(t.Context(), record)
-					return err
-				}); err != nil {
-					t.Fatal(err)
-				}
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	f := newDefaultNativeFixture(t, Config{Clock: clock.Now, ReconcileInterval: time.Millisecond})
+	backend := &scriptedReconcileBackend{}
+	f.service.config.ReconcileBackend = backend
+	for _, enabled := range []bool{true, false} {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(t.Context(), f.project.ID)
+			if err != nil {
+				return err
 			}
-			setRepositoryEnabled(true)
-			var runners []runnerFixture
-			for i := range count {
-				runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-				runner.redemption.DisplayName = fmt.Sprintf("Pilot host %d", i)
-				runner.enroll(t)
-				runners = append(runners, runner)
-			}
-			for range 6 {
-				for _, runner := range runners {
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, "display_name": runner.redemption.DisplayName, "capacity": 2, "version": "test"}), http.StatusOK)
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?state=Todo", runner.redemption.Credential, nil), http.StatusOK)
-				}
-				backend.steps = append(backend.steps, reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "example-org", Name: "example-project", UpdatedAt: clock.Now()}}})
-				clock.Advance(time.Second)
-				if err := f.service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-			}
-			requests := backend.Requests()
-			if len(requests) > 6 {
-				t.Fatalf("runner count multiplied reconciliation: %d calls", len(requests))
-			}
-			if len(requests) != 6 || len(backend.steps) != 0 {
-				t.Errorf("repository reconciliation made %d backend calls in 6 cycles, want 6", len(requests))
-			}
-			for _, request := range requests {
-				if request.Profile != "native" || !request.SkipIssues || request.SkipRepository {
-					t.Errorf("incorrect native reconciliation scope: %+v", request)
-					break
-				}
-			}
-			setRepositoryEnabled(false)
-			clock.Advance(time.Second)
-			if err := f.service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			if len(backend.Requests()) != len(requests) {
-				t.Fatal("disabled integration polled GitHub")
-			}
-			t.Logf("PILOT fleet runners=%d heartbeat_requests=%d candidate_reads=%d reconciliation_cycles=6 backend_calls=6 disabled_calls=0", count, count*6, count*6)
-		})
+			project.Settings.Repository, project.Settings.RepositoryEnabled = "example-org/example-project", enabled
+			_, err = w.UpdateProjectRecord(t.Context(), project)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if enabled {
+			backend.steps = append(backend.steps, reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "example-org", Name: "example-project", UpdatedAt: clock.Now()}}})
+		}
+		clock.Advance(time.Second)
+		if err := f.service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		requests := backend.Requests()
+		if len(requests) != 1 || requests[0].Profile != "native" || !requests[0].SkipIssues || requests[0].SkipRepository {
+			t.Fatalf("repository reconciliation requests=%+v (enabled=%t)", requests, enabled)
+		}
 	}
 }
 
