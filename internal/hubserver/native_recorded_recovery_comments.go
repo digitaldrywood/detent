@@ -18,7 +18,7 @@ import (
 const recoveryCommentProgress = "recovery.comments_examined"
 const recoveryCommentPagesPerRequest = 2
 
-func (s *Service) recordedWorkpadQuestion(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, attempt leasestore.Attempt, advance bool) (bool, error) {
+func (s *Service) recordedWorkpadQuestion(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, attempt leasestore.Attempt, advance bool, clearedAudit recordedAuditQuestion) (bool, error) {
 	var after, lastEdit int64
 	var progress eventstore.Event
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -61,7 +61,7 @@ func (s *Service) recordedWorkpadQuestion(ctx context.Context, scope hubscope.Na
 		if event.Type != recoveryCommentProgress || event.Actor.Kind != "system" || event.Actor.PrincipalID != "recorded_recovery" || event.Data.CommentCursor >= progress.Sequence {
 			return false, artifact.ErrIntegrity
 		}
-		if event.Data.BlockerAttemptID == attempt.ID {
+		if event.Data.BlockerAttemptID == attempt.ID && event.Data.ReasonDetail == clearedAudit.proof {
 			after = max(after, event.Data.CommentCursor)
 		}
 	}
@@ -70,7 +70,7 @@ func (s *Service) recordedWorkpadQuestion(ctx context.Context, scope hubscope.Na
 		if err != nil {
 			return false, err
 		}
-		question, err := s.recoveryPageQuestion(ctx, scope, row.NativeID, page)
+		question, err := s.recoveryPageQuestion(ctx, scope, row.NativeID, page, clearedAudit)
 		if err != nil || question {
 			return question, err
 		}
@@ -80,7 +80,7 @@ func (s *Service) recordedWorkpadQuestion(ctx context.Context, scope hubscope.Na
 		}
 	}
 	if advance {
-		if err := s.recordRecoveryCommentProgress(ctx, scope, row, attempt.ID, after); err != nil {
+		if err := s.recordRecoveryCommentProgress(ctx, scope, row, attempt.ID, after, clearedAudit.proof); err != nil {
 			return false, err
 		}
 	}
@@ -112,7 +112,7 @@ func (p *recoveryCommentPage) add(ctx context.Context, r tenantstore.Reader, row
 	return err
 }
 
-func (s *Service) recoveryPageQuestion(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, page recoveryCommentPage) (bool, error) {
+func (s *Service) recoveryPageQuestion(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, page recoveryCommentPage, clearedAudit recordedAuditQuestion) (bool, error) {
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	editedIDs := make(map[string]struct{})
 	for _, edited := range page.edits {
@@ -149,7 +149,8 @@ func (s *Service) recoveryPageQuestion(ctx context.Context, scope hubscope.Nativ
 		if err != nil {
 			return false, err
 		}
-		if claimapi.RecordedWorkpadQuestion(comment.Body) {
+		question := claimapi.RecordedWorkpadQuestion(comment.Body) || clearedAudit.action != "" && typedWorkerHumanAction(comment.Body)
+		if question && !clearedAudit.matchesComment(record.row, comment.Body) {
 			return true, nil
 		}
 	}
@@ -193,9 +194,9 @@ func (s *Service) readRecoveryCommentPage(ctx context.Context, scope hubscope.Na
 	return page, err
 }
 
-func (s *Service) recordRecoveryCommentProgress(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, attempt string, through int64) error {
+func (s *Service) recordRecoveryCommentProgress(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, attempt string, through int64, proof string) error {
 	event := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: row.NativeID, Type: recoveryCommentProgress, SchemaVersion: 1,
-		Actor: tracker.Actor{Kind: "system", PrincipalID: "recorded_recovery"}, RecordedAt: s.config.Clock().UTC(), Data: tracker.CollaborationData{BlockerAttemptID: attempt, CommentCursor: through}}
+		Actor: tracker.Actor{Kind: "system", PrincipalID: "recorded_recovery"}, RecordedAt: s.config.Clock().UTC(), Data: tracker.CollaborationData{BlockerAttemptID: attempt, CommentCursor: through, ReasonDetail: proof}}
 	raw, err := json.Marshal(event)
 	if err != nil {
 		return err

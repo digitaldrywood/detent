@@ -68,11 +68,7 @@ func (s *ChangeEvidence) PostAuditDisposition(c echo.Context) error {
 		return s.deps.NativeAPIError(c, err)
 	}
 	if receipt != nil {
-		value, err := s.readAuditDisposition(ctx, scope, *receipt)
-		if err != nil {
-			return s.deps.NativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, value)
+		return s.respondAuditDisposition(c, ctx, scope, *receipt)
 	}
 	var selected *eventstore.Evidence
 	var run securityaudit.Run
@@ -148,8 +144,15 @@ func (s *ChangeEvidence) PostAuditDisposition(c echo.Context) error {
 		}
 		return s.deps.NativeAPIError(c, err)
 	}
+	return s.respondAuditDisposition(c, ctx, scope, row)
+}
+
+func (s *ChangeEvidence) respondAuditDisposition(c echo.Context, ctx context.Context, scope hubscope.NativeScope, row eventstore.AuditDisposition) error {
 	value, err := s.readAuditDisposition(ctx, scope, row)
 	if err != nil {
+		return s.deps.NativeAPIError(c, err)
+	}
+	if err := s.recoverClearedAuditHold(ctx, scope, row); err != nil {
 		return s.deps.NativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, value)

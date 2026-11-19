@@ -23,6 +23,7 @@ type ChangeEvidenceDeps struct {
 	NativeAPIError                func(echo.Context, error) error
 	InvalidAPIRequest             func(echo.Context, error) error
 	RunnerSessionFence            func(context.Context, tenantstore.Reader, hubscope.NativeScope, runnersession.Mutation, string, bool) (leasestore.Attempt, policystore.Revision, error)
+	RecoverAuditHold              func(context.Context, hubscope.NativeScope, AuditHoldClearance) error
 	ValidateNativeDetailReference func(context.Context, attachment.DetailStore, tracker.OrganizationID, attachment.ArchiveReference, []byte) error
 }
 
