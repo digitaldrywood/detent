@@ -28,6 +28,7 @@ type BoardClosedPosition struct {
 }
 
 type BoardViewSelection struct {
+	WindowAsOf   *time.Time
 	Projects     []tracker.ProjectID
 	Allowed      []tracker.ProjectID
 	Items        []tracker.NativeWorkItemID

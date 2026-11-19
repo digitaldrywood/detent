@@ -59,7 +59,7 @@ type BoardReporterRelations struct {
 type BoardRecord struct {
 	ListIssue             *tracker.NativeIssue
 	ListBytes             int
-	WindowMask            int
+	LegacyWindowMask      int
 	RefreshAfter          *time.Time
 	ReporterRelations     *BoardReporterRelations
 	PageIssue             *tracker.NativeIssue
@@ -99,6 +99,7 @@ type BoardCandidate struct {
 }
 
 type BoardSelection struct {
+	WindowAsOf          *time.Time
 	Summary             bool
 	CountLanes          bool
 	Compact             bool

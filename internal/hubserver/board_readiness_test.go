@@ -182,6 +182,7 @@ func testBoardReadinessDirtyQueue(t *testing.T, service *Service) {
 			var work *viewstore.BoardSelection
 			if mode == "work+summary" {
 				selection.Compact, selection.Summary = true, true
+				selection.WindowAsOf = &epoch
 				w := selection
 				w.WorkOrder, w.Terminal = true, new(false)
 				work = &w

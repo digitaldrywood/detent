@@ -1,16 +1,9 @@
 package hubserver
 
 import (
-	"time"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-var nativeShippedWindowSpans = []struct {
-	name string
-	span time.Duration
-}{{"1h", time.Hour}, {nativeDefaultShippedWindow, 24 * time.Hour}, {"7d", 7 * 24 * time.Hour}}
 
 const nativeDefaultShippedWindow = "24h"
 

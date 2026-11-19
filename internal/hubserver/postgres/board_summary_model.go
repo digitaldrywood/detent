@@ -35,34 +35,35 @@ func (s *session) replaceBoardSummary(ctx context.Context, previous, current *vi
 		if !slices.Contains(b.Labels, "detent:workspace") {
 			workspace = append(workspace, true)
 		}
-		windows := [6]int64{}
-		for index := range 3 {
-			if b.WindowMask&(1<<index) == 0 {
-				continue
-			}
-			if b.Position.State == "Done" {
-				windows[index] = change.delta
-			}
-			if b.Position.State == "Cancelled" {
-				windows[index+3] = change.delta
-			}
-		}
 		running := int64(0)
 		if b.Running {
 			running = change.delta
 		}
-		statement := `INSERT INTO native_board_page_summaries(organization_id,project_id,audience,archive_scope,exclude_workspace,kind,state,total,running,shipped_1h,shipped_24h,shipped_7d,cancelled_1h,cancelled_24h,cancelled_7d,projected_at)
-SELECT $1,$2,audience,archive_scope,exclude_workspace,kind,state,$7,$8,$9,$10,$11,$12,$13,$14,$15 FROM unnest($3::text[]) audience CROSS JOIN unnest($4::text[]) archive_scope CROSS JOIN unnest($5::boolean[]) exclude_workspace CROSS JOIN unnest($6::text[],$16::text[]) scopes(state,kind)
-ON CONFLICT(organization_id,project_id,audience,archive_scope,exclude_workspace,kind,state) DO UPDATE SET total=native_board_page_summaries.total+excluded.total,running=native_board_page_summaries.running+excluded.running,shipped_1h=native_board_page_summaries.shipped_1h+excluded.shipped_1h,shipped_24h=native_board_page_summaries.shipped_24h+excluded.shipped_24h,shipped_7d=native_board_page_summaries.shipped_7d+excluded.shipped_7d,cancelled_1h=native_board_page_summaries.cancelled_1h+excluded.cancelled_1h,cancelled_24h=native_board_page_summaries.cancelled_24h+excluded.cancelled_24h,cancelled_7d=native_board_page_summaries.cancelled_7d+excluded.cancelled_7d,projected_at=greatest(native_board_page_summaries.projected_at,excluded.projected_at)`
+		archive := []string{"all", strconv.FormatBool(b.Archived)}
+		args := []any{s.organization, b.ProjectID, audience, archive, workspace, states, kinds, change.delta, running, b.ProjectedAt}
+		statement := `INSERT INTO native_board_page_summaries(organization_id,project_id,audience,archive_scope,exclude_workspace,kind,state,total,running,projected_at)
+SELECT $1,$2,audience,archive_scope,exclude_workspace,kind,state,$8,$9,$10 FROM unnest($3::text[]) audience CROSS JOIN unnest($4::text[]) archive_scope CROSS JOIN unnest($5::boolean[]) exclude_workspace CROSS JOIN unnest($6::text[],$7::text[]) scopes(state,kind)
+ON CONFLICT(organization_id,project_id,audience,archive_scope,exclude_workspace,kind,state) DO UPDATE SET total=native_board_page_summaries.total+excluded.total,running=native_board_page_summaries.running+excluded.running,projected_at=greatest(native_board_page_summaries.projected_at,excluded.projected_at)`
 		if change.delta < 0 {
-			statement = `UPDATE native_board_page_summaries SET total=total+$7,running=running+$8,shipped_1h=shipped_1h+$9,shipped_24h=shipped_24h+$10,shipped_7d=shipped_7d+$11,cancelled_1h=cancelled_1h+$12,cancelled_24h=cancelled_24h+$13,cancelled_7d=cancelled_7d+$14,projected_at=greatest(projected_at,$15) WHERE organization_id=$1 AND project_id=$2 AND audience=ANY($3::text[]) AND archive_scope=ANY($4::text[]) AND exclude_workspace=ANY($5::boolean[]) AND (state,kind) IN (SELECT * FROM unnest($6::text[],$16::text[]))`
+			legacyShipped, legacyCancelled := 0, 0
+			switch b.Position.State {
+			case "Done":
+				legacyShipped = b.LegacyWindowMask
+			case "Cancelled":
+				legacyCancelled = b.LegacyWindowMask
+			}
+			statement = `UPDATE native_board_page_summaries SET total=total+$8,running=running+$9,projected_at=greatest(projected_at,$10),
+ shipped_1h=shipped_1h-($11::int&1),shipped_24h=shipped_24h-(($11::int>>1)&1),shipped_7d=shipped_7d-(($11::int>>2)&1),
+ cancelled_1h=cancelled_1h-($12::int&1),cancelled_24h=cancelled_24h-(($12::int>>1)&1),cancelled_7d=cancelled_7d-(($12::int>>2)&1)
+ WHERE organization_id=$1 AND project_id=$2 AND audience=ANY($3::text[]) AND archive_scope=ANY($4::text[]) AND exclude_workspace=ANY($5::boolean[]) AND (state,kind) IN (SELECT * FROM unnest($6::text[],$7::text[]))`
+			args = append(args, legacyShipped, legacyCancelled)
 		}
-		_, err := s.db.Exec(ctx, statement, s.organization, b.ProjectID, audience, []string{"all", strconv.FormatBool(b.Archived)}, workspace, states, change.delta, running, windows[0], windows[1], windows[2], windows[3], windows[4], windows[5], b.ProjectedAt, kinds)
+		_, err := s.db.Exec(ctx, statement, args...)
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		if change.delta < 0 {
-			_, err = s.db.Exec(ctx, `DELETE FROM native_board_page_summaries WHERE organization_id=$1 AND project_id=$2 AND audience=ANY($3::text[]) AND archive_scope=ANY($4::text[]) AND exclude_workspace=ANY($5::boolean[]) AND (state,kind) IN (SELECT * FROM unnest($6::text[],$7::text[])) AND total=0`, s.organization, b.ProjectID, audience, []string{"all", strconv.FormatBool(b.Archived)}, workspace, states, kinds)
+			_, err = s.db.Exec(ctx, `DELETE FROM native_board_page_summaries WHERE organization_id=$1 AND project_id=$2 AND audience=ANY($3::text[]) AND archive_scope=ANY($4::text[]) AND exclude_workspace=ANY($5::boolean[]) AND (state,kind) IN (SELECT * FROM unnest($6::text[],$7::text[])) AND total=0`, args[:7]...)
 			if err != nil {
 				return mapError(ctx, err)
 			}
@@ -88,25 +89,28 @@ func (s *session) boardSummaryQuery(selection viewstore.BoardSelection, includeM
 	}
 	query := `WITH metadata AS MATERIALIZED (` + boardModelMetadataSQL + `),
 counts AS MATERIALIZED (
- SELECT c.kind,c.state,c.total,c.running,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at
+ SELECT c.kind,c.state,c.total,c.running,c.projected_at
  FROM native_board_page_summaries c
  WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM metadata)
  ORDER BY c.kind,c.state LIMIT 204
 ), completion AS MATERIALIZED (
- SELECT c.kind,c.state,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at
+ SELECT c.kind,c.state,c.projected_at
  FROM native_board_page_summaries c
  WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope='all' AND c.exclude_workspace=$5 AND c.kind IN ('total','lane') AND NOT (SELECT pending FROM metadata)
  ORDER BY c.kind,c.state LIMIT 204
-), summary(kind,state,total,running,shipped_1h,shipped_24h,shipped_7d,cancelled_1h,cancelled_24h,cancelled_7d,projected_at,sequence) AS (
+),
+windows AS MATERIALIZED (` + boardviewsql.CompletionCountsSQL("(SELECT $2::text FROM metadata WHERE NOT pending)", "$3", "$5", "$6") + `), summary(kind,state,total,running,shipped_1h,shipped_24h,shipped_7d,cancelled_1h,cancelled_24h,cancelled_7d,projected_at,sequence) AS (
  SELECT coalesce(c.kind,a.kind,'total'),coalesce(c.state,a.state,''),coalesce(c.total,0),coalesce(c.running,0),
- coalesce(a.shipped_1h,c.shipped_1h,0),
- coalesce(a.shipped_24h,c.shipped_24h,0),
- coalesce(a.shipped_7d,c.shipped_7d,0),
- coalesce(a.cancelled_1h,c.cancelled_1h,0),
- coalesce(a.cancelled_24h,c.cancelled_24h,0),
- coalesce(a.cancelled_7d,c.cancelled_7d,0),
+ coalesce(w.shipped_1h,0),
+ coalesce(w.shipped_24h,0),
+ coalesce(w.shipped_7d,0),
+ coalesce(w.cancelled_1h,0),
+ coalesce(w.cancelled_24h,0),
+ coalesce(w.cancelled_7d,0),
  greatest(c.projected_at,a.projected_at),(SELECT sequence FROM metadata)
  FROM counts c FULL JOIN completion a ON c.kind=a.kind AND c.state=a.state
+ LEFT JOIN windows w ON w.kind=CASE WHEN c.kind='closed' THEN 'total' ELSE coalesce(c.kind,a.kind) END AND w.state=coalesce(c.state,a.state)
+ AND w.archive_scope=CASE WHEN c.kind='closed' THEN $4 ELSE 'all' END
  ORDER BY 1,2 LIMIT 204)
 `
 	if includeMetadata {
@@ -117,7 +121,7 @@ counts AS MATERIALIZED (
 		query += `SELECT * FROM summary
 UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELECT pending FROM metadata)`
 	}
-	return query, []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace}, nil
+	return query, []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace, selection.WindowAsOf}, nil
 }
 
 func (s *session) BoardSummaryModel(ctx context.Context, selection viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error) {
