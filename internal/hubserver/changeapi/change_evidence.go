@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
@@ -101,14 +102,16 @@ func (s *HTTP) readValidatorArchive(ctx context.Context, scope hubscope.NativeSc
 }
 
 func validValidatorArchiveJSON(raw []byte) bool {
-	if len(raw) > attachment.MaxArchiveBytes {
+	if len(raw) > attachment.MaxArchiveBytes || !utf8.Valid(raw) {
 		return false
 	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(raw) {
 		return false
 	}
-	shapeBudget := hubapi.MaxAPIRequestBodyBytes / int(reflect.TypeFor[gate.CommandResult]().Size())
+	const objectMemberCost = 32
+	shapeBudget := hubapi.MaxAPIRequestBodyBytes
+	collectionCost := int(reflect.TypeFor[gate.CommandResult]().Size())
 	var containers []byte
 	var quoted, escaped bool
 	for _, b := range raw {
@@ -121,6 +124,7 @@ func validValidatorArchiveJSON(raw []byte) bool {
 			escaped = b == '\\'
 			continue
 		}
+		cost := collectionCost
 		switch b {
 		case '"':
 			quoted = true
@@ -134,10 +138,12 @@ func validValidatorArchiveJSON(raw []byte) bool {
 			if containers[len(containers)-1] != '[' {
 				continue
 			}
+		case ':':
+			cost = objectMemberCost
 		default:
 			continue
 		}
-		shapeBudget--
+		shapeBudget -= cost
 		if shapeBudget < 0 {
 			return false
 		}

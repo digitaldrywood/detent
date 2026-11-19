@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -83,9 +85,11 @@ func (d *DetailStore) Reclaim(ctx context.Context, organization tracker.Organiza
 	return reclaimed, nil
 }
 
-func (s *session) detailObject(ctx context.Context, key string) ([]byte, error) {
+const detailObjectQuery = `SELECT content FROM public.hub_detail_objects WHERE organization_id=$1 AND object_key=$2`
+
+func scanDetailObject(ctx context.Context, row pgx.Row) ([]byte, error) {
 	var content []byte
-	err := s.db.QueryRow(ctx, `SELECT content FROM hub_detail_objects WHERE organization_id=$1 AND object_key=$2`, s.organization, key).Scan(&content)
+	err := row.Scan(&content)
 	if err != nil {
 		err = mapError(ctx, err)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -134,10 +138,24 @@ func (d *DetailStore) ReadCanonicalDetail(ctx context.Context, organization, pro
 
 func (d *DetailStore) read(ctx context.Context, organization, key string) ([]byte, error) {
 	var compressed []byte
-	err := d.repository.leafTransaction(ctx, tracker.OrganizationID(organization), true, func(s *session) error {
+	if _, nested := ctx.Value(readRequestKey{}).(*readRequest); nested {
+		err := d.repository.leafTransaction(ctx, tracker.OrganizationID(organization), true, func(s *session) error {
+			var err error
+			compressed, err = scanDetailObject(ctx, s.db.QueryRow(ctx, detailObjectQuery, s.organization, key))
+			return err
+		})
+		return compressed, err
+	}
+
+	batch := &pgx.Batch{}
+	batch.Queue(`SELECT pg_catalog.set_config('detent.organization_id', $1, true)`, organization)
+	batch.Queue(detailObjectQuery, organization, key).QueryRow(func(row pgx.Row) error {
 		var err error
-		compressed, err = s.detailObject(ctx, key)
+		compressed, err = scanDetailObject(ctx, row)
 		return err
 	})
-	return compressed, err
+	started := time.Now()
+	err := d.repository.runtime.reader.SendBatch(ctx, batch).Close()
+	observeStatement(ctx, started, detailObjectQuery)
+	return compressed, mapError(ctx, err)
 }

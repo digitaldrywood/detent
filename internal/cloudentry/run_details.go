@@ -52,8 +52,8 @@ func (d tenantDetailStore) ReadDetail(ctx context.Context, organization string, 
 		return nil, attachment.ErrInvalid
 	}
 	unlock := d.service.attachmentLocks.lock(organization, false)
-	defer unlock()
 	storage, err := d.current(ctx)
+	unlock()
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -1016,6 +1017,89 @@ func TestTenantContentStorage(t *testing.T) {
 	defer spaces.Mu.Unlock()
 	if len(spaces.Objects) != 6 {
 		t.Fatalf("stored %d objects, want three bindings per org", len(spaces.Objects))
+	}
+}
+
+func TestTenantContentReadsReleaseAttachmentLock(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"archive content", "run detail"} {
+		t.Run(path, func(t *testing.T) {
+			f := newEntryFixture(t)
+			ctx := t.Context()
+			organization, err := f.service.readyOrganization(ctx, "org_alpha")
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := []byte("immutable detail")
+			ref, compressed, err := attachment.PrepareArchive(organization.ID, 1, bytes.NewReader(content))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			storage := &pausedArchiveRead{
+				entered: make(chan struct{}),
+				release: make(chan struct{}),
+				data:    compressed,
+			}
+			f.service.attachments = storage
+			done := make(chan error, 1)
+			go func() {
+				var got, want []byte
+				var err error
+				if path == "archive content" {
+					want = compressed
+					got, err = f.service.tenantContent(ctx, organization, entryauthority.ContentRequest{Organization: organization.ID, Reference: ref})
+				} else {
+					want = content
+					store := tenantDetailStore{service: f.service, allocation: organization}
+					got, err = store.ReadDetail(ctx, organization.ID, ref)
+				}
+				if err == nil && !bytes.Equal(got, want) {
+					err = errors.New("read returned different content")
+				}
+				done <- err
+			}()
+			select {
+			case <-storage.entered:
+			case err := <-done:
+				t.Fatalf("read completed before opening storage: %v", err)
+			}
+
+			locks := &f.service.attachmentLocks
+			locks.mu.Lock()
+			entry := locks.entries[organization.ID]
+			locks.mu.Unlock()
+			switch {
+			case entry == nil:
+				unlock := locks.lock(organization.ID, true)
+				unlock()
+			case entry.TryLock():
+				entry.Unlock()
+			default:
+				t.Error("writer could not acquire the attachment lock during the object read")
+			}
+			close(storage.release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+type pausedArchiveRead struct {
+	attachment.ArchiveStorage
+	entered chan struct{}
+	release chan struct{}
+	data    []byte
+}
+
+func (s *pausedArchiveRead) Open(ctx context.Context, _ string) (io.ReadCloser, error) {
+	close(s.entered)
+	select {
+	case <-s.release:
+		return io.NopCloser(bytes.NewReader(s.data)), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
