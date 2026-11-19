@@ -3,41 +3,9 @@ package hubserver
 import (
 	"context"
 
-	"github.com/digitaldrywood/detent/internal/chat"
-	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-const coordinatorAgentName = "Luna"
-
-func coordinatorAgent(model string) string {
-	if model == "" {
-		return coordinatorAgentName
-	}
-	return coordinatorAgentName + " (" + model + ")"
-}
-
-// coordinatorProposalAgent reads the agent from the proposal the coordinator
-// stored, never from the submitted action, so a client cannot relabel who
-// acted.
-func (s *Service) coordinatorProposalAgent(ctx context.Context, action chat.Action) (string, error) {
-	agent := coordinatorAgentName
-	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(action.OrganizationID), corestore.Serving, func(r tenantstore.Reader) error {
-		page, err := r.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: action.ConversationID, OperatorActionID: action.ID, Limit: 1})
-		if err != nil {
-			return err
-		}
-		if len(page.Items) > 0 && page.Items[0].OperatorAgent != nil && *page.Items[0].OperatorAgent != "" {
-			agent = *page.Items[0].OperatorAgent
-		}
-		return nil
-	})
-	return agent, err
-}
 
 // withCoordinatorAgent attributes application writes made under ctx to the
 // agent acting for the credential's principal.

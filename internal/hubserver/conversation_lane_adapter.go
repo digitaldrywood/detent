@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/sprites"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -1016,5 +1018,377 @@ func (c *conversationTurnCoordinator) recordDeps() coordinator.RecordDeps {
 		Authorize: c.server.authorizeAccessScope,
 		Now:       func() time.Time { return c.server.config.Clock() },
 		Cancel:    c.cancelRecordedTurn,
+	}
+}
+func (t *coordinatorToolset) tools() []runner.AgentTool {
+	return coordinator.Tools(append(append(append(append(append(append(append(coordinatorActionTools(), coordinatorWorkflowTools()...), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...), coordinatorScreenTools()...), coordinatorSettingsTools()...), coordinatorCatalogTools()...))
+}
+
+func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+	return t.toolDeps().Handle(ctx, call)
+}
+
+func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolCall) (any, error) {
+	return t.toolDeps().Execute(ctx, call)
+}
+
+func (t *coordinatorToolset) readableProjects(ctx context.Context, record conversationRecord) ([]tracker.ProjectID, error) {
+	return t.workToolDeps().ReadableProjects(ctx, record)
+}
+
+func (t *coordinatorToolset) listAttention(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, scope string, limit int) (any, error) {
+	return t.workToolDeps().ListAttention(ctx, record, readable, scope, limit)
+}
+
+func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record conversationRecord, reference string) (string, error) {
+	return t.workToolDeps().ResolveIssueReference(ctx, record, reference)
+}
+
+func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, workItemID string) (any, error) {
+	return t.workToolDeps().ExplainIssue(ctx, record, readable, workItemID)
+}
+
+func (s *Service) coordinatorAllowedProjects(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, ids []tracker.ProjectID) ([]tracker.ProjectID, error) {
+	return coordinator.AllowedProjects(ctx, r, scope, ids, s.authorizeAccessScope)
+}
+
+func (t *coordinatorToolset) proposeIssue(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, title, objective, projectID string) (any, error) {
+	return coordinator.ProposeIssue(ctx, record, readable, title, objective, projectID, t.publishIssueProposal)
+}
+
+const coordinatorToolResultBytes = coordinator.ToolResultBytes
+
+type coordinatorIssue = coordinator.IssueExplanation
+
+func (t *coordinatorToolset) toolDeps() coordinator.ToolDeps {
+	deps := coordinator.ToolDeps{
+		ConversationID:  t.state.conversationID,
+		CatalogCallName: coordinatorToolCallTool,
+		CatalogFindName: coordinatorToolFindTools,
+		Logger:          t.coordinator.logger,
+		EndSegment:      t.state.endTextSegment,
+		ReadConversation: func(ctx context.Context) (conversationRecord, error) {
+			return t.coordinator.readConversation(ctx, nil, t.state.conversationID)
+		},
+		ActionContext:           t.actionContext,
+		Operator:                currentHubOperator,
+		AuthorizeRecord:         t.coordinator.authorizeRecord,
+		ReadableProjects:        t.readableProjects,
+		PostActionRefusal:       t.postActionRefusal,
+		RestrictReadAudience:    t.restrictReadAudience,
+		ScreenTool:              coordinatorScreenRead,
+		IsSpriteTool:            coordinatorSpriteTool,
+		SpriteMutation:          coordinatorSpriteMutation,
+		ScreenRead:              t.screenRead,
+		SettingsTool:            t.settingsTool,
+		WorkflowTool:            t.workflowTool,
+		RunnerTool:              t.runnerTool,
+		PromoteSpritesTokenTool: t.promoteSpritesTokenTool,
+		SpriteTool:              t.spriteTool,
+		ReadIssueHistory:        t.readIssueHistory,
+		ProjectAction:           t.projectAction,
+		ProposeStopRun:          t.proposeStopRun,
+		SlashAction:             t.slashAction,
+		FindTools:               t.findTools,
+		CallTool:                t.callTool,
+		ProposeIssueArchive:     t.proposeIssueArchive,
+		ProposeIssueSplit:       t.proposeIssueSplit,
+		ListAttention:           t.listAttention,
+		ExplainIssue:            t.explainIssue,
+		ProposeIssue:            t.proposeIssue,
+	}
+	if t.coordinator.server != nil {
+		deps.RunDetailContext = t.coordinator.server.runDetailContext
+	}
+	return deps
+}
+
+func (t *coordinatorToolset) workToolDeps() coordinator.WorkToolDeps {
+	s := t.coordinator.server
+	return coordinator.WorkToolDeps{
+		ActionContext:   t.actionContext,
+		WorkReadContext: t.workReadContext,
+		Operator:        currentHubOperator,
+		ReadTenant:      s.readConversationTenant,
+		Authorize:       s.authorizeAccessScope,
+		AllowedProjects: s.coordinatorAllowedProjects,
+		Now:             s.config.Clock,
+		ResolveIssue:    s.resolveCoordinatorIssue,
+		ReadWorkItem:    s.readWorkItemRecord,
+		HydrateIssue:    s.hydrateWorkItemRecord,
+		ReadAttempt:     s.readNativeAttemptTenant,
+		ReadComments:    s.readCommentRecords,
+	}
+}
+
+func (t *coordinatorToolset) publishIssueProposal(ctx context.Context, id string, message conversationMessageRecord) error {
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
+	message.ThreadID = t.state.threadID
+	return t.coordinator.appendPreparedMessage(ctx, id, message)
+}
+func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID string, fn func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error, preparations ...func(context.Context, *conversationPublicationPlan) error) error {
+	return c.turnWriteDeps().Write(ctx, conversationID, fn, preparations...)
+}
+
+var coordinatorHandles = coordinator.Handles
+var errCoordinatorRevision = coordinator.ErrRevision
+var errCoordinatorLinked = coordinator.ErrLinked
+
+func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend runner.AgentBackend, request runner.AgentTurnRequest, state *coordinatorTurnState) (runner.AgentTurnResult, error) {
+	return coordinator.CallBackend(ctx, backend, request, c.stop, state.handleUpdate, func() ([]runner.AgentTool, runner.AgentToolHandler) {
+		toolset := newCoordinatorToolset(c, state)
+		return toolset.tools(), toolset.handle
+	})
+}
+
+var coordinatorOutcome = coordinator.Outcome
+var coordinatorToolSummary = coordinator.ToolSummary
+
+const coordinatorInstructions = coordinator.Instructions
+
+type coordinatorAttachment = coordinator.TextAttachment
+
+var coordinatorSkillsPrompt = coordinator.SkillsPrompt
+var appendCoordinatorData = coordinator.AppendData
+var coordinatorAttachmentBlock = coordinator.AttachmentBlock
+var coordinatorPrompt = coordinator.Prompt
+
+func (c *conversationTurnCoordinator) coordinatorAttachments(ctx context.Context, pending []conversationMessageRecord) ([]coordinatorAttachment, error) {
+	return coordinator.ReadTextAttachments(ctx, pending, c.attachmentContent)
+}
+
+func (c *conversationTurnCoordinator) turnWriteDeps() coordinator.TurnWriteDeps {
+	return coordinator.TurnWriteDeps{
+		Service:     c.service,
+		Now:         func() time.Time { return c.server.config.Clock() },
+		WriteTenant: c.server.writeConversationTenant,
+	}
+}
+
+var coordinatorScreenReadNames = coordinator.ScreenReadNames
+
+var coordinatorScreenTools = coordinator.ScreenTools
+
+var coordinatorScreenRead = coordinator.ScreenRead
+
+var coordinatorReadPermission = coordinator.ReadPermission
+
+func (t *coordinatorToolset) screenRead(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.screenReadDeps().Read(ctx, record, call)
+}
+
+var coordinatorProjectReadScoped = coordinator.ProjectReadScoped
+
+func (s *Service) coordinatorRunnerAttached(ctx context.Context, record conversationRecord, id string) (bool, error) {
+	return coordinator.RunnerAttached(ctx, record, id, currentHubOperator, s.coordinatorRunner)
+}
+
+func (s *Service) coordinatorScreenReport(ctx context.Context, record conversationRecord, credential hubapi.APICredential, call runner.AgentToolCall) (any, error) {
+	return s.screenReportDeps().Report(ctx, record, credential, call)
+}
+
+var coordinatorScreenTarget = coordinator.ScreenTarget
+
+func (t *coordinatorToolset) restrictReadAudience(ctx context.Context, record conversationRecord, credential hubapi.APICredential) error {
+	return t.readAudienceDeps().Restrict(ctx, record, credential)
+}
+
+func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.spritePreviewDeps().Preview(ctx, record, call)
+}
+
+func (s *Service) coordinatorScope(ctx context.Context, project tracker.ProjectID, manage bool) (hubscope.NativeScope, error) {
+	return coordinator.NativeScope(ctx, project, manage)
+}
+
+func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope hubscope.NativeScope, settings spritePoolSettings) error {
+	return s.spriteCommandDeps().Validate(ctx, scope, settings)
+}
+
+func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.spriteCommandDeps().Execute(ctx, action)
+}
+
+var coordinatorSpriteTools = coordinator.SpriteTools
+
+var coordinatorSpriteTool = coordinator.IsSpriteTool
+
+var coordinatorSpriteMutation = coordinator.SpriteMutation
+
+var decodeCoordinatorSpriteArguments = coordinator.DecodeSpriteArguments
+
+type coordinatorSpriteChange = coordinator.SpriteChange
+
+func (s *Service) coordinatorProposalAgent(ctx context.Context, action chat.Action) (string, error) {
+	return s.readCoordinatorProposalAgent(ctx, action)
+}
+
+const coordinatorAgentName = coordinator.AgentName
+
+var coordinatorAgent = coordinator.Agent
+
+type coordinatorSpriteArguments = coordinator.SpriteArguments
+
+func (t *coordinatorToolset) screenReadDeps() coordinator.ScreenReadDeps {
+	s := t.coordinator.server
+	return coordinator.ScreenReadDeps{
+		ActionContext:    t.actionContext,
+		Operator:         currentHubOperator,
+		AuthorizeRecord:  t.coordinator.authorizeRecord,
+		RestrictAudience: t.restrictReadAudience,
+		ReadSlack: func(ctx context.Context, org tracker.OrganizationID) (any, error) {
+			return s.coordinatorSlackIntegration(ctx, org)
+		},
+		ReadBudget: func(ctx context.Context, scope hubscope.NativeScope) (any, error) {
+			return readBillingMonthlySettings(ctx, s.config.TenantRepository, scope)
+		},
+		ReadRunners:      s.coordinatorProjectRunners,
+		AllRunnerGrants:  s.hostedAllRunnerGrants,
+		ReadReport:       s.coordinatorScreenReport,
+		FleetRequirement: hubFleetRequirement,
+		RunnerAttached:   s.coordinatorRunnerAttached,
+		ExecuteOperator:  (hostedOperatorExecutor{service: s}).Execute,
+		ProjectMembers:   coordinatorProjectMembers,
+	}
+}
+
+func (s *Service) screenReportDeps() coordinator.ScreenReportDeps {
+	return coordinator.ScreenReportDeps{
+		Now:            s.config.Clock,
+		FleetPermitted: s.hubFleetReadPermitted,
+		UsageWindow: func(name string, now time.Time) (operatortool.AnalyticsWindow, error) {
+			window, err := usageRangeWindow(name, now)
+			return operatortool.AnalyticsWindow{From: window.From, To: window.To, Bucket: time.Hour}, err
+		},
+		ReadProjectReport: func(ctx context.Context, credential hubapi.APICredential, project string, window operatortool.AnalyticsWindow) (any, bool, error) {
+			return s.readProjectReport(ctx, credential, project, window, reportsFilter{})
+		},
+		ReadDiagnostics: func(ctx context.Context, credential hubapi.APICredential, window operatortool.AnalyticsWindow, project tracker.ProjectID) (any, error) {
+			return s.readDiagnosticsTenant(ctx, credential, window, project)
+		},
+	}
+}
+
+func (t *coordinatorToolset) readAudienceDeps() coordinator.ReadAudienceDeps {
+	return coordinator.ReadAudienceDeps{
+		ReadTenant: t.coordinator.server.readConversationTenant,
+		Write:      t.coordinator.write,
+	}
+}
+
+func (s *Service) spriteCommandDeps() coordinator.SpriteCommandDeps {
+	return coordinator.SpriteCommandDeps{
+		HostedSecrets: s.config.Hosted != nil && s.config.SecretKeys != nil,
+		TokenPresent: func(ctx context.Context, scope hubscope.NativeScope) (bool, error) {
+			status, err := s.readAccessSecretStatus(ctx, scope)
+			return status.Present, err
+		},
+		ReadPool: func(ctx context.Context, scope hubscope.NativeScope) (coordinator.SpritePool, error) {
+			view, err := s.readSpritePool(ctx, scope)
+			if err != nil {
+				return coordinator.SpritePool{}, err
+			}
+			result := coordinator.SpritePool{
+				Settings: view.spritePoolSettings,
+				Status: func(ctx context.Context, scope hubscope.NativeScope, connector string, project tracker.ProjectID) (any, error) {
+					return s.coordinatorSpritePoolStatus(ctx, scope, view, connector, project)
+				},
+			}
+			if len(view.Members) > 0 {
+				last := view.Members[len(view.Members)-1]
+				result.LastBootstrap = &coordinator.SpriteBootstrap{Name: last.Name, State: last.State, BootstrapLog: last.BootstrapLog}
+			}
+			return result, nil
+		},
+		RecordAuthority: s.spritePoolRecordAuthority,
+		Update: func(ctx context.Context, scope hubscope.NativeScope, command tracker.Mutation, change coordinator.SpriteChange, resolve func(sprites.PoolSettings) (sprites.PoolSettings, *string, error)) error {
+			return s.executeSpritePoolSettingsCommand(ctx, scope, command, change, resolve)
+		},
+		RecheckMutation: s.recheckProjectRecordMutation,
+		StartPool:       s.startSpritePoolForQueue,
+	}
+}
+
+func (t *coordinatorToolset) spritePreviewDeps() coordinator.SpritePreviewDeps {
+	s := t.coordinator.server
+	return coordinator.SpritePreviewDeps{ProposalDeps: t.proposalDeps(), Commands: s.spriteCommandDeps(), HostedPath: s.hostedPath}
+}
+
+func (s *Service) readCoordinatorProposalAgent(ctx context.Context, action chat.Action) (agent string, err error) {
+	agent = coordinator.AgentName
+	err = s.readConversationTenant(ctx, tracker.OrganizationID(action.OrganizationID), func(r tenantstore.Reader) error {
+		agent, err = coordinator.ProposalAgent(ctx, r, action)
+		return err
+	})
+	return agent, err
+}
+
+func (t *coordinatorToolset) projectAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, requireConfirmation ...bool) (any, error) {
+	return t.projectActionDeps().Preview(ctx, record, call, requireConfirmation...)
+}
+
+func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, action chat.Action) (any, error) {
+	return coordinator.SubmitAction(ctx, record, call, action, t.proposalDeps().MessageID, t.state.model, t.coordinator.appendPreparedMessage)
+}
+
+func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return s.actionDispatchDeps().Execute(ctx, action)
+}
+
+func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Action) (context.Context, error) {
+	return s.actionAuthorizationDeps().Authorize(ctx, action)
+}
+
+func (t *coordinatorToolset) postActionRefusal(ctx context.Context, name string, failure error) error {
+	return coordinator.PostRefusal(ctx, t.state.conversationID, name, failure, t.coordinator.appendPreparedMessage)
+}
+
+func (t *coordinatorToolset) projectActionDeps() coordinator.ProjectActionDeps {
+	s := t.coordinator.server
+	return coordinator.ProjectActionDeps{
+		ProposalDeps:    t.proposalDeps(),
+		GitHubAvailable: s.config.ReconcileBackend != nil,
+		ReadProject:     s.readProjectRecord,
+		ReadWorkflow:    s.projectRecordWorkflow,
+		PreviewCommand: func(ctx context.Context, call operatortool.Call) (json.RawMessage, error) {
+			return (hubProjectExecutor{s}).command(ctx, call, projectCommandPreview)
+		},
+		ObserveIssue:       s.nativeWorkObservation,
+		ValidateMoveAnswer: s.validateCoordinatorMoveAnswer,
+	}
+}
+
+func (s *Service) actionDispatchDeps() coordinator.ActionDispatchDeps {
+	return coordinator.ActionDispatchDeps{
+		Authorize:          s.authorizeCoordinatorAction,
+		ProposalAgent:      s.coordinatorProposalAgent,
+		WithAgent:          withCoordinatorAgent,
+		CatalogWrite:       coordinatorCatalogWrite,
+		ExecuteCatalog:     s.executeCoordinatorCatalogCall,
+		ExecuteSettings:    s.executeCoordinatorSettingsAction,
+		ExecuteArchive:     s.executeCoordinatorIssueArchive,
+		ExecuteSplit:       s.executeCoordinatorIssueSplit,
+		ExecuteRunner:      s.executeCoordinatorRunnerAction,
+		PromoteSpriteToken: s.executePromoteSpritesToken,
+		ExecuteSprite:      s.executeCoordinatorSpriteAction,
+		ExecuteWorkflow:    s.executeCoordinatorWorkflowAction,
+		ExecuteProject: func(ctx context.Context, call operatortool.Call) (json.RawMessage, error) {
+			return (hubProjectExecutor{s}).command(ctx, call, projectCommandExecute)
+		},
+		StopRun:         s.executeCoordinatorStopRun,
+		CreateIssue:     s.operatorCreateNativeWork,
+		TransitionIssue: s.transitionNativeIssueCommandWithChat,
+		MutateIssue:     s.operatorNativeWork,
+	}
+}
+
+func (s *Service) actionAuthorizationDeps() coordinator.ActionAuthorizationDeps {
+	return coordinator.ActionAuthorizationDeps{
+		SettingsRequirement: coordinatorSettingsRequirement,
+		CatalogWrite:        coordinatorCatalogWrite,
+		CatalogRequirement:  coordinatorCatalogRequirement,
+		Operator:            currentHubOperator,
+		ReadConversation:    s.readPGConversation,
 	}
 }
