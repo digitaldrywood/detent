@@ -161,11 +161,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 					return detentupdate.ErrWorkerCriticalUpdate
 				}
 			}
-			var err error
-			workflow, checker, estimator, err = r.SSHWorkflow(ctx)
-			if err != nil {
-				return err
-			}
+			workflow, checker, estimator = r.WorkerWorkflowSnapshot()
 			if request.Policy.ID != "" && request.Policy.ID != workflow.Config.Policy.ID {
 				return errors.New("worker policy differs from the claimed policy")
 			}
@@ -221,8 +217,8 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	if err != nil {
 		return result, err
 	}
-	boot := sshBootstrap{Local: true, CommitIdentity: r.commitIdentity, Version: runnerpkg.SSHProtocolVersion, Workflow: workflow, Policy: workflow.Config.Policy,
-		ProjectID: r.projectID, Workdir: r.workdir, Home: home, Repository: workspace.RepositoryURL(ctx, r.workdir),
+	boot := sshBootstrap{Local: true, CommitIdentity: r.commitIdentity, Version: runnerpkg.SSHProtocolVersion, Policy: workflow.Config.Policy,
+		ProjectID: r.projectID, Workdir: r.workdir, Home: home,
 		Memory: r.memory, GoBuildSlots: r.goBuildSlots, GoJobSlots: int(r.goJobSlots.Load()), Connection: r.connection,
 		BudgetChecker: checker, BudgetEstimator: estimator, GoTestReceipts: r.GoTestReceiptsEnabled(), Run: runnerpkg.NewSSHRunRequest(request)}
 	processCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -371,6 +367,15 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	if err := ctx.Err(); err != nil {
 		return result, context.Cause(ctx)
 	}
+	commandCtx := r.WorkerCommandContext(ctx, request)
+	if captured == nil {
+		workflow, err = runnerpkg.ResolveSSHWorkflow(commandCtx, workflow)
+		if err != nil {
+			return result, r.hostFailure("local", fmt.Errorf("resolve execution worker workflow: %w", err))
+		}
+	}
+	boot.Workflow = workflow
+	boot.Repository = workspace.RepositoryURL(commandCtx, r.workdir)
 	if request.PrepareRun != nil {
 		closePreparationWorker := func() error {
 			if workerClosed {
