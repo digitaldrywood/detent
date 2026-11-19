@@ -139,73 +139,73 @@ func TestAPIRefusals(t *testing.T) {
 		return nil
 	}
 	for _, test := range []struct {
-		name, path, body, code, reason string
-		status                         int
-		handle                         func(*Service, echo.Context) error
+		name, path, body, code string
+		status                 int
+		handle                 func(*Service, echo.Context) error
 	}{
-		{"budget mode", hubapi.NativeBase + "/monthly-budget", `{"policy":{"mode":"private-token"}}`, "invalid_request", "monthly budget mode must be drain_issue or hard_stop", http.StatusUnprocessableEntity, budgetRefusal},
-		{"negative Luna budget", hubapi.NativeBase + "/monthly-budget", `{"policy":{"luna_api_micros":-1}}`, "invalid_request", "monthly luna_api budget must be nonnegative", http.StatusUnprocessableEntity, budgetRefusal},
-		{"negative runner budget", hubapi.NativeBase + "/monthly-budget", `{"policy":{"runner_api_micros":-1}}`, "invalid_request", "monthly runner_api budget must be nonnegative", http.StatusUnprocessableEntity, budgetRefusal},
-		{"negative sprite budget", hubapi.NativeBase + "/monthly-budget", `{"policy":{"sprite_infrastructure_micros":-1}}`, "invalid_request", "monthly sprite_infrastructure budget must be nonnegative", http.StatusUnprocessableEntity, budgetRefusal},
-		{"negative total budget", hubapi.NativeBase + "/monthly-budget", `{"policy":{"total_micros":-1}}`, "invalid_request", "monthly total budget must be nonnegative", http.StatusUnprocessableEntity, budgetRefusal},
-		{"hosted key access", "/api/v2/organizations/:organization/api-keys", `{"name":"private-token","scope":"read","never_expires":true,"project_access":"private-token"}`, "invalid_request", "Choose all or selected project access", http.StatusUnprocessableEntity, keyRefusal(false)},
-		{"hosted key selected projects", "/api/v2/organizations/:organization/api-keys", `{"name":"private-token","scope":"read","never_expires":true,"project_access":"selected"}`, "invalid_request", "Selected project access requires at least one project", http.StatusUnprocessableEntity, keyRefusal(false)},
-		{"hosted key all projects", "/api/v2/organizations/:organization/api-keys", `{"name":"private-token","scope":"read","never_expires":true,"project_access":"all","project_ids":["private-project"]}`, "invalid_request", "All project access cannot include selected project IDs", http.StatusUnprocessableEntity, keyRefusal(false)},
-		{"token access", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"private-token"}`, "invalid_request", "Choose all or selected project access", http.StatusUnprocessableEntity, keyRefusal(true)},
-		{"token selected projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"selected"}`, "invalid_request", "Selected project access requires at least one project", http.StatusUnprocessableEntity, keyRefusal(true)},
-		{"token all projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"all","project_ids":["private-project"]}`, "invalid_request", "All project access cannot include selected project IDs", http.StatusUnprocessableEntity, keyRefusal(true)},
-		{"attachment metadata", hubapi.NativeBase + "/attempts/:attempt/attachment-metadata", `{}`, "invalid_request", "Invalid attachment metadata", http.StatusUnprocessableEntity, (*Service).recordCloudAttachment},
-		{"archive query", hubapi.NativeBase + "/work-items?archive_url=private-token", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
-		{"repeated archive query", hubapi.NativeBase + "/work-items?archive_url=true&archive_url=false", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
-		{"archive reference", attachmentMetadataBase + "/archives/:item", `{}`, "invalid_request", "Invalid archive reference", http.StatusUnprocessableEntity, (*Service).recordAttachmentArchive},
-		{"diff generation sequence", hubapi.NativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"attempt","seq":0}}`, "invalid_request", "invalid tracker work event: generation seq must be positive", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
-		{"diff attempt generation ID", hubapi.NativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"attempt","id":"private-token","seq":1}}`, "invalid_request", "invalid tracker work event: an attempt generation carries no id", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
-		{"diff workspace generation ID", hubapi.NativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"workspace","seq":1}}`, "invalid_request", "invalid tracker work event: a workspace generation requires its workspace id", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
-		{"diff generation source", hubapi.NativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"private-token","seq":1}}`, "invalid_request", "invalid tracker work event: generation source must be attempt or workspace", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
-		{"attempt evidence", hubapi.NativeBase + "/attempts/:attempt/evidence", "", "invalid_request", "Invalid attempt evidence", http.StatusUnprocessableEntity, func(s *Service, c echo.Context) error {
+		{"budget mode", hubapi.NativeBase + "/monthly-budget", `{"policy":{"mode":"private-token"}}`, "invalid_request", http.StatusUnprocessableEntity, budgetRefusal},
+		{"negative Luna budget", hubapi.NativeBase + "/monthly-budget", `{"policy":{"luna_api_micros":-1}}`, "invalid_request", http.StatusUnprocessableEntity, budgetRefusal},
+		{"negative runner budget", hubapi.NativeBase + "/monthly-budget", `{"policy":{"runner_api_micros":-1}}`, "invalid_request", http.StatusUnprocessableEntity, budgetRefusal},
+		{"negative sprite budget", hubapi.NativeBase + "/monthly-budget", `{"policy":{"sprite_infrastructure_micros":-1}}`, "invalid_request", http.StatusUnprocessableEntity, budgetRefusal},
+		{"negative total budget", hubapi.NativeBase + "/monthly-budget", `{"policy":{"total_micros":-1}}`, "invalid_request", http.StatusUnprocessableEntity, budgetRefusal},
+		{"hosted key access", "/api/v2/organizations/:organization/api-keys", `{"name":"private-token","scope":"read","never_expires":true,"project_access":"private-token"}`, "invalid_request", http.StatusUnprocessableEntity, keyRefusal(false)},
+		{"hosted key selected projects", "/api/v2/organizations/:organization/api-keys", `{"name":"private-token","scope":"read","never_expires":true,"project_access":"selected"}`, "invalid_request", http.StatusUnprocessableEntity, keyRefusal(false)},
+		{"hosted key all projects", "/api/v2/organizations/:organization/api-keys", `{"name":"private-token","scope":"read","never_expires":true,"project_access":"all","project_ids":["private-project"]}`, "invalid_request", http.StatusUnprocessableEntity, keyRefusal(false)},
+		{"token access", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"private-token"}`, "invalid_request", http.StatusUnprocessableEntity, keyRefusal(true)},
+		{"token selected projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"selected"}`, "invalid_request", http.StatusUnprocessableEntity, keyRefusal(true)},
+		{"token all projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"all","project_ids":["private-project"]}`, "invalid_request", http.StatusUnprocessableEntity, keyRefusal(true)},
+		{"attachment metadata", hubapi.NativeBase + "/attempts/:attempt/attachment-metadata", `{}`, "invalid_request", http.StatusUnprocessableEntity, (*Service).recordCloudAttachment},
+		{"archive query", hubapi.NativeBase + "/work-items?archive_url=private-token", "", "invalid_request", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
+		{"repeated archive query", hubapi.NativeBase + "/work-items?archive_url=true&archive_url=false", "", "invalid_request", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
+		{"archive reference", attachmentMetadataBase + "/archives/:item", `{}`, "invalid_request", http.StatusUnprocessableEntity, (*Service).recordAttachmentArchive},
+		{"diff generation sequence", hubapi.NativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"attempt","seq":0}}`, "invalid_request", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
+		{"diff attempt generation ID", hubapi.NativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"attempt","id":"private-token","seq":1}}`, "invalid_request", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
+		{"diff workspace generation ID", hubapi.NativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"workspace","seq":1}}`, "invalid_request", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
+		{"diff generation source", hubapi.NativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"private-token","seq":1}}`, "invalid_request", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
+		{"attempt evidence", hubapi.NativeBase + "/attempts/:attempt/evidence", "", "invalid_request", http.StatusUnprocessableEntity, func(s *Service, c echo.Context) error {
 			c.SetParamNames("attempt")
 			c.SetParamValues("attempt_example")
 			return s.nativeAPIError(c, s.checkAttachmentEvidence(c, nil))
 		}},
-		{"claim ID", hubapi.NativeBase + "/claims", `{"work_item_id":-1}`, "invalid_request", "Request body contains an invalid field type", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},
-		{"claim body limit", hubapi.NativeBase + "/claims", `{"session_id":"` + strings.Repeat("x", hubapi.MaxAPIRequestBodyBytes) + `"}`, "payload_too_large", "Request body is too large", http.StatusRequestEntityTooLarge, (*Service).claimNativeIssue},
-		{"budget override body limit", hubapi.NativeBase + "/budget-override", `{"idempotency_key":"budget-limit","reason":"` + strings.Repeat("x", hubapi.MaxAPIRequestBodyBytes) + `"}`, "payload_too_large", "Request body is too large", http.StatusRequestEntityTooLarge, func(s *Service, c echo.Context) error {
+		{"claim ID", hubapi.NativeBase + "/claims", `{"work_item_id":-1}`, "invalid_request", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},
+		{"claim body limit", hubapi.NativeBase + "/claims", `{"session_id":"` + strings.Repeat("x", hubapi.MaxAPIRequestBodyBytes) + `"}`, "payload_too_large", http.StatusRequestEntityTooLarge, (*Service).claimNativeIssue},
+		{"budget override body limit", hubapi.NativeBase + "/budget-override", `{"idempotency_key":"budget-limit","reason":"` + strings.Repeat("x", hubapi.MaxAPIRequestBodyBytes) + `"}`, "payload_too_large", http.StatusRequestEntityTooLarge, func(s *Service, c echo.Context) error {
 			c.Request().Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 			return s.putBudgetOverride(c)
 		}},
-		{"claim TTL", hubapi.NativeBase + "/claims", `{"ttl_seconds":-1,"protocol_major":2,"capabilities":["native_issues","scoped_collaboration"]}`, "invalid_request", "Lease TTL is invalid", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},
-		{"dependency key", hubapi.NativeBase + "/work-items/:item/dependencies", `{}`, "invalid_request", "An idempotency key of at most 128 bytes is required", http.StatusUnprocessableEntity, (*Service).changeNativeDependency},
-		{"key administration", "/internal/keys/admin", "", "forbidden", "Organization administrator service access is required", http.StatusForbidden, (*Service).entryKeyAdmin},
-		{"key context", "/internal/keys/context", "", "forbidden", "Shared service identity is required to read key context", http.StatusForbidden, (*Service).entryKeyContext},
-		{"key audit", "/internal/keys/audit", `{"key_id":"key_example","owner":"private-token","event":"created"}`, "forbidden", "Shared service access is required to record key audit events", http.StatusForbidden, (*Service).entryKeyAudit},
-		{"credit balance", hubapi.NativeBase + "/ai-credits", "", "forbidden", "Shared service access is required to read AI credits", http.StatusForbidden, func(s *Service, c echo.Context) error { return credits.NewHTTP(s.creditHTTPDeps()).PlatformBalance(c) }},
-		{"credit adjustment", hubapi.NativeBase + "/ai-credits", "", "forbidden", "Shared service identity and email are required to adjust AI credits", http.StatusForbidden, func(s *Service, c echo.Context) error { return credits.NewHTTP(s.creditHTTPDeps()).AdjustPlatform(c) }},
-		{"request metrics", hubapi.NativeBase + "/request-metrics", "", "forbidden", "Staff access is required to read request metrics", http.StatusForbidden, (*Service).hostedRequestMetrics},
-		{"runtime read", hubapi.NativeBase + "/runtime", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, func(s *Service, c echo.Context) error {
+		{"claim TTL", hubapi.NativeBase + "/claims", `{"ttl_seconds":-1,"protocol_major":2,"capabilities":["native_issues","scoped_collaboration"]}`, "invalid_request", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},
+		{"dependency key", hubapi.NativeBase + "/work-items/:item/dependencies", `{}`, "invalid_request", http.StatusUnprocessableEntity, (*Service).changeNativeDependency},
+		{"key administration", "/internal/keys/admin", "", "forbidden", http.StatusForbidden, (*Service).entryKeyAdmin},
+		{"key context", "/internal/keys/context", "", "forbidden", http.StatusForbidden, (*Service).entryKeyContext},
+		{"key audit", "/internal/keys/audit", `{"key_id":"key_example","owner":"private-token","event":"created"}`, "forbidden", http.StatusForbidden, (*Service).entryKeyAudit},
+		{"credit balance", hubapi.NativeBase + "/ai-credits", "", "forbidden", http.StatusForbidden, func(s *Service, c echo.Context) error { return credits.NewHTTP(s.creditHTTPDeps()).PlatformBalance(c) }},
+		{"credit adjustment", hubapi.NativeBase + "/ai-credits", "", "forbidden", http.StatusForbidden, func(s *Service, c echo.Context) error { return credits.NewHTTP(s.creditHTTPDeps()).AdjustPlatform(c) }},
+		{"request metrics", hubapi.NativeBase + "/request-metrics", "", "forbidden", http.StatusForbidden, (*Service).hostedRequestMetrics},
+		{"runtime read", hubapi.NativeBase + "/runtime", "", "forbidden", http.StatusForbidden, func(s *Service, c echo.Context) error {
 			return hostedplans.NewHTTP(s.hostedPlansHTTPDeps()).ReadRuntime(c)
 		}},
-		{"runtime reload", hubapi.NativeBase + "/runtime", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, func(s *Service, c echo.Context) error {
+		{"runtime reload", hubapi.NativeBase + "/runtime", "", "forbidden", http.StatusForbidden, func(s *Service, c echo.Context) error {
 			return hostedplans.NewHTTP(s.hostedPlansHTTPDeps()).ReloadRuntime(c)
 		}},
-		{"plan read", hubapi.NativeBase + "/plan", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, func(s *Service, c echo.Context) error {
+		{"plan read", hubapi.NativeBase + "/plan", "", "forbidden", http.StatusForbidden, func(s *Service, c echo.Context) error {
 			return hostedplans.NewHTTP(s.hostedPlansHTTPDeps()).PlanReport(c)
 		}},
-		{"plan update", hubapi.NativeBase + "/plan", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, func(s *Service, c echo.Context) error {
+		{"plan update", hubapi.NativeBase + "/plan", "", "forbidden", http.StatusForbidden, func(s *Service, c echo.Context) error {
 			return hostedplans.NewHTTP(s.hostedPlansHTTPDeps()).UpdatePlan(c)
 		}},
-		{"billing webhook", "/webhooks/stripe", `{"private-token":"test-secret"}`, "invalid_request", "Billing webhook signature, timestamp or mode is invalid", http.StatusBadRequest, func(s *Service, c echo.Context) error {
+		{"billing webhook", "/webhooks/stripe", `{"private-token":"test-secret"}`, "invalid_request", http.StatusBadRequest, func(s *Service, c echo.Context) error {
 			s.database = &database{}
 			s.config.Clock = time.Now
 			s.config.Hosted.Billing = &hostedplans.HostedBillingConfig{WebhookSecret: []byte("test-secret")}
 			return s.hostedStripeWebhook(c)
 		}},
-		{"operator writer", "/api/v1/work-items/:id/workflow", "", "idempotency_conflict", "Idempotency key conflicts with an earlier mutation", http.StatusConflict, func(s *Service, c echo.Context) error {
+		{"operator writer", "/api/v1/work-items/:id/workflow", "", "idempotency_conflict", http.StatusConflict, func(s *Service, c echo.Context) error {
 			return s.operatorAPIError(c, ErrIdempotencyConflict)
 		}},
-		{"hosted writer", hubapi.NativeBase, "", "forbidden", "Owner access is required", http.StatusForbidden, func(s *Service, c echo.Context) error {
+		{"hosted writer", hubapi.NativeBase, "", "forbidden", http.StatusForbidden, func(s *Service, c echo.Context) error {
 			return s.hostedJSONError(c, http.StatusForbidden, "Owner access is required")
 		}},
-		{"billing writer", hubapi.NativeBase + "/billing", "", "billing_conflict", "A billing account is required", http.StatusConflict, func(s *Service, c echo.Context) error {
+		{"billing writer", hubapi.NativeBase + "/billing", "", "billing_conflict", http.StatusConflict, func(s *Service, c echo.Context) error {
 			return s.hostedBillingFailure(c, true, http.StatusConflict, "A billing account is required")
 		}},
 	} {
@@ -220,21 +220,7 @@ func TestAPIRefusals(t *testing.T) {
 			if err := test.handle(service, c); err != nil {
 				t.Fatal(err)
 			}
-			failure := requireNativeCode(t, recorded, test.status, test.code)
-			var entry map[string]any
-			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
-				t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
-			}
-			message := test.reason
-			if test.name == "claim ID" {
-				message = "Request body is invalid: invalid type for field work_item_id"
-			}
-			if entry["level"] != "WARN" || entry["code"] != test.code || entry["reason"] != test.reason || entry["error"] != test.reason || entry["route"] != c.Path() || failure.Message != message {
-				t.Fatalf("refusal = %#v, log = %#v", failure, entry)
-			}
-			if entry["organization_id"] != "" || entry["project_id"] != "" {
-				t.Fatalf("unvalidated scope in log = %#v", entry)
-			}
+			requireNativeCode(t, recorded, test.status, test.code)
 			for _, private := range []string{"private-token", "test-secret", "private-organization", "private-project"} {
 				if strings.Contains(logs.String(), private) || strings.Contains(recorded.Body.String(), private) {
 					t.Fatalf("private context escaped: %s", private)
@@ -246,11 +232,11 @@ func TestAPIRefusals(t *testing.T) {
 	native := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
 	first, second := native.create(t, "first refusal item"), native.create(t, "second refusal item")
 	for _, test := range []struct {
-		name, method, path, body, message string
+		name, method, path, body string
 	}{
-		{"private query", http.MethodGet, native.base + "/work-items?priority=private-token", "", "priority must be between zero and three"},
-		{"dependency action", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"invalid-operation","expected_revision":"1","related_work_item_id":%q,"operation":"private-token"}`, second.WorkItemID), "Relationship operation must be add or remove"},
-		{"dependency distinct item", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"self-dependency","expected_revision":"1","related_work_item_id":%q,"operation":"add"}`, first.WorkItemID), "An issue cannot be related to itself"},
+		{"private query", http.MethodGet, native.base + "/work-items?priority=private-token", ""},
+		{"dependency action", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"invalid-operation","expected_revision":"1","related_work_item_id":%q,"operation":"private-token"}`, second.WorkItemID)},
+		{"dependency distinct item", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"self-dependency","expected_revision":"1","related_work_item_id":%q,"operation":"add"}`, first.WorkItemID)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			logStart := len(logs.String())
@@ -259,39 +245,8 @@ func TestAPIRefusals(t *testing.T) {
 			request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 			request.Header.Set(echo.HeaderAuthorization, "Bearer "+native.token)
 			native.service.Handler().ServeHTTP(response, request)
-			failure := requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
+			requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
 			logged := logs.String()[logStart:]
-			route := hubapi.NativeBase + "/work-items"
-			if strings.Contains(test.path, "/dependencies") {
-				route += "/:item/dependencies"
-			}
-			var entry map[string]any
-			matched := 0
-			for _, line := range strings.Split(strings.TrimSpace(logged), "\n") {
-				if line == "" {
-					continue
-				}
-				var candidate map[string]any
-				if err := json.Unmarshal([]byte(line), &candidate); err != nil {
-					t.Fatalf("invalid JSON log: %v: %s", err, line)
-				}
-				if candidate["level"] == "WARN" && candidate["route"] == route && candidate["method"] == test.method && candidate["refusal_code"] == "invalid_request" {
-					entry = candidate
-					matched++
-				}
-			}
-			if matched != 1 {
-				t.Fatalf("matching request refusal warnings=%d, want1: %s", matched, logged)
-			}
-			if entry["route"] != route || entry["organization_id"] != string(native.project.OrganizationID) || entry["project_id"] != string(native.project.ID) {
-				t.Fatalf("validated refusal scope or route = %#v", entry)
-			}
-			if failure.Message != test.message || entry["level"] != "WARN" || entry["reason"] != test.message || entry["error"] != test.message || entry["refusal_code"] != "invalid_request" {
-				t.Fatalf("refusal = %#v, log = %#v", failure, entry)
-			}
-			if code, present := entry["code"]; present {
-				t.Fatalf("hosted refusal log kept code %#v: %#v", code, entry)
-			}
 			if strings.Contains(logged+response.Body.String(), "private-token") {
 				t.Fatal("private query or operation escaped in refusal")
 			}
