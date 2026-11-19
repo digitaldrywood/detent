@@ -344,7 +344,9 @@ func (b *AgentBackend) ListModels(ctx context.Context, process runner.AgentProce
 }
 
 func (b *AgentBackend) DefaultModel(ctx context.Context, process runner.AgentProcessRequest) (string, error) {
-	return b.client.DefaultModel(withAgentProcess(ctx, process), process.Workspace)
+	launch, finish := process.OwnProviderLaunch(ctx)
+	model, err := b.client.DefaultModel(withAgentProcess(launch, process), process.Workspace)
+	return model, finish(err)
 }
 
 func withAgentProcess(ctx context.Context, process runner.AgentProcessRequest) context.Context {
@@ -496,7 +498,9 @@ func creditsBucketFromCodex(credits *CreditsSnapshot) *telemetry.RateLimitBucket
 }
 
 func (b *AgentBackend) BillingBasis(ctx context.Context, process runner.AgentProcessRequest) (string, error) {
-	account, err := b.client.Account(withAgentProcess(ctx, process))
+	launch, finish := process.OwnProviderLaunch(ctx)
+	account, err := b.client.Account(withAgentProcess(launch, process))
+	err = finish(err)
 	if err != nil {
 		return "unknown", err
 	}

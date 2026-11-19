@@ -8,11 +8,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestStartAuthorizedWaitsForAcknowledgement(t *testing.T) {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		t.Setenv("PATH", t.TempDir())
+	}
 	for _, deny := range []bool{false, true} {
 		name := "acknowledged"
 		if deny {

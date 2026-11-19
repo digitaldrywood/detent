@@ -28,7 +28,7 @@ func newGitWorktree(t *testing.T) (*workspacerunner.GitWorktree, *workspace.Loca
 		t.Fatalf("NewLocalGit() error = %v", err)
 	}
 	worktrees := &workspacerunner.GitWorktree{
-		Backend: backend, ProjectID: "dogfood",
+		Backend: backend, ProjectID: "dogfood", NativeScope: workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_1"},
 		Resolve: func(_ context.Context, workItemID string) (string, error) {
 			if workItemID != "wi_0c1e9fe3" {
 				return "", fmt.Errorf("unknown work item %s", workItemID)
@@ -82,7 +82,8 @@ func TestGitWorktreePrepareRelease(t *testing.T) {
 			var attempt workspace.Info
 			if tt.worktree == workspacesession.WorktreeRetained {
 				var err error
-				attempt, err = backend.Create(t.Context(), workspace.Issue{ProjectID: "dogfood", ID: "wi_0c1e9fe3", Identifier: attemptIdentifier})
+				checkout.AttemptID = "attempt_11111111111111111111111111111111"
+				attempt, err = backend.Create(t.Context(), workspace.Issue{AttemptWorkspace: workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_1", Attempt: checkout.AttemptID}, ProjectID: "dogfood", ID: "wi_0c1e9fe3", Identifier: attemptIdentifier})
 				if err != nil {
 					t.Fatalf("create attempt worktree: %v", err)
 				}
@@ -380,5 +381,32 @@ func TestGitWorktreeHoldsItsWorktreeAgainstResidualSweeps(t *testing.T) {
 		if _, statErr := os.Stat(path); (statErr == nil) != tt.wantPresent {
 			t.Fatalf("%s: worktree present = %t, want %t", tt.name, statErr == nil, tt.wantPresent)
 		}
+	}
+}
+
+func TestIndependentRetainedAttemptSelection(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprint("legacy=", legacy), func(t *testing.T) {
+			worktrees, backend, _, _ := newGitWorktree(t)
+			issue := workspace.Issue{ProjectID: "dogfood", ID: "wi_0c1e9fe3", Identifier: attemptIdentifier}
+			if legacy {
+				if _, err := backend.Create(t.Context(), issue); err != nil {
+					t.Fatal(err)
+				}
+			}
+			issue.AttemptWorkspace = workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_1", Attempt: "attempt_11111111111111111111111111111111"}
+			want, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkout := hubclient.WorkspaceCheckout{WorkItemID: issue.ID, AttemptID: issue.AttemptWorkspace.Attempt, Worktree: workspacesession.WorktreeRetained}
+			got, err := worktrees.Prepare(t.Context(), "ws_example", checkout)
+			if err == nil {
+				defer worktrees.Release(t.Context(), got, checkout)
+			}
+			if err != nil || got != want.Path {
+				t.Errorf("retained attempt got=%s want=%s error=%v", filepath.Base(got), filepath.Base(want.Path), err)
+			}
+		})
 	}
 }

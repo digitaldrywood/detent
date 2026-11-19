@@ -32,8 +32,12 @@ type hostValidationProcess struct {
 }
 
 func (r *Runner) withValidationProcessOwner(ctx context.Context, issue connector.Issue, attemptID int64) context.Context {
-	native := workspace.AttemptWorkspaceFromContext(ctx).Key() != ""
-	owner, ok := r.store.(workerRegistrationStore)
+	return withValidationProcessOwner(ctx, r.store, r.projectID, issue, attemptID)
+}
+
+func withValidationProcessOwner(ctx context.Context, sessions SessionStore, project string, issue connector.Issue, attemptID int64) context.Context {
+	native := workspace.AttemptWorkspaceFromContext(ctx) != (workspace.AttemptWorkspace{})
+	owner, ok := sessions.(workerRegistrationStore)
 	if !native && (!ok || toolcache.ManagedBuildFromContext(ctx) == "") {
 		return ctx
 	}
@@ -49,7 +53,7 @@ func (r *Runner) withValidationProcessOwner(ctx context.Context, issue connector
 			identifier = observedIssue.Identifier
 		}
 		sessionID, err := owner.StartSession(ctx, store.SessionStart{
-			ProjectID: r.projectID, IssueID: issueID, Identifier: identifier, IssueURL: issue.URL,
+			ProjectID: project, IssueID: issueID, Identifier: identifier, IssueURL: issue.URL,
 			WorkAttemptID: attemptID, StartedAt: time.Now().UTC(), AgentBackendKind: "host", AgentRole: store.WorkerProcessRoleHostValidation,
 		})
 		if err != nil {
@@ -132,7 +136,7 @@ func (p AgentProcessRequest) OwnProviderLaunch(ctx context.Context) (context.Con
 	}
 	owner := workspace.ValidationProcessOwnerFromContext(ctx)
 	root := p.Workspace
-	if root == "" && p.TempDir != "" {
+	if (root == "" || root == p.TempDir) && p.TempDir != "" {
 		root = filepath.Dir(p.TempDir)
 	}
 	var session workspace.ValidationProcess
@@ -144,6 +148,9 @@ func (p AgentProcessRequest) OwnProviderLaunch(ctx context.Context) (context.Con
 		session, err = owner(ctx, workspace.Info{Path: root}, workspace.Issue{}, p.TempDir)
 		if err != nil {
 			return err
+		}
+		if session == nil {
+			return ErrExecutionAuthorityUnavailable
 		}
 		return session.Started(ctx, identity)
 	})

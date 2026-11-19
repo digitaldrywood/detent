@@ -13,6 +13,8 @@ import (
 	"unicode/utf8"
 
 	_ "golang.org/x/image/webp"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 type GitCapture struct {
@@ -38,7 +40,7 @@ func gitRead(ctx context.Context, directory string, limit int, args ...string) (
 	command.Dir = directory
 	out := &boundedBuffer{limit: limit}
 	command.Stdout = out
-	if err := command.Run(); err != nil {
+	if err := procgroup.RunCommand(ctx, command); err != nil {
 		return nil, errors.Join(ErrInvalid, err)
 	}
 	return out.Bytes(), nil

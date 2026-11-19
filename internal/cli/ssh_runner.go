@@ -351,6 +351,11 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 	if operation == "run.progress" && (!boot.Local || boot.Progress == nil || !boot.Run.AttemptWorker || boot.Run.Request.AttemptWorkspace.Key() == "") {
 		return nil, runnerpkg.ErrExecutionAuthorityUnavailable
 	}
+	var sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}
+	if boot.Local {
+		sessions = runnerpkg.LocalSessionStore{SSHSessionStore: runnerpkg.SSHSessionStore{Peer: peer}}
+	}
+	ctx = boot.Run.Sources.BindWorkerProcesses(ctx, boot.ProjectID, sessions, boot.Run.Request)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -406,10 +411,7 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 		defer closeProxy()
 		connection.Address = address
 	}
-	var sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}
-	if boot.Local {
-		sessions = runnerpkg.LocalSessionStore{SSHSessionStore: runnerpkg.SSHSessionStore{Peer: peer}}
-	}
+
 	var isolationPolicies []func() (isolation.Policy, error)
 	if claimPolicy := boot.Run.IsolationPolicy; claimPolicy != nil {
 		isolationPolicies = append(isolationPolicies, func() (isolation.Policy, error) {

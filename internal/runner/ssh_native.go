@@ -18,8 +18,10 @@ import (
 // SSHExecutionSources exposes only the checkout bound by the remote runner.
 // Upload credentials, journals, producer tuples and lease ownership stay central.
 type SSHExecutionSources struct {
+	bindProcesses       func(context.Context) context.Context
 	reasonGenerator     DependencyReasonGenerator
 	landingAudit        func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error)
+	landingRebase       func(context.Context, workspace.Issue, string, string) (sshLandingOutcome, error)
 	landingBatch        func(context.Context, []workspace.LandRequest) []sshLandingOutcome
 	mu                  sync.Mutex
 	diff                AttemptDiffSource
@@ -37,13 +39,35 @@ type sshDiff struct {
 	Present bool
 }
 
+func (s *SSHExecutionSources) BindWorkerProcesses(ctx context.Context, project string, sessions SessionStore, req RunRequest) context.Context {
+	if req.AttemptWorkspace == (workspace.AttemptWorkspace{}) {
+		return ctx
+	}
+	attempt := req.AttemptWorkspace
+	ctx = withValidationProcessOwner(workspace.WithAttemptWorkspace(ctx, attempt), sessions, project, req.Issue, req.WorkAttemptID)
+	owner := workspace.ValidationProcessOwnerFromContext(ctx)
+	if s != nil {
+		s.mu.Lock()
+		s.bindProcesses = func(call context.Context) context.Context {
+			return workspace.WithValidationProcessOwner(workspace.WithAttemptWorkspace(call, attempt), owner)
+		}
+		s.mu.Unlock()
+	}
+	return ctx
+}
+
 func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 	s.mu.Lock()
 	diff, directory, evidence, integration, changeSource := s.diff, s.directory, s.evidence, s.integration, s.changeSource
 	publication, publicationIdentity, publicationPeer := s.publication, s.publicationIdentity, s.publicationPeer
+	landingRebase := s.landingRebase
 	landingBatch, landingAudit := s.landingBatch, s.landingAudit
 	reasonGenerator := s.reasonGenerator
+	bind := s.bindProcesses
 	s.mu.Unlock()
+	if bind != nil {
+		ctx = bind(ctx)
+	}
 	switch method {
 	case "source.dependency_reason":
 		if reasonGenerator == nil {
@@ -70,6 +94,11 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 			}
 			return publication(ctx, version, opts)
 		}, "", args)
+	case "source.landing_rebase":
+		if landingRebase == nil {
+			return nil, errors.New("batch validation owner unavailable")
+		}
+		return invokeSSHMethod(ctx, landingRebase, "", args)
 	case "source.landing_audit":
 		return invokeSSHMethod(ctx, landingAudit, "", args)
 	case "source.landing_batch":

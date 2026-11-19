@@ -32,7 +32,7 @@ func (b *AgentBackend) BillingBasis(ctx context.Context, process runner.AgentPro
 	procgroup.Configure(ctx, cmd)
 	output := newTailBuffer(16 * 1024)
 	cmd.Stdout = output
-	if err := cmd.Run(); err != nil {
+	if err := procgroup.RunCommand(ctx, cmd); err != nil {
 		return "unknown", errors.New("claude authentication observation unavailable")
 	}
 	var status struct {

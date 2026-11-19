@@ -12,6 +12,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -24,7 +25,7 @@ func githubRepositoryCommand(ctx context.Context, args ...string) ([]byte, error
 	var output bytes.Buffer
 	cmd.Stdout = &repositoryOutput{buffer: &output, remaining: 2 << 20}
 	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
+	if err := procgroup.RunCommand(ctx, cmd); err != nil {
 		return nil, errors.New("GitHub CLI request unavailable")
 	}
 	return output.Bytes(), nil

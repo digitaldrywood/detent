@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 const recoveryEvidenceLimit = 20
@@ -606,7 +608,7 @@ func gitDiffFingerprint(ctx context.Context, workspacePath string, env []string,
 	cmd.Stdout = hash
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := procgroup.RunCommand(ctx, cmd); err != nil {
 		exitCode := -1
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

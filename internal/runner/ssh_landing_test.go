@@ -21,6 +21,14 @@ func (land sshLandingTestLander) LandChanges(ctx context.Context, requests []wor
 	return land(ctx, requests)
 }
 
+func (land sshLandingTestLander) ValidateBatchRebase(ctx context.Context, request workspace.LandRequest, staging workspace.Issue, head, base string) (workspace.LandResult, error) {
+	attempt := workspace.AttemptWorkspaceFromContext(ctx)
+	if attempt.Key() == "" || attempt != request.Issue.AttemptWorkspace || workspace.ValidationProcessOwnerFromContext(ctx) == nil || head != request.Options.HeadSHA || staging.AttemptWorkspace.Key() == "" || base != "integrated-base" {
+		return workspace.LandResult{}, errors.New("rebase validation lost its member or integrated head")
+	}
+	return workspace.LandResult{Packages: []string{attempt.Key()}}, nil
+}
+
 func TestSSHNativeLandingBatch(t *testing.T) {
 	t.Parallel()
 	batch := workspace.NewLandingBatch(t.Context())
@@ -37,6 +45,14 @@ func TestSSHNativeLandingBatch(t *testing.T) {
 				continue
 			}
 			validated.Add(1)
+			if request.CheckRebase == nil {
+				t.Error("missing member validation")
+				continue
+			}
+			checked, err := request.CheckRebase(ctx, requests[0].Issue, request.Options.HeadSHA, "integrated-base")
+			if err != nil || len(checked.Packages) != 1 || checked.Packages[0] != request.Issue.AttemptWorkspace.Key() {
+				t.Errorf("rebase validation for %s: %+v %v", request.Issue.AttemptWorkspace.Attempt, checked, err)
+			}
 			if request.Options.SecurityAuditRequired {
 				audit, err := request.Options.SecurityAudit(ctx, workspace.FileDiffs{BaseSHA: "integrated-base", HeadSHA: request.Options.HeadSHA})
 				if err != nil || audit == nil || audit.Run.BaseSHA != "integrated-base" || audit.Run.HeadSHA != request.Options.HeadSHA {

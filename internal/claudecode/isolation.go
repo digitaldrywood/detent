@@ -66,7 +66,8 @@ func VerifySandboxCommand(ctx context.Context, cmd *exec.Cmd, settings map[strin
 		return errors.Join(err, input.Close())
 	}
 	cmd.Stderr = io.Discard
-	if err := cmd.Start(); err != nil {
+	wait, err := procgroup.StartCommand(ctx, cmd)
+	if err != nil {
 		return errors.Join(err, input.Close())
 	}
 	groupID := procgroup.GroupID(cmd)
@@ -75,7 +76,7 @@ func VerifySandboxCommand(ctx context.Context, cmd *exec.Cmd, settings map[strin
 	if err != nil {
 		err = errors.Join(err, procgroup.TerminateTree(cmd, groupID))
 	}
-	waitErr := cmd.Wait()
+	waitErr := wait()
 	return errors.Join(err, waitErr, procgroup.Cleanup(groupID))
 }
 

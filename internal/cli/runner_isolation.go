@@ -229,7 +229,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		return &backendCheckError{Check: command + " " + strings.Join(args, " "), Err: err}
 	}
 	host := exec.CommandContext(ctx, "/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)(deny file-write*)", "/usr/bin/true")
-	if err := host.Run(); err != nil {
+	if err := procgroup.RunCommand(ctx, host); err != nil {
 		return &backendCheckError{Check: strings.Join(host.Args, " "), Err: err}
 	}
 	return nil
@@ -275,11 +275,12 @@ func runBackendProbe(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 	var output boundedProbeOutput
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	if err := procgroup.Start(cmd); err != nil {
+	wait, err := procgroup.StartCommand(ctx, cmd)
+	if err != nil {
 		return nil, err
 	}
 	groupID := procgroup.GroupID(cmd)
-	err := cmd.Wait()
+	err = wait()
 	err = errors.Join(err, ctx.Err(), procgroup.Cleanup(groupID))
 	if err != nil {
 		err = fmt.Errorf("%w: %s", err, output.data)

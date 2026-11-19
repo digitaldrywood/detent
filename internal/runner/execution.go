@@ -906,9 +906,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-		_, err := r.PreserveWorkspace(preserveCtx, req.Issue)
+		_, err := preserveWorkspace(preserveCtx, backend, issue)
 		cancel()
-		if err != nil && !errors.Is(err, workspace.ErrMissingWorkspace) {
+		if err != nil && (issue.AttemptWorkspace.Key() != "" || !errors.Is(err, workspace.ErrMissingWorkspace)) {
 			r.logger.Warn("preserve native workspace failed", "issue_id", req.Issue.ID, "error", err)
 			return false, errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
 		}

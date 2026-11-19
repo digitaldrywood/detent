@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 const (
@@ -107,7 +109,8 @@ func gitProgressPatchBounded(ctx context.Context, path string, limit int64, revi
 	if err != nil {
 		return "", err
 	}
-	if err := diff.Start(); err != nil {
+	wait, err := procgroup.StartCommand(ctx, diff)
+	if err != nil {
 		return "", err
 	}
 	identity := exec.CommandContext(ctx, "git", "patch-id", "--verbatim")
@@ -115,7 +118,7 @@ func gitProgressPatchBounded(ctx context.Context, path string, limit int64, revi
 	identity.WaitDelay = workspaceCommandWaitDelay
 	bounded := &io.LimitedReader{R: patch, N: limit + 1}
 	identity.Stdin = bounded
-	output, patchErr := identity.Output()
+	output, patchErr := procgroup.CommandOutput(ctx, identity, false)
 	if bounded.N == 0 {
 		patchErr = errors.Join(patchErr, errors.New("local progress patch exceeds observation limit"))
 	}
@@ -123,7 +126,7 @@ func gitProgressPatchBounded(ctx context.Context, path string, limit int64, revi
 		cancel()
 	}
 	closeErr := patch.Close()
-	diffErr := diff.Wait()
+	diffErr := wait()
 	if err := errors.Join(patchErr, closeErr, diffErr); err != nil {
 		return "", fmt.Errorf("read local progress patch: %w: %s", err, strings.TrimSpace(diffError.String()))
 	}

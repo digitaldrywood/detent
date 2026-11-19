@@ -14,7 +14,11 @@ func (r *Runner) InspectWorkspaceBranchHold(ctx context.Context, issue connector
 	if !ok {
 		return WorkspaceBranchHold{}, nil
 	}
-	hold, held, err := provider.BranchHold(ctx, workspaceIssue(r.projectID, issue))
+	target, known := (RunRequest{Issue: issue}).workspaceTarget(ctx, r.projectID)
+	if !known {
+		return WorkspaceBranchHold{}, nil
+	}
+	hold, held, err := provider.BranchHold(ctx, target)
 	if err != nil {
 		return WorkspaceBranchHold{}, err
 	}

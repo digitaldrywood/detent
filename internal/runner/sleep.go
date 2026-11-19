@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -46,7 +47,8 @@ func startSleepInhibitor(ctx context.Context, platform string, command func(cont
 		cancel()
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	wait, err := procgroup.StartCommand(held, cmd)
+	if err != nil {
 		closeErr := input.Close()
 		cancel()
 		return nil, errors.Join(err, closeErr)
@@ -54,7 +56,7 @@ func startSleepInhibitor(ctx context.Context, platform string, command func(cont
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := cmd.Wait(); err != nil && held.Err() == nil {
+		if err := wait(); err != nil && held.Err() == nil {
 			for _, failed := range failures {
 				failed()
 			}

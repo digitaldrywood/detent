@@ -266,7 +266,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 						return err
 					}
 					return authorizeLanding(batchCtx)
-				}})
+				}}.WithProcessOwner(ctx))
 			} else {
 				result, err = lander.LandChange(ctx, info, issue, options)
 			}

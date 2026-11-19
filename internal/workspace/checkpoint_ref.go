@@ -40,6 +40,13 @@ func (l *LocalGit) RestoreCheckpointForFinalization(ctx context.Context, origina
 }
 
 func CheckpointRefName(issue Issue) string {
+	if owner := issue.AttemptWorkspace.Key(); owner != "" {
+		return CheckpointRefPrefix + owner
+	}
+	return legacyCheckpointRefName(issue)
+}
+
+func legacyCheckpointRefName(issue Issue) string {
 	id := strings.TrimSpace(issue.ID)
 	if id == "" {
 		id = issue.Identifier
@@ -47,7 +54,27 @@ func CheckpointRefName(issue Issue) string {
 	return CheckpointRefPrefix + SafeKey(id)
 }
 
+func ownsCheckpointRef(issue Issue, ref string) bool {
+	if ref == CheckpointRefName(issue) {
+		return true
+	}
+	current, previous := issue.AttemptWorkspace, issue.RecoveryAttemptWorkspace
+	if current.Key() == "" {
+		return false
+	}
+	if previous != (AttemptWorkspace{}) && (previous.Key() == "" || current.Organization != previous.Organization || current.Project != previous.Project) {
+		return false
+	}
+	return ref == legacyCheckpointRefName(issue) || previous.Key() != "" && ref == CheckpointRefPrefix+previous.Key()
+}
+
 func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue, previous CheckpointRef, validate func(context.Context) error) (_ CheckpointRef, _ bool, err error) {
+	if issue.AttemptWorkspace != (AttemptWorkspace{}) {
+		expected, err := l.infoForIssue(issue)
+		if err != nil || expected.Key != info.Key || expected.Path != info.Path || previous.Ref != "" && !ownsCheckpointRef(issue, previous.Ref) {
+			return previous, false, errors.Join(ErrCheckpointUnsafe, err)
+		}
+	}
 	if validate == nil {
 		return previous, false, fmt.Errorf("%w: ownership validation is required", ErrCheckpointUnsafe)
 	}
@@ -80,7 +107,7 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	if err != nil {
 		return previous, false, err
 	}
-	if previous.CommitSHA != "" && previous.HeadSHA == head && previous.TreeSHA == tree {
+	if previous.Ref == CheckpointRefName(issue) && previous.CommitSHA != "" && previous.HeadSHA == head && previous.TreeSHA == tree {
 		return previous, false, nil
 	}
 	for _, path := range included {
@@ -156,15 +183,22 @@ func (l *LocalGit) verifiedLocalCheckpointHead(ctx context.Context, target Info,
 		return "", err
 	}
 	prior := target
+	source := issue
 	if !exists {
-		source := issue
 		source.AttemptWorkspace = issue.RecoveryAttemptWorkspace
+		if source.AttemptWorkspace != (AttemptWorkspace{}) && (source.AttemptWorkspace.Organization != issue.AttemptWorkspace.Organization || source.AttemptWorkspace.Project != issue.AttemptWorkspace.Project) {
+			return "", ErrLocalCheckpointChanged
+		}
 		prior, err = l.Existing(source)
+		if errors.Is(err, ErrMissingWorkspace) && source.AttemptWorkspace.Key() != "" {
+			source.AttemptWorkspace = AttemptWorkspace{}
+			prior, err = l.Existing(source)
+		}
 		if err != nil {
 			return "", errors.Join(ErrLocalCheckpointChanged, err)
 		}
 	}
-	if err := l.verifyLocalCheckpoint(ctx, prior, issue); err != nil {
+	if err := l.verifyLocalCheckpoint(ctx, prior, source); err != nil {
 		return "", err
 	}
 	return checkpoint.HeadSHA, nil
@@ -191,7 +225,7 @@ func (l *LocalGit) bindCheckpointBranch(issue Issue, info Info, checkpoint *Chec
 	if checkpoint.Transaction == nil {
 		return nil
 	}
-	if !issue.NativeRework || checkpoint.Ref != CheckpointRefName(issue) {
+	if !issue.NativeRework || !ownsCheckpointRef(issue, checkpoint.Ref) {
 		return fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
 	}
 	if checkpoint.Transaction.Branch != info.Branch {

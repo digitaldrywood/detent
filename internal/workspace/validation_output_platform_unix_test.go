@@ -296,3 +296,73 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestIndependentValidationProbeBeforeReceipt(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "sh")
+	marker := filepath.Join(root, "started")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '"+marker+"'\nexec /bin/sh \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: initSourceRepo(t), AutoBranch: true, Hooks: Hooks{Shell: script}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{ID: "wi_example", Identifier: "prj_example#1", AttemptWorkspace: AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.PullRequestHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+	denied := errors.New("session write unavailable")
+	process := validationProcessFixture{started: func(procgroup.Identity) error { return denied }, finished: func(gate.CommandResult, error) error { return nil }}
+	ctx := WithValidationProcessOwner(WithAttemptWorkspace(t.Context(), issue.AttemptWorkspace), func(context.Context, Info, Issue, string) (ValidationProcess, error) { return process, nil })
+	_, err = backend.RunReviewCommand(ctx, info, issue, "go version")
+	if !errors.Is(err, denied) {
+		t.Fatalf("did not reach denied registration: %v", err)
+	}
+	if trace, err := os.ReadFile(marker); err == nil {
+		t.Errorf("configured validation shell already executed before receipt denial: %s", trace)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeHookLaunch(t *testing.T) {
+	for _, denied := range []bool{true, false} {
+		t.Run(fmt.Sprint("denied=", denied), func(t *testing.T) {
+			issue := Issue{ID: "wi_example", Identifier: "prj_example#1", AttemptWorkspace: AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}}
+			backend, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), Hooks: Hooks{BeforeRun: "touch hook-effect"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(info.Path, "hook-effect")
+			registered := false
+			deny := errors.New("hook registration refused")
+			ctx := WithValidationProcessOwner(WithAttemptWorkspace(t.Context(), issue.AttemptWorkspace), func(context.Context, Info, Issue, string) (ValidationProcess, error) {
+				return validationProcessFixture{started: func(id procgroup.Identity) error {
+					if id.PID <= 0 || id.GroupID <= 0 || id.StartedAt.IsZero() {
+						return errors.New("missing hook identity")
+					}
+					if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+						return errors.New("hook ran before receipt")
+					}
+					registered = true
+					if denied {
+						return deny
+					}
+					return nil
+				}, finished: func(gate.CommandResult, error) error { return nil }}, nil
+			})
+			err = backend.BeforeRun(ctx, info, issue)
+			_, statErr := os.Stat(marker)
+			if !registered || denied && (!errors.Is(err, deny) || !errors.Is(statErr, os.ErrNotExist)) || !denied && (err != nil || statErr != nil) {
+				t.Fatalf("registered=%t error=%v effect=%v", registered, err, statErr)
+			}
+		})
+	}
+}

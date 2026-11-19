@@ -188,7 +188,7 @@ func TestCheckpointPullRequestAssociation(t *testing.T) {
 			if scenario == "lost lease" {
 				checkpoint.request.CheckpointValidate = func(context.Context) error { return ErrExecutionAuthorityUnavailable }
 			}
-			command := func(_ AgentTurnRequest, cmd *exec.Cmd) (string, error) {
+			command := func(_ context.Context, _ AgentTurnRequest, cmd *exec.Cmd) (string, error) {
 				args := cmd.Args[1:]
 				calls++
 				if calls == 1 {
@@ -555,7 +555,7 @@ func TestCheckpointCommandCancellation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := checkpointCommand(AgentTurnRequest{Workspace: t.TempDir()}, exec.CommandContext(ctx, "gh", "--version"))
+	_, err := checkpointCommand(ctx, AgentTurnRequest{Workspace: t.TempDir()}, exec.CommandContext(ctx, "gh", "--version"))
 	if err == nil {
 		t.Fatal("cancelled command succeeded")
 	}
@@ -694,7 +694,7 @@ func TestAgentTurnDeliverableNativeTracker(t *testing.T) {
 				t.Fatalf("deliverable = %q %q, want %q %q", kind, repository, tt.wantKind, tt.wantRepository)
 			}
 			calls := 0
-			command := func(AgentTurnRequest, *exec.Cmd) (string, error) {
+			command := func(context.Context, AgentTurnRequest, *exec.Cmd) (string, error) {
 				calls++
 				return "[]", nil
 			}

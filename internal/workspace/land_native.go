@@ -16,10 +16,48 @@ import (
 )
 
 type LandRequest struct {
-	Validate func(context.Context) error `json:"-"`
-	Info     Info
-	Issue    Issue
-	Options  LandOptions
+	Validate     func(context.Context) error `json:"-"`
+	CheckRebase  LandingRebaseCheck          `json:"-"`
+	Info         Info
+	Issue        Issue
+	Options      LandOptions
+	processOwner ValidationProcessOwner
+}
+
+func (r LandRequest) WithProcessOwner(ctx context.Context) LandRequest {
+	r.processOwner = ValidationProcessOwnerFromContext(ctx)
+	return r
+}
+
+func (r LandRequest) bindProcesses(ctx context.Context) context.Context {
+	if r.processOwner == nil {
+		return ctx
+	}
+	return WithValidationProcessOwner(WithAttemptWorkspace(ctx, r.Issue.AttemptWorkspace), r.processOwner)
+}
+
+type LandingRebaseCheck func(context.Context, Issue, string, string) (LandResult, error)
+
+func (l *LocalGit) ValidateBatchRebase(ctx context.Context, request LandRequest, staging Issue, head, base string) (LandResult, error) {
+	member := request.Issue.AttemptWorkspace
+	if member != (AttemptWorkspace{}) && (member.Key() == "" || staging.AttemptWorkspace.Key() == "" || member.Organization != staging.AttemptWorkspace.Organization || member.Project != staging.AttemptWorkspace.Project) {
+		return LandResult{}, errors.New("batch staging requires an attempt from the member project")
+	}
+	path, err := validateWorkspacePath(l.root, filepath.Join(l.root, "landing-"+workspaceIssueKey(staging)))
+	if err != nil {
+		return LandResult{}, err
+	}
+	if !validLandingHead(head) || !validLandingHead(base) || !l.isSourceWorktree(ctx, path) {
+		return LandResult{}, errors.New("batch validation requires an integrated worktree and immutable commits")
+	}
+	command, packages, err := shortLandingCommand(ctx, path, base, head, request.Options.ValidationCommand)
+	if err != nil {
+		return LandResult{}, err
+	}
+	info := request.Info
+	info.Path = path
+	result, err := l.validateLanding(ctx, info, request.Issue, command, head, base)
+	return LandResult{Gate: result, Packages: packages}, err
 }
 
 type LandOutcome struct {
@@ -44,6 +82,7 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 		}
 		return out
 	}
+	ctx = requests[0].bindProcesses(ctx)
 	release, err := l.acquireSourceOperation(ctx)
 	if err != nil {
 		return fail(err)
@@ -98,6 +137,7 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 		stageHead := base
 		members := []int{}
 		for i, request := range requests {
+			ctx := request.bindProcesses(ctx)
 			if out[i].Err != nil || out[i].Result.MergeSHA != "" {
 				continue
 			}
@@ -230,18 +270,16 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				result.Rebased, result.Path = true, "rebase_short_validation"
 			}
 			if result.Rebased && err == nil && request.Options.Resolution == nil {
-				validationInfo := info
-				validationInfo.Path = staging
-				command, packages, scopeErr := shortLandingCommand(ctx, staging, stageHead, merged, request.Options.ValidationCommand)
-				result.Packages = packages
-				if scopeErr != nil {
-					err = scopeErr
+				var checked LandResult
+				if request.CheckRebase != nil {
+					checked, err = request.CheckRebase(ctx, requests[0].Issue, merged, stageHead)
 				} else {
-					result.Gate, err = l.validateLanding(ctx, validationInfo, request.Issue, command, merged, stageHead)
-					if !result.Gate.StartedAt.IsZero() {
-						result.Gate.TimingStage = "landing_validation"
-						result.Pipeline = append(result.Pipeline, result.Gate.PipelineTiming("landing_validation"))
-					}
+					checked, err = l.ValidateBatchRebase(ctx, request, requests[0].Issue, merged, stageHead)
+				}
+				result.Gate, result.Packages = checked.Gate, checked.Packages
+				if !result.Gate.StartedAt.IsZero() {
+					result.Gate.TimingStage = "landing_validation"
+					result.Pipeline = append(result.Pipeline, result.Gate.PipelineTiming("landing_validation"))
 				}
 			}
 			if err == nil && request.Options.SecurityAuditRequired {

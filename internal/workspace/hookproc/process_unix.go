@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 
 	"github.com/digitaldrywood/detent/internal/procstart"
@@ -533,7 +534,7 @@ func workspaceScanOutput(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 		hasDeadline = true
 	}
 	contextAtStart := fmt.Sprint(ctx.Err())
-	startErr := cmd.Start()
+	wait, startErr := procgroup.StartCommand(ctx, cmd)
 	startElapsed := time.Since(started)
 	if startErr != nil {
 		return nil, fmt.Errorf("workspace scan command stage=start start_elapsed=%s deadline_set=%t deadline_remaining=%s context_at_start=%v context_error=%v: %w",
@@ -550,7 +551,7 @@ func workspaceScanOutput(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		err := cmd.Wait()
+		err := wait()
 		var exitErr *exec.ExitError
 		if captureStderr && errors.As(err, &exitErr) {
 			exitErr.Stderr = []byte(stderr.String())

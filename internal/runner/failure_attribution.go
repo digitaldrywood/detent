@@ -110,7 +110,9 @@ func (r *Runner) attributeFailure(ctx context.Context, req RunRequest, err error
 	workflow, runtime, _, _ := r.runtimeSnapshot()
 	role := runRole(req.Mode, req.Issue)
 	selection, backend, config, selectErr := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), runtime.effectiveRunRole(role))
-	if selectErr == nil {
+	target, known := req.workspaceTarget(ctx, r.projectID)
+	if selectErr == nil && known {
+		ctx = workspace.WithAttemptWorkspace(ctx, target.AttemptWorkspace)
 		modelProvider, tier, effort := agentTurnIdentityOptions(config)
 		request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: tier, ReasoningEffort: effort, MaxDuration: progresscheck.MaxDuration, MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval, processRSS: r.processRSS}
 		if reserved, ok := req.Execution.(ProviderCapacityExecution); ok {
@@ -161,7 +163,10 @@ func (r *Runner) collectFailureEvidence(ctx context.Context, req RunRequest, err
 	if !ok || !canDiff {
 		return evidence
 	}
-	issue := workspaceIssue(r.projectID, req.Issue)
+	issue, known := req.workspaceTarget(ctx, r.projectID)
+	if !known {
+		return evidence
+	}
 	info, lookupErr := existing.Existing(issue)
 	if lookupErr != nil {
 		return evidence

@@ -56,7 +56,7 @@ func WriteRecord(plan Plan, record Record) (returnErr error) {
 	}
 	record.Schema = 1
 	record.WorkspacePath = plan.Info.Path
-	record.Branch = plan.Info.Branch
+	record.Branch = plan.Info.PublishBranch()
 	data, err := json.Marshal(record)
 	if err != nil {
 		return err
@@ -114,7 +114,7 @@ func Guard(ctx context.Context, git GitRunner, plan Plan, head string, validate 
 }
 
 func RemoteHead(ctx context.Context, git GitRunner, plan Plan) (string, error) {
-	output, err := git(ctx, "ls-remote", "--heads", plan.RemoteURL, "refs/heads/"+plan.Info.Branch)
+	output, err := git(ctx, "ls-remote", "--heads", plan.RemoteURL, "refs/heads/"+plan.Info.PublishBranch())
 	if err != nil {
 		return "", err
 	}
@@ -122,7 +122,7 @@ func RemoteHead(ctx context.Context, git GitRunner, plan Plan) (string, error) {
 	if len(fields) == 0 {
 		return "", nil
 	}
-	if len(fields) != 2 || fields[1] != "refs/heads/"+plan.Info.Branch {
+	if len(fields) != 2 || fields[1] != "refs/heads/"+plan.Info.PublishBranch() {
 		return "", fmt.Errorf("%w: unexpected remote ref", ErrUnsafe)
 	}
 	return fields[0], nil

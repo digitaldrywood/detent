@@ -417,9 +417,11 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 				}
 				candidate := workspaceIssue
 				candidate.AttemptWorkspace = request.AttemptWorkspace
-				retained, err := gitWorkspace.Existing(candidate)
-				if err != nil || retained.Path != info.Path {
-					t.Fatalf("changed evidence prepared a new checkout: %+v %v", retained, err)
+				if _, err := gitWorkspace.Existing(candidate); !errors.Is(err, workspace.ErrMissingWorkspace) {
+					t.Fatalf("changed evidence prepared a new checkout: %v", err)
+				}
+				if retained, err := gitWorkspace.Existing(workspaceIssue); err != nil || retained.Path != info.Path {
+					t.Fatalf("legacy source lost: %+v %v", retained, err)
 				}
 				return
 			}

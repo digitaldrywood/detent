@@ -73,7 +73,7 @@ func (c *workerCheckpoint) validate(ctx context.Context) error {
 func (r *Runner) saveWorkerCheckpoint(c *workerCheckpoint, record workspace.CheckpointRecord) {
 	record.Schema = 1
 	record.WorkspacePath = c.plan.Info.Path
-	record.Branch = c.plan.Info.Branch
+	record.Branch = c.plan.Info.PublishBranch()
 	c.record = &record
 	if err := workspace.WriteCheckpointRecord(c.plan, record); err != nil {
 		r.logWorkerEvent(c.request.Issue, "worker_checkpoint_journal_failed", "error", err)
@@ -205,14 +205,14 @@ func (r *Runner) workerCheckpoint(ctx context.Context, c *workerCheckpoint, reas
 	return execution
 }
 
-type checkpointCommander func(AgentTurnRequest, *exec.Cmd) (string, error)
+type checkpointCommander func(context.Context, AgentTurnRequest, *exec.Cmd) (string, error)
 
-func checkpointCommand(turn AgentTurnRequest, cmd *exec.Cmd) (string, error) {
+func checkpointCommand(ctx context.Context, turn AgentTurnRequest, cmd *exec.Cmd) (string, error) {
 	cmd.Dir = turn.Workspace
 	cmd.WaitDelay = 5 * time.Second
 	procgroup.SetEnvironment(cmd, turn.Environment)
 	procgroup.SetTempDir(cmd, turn.TempDir)
-	output, err := cmd.Output()
+	output, err := procgroup.CommandOutput(ctx, cmd, false)
 	return strings.TrimSpace(string(output)), err
 }
 
@@ -228,8 +228,8 @@ func checkpointPullRequest(ctx context.Context, c *workerCheckpoint, turn AgentT
 		return "", errors.New("checkpoint PR repository is unavailable")
 	}
 	list := exec.CommandContext(ctx, "gh", "pr", "list", "--state", "open", "--json", "url", "--limit", "2")
-	list.Args = append(list.Args, "--repo="+repository, "--head="+c.plan.Info.Branch)
-	output, err := command(turn, list)
+	list.Args = append(list.Args, "--repo="+repository, "--head="+c.plan.Info.PublishBranch())
+	output, err := command(ctx, turn, list)
 	if err != nil {
 		return "", err
 	}
@@ -252,10 +252,10 @@ func checkpointPullRequest(ctx context.Context, c *workerCheckpoint, turn AgentT
 	if c.request.Issue.PullRequest != nil && c.request.Issue.PullRequest.BaseRef != "" {
 		create.Args = append(create.Args, "--base="+c.request.Issue.PullRequest.BaseRef)
 	}
-	create.Args = append(create.Args, "--repo="+repository, "--head="+c.plan.Info.Branch,
+	create.Args = append(create.Args, "--repo="+repository, "--head="+c.plan.Info.PublishBranch(),
 		"--title=Checkpoint: "+c.request.Issue.Title,
 		"--body=Incomplete recovery checkpoint for "+c.request.Issue.Identifier+".\n\nWork is not validated delivery. The normal completion, review, and CI gates still apply.")
-	return command(turn, create)
+	return command(ctx, turn, create)
 }
 
 func (r *Runner) runCheckpointedTurn(parent, session context.Context, c *workerCheckpoint, cfg config.Agent, backend AgentBackend, turn AgentTurnRequest, req RunRequest, run func(context.Context, AgentTurnRequest, RunRequest) agentTurnExecution) agentTurnExecution {

@@ -658,8 +658,8 @@ func TestAttemptPrivateCheckoutRecoversLegacyCheckpoint(t *testing.T) {
 	}
 	issue.AttemptWorkspace = AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_" + strings.Repeat("1", 32)}
 	existing, err := backend.Existing(issue)
-	if err != nil || existing.Path != legacy.Path {
-		t.Fatalf("upgraded recovery cannot read legacy worktree: %+v %v", existing, err)
+	if !errors.Is(err, ErrMissingWorkspace) || existing.Path != "" {
+		t.Fatalf("unverified lookup selected a legacy checkout: %+v %v", existing, err)
 	}
 	issue.Checkpoint = &CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, TreeSHA: checkpoint.TreeSHA}
 	first, err := backend.Create(t.Context(), issue)
@@ -684,6 +684,28 @@ func TestAttemptPrivateCheckoutRecoversLegacyCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	firstIssue := issue
+	firstIssue.AttemptWorkspace.Attempt = "attempt_" + strings.Repeat("1", 32)
+	var refs []CheckpointRef
+	for _, item := range []struct {
+		info  Info
+		issue Issue
+	}{{first, firstIssue}, {second, issue}} {
+		ref, pushed, err := backend.PushCheckpointRef(t.Context(), item.info, item.issue, checkpoint, func(ctx context.Context) error { return ctx.Err() })
+		if err != nil || !pushed || ref.Ref == checkpoint.Ref {
+			t.Fatalf("private checkpoint %+v push=%t err=%v", ref, pushed, err)
+		}
+		refs = append(refs, ref)
+	}
+	if refs[0].Ref == refs[1].Ref {
+		t.Fatal("attempts share a checkpoint ref")
+	}
+	for _, ref := range append(refs, checkpoint) {
+		if got := strings.TrimSpace(runGit(t, remote, "rev-parse", ref.Ref)); got != ref.CommitSHA {
+			t.Fatalf("checkpoint %s moved to %s", ref.Ref, got)
+		}
+	}
+
 	if second.Path == first.Path || second.Branch == first.Branch || second.Path == legacy.Path {
 		t.Fatalf("two attempts share a checkout: legacy=%+v first=%+v second=%+v", legacy, first, second)
 	}
@@ -746,6 +768,59 @@ func TestReview1973PrivateCheckoutKeepsPublicationBranch(t *testing.T) {
 			if private.Path == legacy.Path || private.Branch == legacy.Branch || private.PublishBranch() != issue.BranchName ||
 				strings.TrimSpace(runGit(t, legacy.Path, "branch", "--show-current")) != legacy.Branch {
 				t.Fatalf("legacy=%+v private=%+v", legacy, private)
+			}
+			delivery, err := backend.DeliverableState(t.Context(), private, issue)
+			if err != nil || !delivery.RemoteBranchExists || strings.TrimSpace(runGit(t, private.Path, "rev-parse", "HEAD")) != published {
+				t.Fatalf("private checkout lost its publication ref: %+v %v", delivery, err)
+			}
+			if restore {
+				for _, checkout := range []Info{legacy, private} {
+					if got, err := os.ReadFile(filepath.Join(checkout.Path, "progress.txt")); err != nil || string(got) != "preserved progress" {
+						t.Fatalf("checkpoint content in %s = %q, error %v", checkout.Branch, got, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestIndependentDefaultPublicationRef(t *testing.T) {
+	for _, restore := range []bool{false, true} {
+		name := "independent checkout"
+		if restore {
+			name = "checkpoint restore"
+		}
+		t.Run(name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			publishCleanupSource(t, source)
+			backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{ID: "wi_example", Identifier: "prj_example#1"}
+			legacy, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, legacy.Path, "commit", "--allow-empty", "-m", "published checkpoint")
+			published := strings.TrimSpace(runGit(t, legacy.Path, "rev-parse", "HEAD"))
+			runGit(t, legacy.Path, "push", "origin", "HEAD:refs/heads/"+legacy.Branch)
+			if restore {
+				writeCheckpointFile(t, legacy.Path, "progress.txt", "preserved progress")
+				checkpoint, pushed, err := backend.PushCheckpointRef(t.Context(), legacy, issue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
+				if err != nil || !pushed {
+					t.Fatalf("checkpoint pushed=%t error=%v", pushed, err)
+				}
+				issue.Checkpoint = &checkpoint
+			}
+			issue.AttemptWorkspace = AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+			private, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if private.Path == legacy.Path || private.Branch == legacy.Branch || private.PublishBranch() != legacy.Branch ||
+				strings.TrimSpace(runGit(t, legacy.Path, "branch", "--show-current")) != legacy.Branch {
+				t.Errorf("publication ref was %s, now %s", legacy.Branch, private.PublishBranch())
 			}
 			delivery, err := backend.DeliverableState(t.Context(), private, issue)
 			if err != nil || !delivery.RemoteBranchExists || strings.TrimSpace(runGit(t, private.Path, "rev-parse", "HEAD")) != published {

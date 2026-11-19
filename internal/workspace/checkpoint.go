@@ -24,9 +24,10 @@ func (l *LocalGit) PrepareCheckpoint(ctx context.Context, info Info, issue Issue
 	}
 	automatic := issue
 	automatic.BranchName = ""
-	if !l.autoBranch || expected.Branch == "" || expected.PublicationBranch != "" || info.Path != expected.Path || info.Branch != l.branchName(automatic, expected.Key) {
+	if !l.autoBranch || expected.Branch == "" || expected.PublicationBranch != l.publicationBranch(automatic, expected.Key) || info.PublicationBranch != "" && info.PublicationBranch != expected.PublicationBranch || info.Path != expected.Path || info.Branch != l.branchName(automatic, expected.Key) {
 		return CheckpointPlan{}, fmt.Errorf("%w: workspace is not an automatically owned issue branch", ErrCheckpointUnsafe)
 	}
+	info.PublicationBranch = expected.PublicationBranch
 	if !l.isSourceWorktree(ctx, info.Path) {
 		return CheckpointPlan{}, fmt.Errorf("%w: workspace ownership is unavailable", ErrCheckpointUnsafe)
 	}
@@ -149,7 +150,7 @@ func (l *LocalGit) Checkpoint(ctx context.Context, plan CheckpointPlan, selectio
 		return head, err
 	}
 	if remoteHead != head {
-		if _, err := git(ctx, "-c", "push.followTags=false", "push", "--recurse-submodules=no", "--force-with-lease=refs/heads/"+plan.Info.Branch+":"+remoteHead, plan.RemoteURL, head+":refs/heads/"+plan.Info.Branch); err != nil {
+		if _, err := git(ctx, "-c", "push.followTags=false", "push", "--recurse-submodules=no", "--force-with-lease=refs/heads/"+plan.Info.PublishBranch()+":"+remoteHead, plan.RemoteURL, head+":refs/heads/"+plan.Info.PublishBranch()); err != nil {
 			return head, err
 		}
 	}

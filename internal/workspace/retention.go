@@ -74,6 +74,9 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 		if err != nil || !l.validOwnershipRecord(ctx, relative, record) {
 			continue
 		}
+		if record.requiresAttemptOwner() {
+			continue
+		}
 		relativePath, err := filepath.Rel(l.root, record.Path)
 		if err != nil {
 			recordError(err)
@@ -159,7 +162,7 @@ func (l *LocalGit) sweepLanding(ctx context.Context, root *os.Root, request Rete
 			key = strings.TrimPrefix(key, "landing-")
 		}
 		scope, issueKey := splitCheckoutIssueKey(key)
-		if scope != "" || active[issueKey] {
+		if scope != "" || nativeWorkspaceKeyPattern.MatchString(key) || active[issueKey] {
 			continue
 		}
 		relative, err := filepath.Rel(l.root, path)

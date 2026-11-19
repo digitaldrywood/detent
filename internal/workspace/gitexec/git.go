@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 const WaitDelay = time.Second
@@ -91,7 +93,10 @@ func withInputCommand(ctx context.Context, dir string, env []string, fileOutput 
 			slog.Warn("remove git output file", slog.String("path", file.Name()), slog.Any("error", removeErr))
 		}
 	} else {
-		output, err = cmd.CombinedOutput()
+		var captured bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &captured, &captured
+		err = run(ctx, cmd)
+		output = captured.Bytes()
 	}
 	if err == nil {
 		return string(output), nil
@@ -115,8 +120,8 @@ func withInputCommand(ctx context.Context, dir string, env []string, fileOutput 
 	}
 }
 
-func RunCommand(_ context.Context, cmd *exec.Cmd) error {
-	return cmd.Run()
+func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
+	return procgroup.RunCommand(ctx, cmd)
 }
 
 const DefaultRemote = "origin"
@@ -189,7 +194,8 @@ func WithinLimit(ctx context.Context, workspacePath string, env []string, maxByt
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
+	wait, err := procgroup.StartCommand(ctx, cmd)
+	if err != nil {
 		return "", false, fmt.Errorf("git diff start: %w", err)
 	}
 
@@ -199,7 +205,7 @@ func WithinLimit(ctx context.Context, workspacePath string, env []string, maxByt
 	if truncated && cmd.Process != nil {
 		killErr = cmd.Process.Kill()
 	}
-	waitErr := cmd.Wait()
+	waitErr := wait()
 
 	if readErr != nil {
 		return "", false, fmt.Errorf("git diff read: %w", readErr)

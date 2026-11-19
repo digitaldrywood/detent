@@ -148,7 +148,7 @@ func (l *LocalGit) CleanupIssues(ctx context.Context, cursor string, limit int) 
 			continue
 		}
 		inventory.records = append(inventory.records, record)
-		if issue := record.issue(); issue.Identifier != "" && issue.cleanupScope == "" {
+		if issue := record.issue(); issue.Identifier != "" && !record.requiresAttemptOwner() {
 			issues = append(issues, issue)
 		}
 	}
@@ -341,6 +341,11 @@ func (l *LocalGit) validOwnershipRecord(ctx context.Context, relativePath string
 	return err == nil && sourceCommonDir == filepath.Clean(record.SourceCommonDir)
 }
 
+func (record cleanupOwnershipRecord) requiresAttemptOwner() bool {
+	owner := record.issue()
+	return owner.cleanupScope != "" || nativeProjectID(owner) != "" || nativeWorkspaceKeyPattern.MatchString(record.Key)
+}
+
 func (record cleanupOwnershipRecord) issue() Issue {
 	scope, checkoutKey := splitCheckoutIssueKey(record.Key)
 	issue := Issue{ProjectID: record.ProjectID, ID: record.IssueID, Identifier: record.Identifier, WorkspaceSession: record.WorkspaceSession, cleanupScope: scope}
@@ -351,6 +356,19 @@ func (record cleanupOwnershipRecord) issue() Issue {
 		}
 	}
 	return issue
+}
+
+func (record cleanupOwnershipRecord) attemptIssue(bound Issue) (Issue, bool) {
+	owner := record.issue()
+	if bound.AttemptWorkspace.Key() == "" || bound.ID == "" || record.IssueID != "" && record.IssueID != bound.ID || owner.Identifier != bound.Identifier {
+		return Issue{}, false
+	}
+	bound.ReviewVersionID = owner.ReviewVersionID
+	if !issueOwnsKey(bound, record.Key) {
+		return Issue{}, false
+	}
+	owner.ID, owner.AttemptWorkspace = bound.ID, bound.AttemptWorkspace
+	return owner, true
 }
 
 func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue) (ReconcileResult, error) {
@@ -374,11 +392,20 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 			result.ActiveSkipped++
 			continue
 		}
-		if scope, _ := splitCheckoutIssueKey(record.Key); scope != "" {
-			result.PreservedSkipped++
-			continue
+		owner := record.issue()
+		if record.requiresAttemptOwner() {
+			var matched bool
+			for _, active := range activeIssues {
+				if owner, matched = record.attemptIssue(active); matched {
+					break
+				}
+			}
+			if !matched {
+				result.PreservedSkipped++
+				continue
+			}
 		}
-		removed, reconcileErr := l.reconcileWorkspace(ctx, record, inventory.recorded[record.Path], &result)
+		removed, reconcileErr := l.reconcileWorkspace(ctx, record, owner, inventory.recorded[record.Path], &result)
 		if reconcileErr != nil {
 			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: reconcileErr.Error()})
 			if errors.Is(reconcileErr, ErrWorkspacePreserved) {
@@ -428,7 +455,7 @@ func (l *LocalGit) ownsUnrecordedBranch(record cleanupOwnershipRecord) bool {
 		strings.Contains(record.Key, "-review-") && record.Branch == l.branchName(Issue{ReviewVersionID: "review"}, record.Key)
 }
 
-func (l *LocalGit) reconcileWorkspace(ctx context.Context, record cleanupOwnershipRecord, recorded bool, result *ReconcileResult) (bool, error) {
+func (l *LocalGit) reconcileWorkspace(ctx context.Context, record cleanupOwnershipRecord, issue Issue, recorded bool, result *ReconcileResult) (bool, error) {
 	if !recorded && !l.ownsUnrecordedBranch(record) {
 		result.UnownedSkipped++
 		return false, nil
@@ -452,7 +479,6 @@ func (l *LocalGit) reconcileWorkspace(ctx context.Context, record cleanupOwnersh
 		}
 	}
 	info := Info{Path: record.Path, Key: record.Key, Branch: record.Branch}
-	issue := record.issue()
 	issue.WorkspaceSession = issue.WorkspaceSession || sessionOwned(info, Issue{})
 	cleaned, err := l.cleanupWorkspace(ctx, info, issue)
 	result.Removed += cleaned.Worktrees
@@ -530,8 +556,9 @@ func (l *LocalGit) inferNativeOwnership(record *cleanupOwnershipRecord) {
 	if !l.ownsUnrecordedBranch(*record) {
 		return
 	}
-	if parts := nativeWorkspaceKeyPattern.FindStringSubmatch(record.Key); len(parts) == 6 {
-		issue := Issue{ProjectID: parts[1], Identifier: parts[2] + "#" + parts[3], ReviewVersionID: parts[5]}
+	scope, key := splitCheckoutIssueKey(record.Key)
+	if parts := nativeWorkspaceKeyPattern.FindStringSubmatch(key); len(parts) == 6 {
+		issue := Issue{cleanupScope: scope, ProjectID: parts[1], Identifier: parts[2] + "#" + parts[3], ReviewVersionID: parts[5]}
 		if issueOwnsKey(issue, record.Key) {
 			record.ProjectID, record.Identifier = issue.ProjectID, issue.Identifier
 		}
@@ -542,7 +569,7 @@ func issueOwnsKey(issue Issue, key string) bool {
 	scope, key := splitCheckoutIssueKey(key)
 	expected := issue.cleanupScope
 	if expected == "" {
-		expected = issue.AttemptWorkspace.scope()
+		expected = issue.AttemptWorkspace.Key()
 	}
 	if scope != expected {
 		return false
@@ -554,7 +581,7 @@ func nativeOwnershipActive(record cleanupOwnershipRecord, issues []Issue) bool {
 	owner := record.issue()
 	review := owner.ReviewVersionID != ""
 	for _, issue := range issues {
-		if owner.cleanupScope == issue.AttemptWorkspace.scope() && (!review || issue.CleanupInUse) && nativeProjectID(issue) != "" && (record.IssueID == "" || record.IssueID == issue.ID) && record.Identifier == issue.Identifier {
+		if owner.cleanupScope == issue.AttemptWorkspace.Key() && (!review || issue.CleanupInUse) && nativeProjectID(issue) != "" && (record.IssueID == "" || record.IssueID == issue.ID) && record.Identifier == issue.Identifier {
 			return true
 		}
 	}

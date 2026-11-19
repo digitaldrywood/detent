@@ -405,7 +405,7 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			}
 
 			retentionFixture(t, filepath.Join(info.Path, "dirty.txt"), now)
-			if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+			if _, err := backend.CleanupIssue(t.Context(), issue); test.alias && err != nil || !test.alias && !errors.Is(err, ErrWorkspacePreserved) {
 				t.Fatalf("baseline cleanup=%v", err)
 			}
 			request := RetentionRequest{Now: now, Completed: func(context.Context, []Issue) (map[string]time.Time, error) {
@@ -571,5 +571,65 @@ func TestRetentionCompletedResidue(t *testing.T) {
 				t.Fatalf("totals=%+v", total)
 			}
 		})
+	}
+}
+
+func TestIndependentScopeForRetention(t *testing.T) {
+	backend := retentionBackend(t)
+	now := time.Now().UTC()
+	issue := Issue{ID: "wi_example", Identifier: "prj_example#1", AttemptWorkspace: AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}}
+	for _, org := range []string{"org_first", "org_second"} {
+		issue.AttemptWorkspace.Organization = org
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	second, err := backend.infoForIssue(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(second.Path, "unpublished.txt"), []byte("second organization"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := RetentionRequest{Now: now, Completed: func(ctx context.Context, issues []Issue) (map[string]time.Time, error) {
+		return map[string]time.Time{"wi_example": now.Add(-2 * time.Hour)}, nil
+	}}
+	if _, err := backend.SweepRetention(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(second.Path, "unpublished.txt")); err != nil {
+		t.Errorf("issue-only completion removed the other organization's unpublished file: %v", err)
+	}
+}
+func TestIndependentFilesystemKeyOmitted(t *testing.T) {
+	backend, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), OutputRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{ID: "wi_example", Identifier: "prj_example#1"}
+	legacy, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backend.outputRoot, legacy.Key, "legacy-only"), []byte("legacy"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	issue.AttemptWorkspace = AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+	current, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, info := range []Info{{}, {Path: current.Path}, current} {
+		evidence, err := backend.ArtifactEvidence(t.Context(), info, issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if evidence.Files != 0 {
+			t.Errorf("current attempt reports %d legacy files with info key %q", evidence.Files, info.Key)
+		}
 	}
 }

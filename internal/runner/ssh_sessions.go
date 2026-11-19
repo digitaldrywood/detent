@@ -26,6 +26,7 @@ type SSHCallbacks struct {
 	publicationEffect     func(uint64, string, workspace.GitHubPublication, string, string, workspace.GitHubPublication) error
 	landingBatch          *workspace.LandingBatchTicket
 	batchLander           *sshBatchLander
+	batchRebases          []func(context.Context, string, string) (sshLandingOutcome, error)
 	batchAudits           []func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error)
 	batchValidations      []func(context.Context) error
 	handle                func(context.Context, string, []json.RawMessage) (any, error)
@@ -78,7 +79,7 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 			}
 		}
 		c.publicationCallbackMu.Unlock()
-	case "landing.submit", "landing.finish", "landing.validate", "landing.audit":
+	case "landing.submit", "landing.finish", "landing.validate", "landing.audit", "landing.rebase":
 		result, err = c.handleLandingBatch(ctx, method, args)
 	default:
 		result, err = c.handle(ctx, method, args)

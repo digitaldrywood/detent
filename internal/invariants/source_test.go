@@ -41,6 +41,7 @@ func TestRepositorySources(t *testing.T) {
 	if packages.PrintErrors(pkgs) != 0 {
 		t.Fatal("load repository packages")
 	}
+	checkAttemptCommands(t, pkgs)
 	for _, pkg := range pkgs {
 		for _, problem := range checkSources(pkg, root, policy) {
 			t.Error(problem)
