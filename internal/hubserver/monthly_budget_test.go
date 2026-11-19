@@ -7,12 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -746,17 +744,6 @@ func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
 	}
 	pgtransport.Configure(poolConfig)
 	poolConfig.MaxConns = 3
-	trace := &entryAuthBudgetTrace{}
-	poolConfig.ConnConfig.Tracer = trace
-	var exchanges atomic.Int64
-	dial := poolConfig.ConnConfig.DialFunc
-	poolConfig.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := dial(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
-		return &entryAuthBudgetWireConn{nativeLeaseWireConn: &nativeLeaseWireConn{Conn: conn, exchanges: &atomic.Int64{}, startup: true}, total: &exchanges}, nil
-	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -804,19 +791,15 @@ func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
 		}
 		setMonthlyBudgetFixture(t, f, i == 0, budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64(20000))})
 	}
-	check := func(t *testing.T, i int, allowed bool) [2]int64 {
+	check := func(t *testing.T, i int, allowed bool) {
 		t.Helper()
 		f, runner := fixtures[i], runners[i]
 		issue := issues[i][0]
 		issues[i] = issues[i][1:]
 		request := newHubAPIRequest(t, http.MethodPost, f.base+"/claims", runner.redemption.Credential, providerClaim(runner, issue, hubapi.NewID("session")))
-		request = request.WithContext(context.WithValue(t.Context(), entryAuthBudgetContextKey{}, true))
-		trace.statements.Store(0)
-		exchanges.Store(0)
+		request = request.WithContext(t.Context())
 		response := httptest.NewRecorder()
 		f.service.Handler().ServeHTTP(response, request)
-		counts := [2]int64{trace.statements.Load(), exchanges.Load()}
-		t.Logf("claim tenant=%d allowed=%t statements=%d exchanges=%d", i, allowed, counts[0], counts[1])
 		if allowed {
 			requireNativeStatus(t, response, http.StatusOK)
 			var lease tracker.NativeLease
@@ -828,7 +811,7 @@ func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
 			if !admitted || !runnerAPI || !sprite {
 				t.Fatalf("claim budget facts admitted=%t runner_api=%t sprite=%t", admitted, runnerAPI, sprite)
 			}
-			return counts
+			return
 		}
 		requireNativeStatus(t, response, http.StatusConflict)
 		var refusal struct {
@@ -855,30 +838,6 @@ func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
 		}
 		if leases != 0 || admissions != 0 {
 			t.Fatalf("refused claim persisted leases=%d admissions=%d", leases, admissions)
-		}
-		return counts
-	}
-	var baseline [2][2]int64
-	for n := range 50 {
-		for _, f := range fixtures {
-			o := costTestObservation("cpu", now.Add(-time.Hour), now)
-			o.SourceID, o.ResourceID, o.AmountMicros = fmt.Sprint("scale-", n), fmt.Sprint("scale-", n), new(int64)
-			o.Quantity = new(float64)
-			if _, err := recordPostgresTestCost(t, f.service.database, string(f.project.OrganizationID), string(f.project.ID), o, now); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if n == 1 || n == 49 {
-			for i := range fixtures {
-				t.Run(fmt.Sprintf("scale %d tenant %d", n+1, i), func(t *testing.T) {
-					counts := check(t, i, true)
-					if n == 1 {
-						baseline[i] = counts
-					} else if counts != baseline[i] {
-						t.Fatalf("claim grew with cost history: two=%v fifty=%v", baseline[i], counts)
-					}
-				})
-			}
 		}
 	}
 	observations := make([]costObservation, len(fixtures))

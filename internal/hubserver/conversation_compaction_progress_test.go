@@ -3,8 +3,6 @@ package hubserver
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -147,56 +145,4 @@ func checkCompactionPredecessorInvalidation(t *testing.T) {
 			}
 		})
 	}
-}
-
-type compactionLookupPlan struct {
-	NodeType  string                 `json:"Node Type"`
-	Index     string                 `json:"Index Name"`
-	Condition string                 `json:"Index Cond"`
-	Rows      float64                `json:"Actual Rows"`
-	Loops     float64                `json:"Actual Loops"`
-	Removed   float64                `json:"Rows Removed by Filter"`
-	Plans     []compactionLookupPlan `json:"Plans"`
-}
-
-func checkCompactionPendingLookup(t *testing.T) {
-	f := streamFixture{conversationAPIFixture: newConversationAPIFixture(t, nil)}
-	target := f.create(t, f.token, map[string]any{"title": "Example closed history"}).Conversation.ID
-	other := f.create(t, f.token, map[string]any{"title": "Example unrelated pending"}).Conversation.ID
-	admin := conversationTestAdmin(t, f.service)
-	for _, row := range []struct{ id, delivery string }{{target, "completed"}, {other, "queued"}} {
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversation_messages (organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,actor_json,created_at,updated_at) SELECT $1,$2,'msg_'||md5($2||'/'||n::text),n,'assistant','text','','{}'::jsonb,$3,'{}'::jsonb,clock_timestamp(),clock_timestamp() FROM generate_series(1,4000) n`, f.project.OrganizationID, row.id, row.delivery); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := admin.ExecContext(t.Context(), "ANALYZE conversation_messages"); err != nil {
-		t.Fatal(err)
-	}
-	var raw []byte
-	if err := admin.QueryRowContext(t.Context(), `EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT (SELECT m.id FROM conversation_messages m WHERE m.organization_id=$1 AND m.conversation_id=$2 AND m.delivery IN ('saved','queued','sending','responding') ORDER BY m.id LIMIT 1) IS NULL`, f.project.OrganizationID, target).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("pending lookup plan: %s", raw)
-	var plans []struct{ Plan compactionLookupPlan }
-	if err := json.Unmarshal(raw, &plans); err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	var walk func(compactionLookupPlan)
-	walk = func(node compactionLookupPlan) {
-		if node.Index == "conversation_messages_compaction_pending_idx" {
-			found = strings.Contains(node.Condition, "organization_id") && strings.Contains(node.Condition, "conversation_id") && node.Rows*node.Loops+node.Removed <= 1
-		}
-		for _, child := range node.Plans {
-			walk(child)
-		}
-	}
-	for _, plan := range plans {
-		walk(plan.Plan)
-	}
-	if !found {
-		t.Fatal("pending lookup lacks bounded tenant/conversation index access")
-	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+other, f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
 }

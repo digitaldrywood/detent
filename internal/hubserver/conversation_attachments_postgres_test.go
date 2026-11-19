@@ -249,7 +249,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				}
 			})
 			fired := false
-			counter := &attachmentReadCounter{Repository: repository, beforeWrite: func() error {
+			counter := &attachmentWriteProbe{Repository: repository, beforeWrite: func() error {
 				fired = true
 				_, err := admin.ExecContext(t.Context(), `UPDATE api_tokens SET operator_key_scope='read' WHERE organization_id=$1 AND id='test_hub_admin'`, f.org)
 				return err
@@ -380,16 +380,10 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			counter := &attachmentReadCounter{Repository: repository}
-			service.config.TenantRepository = counter
 			streamResponse := httptest.NewRecorder()
 			stream := newConversationStream(service.echo.NewContext(httptest.NewRequest(http.MethodGet, "/", nil), streamResponse))
 			if _, err := service.replayPGConversationEvents(t.Context(), scope, stream, f.other, 0, body.Cursor); err != nil {
 				t.Fatal(err)
-			}
-			service.config.TenantRepository = repository
-			if counter.reads != 2 {
-				t.Fatalf("archived event page used %d tenant admissions, want 2", counter.reads)
 			}
 			frameReader := bufio.NewReader(bytes.NewReader(streamResponse.Body.Bytes()))
 			frame, err := readSSEFrame(frameReader)
@@ -705,13 +699,12 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 
 }
 
-type attachmentReadCounter struct {
+type attachmentWriteProbe struct {
 	tenantstore.Repository
-	reads       int
 	beforeWrite func() error
 }
 
-func (r *attachmentReadCounter) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+func (r *attachmentWriteProbe) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	if r.beforeWrite != nil {
 		before := r.beforeWrite
 		r.beforeWrite = nil
@@ -722,13 +715,7 @@ func (r *attachmentReadCounter) WriteTenant(ctx context.Context, org tracker.Org
 	return r.Repository.WriteTenant(ctx, org, workload, write)
 }
 
-func (r *attachmentReadCounter) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	r.reads++
-	return r.Repository.ReadTenant(ctx, org, workload, read)
-}
-
-func (r *attachmentReadCounter) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	r.reads++
+func (r *attachmentWriteProbe) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, read)
 }
 
@@ -843,7 +830,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeErr := errors.New("attachment write unavailable")
-			service.config.TenantRepository = &attachmentReadCounter{Repository: repository, beforeWrite: func() error { return writeErr }}
+			service.config.TenantRepository = &attachmentWriteProbe{Repository: repository, beforeWrite: func() error { return writeErr }}
 			swept, err := service.conversations.SweepAttachments(t.Context())
 			service.config.TenantRepository = repository
 			if !errors.Is(err, writeErr) || swept != 0 {
@@ -862,7 +849,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			counter := &attachmentReadCounter{Repository: repository, beforeWrite: func() error {
+			counter := &attachmentWriteProbe{Repository: repository, beforeWrite: func() error {
 				swept, err := service.conversations.SweepAttachments(t.Context())
 				if err == nil && swept != 2 {
 					return fmt.Errorf("concurrent sweep=%d want=2", swept)

@@ -1,15 +1,22 @@
 package hubserver
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 )
 
 func TestPostgresCreditWriteRoutes(t *testing.T) {
@@ -154,6 +161,97 @@ func TestPostgresCreditWebhookRoute(t *testing.T) {
 				return err
 			})); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPostgresCreditWritesReleaseConnectionBeforeProviderIO(t *testing.T) {
+	t.Parallel()
+	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
+	f.requestContext = func(ctx context.Context) context.Context {
+		return ctx
+	}
+	for _, org := range []string{"org_startup", "org_other"} {
+		t.Run(org, func(t *testing.T) {
+			service := f.services[org]
+			service.stopHostedBilling()
+			done := make(chan struct{})
+			close(done)
+			service.billing = &hostedBillingWorker{service: service, cancel: func() {}, done: done}
+			config, err := service.config.Postgres.Connection.PoolConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pgtransport.Configure(config)
+			config.MaxConns = int32(service.config.Postgres.Pool.MaxConnections)
+			pool, err := pgxpool.NewWithConfig(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			measured, err := postgres.NewRepository(t.Context(), pool, service.config.Postgres.Pool)
+			if err != nil {
+				pool.Close()
+				t.Fatal(err)
+			}
+			oldAccess, oldTenant := service.config.AccessRepository, service.config.TenantRepository
+			oldBilling, oldPostgres := service.database.billingRepository, service.database.postgres
+			service.config.AccessRepository, service.config.TenantRepository = measured, measured
+			service.database.billingRepository, service.database.postgres = measured, measured
+			t.Cleanup(func() {
+				if service.requestMetrics != nil {
+					if err := service.requestMetrics.Drain(context.WithoutCancel(t.Context()), service.config.Clock()); err != nil {
+						t.Error(err)
+					}
+				}
+				service.config.AccessRepository, service.config.TenantRepository = oldAccess, oldTenant
+				service.database.billingRepository, service.database.postgres = oldBilling, oldPostgres
+				if service.requestMetrics != nil {
+					service.requestMetrics.RecordUsage(service.database.metricsBillingOwner(), requestmetrics.Key{}, requestmetrics.Usage{})
+				}
+				if err := measured.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			provider := service.config.Hosted.Billing.Provider.(*hostedCreditProvider)
+			provider.savedMethod = "pm_example"
+			provider.duringCheckout = func(context.Context, billing.CreditRequest) error {
+				if got := pool.Stat().AcquiredConns(); got != 0 {
+					return fmt.Errorf("provider I/O held %d database connections", got)
+				}
+				return nil
+			}
+			warm := f.request(t, org, "/api/v2/organizations/"+org+"/billing/credits/checkout", `{"price":"price_credit","idempotency_key":"warmup"}`, sharedRouteBrowserClaims, map[string]string{"X-CSRF-Token": strings.Repeat("b", 64)})
+			requireNativeStatus(t, warm, http.StatusOK)
+			seeded := 0
+			for _, size := range []int{2} {
+				for seeded < size {
+					if err := hubapi.FromFeatureError(service.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+						_, err := w.PostBillingCredit(t.Context(), billingstore.CreditTransaction{OrganizationID: service.database.hostedOrganization, Mode: billing.ModeTest, Source: fmt.Sprintf("history_%d", seeded), Kind: "purchase", AmountMicros: 1, RecordedAt: service.config.Clock()})
+						return err
+					})); err != nil {
+						t.Fatal(err)
+					}
+					seeded++
+				}
+				for _, route := range []struct {
+					name, method, body string
+					status             int
+				}{
+					{"checkout", http.MethodPost, fmt.Sprintf(`{"price":"price_credit","idempotency_key":"size_%d"}`, size), http.StatusOK},
+					{"auto-fund", http.MethodPut, `{"enabled":true,"threshold_cents":100,"price":"price_credit"}`, http.StatusNoContent},
+					{"events", http.MethodPost, fmt.Sprintf(`{"event_id":"evt_size_%d","event_type":"checkout.session.completed","customer_id":%q}`, size, "cus_"+org), http.StatusNoContent},
+				} {
+					path := "/api/v2/organizations/" + org + "/billing/credits/" + route.name
+					var claims func(*cloudassert.Claims)
+					if route.name == "events" {
+						path = "/internal/v1/billing/events"
+					} else {
+						claims = func(c *cloudassert.Claims) { sharedRouteBrowserClaims(c); c.Method = route.method }
+					}
+					response := f.request(t, org, path, route.body, claims, map[string]string{"X-CSRF-Token": strings.Repeat("b", 64)})
+					requireNativeStatus(t, response, route.status)
+				}
 			}
 		})
 	}
