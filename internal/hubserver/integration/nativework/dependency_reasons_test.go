@@ -1,10 +1,8 @@
-package hubserver
+package nativework_test
 
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,13 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -31,12 +28,21 @@ import (
 
 func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	details := &memoryRunDetails{}
+	clock := hubtest.NewClock(now)
+	details := hubtest.NewDetails()
+	admin := hubtest.Database(t)
+	open := func(organization string) *hubfixture.Hub {
+		t.Helper()
+		cfg := hubfixture.StartupConfig()
+		cfg.Clock, cfg.RunDetails = clock.Now, details
+		cfg.Hosted.OrganizationID = organization
+		cfg.Hosted.WorkOSOrganizationID = "provider_" + organization
+		return hubfixture.OpenStartupOn(t, admin, cfg)
+	}
+	first, second := open("org_first"), open("org_second")
+	repository := first.Repository
 	const runnerID, machineID = "runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "machine_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, Clock: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &hostedplans.HostedConfig{OrganizationID: "org_first"}}}
-	service.registerNativeRoutes(service.echo)
 	leases := map[tracker.OrganizationID]leasestore.Lease{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		versions := map[tracker.NativeWorkItemID]eventstore.CollaborationVersion{}
@@ -56,7 +62,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 			}
 			versions[id] = version
 		}
-		descriptor := hubTestPolicy()
+		descriptor := hubtest.PolicyDescriptor()
 		descriptor.Requirements.RequiredTags = []string{"example-tag"}
 		revision, err := eventstore.NewContent(details).PrepareProjectPolicy(t.Context(), org, descriptor)
 		if err != nil {
@@ -66,10 +72,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 		revision.ApprovedAt = now
 		revision.ApprovedBy = "example-owner"
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
-				return err
-			}
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project", Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project", Name: "Example project", Slug: "example-project", Profile: "native"}, States: hubtest.States()}); err != nil {
 				return err
 			}
 			if err := w.ApproveProjectPolicy(t.Context(), revision, ""); err != nil {
@@ -128,6 +131,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 		}
 	}
 	now = now.Add(time.Second)
+	clock.Set(now)
 	path := "/api/v2/organizations/org_first/projects/project/work-items/item_1/dependency-reasons"
 	request := tracker.UpdateDependencyReason{Mutation: tracker.Mutation{IdempotencyKey: "reason-current", LeaseID: tracker.LeaseID(leases["org_first"].LeaseID), FencingToken: tracker.FencingToken(leases["org_first"].FencingToken)}, WorkItemID: "item_1", Kind: "blocked", Text: "Waits for the shared foundation.", Basis: workitemread.DependencyBasis([]string{"item_2"}), ExpectedRevision: 0}
 	setTags := func(tags []string) {
@@ -146,7 +150,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 	setTags([]string{"other-tag"})
 	mismatch := request
 	mismatch.IdempotencyKey = "policy mismatch"
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "org_first_token", mismatch), http.StatusConflict)
+	hubfixture.RequireStatus(t, first.Request(t, http.MethodPost, path, "org_first_token", mismatch), http.StatusConflict)
 	setTags([]string{"example-tag"})
 	for _, test := range []struct {
 		name   string
@@ -157,24 +161,22 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 			r := request
 			r.IdempotencyKey = test.name
 			test.mutate(&r)
-			response := performHubAPIRequest(t, service, http.MethodPost, path, "org_first_token", r)
-			requireNativeStatus(t, response, test.status)
+			response := first.Request(t, http.MethodPost, path, "org_first_token", r)
+			hubfixture.RequireStatus(t, response, test.status)
 		})
 	}
-	response := performHubAPIRequest(t, service, http.MethodPost, path, "org_first_token", request)
-	requireNativeStatus(t, response, http.StatusConflict)
 	request.IdempotencyKey = "current"
-	replay := performHubAPIRequest(t, service, http.MethodPost, path, "org_first_token", request)
-	requireNativeStatus(t, replay, http.StatusOK)
+	replay := first.Request(t, http.MethodPost, path, "org_first_token", request)
+	hubfixture.RequireStatus(t, replay, http.StatusOK)
 	var reason tracker.DependencyReason
-	decodeHubResponse(t, replay, &reason)
+	hubfixture.Decode(t, replay, &reason)
 	if reason.Revision != 1 || reason.Text != request.Text || reason.Basis != request.Basis {
 		t.Fatalf("persisted reason response = %+v", reason)
 	}
-	read := performHubAPIRequest(t, service, http.MethodGet, strings.TrimSuffix(path, "/dependency-reasons"), "org_first_token", nil)
-	requireNativeStatus(t, read, http.StatusOK)
+	read := first.Request(t, http.MethodGet, strings.TrimSuffix(path, "/dependency-reasons"), "org_first_token", nil)
+	hubfixture.RequireStatus(t, read, http.StatusOK)
 	var issue tracker.NativeIssue
-	decodeHubResponse(t, read, &issue)
+	hubfixture.Decode(t, read, &issue)
 
 	if issue.Revision != 1 || issue.State != "Todo" || issue.BlockedReason.Text != request.Text || issue.BlockedReason.Revision != 1 {
 		t.Fatalf("dependency reason changed issue authority or was not read: %+v", issue)
@@ -194,11 +196,11 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 	neighbor.Kind = "unblocks"
 	neighbor.Text = "Enables the dependent feature."
 	neighbor.Basis = workitemread.DependencyBasis([]string{"item_1"})
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "org_first_token", neighbor), http.StatusOK)
-	neighborRead := performHubAPIRequest(t, service, http.MethodGet, strings.TrimSuffix(path, "item_1/dependency-reasons")+"item_2", "org_first_token", nil)
-	requireNativeStatus(t, neighborRead, http.StatusOK)
+	hubfixture.RequireStatus(t, first.Request(t, http.MethodPost, path, "org_first_token", neighbor), http.StatusOK)
+	neighborRead := first.Request(t, http.MethodGet, strings.TrimSuffix(path, "item_1/dependency-reasons")+"item_2", "org_first_token", nil)
+	hubfixture.RequireStatus(t, neighborRead, http.StatusOK)
 	var neighborIssue tracker.NativeIssue
-	decodeHubResponse(t, neighborRead, &neighborIssue)
+	hubfixture.Decode(t, neighborRead, &neighborIssue)
 	if neighborIssue.UnblocksReason.Text != neighbor.Text || neighborIssue.UnblocksReason.Revision != 1 {
 		t.Fatalf("neighbor reason row is unusable: %+v", neighborIssue.UnblocksReason)
 	}
@@ -210,7 +212,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 			r := request
 			r.IdempotencyKey = fmt.Sprintf("concurrent_%d", index)
 			r.ExpectedRevision = 1
-			statuses <- performHubAPIRequest(t, service, http.MethodPost, path, "org_first_token", r).Code
+			statuses <- first.Request(t, http.MethodPost, path, "org_first_token", r).Code
 		})
 	}
 	workers.Wait()
@@ -229,32 +231,31 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "org_first_token", request), http.StatusOK)
+	hubfixture.RequireStatus(t, first.Request(t, http.MethodPost, path, "org_first_token", request), http.StatusOK)
 	r := request
 	r.IdempotencyKey = "released lease"
 	r.ExpectedRevision = 2
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "org_first_token", r), http.StatusConflict)
+	hubfixture.RequireStatus(t, first.Request(t, http.MethodPost, path, "org_first_token", r), http.StatusConflict)
 	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: "org_first", ProjectID: "project", WorkItemID: "item_1", RelatedProjectID: "project", RelatedWorkItemID: "item_2", Type: "dependency"}, "remove", now)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	staleRead := performHubAPIRequest(t, service, http.MethodGet, strings.TrimSuffix(path, "/dependency-reasons"), "org_first_token", nil)
-	requireNativeStatus(t, staleRead, http.StatusOK)
-	decodeHubResponse(t, staleRead, &issue)
+	staleRead := first.Request(t, http.MethodGet, strings.TrimSuffix(path, "/dependency-reasons"), "org_first_token", nil)
+	hubfixture.RequireStatus(t, staleRead, http.StatusOK)
+	hubfixture.Decode(t, staleRead, &issue)
 	if issue.BlockedReason.Text != "" || issue.BlockedReason.Basis == issue.BlockedReason.CurrentBasis || issue.Revision != 1 {
 		t.Fatalf("removed graph still exposes the old reason: %+v", issue.BlockedReason)
 	}
-	service.config.Hosted.OrganizationID = "org_second"
 	legacy := request
 	legacy.IdempotencyKey = "retain legacy baseline"
 	legacy.LeaseID = tracker.LeaseID(leases["org_second"].LeaseID)
 	legacy.FencingToken = tracker.FencingToken(leases["org_second"].FencingToken)
 	legacy.ExpectedRevision = 3
 	legacyPath := strings.Replace(path, "org_first", "org_second", 1)
-	legacyResult := performHubAPIRequest(t, service, http.MethodPost, legacyPath, "org_second_token", legacy)
-	requireNativeStatus(t, legacyResult, http.StatusOK)
-	decodeHubResponse(t, legacyResult, &reason)
+	legacyResult := second.Request(t, http.MethodPost, legacyPath, "org_second_token", legacy)
+	hubfixture.RequireStatus(t, legacyResult, http.StatusOK)
+	hubfixture.Decode(t, legacyResult, &reason)
 	if reason.Revision != 4 {
 		t.Fatalf("legacy reason revision reset: %+v", reason)
 	}

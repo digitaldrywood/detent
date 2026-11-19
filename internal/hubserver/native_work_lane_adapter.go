@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 
 	"github.com/labstack/echo/v4"
@@ -10,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemchange"
 	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/hubserver/workpage"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -70,4 +72,21 @@ func (s *Service) fitNativeRecovery(ctx context.Context, scope hubscope.NativeSc
 
 func projectNativeRecovery(result *tracker.NativeRecovery) error {
 	return workitemread.ProjectRecovery(result, boundedChangeReviewResult)
+}
+
+func validDependencyReason(text string) bool {
+	return workitemchange.ValidDependencyReason(text)
+}
+
+func (s *Service) updateNativeDependencyReason(c echo.Context) error {
+	var request tracker.UpdateDependencyReason
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
+		return s.invalidAPIRequest(c, err)
+	}
+	scope := hubscope.NativeRequestScope(c)
+	result, err := s.updateNativeDependencyReasonTenant(c.Request().Context(), scope, c.Param("item"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
 }
