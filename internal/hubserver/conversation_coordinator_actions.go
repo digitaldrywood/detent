@@ -289,11 +289,6 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 
-func coordinatorActionRequestID(messageID string, call runner.AgentToolCall) string {
-	digest := sha256.Sum256([]byte(messageID + ":" + call.Name + ":" + string(call.Arguments)))
-	return "luna_" + hex.EncodeToString(digest[:])
-}
-
 type coordinatorMoveAnswerAttempt struct {
 	checked   bool
 	attemptID string

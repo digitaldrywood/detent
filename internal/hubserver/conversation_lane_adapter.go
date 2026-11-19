@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/coordinator"
+	"github.com/digitaldrywood/detent/internal/runner"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/artifact/cataloghub"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -431,4 +435,86 @@ func (s *Service) artifactCatalogHTTP() conversations.ArtifactCatalogHTTP {
 			return s.database.postgres.WriteArtifactCatalog(ctx, org, corestore.Serving, write)
 		},
 	})
+}
+
+var coordinatorTool = coordinator.Tool
+var decodeCoordinatorArguments = coordinator.DecodeArguments
+var decodeCoordinatorArgumentsWithLimit = coordinator.DecodeArgumentsWithLimit
+var errCoordinatorToolArguments = coordinator.ErrToolArguments
+var coordinatorActionRequestID = coordinator.ActionRequestID
+var escapeCoordinatorData = coordinator.EscapeData
+var coordinatorWorkflowTool = coordinator.WorkflowTool
+var coordinatorWorkflowMutation = coordinator.WorkflowMutation
+var coordinatorWorkflowTools = coordinator.WorkflowTools
+var coordinatorSettingsDiff = coordinator.SettingsDiff
+var coordinatorPolicyEvidence = coordinator.PolicyEvidence
+var coordinatorSubjectPrompt = coordinator.SubjectPrompt
+var errCoordinatorProjectUnreadable = coordinator.ErrProjectUnreadable
+
+func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return coordinator.PreviewWorkflow(ctx, record, call, t.workflowPreviewDeps())
+}
+
+func (s *Service) executeCoordinatorWorkflowAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
+	return coordinator.ExecuteWorkflow(ctx, action, s.workflowExecutionDeps())
+}
+
+func (t *coordinatorToolset) issueContext(ctx context.Context, record conversationRecord) (operatortool.IssueContext, error) {
+	return t.issueContextDeps().IssueContext(ctx, record)
+}
+
+func (t *coordinatorToolset) readIssueHistory(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	return t.issueContextDeps().ReadIssueHistory(ctx, record, call)
+}
+
+func (t *coordinatorToolset) proposalDeps() coordinator.ProposalDeps {
+	return coordinator.ProposalDeps{
+		ActionContext: t.actionContext,
+		MessageID: func() string {
+			return t.state.users[len(t.state.users)-1].ID
+		},
+		Submit: t.submitCoordinatorAction,
+	}
+}
+
+func (t *coordinatorToolset) workflowPreviewDeps() coordinator.WorkflowPreviewDeps {
+	executor := hubProjectExecutor{t.coordinator.server}
+	return coordinator.WorkflowPreviewDeps{
+		ProposalDeps:       t.proposalDeps(),
+		ProjectScope:       projectToolScope,
+		LocalConfiguration: executor.localProjectConfiguration,
+		ReadConfiguration:  executor.Execute,
+		ReadPolicy:         executor.read,
+		PreviewApproval: func(ctx context.Context, call operatortool.Call) (json.RawMessage, error) {
+			return executor.command(ctx, call, projectCommandPreview)
+		},
+		PreviewConfiguration: func(ctx context.Context, name string, args operatortool.LocalProjectArguments) (operatortool.Result, error) {
+			return executor.projectConfigurationCommand(ctx, name, args, true)
+		},
+	}
+}
+
+func (s *Service) workflowExecutionDeps() coordinator.WorkflowExecutionDeps {
+	executor := hubProjectExecutor{s}
+	return coordinator.WorkflowExecutionDeps{
+		LocalConfiguration: executor.localProjectConfiguration,
+		Approve: func(ctx context.Context, call operatortool.Call) (json.RawMessage, error) {
+			return executor.command(ctx, call, projectCommandExecute)
+		},
+		Audit: executor.AuditAction,
+	}
+}
+
+func (t *coordinatorToolset) issueContextDeps() coordinator.IssueContextDeps {
+	return coordinator.IssueContextDeps{
+		ActionContext:    t.actionContext,
+		ResolveReference: t.resolveIssueReference,
+		WorkReader: func(scope hubscope.NativeScope) operatortool.WorkReader {
+			return operatorWorkReads{service: t.coordinator.server, scope: scope}
+		},
+	}
+}
+
+func (t *coordinatorToolset) workReadContext(ctx context.Context, record conversationRecord) (context.Context, hubscope.NativeScope, error) {
+	return t.issueContextDeps().WorkReadContext(ctx, record)
 }
