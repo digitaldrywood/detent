@@ -114,3 +114,7 @@ func (s *nativeSessionClient) SessionProgress(_ context.Context, id int64) (stor
 	}
 	return *snapshot.Progress, nil
 }
+
+func (s *nativeSessionClient) MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error {
+	return nil
+}

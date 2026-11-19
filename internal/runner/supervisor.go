@@ -245,9 +245,21 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 	if request.PrepareRun != nil {
 		prepare := request.PrepareRun
 		request.PrepareRun = nil
-		err = prepare(ctx, &request)
+		if _, native := request.Execution.(AttemptWorkerExecution); native {
+			request.PrepareRun = func(ctx context.Context, prepared *RunRequest) error {
+				err := prepare(ctx, prepared)
+				if owner, ok := prepared.Execution.(AttemptWorkerExecution); ok {
+					prepared.AttemptWorkspace = owner.AttemptWorkspace()
+				}
+				completion.Request = *prepared
+				return err
+			}
+		} else {
+			err = prepare(ctx, &request)
+		}
 	}
 	completion.Request = request
+	completion.Request.PrepareRun = nil
 	if err == nil {
 		result, err = s.backend.Run(ctx, request)
 	}

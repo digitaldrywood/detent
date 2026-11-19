@@ -24,7 +24,7 @@ func (l *LocalGit) PrepareCheckpoint(ctx context.Context, info Info, issue Issue
 	}
 	automatic := issue
 	automatic.BranchName = ""
-	if !l.autoBranch || expected.Branch == "" || info.Path != expected.Path || info.Branch != l.branchName(automatic, expected.Key) {
+	if !l.autoBranch || expected.Branch == "" || expected.PublicationBranch != "" || info.Path != expected.Path || info.Branch != l.branchName(automatic, expected.Key) {
 		return CheckpointPlan{}, fmt.Errorf("%w: workspace is not an automatically owned issue branch", ErrCheckpointUnsafe)
 	}
 	if !l.isSourceWorktree(ctx, info.Path) {

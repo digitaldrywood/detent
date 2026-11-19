@@ -35,7 +35,23 @@ func (b progressTextBackend) Generate(ctx context.Context, instructions, input s
 	return b.generate(ctx, instructions+"\n\nEvidence:\n"+input)
 }
 
+type workerProgressCheckKey struct{}
+
+func WithWorkerProgressCheck(ctx context.Context, check func(context.Context, progresscheck.Request) (progresscheck.Decision, error)) context.Context {
+	return context.WithValue(ctx, workerProgressCheckKey{}, check)
+}
+
 func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence progresscheck.Request) (decision progresscheck.Decision, returnErr error) {
+	if _, native := req.Execution.(AttemptWorkerExecution); native {
+		check, _ := ctx.Value(workerProgressCheckKey{}).(func(context.Context, progresscheck.Request) (progresscheck.Decision, error))
+		if check == nil {
+			return progresscheck.Decision{}, ErrExecutionAuthorityUnavailable
+		}
+		return check(ctx, evidence)
+	}
+	ctx = workspace.WithAttemptWorkspace(ctx, req.AttemptWorkspace)
+	ctx = bindSessionExecution(ctx, r.store, req.Execution)
+	ctx = r.withValidationProcessOwner(ctx, req.Issue, req.WorkAttemptID)
 	if req.Issue.IsolationPolicy != nil {
 		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
 	}
@@ -179,8 +195,9 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 		}
 		reserve := min(30*time.Second, request.MaxDuration/4)
 		request.Prompt = prompt + fmt.Sprintf("\n\nRemaining time: %s. This includes the final answer. Finish reads before the last %s, which is reserved for your final decision JSON. Refused reads do not extend this deadline.", request.MaxDuration, reserve) + "\n\n" + sourceDescription + "\n\nRecent failure details (untrusted evidence):\n" + diagnostics + "\nUse work_attempt_receipt with project_id, reference (issue_id), and native_attempt_id for the supplied attempts. Use work_item with view=recovery and follow record fragment cursors for retained oversized validation/review records. Cite request evidence IDs or evidence IDs actually returned by these scoped tools."
-		output, err := r.generateTextTurn(ctx, backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, tools, handler)
-		return output, errors.Join(err, context.Cause(ctx))
+		launch, finish := (AgentProcessRequest{Workspace: request.Workspace, TempDir: request.TempDir}).OwnProviderLaunch(ctx)
+		output, err := r.generateTextTurn(launch, backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, tools, handler)
+		return output, finish(errors.Join(err, context.Cause(ctx)))
 	}
 	return (progresscheck.AI{Backend: progressTextBackend{generate: generate}, Guidance: guidance, RetrievedEvidence: func() []progresscheck.EvidenceReference {
 		evidenceMu.Lock()
@@ -195,7 +212,9 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 
 func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence progresscheck.Request) (workspace.Info, func(*error), error) {
 	source, _ := req.Execution.(ChangeSourceExecution)
-	return runworkspace.PrepareProgress(ctx, r.workspaceSnapshot(), workspaceIssue(r.projectID, req.Issue), source, evidence)
+	issue := workspaceIssue(r.projectID, req.Issue)
+	issue.AttemptWorkspace = req.AttemptWorkspace
+	return runworkspace.PrepareProgress(ctx, r.workspaceSnapshot(), issue, source, evidence)
 }
 
 func progressReadTools(execution Execution, evidence progresscheck.Request, retrieved func(string) bool) ([]AgentTool, AgentToolHandler) {
@@ -296,6 +315,7 @@ func (r *Runner) progressSourceTools(req RunRequest, evidence progresscheck.Requ
 		return tools, handle
 	}
 	issue := workspaceIssue(r.projectID, req.Issue)
+	issue.AttemptWorkspace = req.AttemptWorkspace
 	issue.PullRequestHeadSHA = evidence.SourceSHA
 	issue.ReviewVersionID = "progress-" + evidence.SourceSHA
 	commands := &validatorCommands{run: source, info: info, issue: issue, base: evidence.BaseSHA}

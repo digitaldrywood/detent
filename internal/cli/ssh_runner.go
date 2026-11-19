@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -99,6 +100,7 @@ type sshBootstrap struct {
 	BudgetEstimator bool
 	GoTestReceipts  bool
 	Run             runnerpkg.SSHRunRequest
+	Progress        *progresscheck.Request
 }
 
 func sshCommand(ctx context.Context, host, command string) *exec.Cmd {
@@ -137,11 +139,18 @@ func (r *sshRunner) WorkerHostAvailable(ctx context.Context, host string) bool {
 }
 
 func (r *sshRunner) Run(ctx context.Context, request runnerpkg.RunRequest) (result runnerpkg.RunResult, runErr error) {
+	_, native := request.Execution.(runnerpkg.AttemptWorkerExecution)
 	if request.WorkerHost == "" || request.WorkerHost == "local" {
 		if r.artifacts != nil {
 			return r.runLocalWorker(ctx, request)
 		}
+		if native {
+			return result, runnerpkg.ErrExecutionAuthorityUnavailable
+		}
 		return r.Runner.Run(ctx, request)
+	}
+	if native {
+		return result, runnerpkg.ErrExecutionAuthorityUnavailable
 	}
 	if request.Execution != nil {
 		guarded, stop, err := request.Execution.Guard(ctx)
@@ -281,7 +290,7 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 		if strings.HasPrefix(method, "source.") {
 			return sources.Handle(ctx, method, args)
 		}
-		if (method != "run" && method != "reap" && method != "reconcile") || len(args) != 1 {
+		if (method != "run" && method != "run.progress" && method != "reap" && method != "reconcile") || len(args) != 1 {
 			return nil, errors.New("unsupported SSH worker request")
 		}
 		// A channel carries exactly one worker. Never allow two lifecycles to
@@ -298,6 +307,10 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 		}
 		if bootstrap.Version != runnerpkg.SSHProtocolVersion {
 			return nil, errors.New("incompatible SSH worker protocol")
+		}
+		if (bootstrap.Run.AttemptWorker || bootstrap.Run.Request.AttemptWorkspace.Key() != "") &&
+			(!bootstrap.Local || bootstrap.Run.Request.AttemptWorkspace.Key() == "") {
+			return nil, runnerpkg.ErrExecutionAuthorityUnavailable
 		}
 		bootstrap.Run.Sources = sources
 		result, err := runSSHBootstrap(ctx, peer, bootstrap, logger, method, func(cleanup func() error) { cleanups = append(cleanups, cleanup) })
@@ -335,6 +348,9 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 }
 
 func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBootstrap, logger *slog.Logger, operation string, retainCleanup func(func() error)) (result any, runErr error) {
+	if operation == "run.progress" && (!boot.Local || boot.Progress == nil || !boot.Run.AttemptWorker || boot.Run.Request.AttemptWorkspace.Key() == "") {
+		return nil, runnerpkg.ErrExecutionAuthorityUnavailable
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -424,6 +440,8 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 		return nil, err
 	}
 	switch operation {
+	case "run.progress":
+		return run.CheckProgress(ctx, boot.Run.Bind(ctx, peer), *boot.Progress)
 	case "reap":
 		return run.ReapWorkspace(ctx, boot.Run.Request.Issue)
 	case "reconcile":

@@ -1107,6 +1107,14 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 		if err != nil {
 			return AgentTurnResult{}, err
 		}
+		if request.acknowledgeProcess != nil {
+			launchCtx := governedCtx
+			governedCtx = procgroup.WithStartAcknowledgement(governedCtx, func(identity procgroup.Identity) error {
+				updateMu.Lock()
+				defer updateMu.Unlock()
+				return request.acknowledgeProcess(launchCtx, identity, request.TempDir)
+			})
+		}
 		var result AgentTurnResult
 		var runErr error
 		if len(tools) > 0 {
@@ -1294,6 +1302,8 @@ func (r *Runner) runAgentTurn(
 	usageReport := &turnUsageReporter{startedAt: r.now(), sourceID: "session_" + strconv.FormatInt(detentSessionID, 10)}
 	activityProfile := runRequest.activityProfile
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
+	worker := &sessionWorkerRegistration{sessionID: detentSessionID, cleanupRoot: info.Path}
+	turnRequest.acknowledgeProcess = r.acknowledgeProviderProcess(ctx, worker, "")
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		r.providerUsage.ObserveUpdate(initialIdentity.BackendID, update)
@@ -1319,7 +1329,7 @@ func (r *Runner) runAgentTurn(
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
 			}
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update, info.Path, update.workerScratchPath); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
 			return err
 		}
 		r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
@@ -1682,6 +1692,12 @@ func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backen
 	}
 	refreshCheckpoint := previous != nil && previous.Checkpoint != nil && (previous.Checkpoint.WorktreeState == "dirty" || previous.Checkpoint.Resume == "fresh_checkout")
 	issue.Checkpoint = nativeRestorableCheckpoint(recovery, issue.Source)
+	if issue.Checkpoint == nil && issue.Source == nil && issue.AttemptWorkspace.Key() != "" &&
+		previous != nil && previous.MachineID != "" && previous.MachineID == recovery.Lease.MachineID &&
+		previous.Checkpoint != nil && previous.Checkpoint.Storage == "local_only" && previous.Checkpoint.WorktreeState == "unpushed" &&
+		!previous.Checkpoint.UncertainForgeEffect() {
+		issue.LocalCheckpoint = previous.Checkpoint
+	}
 	if issue.NativeRework && refreshCheckpoint && issue.Checkpoint != nil {
 		issue.FreshCheckout = true
 	} else if issue.Checkpoint != nil && !issue.RequireCheckpoint && sameMachineWorkspaceRetained(runWorkspace, recovery, *issue) {
@@ -1946,6 +1962,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, errors.Join(sourceErr, err)
 		}
 		sourceRecovery := workspaceIssue.NativeRework || workspaceIssue.Source != nil && workspaceIssue.Source.Transferred
+		if errors.Is(err, workspace.ErrLocalCheckpointChanged) {
+			return RunResult{}, fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, err)
+		}
 		if sourceRecovery && errors.Is(err, workspace.ErrMergeResolutionInvalid) {
 			return RunResult{}, fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, err)
 		}
@@ -2090,7 +2109,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		r.publishCompletionSourceStart(req, recoveryState)
 		targetRefObserver = func(observerCtx context.Context) *DeliverableTargetRefEvidence {
 			postCommand := r.observeWorkspaceDeliverableState(runWorkspace, observerCtx, info, workspaceIssue, "post_command")
-			return deliverableTargetRefEvidence(info.Branch, initialDeliverableState, postCommand)
+			return deliverableTargetRefEvidence(info.PublishBranch(), initialDeliverableState, postCommand)
 		}
 	}
 	promptOptions := PromptOptions{
@@ -2641,7 +2660,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			execution = r.reconcileFailedPushPublication(sessionCtx, runWorkspace, info, workspaceIssue, initialDeliverableState, execution, req)
 		}
 		if deliverableErr, ok := recoverablePullRequestDeliverable(execution); ok {
-			branch := strings.TrimSpace(info.Branch)
+			branch := strings.TrimSpace(info.PublishBranch())
 			if branch == "" {
 				branch = strings.TrimSpace(req.Issue.BranchName)
 			}
@@ -2971,7 +2990,7 @@ func (r *Runner) reconcileFailedPushPublication(
 
 	targetRef := cloneDeliverableTargetRefEvidence(pushErrors[0].TargetRef)
 	if targetRef == nil {
-		targetRef = deliverableTargetRefEvidence(info.Branch, initial, workspaceDeliverableStateObservation{})
+		targetRef = deliverableTargetRefEvidence(info.PublishBranch(), initial, workspaceDeliverableStateObservation{})
 	}
 	finalState := r.observeWorkspaceDeliverableState(backend, ctx, info, issue, "final_command_reconciliation")
 	targetRef = finalizeDeliverableTargetRefEvidence(targetRef, finalState)
@@ -4043,7 +4062,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		effort = resolvedSelection.Effort
 	}
 	stopCompute := r.meterCompute(runReq.WorkerHost)
+	worker := &sessionWorkerRegistration{sessionID: sessionID, cleanupRoot: info.Path}
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
+		acknowledgeProcess:  r.acknowledgeProviderProcess(sessionCtx, worker, ""),
 		ReadOnly:            req.NativeVersion != nil,
 		SupplementalTools:   req.NativeVersion != nil,
 		AllowLocalBinding:   workflow.Config.Worker.EffectiveAllowLocalBinding(),
@@ -4078,7 +4099,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
 		r.logAgentUpdate(runReq, sessionID, update)
-		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, info.Path, update.workerScratchPath); err != nil {
+		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
 			return err
 		}
 		r.persistSessionProviderIdentity(updateCtx, sessionID, update)
@@ -4592,27 +4613,60 @@ func (r *Runner) persistSessionProviderIdentity(ctx context.Context, sessionID i
 	}
 }
 
-func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int64, update AgentUpdate, cleanupRoot string, cleanupPath string) error {
-	identity := update.WorkerProcess
-	if sessionID <= 0 || identity.PID <= 0 || identity.StartedAt.IsZero() {
+type sessionWorkerRegistration struct {
+	sessionID    int64
+	cleanupRoot  string
+	acknowledged procgroup.Identity
+}
+
+func (r *Runner) persistSessionWorkerProcess(ctx context.Context, worker *sessionWorkerRegistration, identity procgroup.Identity, cleanupPath string) error {
+	if identity.PID == 0 {
 		return nil
 	}
 	processStore, ok := r.store.(sessionWorkerProcessStore)
-	if !ok {
+	process := store.WorkerProcessIdentity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt}
+	scoped := workspace.AttemptWorkspaceFromContext(ctx).Key() != ""
+	if scoped {
+		if worker.acknowledged == identity {
+			return nil
+		}
+		if !ok || worker.sessionID <= 0 {
+			return ErrExecutionAuthorityUnavailable
+		}
+		var err error
+		process, err = inspectedWorkerProcess(identity)
+		if err != nil {
+			return err
+		}
+	} else if !ok || worker.sessionID <= 0 || identity.PID < 0 || identity.StartedAt.IsZero() {
 		return nil
 	}
-	if err := processStore.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessRegistration{
-		WorkerProcessIdentity: store.WorkerProcessIdentity{
-			PID:       identity.PID,
-			GroupID:   identity.GroupID,
-			StartedAt: identity.StartedAt,
-		},
-		CleanupRoot: strings.TrimSpace(cleanupRoot),
-		CleanupPath: strings.TrimSpace(cleanupPath),
+	if err := processStore.UpdateSessionWorkerProcess(ctx, worker.sessionID, store.WorkerProcessRegistration{
+		WorkerProcessIdentity: process,
+		CleanupRoot:           strings.TrimSpace(worker.cleanupRoot),
+		CleanupPath:           strings.TrimSpace(cleanupPath),
 	}); err != nil {
 		return fmt.Errorf("update agent session worker process: %w", err)
 	}
+	if scoped {
+		worker.acknowledged = identity
+	}
 	return nil
+}
+
+func (r *Runner) acknowledgeProviderProcess(ctx context.Context, worker *sessionWorkerRegistration, cleanupPath string) func(context.Context, procgroup.Identity, string) error {
+	if workspace.AttemptWorkspaceFromContext(ctx).Key() == "" {
+		return nil
+	}
+	return func(ctx context.Context, identity procgroup.Identity, scratch string) error {
+		if identity.PID <= 0 {
+			return ErrExecutionAuthorityUnavailable
+		}
+		if cleanupPath != "" {
+			scratch = cleanupPath
+		}
+		return r.persistSessionWorkerProcess(ctx, worker, identity, scratch)
+	}
 }
 
 func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, issue connector.Issue, reason string) error {

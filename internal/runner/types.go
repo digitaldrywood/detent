@@ -384,6 +384,7 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
+	acknowledgeProcess  func(context.Context, procgroup.Identity, string) error
 	ExtraNetworkDomains []string
 	AllowLocalBinding   bool
 	// ConversationControl, when set, connects a live conversation to the turn on

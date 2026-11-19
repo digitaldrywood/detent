@@ -3,9 +3,11 @@ package nativechange
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/runtimeevidence"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -27,6 +29,12 @@ func (e *nativeExecution) RegisterAttemptWorker(ctx context.Context, worker trac
 	}
 	e.workerLaunchMu.Lock()
 	defer e.workerLaunchMu.Unlock()
+	if e.workerFromRecovery {
+		if err := e.reconcileAttemptWorker(ctx); err != nil {
+			return false, err
+		}
+		e.workerFromRecovery = false
+	}
 	if e.worker != nil {
 		if !e.workerExited {
 			return *e.worker == worker, nil
@@ -113,6 +121,38 @@ func (e *nativeExecution) RegisterAttemptWorker(ctx context.Context, worker trac
 	e.worker = &worker
 	e.reconnecting = false
 	return true, nil
+}
+
+func (e *nativeExecution) reconcileAttemptWorker(ctx context.Context) error {
+	client := e.claim.source.NativeClient()
+	lease := e.claim.lease
+	attempt := e.AttemptWorkspace().Attempt
+	for after := ""; ; {
+		page, err := client.AttemptWorkers(ctx, after)
+		if err != nil {
+			return fmt.Errorf("read recovered attempt worker: %w", err)
+		}
+		for _, record := range page.Workers {
+			if record.AttemptID != attempt {
+				continue
+			}
+			if record.WorkItemID != lease.WorkItemID || record.LeaseID != lease.ID || record.FencingToken != lease.FencingToken ||
+				record.MachineID != lease.MachineID || record.LeaseState != runnerauth.AttemptLeaseLive {
+				return runner.ErrExecutionAuthorityUnavailable
+			}
+			if err := runner.VerifyRecoveredAttemptWorkerExited(record.Worker); err != nil {
+				return err
+			}
+			return e.retireAttemptWorker(ctx, record.Worker)
+		}
+		if page.Next == "" {
+			return nil
+		}
+		if page.Next <= after {
+			return runner.ErrExecutionAuthorityUnavailable
+		}
+		after = page.Next
+	}
 }
 
 func (e *nativeExecution) AttemptWorkerExited(worker tracker.NativeAttemptWorker) {

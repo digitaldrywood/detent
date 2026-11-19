@@ -16,7 +16,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) (err error) {
+func (e *nativeExecution) NoteAttemptWorkerPreparation(observation tracker.NativeRuntimeObservation) {
+	e.noteRuntimeDiagnostic(observation)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.data.Sequence == 0 && e.data.Identity == nil {
+		preparation := runtimeevidence.Merge(e.data.Runtime, observation)
+		e.data.Runtime = &preparation
+		e.runtimeDirty = true
+	}
+}
+
+func (e *nativeExecution) noteRuntimeDiagnostic(observation tracker.NativeRuntimeObservation) {
 	e.diagnosticMu.Lock()
 	if observation.LocalAttemptID > 0 {
 		e.diagnostic.LocalAttemptID = observation.LocalAttemptID
@@ -28,6 +39,10 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 		e.diagnostic.Stage = observation.Phase
 	}
 	e.diagnosticMu.Unlock()
+}
+
+func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) (err error) {
+	e.noteRuntimeDiagnostic(observation)
 	defer func() {
 		if err != nil {
 			err = e.executionError(ctx, err)

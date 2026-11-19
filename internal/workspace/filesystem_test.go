@@ -98,3 +98,29 @@ func TestFilesystemWorkspaceCreatesArtifactWorkspaceAndOutputRoot(t *testing.T) 
 		t.Fatalf("workspace still exists or unexpected stat error: %v", err)
 	}
 }
+
+func TestReview1973FilesystemAttemptPaths(t *testing.T) {
+	backend, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), OutputRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{ID: "wi_example", Identifier: "prj_example#1",
+		AttemptWorkspace: AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}}
+	first, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.AttemptWorkspace.Attempt = "attempt_22222222222222222222222222222222"
+	second, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Path == second.Path || first.Key == second.Key {
+		t.Fatalf("attempts share a workspace or output: %+v %+v", first, second)
+	}
+	for _, info := range []Info{first, second} {
+		if _, err := os.Stat(filepath.Join(backend.outputRoot, info.Key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

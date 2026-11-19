@@ -226,7 +226,7 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 		}
 		return info, false, nil
 	}
-	if info.Branch != "" {
+	if scope, _ := splitCheckoutIssueKey(info.Key); scope == "" && info.Branch != "" {
 		if err := l.releaseBranchHolders(ctx, info.Branch, info.Path); err != nil {
 			return info, false, err
 		}
@@ -426,8 +426,8 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	}
 
 	result := LandResult{Gate: validation, MergeSHA: mergeSHA, BaseRef: target, BaseBefore: targetHead, Method: method, Rebased: rebased}
-	if opts.PushAttemptBranch && strings.TrimSpace(normalized.Branch) != "" {
-		if _, err := runGitAt(ctx, normalized.Path, "push", remote, head+":refs/heads/"+normalized.Branch); err == nil {
+	if branch := normalized.PublishBranch(); opts.PushAttemptBranch && branch != "" {
+		if _, err := runGitAt(ctx, normalized.Path, "push", remote, head+":refs/heads/"+branch); err == nil {
 			result.AttemptBranchPushed = true
 		} else if l.logger != nil {
 			l.logger.Warn("landed head not published under its branch name", "branch", normalized.Branch, "error", err)

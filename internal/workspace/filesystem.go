@@ -275,7 +275,7 @@ func (f *Filesystem) DiffStat(ctx context.Context, info Info, issue Issue) (Diff
 }
 
 func (f *Filesystem) infoForIssue(issue Issue) (Info, error) {
-	key := issueKey(issue)
+	key := workspaceIssueKey(issue)
 	path, err := validateWorkspacePath(f.root, filepath.Join(f.root, key))
 	if err != nil {
 		return Info{}, err

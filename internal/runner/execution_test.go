@@ -220,6 +220,8 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 		status             string
 		recoveryReason     string
 		unpushed           bool
+		privateCheckout    bool
+		alteredCheckpoint  bool
 		changedHead        bool
 		changedModel       bool
 		priorEffort        string
@@ -236,6 +238,8 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	}{
 		{name: "killed clean attempt", status: "cancelled"},
 		{name: "killed unpushed attempt", status: "cancelled", unpushed: true},
+		{name: "legacy unpushed checkpoint in private checkout", status: "cancelled", unpushed: true, privateCheckout: true},
+		{name: "private checkout refuses changed legacy checkpoint", status: "cancelled", unpushed: true, privateCheckout: true, alteredCheckpoint: true},
 		{name: "ordinary failed retry", status: "failed"},
 		{name: "unchanged git checkpoint after restart", status: "cancelled", gitRef: true},
 		{name: "unchanged git checkpoint on failed retry", status: "failed", gitRef: true},
@@ -270,6 +274,9 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			}
 			identity := agentidentity.Configured("codex", "codex", "default", role, "example-model", "openai", test.priorEffort, "", started)
 			issue := connector.Issue{ID: "work", Identifier: "example-org/example-project#1", State: "In Progress", BranchName: "example/work"}
+			if test.privateCheckout {
+				issue.BranchName = ""
+			}
 			if role == RoleRework {
 				issue.State = "Rework"
 			}
@@ -394,7 +401,28 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Issue: issue, Mode: RunModeImplement, Execution: runExecution})
+			request := RunRequest{ProjectID: "native", Policy: approved, Issue: issue, Mode: RunModeImplement, Execution: runExecution}
+			if test.privateCheckout {
+				request.AttemptWorkspace = workspace.AttemptWorkspace{Organization: "org_example", Project: "native", Attempt: "attempt_22222222222222222222222222222222"}
+				execution.recovery.Attempts[0].AttemptID = "attempt_11111111111111111111111111111111"
+				owner.attempts["attempt_11111111111111111111111111111111"] = owner.attempts["attempt_previous"]
+				if test.alteredCheckpoint {
+					runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "altered source")
+				}
+			}
+			_, err = restarted.Run(ctx, request)
+			if test.alteredCheckpoint {
+				if !errors.Is(err, ErrNativeRecoveryRequired) || !strings.Contains(err.Error(), "local_checkpoint_changed") || agent.calls != 0 {
+					t.Fatalf("changed checkpoint: error=%v provider calls=%d", err, agent.calls)
+				}
+				candidate := workspaceIssue
+				candidate.AttemptWorkspace = request.AttemptWorkspace
+				retained, err := gitWorkspace.Existing(candidate)
+				if err != nil || retained.Path != info.Path {
+					t.Fatalf("changed evidence prepared a new checkout: %+v %v", retained, err)
+				}
+				return
+			}
 			wantResume := resume
 			wantAction, wantReason := "resume_session", "verified_local_session"
 			if fresh {
@@ -423,8 +451,16 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 				t.Errorf("persisted native identity = %+v, want %+v", execution.identity, wantIdentity)
 			}
 			decision := execution.runtime.Recovery
-			if decision == nil || decision.Action != wantAction || decision.Reason != wantReason || agent.request.Workspace != info.Path {
+			if decision == nil || decision.Action != wantAction || decision.Reason != wantReason || (agent.request.Workspace != info.Path) != test.privateCheckout {
 				t.Fatalf("restart lost recovery or workspace: decision=%+v workspace=%s", decision, agent.request.Workspace)
+			}
+			if test.privateCheckout {
+				if !strings.Contains(runRunnerGit(t, agent.request.Workspace, "show", "HEAD:feature.md"), "retained feature") {
+					t.Fatal("private checkout lost the retained commit")
+				}
+				if strings.TrimSpace(runRunnerGit(t, info.Path, "branch", "--show-current")) != info.Branch {
+					t.Fatal("legacy checkout lost its branch")
+				}
 			}
 			after, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
 			if err != nil {

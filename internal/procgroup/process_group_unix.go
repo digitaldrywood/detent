@@ -444,3 +444,44 @@ func waitForProcessTargetExit(ctx context.Context, pid int, groupID int, grace t
 		}
 	}
 }
+
+func startAcknowledged(cmd *exec.Cmd, acknowledge func(Identity) error) error {
+	if cmd.Err != nil {
+		return cmd.Err
+	}
+	fd := 3 + len(cmd.ExtraFiles)
+	if fd > 9 {
+		return errors.New("no descriptor available for worker acknowledgement")
+	}
+	input, release, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("open worker acknowledgement pipe: %w", err)
+	}
+	defer release.Close()
+	cmd.ExtraFiles = append(cmd.ExtraFiles, input)
+	script := fmt.Sprintf(`IFS= read -r permission <&%d && [ "$permission" = go ] || exit 1; exec %d<&-; exec "$@"`, fd, fd)
+	args := []string{"sh", "-c", script, "sh", cmd.Path}
+	if len(cmd.Args) > 0 {
+		args = append(args, cmd.Args[1:]...)
+	}
+	cmd.Args = args
+	cmd.Path = "/bin/sh"
+	if err := Start(cmd); err != nil {
+		return errors.Join(err, input.Close())
+	}
+	group := GroupID(cmd)
+	if err := input.Close(); err != nil {
+		return errors.Join(err, release.Close(), TerminateTree(cmd, group), Wait(cmd))
+	}
+	identity, err := Inspect(cmd)
+	if err == nil {
+		err = acknowledge(identity)
+	}
+	if err != nil {
+		return errors.Join(fmt.Errorf("acknowledge worker launch: %w", err), release.Close(), Wait(cmd))
+	}
+	if _, err := release.WriteString("go\n"); err != nil {
+		return errors.Join(err, release.Close(), TerminateTree(cmd, group), Wait(cmd))
+	}
+	return nil
+}

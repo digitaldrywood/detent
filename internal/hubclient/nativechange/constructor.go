@@ -26,6 +26,7 @@ func NewExecution(host executioncontract.ExecutionHost, view executioncontract.E
 		execution.role = attempt.Identity.Role
 		execution.workerBootstrapping = attempt.Runtime != nil && attempt.Runtime.WorkerLaunch != nil && attempt.Runtime.WorkerLaunch.Bootstrap
 		execution.reconnecting = true
+		execution.workerFromRecovery = true
 		if attempt.Checkpoint != nil {
 			execution.worktreeState = attempt.Checkpoint.WorktreeState
 			execution.worktreeHead = attempt.Checkpoint.HeadSHA

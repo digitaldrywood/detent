@@ -75,3 +75,25 @@ func sameIdentity(current Identity, recorded Identity) bool {
 		(recorded.GroupID <= 0 || current.GroupID == recorded.GroupID) &&
 		!recorded.StartedAt.IsZero() && current.StartedAt.Equal(recorded.StartedAt)
 }
+
+type startAcknowledgementKey struct{}
+
+func WithStartAcknowledgement(ctx context.Context, acknowledge func(Identity) error) context.Context {
+	return context.WithValue(ctx, startAcknowledgementKey{}, acknowledge)
+}
+
+func StartAuthorized(ctx context.Context, cmd *exec.Cmd) error {
+	acknowledge, _ := ctx.Value(startAcknowledgementKey{}).(func(Identity) error)
+	if acknowledge == nil {
+		return Start(cmd)
+	}
+	return startAcknowledged(cmd, func(identity Identity) error {
+		if err := ctx.Err(); err != nil {
+			return context.Cause(ctx)
+		}
+		if err := acknowledge(identity); err != nil {
+			return err
+		}
+		return context.Cause(ctx)
+	})
+}

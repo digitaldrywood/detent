@@ -153,7 +153,7 @@ func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, iss
 			return GitHubPublication{}, err
 		}
 	}
-	branch := strings.TrimSpace(normalized.Branch)
+	branch := strings.TrimSpace(normalized.PublishBranch())
 	defer func() {
 		returnErr = reconcilePublicationRefusal(ctx, normalized.Path, remote, branch, base, *opts, returnErr)
 	}()
@@ -456,7 +456,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if err := l.verifyLandingWorktree(ctx, normalized, issue, opts); err != nil {
 		return LandResult{}, err
 	}
-	branch := strings.TrimSpace(normalized.Branch)
+	branch := strings.TrimSpace(normalized.PublishBranch())
 	if branch == "" {
 		return LandResult{}, refuse(LandRefusalProtected, "GitHub pull request landing needs an attempt branch to publish")
 	}
@@ -985,7 +985,7 @@ func githubLandingBranch(info Info, opts LandOptions) string {
 	if opts.External != nil && info.ReviewBranch != "" {
 		return info.ReviewBranch
 	}
-	return info.Branch
+	return info.PublishBranch()
 }
 
 func (l *LocalGit) verifyGitHubLandingSource(ctx context.Context, info Info, issue Issue, opts LandOptions, remote, repository, base string, number int, publishedHead, validatedBase string, refusal error) error {

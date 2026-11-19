@@ -32,11 +32,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/procstart"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -47,6 +49,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestLocalWorkerProcess(t *testing.T) {
@@ -83,7 +86,7 @@ func TestLocalWorkerProcess(t *testing.T) {
 			}
 			defer close(finished)
 			var boot sshBootstrap
-			if method != "run" || len(args) != 1 {
+			if (method != "run" && method != "run.progress") || len(args) != 1 {
 				return nil, errors.New("invalid worker bootstrap")
 			}
 			if err := json.Unmarshal(args[0], &boot); err != nil {
@@ -100,6 +103,12 @@ func TestLocalWorkerProcess(t *testing.T) {
 			var release string
 			if err := peer.Call(ctx, "progress", &release); err != nil {
 				return nil, err
+			}
+			if method == "run.progress" {
+				if boot.Progress == nil || request.AttemptWorkspace.Key() == "" {
+					return nil, errors.New("progress request lacks attempt scope or evidence")
+				}
+				return progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "fixture progress"}, nil
 			}
 			if completion, ok := request.Execution.(runnerpkg.CompletionExecution); ok {
 				if err := completion.PrepareFinish(ctx, "succeeded", "Worker finished", nil); err != nil {
@@ -743,12 +752,18 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 	defer cancel()
 	var events []tracker.NativeRunEvent
 	var registration runnersession.Mutation
-	var acked int
+	var acked, reconnectReads int
 	var inventory func() []runnerauth.AttemptWorker
+	var reconnectSource *hubclient.NativeConnector
 	var mu sync.Mutex
 	sent := make(chan struct{}, 2)
 	intercept := func(handler http.Handler, request *http.Request) (*http.Response, error) {
 		var event tracker.NativeRunEvent
+		if request.URL.Query().Has("attempt_worker_after") {
+			mu.Lock()
+			reconnectReads++
+			mu.Unlock()
+		}
 		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
 			raw, err := io.ReadAll(request.Body)
 			if err != nil {
@@ -784,7 +799,7 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			case "before_registration":
 				cancel()
 				return nil, io.ErrUnexpectedEOF
-			case "unreachable":
+			case "unreachable", "preparation_unreachable":
 				return nil, io.ErrUnexpectedEOF
 			case "after_commit_before_reply", "after_ack_before_release", "lost_reply":
 				recorder := httptest.NewRecorder()
@@ -831,6 +846,51 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			}
 			return response.Page.Workers
 		}
+		if scenario == "recovered_live" || scenario == "recovered_exited" {
+			path := filepath.Join(t.TempDir(), "private", "runner.json")
+			file, err := runnerauth.Initialize(path, "https://worker-hub.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = organization
+			file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			client, err := hubclient.New(hubclient.Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{
+				Transport: workerHubTransport(func(request *http.Request) (*http.Response, error) {
+					request.Header.Set("Authorization", "Bearer "+token)
+					if !request.URL.Query().Has("attempt_worker_after") {
+						return intercept(handler, request)
+					}
+					request.URL.Path = strings.Replace(request.URL.Path, string(file.Identity.MachineID), string(clihangBinding(organization).MachineID), 1)
+					resp, err := intercept(handler, request)
+					if err != nil || resp.StatusCode != http.StatusOK {
+						return resp, err
+					}
+					var wire runnerauth.AttemptWorkerInventory
+					err = errors.Join(json.NewDecoder(resp.Body).Decode(&wire), resp.Body.Close())
+					if err != nil {
+						return nil, err
+					}
+					wire.RunnerID = file.Identity.RunnerID
+					raw, err := json.Marshal(wire)
+					resp.Body = io.NopCloser(bytes.NewReader(raw))
+					return resp, err
+				}),
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native(organization, project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reconnectSource, err = hubclient.NewNativeConnector(native)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 	}, intercept)
 	workspaceRoot := t.TempDir()
 	workflow.Config.Workspace.Root = workspaceRoot
@@ -876,7 +936,91 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			return "continue", nil
 		},
 	}
-	outcome, runErr := run.Run(ctx, request)
+	var outcome runnerpkg.RunResult
+	var runErr error
+	if strings.HasPrefix(scenario, "preparation_") {
+		prepared := false
+		request.PrepareRun = func(prepareCtx context.Context, request *runnerpkg.RunRequest) error {
+			prepared = true
+			if workers := inventory(); len(workers) != 1 {
+				return errors.New("preparation ran before the attempt worker was recorded")
+			}
+			decision, err := run.CheckProgress(prepareCtx, *request, progresscheck.Request{IssueID: issue.ID})
+			if err != nil || decision.Reason != "fixture progress" {
+				return fmt.Errorf("progress decision: %+v: %w", decision, err)
+			}
+			request.PriorAttempt.Source = "progress receipt"
+			if scenario == "preparation_readmitted" {
+				execution, policy, err := scheduler.ReadmitRetryProgress(prepareCtx, *request, nil)
+				if err != nil {
+					return err
+				}
+				request.Execution = execution
+				request.Issue.IsolationPolicy = policy
+			}
+			return nil
+		}
+		supervisor, err := runnerpkg.NewSupervisor(run, runnerpkg.SupervisorConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		completion := supervisor.Run(ctx, request)
+		if scenario == "preparation_unreachable" {
+			if prepared || completion.Err == nil || len(sent) != 0 || len(events) == 0 {
+				t.Fatalf("unacknowledged preparation: prepared=%t error=%v effects=%d launch writes=%d", prepared, completion.Err, len(sent), len(events))
+			}
+			return
+		}
+		if !prepared || completion.Err != nil || completion.Request.PriorAttempt.Source != "progress receipt" ||
+			completion.Result.FinalState != runnerpkg.FinalStateCompleted || len(sent) != 2 ||
+			len(events) != 2 {
+			t.Fatalf("acknowledged preparation: prepared=%t error=%v final state=%q effects=%d launch writes=%d", prepared, completion.Err, completion.Result.FinalState, len(sent), len(events))
+		}
+		first, second := events[0], events[1]
+		if scenario == "preparation_readmitted" {
+			if first.Data.FencingToken == second.Data.FencingToken || first.Data.AttemptID == second.Data.AttemptID ||
+				second.Type != "run.started" || completion.Request.AttemptWorkspace.Attempt != second.Data.AttemptID {
+				t.Fatalf("readmitted progress reused the old launch: first=%+v second=%+v", first, second)
+			}
+		} else if first.Data.FencingToken != second.Data.FencingToken || second.Type != "run.observed" {
+			t.Fatalf("same-fence progress changed ownership: first=%+v second=%+v", first, second)
+		}
+		return
+	}
+	outcome, runErr = run.Run(ctx, request)
+	if scenario == "recovered_live" || scenario == "recovered_exited" {
+		if runErr != nil || len(events) != 1 || len(sent) != 1 {
+			t.Fatalf("initial launch: error=%v writes=%d effects=%d", runErr, len(events), len(sent))
+		}
+		if scenario == "recovered_exited" {
+			if err := execution.(runnerpkg.WorkerLifetimeExecution).CloseWorkers(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		claim, ok := scheduler.ExecutionClaim(issue.ID)
+		if !ok {
+			t.Fatal("same-fence claim was removed")
+		}
+		claim.Recovery, runErr = workerClient.Recovery(ctx, tracker.NativeWorkItemID(issue.ID))
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		claim.Source = reconnectSource
+		request.Execution = nativechange.NewExecution(scheduler, claim)
+		defer request.Execution.(runnerpkg.WorkerLifetimeExecution).CloseWorkers(context.WithoutCancel(ctx))
+		_, runErr := run.Run(ctx, request)
+		if reconnectReads != 1 {
+			t.Fatalf("same-fence launch used %d fresh inventory reads (error=%v)", reconnectReads, runErr)
+		}
+		if scenario == "recovered_live" {
+			if !errors.Is(runErr, runnerpkg.ErrExecutionAuthorityUnavailable) || len(events) != 1 || len(sent) != 1 {
+				t.Fatalf("recovery replaced a live owner: error=%v writes=%d effects=%d", runErr, len(events), len(sent))
+			}
+		} else if runErr != nil || len(events) != 2 || len(sent) != 2 || events[0].Data.FencingToken != events[1].Data.FencingToken {
+			t.Fatalf("recovery did not replace the proven-exited owner: error=%v writes=%d effects=%d", runErr, len(events), len(sent))
+		}
+		return
+	}
 	if scenario == "second_launch" || scenario == "overlapping" {
 		if runErr != nil || outcome.FinalState != runnerpkg.FinalStateCompleted || len(sent) != 1 {
 			t.Fatalf("first launch: outcome=%s error=%v releases=%d", outcome.FinalState, runErr, len(sent))
@@ -987,4 +1131,47 @@ func bestEffortTestPath(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return canonical
+}
+
+func TestReview1973NativeRunRefusesUnownedRoute(t *testing.T) {
+	for _, host := range []string{"local", "example-worker"} {
+		t.Run(host, func(t *testing.T) {
+			backend, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), OutputRoot: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{Workspace: backend, AgentBackend: stubConversationBackend{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			execution := &review1973UnownedExecution{}
+			supervisor, err := runnerpkg.NewSupervisor(&sshRunner{Runner: run}, runnerpkg.SupervisorConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared := false
+			outcome := supervisor.Run(t.Context(), runnerpkg.RunRequest{
+				Issue:      connector.Issue{ID: "example-issue"},
+				WorkerHost: host, Execution: execution,
+				PrepareRun: func(context.Context, *runnerpkg.RunRequest) error {
+					prepared = true
+					return nil
+				},
+			})
+			if !errors.Is(outcome.Err, runnerpkg.ErrExecutionAuthorityUnavailable) || prepared || execution.guarded {
+				t.Fatalf("unowned route reached preparation or execution: error=%v prepared=%t guarded=%t", outcome.Err, prepared, execution.guarded)
+			}
+		})
+	}
+}
+
+type review1973UnownedExecution struct {
+	runnerpkg.Execution
+	runnerpkg.AttemptWorkerExecution
+	guarded bool
+}
+
+func (e *review1973UnownedExecution) Guard(ctx context.Context) (context.Context, func(), error) {
+	e.guarded = true
+	return ctx, func() {}, runnerpkg.ErrExecutionAuthorityUnavailable
 }

@@ -320,12 +320,14 @@ func (b *AgentBackend) VerifyResume(ctx context.Context, process runner.AgentPro
 	if strings.TrimSpace(resume.ThreadID) == "" {
 		return runner.ErrAgentResumeUnsupported
 	}
-	return b.client.VerifyThread(withAgentProcess(ctx, process), resume.ThreadID)
+	launch, finish := process.OwnProviderLaunch(ctx)
+	return finish(b.client.VerifyThread(withAgentProcess(launch, process), resume.ThreadID))
 }
 
 func (b *AgentBackend) ListModels(ctx context.Context, process runner.AgentProcessRequest) ([]runner.AgentModel, error) {
-	models, err := b.client.ListModels(withAgentProcess(ctx, process))
-	if err != nil {
+	launch, finish := process.OwnProviderLaunch(ctx)
+	models, err := b.client.ListModels(withAgentProcess(launch, process))
+	if err := finish(err); err != nil {
 		return nil, err
 	}
 	out := make([]runner.AgentModel, 0, len(models))
